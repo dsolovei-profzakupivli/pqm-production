@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PQM — Реєстр заявок</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="filters.css">
+  <link rel="stylesheet" href="modules.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img class="brand-logo" src="assets/professional-purchasing-logo.webp" alt="ДУ Професійні закупівлі"><div><strong>Profzakupivli Qualification Manager</strong><small>Розроблено для ДУ «Професійні закупівлі»</small><em>Тестова локальна версія · ручні рішення не мігруються</em></div></div>
+    <nav id="mainNav">
+      <button id="applicationsNav" class="nav-active">Реєстр заявок</button>
+      <button id="suppliersNav">База постачальників</button>
+      <button id="frameworksNav">Відбори</button>
+      <button id="procurementsNav">Закупівлі за відборами</button>
+      <button id="referencesNav">Довідники</button>
+      <button id="requestsNav">Звернення замовників</button>
+      <button id="auditBtn">Журнал змін</button>
+    </nav>
+    <label class="role">Роль <select id="roleSelect"><option value="viewer">Перегляд</option><option value="officer" selected>УО</option><option value="admin">Адміністратор</option></select></label>
+  </header>
+
+  <main id="applicationsView">
+    <section class="page-heading">
+      <div><p class="eyebrow">Кваліфікація постачальників</p><h1>Реєстр заявок</h1><p id="resultInfo" class="muted"></p></div>
+      <div class="heading-metrics">
+        <section id="kpiCards" class="kpi-cards" aria-label="Коротка статистика">
+          <article class="kpi-card" data-kpi-card="applications"><span>Заявки</span><strong data-kpi="applications">—</strong></article>
+          <article class="kpi-card" data-kpi-card="suppliers"><span>Постачальники</span><strong data-kpi="suppliers">—</strong></article>
+          <article class="kpi-card kpi-wait" data-kpi-card="pending"><span>Очікують</span><strong data-kpi="pending">—</strong></article>
+          <article class="kpi-card kpi-admit" data-kpi-card="admitted"><span>Допущено</span><strong data-kpi="admitted">—</strong></article>
+          <article class="kpi-card kpi-reject" data-kpi-card="rejected"><span>Відхилено</span><strong data-kpi="rejected">—</strong></article>
+          <article class="kpi-card kpi-active" data-kpi-card="registry_active"><span>Активні у відборі</span><strong data-kpi="registry_active">—</strong></article>
+          <article class="kpi-card kpi-inactive" data-kpi-card="registry_inactive"><span>Неактивні у відборі</span><strong data-kpi="registry_inactive">—</strong></article>
+        </section>
+        <section id="officerCards" class="officer-cards" aria-label="Кількість заявок за УО"></section>
+      </div>
+      <div class="heading-actions"><span id="syncStatus" class="sync-status">Графік: щогодини о :05</span><button id="protocolBtn" class="ghost">Перевірити протокол</button><button id="resetBtn" class="ghost">Оновити з Prozorro</button><button id="bulkBtn" class="primary" disabled>Масове заповнення <span id="selectedCount"></span></button></div>
+    </section>
+
+    <section class="toolbar card">
+      <div class="search-wrap"><span>⌕</span><input id="searchInput" placeholder="Пошук за учасником, ЄДРПОУ, кодом ДК…"></div>
+      <details id="supplierCodeFilter" class="multi-filter"><summary>Коди ЄДРПОУ</summary><div class="multi-panel"><input class="multi-search" placeholder="Код або назва…"><div class="multi-options"></div></div></details>
+      <details id="statusFilter" class="multi-filter"><summary>Усі статуси</summary><div class="multi-panel"><label><input type="checkbox" value="Очікує рішення"> Очікує рішення</label><label><input type="checkbox" value="Допущено"> Допущено</label><label><input type="checkbox" value="Відхилено"> Відхилено</label></div></details>
+      <details id="registryStatusFilter" class="multi-filter"><summary>Будь-який стан у відборі</summary><div class="multi-panel"><label><input type="checkbox" value="Активний"> Активний</label><label><input type="checkbox" value="Неактивний"> Неактивний</label><label><input type="checkbox" value="Призупинений"> Призупинений</label></div></details>
+      <details id="frameworkFilter" class="multi-filter wide-filter"><summary>Усі відбори</summary><div class="multi-panel"><input class="multi-search" placeholder="Номер або назва відбору…"><div class="multi-options"></div></div></details>
+      <details id="dkFilter" class="multi-filter"><summary>Усі коди ДК</summary><div class="multi-panel"><input class="multi-search" placeholder="Код ДК…"><div class="multi-options"></div></div></details>
+      <label class="date-filter">Від <input id="dateFromFilter" type="date" aria-label="Дата заявки від"></label>
+      <label class="date-filter">До <input id="dateToFilter" type="date" aria-label="Дата заявки до"></label>
+      <select id="profileSelect" aria-label="Профіль"></select>
+      <button id="saveProfileBtn" class="ghost">Зберегти профіль</button>
+      <button id="cardsBtn" class="ghost">Картки</button>
+      <button id="columnsBtn" class="ghost">Колонки</button>
+      <button id="clearFiltersBtn" class="icon-btn" title="Очистити фільтри">↺</button>
+      <span id="saveState" class="save-state"><i></i> Усі зміни збережено</span>
+    </section>
+
+    <section class="table-card card">
+      <div class="table-scroll-top" id="tableScrollTop" aria-label="Горизонтальна прокрутка таблиці"><div></div></div>
+      <div class="table-scroll" id="tableScroll"><table id="applicationsTable"><thead></thead><tbody></tbody></table></div>
+      <footer><span id="footerInfo"></span><span>Підказка: натисніть на клітинку, щоб редагувати</span></footer>
+    </section>
+  </main>
+
+  <main id="suppliersView" class="module-view" hidden>
+    <section class="module-heading">
+      <div><p class="eyebrow">Кваліфіковані постачальники Prozorro Market</p><h1>База постачальників</h1><p id="suppliersInfo" class="muted">Дані з реєстрів постачальників усіх синхронізованих відборів</p></div>
+      <div class="module-kpis"><article><span>Постачальники</span><strong id="supplierRegistryTotal">—</strong></article><article><span>Активні кваліфікації</span><strong id="supplierRegistryActive">—</strong></article><article class="candidate-kpi"><span>Ще не в реєстрі</span><strong id="supplierRegistryCandidates">—</strong></article><article class="supplier-filter-kpi" data-risk="amcu"><span>АМКУ</span><strong id="supplierRegistryAmcu">—</strong></article><article class="supplier-filter-kpi" data-risk="nazk"><span>НАЗК</span><strong id="supplierRegistryNazk">—</strong></article></div>
+    </section>
+    <section class="supplier-toolbar card">
+      <div class="search-wrap"><span>⌕</span><input id="supplierRegistrySearch" placeholder="Пошук за назвою або кодом ЄДРПОУ/РНОКПП…"></div>
+      <select id="supplierRegistryStatus"><option value="">Усі статуси</option><option value="active">Активний</option><option value="terminated">Неактивний</option><option value="suspended">Призупинений</option><option value="not_registered">Ще не в реєстрі</option></select>
+      <input id="supplierRegistryDk" list="supplierRegistryDkOptions" placeholder="Код ДК…" aria-label="Фільтр за кодом ДК"><datalist id="supplierRegistryDkOptions"></datalist>
+      <button id="supplierRegistryRefresh" class="ghost">Оновити з Prozorro</button>
+      <button id="supplierEdrSync" class="primary">Синхронізувати ЄДР</button>
+      <button id="supplierNazkReviewSync" class="primary">Синхронізувати перевірки НАЗК</button>
+    </section>
+    <p id="supplierEdrSyncStatus" class="module-sync muted">Довідник ЄДР ще не синхронізовано</p>
+    <p id="supplierNazkReviewSyncStatus" class="module-sync muted">Перевірки НАЗК ще не синхронізовано</p>
+    <section class="supplier-table-card card"><div class="supplier-table-scroll"><table class="supplier-table"><thead><tr><th>Постачальник</th><th>ЄДРПОУ / РНОКПП</th><th>Статус</th><th>Заявок</th><th>Кваліфікацій</th><th>Активні</th><th>Неактивні</th><th>Коди ДК</th><th>Остання подія</th></tr></thead><tbody id="supplierRegistryBody"></tbody></table></div><footer id="supplierRegistryFooter" class="supplier-pagination"><span id="supplierRegistryPageInfo"></span><div><button id="supplierRegistryPrev" type="button" class="ghost" aria-label="Попередня сторінка">←</button><button id="supplierRegistryNext" type="button" class="ghost" aria-label="Наступна сторінка">→</button></div></footer></section>
+  </main>
+
+  <main id="frameworkAnalyticsView" class="module-view" hidden>
+    <section class="module-heading"><div><p class="eyebrow">КВАЛІФІКАЦІЙНІ ВІДБОРИ PROZORRO MARKET</p><h1>Відбори</h1><p>Аналітика відборів, закупівель і участей постачальників</p></div><div class="kpi-row"><article class="kpi"><span>Відбори</span><strong id="frameworksTotal">0</strong></article><article class="kpi"><span>Закупівлі</span><strong id="frameworksTenders">0</strong></article><article class="kpi"><span>Bids</span><strong id="frameworksBids">0</strong></article></div></section>
+    <section class="card frameworks-toolbar"><input id="frameworksSearch" type="search" placeholder="Пошук за ID, кодом ДК або назвою..."><select id="frameworksStatus"><option value="">Усі статуси</option><option value="active">Активні</option><option value="inactive">Неактивні</option></select><input id="frameworksDk" placeholder="Код ДК..."><label>Від <input id="frameworksDateFrom" type="date"></label><label>До <input id="frameworksDateTo" type="date"></label><button id="frameworksRefresh" class="secondary">Оновити</button></section>
+    <p id="frameworksSyncStatus" class="sync-note"></p>
+    <section class="card table-card"><div class="table-scroll"><table class="frameworks-table"><thead><tr class="frameworks-head-groups"><th rowspan="2" data-framework-sort="cpv_code">КОД ДК</th><th rowspan="2">ВІДБІР / AGREEMENT ID</th><th rowspan="2">НАЗВА / КАТЕГОРІЯ</th><th rowspan="2" data-framework-sort="status">СТАТУС</th><th colspan="4">ПОСТАЧАЛЬНИКИ</th><th colspan="3">ЗАКУПІВЛІ</th><th rowspan="2">ОСТАННЯ<br>ЗАКУПІВЛЯ</th><th rowspan="2">ПРОПОЗИЦІЇ<br>(BIDS)</th></tr><tr class="frameworks-head-details"><th>КВАЛІФІКОВАНІ</th><th>З ПРОПОЗИЦІЯМИ</th><th>В ПОТОЧНОМУ РОЦІ</th><th>БЕЗ УЧАСТІ</th><th>ОГОЛОШЕНО</th><th>УСПІШНІ</th><th>НЕУСПІШНІ</th></tr></thead><tbody id="frameworksBody"></tbody></table></div><footer class="table-footer"><span id="frameworksPageInfo"></span><div><button id="frameworksPrev" class="secondary">←</button><button id="frameworksNext" class="secondary">→</button></div></footer></section>
+  </main>
+  <main id="referencesView" class="module-view" hidden>
+    <section class="module-heading"><div><p class="eyebrow">Системні дані PQM</p><h1>Довідники</h1><p class="muted">Перевірочні реєстри та шаблони зауважень</p></div></section>
+    <div class="reference-tabs card"><button type="button" data-ref-tab="nazk" class="active">Реєстр НАЗК</button><button type="button" data-ref-tab="amcu">Реєстр АМКУ</button><button type="button" data-ref-tab="remarks">Конструктор зауважень</button></div>
+    <section id="referenceNazk" class="reference-panel">
+      <div class="reference-toolbar card"><div><strong>Реєстр НАЗК</strong><small id="refNazkStatus">Ще не оновлювався</small></div><input id="refNazkSearch" placeholder="Пошук за ПІБ, порушенням або справою…"><label class="reference-date-filter">Від <input id="refNazkDateFrom" type="date"></label><label class="reference-date-filter">До <input id="refNazkDateTo" type="date"></label><select id="refNazkCourt" aria-label="Фільтр за судом"><option value="">Усі суди / органи</option></select><button id="refNazkRefresh" type="button" class="primary">Оновити зараз</button></div>
+      <div class="card reference-table-wrap"><table class="reference-table"><thead><tr><th>ПІБ</th><th>Порушення</th><th>Номер судової справи</th><th>Дата рішення</th><th>Дата набрання законної сили</th><th>Посилання на рішення</th></tr></thead><tbody id="refNazkBody"></tbody></table><footer><span id="refNazkInfo"></span><div><button id="refNazkPrev" class="ghost">←</button><button id="refNazkNext" class="ghost">→</button></div></footer></div>
+    </section>
+    <section id="referenceAmcu" class="reference-panel" hidden>
+      <div class="reference-toolbar card"><div><strong>Реєстр АМКУ</strong><small id="refAmcuStatus">Ще не оновлювався</small></div><input id="refAmcuSearch" placeholder="Пошук за назвою, кодом або рішенням…"><label class="reference-date-filter">Від <input id="refAmcuDateFrom" type="date"></label><label class="reference-date-filter">До <input id="refAmcuDateTo" type="date"></label><select id="refAmcuAuthority" aria-label="Фільтр за органом АМКУ"><option value="">Усі органи АМКУ</option></select><select id="refAmcuSupplierScope" aria-label="Фільтр за наявністю постачальника"><option value="">Усі суб’єкти</option><option value="registered">В реєстрі постачальників</option><option value="applicant">Є заявка постачальника</option></select><button id="refAmcuRefresh" type="button" class="primary">Оновити з сайту</button><button id="refAmcuUploadBtn" type="button" class="ghost">Завантажити Excel</button><input id="refAmcuFile" type="file" accept=".xlsx" hidden></div>
+      <div class="card reference-table-wrap"><table class="reference-table"><thead><tr><th>Суб’єкт</th><th>Код</th><th>Рішення</th><th>Дата</th><th>Орган АМКУ</th><th>Судова справа</th></tr></thead><tbody id="refAmcuBody"></tbody></table><footer><span id="refAmcuInfo"></span><div><button id="refAmcuPrev" class="ghost">←</button><button id="refAmcuNext" class="ghost">→</button></div></footer></div>
+    </section>
+    <section id="referenceRemarks" class="reference-panel" hidden>
+      <div class="reference-toolbar card"><div><strong>Конструктор зауважень</strong><small id="refRemarksStatus">Локальний редагований довідник</small></div><input id="refRemarkPoint" placeholder="Пункт вимог"><input id="refRemarkText" class="wide-input" placeholder="Текст невідповідності"><button id="refRemarkAdd" type="button" class="primary">Додати</button></div>
+      <div id="refRemarksList" class="card reference-remarks-list"></div>
+    </section>
+  </main>
+  <main id="frameworksView" class="module-view" hidden><section class="empty-module card"><p class="eyebrow">Кваліфікація Prozorro Market</p><h1>Відбори</h1><p>Окремий реєстр кваліфікаційних відборів: ідентифікатор, категорія та код ДК, строки дії, статус, кількість заявок і постачальників.</p></section></main>
+  <main id="procurementsView" class="module-view" hidden>
+    <section class="module-heading"><div><p class="eyebrow">Аналітика електронного каталогу</p><h1>Закупівлі за відборами</h1><p class="muted">Стан локальної історичної бази ProzorroBids</p></div><div class="heading-actions"><button id="bidsStatusRefresh" type="button" class="ghost">Оновити стан</button><button id="bidsDataRefresh" type="button" class="primary">Оновити дані Bids</button></div></section>
+    <section class="bids-status-grid">
+      <article class="card"><span>Відбори</span><strong id="bidsAgreements">—</strong><small id="bidsAgreementsDetail"></small></article>
+      <article class="card"><span>Закупівлі</span><strong id="bidsTenders">—</strong><small id="bidsTendersDetail"></small></article>
+      <article class="card"><span>Bids</span><strong id="bidsCount">—</strong><small>Пропозиції постачальників</small></article>
+      <article class="card"><span>Awards</span><strong id="bidsAwards">—</strong><small>Рішення про визначення</small></article>
+      <article class="card"><span>Черга деталізації</span><strong id="bidsPending">—</strong><small id="bidsErrors"></small></article>
+    </section>
+    <section class="bids-sync-panel card"><header><div><h2>Стан синхронізації</h2><p id="bidsSyncHeadline" class="muted">Завантаження…</p></div><span id="bidsSyncBadge" class="bids-sync-badge">—</span></header><dl>
+      <div><dt>Охоплення закупівель</dt><dd id="bidsCoverage">—</dd></div><div><dt>Дані змінено до</dt><dd id="bidsModifiedTo">—</dd></div>
+      <div><dt>Останній пошук відборів</dt><dd id="bidsLastSearch">—</dd></div><div><dt>Остання деталізація</dt><dd id="bidsLastDetail">—</dd></div>
+      <div><dt>Останній завершений запуск</dt><dd id="bidsLastRun">—</dd></div><div><dt>База даних</dt><dd id="bidsDatabase">—</dd></div>
+    </dl><p id="bidsSyncWarning" class="bids-sync-warning" hidden></p></section>
+    <section class="powerbi-panel card"><header><div><h2>База для Power BI</h2><p id="powerbiHeadline" class="muted">Постійний набір без накопичення копій</p></div><button id="powerbiExportBtn" type="button" class="primary">Оновити базу Power BI</button></header><dl>
+      <div><dt>Постійний шлях</dt><dd id="powerbiPath">—</dd></div><div><dt>Останній успішний експорт</dt><dd id="powerbiUpdated">—</dd></div>
+      <div><dt>Розмір</dt><dd id="powerbiSize">—</dd></div><div><dt>Рядків у наборах</dt><dd id="powerbiRows">—</dd></div>
+    </dl><div id="powerbiDatasets" class="powerbi-datasets"></div><p id="powerbiStatusMessage" class="muted"></p></section>
+  </main>
+  <main id="requestsView" class="module-view" hidden>
+    <section class="module-heading">
+      <div><p class="eyebrow">Порушення постачальників Prozorro Market</p><h1>Звернення замовників</h1><p id="requestsInfo" class="muted">Офіційний реєстр UA-D з Prozorro</p></div>
+      <div class="module-kpis"><article><span>Звернення</span><strong id="requestsTotal">—</strong></article><article><span>Задоволено</span><strong id="requestsSatisfied">—</strong></article></div>
+    </section>
+    <section id="requestAuthorityCards" class="request-authority-cards" aria-label="Фільтр за адміністратором електронного каталогу"></section>
+    <section class="supplier-toolbar requests-toolbar card">
+      <div class="search-wrap"><span>⌕</span><input id="requestsSearch" placeholder="Пошук за UA-D, замовником, постачальником, кодом або закупівлею…"></div>
+      <select id="requestsStatus"><option value="">Усі статуси</option></select>
+      <select id="requestsReason"><option value="">Усі підстави</option></select>
+      <label class="compact-date">Від <input id="requestsDateFrom" type="date"></label>
+      <label class="compact-date">До <input id="requestsDateTo" type="date"></label>
+      <button id="requestsRefresh" class="ghost">Оновити з Prozorro</button>
+    </section>
+    <p id="requestsSyncStatus" class="module-sync muted"></p>
+    <section class="supplier-table-card card"><div class="supplier-table-scroll"><table class="supplier-table requests-table"><thead><tr><th>Звернення</th><th>Дата</th><th>Замовник</th><th>Постачальник</th><th>Підстава</th><th>Пояснення до</th><th>Закупівля / договір / звернення</th><th>Статус</th><th>Рішення</th><th>Документи</th></tr></thead><tbody id="requestsBody"></tbody></table></div><footer id="requestsFooter" class="supplier-pagination"><span id="requestsPageInfo"></span><div><button id="requestsPrev" type="button" class="ghost" aria-label="Попередня сторінка">←</button><button id="requestsNext" type="button" class="ghost" aria-label="Наступна сторінка">→</button></div></footer></section>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <dialog id="frameworkDetailsDialog" class="request-details-dialog framework-details-dialog"><form method="dialog"><header><div><h2 id="frameworkDetailsTitle">Відбір</h2><p id="frameworkDetailsSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="frameworkDetailsBody" class="framework-details-body"></div><footer><button value="cancel" class="primary">Закрити</button></footer></form></dialog>
+  <dialog id="supplierProfileDialog" class="request-details-dialog"><form method="dialog"><header><div><h2 id="supplierProfileTitle">Картка постачальника</h2><p id="supplierProfileSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="supplierProfileBody" class="supplier-profile-body"></div><footer><button value="cancel" class="primary">Закрити</button></footer></form></dialog>
+  <dialog id="requestDetailsDialog" class="request-details-dialog"><form method="dialog"><header><div><h2 id="requestDetailsTitle">Звернення замовника</h2><p id="requestDetailsSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="requestDetailsBody" class="request-details-body"></div><footer><button value="cancel" class="primary">Закрити</button></footer></form></dialog>
+
+  <dialog id="bulkDialog"><form method="dialog"><header><div><h2>Масове заповнення</h2><p>Зміни для вибраних заявок</p></div><button value="cancel" class="dialog-close">×</button></header><div id="bulkFields" class="form-grid"></div><footer><button value="cancel" class="ghost">Скасувати</button><button id="applyBulkBtn" value="default" class="primary">Застосувати</button></footer></form></dialog>
+  <dialog id="docsDialog"><form method="dialog"><header><div><h2>Документи учасника</h2><p id="docsSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="docsList" class="docs-list"></div><footer><button id="verifyDocumentsBtn" type="button" class="ghost">Перевірити документи і КЕП</button><a id="archiveDownloadBtn" class="primary button-link" href="#">⇩ Завантажити всі</a><button value="cancel" class="ghost">Закрити</button></footer></form></dialog>
+  <dialog id="documentCheckDialog" class="document-check-dialog"><form method="dialog"><header><div><h2>Перевірка документів і КЕП</h2><p id="documentCheckSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="documentCheckBody" class="document-check-body"></div><footer><a id="officialSignatureCheck" class="ghost button-link" href="https://czo.gov.ua/verify" target="_blank" rel="noopener">Перевірити в ЦЗО</a><button value="cancel" class="ghost">Закрити</button><button id="saveDocumentReviewBtn" type="button" class="primary">Зберегти висновок</button></footer></form></dialog>
+  <dialog id="auditDialog" class="wide"><form method="dialog"><header><div><h2>Журнал змін</h2><p>Історія дій у локальному реєстрі</p></div><button value="cancel" class="dialog-close">×</button></header><div class="audit-wrap"><table class="audit-table"><thead><tr><th>Час</th><th>Користувач</th><th>Заявка</th><th>Поле</th><th>Було</th><th>Стало</th></tr></thead><tbody id="auditBody"></tbody></table></div><footer><button id="clearAuditBtn" value="cancel" class="ghost">Очистити журнал</button><span id="auditPageInfo"></span><div><button id="auditPrev" type="button" class="ghost" aria-label="Попередня сторінка">←</button><button id="auditNext" type="button" class="ghost" aria-label="Наступна сторінка">→</button></div><button value="cancel" class="primary">Закрити</button></footer></form></dialog>
+  <dialog id="columnsDialog"><form method="dialog"><header><div><h2>Налаштування колонок</h2><p>Показуйте, змінюйте порядок і закріплюйте</p></div><button value="cancel" class="dialog-close">×</button></header><div id="columnsList" class="columns-list"></div><footer><button value="cancel" class="primary">Готово</button></footer></form></dialog>
+  <dialog id="cardsDialog"><form method="dialog"><header><div><h2>Картки профілю</h2><p>Оберіть показники, потрібні для цієї операції</p></div><button value="cancel" class="dialog-close">×</button></header><div id="cardsList" class="cards-list"></div><footer><button value="cancel" class="primary">Готово</button></footer></form></dialog>
+  <dialog id="remarksDialog" class="remarks-dialog"><form method="dialog"><header><div><h2>Зауваження до протоколу</h2><p id="remarksSubtitle">Вибір і остаточний текст визначає УО</p></div><button value="cancel" class="dialog-close">×</button></header><div class="remarks-body"><div class="remarks-mode"><label><input type="radio" name="remarksMode" value="none"> Без зауважень</label><label><input type="radio" name="remarksMode" value="selected"> Вибрати зауваження</label></div><div id="remarksPicker"><div class="remarks-tools"><input id="remarksSearch" placeholder="Пошук за пунктом або текстом…"><button id="addRemarkBtn" type="button" class="ghost">+ Додати пункт</button><button id="refreshRemarksBtn" type="button" class="ghost">Імпортувати нові з таблиці</button></div><div id="remarksCatalog" class="remarks-catalog"></div></div><label class="remarks-preview-label">Текст, який буде збережено<textarea id="remarksPreview" rows="7"></textarea></label><p id="remarksSource" class="muted"></p></div><footer><button value="cancel" class="ghost">Скасувати</button><button id="saveRemarksBtn" type="button" class="primary">Зберегти</button></footer></form></dialog>
+  <dialog id="protocolDialog" class="wide"><form id="protocolForm"><header><div><h2>Готовність протоколу</h2><p>Перевірка складу та обов’язкових полів перед формуванням</p></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></header><div class="protocol-controls"><label>№ протоколу<input id="checkProtocolNumber"></label><label>Період від<input id="checkDateFrom" type="date"></label><label>Період до<input id="checkDateTo" type="date"></label><button type="submit" class="primary">Перевірити</button></div><div id="protocolSummary" class="protocol-summary muted">Зазначте номер протоколу або період.</div><div id="protocolIssues" class="protocol-issues"></div><footer><button type="button" class="ghost" onclick="this.closest('dialog').close()">Закрити</button><button id="generateProtocolBtn" type="button" class="primary" disabled>Сформувати протокол</button></footer></form></dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
