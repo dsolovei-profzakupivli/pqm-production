@@ -129,6 +129,7 @@ GOOGLE_OAUTH_CLIENT_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GO
 GOOGLE_OAUTH_TOKEN_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json")))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 GOOGLE_OAUTH_PENDING: dict[str, dict] = {}
+SYNC_CURSOR_OVERLAP_SECONDS = max(0, int(os.environ.get("PQM_SYNC_CURSOR_OVERLAP_SECONDS", "86400")))
 SUPPLIER_EDR_SYNC_STATE = {"running": False, "message": "Довідник ЄДР ще не синхронізували",
                            "started_at": None, "updated_at": None, "processed": 0,
                            "inserted": 0, "updated": 0, "error": None}
@@ -468,8 +469,23 @@ def unicode_casefold(value: str | None) -> str:
     return (value or "").casefold()
 
 
+class ClosingConnection(sqlite3.Connection):
+    """Commit/rollback and close connections used as context managers."""
+
+    def __exit__(self, exc_type, exc_value, traceback_value):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback_value)
+        finally:
+            self.close()
+
+
+DB_SETUP_LOCK = threading.Lock()
+DB_WAL_READY = False
+
+
 def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH, timeout=60)
+    global DB_WAL_READY
+    con = sqlite3.connect(DB_PATH, timeout=60, factory=ClosingConnection)
     con.row_factory = sqlite3.Row
     con.create_function("CASEFOLD", 1, unicode_casefold, deterministic=True)
     con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
@@ -479,8 +495,12 @@ def db() -> sqlite3.Connection:
         deterministic=True,
     )
     con.execute("PRAGMA foreign_keys=ON")
-    con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=60000")
+    if not DB_WAL_READY:
+        with DB_SETUP_LOCK:
+            if not DB_WAL_READY:
+                con.execute("PRAGMA journal_mode=WAL")
+                DB_WAL_READY = True
     return con
 
 
@@ -928,7 +948,11 @@ def resource_cursor(framework_id: str, table: str) -> str | None:
             continue
     if latest is None:
         return None
-    seconds = f"{latest[0]:.3f}".rstrip("0").rstrip(".")
+    # Prozorro resources can be modified slightly out of order. Re-reading a
+    # bounded overlap prevents a newer local watermark from hiding a late
+    # qualification decision; UPSERT keeps the operation idempotent.
+    cursor_timestamp = max(0.0, latest[0] - SYNC_CURSOR_OVERLAP_SECONDS)
+    seconds = f"{cursor_timestamp:.3f}".rstrip("0").rstrip(".")
     digest = hashlib.md5(latest[1].encode()).hexdigest()
     return f"{seconds}.1.{digest}"
 
@@ -1216,7 +1240,9 @@ def sync_all_tracked_frameworks() -> dict:
 
 def sync_incremental_active_frameworks() -> dict:
     with db() as con:
-        framework_ids = [row[0] for row in con.execute("SELECT id FROM frameworks WHERE status='active' ORDER BY pretty_id")]
+        framework_ids = [row[0] for row in con.execute(
+            "SELECT id FROM frameworks WHERE status='active' ORDER BY pretty_id DESC"
+        )]
     totals = {"frameworks": len(framework_ids), "completed": 0, "submissions": 0,
               "qualifications": 0, "contracts": 0, "errors": []}
     for index, framework_id in enumerate(framework_ids, 1):
