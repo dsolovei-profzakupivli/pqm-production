@@ -226,9 +226,11 @@ def list_registry(db_path, source, query):
       COALESCE((SELECT MAX(srs.active_count) FROM supplier_registry_summary srs WHERE srs.supplier_code=amcu_registry.offender_code),0) active_qualifications,
       EXISTS(SELECT 1 FROM submissions s WHERE s.supplier_code=amcu_registry.offender_code) has_application"""
     conditions, params = [], []
-    if q:
+    normalized_q = " ".join(re.sub(r"[’'`\-]+", " ", q.casefold()).split())
+    if normalized_q:
         fields = ["full_name", "offense_name", "court_case_number"] if source == "nazk" else ["offender_name", "offender_code", "decision_no"]
-        conditions.append("(" + " OR ".join(f"{f} LIKE ?" for f in fields) + ")"); params.extend([f"%{q}%"] * len(fields))
+        conditions.append("(" + " OR ".join(f"INSTR(NORMALIZE_SEARCH({f}),?)>0" for f in fields) + ")")
+        params.extend([normalized_q] * len(fields))
     if source == "amcu":
         date_from = (query.get("date_from", [""])[0] or "").strip()
         date_to = (query.get("date_to", [""])[0] or "").strip()
@@ -252,6 +254,9 @@ def list_registry(db_path, source, query):
     order_by = "decision_date DESC, offender_name, row_key" if source == "amcu" else "sentence_date DESC, full_name, source_id"
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
+        con.create_function("NORMALIZE_SEARCH", 1, lambda value: " ".join(
+            re.sub(r"[’'`\-]+", " ", str(value or "").casefold()).split()
+        ))
         total = con.execute(f"SELECT COUNT(*) FROM {table}{where}", params).fetchone()[0]
         rows = [dict(r) for r in con.execute(f"SELECT {cols} FROM {table}{where} ORDER BY {order_by} LIMIT ? OFFSET ?", params + [size, (page-1)*size])]
         date_field = "sentence_date" if source == "nazk" else "decision_date"

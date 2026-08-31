@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import base64
-import binascii
-import hmac
 import csv
 import hashlib
 import html
 import io
+import itertools
+import hmac
+import logging
+from logging.handlers import RotatingFileHandler
 import mimetypes
 import os
 import re
@@ -22,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import uuid
@@ -33,18 +36,83 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from protocol_docx import build_protocol_docx
+from violation_protocol_docx import (TEMPLATES, build_violation_protocol_docx,
+                                     ensure_runtime_templates, replace_runtime_template,
+                                     template_metadata)
+from nazk_workflow import (
+    complete_submission_nazk_check, complete_supplier_nazk_check,
+    ensure_submission_nazk_control, mark_supplier_nazk_request_sent,
+    get_submission_nazk_control, get_submission_nazk_state, get_submission_nazk_states,
+    get_submission_nazk_presentation_state,
+    get_supplier_application_nazk_state, get_supplier_nazk_presentation_state,
+    registry_matches,
+    reconcile_active_supplier_nazk,
+    transitional_submission_backfill_dry_run,
+)
 from reference_directories import (
     init_reference_tables, list_registry, reference_status,
     refresh_amcu, refresh_nazk,
 )
+from uo_work_queue import get_uo_work_queue
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("PQM_DATA_DIR", str(ROOT / "data"))).expanduser().resolve()
-DB_PATH = DATA_DIR / "pqm.sqlite3"
-BIDS_DB_PATH = Path(os.environ.get("PQM_BIDS_DB", str(DATA_DIR / "prozorro_bids.db"))).expanduser()
+
+
+def configure_file_logging() -> logging.Logger:
+    """Persist LOCAL diagnostics without recording payloads or credentials."""
+    logger = logging.getLogger("pqm.server")
+    if logger.handlers:
+        return logger
+    log_dir = Path(os.environ.get("PQM_LOG_DIR", str(ROOT / "logs"))).resolve()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        log_dir / "server.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+SERVER_LOG = configure_file_logging()
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+PQM_ENV = os.environ.get("PQM_ENV", "local").strip().casefold() or "local"
+IS_WEB_ENV = PQM_ENV in {"test", "test_web", "web", "production"}
+DATA_DIR = Path(os.environ.get("PQM_DATA_DIR", str(ROOT / "data"))).resolve()
+DB_PATH = Path(os.environ.get("PQM_DB_PATH", str(DATA_DIR / "pqm.sqlite3"))).resolve()
+PROTOCOLS_DIR = Path(os.environ.get("PQM_PROTOCOLS_DIR", str(DATA_DIR / "protocols"))).resolve()
+RUNTIME_CACHE_DIR = Path(os.environ.get("PQM_CACHE_DIR", str(DATA_DIR / "cache"))).resolve()
+HOST = os.environ.get("HOST", "0.0.0.0" if IS_WEB_ENV else "127.0.0.1")
+PORT = int(os.environ.get("PORT", "10000" if IS_WEB_ENV else "8080"))
+ENABLE_BROWSER = env_flag("PQM_ENABLE_BROWSER", not IS_WEB_ENV)
+ENABLE_SCHEDULER = env_flag("PQM_ENABLE_SCHEDULER", not IS_WEB_ENV)
+ENABLE_NAZK_SCHEDULER = env_flag("PQM_ENABLE_NAZK_SCHEDULER", not IS_WEB_ENV)
+AUTH_ENABLED = env_flag("PQM_AUTH_ENABLED", False)
+BIDS_MODE = os.environ.get("PQM_BIDS_MODE", "disabled" if IS_WEB_ENV else "readonly").strip().casefold()
+ENABLE_BIDS_UPDATE = env_flag("PQM_ENABLE_BIDS_UPDATE", not IS_WEB_ENV)
+ENABLE_POWERBI = env_flag("PQM_ENABLE_POWERBI", not IS_WEB_ENV)
+ENABLE_GOOGLE = env_flag("PQM_ENABLE_GOOGLE", not IS_WEB_ENV)
+EDS_ADAPTER_PATH = ROOT / "tools" / "prozorro_eds_adapter" / "verify-signature.mjs"
+EDS_TIMEOUT_SECONDS = max(5, int(os.environ.get("PQM_EDS_TIMEOUT_SECONDS", "35")))
+BIDS_DB_PATH = Path(os.environ.get(
+    "PQM_BIDS_DB",
+    str(DATA_DIR / "prozorro_bids.db") if IS_WEB_ENV else r"D:\ProzorroBids\prozorro_bids.db",
+))
 BIDS_STATUS_CACHE: dict = {"at": 0.0, "value": None}
 BIDS_STATUS_LOCK = threading.Lock()
-BIDS_PROJECT_PATH = Path(os.environ.get("PQM_BIDS_PROJECT", str(DATA_DIR / "ProzorroBids"))).expanduser()
+BIDS_PROJECT_PATH = Path(os.environ.get(
+    "PQM_BIDS_PROJECT_DIR",
+    str(DATA_DIR) if IS_WEB_ENV else r"D:\ProzorroBids",
+))
 BIDS_UPDATE_STATE = {"running": False, "message": "Ручне оновлення ще не запускали", "started_at": None,
                      "updated_at": None, "date_from": None, "date_to": None, "error": None}
 POWERBI_EXPORT_STATE = {"running": False, "message": "Експорт ще не запускали", "started_at": None,
@@ -55,7 +123,8 @@ SUPPLIER_EDR_SHEET_ID = "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA"
 SUPPLIER_EDR_SHEETS = {"ФОП": "1278053622", "ЮО": "511647713"}
 SUPPLIER_NAZK_REVIEW_SHEET_ID = "1hAgy_YQFWf8m6yHQTO4g22Et94Gm46dC9WTBaoyZloA"
 SUPPLIER_NAZK_REVIEW_SHEET = "nazk_data"
-GOOGLE_OAUTH_DIR = Path(os.environ.get("PQM_GOOGLE_OAUTH_DIR", str(DATA_DIR / "google_oauth"))).expanduser()
+CURRENT_USER = os.environ.get("PQM_CURRENT_USER", "Світлана НАМЯСЕНКО")
+GOOGLE_OAUTH_DIR = Path(os.environ.get("PQM_GOOGLE_OAUTH_DIR", str((Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "PQM") if not IS_WEB_ENV else (DATA_DIR / "google_oauth"))))
 GOOGLE_OAUTH_CLIENT_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json")))
 GOOGLE_OAUTH_TOKEN_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json")))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
@@ -66,15 +135,22 @@ SUPPLIER_EDR_SYNC_STATE = {"running": False, "message": "Довідник ЄДР
 SUPPLIER_NAZK_REVIEW_SYNC_STATE = {"running": False, "message": "Перевірки НАЗК ще не синхронізували",
                                    "started_at": None, "updated_at": None, "processed": 0,
                                    "inserted": 0, "updated": 0, "error": None}
-TESSERACT_EXE = Path(os.environ.get("TESSERACT_EXE", "tesseract"))
+TESSERACT_EXE = Path(os.environ.get(
+    "PQM_TESSERACT_EXE",
+    shutil.which("tesseract") or ("/usr/bin/tesseract" if IS_WEB_ENV else r"D:\Program Files\Tesseract-OCR\tesseract.exe"),
+))
 TESSDATA_DIR = ROOT / "tools" / "tessdata"
-PDFTOPPM_EXE = Path(os.environ.get("PDFTOPPM_EXE", "pdftoppm"))
+PDFTOPPM_EXE = Path(os.environ.get(
+    "PQM_PDFTOPPM_EXE",
+    shutil.which("pdftoppm") or ("/usr/bin/pdftoppm" if IS_WEB_ENV else r"C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin\pdftoppm.exe"),
+))
 API_ROOT = "https://public-api.prozorro.gov.ua/api/2.5"
 ORGANIZER_EDRPOU = "40996564"
 DEFAULT_FRAMEWORK_ID = "92e49fa487da40b3ab080b030f8a2b5d"
 ANNOUNCEMENTS_CSV = "https://docs.google.com/spreadsheets/d/1kdjP1Yr5C5UuO-Otju8xC8eo7p5BMewTCDdkLyS6Ofg/export?format=csv&gid=1378255205"
+ANNOUNCEMENTS_SHEET_ID = "1kdjP1Yr5C5UuO-Otju8xC8eo7p5BMewTCDdkLyS6Ofg"
 REMARKS_CSV = "https://docs.google.com/spreadsheets/d/1S94-jj5ys-BIwiWeWhxVNwRFilMrq0erOuJGWMXci1w/export?format=csv&gid=1118329674"
-REMARKS_CACHE = DATA_DIR / "remarks_catalog.json"
+REMARKS_CACHE = Path(os.environ.get("PQM_REMARKS_CACHE", str(DATA_DIR / "remarks_catalog.json")))
 # Destination selected by the administrator for finished review protocols.
 # The local MVP still generates files on disk first; Drive upload requires the
 # PQM Google OAuth integration and must not depend on the Codex session.
@@ -96,11 +172,96 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
         if os.name == "nt" and exclusive is not None:
             self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
         super().server_bind()
+
+
+class BidsUnavailableError(RuntimeError):
+    """The optional read-only ProzorroBids source is unavailable."""
+
+
+def configured_basic_auth_users() -> dict[str, str]:
+    """Read Basic Auth users from the environment without writing credentials to disk."""
+    raw = os.environ.get("PQM_USERS_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("PQM_USERS_JSON містить некоректний JSON") from exc
+    if isinstance(payload, dict) and isinstance(payload.get("users"), list):
+        payload = payload["users"]
+    if isinstance(payload, dict):
+        return {str(name): str(secret) for name, secret in payload.items() if str(name).strip()}
+    if isinstance(payload, list):
+        users = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("username") or item.get("user") or "").strip()
+            secret = item.get("password") if "password" in item else item.get("password_hash")
+            if name and secret is not None:
+                users[name] = str(secret)
+        return users
+    raise RuntimeError("PQM_USERS_JSON має містити object або масив users")
+
+
+def verify_basic_auth_secret(provided: str, configured: str) -> bool:
+    """Support current env passwords and an explicit sha256: digest for secret rotation."""
+    if configured.startswith("sha256:"):
+        digest = hashlib.sha256(provided.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(digest, configured.removeprefix("sha256:"))
+    return hmac.compare_digest(provided, configured)
 PROTOCOL_DECISIONS = {"", "admit", "reject"}
 MARKETPLACE_DECISIONS = {"", "admit", "reject"}
 COMPLIANCE_STATUSES = {"", "approved", "rejected"}
 AUTHORITY_REVIEWS = {"", "approved", "missing", "not_required"}
-PROTOCOL_OFFICERS = {"Світлана НАМЯСЕНКО", "Дмитро САВВА", "Тетяна ФЕДЧЕНКО", "Олена ЄРЬОМІНА"}
+INITIAL_AUTHORIZED_OFFICERS = (
+    ("СВІТЛАНА НАМЯСЕНКО", 1), ("ЯНА КАСЬЯН", 0),
+    ("ОКСАНА АБРОСІМОВА", 0), ("ДМИТРО САВВА", 1),
+    ("СЕРГІЙ ЛОЗИНСЬКИЙ", 0), ("ТЕТЯНА ФЕДЧЕНКО", 1),
+    ("ОЛЕНА ЄРЬОМІНА", 1),
+)
+
+
+def normalized_officer_name(value: str) -> str:
+    return " ".join(str(value or "").split()).upper()
+
+
+def formatted_officer_name(value: str) -> str:
+    """Canonical presentation/storage form: Ім'я ПРІЗВИЩЕ."""
+    parts = " ".join(str(value or "").split()).split()
+    if not parts:
+        return ""
+    titled = [part.lower().capitalize() for part in parts[:-1]]
+    return " ".join([*titled, parts[-1].upper()])
+
+
+def authorized_officers(active_only: bool = False) -> list[dict]:
+    with db() as con:
+        where = "WHERE active=1" if active_only else ""
+        rows = [dict(row) for row in con.execute(
+            f"SELECT id,full_name,role,active,created_at,updated_at FROM authorized_officers {where} ORDER BY active DESC,full_name"
+        )]
+    active_frameworks = framework_service_directory()["items"] if rows else []
+    counts = {}
+    for framework in active_frameworks:
+        if framework.get("status") == "Активний" and framework.get("responsible_officer"):
+            key = normalized_officer_name(framework["responsible_officer"])
+            counts[key] = counts.get(key, 0) + 1
+    for row in rows:
+        row["active"] = bool(row["active"])
+        row["active_frameworks"] = counts.get(normalized_officer_name(row["full_name"]), 0)
+        row["full_name"] = formatted_officer_name(row["full_name"])
+    return rows
+
+
+def valid_active_officer(value: str) -> bool:
+    normalized = normalized_officer_name(value)
+    if not normalized:
+        return True
+    with db() as con:
+        return bool(con.execute(
+            "SELECT 1 FROM authorized_officers WHERE UPPER(full_name)=? AND active=1", (normalized,)
+        ).fetchone())
 SYNC_STATE = {"running": False, "message": "Синхронізацію ще не запускали", "updated_at": None,
               "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None}
 VIOLATION_SYNC_STATE = {"running": False, "message": "Звернення ще не синхронізувалися", "updated_at": None,
@@ -127,6 +288,43 @@ DEFAULT_REMARKS = [
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def violation_threshold_summary(decision_dates, moment: datetime | None = None) -> dict:
+    """Count satisfied reports in inclusive p. 52 calendar windows."""
+    today = (moment or datetime.now().astimezone()).date()
+    month_start = today.replace(day=1)
+    three_month_index = today.year * 12 + today.month - 3
+    three_month_start = today.replace(
+        year=three_month_index // 12,
+        month=three_month_index % 12 + 1,
+        day=1,
+    )
+    parsed_dates = []
+    for value in decision_dates:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        parsed = None
+        for candidate, pattern in ((text[:10], "%Y-%m-%d"), (text[:10], "%d.%m.%Y")):
+            try:
+                parsed = datetime.strptime(candidate, pattern).date()
+                break
+            except ValueError:
+                pass
+        if parsed is not None and parsed <= today:
+            parsed_dates.append(parsed)
+    return {
+        "current_month": sum(month_start <= value <= today for value in parsed_dates),
+        "three_calendar_months": sum(three_month_start <= value <= today for value in parsed_dates),
+        "current_month_limit": 3,
+        "three_calendar_months_limit": 5,
+        "current_month_from": month_start.isoformat(),
+        "three_calendar_months_from": three_month_start.isoformat(),
+        "calculated_to": today.isoformat(),
+        "thresholds_available": True,
+        "date_basis": "decision_date",
+    }
 
 
 def remarks_catalog(force: bool = False) -> dict:
@@ -192,7 +390,7 @@ def announcement_officer_name(value: str) -> str:
         "Савва": "Дмитро САВВА",
         "Федченко": "Тетяна ФЕДЧЕНКО",
         "Єрьоміна": "Олена ЄРЬОМІНА",
-        "Абросімова": "Олена АБРОСІМОВА",
+        "Абросімова": "Оксана АБРОСІМОВА",
     }
     clean = (value or "").strip()
     return names.get(clean, clean)
@@ -203,31 +401,67 @@ def sync_framework_officers() -> dict:
     assignments = {}
     for row in rows:
         pretty_id = (row.get("ID") or "").strip()
+        # The service owner of a framework is the officer who publishes it.
+        # "Хто розглядає" describes operational review and must not overwrite
+        # the framework-level responsibility during the bootstrap import.
         officer = announcement_officer_name(row.get("Хто публікує") or "")
         marketplace_url = (row.get("Посилання на майданчик") or "").strip()
-        status = (row.get("status") or "").strip().casefold()
-        if pretty_id and officer and status == "активне":
-            assignments[pretty_id] = (officer, marketplace_url)
+        category = (row.get("Категорія") or row.get("КАТЕГ") or "").strip()
+        status = (row.get("status") or "").strip()
+        dk_code = (row.get("ДК") or "").strip()
+        source_title = (row.get("Назва фреймворку") or row.get("Інформація про категорію товару") or "").strip()
+        if pretty_id:
+            assignments[pretty_id] = (officer, marketplace_url, category, status, dk_code, source_title)
     matched = 0
+    status_counts = {}
     with db() as con:
-        con.execute("DELETE FROM framework_officers WHERE source=?", ("Google Sheets: Оголошення",))
-        for pretty_id, (officer, marketplace_url) in assignments.items():
+        for pretty_id, (officer, marketplace_url, category, status, dk_code, source_title) in assignments.items():
+            normalized_status = status.casefold() or "не визначено"
+            status_counts[normalized_status] = status_counts.get(normalized_status, 0) + 1
             framework = con.execute("SELECT id FROM frameworks WHERE pretty_id=?", (pretty_id,)).fetchone()
+            framework_id = framework[0] if framework else None
+            con.execute("""INSERT INTO framework_service_directory(
+              pretty_id,framework_id,dk_code,category,marketplace_url,responsible_officer,
+              source_title,source,synced_at)
+              VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(pretty_id) DO UPDATE SET
+              framework_id=excluded.framework_id,
+              dk_code=CASE WHEN framework_service_directory.source='PQM' THEN framework_service_directory.dk_code ELSE excluded.dk_code END,
+              category=CASE WHEN framework_service_directory.source='PQM' THEN framework_service_directory.category ELSE excluded.category END,
+              marketplace_url=CASE WHEN framework_service_directory.source='PQM' THEN framework_service_directory.marketplace_url ELSE excluded.marketplace_url END,
+              responsible_officer=CASE WHEN framework_service_directory.source='PQM' THEN framework_service_directory.responsible_officer ELSE excluded.responsible_officer END,
+              source_title=excluded.source_title,
+              source=CASE WHEN framework_service_directory.source='PQM' THEN framework_service_directory.source ELSE excluded.source END,
+              synced_at=excluded.synced_at""",
+              (pretty_id, framework_id, dk_code, category, marketplace_url, officer,
+               source_title, "Google Sheets: Оголошення", now_iso()))
             if not framework:
                 continue
-            con.execute("""INSERT INTO framework_officers(framework_id,officer,marketplace_url,source,synced_at)
-              VALUES (?,?,?,?,?) ON CONFLICT(framework_id) DO UPDATE SET
-              officer=excluded.officer,marketplace_url=excluded.marketplace_url,
-              source=excluded.source,synced_at=excluded.synced_at""",
-              (framework[0], officer, marketplace_url, "Google Sheets: Оголошення", now_iso()))
+            con.execute("""INSERT INTO framework_officers(framework_id,officer,marketplace_url,category,source,synced_at)
+              VALUES (?,?,?,?,?,?) ON CONFLICT(framework_id) DO UPDATE SET
+              officer=CASE WHEN framework_officers.source='PQM' THEN framework_officers.officer ELSE excluded.officer END,
+              marketplace_url=CASE WHEN framework_officers.source='PQM' THEN framework_officers.marketplace_url ELSE excluded.marketplace_url END,
+              category=CASE WHEN framework_officers.source='PQM' THEN framework_officers.category ELSE excluded.category END,
+              source=CASE WHEN framework_officers.source='PQM' THEN framework_officers.source ELSE excluded.source END,
+              synced_at=excluded.synced_at""",
+              (framework_id, officer, marketplace_url, category, "Google Sheets: Оголошення", now_iso()))
             matched += 1
-    return {"rows": len(rows), "assigned": len(assignments), "matched": matched}
+    return {"rows": len(rows), "unique": len(assignments), "matched": matched,
+            "unmatched": len(assignments) - matched, "statuses": status_counts}
 
 
 def load_announcement_rows() -> list[dict]:
-    request = urllib.request.Request(ANNOUNCEMENTS_CSV, headers={"User-Agent": "PQM/0.1"})
-    with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
-        return list(csv.DictReader(io.StringIO(response.read().decode("utf-8-sig"))))
+    try:
+        request = urllib.request.Request(ANNOUNCEMENTS_CSV, headers={"User-Agent": "PQM/0.1"})
+        with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+            return list(csv.DictReader(io.StringIO(response.read().decode("utf-8-sig"))))
+    except Exception:
+        # The directory is private. Reuse the existing read-only OAuth token;
+        # do not require public link sharing and do not write to Google Sheets.
+        values = _google_sheet_values("Оголошення", ANNOUNCEMENTS_SHEET_ID, "A:Z")
+        if not values:
+            return []
+        headers = [str(value or "").strip() for value in values[0]]
+        return [dict(zip(headers, list(row) + [""] * (len(headers) - len(row)))) for row in values[1:]]
 
 
 def unicode_casefold(value: str | None) -> str:
@@ -252,9 +486,14 @@ def db() -> sqlite3.Connection:
 
 def bids_db() -> sqlite3.Connection:
     """Open the large ProzorroBids database read-only."""
+    if BIDS_MODE not in {"readonly", "read_only"}:
+        raise BidsUnavailableError("Аналітика ProzorroBids вимкнена в цьому середовищі")
     if not BIDS_DB_PATH.is_file():
-        raise FileNotFoundError(f"ProzorroBids database not found: {BIDS_DB_PATH}")
-    con = sqlite3.connect(f"file:{BIDS_DB_PATH.as_posix()}?mode=ro", uri=True, timeout=30)
+        raise BidsUnavailableError("Локальна база ProzorroBids недоступна в цьому середовищі")
+    try:
+        con = sqlite3.connect(f"file:{BIDS_DB_PATH.as_posix()}?mode=ro", uri=True, timeout=30)
+    except sqlite3.Error as exc:
+        raise BidsUnavailableError("Не вдалося відкрити базу ProzorroBids у read-only режимі") from exc
     con.row_factory = sqlite3.Row
     con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
     con.execute("PRAGMA query_only=ON")
@@ -263,7 +502,6 @@ def bids_db() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
         con.executescript("""
@@ -323,6 +561,136 @@ def init_db() -> None:
           status TEXT NOT NULL, processed INTEGER DEFAULT 0, inserted INTEGER DEFAULT 0,
           updated INTEGER DEFAULT 0, error TEXT DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS supplier_managers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          supplier_code TEXT NOT NULL,
+          manager_name TEXT NOT NULL,
+          normalized_name TEXT NOT NULL,
+          manager_tax_id TEXT,
+          manager_tax_id_source TEXT,
+          manager_tax_id_verified_at TEXT,
+          manager_tax_id_verified_by TEXT,
+          valid_from TEXT,
+          valid_to TEXT,
+          is_current INTEGER NOT NULL DEFAULT 0,
+          source TEXT DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_supplier_managers_supplier
+          ON supplier_managers(supplier_code);
+        CREATE INDEX IF NOT EXISTS ix_supplier_managers_name
+          ON supplier_managers(normalized_name);
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_supplier_managers_current
+          ON supplier_managers(supplier_code) WHERE is_current=1;
+        CREATE TABLE IF NOT EXISTS supplier_nazk_checks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          supplier_code TEXT NOT NULL,
+          manager_id INTEGER REFERENCES supplier_managers(id),
+          manager_name TEXT NOT NULL,
+          workflow_status TEXT NOT NULL,
+          result TEXT,
+          started_at TEXT NOT NULL,
+          completed_at TEXT,
+          evidence_date TEXT,
+          covered_nazk_date TEXT,
+          comment TEXT DEFAULT '',
+          is_legacy INTEGER NOT NULL DEFAULT 0,
+          legacy_source_row INTEGER,
+          legacy_key TEXT,
+          created_at TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          updated_by TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_supplier_nazk_checks_supplier
+          ON supplier_nazk_checks(supplier_code,started_at DESC);
+        CREATE INDEX IF NOT EXISTS ix_supplier_nazk_checks_manager
+          ON supplier_nazk_checks(manager_id,started_at DESC);
+        CREATE INDEX IF NOT EXISTS ix_supplier_nazk_checks_state
+          ON supplier_nazk_checks(workflow_status,result);
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_supplier_nazk_checks_legacy
+          ON supplier_nazk_checks(legacy_key) WHERE legacy_key IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS supplier_nazk_check_matches (
+          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,
+          nazk_source_id TEXT NOT NULL REFERENCES nazk_registry(source_id),
+          match_status TEXT NOT NULL DEFAULT 'candidate',
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(check_id,nazk_source_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_supplier_nazk_matches_source
+          ON supplier_nazk_check_matches(nazk_source_id);
+        CREATE TABLE IF NOT EXISTS supplier_nazk_check_documents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,
+          document_type TEXT NOT NULL,
+          document_date TEXT,
+          document_number TEXT,
+          title TEXT DEFAULT '',
+          url TEXT DEFAULT '',
+          source TEXT DEFAULT '',
+          submission_id TEXT REFERENCES submissions(id),
+          prozorro_document_id TEXT,
+          created_at TEXT NOT NULL,
+          created_by TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_supplier_nazk_documents_check
+          ON supplier_nazk_check_documents(check_id,created_at);
+        CREATE TABLE IF NOT EXISTS supplier_nazk_check_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,
+          request_type TEXT,
+          request_date TEXT,
+          request_number TEXT,
+          request_document_url TEXT DEFAULT '',
+          request_status TEXT NOT NULL DEFAULT 'prepared',
+          response_date TEXT,
+          created_at TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          updated_by TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_supplier_nazk_requests_check
+          ON supplier_nazk_check_requests(check_id,created_at);
+        CREATE TABLE IF NOT EXISTS supplier_nazk_check_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,
+          event_type TEXT NOT NULL,
+          event_at TEXT NOT NULL,
+          event_by TEXT NOT NULL,
+          old_workflow_status TEXT,
+          new_workflow_status TEXT,
+          old_result TEXT,
+          new_result TEXT,
+          details_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS ix_supplier_nazk_events_check
+          ON supplier_nazk_check_events(check_id,event_at,id);
+        CREATE TABLE IF NOT EXISTS submission_nazk_controls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          submission_id TEXT NOT NULL UNIQUE REFERENCES submissions(id),
+          supplier_code TEXT NOT NULL,
+          manager_id INTEGER REFERENCES supplier_managers(id),
+          manager_name TEXT DEFAULT '',
+          nazk_certificate_required INTEGER NOT NULL DEFAULT 0,
+          nazk_certificate_checked INTEGER NOT NULL DEFAULT 0,
+          selected_document_id TEXT,
+          selected_document_url TEXT,
+          supplier_nazk_check_id INTEGER REFERENCES supplier_nazk_checks(id),
+          checked_at TEXT,
+          checked_by TEXT,
+          comment TEXT DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_submission_nazk_controls_supplier
+          ON submission_nazk_controls(supplier_code);
+        CREATE INDEX IF NOT EXISTS ix_submission_nazk_controls_manager
+          ON submission_nazk_controls(manager_id);
+        CREATE INDEX IF NOT EXISTS ix_submission_nazk_controls_required
+          ON submission_nazk_controls(nazk_certificate_required);
+        CREATE INDEX IF NOT EXISTS ix_submission_nazk_controls_checked
+          ON submission_nazk_controls(nazk_certificate_checked);
         CREATE TABLE IF NOT EXISTS application_fields (
           submission_id TEXT PRIMARY KEY REFERENCES submissions(id),
           protocol_number TEXT DEFAULT '', protocol_date TEXT DEFAULT '',
@@ -335,13 +703,32 @@ def init_db() -> None:
           document_checked_at TEXT DEFAULT '', document_check_result_json TEXT DEFAULT '',
           generated_protocol_number TEXT DEFAULT '', generated_protocol_date TEXT DEFAULT '',
           generated_protocol_decision TEXT DEFAULT '', protocol_generated_at TEXT DEFAULT '',
-          notes TEXT DEFAULT '', updated_at TEXT, updated_by TEXT
+          notes TEXT DEFAULT '', review_officer TEXT DEFAULT '', updated_at TEXT, updated_by TEXT
         );
         CREATE TABLE IF NOT EXISTS framework_officers (
           framework_id TEXT PRIMARY KEY REFERENCES frameworks(id),
-          officer TEXT NOT NULL, marketplace_url TEXT DEFAULT '',
+          officer TEXT NOT NULL, marketplace_url TEXT DEFAULT '', category TEXT DEFAULT '',
           source TEXT DEFAULT 'Оголошення', synced_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS framework_service_directory (
+          pretty_id TEXT PRIMARY KEY,
+          framework_id TEXT REFERENCES frameworks(id),
+          dk_code TEXT DEFAULT '', category TEXT DEFAULT '', marketplace_url TEXT DEFAULT '',
+          responsible_officer TEXT DEFAULT '', source_title TEXT DEFAULT '',
+          source TEXT DEFAULT 'Google Sheets: Оголошення', synced_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_framework_service_directory_framework
+          ON framework_service_directory(framework_id);
+        CREATE TABLE IF NOT EXISTS authorized_officers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          full_name TEXT NOT NULL UNIQUE,
+          role TEXT NOT NULL DEFAULT 'УО',
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_authorized_officers_active
+          ON authorized_officers(active,full_name);
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,
           changed_by TEXT NOT NULL, field_name TEXT NOT NULL, old_value TEXT, new_value TEXT
@@ -371,18 +758,38 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS violation_report_reviews (
           report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,
           review_status TEXT DEFAULT 'not_reviewed', assigned_officer TEXT DEFAULT '',
-          internal_decision TEXT DEFAULT '', review_notes TEXT DEFAULT '', protocol_number TEXT DEFAULT '',
+          internal_decision TEXT DEFAULT '', decision_justification TEXT DEFAULT '', review_notes TEXT DEFAULT '', protocol_number TEXT DEFAULT '',
           protocol_date TEXT DEFAULT '', reviewed_at TEXT DEFAULT '', updated_at TEXT NOT NULL, updated_by TEXT DEFAULT 'УО'
         );
+        CREATE TABLE IF NOT EXISTS violation_report_document_reviews (
+          report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,
+          document_source TEXT NOT NULL CHECK(document_source IN ('customer','supplier')),
+          document_id TEXT NOT NULL,
+          original_title TEXT NOT NULL DEFAULT '',
+          original_url TEXT NOT NULL DEFAULT '',
+          file_unavailable INTEGER NOT NULL DEFAULT 0 CHECK(file_unavailable IN (0,1)),
+          checked_at TEXT NOT NULL,
+          checked_by TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(report_id,document_source,document_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_violation_document_reviews_report
+          ON violation_report_document_reviews(report_id,document_source);
         CREATE TABLE IF NOT EXISTS remarks_catalog (
           id INTEGER PRIMARY KEY AUTOINCREMENT, point TEXT NOT NULL, text TEXT NOT NULL,
           tag TEXT DEFAULT '', category TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
           updated_at TEXT NOT NULL
         );
         """)
+        violation_review_columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
+        if "decision_justification" not in violation_review_columns:
+            con.execute("ALTER TABLE violation_report_reviews ADD COLUMN decision_justification TEXT DEFAULT ''")
         if con.execute("SELECT COUNT(*) FROM remarks_catalog").fetchone()[0] == 0:
             con.executemany("INSERT INTO remarks_catalog(point,text,tag,category,active,updated_at) VALUES (?,?,?,?,1,?)",
                             [(point, text, tag, "", now_iso()) for point, text, tag in DEFAULT_REMARKS])
+        for full_name, active in INITIAL_AUTHORIZED_OFFICERS:
+            con.execute("""INSERT INTO authorized_officers(full_name,role,active,created_at,updated_at)
+              VALUES (?,'УО',?,?,?) ON CONFLICT(full_name) DO NOTHING""",
+              (full_name, active, now_iso(), now_iso()))
         application_columns = {row[1] for row in con.execute("PRAGMA table_info(application_fields)")}
         if "protocol_remarks" not in application_columns:
             con.execute("ALTER TABLE application_fields ADD COLUMN protocol_remarks TEXT DEFAULT ''")
@@ -409,9 +816,13 @@ def init_db() -> None:
         for field in ("generated_protocol_number", "generated_protocol_date", "generated_protocol_decision", "protocol_generated_at"):
             if field not in application_columns:
                 con.execute(f"ALTER TABLE application_fields ADD COLUMN {field} TEXT DEFAULT ''")
+        if "review_officer" not in application_columns:
+            con.execute("ALTER TABLE application_fields ADD COLUMN review_officer TEXT DEFAULT ''")
         officer_columns = {row[1] for row in con.execute("PRAGMA table_info(framework_officers)")}
         if "marketplace_url" not in officer_columns:
             con.execute("ALTER TABLE framework_officers ADD COLUMN marketplace_url TEXT DEFAULT ''")
+        if "category" not in officer_columns:
+            con.execute("ALTER TABLE framework_officers ADD COLUMN category TEXT DEFAULT ''")
         violation_columns = {row[1] for row in con.execute("PRAGMA table_info(violation_reports)")}
         if "authority_code" not in violation_columns:
             con.execute("ALTER TABLE violation_reports ADD COLUMN authority_code TEXT DEFAULT ''")
@@ -421,6 +832,51 @@ def init_db() -> None:
                 con.execute("UPDATE violation_reports SET authority_code=? WHERE id=?", (authority_code, row[0]))
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
+        review_columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
+        review_additions = {
+            "contract_deadline_extended": "INTEGER NOT NULL DEFAULT 0",
+            "written_refusal_date": "TEXT DEFAULT ''",
+            "written_refusal_number": "TEXT DEFAULT ''",
+            "written_refusal_url": "TEXT DEFAULT ''",
+            "court_decision_final_present": "INTEGER",
+            "customer_verified_full_name": "TEXT DEFAULT ''",
+            "customer_verified_short_name": "TEXT DEFAULT ''",
+            "actual_contract_date": "TEXT DEFAULT ''",
+            "actual_contract_number": "TEXT DEFAULT ''",
+            "actual_contract_url": "TEXT DEFAULT ''",
+            "assigned_officer_id": "INTEGER REFERENCES authorized_officers(id)",
+            "additional_check_required": "INTEGER NOT NULL DEFAULT 0",
+            "guarantee_documents_visible": "INTEGER",
+            "supplier_explanation_assessment": "TEXT NOT NULL DEFAULT ''",
+            "established_discrepancy": "TEXT NOT NULL DEFAULT ''",
+            "decision_template_key": "TEXT NOT NULL DEFAULT ''",
+            "justification_source_hash": "TEXT NOT NULL DEFAULT ''",
+            "justification_generated_at": "TEXT NOT NULL DEFAULT ''",
+            "justification_manually_edited": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for field, definition in review_additions.items():
+            if field not in review_columns:
+                con.execute(f"ALTER TABLE violation_report_reviews ADD COLUMN {field} {definition}")
+        con.executescript("""
+        CREATE TABLE IF NOT EXISTS violation_report_review_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,
+          event_type TEXT NOT NULL,
+          field_name TEXT NOT NULL DEFAULT '',
+          old_value TEXT,
+          new_value TEXT,
+          changed_at TEXT NOT NULL,
+          changed_by TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS ix_violation_review_events_report
+          ON violation_report_review_events(report_id,changed_at);
+        """)
+        nazk_document_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_nazk_check_documents)")}
+        if "submission_id" not in nazk_document_columns:
+            con.execute("ALTER TABLE supplier_nazk_check_documents ADD COLUMN submission_id TEXT REFERENCES submissions(id)")
+        if "prozorro_document_id" not in nazk_document_columns:
+            con.execute("ALTER TABLE supplier_nazk_check_documents ADD COLUMN prozorro_document_id TEXT")
+        con.execute("CREATE INDEX IF NOT EXISTS ix_supplier_nazk_documents_submission ON supplier_nazk_check_documents(submission_id)")
 
 
 def api_get(url: str) -> dict:
@@ -495,6 +951,46 @@ def save_framework(item: dict) -> bool:
     return True
 
 
+def effective_framework_status(status: str, raw: dict | None = None) -> str:
+    """Return the operational framework status from Prozorro metadata, never from Bids."""
+    official = str(status or "").strip().casefold()
+    if official == "complete":
+        return "closed"
+    if official == "active":
+        valid_until = str((((raw or {}).get("qualificationPeriod") or {}).get("endDate") or ""))[:10]
+        if valid_until and valid_until < datetime.now().date().isoformat():
+            return "closed"
+        return "active"
+    return official
+
+
+def refresh_framework_metadata() -> dict:
+    """Refresh official framework fields without loading submissions or registry contracts."""
+    frameworks = discover_tracked_frameworks()
+    updated = 0
+    for index, framework in enumerate(frameworks, 1):
+        SYNC_STATE["message"] = f"Оновлення відборів з Prozorro {index}/{len(frameworks)}"
+        if save_framework(framework):
+            updated += 1
+    return {"frameworks": len(frameworks), "updated": updated}
+
+
+def refresh_framework_metadata_worker() -> None:
+    if SYNC_STATE["running"]:
+        return
+    started = datetime.now(timezone.utc)
+    SYNC_STATE.update(running=True, mode="framework_metadata", started_at=started.isoformat(),
+                      message="Отримання актуальних відборів із Prozorro…")
+    try:
+        result = refresh_framework_metadata()
+        SYNC_STATE["message"] = f"Відбори оновлено з Prozorro: {result['updated']}/{result['frameworks']}"
+    except Exception as exc:
+        SYNC_STATE["message"] = f"Помилка оновлення відборів: {exc}"
+    finally:
+        SYNC_STATE.update(running=False, updated_at=now_iso(),
+                          duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 1))
+
+
 def sync_one_framework(framework_id: str, framework: dict | None = None, incremental: bool = False) -> dict:
     framework = framework or api_get(f"{API_ROOT}/frameworks/{framework_id}")["data"]
     if not save_framework(framework):
@@ -516,7 +1012,17 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                    tenderer.get("identifier", {}).get("id", ""), item.get("datePublished") or item.get("date", ""),
                    item.get("status", ""), item.get("qualificationID", ""),
                    json.dumps(item.get("documents", []), ensure_ascii=False), json.dumps(item, ensure_ascii=False), now_iso()))
-                con.execute("INSERT OR IGNORE INTO application_fields(submission_id) VALUES (?)", (item["id"],))
+                application_cursor = con.execute(
+                    "INSERT OR IGNORE INTO application_fields(submission_id) VALUES (?)", (item["id"],)
+                )
+                if application_cursor.rowcount:
+                    assignment = con.execute("""SELECT responsible_officer FROM framework_service_directory
+                      WHERE framework_id=? AND COALESCE(responsible_officer,'')<>'' LIMIT 1""",
+                      (framework_id,)).fetchone()
+                    if assignment:
+                        con.execute("""UPDATE application_fields SET protocol_officer=?,updated_at=?,updated_by=?
+                          WHERE submission_id=? AND COALESCE(protocol_officer,'')=''""",
+                          (assignment[0], now_iso(), "PQM default from framework", item["id"]))
                 previous_manager = con.execute("""SELECT af.manager_name,s.id
                   FROM submissions s JOIN application_fields af ON af.submission_id=s.id
                   WHERE s.supplier_code=? AND s.id<>? AND COALESCE(af.manager_name,'')<>''
@@ -528,6 +1034,29 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                       manager_name_source_submission_id=?,updated_at=?,updated_by='PQM auto-fill'
                       WHERE submission_id=? AND COALESCE(manager_name,'')='' AND COALESCE(manager_name_source,'')<>'manual'""",
                       (previous_manager[0], previous_manager[1], now_iso(), item["id"]))
+                else:
+                    supplier_code = tenderer.get("identifier", {}).get("id", "")
+                    submission_day = str(item.get("datePublished") or item.get("date") or "")[:10]
+                    trusted_manager = con.execute("""SELECT manager_name,'edr_profile' source,'' source_submission_id
+                      FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=DIGITS(?)
+                        AND COALESCE(manager_name,'')<>''
+                        AND (?='' OR COALESCE(SUBSTR(edr_checked_at,1,10),'')='' OR SUBSTR(edr_checked_at,1,10)<=?)
+                      UNION ALL
+                      SELECT manager_name,'supplier_manager' source,'' source_submission_id
+                      FROM supplier_managers WHERE DIGITS(supplier_code)=DIGITS(?) AND is_current=1
+                        AND COALESCE(manager_name,'')<>''
+                        AND (?='' OR COALESCE(SUBSTR(valid_from,1,10),'')='' OR SUBSTR(valid_from,1,10)<=?)
+                      LIMIT 1""", (supplier_code, submission_day, submission_day,
+                                    supplier_code, submission_day, submission_day)).fetchone()
+                    if trusted_manager:
+                        con.execute("""UPDATE application_fields SET manager_name=?,manager_name_source=?,
+                          manager_name_source_submission_id=?,updated_at=?,updated_by='PQM auto-fill'
+                          WHERE submission_id=? AND COALESCE(manager_name,'')=''
+                            AND COALESCE(manager_name_source,'')<>'manual'""",
+                          (trusted_manager[0], trusted_manager[1], trusted_manager[2], now_iso(), item["id"]))
+                # Existing submissions must also be reconciled: their manager/profile
+                # can become known after the submission was first synchronized.
+                ensure_submission_nazk_control(con, item["id"])
                 submission_count += 1
         latest_manager_by_supplier = {}
         manager_rows = con.execute("""SELECT s.id,s.supplier_code,s.date_published,
@@ -839,10 +1368,23 @@ def application_filter(params: dict) -> tuple[str, list]:
     date_from = params.get("date_from", [""])[0].strip()
     date_to = params.get("date_to", [""])[0].strip()
     officer = params.get("officer", [""])[0].strip()
+    category = params.get("category", [""])[0].strip()
+    submission_id = params.get("submission_id", [""])[0].strip()
+    protocol_decision = params.get("protocol_decision", [""])[0].strip()
+    compliance_status = params.get("compliance_status", [""])[0].strip()
     where, args = ["1=1"], []
+    if submission_id:
+        where.append("s.id=?")
+        args.append(submission_id)
+    if protocol_decision in {"__empty__", "admit", "reject"}:
+        where.append("COALESCE(af.protocol_decision,'')=?")
+        args.append("" if protocol_decision == "__empty__" else protocol_decision)
+    if compliance_status in {"__empty__", "approved", "rejected"}:
+        where.append("COALESCE(af.compliance_status,'')=?")
+        args.append("" if compliance_status == "__empty__" else compliance_status)
     if search:
-        where.append("(INSTR(CASEFOLD(s.supplier_name), ?) > 0 OR INSTR(CASEFOLD(s.supplier_code), ?) > 0 OR INSTR(CASEFOLD(f.pretty_id), ?) > 0 OR INSTR(CASEFOLD(f.dk_code), ?) > 0 OR INSTR(CASEFOLD(af.manager_name), ?) > 0)")
-        args.extend([search.casefold()] * 5)
+        where.append("(INSTR(CASEFOLD(s.supplier_name), ?) > 0 OR INSTR(CASEFOLD(s.supplier_code), ?) > 0 OR INSTR(CASEFOLD(f.pretty_id), ?) > 0 OR INSTR(CASEFOLD(f.dk_code), ?) > 0 OR INSTR(CASEFOLD(f.title), ?) > 0 OR INSTR(CASEFOLD(af.manager_name), ?) > 0)")
+        args.extend([search.casefold()] * 6)
     if supplier_codes:
         where.append(f"s.supplier_code IN ({','.join('?' for _ in supplier_codes)})")
         args.extend(supplier_codes)
@@ -858,9 +1400,15 @@ def application_filter(params: dict) -> tuple[str, list]:
     if date_to:
         where.append("SUBSTR(s.date_published,1,10)<=?")
         args.append(date_to)
-    if officer:
-        where.append("fo.officer=?")
+    assigned_officer = "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'')"
+    if officer == "__unassigned__":
+        where.append(f"{assigned_officer}=''")
+    elif officer:
+        where.append(f"{assigned_officer}=?")
         args.append(officer)
+    if category:
+        where.append("COALESCE(fo.category,'')=?")
+        args.append(category)
     status_codes = [{"Допущено": "active", "Відхилено": "unsuccessful", "Очікує рішення": "pending"}[value] for value in statuses if value in {"Допущено", "Відхилено", "Очікує рішення"}]
     if status_codes:
         where.append(f"COALESCE(q.status,'pending') IN ({','.join('?' for _ in status_codes)})")
@@ -888,12 +1436,12 @@ def application_stats(params: dict) -> dict:
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}""", args).fetchone()
-        officers = con.execute(f"""SELECT COALESCE(NULLIF(fo.officer,''),'Не визначено') officer, COUNT(*) applications
+        officers = con.execute(f"""SELECT COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не визначено') officer, COUNT(*) applications
           FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {officer_clause}
-          GROUP BY COALESCE(NULLIF(fo.officer,''),'Не визначено') ORDER BY applications DESC""", officer_args).fetchall()
+          GROUP BY COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не визначено') ORDER BY applications DESC""", officer_args).fetchall()
     result = {key: (value or 0) for key, value in dict(row).items()}
     result["officers"] = [dict(item) for item in officers]
     return result
@@ -935,22 +1483,45 @@ def list_applications(params: dict) -> dict:
         total = con.execute(f"""SELECT COUNT(*) FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}""", args).fetchone()[0]
-        records = con.execute(f"""SELECT s.id,f.pretty_id,f.title,f.dk_code,f.status framework_status,
+        records = [dict(row) for row in con.execute(f"""SELECT s.id,f.pretty_id,f.title framework_title,f.dk_code,f.status framework_status,
           s.supplier_name,s.supplier_code,s.date_published,s.documents_json,
           COALESCE(q.status,'pending') decision_status,q.documents_json decision_documents,
           (SELECT rc.status FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
           (SELECT rc.milestones_json FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones,
-          af.protocol_number,af.protocol_date,af.publication_date,af.protocol_officer,
+           af.protocol_number,af.protocol_date,af.publication_date,
+           COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'') protocol_officer,
+           af.review_officer,
           af.protocol_remarks,af.protocol_decision,af.marketplace_decision,af.compliance_status,af.compliance_comments,
           af.generated_protocol_number,af.generated_protocol_date,af.generated_protocol_decision,af.protocol_generated_at,
           af.manager_name,af.manager_name_source,af.manager_name_source_submission_id,
           af.document_package,af.contract_details,af.authority_review,af.mvs_seal_review,
-          af.document_check_status,af.document_check_summary,af.document_checked_at,af.notes,COALESCE(fo.marketplace_url,'') marketplace_url
+           af.document_check_status,af.document_check_summary,af.document_checked_at,af.document_check_result_json,af.notes,COALESCE(fo.marketplace_url,'') marketplace_url,
+           COALESCE(fo.category,'') category
+          ,snc.nazk_certificate_required,snc.nazk_certificate_checked,snc.id nazk_control_id,
+          COALESCE(snc.manager_name,'') nazk_control_manager
           FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           LEFT JOIN application_fields af ON af.submission_id=s.id
+          LEFT JOIN submission_nazk_controls snc ON snc.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}
-          ORDER BY {order_by} {sort_direction}, s.id ASC LIMIT ? OFFSET ?""", (*args, size, (page - 1) * size)).fetchall()
+          ORDER BY {order_by} {sort_direction}, s.id ASC LIMIT ? OFFSET ?""", (*args, size, (page - 1) * size)).fetchall()]
+        supplier_codes = sorted({re.sub(r"\D", "", row.get("supplier_code") or "") for row in records
+                                 if re.sub(r"\D", "", row.get("supplier_code") or "")})
+        edr_profiles = {}
+        if supplier_codes:
+            placeholders = ",".join("?" for _ in supplier_codes)
+            for profile in con.execute(
+                f"""SELECT supplier_code,COALESCE(manager_name,'') manager_name,
+                           COALESCE(edr_checked_at,'') edr_checked_at
+                    FROM supplier_edr_profiles
+                    WHERE DIGITS(supplier_code) IN ({placeholders})""",
+                supplier_codes,
+            ):
+                edr_profiles[re.sub(r"\D", "", profile["supplier_code"] or "")] = profile
+        for row in records:
+            profile = edr_profiles.get(re.sub(r"\D", "", row.get("supplier_code") or ""))
+            row["edr_fallback_manager"] = profile["manager_name"] if profile else ""
+            row["edr_fallback_checked_at"] = profile["edr_checked_at"] if profile else ""
         amcu_codes = {re.sub(r"\D", "", row[0] or "") for row in con.execute(
             "SELECT DISTINCT offender_code FROM amcu_registry WHERE offender_code<>''"
         )}
@@ -958,9 +1529,17 @@ def list_applications(params: dict) -> dict:
             "SELECT DISTINCT full_name FROM nazk_registry WHERE full_name<>''"
         )}
         nazk_reviews = {row[0]: dict(row) for row in con.execute("SELECT * FROM supplier_nazk_reviews")}
+        submission_nazk_states = get_submission_nazk_states(
+            con, [row["id"] for row in records], nazk_names
+        )
     items = []
     for row in records:
         item = dict(row); item["decision"] = decision_label(item.pop("decision_status"))
+        try:
+            stored_check = json.loads(item.pop("document_check_result_json") or "{}")
+        except (TypeError, ValueError):
+            stored_check = {}
+        item["document_check_categories"] = document_check_category_summaries(stored_check)
         supplier_code = re.sub(r"\D", "", item.get("supplier_code") or "")
         manager_name = " ".join(re.sub(r"[’'`\-]+", " ", (item.get("manager_name") or "").casefold()).split())
         item["amcu_match"] = bool(supplier_code and supplier_code in amcu_codes)
@@ -968,6 +1547,21 @@ def list_applications(params: dict) -> dict:
         review = nazk_reviews.get(supplier_code)
         item["nazk_review"] = review or {}
         item["nazk_review_result"] = (review or {}).get("result", "")
+        submission_nazk = submission_nazk_states.get(item["id"], {})
+        item["nazk_state"] = submission_nazk.get("state", "not_required")
+        item["nazk_can_approve"] = bool(submission_nazk.get("can_approve", True))
+        item["nazk_state_reason"] = submission_nazk.get("reason", "")
+        item["manager_name_display"] = item.get("manager_name") or submission_nazk.get("manager_name", "")
+        item["manager_name_display_source"] = ""
+        item["manager_name_display_source_date"] = ""
+        if not item.get("manager_name") and item["manager_name_display"]:
+            control_manager = normalize_manager_name(item.get("nazk_control_manager", ""))
+            edr_manager = normalize_manager_name(item.get("edr_fallback_manager", ""))
+            if control_manager and control_manager == edr_manager:
+                item["manager_name_display_source"] = "edr_fallback"
+                item["manager_name_display_source_date"] = item.get("edr_fallback_checked_at", "")
+            else:
+                item["manager_name_display_source"] = "nazk_control"
         if review:
             review_manager = " ".join(re.sub(r"[’'`\-]+", " ", (review.get("manager_name") or "").casefold()).split())
             review_is_current = bool(manager_name and review_manager and manager_name == review_manager)
@@ -1004,7 +1598,7 @@ def protocol_readiness(payload: dict) -> dict:
           COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.document_package,'') document_package,
           COALESCE(af.protocol_remarks,'') protocol_remarks,
-          COALESCE(af.protocol_officer,'') protocol_officer,
+          COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'') protocol_officer,
           COALESCE(af.manager_name,'') manager_name,
           COALESCE(af.protocol_date,'') protocol_date,
           COALESCE(q.status,'pending') source_status
@@ -1026,13 +1620,16 @@ def protocol_readiness(payload: dict) -> dict:
             errors.append("Не визначено Рішення УО (Так/Ні)"); unresolved += 1
         elif row["protocol_decision"] == "admit":
             admitted += 1
+            if row["protocol_remarks"].strip() != "Без зауважень":
+                errors.append("Рішення УО «Так» неможливе: заявка має зауваження до протоколу")
             if row["source_status"] == "unsuccessful":
                 errors.append("Розбіжність: Рішення УО = Так, але в Prozorro заявку відхилено")
         elif row["protocol_decision"] == "reject":
             rejected += 1
+            if row["protocol_remarks"].strip() == "Без зауважень" and row["compliance_status"] == "approved":
+                errors.append("Немає підстав для відхилення згідно з рішенням комплаєнс та відсутністю зауважень.")
             if row["source_status"] == "active":
                 errors.append("Розбіжність: Рішення УО = Ні, але в Prozorro заявку допущено")
-            if not row["document_package"]: errors.append("Не заповнено варіант підтвердження")
             if not row["protocol_remarks"]: errors.append("Не заповнено зауваження до протоколу")
         if number and row["protocol_number"] and row["protocol_number"] != number:
             errors.append(f"Заявку вже віднесено до протоколу № {row['protocol_number']}")
@@ -1042,7 +1639,7 @@ def protocol_readiness(payload: dict) -> dict:
             if row["protocol_decision"] == "admit":
                 errors.append("Заборонена комбінація: Комплаєнс = Не погоджено, Рішення УО = Так")
             if not row["compliance_comments"]:
-                errors.append("Не заповнено коментар комплаєнс")
+                errors.append("Не заповнено коментар комплаєнс. Для заявки зі статусом “Не погоджено” необхідно зазначити причину непогодження.")
         if row["source_status"] != "pending":
             warnings.append("Рішення вже оприлюднено в Prozorro")
         row.update(errors=errors, warnings=warnings)
@@ -1093,7 +1690,7 @@ def generate_protocol(payload: dict) -> dict:
     safe_number = re.sub(r"[^0-9A-Za-zА-ЯІЇЄҐа-яіїєґ_-]+", "_", protocol_number).strip("_") or "protocol"
     safe_date = protocol_date.replace(".", "-").replace("/", "-")
     filename = f"Протокол_{safe_number}_від_{safe_date}.docx"
-    output_path = DATA_DIR / "protocols" / filename
+    output_path = PROTOCOLS_DIR / filename
     build_protocol_docx({
         "items": items, "protocol_number": protocol_number, "protocol_date": protocol_date,
         "date_from": date_from, "date_to": date_to, "officer": next(iter(officers)),
@@ -1134,15 +1731,40 @@ def framework_analytics(params: dict) -> dict:
     sort_columns = {"cpv_code": "a.cpv_code", "status": "a.source_status", "updated": "a.last_search_at", "total": "a.search_total"}
     order_by = sort_columns.get(sort, "a.cpv_code")
     where, args = ["1=1"], []
+    title_match_agreement_ids = []
     if search:
-        where.append("(LOWER(a.agreement_id) LIKE ? OR LOWER(COALESCE(a.cpv_code,'')) LIKE ?)")
+        # ProzorroBids has agreement IDs and CPV codes, but not the
+        # authoritative framework title. Resolve title matches in PQM first
+        # and include their agreement IDs in the same Bids query.
+        with db() as framework_con:
+            for framework_row in framework_con.execute(
+                    "SELECT id,pretty_id,title,dk_code,agreement_id FROM frameworks"):
+                haystack = " ".join(str(framework_row[key] or "") for key in
+                                    ("id", "pretty_id", "title", "dk_code", "agreement_id")).casefold()
+                if search in haystack and framework_row["agreement_id"]:
+                    title_match_agreement_ids.append(framework_row["agreement_id"])
+        search_parts = ["LOWER(a.agreement_id) LIKE ?", "LOWER(COALESCE(a.cpv_code,'')) LIKE ?"]
         args.extend([f"%{search}%", f"%{search}%"])
-    if status == "active":
-        where.append("LOWER(COALESCE(a.source_status,''))='active'")
-    elif status == "inactive":
-        where.append("LOWER(COALESCE(a.source_status,'')) IN ('closed','complete','inactive','disabled')")
-    elif status:
-        where.append("a.source_status=?"); args.append(status)
+        if title_match_agreement_ids:
+            search_parts.append("a.agreement_id IN (" + ",".join("?" for _ in title_match_agreement_ids) + ")")
+            args.extend(title_match_agreement_ids)
+        where.append("(" + " OR ".join(search_parts) + ")")
+    if status:
+        with db() as framework_con:
+            status_agreement_ids = []
+            for framework_row in framework_con.execute(
+                    "SELECT agreement_id,status,raw_json FROM frameworks WHERE COALESCE(agreement_id,'')<>''"):
+                raw = json.loads(framework_row["raw_json"] or "{}")
+                effective = effective_framework_status(framework_row["status"] or "", raw)
+                matches = (status == "active" and effective == "active") or (
+                    status == "inactive" and effective != "active") or status == effective
+                if matches:
+                    status_agreement_ids.append(framework_row["agreement_id"])
+        if status_agreement_ids:
+            where.append("a.agreement_id IN (" + ",".join("?" for _ in status_agreement_ids) + ")")
+            args.extend(status_agreement_ids)
+        else:
+            where.append("0=1")
     if dk_code:
         where.append("a.cpv_code LIKE ?"); args.append(f"%{dk_code}%")
     date_clauses, date_args = [], []
@@ -1234,6 +1856,8 @@ def framework_analytics(params: dict) -> dict:
         for row in framework_rows:
             framework = dict(row)
             raw = json.loads(framework.pop("raw_json") or "{}")
+            framework["official_status"] = framework.get("status") or ""
+            framework["status"] = effective_framework_status(framework.get("status") or "", raw)
             framework.update({
                 "published_at": raw.get("date") or raw.get("dateCreated") or "",
                 "clarifications_until": (raw.get("enquiryPeriod") or {}).get("clarificationsUntil") or (raw.get("enquiryPeriod") or {}).get("endDate") or "",
@@ -1251,16 +1875,19 @@ def framework_analytics(params: dict) -> dict:
                 continue
             if dk_code and dk_code.casefold() not in str(row["dk_code"] or "").casefold():
                 continue
-            normalized_status = "active" if row["status"] == "active" else "inactive"
-            if status and status not in {row["status"], normalized_status}:
+            normalized_status = "active" if framework["status"] == "active" else "inactive"
+            if status and status not in {framework["status"], normalized_status}:
                 continue
             if date_from or date_to:
                 continue
             local_only.append({"agreement_id": row["agreement_id"] or "", "cpv_code": row["dk_code"] or "",
-                "source_status": row["status"] or "", "last_search_at": "", "search_total": 0,
+                "source_status": framework["status"] or "", "last_search_at": "", "search_total": 0,
                 "tender_count": 0, "bids_count": 0, "buyer_count": 0, "expected_amount": 0,
                 "first_tender": "", "last_tender": "", "supplier_count": 0,
-                "framework": framework, "agreement_pending": True})
+                "qualified_supplier_count": len(qualified_by_agreement.get(row["agreement_id"], set())),
+                "suppliers_current_year": 0,
+                "suppliers_without_bids": len(qualified_by_agreement.get(row["agreement_id"], set())),
+                "framework": framework, "agreement_pending": not bool(row["agreement_id"])})
     for item in items:
         item["framework"] = local.get(item["agreement_id"])
         if item["framework"]:
@@ -1295,7 +1922,8 @@ def framework_analytics_details(agreement_id: str, params: dict) -> dict:
     if date_to: tender_clauses.append("COALESCE(tender_start,date_created)<?"); tender_args.append(date_to + "T23:59:59.999999")
     with bids_db() as con:
         agreement = con.execute("SELECT * FROM agreements WHERE agreement_id=?", (agreement_id,)).fetchone()
-        if agreement is None: raise KeyError(agreement_id)
+        agreement = agreement or {"agreement_id": agreement_id, "cpv_code": "", "source_status": "",
+                                  "last_search_at": "", "search_total": 0}
         tender_stats = dict(con.execute("""SELECT COUNT(*) total,
           SUM(CASE WHEN LOWER(COALESCE(status,''))='complete' THEN 1 ELSE 0 END) complete,
           SUM(CASE WHEN LOWER(COALESCE(status,''))='unsuccessful' THEN 1 ELSE 0 END) unsuccessful
@@ -1318,6 +1946,7 @@ def framework_analytics_details(agreement_id: str, params: dict) -> dict:
           COALESCE(tender_start,date_created) tender_date,buyer_name,bids_count
           FROM tenders WHERE {' AND '.join(tender_clauses)} ORDER BY tender_date DESC LIMIT 100""", tender_args)]
     framework = None
+    qualified_supplier_rows = []
     with db() as con:
         row = con.execute("SELECT * FROM frameworks WHERE agreement_id=?", (agreement_id,)).fetchone()
         if row:
@@ -1335,6 +1964,19 @@ def framework_analytics_details(agreement_id: str, params: dict) -> dict:
         qualified_codes = {re.sub(r"\D", "", str(r[0] or "")) for r in con.execute(
             "SELECT DISTINCT supplier_code FROM registry_contracts WHERE framework_id=? AND COALESCE(supplier_code,'')<>''",
             (framework_id,))} if framework_id else set()
+        if framework_id:
+            qualified_supplier_rows = [dict(r) for r in con.execute("""SELECT rc.supplier_code,
+              COALESCE(MAX(s.supplier_name),'') supplier_name FROM registry_contracts rc
+              LEFT JOIN submissions s ON s.qualification_id=rc.qualification_id
+              WHERE rc.framework_id=? AND COALESCE(rc.supplier_code,'')<>''
+              GROUP BY rc.supplier_code ORDER BY supplier_name""", (framework_id,)).fetchall()]
+        existing_supplier_codes = {re.sub(r"\D", "", str(item.get("supplier_id") or "")) for item in suppliers}
+        for qualified in qualified_supplier_rows:
+            code = re.sub(r"\D", "", str(qualified.get("supplier_code") or ""))
+            if code and code not in existing_supplier_codes:
+                suppliers.append({"supplier_id": code, "supplier_name": qualified.get("supplier_name") or "",
+                                  "participations": 0, "bids_count": 0, "amount": 0, "wins": 0,
+                                  "qualified_supplier": True})
         supplier_codes = {re.sub(r"\D", "", str(item.get("supplier_id") or "")) for item in suppliers}
         placeholders = ",".join("?" for _ in supplier_codes)
         selected_codes = tuple(sorted(supplier_codes))
@@ -1352,8 +1994,21 @@ def framework_analytics_details(agreement_id: str, params: dict) -> dict:
             selected_codes)} if selected_codes else {}
         nazk_names = {" ".join(re.sub(r"[’'`\-]+", " ", str(r[0] or "").casefold()).split()) for r in con.execute(
             "SELECT DISTINCT full_name FROM nazk_registry WHERE COALESCE(full_name,'')<>''")}
+        framework_submissions = {}
+        if framework_id and selected_codes:
+            for submission in con.execute(f"""SELECT s.id,s.supplier_code,s.date_published
+              FROM submissions s
+              WHERE s.framework_id=? AND DIGITS(s.supplier_code) IN ({placeholders})
+              ORDER BY COALESCE(s.date_published,'') DESC,s.id DESC""", (framework_id, *selected_codes)):
+                code = re.sub(r"\D", "", str(submission["supplier_code"] or ""))
+                framework_submissions.setdefault(code, submission["id"])
+        submission_nazk = {
+            code: get_submission_nazk_state(con, submission_id, nazk_names)
+            for code, submission_id in framework_submissions.items()
+        }
     for item in suppliers:
         code = re.sub(r"\D", "", str(item.get("supplier_id") or ""))
+        item["qualified_supplier"] = code in qualified_codes
         profile = profiles.get(code) or {}; review = reviews.get(code) or {}
         current_manager = " ".join(re.sub(r"[’'`\-]+", " ", str(profile.get("manager_name") or "").casefold()).split())
         review_manager = " ".join(re.sub(r"[’'`\-]+", " ", str(review.get("manager_name") or "").casefold()).split())
@@ -1364,6 +2019,11 @@ def framework_analytics_details(agreement_id: str, params: dict) -> dict:
         item["nazk_review_is_current"] = review_is_current
         item["nazk_match"] = (review_is_current and review.get("result") in {"підтверджено", "на запит", "можливо"}) \
             if review else bool(current_manager and current_manager in nazk_names)
+        item["submission_id"] = framework_submissions.get(code, "")
+        item["nazk_submission_state"] = submission_nazk.get(code) or {}
+        item["nazk_submission_presentation"] = get_submission_nazk_presentation_state(
+            item["nazk_submission_state"]
+        )
     bidder_digits = {re.sub(r"\D", "", code) for code in all_bidder_codes}
     analytics = {**tender_stats, "suppliers_with_bids": len(bidder_digits),
                  "suppliers_current_year": len({re.sub(r'\D', '', code) for code in current_year_bidder_codes}),
@@ -1443,6 +2103,11 @@ def bids_update_worker() -> None:
 
 
 def powerbi_export_status() -> dict:
+    if not ENABLE_POWERBI:
+        return {"available": False, "path": "", "exists": False, "complete": False,
+                "updated_at": None, "size_bytes": 0, "total_rows": 0, "datasets": [],
+                "state": {"running": False, "message": "Power BI вимкнено у цьому середовищі",
+                          "error": None}}
     manifest = POWERBI_CURRENT_PATH / "manifest.csv"
     datasets, total_rows = [], 0
     if manifest.is_file():
@@ -1540,40 +2205,111 @@ def refresh_supplier_registry_summary() -> int:
         return con.execute("SELECT COUNT(*) FROM supplier_registry_summary").fetchone()[0]
 
 
+GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = ""
+GOOGLE_OAUTH_TOKEN_ACCESS_ERROR = ""
+
+
 def _google_oauth_client() -> dict | None:
-    if not GOOGLE_OAUTH_CLIENT_PATH.is_file():
+    global GOOGLE_OAUTH_CLIENT_ACCESS_ERROR
+    GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = ""
+    inline = os.environ.get("PQM_GOOGLE_OAUTH_CLIENT_JSON", "").strip()
+    if inline:
+        try:
+            data = json.loads(inline)
+            return data.get("installed") or data.get("web") or data
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = "invalid_configuration"
+            SERVER_LOG.warning("Google OAuth client configuration is invalid type=%s", type(exc).__name__)
+            return None
+    try:
+        if not GOOGLE_OAUTH_CLIENT_PATH.is_file():
+            return None
+        data = json.loads(GOOGLE_OAUTH_CLIENT_PATH.read_text(encoding="utf-8"))
+    except PermissionError as exc:
+        GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = "access_denied"
+        SERVER_LOG.warning("Google OAuth client configuration is inaccessible path=%s type=%s",
+                       GOOGLE_OAUTH_CLIENT_PATH, type(exc).__name__)
         return None
-    data = json.loads(GOOGLE_OAUTH_CLIENT_PATH.read_text(encoding="utf-8"))
+    except OSError as exc:
+        GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = "unavailable"
+        SERVER_LOG.warning("Google OAuth client configuration is unavailable path=%s type=%s",
+                       GOOGLE_OAUTH_CLIENT_PATH, type(exc).__name__)
+        return None
+    except (ValueError, json.JSONDecodeError) as exc:
+        GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = "invalid_configuration"
+        SERVER_LOG.warning("Google OAuth client configuration is invalid path=%s type=%s",
+                       GOOGLE_OAUTH_CLIENT_PATH, type(exc).__name__)
+        return None
     return data.get("installed") or data.get("web")
 
 
 def _google_oauth_token() -> dict | None:
-    if not GOOGLE_OAUTH_TOKEN_PATH.is_file():
-        return None
+    global GOOGLE_OAUTH_TOKEN_ACCESS_ERROR
+    GOOGLE_OAUTH_TOKEN_ACCESS_ERROR = ""
     try:
+        if not GOOGLE_OAUTH_TOKEN_PATH.is_file():
+            return None
         return json.loads(GOOGLE_OAUTH_TOKEN_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+    except PermissionError as exc:
+        GOOGLE_OAUTH_TOKEN_ACCESS_ERROR = "access_denied"
+        SERVER_LOG.warning("Google OAuth token is inaccessible path=%s type=%s",
+                       GOOGLE_OAUTH_TOKEN_PATH, type(exc).__name__)
+        return None
+    except OSError as exc:
+        GOOGLE_OAUTH_TOKEN_ACCESS_ERROR = "unavailable"
+        SERVER_LOG.warning("Google OAuth token is unavailable path=%s type=%s",
+                       GOOGLE_OAUTH_TOKEN_PATH, type(exc).__name__)
+        return None
+    except (ValueError, json.JSONDecodeError) as exc:
+        GOOGLE_OAUTH_TOKEN_ACCESS_ERROR = "invalid_configuration"
+        SERVER_LOG.warning("Google OAuth token is invalid path=%s type=%s",
+                       GOOGLE_OAUTH_TOKEN_PATH, type(exc).__name__)
         return None
 
 
 def google_oauth_status() -> dict:
+    if not ENABLE_GOOGLE:
+        return {"configured": False, "authorized": False, "enabled": False,
+                "message": "Google OAuth вимкнено у цьому середовищі"}
     client = _google_oauth_client()
     token = _google_oauth_token()
-    return {"configured": bool(client), "authorized": bool(token and token.get("refresh_token")),
-            "client_path": str(GOOGLE_OAUTH_CLIENT_PATH),
+    configuration_error = GOOGLE_OAUTH_CLIENT_ACCESS_ERROR or GOOGLE_OAUTH_TOKEN_ACCESS_ERROR
+    if configuration_error:
+        messages = {
+            "access_denied": "Немає доступу до локальної конфігурації Google OAuth",
+            "unavailable": "Локальна конфігурація Google OAuth недоступна",
+            "invalid_configuration": "Локальна конфігурація Google OAuth пошкоджена",
+        }
+        result = {"configured": bool(client), "authorized": False, "enabled": True,
+                  "available": False, "configuration_error": configuration_error,
+                  "message": messages.get(configuration_error, "Google OAuth недоступний")}
+        if not IS_WEB_ENV:
+            result["client_path"] = str(GOOGLE_OAUTH_CLIENT_PATH)
+        return result
+    result = {"configured": bool(client), "authorized": bool(token and token.get("refresh_token")),
+            "enabled": True, "available": True, "configuration_error": "",
             "message": ("Google підключено для читання таблиць" if token and token.get("refresh_token") else
                         "Потрібно увійти через Google" if client else
                         "Потрібен OAuth Client ID для локального застосунку")}
+    if not IS_WEB_ENV:
+        result["client_path"] = str(GOOGLE_OAUTH_CLIENT_PATH)
+    return result
 
 
 def google_oauth_authorization_url() -> str:
+    if not ENABLE_GOOGLE:
+        raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
     client = _google_oauth_client()
     if not client:
+        if GOOGLE_OAUTH_CLIENT_ACCESS_ERROR:
+            raise RuntimeError("Локальна конфігурація Google OAuth недоступна. Перевірте права доступу до файла налаштувань.")
         raise FileNotFoundError(f"OAuth client file not found: {GOOGLE_OAUTH_CLIENT_PATH}")
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    redirect_uri = os.environ.get("PQM_GOOGLE_OAUTH_REDIRECT_URI", "http://127.0.0.1:8080/api/google-oauth/callback")
+    redirect_uri = os.environ.get(
+        "PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback"
+    ).strip()
     GOOGLE_OAUTH_PENDING[state] = {"verifier": verifier, "redirect_uri": redirect_uri, "created_at": time.time()}
     params = {"client_id": client["client_id"], "redirect_uri": redirect_uri, "response_type": "code",
               "scope": GOOGLE_SHEETS_READONLY_SCOPE, "access_type": "offline", "prompt": "consent",
@@ -1623,6 +2359,89 @@ def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHE
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return json.loads(response.read().decode()).get("values", [])
+
+
+def normalize_manager_name(value: str) -> str:
+    """Normalize a person's name for identity-safe exact text matching."""
+    return " ".join(re.sub(r"[’'`\-]+", " ", (value or "").casefold()).split())
+
+
+def sync_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, manager_name: str,
+                                  source: str = "ЄДР", observed_at: str | None = None) -> dict:
+    """Keep one current manager while preserving every observed previous manager."""
+    code = re.sub(r"\D", "", supplier_code or "")
+    name = " ".join((manager_name or "").split())
+    normalized = normalize_manager_name(name)
+    observed = observed_at or now_iso()
+    current = con.execute("""SELECT id,manager_name,normalized_name,source,updated_at FROM supplier_managers
+      WHERE supplier_code=? AND is_current=1 ORDER BY id DESC LIMIT 1""", (code,)).fetchone()
+    if not code:
+        return {"changed": False, "manager_id": None, "reason": "missing_supplier_code"}
+    incoming_is_edr = source.startswith("Google Sheets") or source == "ЄДР"
+    current_is_manual = bool(current and str(current["source"] or "").startswith("Підтверджено УО"))
+    if current and incoming_is_edr and current_is_manual:
+        current_at = _parse_prozorro_date(current["updated_at"])
+        incoming_at = _parse_prozorro_date(observed)
+        if current["normalized_name"] == normalized or (current_at and incoming_at and current_at >= incoming_at):
+            return {"changed": False, "manager_id": current["id"], "reason": "newer_manual_value_preserved"}
+    if current and current["normalized_name"] == normalized and normalized:
+        con.execute("""UPDATE supplier_managers SET manager_name=?,source=?,updated_at=? WHERE id=?""",
+                    (name, source, observed, current["id"]))
+        return {"changed": False, "manager_id": current["id"], "reason": "unchanged"}
+    if current:
+        con.execute("""UPDATE supplier_managers SET is_current=0,valid_to=?,updated_at=? WHERE id=?""",
+                    (observed, observed, current["id"]))
+    if not normalized:
+        return {"changed": bool(current), "manager_id": None, "previous_manager_id": current["id"] if current else None,
+                "reason": "manager_removed" if current else "missing_manager"}
+    cursor = con.execute("""INSERT INTO supplier_managers
+      (supplier_code,manager_name,normalized_name,valid_from,valid_to,is_current,source,created_at,updated_at)
+      VALUES (?,?,?,?,NULL,1,?,?,?)""", (code, name, normalized, observed, source, observed, observed))
+    return {"changed": True, "manager_id": cursor.lastrowid,
+            "previous_manager_id": current["id"] if current else None, "reason": "manager_changed" if current else "manager_created"}
+
+
+def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_code: str) -> int:
+    """Refresh only actionable submissions after the authoritative EDR manager changes.
+
+    Historical/closed submissions are intentionally excluded: an old submission result must
+    never be transferred to another manager or used to close a future submission.
+    """
+    code = re.sub(r"\D", "", supplier_code or "")
+    if not code:
+        return 0
+    rows = con.execute("""SELECT DISTINCT s.id
+      FROM submissions s
+      JOIN qualifications q ON q.submission_id=s.id
+      JOIN frameworks f ON f.id=s.framework_id
+      WHERE DIGITS(s.supplier_code)=? AND q.status='active'
+        AND LOWER(COALESCE(f.status,''))='active'
+        AND (COALESCE(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),'')=''
+          OR date(substr(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),1,10))>=date('now'))""",
+      (code,)).fetchall()
+    for row in rows:
+        ensure_submission_nazk_control(con, row[0])
+    return len(rows)
+
+
+def sync_supplier_managers_from_edr() -> dict:
+    """Idempotently seed/update manager history from the current EDR directory."""
+    created = changed = unchanged = removed = missing = 0
+    with db() as con:
+        profiles = con.execute("""SELECT supplier_code,manager_name,source_sheet,synced_at
+          FROM supplier_edr_profiles ORDER BY supplier_code""").fetchall()
+        for profile in profiles:
+            result = sync_current_supplier_manager(
+                con, profile["supplier_code"], profile["manager_name"],
+                f"Google Sheets: {profile['source_sheet'] or 'ЄДР'}", profile["synced_at"] or now_iso())
+            reason = result["reason"]
+            if reason == "manager_created": created += 1
+            elif reason == "manager_changed": changed += 1
+            elif reason == "manager_removed": removed += 1
+            elif reason == "missing_manager": missing += 1
+            elif reason == "unchanged": unchanged += 1
+    return {"profiles": len(profiles), "created": created, "changed": changed,
+            "removed": removed, "missing": missing, "unchanged": unchanged}
 
 
 def supplier_edr_sync_status() -> dict:
@@ -1696,6 +2515,13 @@ def supplier_edr_sync_worker() -> None:
                     source_sheet=excluded.source_sheet,source_row=excluded.source_row,synced_at=excluded.synced_at""",
                   (item["supplier_code"], item["full_name"], item["short_name"], item["manager_name"],
                    item["edr_status"], item["edr_checked_at"], item["source_sheet"], item["source_row"], synced_at))
+                effective_manager = con.execute("SELECT manager_name FROM supplier_edr_profiles WHERE supplier_code=?",
+                                                (item["supplier_code"],)).fetchone()[0]
+                manager_result = sync_current_supplier_manager(
+                    con, item["supplier_code"], effective_manager,
+                    f"Google Sheets: {item['source_sheet']}", synced_at)
+                if manager_result.get("changed"):
+                    refresh_current_submission_nazk_controls(con, item["supplier_code"])
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,inserted=?,updated=?
               WHERE id=?""", (synced_at, len(source_rows), inserted, updated, log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False,
@@ -1961,6 +2787,72 @@ def list_qualified_suppliers(params: dict) -> dict:
                 normalized = " ".join(re.sub(r"[’'`\-]+", " ", (manager_name or "").casefold()).split())
                 if normalized and normalized in nazk_names and code not in manager_matches:
                     manager_matches[code] = manager_name
+        application_nazk_states = {
+            supplier_code: {"state": "not_required", "can_approve": True,
+                            "required": False, "supplier_code": supplier_code,
+                            "submission_id": ""}
+            for supplier_code in supplier_codes
+        }
+        open_supplier_nazk_workflows = {}
+        latest_supplier_nazk_checks = {}
+        if supplier_codes:
+            placeholders = ",".join("?" for _ in supplier_codes)
+            for check in con.execute(f"""SELECT sc.id,sc.supplier_code,sc.manager_name,
+              sc.workflow_status,sc.result,sc.started_at,sc.completed_at,sc.is_legacy
+              FROM supplier_nazk_checks sc
+              JOIN supplier_managers sm ON sm.id=sc.manager_id AND sm.is_current=1
+              WHERE sc.supplier_code IN ({placeholders})
+              ORDER BY sc.supplier_code,COALESCE(sc.completed_at,sc.updated_at,sc.started_at) DESC,sc.id DESC""",
+              supplier_codes):
+                if check["supplier_code"] not in latest_supplier_nazk_checks:
+                    latest_supplier_nazk_checks[check["supplier_code"]] = dict(check)
+            for workflow in con.execute(f"""SELECT sc.id,sc.supplier_code,sc.manager_name,
+              sc.workflow_status,sc.started_at,sc.is_legacy
+              FROM supplier_nazk_checks sc
+              JOIN supplier_registry_summary srs ON srs.supplier_code=sc.supplier_code
+              JOIN supplier_managers sm ON sm.id=sc.manager_id AND sm.is_current=1
+              WHERE sc.supplier_code IN ({placeholders})
+                AND sc.workflow_status IN ('needs_review','request_to_supplier','request_to_nazk','waiting_response')
+                AND srs.active_count>0
+              ORDER BY sc.supplier_code,COALESCE(sc.started_at,sc.created_at) DESC,sc.id DESC""",
+              supplier_codes):
+                if workflow["supplier_code"] not in open_supplier_nazk_workflows:
+                    open_supplier_nazk_workflows[workflow["supplier_code"]] = dict(workflow)
+            relevant_by_supplier = {}
+            for submission in con.execute(f"""SELECT s.id,s.supplier_code,s.date_published,
+              COALESCE(af.manager_name,'') manager_name,
+              COALESCE(ctrl.nazk_certificate_required,0) control_required
+              FROM submissions s
+              LEFT JOIN qualifications q ON q.id=s.qualification_id
+              JOIN frameworks f ON f.id=s.framework_id
+              LEFT JOIN application_fields af ON af.submission_id=s.id
+              LEFT JOIN submission_nazk_controls ctrl ON ctrl.submission_id=s.id
+              WHERE s.supplier_code IN ({placeholders})
+                AND ctrl.id IS NOT NULL
+                AND ctrl.nazk_certificate_required=1
+                AND LOWER(COALESCE(f.status,'')) IN ('active','active.tendering','active.enquiries')
+                AND COALESCE(
+                  SUBSTR(JSON_EXTRACT(f.raw_json,'$.qualificationPeriod.endDate'),1,10),
+                  SUBSTR(JSON_EXTRACT(f.raw_json,'$.period.endDate'),1,10),
+                  '9999-12-31')>=DATE('now')
+                AND (
+                  LOWER(COALESCE(q.status,'pending'))='pending'
+                  OR (LOWER(COALESCE(q.status,''))='active' AND EXISTS (
+                    SELECT 1 FROM registry_contracts rc
+                    WHERE rc.qualification_id=q.id AND LOWER(COALESCE(rc.status,''))='active'
+                  ))
+                )
+              ORDER BY s.supplier_code,
+                COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC""", supplier_codes):
+                code = submission["supplier_code"]
+                if code in relevant_by_supplier:
+                    continue
+                relevant_by_supplier[code] = submission
+            for code, submission in relevant_by_supplier.items():
+                state = get_submission_nazk_state(con, submission["id"], nazk_names)
+                application_nazk_states[code] = {
+                    **state, "date_published": submission["date_published"] or ""
+                }
     items = [dict(row) for row in rows]
     for item in items:
         code = re.sub(r"\D", "", item.get("code") or "")
@@ -1970,6 +2862,12 @@ def list_qualified_suppliers(params: dict) -> dict:
         item["amcu_match"] = bool(code and code in amcu_codes)
         item["nazk_match"] = item.get("code") in manager_matches
         item["nazk_manager_name"] = manager_matches.get(item.get("code"), "")
+        item["nazk_application_state"] = application_nazk_states.get(
+            item.get("code"), {"state": "not_required", "can_approve": True}
+        )
+        item["nazk_supplier_workflow"] = open_supplier_nazk_workflows.get(item.get("code"), {})
+        latest_supplier_check = latest_supplier_nazk_checks.get(item.get("code"), {})
+        item["nazk_supplier_check"] = latest_supplier_check
         review = nazk_reviews.get(item.get("code"))
         item["nazk_review"] = review or {}
         if review:
@@ -1979,6 +2877,14 @@ def list_qualified_suppliers(params: dict) -> dict:
             item["nazk_review_is_current"] = review_is_current
             item["nazk_match"] = review_is_current and review.get("result") in {"підтверджено", "на запит", "можливо"}
             item["nazk_manager_name"] = review.get("manager_name") or item["nazk_manager_name"]
+        item["nazk_presentation_state"] = get_supplier_nazk_presentation_state(
+            item["nazk_application_state"].get("state"),
+            item["nazk_supplier_workflow"].get("workflow_status"),
+            registry_match=bool(item["nazk_match"]),
+            legacy_result=(latest_supplier_check.get("result")
+              if latest_supplier_check.get("workflow_status") == "completed"
+              else ((review or {}).get("result") if item.get("nazk_review_is_current", not review) else "")),
+        )
     return {"items": items, "total": total,
             "registered_total": registered_total, "not_registered": not_registered, "active": active_total,
             "amcu_total": amcu_total, "nazk_total": nazk_total,
@@ -1993,22 +2899,71 @@ def supplier_profile(supplier_code: str) -> dict:
     with db() as con:
         summary = con.execute("SELECT * FROM supplier_registry_summary WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         profile = con.execute("SELECT * FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
+        current_manager_row = con.execute("""SELECT manager_name,source,valid_from,updated_at
+          FROM supplier_managers WHERE DIGITS(supplier_code)=? AND is_current=1
+          ORDER BY updated_at DESC,id DESC LIMIT 1""", (code,)).fetchone()
         nazk_review = con.execute("SELECT * FROM supplier_nazk_reviews WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
-        qualifications = [dict(row) for row in con.execute("""WITH ranked AS (
+        nazk_check_history = [dict(row) for row in con.execute("""SELECT
+          ctrl.submission_id,ctrl.manager_name,ctrl.checked_at,ctrl.checked_by,ctrl.comment,
+          chk.id check_id,chk.workflow_status,chk.result,chk.evidence_date,
+          doc.title document_title,doc.url document_url,doc.prozorro_document_id,
+          s.supplier_name,s.date_published,COALESCE(NULLIF(f.pretty_id,''),f.id) framework_id
+          FROM submission_nazk_controls ctrl
+          JOIN supplier_nazk_checks chk ON chk.id=ctrl.supplier_nazk_check_id
+          JOIN submissions s ON s.id=ctrl.submission_id
+          LEFT JOIN frameworks f ON f.id=s.framework_id
+          LEFT JOIN supplier_nazk_check_documents doc ON doc.check_id=chk.id
+            AND doc.submission_id=ctrl.submission_id
+            AND ((COALESCE(doc.prozorro_document_id,'')<>'' AND doc.prozorro_document_id=ctrl.selected_document_id)
+              OR (COALESCE(doc.url,'')<>'' AND doc.url=ctrl.selected_document_url))
+          WHERE DIGITS(ctrl.supplier_code)=? AND chk.workflow_status='completed'
+            AND chk.result IN ('refuted','confirmed')
+          ORDER BY COALESCE(ctrl.checked_at,chk.completed_at,chk.created_at) DESC,chk.id DESC""", (code,))]
+        supplier_nazk_checks = [dict(row) for row in con.execute("""SELECT
+          chk.id,chk.manager_name,chk.workflow_status,chk.result,chk.started_at,chk.completed_at,
+          chk.evidence_date,chk.comment,chk.is_legacy,chk.created_by,chk.updated_by,
+          doc.title document_title,doc.url document_url,doc.document_date
+          FROM supplier_nazk_checks chk
+          LEFT JOIN supplier_nazk_check_documents doc ON doc.id=(
+            SELECT d.id FROM supplier_nazk_check_documents d WHERE d.check_id=chk.id
+            ORDER BY d.created_at DESC,d.id DESC LIMIT 1)
+          WHERE DIGITS(chk.supplier_code)=?
+          ORDER BY COALESCE(chk.completed_at,chk.updated_at,chk.started_at) DESC,chk.id DESC""", (code,))]
+        supplier_nazk_workflow = next((row for row in supplier_nazk_checks
+          if row["workflow_status"] in ("needs_review","request_to_supplier","request_to_nazk","waiting_response")), {})
+        qualifications = [dict(row) for row in con.execute("""WITH contract_events AS (
           SELECT rc.id,CASE WHEN rc.status='active' AND NOT (
               LOWER(COALESCE(f.status,''))='active' AND
               (COALESCE(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),'')=''
                 OR date(substr(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),1,10))>=date('now')))
             THEN 'expired' ELSE rc.status END status,COALESCE(NULLIF(f.pretty_id,''),f.id) framework_id,
             f.title framework_title,f.dk_code,COALESCE(fo.marketplace_url,'') marketplace_url,
-            COALESCE(NULLIF(json_extract(rc.raw_json,'$.dateModified'),''),NULLIF(json_extract(rc.raw_json,'$.date'),''),rc.synced_at) event_date,
-            ROW_NUMBER() OVER (PARTITION BY rc.framework_id ORDER BY
-              COALESCE(NULLIF(json_extract(rc.raw_json,'$.dateModified'),''),NULLIF(json_extract(rc.raw_json,'$.date'),''),rc.synced_at) DESC) rn
+            COALESCE(
+              (SELECT COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
+                               NULLIF(json_extract(doc.value,'$.dateModified'),''))
+                 FROM json_each(COALESCE(rc.raw_json,'{}'),'$.milestones') milestone
+                 JOIN json_each(milestone.value,'$.documents') doc
+                WHERE COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
+                               NULLIF(json_extract(doc.value,'$.dateModified'),'')) IS NOT NULL
+                ORDER BY COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
+                                  NULLIF(json_extract(doc.value,'$.dateModified'),'')) DESC LIMIT 1),
+              (SELECT NULLIF(json_extract(milestone.value,'$.dateModified'),'')
+                 FROM json_each(COALESCE(rc.raw_json,'{}'),'$.milestones') milestone
+                WHERE NULLIF(json_extract(milestone.value,'$.dateModified'),'') IS NOT NULL
+                ORDER BY json_extract(milestone.value,'$.dateModified') DESC LIMIT 1),
+              NULLIF(json_extract(rc.raw_json,'$.date'),''),NULLIF(q.decision_date,'')
+            ) event_date,
+            CASE WHEN rc.status='terminated' THEN 'Рішення про виключення'
+                 WHEN rc.status='active' THEN 'Рішення про включення'
+                 ELSE 'Рішення / зміна статусу' END event_label
           FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
           LEFT JOIN framework_officers fo ON fo.framework_id=rc.framework_id
-          WHERE DIGITS(rc.supplier_code)=?)
-          SELECT id,status,framework_id,framework_title,dk_code,marketplace_url,event_date FROM ranked
-          WHERE rn=1 ORDER BY event_date DESC LIMIT 200""", (code,))]
+          LEFT JOIN qualifications q ON q.id=rc.qualification_id
+          WHERE DIGITS(rc.supplier_code)=?), ranked AS (
+          SELECT contract_events.*,ROW_NUMBER() OVER (PARTITION BY framework_id
+            ORDER BY COALESCE(event_date,'') DESC,id DESC) rn FROM contract_events)
+          SELECT id,status,framework_id,framework_title,dk_code,marketplace_url,event_date,event_label FROM ranked
+          WHERE rn=1 ORDER BY COALESCE(event_date,'') DESC LIMIT 200""", (code,))]
         amcu = [dict(row) for row in con.execute("""SELECT offender_name,offender_code,decision_no,
           decision_date,authority,court_case_no FROM amcu_registry
           WHERE DIGITS(offender_code)=? ORDER BY decision_date DESC""", (code,))]
@@ -2025,37 +2980,288 @@ def supplier_profile(supplier_code: str) -> dict:
             nazk = [dict(row) for row in con.execute(f"""SELECT full_name,offense_name,court_case_number,
               sentence_date,punishment_start,court_name,decision_url FROM nazk_registry
               WHERE NORMALIZE_NAME(full_name) IN ({placeholders}) ORDER BY sentence_date DESC""", tuple(normalized_managers))]
+        nazk_application_state = get_supplier_application_nazk_state(con, code)
         violation_reports = [dict(row) for row in con.execute("""SELECT report_id,status,date_published,
           reason,description,decision_resolution,decision_description,decision_date,tender_pretty_id,
           contract_pretty_id,authority_name FROM violation_reports WHERE DIGITS(defendant_code)=?
           ORDER BY COALESCE(NULLIF(decision_date,''),date_published) DESC LIMIT 100""", (code,))]
-    bids_summary = {"participations": 0, "wins": 0, "bids": 0, "amount": 0}
-    procurements = []
+        violation_summary_row = con.execute("""SELECT COUNT(*) submitted,
+          SUM(CASE WHEN status='satisfied' THEN 1 ELSE 0 END) satisfied,
+          SUM(CASE WHEN status='satisfied' AND COALESCE(decision_date,'')='' THEN 1 ELSE 0 END) satisfied_without_decision_date
+          FROM violation_reports WHERE DIGITS(defendant_code)=?""", (code,)).fetchone()
+        violation_summary = {
+            key: int((violation_summary_row[key] if violation_summary_row else 0) or 0)
+            for key in ("submitted", "satisfied", "satisfied_without_decision_date")
+        }
+        satisfied_decision_dates = [row[0] for row in con.execute(
+            "SELECT decision_date FROM violation_reports "
+            "WHERE DIGITS(defendant_code)=? AND status='satisfied' "
+            "AND COALESCE(decision_date,'')<>''",
+            (code,),
+        )]
+        violation_summary.update(violation_threshold_summary(satisfied_decision_dates))
+        violation_summary["thresholds_note"] = (
+            "П. 52: враховано задоволені звернення за датою рішення; межі періодів включні."
+        )
+        contact_variants = []
+        seen_contacts = set()
+        for contact_row in con.execute("""SELECT s.id,s.date_published,s.raw_json,
+          COALESCE(NULLIF(f.pretty_id,''),f.id) framework_id
+          FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
+          WHERE DIGITS(s.supplier_code)=?
+          ORDER BY COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC""", (code,)):
+            try:
+                payload = json.loads(contact_row["raw_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            tenderers = payload.get("tenderers") or []
+            contact = (tenderers[0].get("contactPoint") or {}) if tenderers and isinstance(tenderers[0], dict) else {}
+            values = tuple(" ".join(str(contact.get(field) or "").split())
+                           for field in ("name", "email", "telephone", "fax", "url"))
+            key = tuple(value.casefold() for value in values)
+            if not any(values) or key in seen_contacts:
+                continue
+            seen_contacts.add(key)
+            contact_variants.append({
+                "name": values[0], "email": values[1], "telephone": values[2],
+                "fax": values[3], "url": values[4], "submission_id": contact_row["id"],
+                "submission_date": contact_row["date_published"],
+                "framework_id": contact_row["framework_id"],
+            })
+        application_rows = [dict(row) for row in con.execute("""SELECT s.id,s.framework_id,
+          COALESCE(NULLIF(f.pretty_id,''),f.id) framework_pretty_id,f.dk_code,f.title framework_title,
+          s.date_published,COALESCE(q.status,'pending') qualification_status,
+          COALESCE(af.protocol_decision,'') protocol_decision,COALESCE(af.protocol_remarks,'') protocol_remarks,
+          COALESCE(af.compliance_status,'') compliance_status,COALESCE(af.compliance_comments,'') compliance_comments,
+          COALESCE(af.protocol_number,'') protocol_number,COALESCE(af.protocol_date,'') protocol_date,
+          COALESCE(af.protocol_officer,'') protocol_officer
+          FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
+          LEFT JOIN qualifications q ON q.id=s.qualification_id
+          LEFT JOIN application_fields af ON af.submission_id=s.id
+          WHERE DIGITS(s.supplier_code)=?
+          ORDER BY s.framework_id,COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC""", (code,))]
+        application_history_groups = []
+        for framework_id, grouped_rows in itertools.groupby(application_rows, key=lambda row: row["framework_id"]):
+            attempts = list(grouped_rows)
+            admitted = sum(1 for row in attempts if row["qualification_status"] == "active")
+            rejected = sum(1 for row in attempts if row["qualification_status"] == "unsuccessful")
+            latest = attempts[0]
+            latest_remark = (latest["protocol_remarks"] or latest["compliance_comments"] or "").strip()
+            application_history_groups.append({
+                "framework_id": framework_id,
+                "framework_pretty_id": latest["framework_pretty_id"],
+                "dk_code": latest["dk_code"], "framework_title": latest["framework_title"],
+                "applications_count": len(attempts), "admitted_count": admitted,
+                "rejected_count": rejected, "latest_date": latest["date_published"],
+                "latest_status": latest["qualification_status"], "latest_remark": latest_remark,
+                "applications": attempts,
+            })
+        application_history_groups.sort(key=lambda group: group["latest_date"] or "", reverse=True)
+    bids_summary = {"participations": 0, "wins": 0}
     try:
         with bids_db() as con:
-            row = con.execute("""SELECT COUNT(DISTINCT tender_id) participations,COUNT(*) bids,
-              COALESCE(SUM(amount),0) amount FROM bids WHERE supplier_id=?""", (code,)).fetchone()
+            row = con.execute("""SELECT COUNT(DISTINCT tender_id) participations
+              FROM bids WHERE supplier_id=?""", (code,)).fetchone()
             wins = con.execute("""SELECT COUNT(DISTINCT tender_id) FROM awards
               WHERE supplier_id=? AND LOWER(COALESCE(status,''))='active'""", (code,)).fetchone()[0]
             bids_summary = {**dict(row), "wins": int(wins or 0)}
-            procurements = [dict(row) for row in con.execute("""SELECT b.tender_id,MAX(t.title) title,
-              MAX(COALESCE(t.tender_start,t.date_created,b.bid_date)) tender_date,MAX(t.status) status,
-              MAX(t.buyer_name) buyer_name,COUNT(*) bids_count,MAX(b.amount) amount,MAX(b.currency) currency,
-              MAX(CASE WHEN aw.supplier_id IS NOT NULL THEN 1 ELSE 0 END) won
-              FROM bids b LEFT JOIN tenders t ON t.tender_id=b.tender_id
-              LEFT JOIN awards aw ON aw.tender_id=b.tender_id AND aw.supplier_id=? AND LOWER(COALESCE(aw.status,''))='active'
-              WHERE b.supplier_id=? GROUP BY b.tender_id ORDER BY tender_date DESC LIMIT 100""", (code, code))]
-    except (FileNotFoundError, sqlite3.Error):
+    except (BidsUnavailableError, FileNotFoundError, sqlite3.Error):
         pass
-    current_manager = " ".join(re.sub(r"[’'`\-]+", " ", ((profile["manager_name"] if profile else "") or "").casefold()).split())
+    normalized_current_manager = " ".join(re.sub(r"[’'`\-]+", " ", ((profile["manager_name"] if profile else "") or "").casefold()).split())
     review_manager = " ".join(re.sub(r"[’'`\-]+", " ", ((nazk_review["manager_name"] if nazk_review else "") or "").casefold()).split())
     nazk_review_data = dict(nazk_review) if nazk_review else {}
     if nazk_review_data:
-        nazk_review_data["is_current_manager"] = bool(current_manager and review_manager and current_manager == review_manager)
+        nazk_review_data["is_current_manager"] = bool(normalized_current_manager and review_manager and normalized_current_manager == review_manager)
+    latest_current_supplier_check = next((item for item in supplier_nazk_checks
+        if item.get("workflow_status") == "completed"
+        and " ".join(re.sub(r"[’'`\-]+", " ", str(item.get("manager_name") or "").casefold()).split()) == normalized_current_manager), {})
+    nazk_presentation_state = get_supplier_nazk_presentation_state(
+        nazk_application_state.get("state"),
+        supplier_nazk_workflow.get("workflow_status"),
+        registry_match=bool(nazk),
+        legacy_result=(latest_current_supplier_check.get("result")
+          or (nazk_review_data.get("result") if nazk_review_data.get("is_current_manager") else "")),
+    )
     return {"code": code, "summary": dict(summary) if summary else {}, "edr_profile": dict(profile) if profile else {},
-            "qualifications": qualifications, "bids_summary": bids_summary, "procurements": procurements,
+            "current_manager": dict(current_manager_row) if current_manager_row else {},
+            "qualifications": qualifications, "bids_summary": bids_summary,
             "amcu": amcu, "nazk": nazk, "nazk_review": nazk_review_data,
-            "violation_reports": violation_reports}
+            "nazk_check_history": nazk_check_history,
+            "supplier_nazk_checks": supplier_nazk_checks,
+            "supplier_nazk_workflow": supplier_nazk_workflow,
+            "nazk_application_state": nazk_application_state,
+            "nazk_presentation_state": nazk_presentation_state,
+            "violation_reports": violation_reports,
+            "violation_summary": violation_summary,
+            "contacts": {"current": contact_variants[0] if contact_variants else None,
+                         "history": contact_variants[1:]},
+            "application_history_groups": application_history_groups}
+
+
+def supplier_procurements(supplier_code: str, params: dict) -> dict:
+    """On-demand, paged ProzorroBids rows. Supplier profile never calls this."""
+    code = re.sub(r"\D", "", urllib.parse.unquote(supplier_code or ""))
+    if not code:
+        raise KeyError(supplier_code)
+    page = max(1, int(params.get("page", ["1"])[0] or 1))
+    size = min(200, max(10, int(params.get("size", ["50"])[0] or 50)))
+    result = params.get("result", [""])[0].strip().lower()
+    wins_only = params.get("wins", [""])[0].strip().lower() in {"1", "true", "yes"} or result == "wins"
+    dk_codes = [value.strip() for value in params.get("dk_code", [""])[0].split(",") if value.strip()]
+    search = params.get("search", [""])[0].strip().casefold()
+    date_from = params.get("date_from", [""])[0].strip()
+    date_to = params.get("date_to", [""])[0].strip()
+    year = params.get("year", [""])[0].strip()
+    where = "b.supplier_id=?"
+    args = [code]
+    if wins_only:
+        where += " AND EXISTS (SELECT 1 FROM awards aw WHERE aw.tender_id=b.tender_id AND aw.supplier_id=? AND LOWER(COALESCE(aw.status,''))='active')"
+        args.append(code)
+    elif result == "participations":
+        where += " AND NOT EXISTS (SELECT 1 FROM awards aw WHERE aw.tender_id=b.tender_id AND aw.supplier_id=? AND LOWER(COALESCE(aw.status,''))='active')"
+        args.append(code)
+    if dk_codes:
+        where += f" AND t.cpv_code IN ({','.join('?' for _ in dk_codes)})"
+        args.extend(dk_codes)
+    tender_date = "SUBSTR(COALESCE(t.tender_start,t.date_created,b.bid_date,''),1,10)"
+    if year:
+        where += f" AND SUBSTR({tender_date},1,4)=?"; args.append(year)
+    if date_from:
+        where += f" AND {tender_date}>=?"; args.append(date_from)
+    if date_to:
+        where += f" AND {tender_date}<=?"; args.append(date_to)
+    if search:
+        where += " AND (INSTR(LOWER(COALESCE(b.tender_id,'')),?)>0 OR INSTR(LOWER(COALESCE(t.title,'')),?)>0 OR INSTR(LOWER(COALESCE(t.buyer_name,'')),?)>0)"
+        args.extend([search] * 3)
+    with bids_db() as con:
+        total = int(con.execute(f"SELECT COUNT(DISTINCT b.tender_id) FROM bids b LEFT JOIN tenders t ON t.tender_id=b.tender_id WHERE {where}", args).fetchone()[0] or 0)
+        top_dk = [dict(row) for row in con.execute("""SELECT COALESCE(t.cpv_code,'') dk_code,
+          COALESCE(MAX(t.cpv_name),'') dk_name,COUNT(DISTINCT b.tender_id) procurements
+          FROM bids b LEFT JOIN tenders t ON t.tender_id=b.tender_id
+          WHERE b.supplier_id=? AND COALESCE(t.cpv_code,'')<>''
+          GROUP BY t.cpv_code ORDER BY procurements DESC,t.cpv_code LIMIT 12""", (code,))]
+        summary_row = con.execute("""SELECT COUNT(DISTINCT b.tender_id) participations,
+          COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM awards aw WHERE aw.tender_id=b.tender_id
+            AND aw.supplier_id=? AND LOWER(COALESCE(aw.status,''))='active') THEN b.tender_id END) wins
+          FROM bids b WHERE b.supplier_id=?""", (code, code)).fetchone()
+        rows = [dict(row) for row in con.execute(f"""SELECT b.tender_id,MAX(t.title) title,
+          MAX(t.cpv_code) dk_code,MAX(t.cpv_name) dk_name,
+          MAX(COALESCE(t.tender_start,t.date_created,b.bid_date)) tender_date,MAX(t.status) status,
+          MAX(t.buyer_name) buyer_name,COUNT(*) bids_count,MAX(b.amount) amount,MAX(b.currency) currency,
+          MAX(CASE WHEN aw.supplier_id IS NOT NULL THEN 1 ELSE 0 END) won
+          FROM bids b LEFT JOIN tenders t ON t.tender_id=b.tender_id
+          LEFT JOIN awards aw ON aw.tender_id=b.tender_id AND aw.supplier_id=? AND LOWER(COALESCE(aw.status,''))='active'
+          WHERE {where} GROUP BY b.tender_id ORDER BY tender_date DESC LIMIT ? OFFSET ?""",
+          (code, *args, size, (page - 1) * size))]
+    return {"items": rows, "supplier_code": code, "wins_only": wins_only, "result": result,
+            "filters": {"dk_code": dk_codes, "search": search, "date_from": date_from,
+                        "date_to": date_to, "year": year},
+            "summary": {"participations": int(summary_row[0] or 0), "wins": int(summary_row[1] or 0)},
+            "top_dk": top_dk, "total": total, "page": page, "size": size,
+            "pages": max(1, (total + size - 1) // size)}
+
+
+def framework_service_directory() -> dict:
+    with db() as con:
+        raw_items = [dict(row) for row in con.execute("""SELECT d.pretty_id directory_id,d.framework_id,
+          d.pretty_id,COALESCE(NULLIF(d.dk_code,''),f.dk_code,'') dk_code,
+          COALESCE(NULLIF(f.title,''),d.source_title,'') title,
+          COALESCE(f.status,'') official_status,COALESCE(f.raw_json,'{}') framework_raw_json,
+          d.category,d.marketplace_url,d.responsible_officer,d.source,d.synced_at updated_at
+          FROM framework_service_directory d LEFT JOIN frameworks f ON f.id=d.framework_id
+          ORDER BY d.pretty_id""")]
+    items, counts = [], {"active": 0, "closed": 0, "unknown": 0}
+    for item in raw_items:
+        try:
+            raw = json.loads(item.pop("framework_raw_json") or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = {}
+        valid_until = str(((raw.get("qualificationPeriod") or {}).get("endDate") or ""))[:10]
+        effective = effective_framework_status(item.get("official_status") or "", raw)
+        item["missing_end_date"] = item.get("official_status") == "active" and not valid_until
+        if not item.get("framework_id"):
+            item["status"] = "Не відбувся"
+            counts["unknown"] += 1
+        elif effective == "active":
+            item["status"] = "Активний"
+            counts["active"] += 1
+        elif effective == "closed":
+            item["status"] = "Закритий"
+            counts["closed"] += 1
+        else:
+            item["status"] = "Статус не визначено"
+            counts["unknown"] += 1
+        item["valid_until"] = valid_until
+        items.append(item)
+    items.sort(key=lambda row: (row["status"] != "Активний", row["pretty_id"]))
+    return {"items": items, "total": len(items), "statuses": counts}
+
+
+def submission_nazk_context(con: sqlite3.Connection, submission_id: str) -> dict:
+    """Existing registry/supplier context for one application; performs no writes."""
+    row = con.execute("""SELECT s.supplier_code,COALESCE(ctrl.manager_name,''),
+      COALESCE(af.manager_name,''),COALESCE(af.manager_name_source,''),
+      COALESCE(af.manager_name_source_submission_id,''),s.date_published,s.synced_at
+      FROM submissions s LEFT JOIN submission_nazk_controls ctrl ON ctrl.submission_id=s.id
+      LEFT JOIN application_fields af ON af.submission_id=s.id WHERE s.id=?""", (submission_id,)).fetchone()
+    if not row:
+        raise ValueError("Заявку не знайдено")
+    manager_name = row[1] or row[2]
+    matches = registry_matches(con, manager_name) if manager_name else []
+    current_date = _parse_prozorro_date(row[5] or row[6])
+    current_day = current_date.date() if current_date else None
+
+    def valid_manager(value: str | None) -> bool:
+        return bool(value and value.strip() not in {"-", "—"})
+
+    previous_manager = ""
+    previous_source = ""
+    previous_date = ""
+    previous_submission = con.execute("""SELECT af.manager_name,s.date_published,s.synced_at,s.id
+      FROM submissions s JOIN application_fields af ON af.submission_id=s.id
+      WHERE DIGITS(s.supplier_code)=DIGITS(?) AND s.id<>? AND COALESCE(af.manager_name,'')<>''
+        AND COALESCE(NULLIF(s.date_published,''),s.synced_at)<COALESCE(NULLIF(?,''),?)
+      ORDER BY COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC LIMIT 1""",
+      (row[0], submission_id, row[5], row[6])).fetchone()
+    if previous_submission and valid_manager(previous_submission[0]):
+        previous_manager = previous_submission[0].strip()
+        previous_source = "previous_submission"
+        previous_date = previous_submission[1] or previous_submission[2] or ""
+    if not previous_manager:
+        edr = con.execute("""SELECT manager_name,edr_checked_at,source_sheet,source_row
+          FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=DIGITS(?)""", (row[0],)).fetchone()
+        edr_parsed = _parse_prozorro_date(edr[1]) if edr else None
+        edr_day = (parse_ukrainian_date(edr[1]) or (edr_parsed.date() if edr_parsed else None)) if edr else None
+        if edr and valid_manager(edr[0]) and current_day and edr_day and edr_day < current_day:
+            previous_manager = edr[0].strip()
+            previous_source = "edr_profile"
+            previous_date = edr[1]
+    if not previous_manager:
+        historical = con.execute("""SELECT manager_name,source,created_at,updated_at FROM supplier_managers
+          WHERE DIGITS(supplier_code)=DIGITS(?) ORDER BY is_current DESC,updated_at DESC,id DESC""",
+          (row[0],)).fetchall()
+        for candidate in historical:
+            known_at = _parse_prozorro_date(candidate[2] or candidate[3])
+            if (valid_manager(candidate[0]) and current_date and known_at
+                    and known_at.date() < current_day):
+                previous_manager = candidate[0].strip()
+                previous_source = candidate[1] or "supplier_manager_history"
+                previous_date = candidate[2] or candidate[3] or ""
+                break
+    supplier_check = con.execute("""SELECT chk.id,chk.workflow_status,chk.result,chk.completed_at,
+      chk.evidence_date,chk.comment,chk.updated_by checked_by,doc.title document_title,doc.url document_url
+      FROM supplier_nazk_checks chk LEFT JOIN supplier_nazk_check_documents doc ON doc.id=(
+        SELECT d.id FROM supplier_nazk_check_documents d WHERE d.check_id=chk.id
+        ORDER BY d.created_at DESC,d.id DESC LIMIT 1)
+      WHERE chk.supplier_code=? AND NORMALIZE_NAME(chk.manager_name)=NORMALIZE_NAME(?)
+        AND chk.workflow_status='completed' AND chk.result IN ('refuted','confirmed')
+      ORDER BY COALESCE(chk.completed_at,chk.updated_at,chk.started_at) DESC,chk.id DESC LIMIT 1""",
+      (row[0], manager_name)).fetchone()
+    return {"manager": {"current": manager_name, "previous": previous_manager,
+                         "previous_source": previous_source, "previous_date": previous_date,
+                         "source": row[3], "source_submission_id": row[4]},
+            "registry_matches": matches,
+            "latest_supplier_check": dict(supplier_check) if supplier_check else None}
 
 
 def _organization_fields(organization: dict | None) -> tuple[str, str]:
@@ -2223,6 +3429,779 @@ def list_violation_reports(params: dict) -> dict:
             "pages": (total + size - 1) // size, "statuses": statuses, "reasons": reasons,
             "authorities": authorities,
             "sync": dict(VIOLATION_SYNC_STATE)}
+
+
+VIOLATION_REVIEW_FIELDS = {
+    "review_status", "assigned_officer", "assigned_officer_id", "internal_decision", "decision_justification", "review_notes",
+    "protocol_number", "protocol_date", "contract_deadline_extended",
+    "written_refusal_date", "written_refusal_number", "written_refusal_url",
+    "court_decision_final_present", "customer_verified_full_name",
+    "customer_verified_short_name", "actual_contract_date", "actual_contract_number",
+    "actual_contract_url", "additional_check_required", "guarantee_documents_visible",
+    "supplier_explanation_assessment", "established_discrepancy", "decision_template_key",
+}
+VIOLATION_INTERNAL_DECISIONS = {"", "warning", "decline", "individual_review"}
+
+
+def _parse_prozorro_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _iso_date(value: datetime | None) -> str | None:
+    return value.date().isoformat() if value else None
+
+
+def _calendar_deadline(start: datetime | None, days: int) -> dict:
+    if not start:
+        return {"calendar_day": None, "weekday": None, "shifted": False, "deadline": None}
+    calendar_day = start + timedelta(days=days)
+    deadline = calendar_day
+    while deadline.weekday() >= 5:
+        deadline += timedelta(days=1)
+    return {
+        "calendar_day": _iso_date(calendar_day),
+        "weekday": calendar_day.strftime("%A"),
+        "shifted": deadline.date() != calendar_day.date(),
+        "deadline": _iso_date(deadline),
+    }
+
+
+def _within_calendar_deadline(moment: datetime | None, deadline_date: str | None) -> bool | None:
+    """Compare legal calendar dates; the whole deadline day remains available."""
+    if not moment or not deadline_date:
+        return None
+    try:
+        boundary = datetime.strptime(deadline_date, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    return moment.date() <= boundary
+
+
+def _add_working_days(start: datetime | None, days: int) -> str | None:
+    """Return the date after `days` Mon-Fri days; weekends are not counted."""
+    if not start:
+        return None
+    current = start.date()
+    added = 0
+    while added < days:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            added += 1
+    return current.isoformat()
+
+
+def _deadline_passed(deadline: str | None, moment: datetime | None = None) -> bool:
+    if not deadline:
+        return False
+    try:
+        boundary = datetime.strptime(deadline[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return False
+    return (moment or datetime.now()).date() > boundary
+
+
+def violation_deadline_control(report: dict, moment: datetime | None = None) -> dict:
+    """Separate the supplier response term from the Administrator review term."""
+    received = _parse_prozorro_date(report.get("date_published") or report.get("date_created"))
+    official = str(report.get("defendant_period_end") or "")[:10] or None
+    local_control = _add_working_days(received, 3)
+    supplier_deadline = official or local_control
+    admin_deadline = _add_working_days(received, 10)
+    return {
+        "supplier_official_deadline": official,
+        "supplier_local_control_deadline": local_control,
+        "supplier_deadline": supplier_deadline,
+        "supplier_ready": _deadline_passed(supplier_deadline, moment),
+        "admin_deadline": admin_deadline,
+        "admin_overdue": _deadline_passed(admin_deadline, moment),
+    }
+
+
+def _justification_basis(report: dict, context: dict, review: dict) -> dict:
+    return {
+        "reason": report.get("reason"), "description": report.get("description"),
+        "statements": report.get("defendant_statements") or [],
+        "evidence": report.get("evidence_documents") or [],
+        "winner": context.get("winner_selected_at"), "rejection": context.get("rejection_date"),
+        "rejection_reason": context.get("rejection_reason_classification"),
+        "contract": [context.get("contract_status"), context.get("contract_date"), context.get("contract_pretty_id")],
+        "review": {key: review.get(key) for key in (
+            "internal_decision", "additional_check_required", "guarantee_documents_visible",
+            "supplier_explanation_assessment", "established_discrepancy", "written_refusal_date",
+            "written_refusal_number", "written_refusal_url", "court_decision_final_present")},
+    }
+
+
+def _justification_hash(report: dict, context: dict, review: dict) -> str:
+    raw = json.dumps(_justification_basis(report, context, review), ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _identifier_code(organization: dict) -> str:
+    return re.sub(r"\D", "", str(((organization.get("identifier") or {}).get("id") or "")))
+
+
+def _award_matches_supplier(award: dict, defendant_code: str) -> bool:
+    wanted = re.sub(r"\D", "", defendant_code or "")
+    return bool(wanted) and any(_identifier_code(item) == wanted for item in award.get("suppliers") or [])
+
+
+def _award_sort_key(award: dict) -> str:
+    return str((award.get("period") or {}).get("startDate") or award.get("date") or "")
+
+
+def _documents_without_signature(documents: list[dict]) -> list[dict]:
+    return sorted(documents or [], key=lambda item: str(item.get("datePublished") or ""), reverse=True)
+
+
+def classify_award_rejection_reason(award: dict | None) -> str:
+    """Conservatively classify only explicit non-signing/guarantee wording."""
+    text = " ".join(str((award or {}).get(key) or "") for key in ("title", "description")).casefold()
+    non_signing = any(token in text for token in (
+        "непідпис", "не підпис", "відмовився від підпис", "відмова від підпис",
+        "неуклад", "не уклад", "відмовився укласти", "відмова від уклад",
+    ))
+    guarantee = any(token in text for token in (
+        "ненадан", "не надан", "відсутн", "не внес",
+    )) and any(token in text for token in ("забезпечен", "гаранті"))
+    if non_signing and guarantee:
+        return "non_signing_and_guarantee"
+    if non_signing:
+        return "non_signing"
+    if guarantee:
+        return "guarantee_missing"
+    return "other" if text.strip() else "unknown"
+
+
+def _display_legal_date(value) -> str:
+    raw = str(value or "")[:10]
+    return ".".join(reversed(raw.split("-"))) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) else raw
+
+
+def violation_decision_template_key(report: dict, context: dict, review: dict | None = None) -> str:
+    """Return only a legally approved template key; unsupported combinations have no draft."""
+    review = review or {}
+    reason = report.get("reason") or ""
+    decision = review.get("internal_decision") or ""
+    statements = report.get("defendant_statements") or []
+    if (reason == "contractBreach" and decision == "warning"
+            and context.get("rejection_present") and not statements
+            and context.get("rejected_before_deadline") is False):
+        if context.get("contract_guarantee_required"):
+            if review.get("guarantee_documents_visible") == 0:
+                return "p49_1_warning_guarantee_no_documents_no_explanation"
+            return ""
+        return "p49_1_warning"
+    if (reason == "signingRefusal" and decision == "decline"
+            and context.get("written_refusal_within_deadline") is True):
+        return ("p49_2_decline_timely_refusal_civil_shift"
+                if context.get("day_3_shifted") else "p49_2_decline_timely_refusal")
+    return ""
+
+
+def build_violation_decision_justification(report: dict, context: dict, review: dict | None = None) -> str:
+    """Render an approved template only; never invent or persist additional legal reasoning."""
+    review = review or {}
+    template_key = violation_decision_template_key(report, context, review)
+    winner_date = _display_legal_date(context.get("winner_selected_at"))
+    if template_key in {"p49_1_warning", "p49_1_warning_guarantee_no_documents_no_explanation"}:
+        paragraphs = [
+            "За результатами розгляду звернення Замовника та аналізу матеріалів закупівлі Адміністратором встановлено наступне.",
+            f"Повідомлення про намір укласти договір з Постачальником було оприлюднено в електронній системі закупівель {winner_date}.",
+            f"Відповідно до п. 66 Порядку № 822, граничний строк для укладення договору – {_display_legal_date(context.get('contract_deadline'))}.",
+            f"Станом на дату відхилення замовником пропозиції ({_display_legal_date(context.get('rejection_date'))}) договір Постачальником не підписано, що підтверджується даними електронної системи закупівель.",
+        ]
+        if template_key == "p49_1_warning_guarantee_no_documents_no_explanation":
+            paragraphs.append(
+                "Крім того, в електронній системі закупівель відсутні документи/відомості, що підтверджують надання Постачальником забезпечення виконання договору."
+            )
+        paragraphs.extend((
+            "З боку Постачальника не надано жодних доказів або пояснень, які б спростували інформацію Замовника про вказане порушення.",
+            "З огляду на відсутність підстав для відмови в задоволенні звернення, Адміністратор, керуючись п. 51 Порядку № 822, приймає рішення про наявність порушення постачальника, що передбачене пп. 1 п. 49 Порядку № 822.",
+        ))
+        return "\n\n".join(paragraphs)
+    if template_key in {"p49_2_decline_timely_refusal", "p49_2_decline_timely_refusal_civil_shift"}:
+        paragraphs = [
+            "За результатами розгляду звернення Замовника та аналізу матеріалів закупівлі Адміністратором встановлено наступне.",
+            f"Повідомлення про намір укласти договір з Постачальником було оприлюднене в електронній системі закупівель {winner_date}.",
+            "Відповідно до пп. 2 п. 49 Порядку № 822, порушенням вважається надання постачальником письмової відмови від укладення договору після закінчення трьох календарних днів з дня оприлюднення повідомлення про намір укласти договір.",
+        ]
+        if template_key.endswith("civil_shift"):
+            paragraphs.extend((
+                f"Оскільки третій календарний день припадає на {_display_legal_date(context.get('day_3'))} ({context.get('day_3_weekday_uk_accusative') or context.get('day_3_weekday_uk') or 'вихідний день'}), при обрахунку строків підлягають застосуванню норми ч. 5 ст. 254 ЦК України.",
+                f"Отже, граничний строк для правомірного надання письмової відмови переноситься на понеділок – {_display_legal_date(context.get('written_refusal_deadline'))}.",
+            ))
+        paragraphs.extend((
+            f"Згідно з інформацією, наявною в електронній системі закупівель, письмову відмову надано Постачальником {_display_legal_date(review.get('written_refusal_date'))}, тобто у межах встановленого законодавством строку.",
+            "Оскільки наведені факти не підтверджують наявність порушення, передбаченого пп. 2 п. 49 Порядку № 822, Адміністратор, керуючись п. 51 Порядку № 822, приймає рішення про відмову в задоволенні звернення Замовника.",
+        ))
+        return "\n\n".join(paragraphs)
+    return ""
+
+
+def _guarantee_requirements(tender: dict, awards: list[dict]) -> list[dict]:
+    found = []
+    seen = set()
+
+    def walk(value, criterion=False):
+        if isinstance(value, dict):
+            classification = value.get("classification") or {}
+            here = criterion or classification.get("id") == "CRITERION.OTHER.CONTRACT.GUARANTEE"
+            if here and any(key in value for key in ("value", "unit", "requirement", "requirementID", "title")):
+                marker = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                if marker not in seen:
+                    seen.add(marker); found.append(value)
+            for child in value.values():
+                walk(child, here)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, criterion)
+
+    walk(tender.get("criteria") or [])
+    for award in awards:
+        walk(award.get("requirementResponses") or [])
+    return found
+
+
+def _review_dict(row: sqlite3.Row | None) -> dict | None:
+    if not row:
+        return None
+    result = dict(row)
+    result["contract_deadline_extended"] = bool(result.get("contract_deadline_extended"))
+    if result.get("court_decision_final_present") is not None:
+        result["court_decision_final_present"] = bool(result["court_decision_final_present"])
+    for key in ("additional_check_required", "justification_manually_edited"):
+        result[key] = bool(result.get(key))
+    if result.get("guarantee_documents_visible") is not None:
+        result["guarantee_documents_visible"] = bool(result["guarantee_documents_visible"])
+    return result
+
+
+def _violation_review_officer_presentation(review: dict | None) -> tuple[dict | None, list[dict]]:
+    """Resolve managed officer ID without rewriting the historical review snapshot."""
+    officers = authorized_officers(active_only=False)
+    if not review:
+        return review, [officer for officer in officers if officer["active"]]
+    result = dict(review)
+    stored_id = result.get("assigned_officer_id")
+    snapshot = str(result.get("assigned_officer") or "").strip()
+    matched = next((officer for officer in officers if officer["id"] == stored_id), None)
+    if not matched and snapshot:
+        normalized = normalized_officer_name(snapshot)
+        matched = next((officer for officer in officers
+                        if normalized_officer_name(officer["full_name"]) == normalized), None)
+    if matched:
+        result["assigned_officer_effective_id"] = matched["id"]
+        result["assigned_officer_display"] = matched["full_name"]
+        result["assigned_officer_is_historical"] = not matched["active"]
+    else:
+        result["assigned_officer_effective_id"] = None
+        result["assigned_officer_display"] = snapshot
+        result["assigned_officer_is_historical"] = bool(snapshot)
+    selectable = [officer for officer in officers if officer["active"]]
+    if matched and not matched["active"]:
+        selectable.append(matched)
+    return result, selectable
+
+
+def violation_rules_engine(reason: str, context: dict, review: dict | None) -> dict:
+    review = review or {}
+    if reason == "contractBreach":
+        if not context.get("rejection_present"):
+            return {"recommended_decision": None, "recommended_scenario": "review_without_rejection",
+                    "recommendation_reason": "Пропозицію переможця не відхилено; автоматична перевірка дострокового відхилення не застосовується. Потрібна оцінка інших обставин."}
+        if context.get("rejected_before_deadline"):
+            return {"recommended_decision": "decline", "recommended_scenario": "rejected_before_deadline",
+                    "recommendation_reason": "Пропозицію відхилено до закінчення допустимого строку для укладення договору."}
+        statements_present = bool(context.get("defendant_statements_present"))
+        supplier_ready = bool(context.get("supplier_deadline_ready"))
+        if statements_present:
+            reason_text = ("Строк для укладення договору закінчився до відхилення пропозиції; "
+                           "пояснення від постачальника надано, для прийняття рішення потрібно "
+                           "проаналізувати надані пояснення/документи.")
+        elif supplier_ready:
+            reason_text = ("Строк для укладення договору закінчився до відхилення пропозиції; "
+                           "пояснень від постачальника не надано.")
+        else:
+            reason_text = ("Строк для укладення договору закінчився до відхилення пропозиції; "
+                           "потрібно дочекатися пояснень для прийняття рішення.")
+        return {"recommended_decision": "warning", "recommended_scenario": "contract_deadline_expired",
+                "recommendation_reason": reason_text}
+    if reason == "signingRefusal":
+        within = context.get("written_refusal_within_deadline")
+        if within is None:
+            return {"recommended_decision": None, "recommended_scenario": "written_refusal_missing",
+                    "recommendation_reason": "Вкажіть дату письмової відмови для автоматичної рекомендації."}
+        return {"recommended_decision": "decline" if within else "warning",
+                "recommended_scenario": "written_refusal_within_deadline" if within else "written_refusal_late",
+                "recommendation_reason": "Письмову відмову надано в межах строку." if within else "Письмову відмову надано після закінчення строку."}
+    if reason == "goodsNonCompliance":
+        present = review.get("court_decision_final_present")
+        if present is None:
+            return {"recommended_decision": None, "recommended_scenario": "court_decision_unknown",
+                    "recommendation_reason": "Вкажіть, чи є рішення суду, що набрало законної сили."}
+        return {"recommended_decision": "individual_review" if present else "decline",
+                "recommended_scenario": "court_decision_present" if present else "court_decision_absent",
+                "recommendation_reason": "Потрібен індивідуальний розгляд." if present else "Рішення суду, що набрало законної сили, відсутнє."}
+    return {"recommended_decision": None, "recommended_scenario": "unsupported_reason",
+            "recommendation_reason": "Для цієї підстави автоматичну рекомендацію не налаштовано."}
+
+
+def build_procurement_context(report: dict, review: dict | None = None) -> dict:
+    tender_id = str(report.get("tender_id") or "")
+    if not tender_id:
+        return {"available": False, "error": "У зверненні відсутній tender_id"}
+    tender = api_get(f"{API_ROOT}/tenders/{tender_id}").get("data") or {}
+    defendant_code = str(report.get("defendant_code") or "")
+    supplier_awards = [award for award in tender.get("awards") or [] if _award_matches_supplier(award, defendant_code)]
+    winner_candidates = [award for award in supplier_awards if award.get("qualified") is True]
+    winner = max(winner_candidates, key=_award_sort_key, default=None)
+    rejected_candidates = [award for award in supplier_awards
+                           if award.get("status") == "unsuccessful" and award.get("qualified") is False]
+    rejected = max(rejected_candidates, key=_award_sort_key, default=None)
+    winner_selected = _parse_prozorro_date(((winner or {}).get("period") or {}).get("startDate"))
+    extended = bool((review or {}).get("contract_deadline_extended"))
+    deadline = _calendar_deadline(winner_selected, 10 if extended else 5)
+    rejection_date = _parse_prozorro_date((rejected or {}).get("date"))
+    rejection_classification = classify_award_rejection_reason(rejected)
+    explicit_non_signing = rejection_classification in {
+        "non_signing", "guarantee_missing", "non_signing_and_guarantee"
+    }
+    contract_award = rejected if explicit_non_signing and rejected else winner
+    contract = next((item for item in tender.get("contracts") or []
+                     if contract_award and str(item.get("awardID") or "") == str(contract_award.get("id") or "")
+                     and (not item.get("suppliers") or any(
+                         _identifier_code(org) == re.sub(r"\D", "", defendant_code)
+                         for org in item.get("suppliers") or []))), None)
+    report_relevant = report.get("reason") in {"contractBreach", "signingRefusal"}
+    contract_info_required = not (report_relevant and bool(rejected) and explicit_non_signing and not contract)
+    guarantee = _guarantee_requirements(tender, supplier_awards)
+    guarantee_value = next((item.get("value") for item in guarantee if item.get("value") is not None), None)
+    guarantee_unit = next((((item.get("unit") or {}).get("name")) for item in guarantee if item.get("unit")), None)
+    context = {
+        "available": True, "tender_id": tender_id, "tender_pretty_id": tender.get("tenderID") or report.get("tender_pretty_id"),
+        "defendant_code": defendant_code, "supplier_awards_count": len(supplier_awards),
+        "winner_award_id": (winner or {}).get("id"), "winner_selected_at": ((winner or {}).get("period") or {}).get("startDate"),
+        "winner_award_status": (winner or {}).get("status"),
+        "rejection_present": bool(rejected), "rejection_award_id": (rejected or {}).get("id"),
+        "rejection_date": (rejected or {}).get("date"), "rejection_title": (rejected or {}).get("title"),
+        "rejection_description": (rejected or {}).get("description"),
+        "rejection_documents": _documents_without_signature((rejected or {}).get("documents") or []),
+        "contract_internal_id": (contract or {}).get("id"), "contract_pretty_id": (contract or {}).get("contractID"),
+        "contract_status": (contract or {}).get("status"),
+        "contract_date": (contract or {}).get("dateSigned") or (contract or {}).get("date"),
+        "contract_url": (f"https://prozorro.gov.ua/uk/contract/{(contract or {}).get('contractID')}"
+                         if (contract or {}).get("contractID") else ""),
+        "related_contract_found": bool(contract),
+        "contract_signed": bool(contract) and str((contract or {}).get("status") or "").lower() != "cancelled",
+        "rejection_reason_classification": rejection_classification,
+        "contract_info_required": contract_info_required,
+        "contract_warning": ("Виявлено договір із постачальником, щодо якого подано звернення про "
+                             "непідписання. Потрібна ручна перевірка."
+                             if explicit_non_signing and contract else ""),
+        "contract_guarantee_required": bool(guarantee), "contract_guarantee_value": guarantee_value,
+        "contract_guarantee_unit": guarantee_unit, "contract_guarantee_related_requirements": guarantee,
+        "requirement_responses": [response for award in supplier_awards for response in award.get("requirementResponses") or []],
+        "contract_deadline_extended": extended,
+        "day_5": _calendar_deadline(winner_selected, 5)["calendar_day"],
+        "day_5_weekday": _calendar_deadline(winner_selected, 5)["weekday"],
+        "day_5_shifted": _calendar_deadline(winner_selected, 5)["shifted"],
+        "day_10": _calendar_deadline(winner_selected, 10)["calendar_day"] if extended else None,
+        "contract_deadline": deadline["deadline"],
+        "rejected_before_deadline": _within_calendar_deadline(rejection_date, deadline["deadline"]),
+    }
+    day3 = _calendar_deadline(winner_selected, 3)
+    weekday_uk = {"Monday": "понеділок", "Tuesday": "вівторок", "Wednesday": "середа",
+                  "Thursday": "четвер", "Friday": "п’ятниця", "Saturday": "субота", "Sunday": "неділя"}
+    weekday_uk_accusative = {"Saturday": "суботу", "Sunday": "неділю"}
+    context.update(day_3=day3["calendar_day"], day_3_weekday=day3["weekday"],
+                   day_3_weekday_uk=weekday_uk.get(day3["weekday"], day3["weekday"]),
+                   day_3_weekday_uk_accusative=weekday_uk_accusative.get(day3["weekday"], weekday_uk.get(day3["weekday"], day3["weekday"])),
+                   day_3_shifted=day3["shifted"], written_refusal_deadline=day3["deadline"])
+    refusal_date = _parse_prozorro_date((review or {}).get("written_refusal_date"))
+    context["written_refusal_within_deadline"] = _within_calendar_deadline(refusal_date, day3["deadline"])
+    return context
+
+
+def _fresh_violation_report(report_id: str) -> dict:
+    payload = api_get(f"{API_ROOT}/violation_reports/{report_id}").get("data") or {}
+    if not payload:
+        raise ValueError("Prozorro не повернуло актуальне звернення")
+    save_violation_report_with_retry(payload)
+    return payload
+
+
+def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
+    refresh_error = ""
+    if refresh:
+        try:
+            _fresh_violation_report(report_id)
+        except Exception as exc:
+            refresh_error = str(exc)
+    with db() as con:
+        row = con.execute("SELECT * FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
+        if not row:
+            raise KeyError(report_id)
+        review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (row["id"],)).fetchone()
+        supplier = con.execute("SELECT full_name,short_name FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=DIGITS(?)", (row["defendant_code"],)).fetchone()
+        warning_dates = [value[0] for value in con.execute(
+            "SELECT decision_date FROM violation_reports WHERE DIGITS(defendant_code)=DIGITS(?) AND status='satisfied' AND decision_date<>''",
+            (row["defendant_code"],)).fetchall()]
+        events = [dict(event) for event in con.execute(
+            "SELECT * FROM violation_report_review_events WHERE report_id=? ORDER BY changed_at DESC,id DESC", (row["id"],)).fetchall()]
+        document_reviews = [dict(document) for document in con.execute(
+            "SELECT * FROM violation_report_document_reviews WHERE report_id=?", (row["id"],)).fetchall()]
+    item = dict(row); raw = json.loads(item.pop("raw_json") or "{}")
+    item["evidence_documents"] = json.loads(item.pop("evidence_documents_json") or "[]")
+    item["decision_documents"] = json.loads(item.pop("decision_documents_json") or "[]")
+    item["defendant_statements"] = raw.get("defendantStatements") or []
+    reviewed = {(entry["document_source"], entry["document_id"]): entry for entry in document_reviews}
+    for document in item["evidence_documents"]:
+        state = reviewed.get(("customer", str(document.get("id") or "")))
+        document["manual_reviewed"] = bool(state)
+        document["file_unavailable"] = bool(state and state["file_unavailable"])
+        if state:
+            document["checked_at"], document["checked_by"] = state["checked_at"], state["checked_by"]
+    for statement in item["defendant_statements"]:
+        for document in statement.get("documents") or []:
+            state = reviewed.get(("supplier", str(document.get("id") or "")))
+            document["manual_reviewed"] = bool(state)
+            document["file_unavailable"] = bool(state and state["file_unavailable"])
+            if state:
+                document["checked_at"], document["checked_by"] = state["checked_at"], state["checked_by"]
+    item["official_decisions"] = raw.get("decisions") or []
+    item["has_official_decision"] = bool(item["official_decisions"])
+    item["is_read_only"] = item["has_official_decision"]
+    item["review"], item["active_officers"] = _violation_review_officer_presentation(
+        _review_dict(review_row))
+    item["review"] = item["review"] or {}
+    # ``completed`` used to mean that the local review was finished.  Keep the
+    # stored legacy value intact, but present it as ``reviewed``.  ``completed``
+    # is now reserved for an official Prozorro decision and is derived from the
+    # current decisions[] payload rather than written into the local review.
+    if item["has_official_decision"]:
+        item["review"]["review_status"] = "completed"
+    elif item["review"].get("review_status") == "completed":
+        item["review"]["review_status"] = "reviewed"
+    item["supplier_verified"] = dict(supplier) if supplier else None
+    item["warning_summary"] = violation_threshold_summary(warning_dates)
+    item["warning_summary"]["month"] = item["warning_summary"]["current_month"]
+    item["warning_summary"]["three_months"] = item["warning_summary"]["three_calendar_months"]
+    item["review_events"] = events
+    item["deadline_control"] = violation_deadline_control(item)
+    item["refresh_error"] = refresh_error
+    item["procurement_context"] = None
+    if not item["is_read_only"]:
+        try:
+            item["procurement_context"] = build_procurement_context(item, item["review"])
+        except Exception as exc:
+            item["procurement_context"] = {"available": False, "error": str(exc)}
+        supplier_ready = bool(item["deadline_control"].get("supplier_ready"))
+        recommendation_context = dict(item["procurement_context"] or {})
+        recommendation_context["supplier_deadline_ready"] = supplier_ready
+        recommendation_context["defendant_statements_present"] = bool(item["defendant_statements"])
+        item["recommendation"] = violation_rules_engine(
+            item["reason"], recommendation_context, item["review"])
+        item["justification_draft"] = (build_violation_decision_justification(
+            item, item["procurement_context"] or {}, item["review"]
+        ) if supplier_ready else "")
+        item["justification_template_key"] = (violation_decision_template_key(
+            item, item["procurement_context"] or {}, item["review"]
+        ) if supplier_ready else "")
+        saved_review = item["review"] or {}
+        automatic_saved_draft = bool(
+            saved_review.get("decision_justification")
+            and not saved_review.get("justification_manually_edited")
+            and (saved_review.get("decision_template_key")
+                 or saved_review.get("justification_source_hash")
+                 or saved_review.get("justification_generated_at"))
+        )
+        item["justification_generation_ready"] = supplier_ready
+        item["hide_saved_automatic_justification"] = bool(not supplier_ready and automatic_saved_draft)
+        current_hash = _justification_hash(item, item["procurement_context"] or {}, item["review"] or {})
+        item["justification_source_hash_current"] = current_hash
+        item["justification_stale"] = bool(supplier_ready
+            and item["review"] and item["review"].get("justification_source_hash")
+            and item["review"].get("justification_source_hash") != current_hash)
+        item["protocol_readiness"] = violation_protocol_readiness(item)
+    else:
+        item["recommendation"] = None
+        item["justification_draft"] = ""
+        item["justification_template_key"] = ""
+    return item
+
+
+def save_violation_document_review(report_id: str, source: str, document_id: str,
+                                   file_unavailable: bool, checked_by: str = "УО") -> dict:
+    if source not in {"customer", "supplier"}:
+        raise ValueError("Невідоме джерело документа")
+    with db() as con:
+        report = con.execute("SELECT * FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
+        if not report:
+            raise KeyError(report_id)
+        raw = json.loads(report["raw_json"] or "{}")
+        if raw.get("decisions"):
+            raise PermissionError("У Prozorro вже є офіційне рішення адміністратора. Картка доступна лише для перегляду.")
+        documents = (json.loads(report["evidence_documents_json"] or "[]") if source == "customer" else
+                     [document for statement in raw.get("defendantStatements") or []
+                      for document in statement.get("documents") or []])
+        document = next((item for item in documents if str(item.get("id") or "") == document_id), None)
+        if not document:
+            raise ValueError("Документ не знайдено у складі звернення")
+        previous = con.execute("""SELECT file_unavailable FROM violation_report_document_reviews
+                                  WHERE report_id=? AND document_source=? AND document_id=?""",
+                               (report["id"], source, document_id)).fetchone()
+        now, actor, value = now_iso(), str(checked_by or CURRENT_USER), int(bool(file_unavailable))
+        con.execute("""INSERT INTO violation_report_document_reviews
+          (report_id,document_source,document_id,original_title,original_url,file_unavailable,checked_at,checked_by)
+          VALUES (?,?,?,?,?,?,?,?)
+          ON CONFLICT(report_id,document_source,document_id) DO UPDATE SET
+            original_title=excluded.original_title,original_url=excluded.original_url,
+            file_unavailable=excluded.file_unavailable,checked_at=excluded.checked_at,checked_by=excluded.checked_by""",
+          (report["id"], source, document_id, str(document.get("title") or ""),
+           str(document.get("url") or ""), value, now, actor))
+        old_value = None if previous is None else str(int(previous["file_unavailable"]))
+        if old_value != str(value):
+            con.execute("""INSERT INTO violation_report_review_events
+              (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
+              VALUES (?,?,?,?,?,?,?)""", (report["id"], "document_reviewed",
+              f"document_unavailable:{source}:{document_id}", old_value, str(value), now, actor))
+    return violation_report_detail(report["id"], refresh=False)
+
+
+def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО") -> dict:
+    try:
+        fresh = _fresh_violation_report(report_id)
+    except Exception as exc:
+        raise ConnectionError(f"Не вдалося перевірити актуальний стан у Prozorro: {exc}") from exc
+    if fresh.get("decisions"):
+        raise PermissionError("У Prozorro вже є офіційне рішення адміністратора. Картку переведено в режим лише для перегляду.")
+    action = str(payload.get("action") or "save")
+    with db() as con:
+        report = con.execute("SELECT * FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
+        if not report:
+            raise KeyError(report_id)
+        existing_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
+        existing = dict(existing_row) if existing_row else {}
+        values = {key: payload[key] for key in VIOLATION_REVIEW_FIELDS if key in payload}
+        if values.get("review_status", "") not in {"", "not_reviewed", "in_review", "reviewed"}:
+            raise ValueError("Невідомий статус розгляду")
+        if values.get("internal_decision", "") not in VIOLATION_INTERNAL_DECISIONS:
+            raise ValueError("Невідоме внутрішнє рішення УО")
+        for key in ("contract_deadline_extended", "additional_check_required"):
+            if key in values: values[key] = int(bool(values[key]))
+        for key in ("court_decision_final_present", "guarantee_documents_visible"):
+            if key in values:
+                if values[key] in (None, ""):
+                    values[key] = None
+                elif isinstance(values[key], str):
+                    values[key] = int(values[key].strip().lower() in {"1", "true", "yes", "так"})
+                else:
+                    values[key] = int(bool(values[key]))
+        if "assigned_officer_id" in values:
+            officer_id = values["assigned_officer_id"]
+            officer = con.execute("SELECT id,full_name,active FROM authorized_officers WHERE id=?", (officer_id,)).fetchone() if officer_id else None
+            if officer_id and (not officer or not officer["active"]):
+                raise ValueError("Оберіть активну уповноважену особу")
+            values["assigned_officer_id"] = officer["id"] if officer else None
+            values["assigned_officer"] = officer["full_name"] if officer else existing.get("assigned_officer", "")
+        meaningful = any(str(value or "").strip() for key, value in values.items() if key != "review_status")
+        if meaningful and values.get("review_status", existing.get("review_status", "not_reviewed")) == "not_reviewed":
+            values["review_status"] = "in_review"
+        report_dict = dict(report)
+        report_dict["evidence_documents"] = json.loads(report_dict.pop("evidence_documents_json") or "[]")
+        report_dict["decision_documents"] = json.loads(report_dict.pop("decision_documents_json") or "[]")
+        raw = json.loads(report_dict.pop("raw_json") or "{}")
+        report_dict["defendant_statements"] = raw.get("defendantStatements") or []
+        deadlines = violation_deadline_control(report_dict)
+        final_status = values.get("review_status", existing.get("review_status", "not_reviewed"))
+        final_decision = values.get("internal_decision", existing.get("internal_decision", ""))
+        discrepancy = str(values.get("established_discrepancy", existing.get("established_discrepancy", "")) or "").strip()
+        if final_status == "reviewed":
+            if not deadlines["supplier_ready"]:
+                raise ValueError("Остаточне рішення недоступне до завершення офіційного строку постачальника")
+            if not final_decision:
+                raise ValueError("Для завершення розгляду оберіть рішення УО")
+            if final_decision == "decline" and not discrepancy:
+                raise ValueError("Для відмови в задоволенні зафіксуйте встановлену невідповідність")
+            if not existing.get("reviewed_at"):
+                raise ValueError("Статус «Розглянуто» встановлюється після успішного формування протоколу")
+        now = now_iso()
+        con.execute("INSERT OR IGNORE INTO violation_report_reviews(report_id,updated_at,updated_by) VALUES (?,?,?)",
+                    (report["id"], now, updated_by))
+        if action == "regenerate_justification":
+            if not deadlines["supplier_ready"]:
+                raise ValueError("Обґрунтування рішення буде доступне після завершення строку для надання пояснень та документів постачальника.")
+            merged = {**existing, **values}
+            try:
+                context = build_procurement_context(report_dict, merged)
+            except Exception:
+                context = {}
+            draft = build_violation_decision_justification(report_dict, context, merged)
+            template_key = violation_decision_template_key(report_dict, context, merged)
+            if not draft or not template_key:
+                raise ValueError("Для цієї комбінації підстави, рішення та фактів погоджений шаблон ще не налаштовано")
+            values["decision_justification"] = draft
+            values["decision_template_key"] = template_key
+            values["justification_source_hash"] = _justification_hash(report_dict, context, {**merged, **values})
+            values["justification_generated_at"] = now
+            values["justification_manually_edited"] = 0
+        elif "decision_justification" in values and values["decision_justification"] != existing.get("decision_justification", ""):
+            values["justification_manually_edited"] = 1
+        if values:
+            assignments = ",".join(f"{key}=?" for key in values)
+            con.execute(f"UPDATE violation_report_reviews SET {assignments},updated_at=?,updated_by=? WHERE report_id=?",
+                        (*values.values(), now, updated_by, report["id"]))
+            event_type = "justification_regenerated" if action == "regenerate_justification" else "review_updated"
+            for key, value in values.items():
+                old = existing.get(key)
+                if old != value:
+                    con.execute("""INSERT INTO violation_report_review_events
+                      (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
+                      VALUES (?,?,?,?,?,?,?)""", (report["id"], event_type, key,
+                      None if old is None else str(old), None if value is None else str(value), now, updated_by))
+    return violation_report_detail(report["id"], refresh=False)
+
+
+def violation_protocol_type(report: dict, review: dict) -> str:
+    decision, reason = str(review.get("internal_decision") or ""), str(report.get("reason") or "")
+    if decision == "warning":
+        return "warning"
+    if decision == "decline" and reason in {"contractBreach", "signingRefusal"}:
+        return "decline_p49_1_2"
+    if decision == "decline" and reason == "goodsNonCompliance":
+        return "decline_p49_3"
+    return ""
+
+
+def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol_date: str = "") -> dict:
+    review, deadline = item.get("review") or {}, item.get("deadline_control") or {}
+    number = str(protocol_number or review.get("protocol_number") or "").strip()
+    date = str(protocol_date or review.get("protocol_date") or "").strip()
+    reasons = []
+    if item.get("refresh_error"):
+        reasons.append("Неможливо перевірити актуальний стан Prozorro")
+    if item.get("has_official_decision"):
+        reasons.append("У Prozorro вже оприлюднено рішення")
+    if not deadline.get("supplier_ready"):
+        reasons.append("Не завершився офіційний строк постачальника")
+    if not (review.get("assigned_officer_id") or review.get("assigned_officer")):
+        reasons.append("Не призначена відповідальна УО")
+    if not violation_protocol_type(item, review):
+        reasons.append("Не визначено підтримуваний тип протоколу для рішення і підстави")
+    if not str(review.get("decision_justification") or "").strip():
+        reasons.append("Не заповнене обґрунтування рішення")
+    if not number:
+        reasons.append("Не введено номер протоколу")
+    if not date:
+        reasons.append("Не введено дату протоколу")
+    context = item.get("procurement_context") or {}
+    if not context.get("available"):
+        reasons.append("Не отримано актуальні відомості закупівлі")
+    if item.get("reason") in {"contractBreach", "signingRefusal"} and not context.get("winner_selected_at"):
+        reasons.append("Не визначено дату визначення переможцем")
+    if item.get("reason") == "signingRefusal" and not review.get("written_refusal_date"):
+        reasons.append("Не вказано дату письмової відмови")
+    return {"ready": not reasons, "reasons": reasons, "protocol_type": violation_protocol_type(item, review),
+            "protocol_number": number, "protocol_date": date}
+
+
+def _protocol_date(value) -> str:
+    raw = str(value or "")[:10]
+    return ".".join(reversed(raw.split("-"))) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) else raw
+
+
+def generate_violation_protocol(report_id: str, payload: dict) -> dict:
+    # violation_report_detail performs the mandatory fail-closed fresh Prozorro read.
+    item = violation_report_detail(report_id, refresh=True)
+    gate = violation_protocol_readiness(item, payload.get("protocol_number", ""), payload.get("protocol_date", ""))
+    if not gate["ready"]:
+        raise ValueError("; ".join(gate["reasons"]))
+    review, context = item.get("review") or {}, item.get("procurement_context") or {}
+    statements = item.get("defendant_statements") or []
+    supplier_documents = [doc for statement in statements for doc in statement.get("documents") or []]
+    supplier_text = "\n\n".join(str(statement.get("description") or statement.get("title") or "").strip()
+                                  for statement in statements).strip() or "Пояснення постачальника не надано"
+    reason_number = {"contractBreach": "1", "signingRefusal": "2", "goodsNonCompliance": "3"}.get(item.get("reason"), "")
+    customer_name = str(review.get("customer_verified_full_name") or item.get("author_name") or "—")
+    supplier_name = str((item.get("supplier_verified") or {}).get("full_name") or item.get("defendant_name") or "—")
+    values = {
+        "протокол уо номер": gate["protocol_number"], "номер протоколу": gate["protocol_number"],
+        "дата протоколу": _protocol_date(gate["protocol_date"]), "дата": _protocol_date(gate["protocol_date"]),
+        "уо": str(review.get("assigned_officer") or CURRENT_USER), "піб уо": str(review.get("assigned_officer") or CURRENT_USER),
+        "№ рядка джерела": str(item.get("report_id") or item.get("id")), "номер звернення": str(item.get("report_id") or item.get("id")),
+        "дата звернення": _protocol_date(item.get("date_published")), "номер закупівлі": str(item.get("tender_pretty_id") or "—"),
+        "дата оголошення": _protocol_date(context.get("tender_date_published") or item.get("date_created")),
+        "предмет закупівлі": str(context.get("tender_title") or item.get("description") or "—"),
+        "код дк": str(context.get("dk_code") or "—"), "дк": str(context.get("dk_code") or "—"),
+        "замовник": customer_name, "замовник в р в": customer_name, "замовника": customer_name,
+        "єдрпоу замовника": str(item.get("author_code") or "—"),
+        "постачальник": supplier_name, "постачальника": supplier_name, "постачальнику": supplier_name,
+        "постачальником": supplier_name, "постачальник а": supplier_name,
+        "єдрпоу/рнокпп постачальника": str(item.get("defendant_code") or "—"), "єдрпоу постачальника": str(item.get("defendant_code") or "—"),
+        "пп п 49": reason_number, "пп. п. 49": reason_number, "тип порушення": str(item.get("reason") or "—"),
+        "суть порушення": str(item.get("description") or "—"),
+        "дата визначення переможцем": _protocol_date(context.get("winner_selected_at")),
+        "граничний строк": _protocol_date(context.get("contract_deadline") or context.get("written_refusal_deadline")),
+        "дата відхилення": _protocol_date(context.get("rejection_date")), "підстава відхилення": str(context.get("rejection_title") or context.get("rejection_description") or "—"),
+        "дата письмової відмови": _protocol_date(review.get("written_refusal_date")), "вих. №": str(review.get("written_refusal_number") or "—"),
+        "дата договору": _protocol_date(review.get("actual_contract_date") or context.get("contract_date")),
+        "номер договору": str(review.get("actual_contract_number") or context.get("contract_pretty_id") or "—"),
+        "пояснення постачальника": supplier_text, "рішення": "Попередження" if gate["protocol_type"] == "warning" else "Відмова",
+        "3 к.д.": _protocol_date(context.get("day_3")), "5 к.д.": _protocol_date(context.get("day_5")),
+    }
+    flags = {
+        "written_refusal": item.get("reason") == "signingRefusal" or bool(review.get("written_refusal_url")),
+        "contract": bool(review.get("actual_contract_date") or review.get("actual_contract_number") or context.get("contract_info_required")),
+        "guarantee": bool(context.get("contract_guarantee_required")),
+        "civil_code": bool(context.get("day_3_shifted")),
+        "court": item.get("reason") == "goodsNonCompliance",
+    }
+    safe_report = safe_archive_name(str(item.get("report_id") or item.get("id")), "report")
+    safe_number = safe_archive_name(gate["protocol_number"], "protocol")
+    suffix = "П" if gate["protocol_type"] == "warning" else "В"
+    filename = f"{safe_report}_{safe_number}_{suffix}.docx"
+    output = PROTOCOLS_DIR / filename
+    build_violation_protocol_docx(gate["protocol_type"], output, values,
+        str(review.get("decision_justification") or ""), item.get("evidence_documents") or [], supplier_documents,
+        flags, {"замовник в р в", "замовника", "постачальника", "постачальнику", "постачальником"})
+    # Generating the protocol is the explicit UO action that completes the
+    # local work stage.  The official ``completed`` state is still derived only
+    # from Prozorro decisions[] during the next detail/sync read.
+    now = now_iso()
+    with db() as con:
+        report = con.execute("SELECT id FROM violation_reports WHERE id=? OR report_id=?",
+                             (report_id, report_id)).fetchone()
+        if not report:
+            raise KeyError(report_id)
+        con.execute("INSERT OR IGNORE INTO violation_report_reviews(report_id,updated_at,updated_by) VALUES (?,?,?)",
+                    (report["id"], now, CURRENT_USER))
+        previous = con.execute("SELECT review_status,protocol_number,protocol_date FROM violation_report_reviews WHERE report_id=?",
+                               (report["id"],)).fetchone()
+        con.execute("""UPDATE violation_report_reviews
+                       SET review_status='reviewed',protocol_number=?,protocol_date=?,reviewed_at=?,updated_at=?,updated_by=?
+                       WHERE report_id=?""",
+                    (gate["protocol_number"], gate["protocol_date"], now, now, CURRENT_USER, report["id"]))
+        changes = {
+            "review_status": (previous["review_status"], "reviewed"),
+            "protocol_number": (previous["protocol_number"], gate["protocol_number"]),
+            "protocol_date": (previous["protocol_date"], gate["protocol_date"]),
+        }
+        for field, (old, new) in changes.items():
+            if old != new:
+                con.execute("""INSERT INTO violation_report_review_events
+                  (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
+                  VALUES (?,?,?,?,?,?,?)""",
+                  (report["id"], "protocol_generated", field,
+                   None if old is None else str(old), str(new), now, CURRENT_USER))
+    return {**gate, "filename": filename,
+            "download_url": "/api/protocol/files/" + urllib.parse.quote(filename),
+            "review_status": "reviewed"}
 
 
 def safe_archive_name(value: str, fallback: str) -> str:
@@ -2730,6 +4709,104 @@ def certificate_details(data: bytes) -> dict:
         return {"certificate_found": False, "error": str(exc)}
 
 
+def _node_binary() -> str:
+    configured = os.environ.get("PQM_NODE_BINARY", "").strip()
+    candidates = [
+        configured,
+        shutil.which("node") or "",
+        str(Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node.exe"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    raise RuntimeError("Node.js для перевірки КЕП не знайдено")
+
+
+def verify_prozorro_eds(sign_url: str) -> dict:
+    """Call the official Prozorro EDS package without exposing its raw response."""
+    if not EDS_ADAPTER_PATH.is_file():
+        return {"status": "technical_error", "error": "Адаптер перевірки КЕП не знайдено"}
+    try:
+        process = subprocess.run(
+            [_node_binary(), str(EDS_ADAPTER_PATH)],
+            input=json.dumps({"signUrl": sign_url}, ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            timeout=EDS_TIMEOUT_SECONDS,
+            cwd=str(EDS_ADAPTER_PATH.parent),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "service_unavailable", "error": "Сервіс перевірки підпису не відповів вчасно"}
+    except Exception:
+        return {"status": "technical_error", "error": "Не вдалося запустити автоматичну перевірку підпису"}
+    try:
+        payload = json.loads((process.stdout or "").strip())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"status": "technical_error", "error": "Сервіс перевірки підпису повернув некоректну відповідь"}
+    if not isinstance(payload, dict):
+        return {"status": "technical_error", "error": "Сервіс перевірки підпису повернув некоректну відповідь"}
+    return payload
+
+
+def _document_date(value: str):
+    try:
+        return datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def select_main_signature_document(documents: list[tuple[str, dict]], selection: dict | None) -> tuple[int | None, str]:
+    """Resolve the exact submission signature selected by the UO, or a strict sign.p7s fallback."""
+    selection = selection or {}
+    manual = sorted(
+        int(index) for index, categories in selection.items()
+        if str(index).isdigit() and "signature" in (categories if isinstance(categories, list) else [])
+    )
+    if len(manual) > 1:
+        raise ValueError("Залиште позначку «Підпис заявки» лише біля одного документа.")
+    if manual:
+        index = manual[0]
+        if index < 0 or index >= len(documents):
+            raise ValueError("Вибраний файл підпису не знайдено у поточній заявці.")
+        return index, "manual"
+
+    candidates = []
+    for index, (_, document) in enumerate(documents):
+        title = str(document.get("title") or document.get("title_en") or "").strip()
+        if title.casefold() == "sign.p7s":
+            candidates.append((index, _document_date(document.get("datePublished"))))
+    if not candidates:
+        return None, "none"
+    if len(candidates) == 1:
+        return candidates[0][0], "automatic"
+    dated = [(index, published) for index, published in candidates if published is not None]
+    if not dated:
+        raise ValueError("Знайдено кілька файлів sign.p7s без коректної дати публікації. Виберіть підпис заявки вручну.")
+    latest = max(published for _, published in dated)
+    latest_indexes = [index for index, published in dated if published == latest]
+    if len(latest_indexes) != 1:
+        raise ValueError("Кілька файлів sign.p7s мають однакову останню дату публікації. Виберіть підпис заявки вручну.")
+    return latest_indexes[0], "automatic"
+
+
+def _digits(value: str) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _eds_signing_time(value: dict | None) -> str:
+    value = value if isinstance(value, dict) else {}
+    try:
+        moment = datetime(
+            int(value["year"]), int(value["month"]), int(value["day"]),
+            int(value.get("hour", 0)), int(value.get("minute", 0)), int(value.get("second", 0)),
+        )
+        return moment.strftime("%d.%m.%Y %H:%M:%S")
+    except (KeyError, TypeError, ValueError):
+        return ""
+
+
 def parse_ukrainian_date(value: str):
     for pattern in (r"(?<!\d)(\d{2})[.](\d{2})[.](\d{4})(?!\d)", r"(?<!\d)(\d{2})/(\d{2})/(\d{4})(?!\d)"):
         match = re.search(pattern, value or "")
@@ -2816,19 +4893,35 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         return None
     _, documents = collected
     selection = selection or {}
+    main_signature_index, signature_selection_source = select_main_signature_document(documents, selection)
     selected_indexes = {int(index) for index in selection if str(index).isdigit()}
     selected_categories = {category for categories in selection.values() for category in categories}
+    included_indexes = set(selected_indexes)
+    if main_signature_index is not None:
+        included_indexes.add(main_signature_index)
     files, downloaded, extracted_texts = [], {}, {}
     for index, (_, document) in enumerate(documents):
-        if selected_indexes and index not in selected_indexes:
+        if included_indexes and index not in included_indexes:
             continue
         title = document.get("title") or document.get("title_en") or f"Документ {index + 1}"
-        item = {"index": index, "title": title, "source_title": document.get("title_en") or document.get("title_ru") or title, "format": document.get("format", ""), "url": document.get("url", ""), "document_type": document.get("documentType", "")}
+        item = {
+            "index": index,
+            "document_id": document.get("id", ""),
+            "title": title,
+            "source_title": document.get("title_en") or document.get("title_ru") or title,
+            "format": document.get("format", ""),
+            "url": document.get("url", ""),
+            "document_type": document.get("documentType", ""),
+            "hash": document.get("hash", ""),
+            "datePublished": document.get("datePublished", ""),
+            "dateModified": document.get("dateModified", ""),
+        }
         try:
             data = download_document(document)
             downloaded[index] = data
             item["downloaded"] = True
             item["size"] = len(data)
+            item["content_sha256"] = hashlib.sha256(data).hexdigest()
             if title.casefold().endswith(".pdf") or data[:4] == b"%PDF":
                 text = pdf_text(data)
                 if not text.strip() or _needs_ukrainian_ocr(text) or pdf_has_unreadable_pages(data):
@@ -2852,16 +4945,48 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
 
     file_by_index = {item["index"]: item for item in files}
     signature_indexes = [item["index"] for item in files if is_signature(item)]
-    main_signature_index = next((i for i in signature_indexes if re.match(r"^sign(?:\s|\(|\.|$)", file_by_index[i]["title"], re.I)), signature_indexes[0] if signature_indexes else None)
-    signature = certificate_details(downloaded.get(main_signature_index, b"")) if main_signature_index is not None else {}
+    selected_signature_document = file_by_index.get(main_signature_index) if main_signature_index is not None else None
+    eds_result = verify_prozorro_eds(selected_signature_document.get("url", "")) if selected_signature_document else {
+        "status": "unsupported_or_invalid", "error": "Файл sign.p7s не знайдено"
+    }
+    eds_signers = eds_result.get("signers") if isinstance(eds_result.get("signers"), list) else []
+    eds_signer = eds_signers[0] if eds_signers and isinstance(eds_signers[0], dict) else {}
     supplier_code = row["supplier_code"] or ""
     supplier_name = row["supplier_name"] or ""
     manager_name = row["manager_name"] or ""
-    code_match = bool(signature.get("code") and signature["code"] == supplier_code)
-    org_norm, supplier_norm = normalized_value(signature.get("organization", "")), normalized_value(supplier_name)
+    supplier_digits = _digits(supplier_code)
+    edrpou_code = _digits(eds_signer.get("subjectEDRPOUCode", ""))
+    drfo_code = _digits(eds_signer.get("subjectDRFOCode", ""))
+    signature_code = drfo_code if len(supplier_digits) == 10 else edrpou_code
+    if not signature_code and len(supplier_digits) == 10:
+        signature_code = edrpou_code
+    code_comparison = "match" if signature_code and signature_code == supplier_digits else "mismatch" if signature_code else "unreadable"
+    code_match = code_comparison == "match"
+    organization = str(eds_signer.get("subjectOrg") or "")
+    signer_name = str(eds_signer.get("subjectCN") or "")
+    org_norm, supplier_norm = normalized_value(organization), normalized_value(supplier_name)
     name_match = bool(org_norm and supplier_norm and (org_norm in supplier_norm or supplier_norm in org_norm))
-    signer_norm, manager_norm = normalized_value(signature.get("signer", "")), normalized_value(manager_name)
-    signer_match = bool(signer_norm and manager_norm and (signer_norm in manager_norm or manager_norm in signer_norm))
+    signer_norm, manager_norm = normalized_value(signer_name), normalized_value(manager_name)
+    signer_match = bool(signer_norm and manager_norm and signer_norm == manager_norm)
+    signer_comparison = "match" if signer_match else "manager_missing" if not manager_norm else "signer_unreadable" if not signer_norm else "mismatch"
+    signature = {
+        "technical_status": eds_result.get("status", "technical_error"),
+        "technical_error": eds_result.get("error", ""),
+        "signer_count": int(eds_result.get("signer_count") or len(eds_signers)),
+        "signer": signer_name,
+        "organization": organization,
+        "edrpou_code": edrpou_code,
+        "drfo_code": drfo_code,
+        "code": signature_code,
+        "signing_time": _eds_signing_time(eds_signer.get("time")),
+        "issuer": str(eds_signer.get("issuerCN") or ""),
+        "serial": str(eds_signer.get("serial") or ""),
+        "is_time_available": eds_signer.get("isTimeAvail") is True,
+        "is_timestamp": eds_signer.get("isTimeStamp") is True,
+        "code_comparison": code_comparison,
+        "signer_comparison": signer_comparison,
+        "qualified_certificate": None,
+    }
     mvs_docs = [item for item in files if not is_signature(item) and any(word in (item["title"] + " " + item.get("source_title", "") + " " + item.get("text_preview", "")).casefold() for word in ("мвс", "несудим", "витяг"))]
     def signature_base(title):
         clean = re.sub(r"\.(p7s|pk7)$", "", title, flags=re.I)
@@ -2909,18 +5034,34 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
     else:
         mvs_seal_status, mvs_seal_detail = "warning", "Перевірте через ЦЗО: МВС України · ЄДРПОУ 00032684 · електронна печатка"
     authority_required = bool(signature.get("signer")) and (not manager_name or not signer_match)
+    is_fop = len(supplier_digits) == 10 or normalized_value(supplier_name).startswith("фоп")
+    eds_success = signature.get("technical_status") == "success"
+    eds_technical_detail = signature.get("technical_error") or "Автоматичну перевірку виконано"
+    code_detail = (
+        f"{signature_code} · ✓ Відповідає коду Учасника" if code_comparison == "match" else
+        f"{signature_code} · ⚠ Не відповідає коду Учасника (очікується {supplier_digits or '—'})" if code_comparison == "mismatch" else
+        "⚠ Код не прочитано"
+    )
+    signer_detail = (
+        f"{signer_name} · ✓ Збігається з ПІБ керівника" if signer_comparison == "match" else
+        f"{signer_name} · ⚠ Не збігається з ПІБ керівника — перевірити повноваження" if signer_comparison == "mismatch" else
+        f"{signer_name} · ⚠ ПІБ керівника не визначено" if signer_comparison == "manager_missing" else
+        "⚠ ПІБ підписанта не прочитано"
+    )
     checks = [
         {"key": "main_signature", "label": "Основний файл sign.p7s", "status": "ok" if main_signature_index is not None else "error", "detail": file_by_index[main_signature_index]["title"] if main_signature_index is not None else "Не знайдено"},
-        {"key": "certificate", "label": "Сертифікат підписувача", "status": "ok" if signature.get("certificate_found") else "warning", "detail": "Реквізити сертифіката прочитано" if signature.get("certificate_found") else "Потрібна перевірка через ЦЗО"},
-        {"key": "code", "label": "Код ЄДРПОУ / РНОКПП", "status": "ok" if code_match else "error" if signature.get("code") else "warning", "detail": f"{signature.get('code') or 'Не прочитано'} · очікується {supplier_code}"},
-        {"key": "organization", "label": "Назва організації", "status": "ok" if name_match else "warning", "detail": signature.get("organization") or "Не прочитано"},
-        {"key": "signer", "label": "Підписант", "status": "ok" if signer_match else "warning", "detail": signature.get("signer") or "Не прочитано"},
+        {"key": "eds_verification", "label": "Автоматичне читання КЕП", "status": "ok" if eds_success else "warning", "detail": eds_technical_detail},
+        {"key": "certificate_issuer", "label": "Видавець сертифіката", "status": "ok" if signature.get("issuer") else "warning", "detail": signature.get("issuer") or "Не прочитано"},
+        {"key": "code", "label": "Код ЄДРПОУ / РНОКПП", "status": "ok" if code_match else "warning", "detail": code_detail},
+        {"key": "organization", "label": "Назва організації", "status": "ok", "informational": True, "detail": organization or ("Не зазначено у КЕП (допустимо для ФОП)" if is_fop else "Не прочитано")},
+        {"key": "signer", "label": "Підписант", "status": "ok" if signer_match else "warning", "detail": signer_detail},
+        {"key": "signer_drfo", "label": "РНОКПП підписанта", "status": "ok" if drfo_code else "warning", "detail": drfo_code or "Не прочитано"},
+        {"key": "signing_time", "label": "Дата/час підписання", "status": "ok" if signature.get("signing_time") else "warning", "detail": signature.get("signing_time") or "Не прочитано"},
         {"key": "authority", "label": "Повноваження підписанта", "status": "warning" if not signature.get("signer") or (authority_required and row["authority_review"] != "approved") else "ok", "detail": "Спочатку визначте підписанта через перевірку КЕП" if not signature.get("signer") else "Потрібна ручна перевірка" if authority_required and row["authority_review"] != "approved" else "Підтверджено"},
         {"key": "mvs_extract", "label": "Витяг МВС", "status": "ok" if mvs_docs else "error", "detail": ", ".join(item["title"] for item in mvs_docs) or "Не знайдено"},
         {"key": "mvs_extract_type", "label": "Тип витягу МВС", "status": "ok" if mvs_extract["type"] == "full" else "error" if mvs_extract["type"] == "short" else "warning", "detail": "ПОВНИЙ" if mvs_extract["type"] == "full" else "СКОРОЧЕНИЙ — не відповідає вимозі" if mvs_extract["type"] == "short" else "Не вдалося визначити тип витягу"},
         {"key": "mvs_person", "label": "ПІБ у витягу МВС", "status": "ok" if mvs_extract["person_matches_manager"] else "error" if mvs_extract["person_name"] and manager_name else "warning", "detail": f"{mvs_extract['person_name'] or 'Не прочитано'} · керівник: {manager_name or 'не визначений'}"},
         {"key": "mvs_age", "label": "Строк дії витягу — 30 к.д.", "status": "ok" if mvs_extract["within_30_days"] else "error" if mvs_extract["age_days"] is not None else "warning", "detail": (f"{mvs_extract['age_days']} к.д. · {mvs_extract['issue_date']} → {mvs_extract['submitted_date']}" if mvs_extract["age_days"] is not None else "Не вдалося визначити дату витягу або подання документів")},
-        {"key": "mvs_signature", "label": "Підпис до витягу МВС", "status": "warning" if any(pair["signature"] for pair in mvs_pairs) else "error", "detail": (next((pair["signature"] for pair in mvs_pairs if pair["signature"]), "Не знайдено") + (" · потрібна криптографічна перевірка" if any(pair["signature"] for pair in mvs_pairs) else ""))},
         {"key": "mvs_seal", "label": "Електронна печатка МВС", "status": mvs_seal_status, "detail": mvs_seal_detail},
     ]
     for key, label in (
@@ -2947,14 +5088,93 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
             return "signature" in selected_categories
         checks = [item for item in checks if selected_check(item)]
     counts = {status: sum(item["status"] == status for item in checks) for status in ("ok", "warning", "error")}
+    checked_signature_document = None
+    if selected_signature_document:
+        checked_signature_document = {
+            "index": selected_signature_document.get("index"),
+            "document_id": selected_signature_document.get("document_id", ""),
+            "title": selected_signature_document.get("title", ""),
+            "url": selected_signature_document.get("url", ""),
+            "hash": selected_signature_document.get("hash", ""),
+            "content_sha256": selected_signature_document.get("content_sha256", ""),
+            "datePublished": selected_signature_document.get("datePublished", ""),
+            "selection_source": signature_selection_source,
+        }
     return {
         "submission_id": submission_id, "supplier_name": supplier_name, "supplier_code": supplier_code,
         "pretty_id": row["pretty_id"], "manager_name": manager_name, "authority_review": row["authority_review"], "mvs_seal_review": row["mvs_seal_review"],
-        "signature": signature, "mvs_seal": mvs_seal, "mvs_extract": mvs_extract, "checks": checks, "files": files, "mvs_pairs": mvs_pairs,
+        "signature": signature, "checked_signature_document": checked_signature_document,
+        "mvs_seal": mvs_seal, "mvs_extract": mvs_extract, "checks": checks, "files": files, "mvs_pairs": mvs_pairs,
         "counts": counts, "ready": counts["error"] == 0 and counts["warning"] == 0,
         "official_verification_url": "https://czo.gov.ua/verify",
-        "notice": "Реквізити сертифіката зчитано локально. Криптографічну чинність КЕП необхідно підтвердити через ЦЗО або сертифікований модуль.",
+        "selected_categories": sorted(selected_categories),
+        "notice": "",
     }
+
+
+def document_check_category(key: str) -> str:
+    if key.startswith("business_") or key == "contract_history":
+        return "experience"
+    if key.startswith("mvs_"):
+        return "mvs"
+    return "signature"
+
+
+def document_check_category_summaries(result: dict) -> dict:
+    stored = result.get("category_results") if isinstance(result, dict) else None
+    if isinstance(stored, dict):
+        return {key: value.get("status", "warning") for key, value in stored.items() if isinstance(value, dict)}
+    summaries = {}
+    for check in result.get("checks", []) if isinstance(result, dict) else []:
+        if not isinstance(check, dict):
+            continue
+        category = document_check_category(str(check.get("key") or ""))
+        current = summaries.get(category, "ok")
+        status = check.get("status", "warning")
+        summaries[category] = "error" if "error" in {current, status} else "warning" if "warning" in {current, status} else "ok"
+    return summaries
+
+
+def merge_document_check_results(existing: dict, current: dict) -> dict:
+    """Replace only categories checked in the current run; preserve all others."""
+    category_results = {}
+    existing_checks = existing.get("checks", []) if isinstance(existing, dict) else []
+    if isinstance(existing.get("category_results") if isinstance(existing, dict) else None, dict):
+        category_results.update(existing["category_results"])
+    else:
+        for category in ("signature", "mvs", "experience"):
+            checks = [item for item in existing_checks if isinstance(item, dict) and document_check_category(str(item.get("key") or "")) == category]
+            if checks:
+                counts = {status: sum(item.get("status") == status for item in checks) for status in ("ok", "warning", "error")}
+                category_results[category] = {"checks": checks, "counts": counts, "status": "error" if counts["error"] else "warning" if counts["warning"] else "ok"}
+    selected = set(current.get("selected_categories") or [])
+    if not selected:
+        selected = {document_check_category(str(item.get("key") or "")) for item in current.get("checks", []) if isinstance(item, dict)}
+    for category in selected:
+        checks = [item for item in current.get("checks", []) if isinstance(item, dict) and document_check_category(str(item.get("key") or "")) == category]
+        counts = {status: sum(item.get("status") == status for item in checks) for status in ("ok", "warning", "error")}
+        category_results[category] = {"checks": checks, "counts": counts, "status": "error" if counts["error"] else "warning" if counts["warning"] else "ok", "checked_at": now_iso()}
+    combined_checks = [item for category in ("signature", "mvs", "experience") for item in category_results.get(category, {}).get("checks", [])]
+    combined_counts = {status: sum(item.get("status") == status for item in combined_checks) for status in ("ok", "warning", "error")}
+    existing = existing or {}
+    merged = dict(existing)
+    merged.update(current)
+    # A run for one document category must not replace detailed results of
+    # another category that were saved earlier.
+    if "signature" not in selected:
+        for key in ("signature", "checked_signature_document"):
+            if key in existing:
+                merged[key] = existing[key]
+    if "mvs" not in selected:
+        for key in ("mvs_seal", "mvs_extract", "mvs_pairs"):
+            if key in existing:
+                merged[key] = existing[key]
+    merged["category_results"] = category_results
+    merged["checks"] = combined_checks
+    merged["counts"] = combined_counts
+    merged["ready"] = not combined_counts["error"] and not combined_counts["warning"]
+    merged["checked_categories"] = sorted(category_results)
+    return merged
 
 
 def document_check_worker(job_id: str, submission_id: str, selection: dict | None = None) -> None:
@@ -2962,10 +5182,16 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
         result = analyze_application_documents(submission_id, selection)
         if not result:
             raise ValueError("Заявку не знайдено")
-        counts = result.get("counts") or {}
-        check_status = "error" if counts.get("error") else "warning" if counts.get("warning") else "ok"
-        summary = f"Перевірено: {counts.get('ok', 0)}; попереджень: {counts.get('warning', 0)}; помилок: {counts.get('error', 0)}"
         with db() as con:
+            stored = con.execute("SELECT document_check_result_json FROM application_fields WHERE submission_id=?", (submission_id,)).fetchone()
+            try:
+                existing = json.loads(stored[0] or "{}") if stored else {}
+            except (TypeError, ValueError):
+                existing = {}
+            result = merge_document_check_results(existing, result)
+            counts = result.get("counts") or {}
+            check_status = "error" if counts.get("error") else "warning" if counts.get("warning") else "ok"
+            summary = f"Перевірено: {counts.get('ok', 0)}; попереджень: {counts.get('warning', 0)}; помилок: {counts.get('error', 0)}"
             con.execute("""INSERT INTO application_fields
               (submission_id,document_check_status,document_check_summary,document_checked_at,document_check_result_json,updated_at,updated_by)
               VALUES (?,?,?,?,?,?,?) ON CONFLICT(submission_id) DO UPDATE SET
@@ -2983,97 +5209,104 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
             DOCUMENT_CHECK_JOBS[job_id].update(update)
 
 
-AUTH_REALM = os.environ.get("PQM_AUTH_REALM", "PQM")
-
-def _pbkdf2_hash(password: str, iterations: int = 310_000) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-    return f"pbkdf2_sha256${iterations}${base64.urlsafe_b64encode(salt).decode().rstrip('=')}${base64.urlsafe_b64encode(digest).decode().rstrip('=')}"
-
-def _pbkdf2_verify(password: str, encoded: str) -> bool:
-    try:
-        scheme, iterations, salt_b64, digest_b64 = encoded.split("$", 3)
-        if scheme != "pbkdf2_sha256":
-            return False
-        salt = base64.urlsafe_b64decode(salt_b64 + "===")
-        expected = base64.urlsafe_b64decode(digest_b64 + "===")
-        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations))
-        return hmac.compare_digest(actual, expected)
-    except (ValueError, TypeError, binascii.Error):
-        return False
-
-def auth_users() -> dict:
-    raw = os.environ.get("PQM_USERS_JSON", "{}")
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except json.JSONDecodeError:
-        return {}
-
-def get_auth_user(handler) -> dict | None:
-    header = handler.headers.get("Authorization", "")
-    if not header.startswith("Basic "):
-        return None
-    try:
-        decoded = base64.b64decode(header[6:]).decode("utf-8")
-        username, password = decoded.split(":", 1)
-    except (ValueError, UnicodeDecodeError, binascii.Error):
-        return None
-    record = auth_users().get(username)
-    if not isinstance(record, dict):
-        return None
-    password_hash = str(record.get("password_hash") or "")
-    if not password_hash or not _pbkdf2_verify(password, password_hash):
-        return None
-    role = str(record.get("role") or "viewer")
-    if role not in {"viewer", "officer", "admin"}:
-        role = "viewer"
-    return {"username": username, "name": str(record.get("name") or username), "role": role}
-
-def auth_configured() -> bool:
-    return bool(auth_users())
-
-
 class Handler(BaseHTTPRequestHandler):
     server_version = "PQM/0.1"
-
-    def require_auth(self, *, write=False, admin=False):
-        if self.path.startswith("/api/health"):
-            return {"username": "health", "name": "health", "role": "admin"}
-        user = get_auth_user(self)
-        if not user:
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}", charset="UTF-8"')
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            body = json.dumps({"error": "Потрібна авторизація"}, ensure_ascii=False).encode()
-            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-            return None
-        if admin and user["role"] != "admin":
-            self.send_json({"error": "Потрібна роль адміністратора"}, 403)
-            return None
-        if write and user["role"] == "viewer":
-            self.send_json({"error": "Роль «Перегляд» не може змінювати дані"}, 403)
-            return None
-        return user
 
     def send_json(self, data, status=200):
         raw = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
 
+    def send_file(self, path: Path, content_type: str, filename: str):
+        raw = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def read_json(self):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
 
+    def send_error(self, code, message=None, explain=None):
+        if urllib.parse.urlparse(self.path).path.startswith("/api/"):
+            return self.send_json({"error": message or "Запит не виконано", "status": code}, code)
+        return super().send_error(code, message, explain)
+
+    def _authorize(self) -> bool:
+        self.auth_user = CURRENT_USER
+        if not AUTH_ENABLED or urllib.parse.urlparse(self.path).path == "/api/health":
+            return True
+        try:
+            users = configured_basic_auth_users()
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc), "status": 503}, 503)
+            return False
+        header = self.headers.get("Authorization", "")
+        try:
+            scheme, encoded = header.split(" ", 1)
+            decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+            username, password = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError):
+            username = password = ""
+            scheme = ""
+        valid = scheme.casefold() == "basic" and username in users and verify_basic_auth_secret(password, users[username])
+        if not valid:
+            raw = json.dumps({"error": "Потрібна авторизація", "status": 401}, ensure_ascii=False).encode()
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="PQM TEST"')
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return False
+        self.auth_user = username
+        return True
+
+    def _dispatch(self, method) -> None:
+        if not self._authorize():
+            return
+        try:
+            method()
+        except BidsUnavailableError as exc:
+            self.send_json({"error": str(exc), "code": "bids_unavailable", "available": False}, 503)
+        except json.JSONDecodeError:
+            self.send_json({"error": "Некоректний JSON у запиті", "status": 400}, 400)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:
+            path = urllib.parse.urlparse(self.path).path
+            SERVER_LOG.exception("Unhandled HTTP exception method=%s path=%s type=%s",
+                                 self.command, path, type(exc).__name__)
+            traceback.print_exc()
+            self.send_json({"error": "Внутрішня помилка сервера", "code": "internal_error", "status": 500}, 500)
+
     def do_GET(self):
-        user = self.require_auth()
-        if not user: return
+        return self._dispatch(self._do_GET)
+
+    def do_POST(self):
+        return self._dispatch(self._do_POST)
+
+    def do_PATCH(self):
+        return self._dispatch(self._do_PATCH)
+
+    def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/api/auth/me":
-            return self.send_json({"authenticated": True, "user": user})
         if parsed.path == "/api/health":
             with db() as con:
                 counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("frameworks", "submissions", "qualifications")}
             return self.send_json({"ok": True, "counts": counts, "sync": SYNC_STATE})
+        if parsed.path == "/api/runtime-features":
+            return self.send_json({
+                "environment": PQM_ENV,
+                "bids_mode": BIDS_MODE,
+                "bids_update": ENABLE_BIDS_UPDATE and BIDS_MODE in {"readonly", "read_only"},
+                "powerbi": ENABLE_POWERBI,
+                "google": ENABLE_GOOGLE,
+                "scheduler": ENABLE_SCHEDULER,
+                "nazk_scheduler": ENABLE_NAZK_SCHEDULER,
+            })
         if parsed.path.startswith("/api/document-check-jobs/"):
             job_id = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
             with DOCUMENT_CHECK_LOCK:
@@ -3097,6 +5330,32 @@ class Handler(BaseHTTPRequestHandler):
             result["saved_summary"] = row[1] or ""
             result["checked_at"] = row[2] or ""
             return self.send_json(result)
+        if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/nazk-control"):
+            submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
+            try:
+                with db() as con:
+                    control = get_submission_nazk_control(con, submission_id)
+                    if not control:
+                        control = ensure_submission_nazk_control(con, submission_id)
+                    state = get_submission_nazk_state(con, submission_id)
+                    context = submission_nazk_context(con, submission_id)
+                    documents = con.execute(
+                        "SELECT documents_json FROM submissions WHERE id=?", (submission_id,)
+                    ).fetchone()
+                return self.send_json({"control": control, "state": state,
+                    "documents": json.loads((documents or ["[]"])[0] or "[]"),
+                    "context": context,
+                    "coverage_status": "legal_date_field_unresolved"})
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 404)
+        if parsed.path == "/api/nazk/reconciliation/dry-run":
+            with db() as con:
+                return self.send_json(reconcile_active_supplier_nazk(con, apply=False))
+        if parsed.path == "/api/nazk/transitional-backfill/dry-run":
+            query = urllib.parse.parse_qs(parsed.query)
+            year = int((query.get("year") or ["2026"])[0] or 2026)
+            with db() as con:
+                return self.send_json(transitional_submission_backfill_dry_run(con, year))
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/verify-documents/start"):
             parts = parsed.path.split("/")
             submission_id = urllib.parse.unquote(parts[3])
@@ -3122,8 +5381,39 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(supplier_profile(code))
             except KeyError:
                 return self.send_json({"error": "Постачальника не знайдено"}, 404)
+        if parsed.path.startswith("/api/supplier-procurements/"):
+            code = parsed.path.removeprefix("/api/supplier-procurements/")
+            try:
+                return self.send_json(supplier_procurements(code, urllib.parse.parse_qs(parsed.query)))
+            except KeyError:
+                return self.send_json({"error": "Постачальника не знайдено"}, 404)
+        if parsed.path == "/api/admin/frameworks":
+            return self.send_json(framework_service_directory())
+        if parsed.path == "/api/admin/officers":
+            query = urllib.parse.parse_qs(parsed.query)
+            return self.send_json({"items": authorized_officers(query.get("active") == ["1"])})
+        if parsed.path == "/api/admin/templates":
+            return self.send_json({"items": template_metadata()})
+        template_download = re.fullmatch(r"/api/admin/templates/([^/]+)/download", parsed.path)
+        if template_download:
+            key = urllib.parse.unquote(template_download.group(1))
+            ensure_runtime_templates()
+            path = TEMPLATES.get(key)
+            if not path or not path.exists():
+                return self.send_json({"error": "Шаблон не знайдено"}, 404)
+            return self.send_file(path, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", path.name)
         if parsed.path == "/api/violation-reports":
             return self.send_json(list_violation_reports(urllib.parse.parse_qs(parsed.query)))
+        if parsed.path == "/api/uo-work-queue":
+            query = {key: values[0] if values else "" for key, values in urllib.parse.parse_qs(parsed.query).items()}
+            with db() as con:
+                return self.send_json(get_uo_work_queue(con, query, self.auth_user))
+        if parsed.path.startswith("/api/violation-reports/") and not parsed.path.endswith("/sync"):
+            report_id = urllib.parse.unquote(parsed.path.removeprefix("/api/violation-reports/"))
+            try:
+                return self.send_json(violation_report_detail(report_id))
+            except KeyError:
+                return self.send_json({"error": "Звернення не знайдено"}, 404)
         if parsed.path == "/api/stats":
             return self.send_json(application_stats(urllib.parse.parse_qs(parsed.query)))
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/archive"):
@@ -3145,7 +5435,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/protocol/files/"):
             filename = urllib.parse.unquote(parsed.path[len("/api/protocol/files/"):])
-            protocols_dir = (DATA_DIR / "protocols").resolve()
+            protocols_dir = PROTOCOLS_DIR
             target = (protocols_dir / filename).resolve()
             if protocols_dir not in target.parents or not target.is_file():
                 return self.send_error(404)
@@ -3227,10 +5517,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
 
-    def do_POST(self):
-        user = self.require_auth(write=True)
-        if not user: return
+    def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/protocol/generate"):
+            report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/protocol/generate")]).rstrip("/")
+            payload = self.read_json()
+            try:
+                return self.send_json(generate_violation_protocol(report_id, payload))
+            except KeyError:
+                return self.send_json({"error": "Звернення не знайдено"}, 404)
+            except ConnectionError as exc:
+                return self.send_json({"error": str(exc)}, 503)
+            except (ValueError, PermissionError) as exc:
+                return self.send_json({"error": str(exc)}, 409)
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/verify-documents"):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
             job_id = uuid.uuid4().hex
@@ -3256,12 +5555,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"started": True, "framework_id": framework_id}, 202)
             threading.Thread(target=sync_all_worker, daemon=True).start()
             return self.send_json({"started": True, "scope": "active_and_closed"}, 202)
+        if parsed.path == "/api/frameworks/refresh":
+            if SYNC_STATE["running"]:
+                return self.send_json(SYNC_STATE, 409)
+            threading.Thread(target=refresh_framework_metadata_worker, daemon=True).start()
+            return self.send_json({"started": True, "scope": "framework_metadata"}, 202)
         if parsed.path == "/api/violation-reports/sync":
             if VIOLATION_SYNC_STATE["running"]:
                 return self.send_json(VIOLATION_SYNC_STATE, 409)
             threading.Thread(target=sync_violation_reports_worker, daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/bids-sync":
+            if not ENABLE_BIDS_UPDATE or BIDS_MODE not in {"readonly", "read_only"}:
+                return self.send_json({"error": "Оновлення ProzorroBids вимкнене в цьому середовищі"}, 403)
             if BIDS_UPDATE_STATE["running"]:
                 return self.send_json(BIDS_UPDATE_STATE, 409)
             BIDS_UPDATE_STATE.update(running=True, message="Підготовка оновлення Bids…", started_at=now_iso(), error=None)
@@ -3283,11 +5589,15 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=supplier_nazk_review_sync_worker, daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/google-oauth/start":
+            if not ENABLE_GOOGLE:
+                return self.send_json({"error": "Google OAuth вимкнено в цьому середовищі"}, 403)
             try:
                 return self.send_json({"authorization_url": google_oauth_authorization_url()}, 200)
             except FileNotFoundError as exc:
                 return self.send_json({"error": str(exc), "oauth": google_oauth_status()}, 409)
         if parsed.path == "/api/powerbi-export":
+            if not ENABLE_POWERBI:
+                return self.send_json({"error": "Power BI export вимкнено в цьому середовищі"}, 403)
             if POWERBI_EXPORT_STATE["running"]:
                 return self.send_json(POWERBI_EXPORT_STATE, 409)
             POWERBI_EXPORT_STATE.update(running=True, message="Підготовка експорту Power BI…", started_at=now_iso(), error=None)
@@ -3300,6 +5610,43 @@ class Handler(BaseHTTPRequestHandler):
                 cursor = con.execute("INSERT INTO remarks_catalog(point,text,tag,category,active,updated_at) VALUES (?,?,?,?,1,?)",
                                      (point, text, str(payload.get("tag") or "").strip(), str(payload.get("category") or "").strip(), now_iso()))
             return self.send_json({"saved": True, "id": cursor.lastrowid}, 201)
+        if parsed.path == "/api/admin/officers":
+            payload = self.read_json()
+            full_name = formatted_officer_name(payload.get("full_name"))
+            role_name = str(payload.get("role") or "УО").strip() or "УО"
+            if not full_name or full_name == "НЕ ВИЗНАЧЕНО":
+                return self.send_json({"error": "Вкажіть ПІБ фізичної уповноваженої особи"}, 400)
+            with db() as con:
+                if con.execute("SELECT 1 FROM authorized_officers WHERE UPPER(full_name)=?", (normalized_officer_name(full_name),)).fetchone():
+                    return self.send_json({"error": "Така УО вже є у довіднику"}, 409)
+                cursor = con.execute("""INSERT INTO authorized_officers(full_name,role,active,created_at,updated_at)
+                  VALUES (?,?,1,?,?)""", (full_name, role_name, now_iso(), now_iso()))
+                con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+                  VALUES (?,?,?,?,?,?)""", (f"authorized_officer:{cursor.lastrowid}", now_iso(), self.auth_user,
+                  "authorized_officer.created", "", full_name))
+            return self.send_json({"saved": True, "id": cursor.lastrowid}, 201)
+        template_replace = re.fullmatch(r"/api/admin/templates/([^/]+)/replace", parsed.path)
+        if template_replace:
+            key = urllib.parse.unquote(template_replace.group(1))
+            payload = self.read_json()
+            try:
+                raw = base64.b64decode(payload.get("content") or "", validate=True)
+            except Exception:
+                return self.send_json({"error": "Не вдалося прочитати DOCX"}, 400)
+            temporary = DATA_DIR / "tmp" / f"template_{uuid.uuid4().hex}.docx"
+            temporary.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                temporary.write_bytes(raw)
+                target = replace_runtime_template(key, temporary)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            finally:
+                temporary.unlink(missing_ok=True)
+            with db() as con:
+                con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+                  VALUES (?,?,?,?,?,?)""", (f"document_template:{key}", now_iso(), self.auth_user,
+                  "document_template.replaced", "", target.name))
+            return self.send_json({"saved": True, "item": next(x for x in template_metadata() if x["key"] == key)})
         if parsed.path == "/api/nazk-registry/refresh":
             threading.Thread(target=refresh_nazk, args=(DB_PATH,), daemon=True).start()
             return self.send_json({"started": True}, 202)
@@ -3316,10 +5663,138 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"started": True}, 202)
         return self.send_error(404)
 
-    def do_PATCH(self):
-        user = self.require_auth(write=True)
-        if not user: return
+    def _do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)
+        document_match = re.fullmatch(r"/api/violation-reports/([^/]+)/documents/(customer|supplier)/([^/]+)", parsed.path)
+        if document_match:
+            report_id, source, document_id = (urllib.parse.unquote(value) for value in document_match.groups())
+            payload = self.read_json()
+            try:
+                return self.send_json(save_violation_document_review(
+                    report_id, source, document_id, bool(payload.get("file_unavailable")),
+                    str(payload.get("checked_by") or self.auth_user)))
+            except KeyError:
+                return self.send_json({"error": "Звернення не знайдено"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except PermissionError as exc:
+                return self.send_json({"error": str(exc), "is_read_only": True}, 409)
+        if parsed.path.startswith("/api/admin/officers/"):
+            try:
+                officer_id = int(parsed.path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self.send_json({"error": "Некоректний ID УО"}, 400)
+            payload = self.read_json()
+            with db() as con:
+                current = con.execute("SELECT * FROM authorized_officers WHERE id=?", (officer_id,)).fetchone()
+                if not current:
+                    return self.send_json({"error": "УО не знайдено"}, 404)
+                role_name = str(payload.get("role", current["role"]) or "УО").strip() or "УО"
+                active = 1 if payload.get("active", bool(current["active"])) else 0
+                for field_name, old_value, new_value in (
+                    ("role", str(current["role"] or ""), role_name),
+                    ("active", str(int(current["active"])), str(active)),
+                ):
+                    if old_value != new_value:
+                        con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+                          VALUES (?,?,?,?,?,?)""", (f"authorized_officer:{officer_id}", now_iso(), self.auth_user,
+                          f"authorized_officer.{field_name}", old_value, new_value))
+                con.execute("UPDATE authorized_officers SET role=?,active=?,updated_at=? WHERE id=?",
+                            (role_name, active, now_iso(), officer_id))
+            item = next((row for row in authorized_officers() if row["id"] == officer_id), None)
+            return self.send_json({"saved": True, "item": item})
+        if parsed.path.startswith("/api/admin/frameworks/"):
+            directory_id = urllib.parse.unquote(parsed.path.removeprefix("/api/admin/frameworks/"))
+            payload = self.read_json()
+            officer = formatted_officer_name(payload.get("responsible_officer"))
+            category = str(payload.get("category") or "").strip()
+            marketplace_url = str(payload.get("marketplace_url") or "").strip()
+            if officer and not valid_active_officer(officer):
+                return self.send_json({"error": "Невідома відповідальна УО"}, 400)
+            with db() as con:
+                current = con.execute("SELECT * FROM framework_service_directory WHERE pretty_id=?", (directory_id,)).fetchone()
+                if not current:
+                    return self.send_json({"error": "Відбір не знайдено"}, 404)
+                changes = {"category": category, "marketplace_url": marketplace_url, "responsible_officer": officer}
+                for field_name, new_value in changes.items():
+                    old_value = str(current[field_name] or "")
+                    if old_value != new_value:
+                        con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+                          VALUES (?,?,?,?,?,?)""", (directory_id, now_iso(), self.auth_user,
+                          f"framework_directory.{field_name}", old_value, new_value))
+                con.execute("""UPDATE framework_service_directory SET category=?,marketplace_url=?,
+                  responsible_officer=?,source='PQM',synced_at=? WHERE pretty_id=?""",
+                  (category, marketplace_url, officer, now_iso(), directory_id))
+                framework_id = current["framework_id"]
+                if framework_id:
+                    con.execute("""INSERT INTO framework_officers(framework_id,officer,marketplace_url,category,source,synced_at)
+                      VALUES (?,?,?,?,?,?) ON CONFLICT(framework_id) DO UPDATE SET officer=excluded.officer,
+                      marketplace_url=excluded.marketplace_url,category=excluded.category,source=excluded.source,synced_at=excluded.synced_at""",
+                      (framework_id, officer, marketplace_url, category, "PQM", now_iso()))
+            return self.send_json({"saved": True})
+        if parsed.path.startswith("/api/suppliers/") and parsed.path.endswith("/nazk-check"):
+            supplier_code = re.sub(r"\D", "", urllib.parse.unquote(parsed.path.split("/")[3]))
+            payload = self.read_json()
+            try:
+                check_id = int(payload.get("check_id") or 0)
+                with db() as con:
+                    owner = con.execute("SELECT supplier_code FROM supplier_nazk_checks WHERE id=?", (check_id,)).fetchone()
+                    if not owner or re.sub(r"\D", "", owner["supplier_code"] or "") != supplier_code:
+                        raise ValueError("Перевірку НАЗК цього постачальника не знайдено")
+                    if payload.get("action") == "request_sent":
+                        result = mark_supplier_nazk_request_sent(
+                            con, check_id, changed_by=str(payload.get("checked_by") or self.auth_user),
+                            comment=str(payload.get("comment") or ""),
+                        )
+                    elif payload.get("action") == "complete":
+                        result = complete_supplier_nazk_check(
+                            con, check_id, result=str(payload.get("result") or ""),
+                            evidence_date=str(payload.get("evidence_date") or ""),
+                            document_url=str(payload.get("document_url") or ""),
+                            document_title=str(payload.get("document_title") or ""),
+                            checked_by=str(payload.get("checked_by") or self.auth_user),
+                            comment=str(payload.get("comment") or ""),
+                        )
+                    else:
+                        raise ValueError("Невідома дія supplier-level перевірки НАЗК")
+                return self.send_json(result)
+            except (TypeError, ValueError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/nazk-control"):
+            submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
+            payload = self.read_json()
+            try:
+                with db() as con:
+                    if payload.get("action") == "complete_refuted":
+                        result = complete_submission_nazk_check(
+                            con, submission_id,
+                            document_id=str(payload.get("selected_document_id") or ""),
+                            document_url=str(payload.get("selected_document_url") or ""),
+                            evidence_date=str(payload.get("evidence_date") or ""),
+                            checked_by=str(payload.get("checked_by") or self.auth_user),
+                            comment=str(payload.get("comment") or ""),
+                            manager_tax_id=str(payload.get("manager_tax_id") or ""),
+                        )
+                    else:
+                        result = {"control": ensure_submission_nazk_control(
+                            con, submission_id, str(payload.get("manager_name"))
+                            if "manager_name" in payload else None)}
+                return self.send_json(result)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/review"):
+            report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/review")]).rstrip("/")
+            payload = self.read_json()
+            try:
+                return self.send_json(save_violation_review(report_id, payload, str(payload.pop("updated_by", "УО") or "УО")))
+            except KeyError:
+                return self.send_json({"error": "Звернення не знайдено"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except PermissionError as exc:
+                return self.send_json({"error": str(exc), "is_read_only": True}, 409)
+            except ConnectionError as exc:
+                return self.send_json({"error": str(exc)}, 503)
         if parsed.path.startswith("/api/remarks-catalog/"):
             try: remark_id = int(parsed.path.rsplit("/", 1)[-1])
             except ValueError: return self.send_json({"error": "Невідомий пункт довідника"}, 400)
@@ -3337,8 +5812,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"saved": True})
         if not parsed.path.startswith("/api/applications/"): return self.send_error(404)
         submission_id = parsed.path.rsplit("/", 1)[-1]; payload = self.read_json()
-        role = user["role"]; user_name = user["name"]
-        if "protocol_officer" in payload and payload["protocol_officer"] not in PROTOCOL_OFFICERS | {""}:
+        role = payload.pop("role", "officer")
+        supplied_user = str(payload.pop("user", "") or "").strip()
+        user = supplied_user if supplied_user and supplied_user not in {"УО", "Перегляд", "Адміністратор"} else self.auth_user
+        if "protocol_officer" in payload and not valid_active_officer(payload["protocol_officer"]):
             return self.send_json({"error": "Невідома відповідальна особа протоколу"}, 400)
         if "protocol_decision" in payload and payload["protocol_decision"] not in PROTOCOL_DECISIONS:
             return self.send_json({"error": "Невідоме рішення до протоколу"}, 400)
@@ -3355,11 +5832,19 @@ class Handler(BaseHTTPRequestHandler):
             if not decision: return self.send_json({"error": "Заявку не знайдено"}, 404)
             current_controls = con.execute("""SELECT protocol_decision,compliance_status,marketplace_decision,
               protocol_number,protocol_date,manager_name,compliance_comments,
-              generated_protocol_number,generated_protocol_date,generated_protocol_decision,protocol_generated_at
+              generated_protocol_number,generated_protocol_date,generated_protocol_decision,protocol_generated_at,protocol_remarks
               FROM application_fields WHERE submission_id=?""", (submission_id,)).fetchone()
             current_protocol_decision, current_compliance_status, current_marketplace_decision = (current_controls[0] or "", current_controls[1] or "", current_controls[2] or "")
             effective_protocol_decision = payload.get("protocol_decision", current_protocol_decision)
             effective_compliance_status = payload.get("compliance_status", current_compliance_status)
+            effective_protocol_remarks = str(payload.get("protocol_remarks", current_controls[11]) or "").strip()
+            if payload.get("compliance_status") == "approved":
+                nazk_state = get_submission_nazk_state(con, submission_id)
+                if not nazk_state.get("can_approve"):
+                    return self.send_json({
+                        "error": "Неможливо погодити Комплаєнс. Для цієї заявки не завершено перевірку довідки НАЗК.",
+                        "nazk_state": nazk_state.get("state", "needs_check"),
+                    }, 409)
             if effective_protocol_decision and not effective_compliance_status:
                 return self.send_json({"error": "Спочатку визначте рішення комплаєнс"}, 409)
             if "compliance_status" in payload and payload["compliance_status"] != current_compliance_status and current_protocol_decision:
@@ -3368,6 +5853,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Щоб змінити Рішення УО, спочатку скиньте дію на майданчику"}, 409)
             if effective_protocol_decision == "admit" and effective_compliance_status == "rejected":
                 return self.send_json({"error": "Рішення УО «Так» неможливе, коли комплаєнс не погоджено"}, 409)
+            if effective_protocol_decision == "admit" and effective_protocol_remarks != "Без зауважень":
+                return self.send_json({"error": "Неможливо встановити “Так”: для заявки зазначено зауваження до протоколу."}, 409)
+            if (effective_protocol_decision == "reject" and effective_protocol_remarks == "Без зауважень"
+                    and effective_compliance_status == "approved"):
+                return self.send_json({"error": "Немає підстав для відхилення: комплаєнс погоджено та зауваження до протоколу відсутні."}, 409)
             marketplace_decision = payload.get("marketplace_decision")
             if marketplace_decision and not current_protocol_decision:
                 return self.send_json({"error": "Спочатку визначте Рішення УО"}, 409)
@@ -3408,39 +5898,62 @@ class Handler(BaseHTTPRequestHandler):
                 old = con.execute(f"SELECT {field} FROM application_fields WHERE submission_id=?", (submission_id,)).fetchone()[0] or ""
                 new = str(value or "")
                 if old != new:
-                    con.execute(f"UPDATE application_fields SET {field}=?,updated_at=?,updated_by=? WHERE submission_id=?", (new, now_iso(), user_name, submission_id))
+                    con.execute(f"UPDATE application_fields SET {field}=?,updated_at=?,updated_by=? WHERE submission_id=?", (new, now_iso(), user, submission_id))
+                    if field == "protocol_decision":
+                        review_old = con.execute(
+                            "SELECT COALESCE(review_officer,'') FROM application_fields WHERE submission_id=?",
+                            (submission_id,),
+                        ).fetchone()[0]
+                        con.execute(
+                            "UPDATE application_fields SET review_officer=? WHERE submission_id=?",
+                            (user, submission_id),
+                        )
+                        if review_old != user:
+                            con.execute(
+                                "INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value) VALUES (?,?,?,?,?,?)",
+                                (submission_id, now_iso(), user, "review_officer", review_old, user),
+                            )
                     if field == "manager_name":
                         con.execute("""UPDATE application_fields SET manager_name_source='manual',
                           manager_name_source_submission_id='' WHERE submission_id=?""", (submission_id,))
+                        supplier = con.execute(
+                            "SELECT supplier_code FROM submissions WHERE id=?", (submission_id,)
+                        ).fetchone()
+                        if supplier:
+                            sync_current_supplier_manager(
+                                con, supplier[0], new,
+                                source=f"Підтверджено УО у заявці {submission_id}", observed_at=now_iso(),
+                            )
                     con.execute("INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value) VALUES (?,?,?,?,?,?)", (submission_id, now_iso(), user, field, old, new))
                     if field in {"protocol_number", "protocol_date", "protocol_decision", "manager_name", "compliance_status", "compliance_comments", "protocol_remarks", "document_package"}:
                         con.execute("""UPDATE application_fields SET generated_protocol_number='',generated_protocol_date='',
                           generated_protocol_decision='',protocol_generated_at='' WHERE submission_id=?""", (submission_id,))
+            if "manager_name" in payload:
+                ensure_submission_nazk_control(con, submission_id)
         return self.send_json({"saved": True})
 
     def log_message(self, fmt, *args):
-        print(f"[{self.log_date_time_string()}] {fmt % args}")
+        message = fmt % args
+        print(f"[{self.log_date_time_string()}] {message}")
+        SERVER_LOG.info("HTTP %s", message)
 
 
 def main():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
+    RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     init_reference_tables(DB_PATH)
 
-    # External sources must never delay availability of the local application.
-    # Refresh the officers directory in a background thread after the HTTP
-    # server has started listening.
-    def refresh_officers_directory():
-        try:
-            result = sync_framework_officers()
-            print(f"Оголошення: {result['matched']} відборів із закріпленою УО")
-        except Exception as exc:
-            print(f"Оголошення: використано локальний довідник ({exc})")
-
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "10000"))
-    print(f"PQM 0.1: http://{host}:{port}")
-    threading.Thread(target=refresh_officers_directory, daemon=True).start()
-    threading.Thread(target=hourly_sync_scheduler, daemon=True).start()
+    print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
+    print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
+    print(f"Features: scheduler={ENABLE_SCHEDULER}, nazk_scheduler={ENABLE_NAZK_SCHEDULER}, "
+          f"bids={BIDS_MODE}, bids_update={ENABLE_BIDS_UPDATE}, powerbi={ENABLE_POWERBI}, "
+          f"google={ENABLE_GOOGLE}, auth={AUTH_ENABLED}")
+    SERVER_LOG.info("PQM startup environment=%s host=%s port=%s data_dir=%s db=%s",
+                    PQM_ENV, HOST, PORT, DATA_DIR, DB_PATH)
+    if ENABLE_SCHEDULER:
+        threading.Thread(target=hourly_sync_scheduler, daemon=True).start()
     def reference_scheduler():
         last_date = ""
         while True:
@@ -3452,8 +5965,11 @@ def main():
                     refresh_nazk(DB_PATH)
                 last_date = now.date().isoformat()
             time.sleep(60)
-    threading.Thread(target=reference_scheduler, daemon=True).start()
-    ExclusiveThreadingHTTPServer((host, port), Handler).serve_forever()
+    if ENABLE_NAZK_SCHEDULER:
+        threading.Thread(target=reference_scheduler, daemon=True).start()
+    if ENABLE_BROWSER:
+        threading.Timer(1, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
+    ExclusiveThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":
