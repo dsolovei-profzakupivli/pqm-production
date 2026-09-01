@@ -188,6 +188,18 @@ class ForeignAuthorityError(PermissionError):
 
 
 AUTH_ROLES = {"admin", "officer", "viewer"}
+AUTH_SESSIONS: dict[str, dict] = {}
+AUTH_SESSIONS_LOCK = threading.Lock()
+AUTH_SESSION_TTL = 12 * 60 * 60
+AUTH_COOKIE = "pqm_session"
+
+
+def hash_password(password: str) -> str:
+    if len(password) < 10:
+        raise ValueError("Пароль має містити щонайменше 10 символів")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+    return f"pbkdf2_sha256:260000:{salt.hex()}:{digest.hex()}"
 
 
 def configured_auth_accounts() -> dict[str, dict]:
@@ -233,6 +245,18 @@ def configured_auth_accounts() -> dict[str, dict]:
 def configured_basic_auth_users() -> dict[str, str]:
     """Read Basic Auth users from the environment without writing credentials to disk."""
     return {name: account["secret"] for name, account in configured_auth_accounts().items()}
+
+
+def auth_accounts() -> dict[str, dict]:
+    accounts = configured_auth_accounts()
+    try:
+        with db() as con:
+            for row in con.execute("SELECT username,password_hash,role,officer_id,active FROM auth_users"):
+                accounts[row["username"]] = {"secret": row["password_hash"], "role": row["role"],
+                                              "officer_id": row["officer_id"], "active": bool(row["active"])}
+    except sqlite3.OperationalError:
+        pass
+    return accounts
 
 
 def mutation_allowed(role: str, method: str, path: str) -> bool:
@@ -297,6 +321,13 @@ def verify_basic_auth_secret(provided: str, configured: str) -> bool:
     if configured.startswith("sha256:"):
         digest = hashlib.sha256(provided.encode("utf-8")).hexdigest()
         return hmac.compare_digest(digest, configured.removeprefix("sha256:"))
+    if configured.startswith("pbkdf2_sha256:"):
+        try:
+            _, iterations, salt, expected = configured.split(":", 3)
+            digest = hashlib.pbkdf2_hmac("sha256", provided.encode(), bytes.fromhex(salt), int(iterations)).hex()
+            return hmac.compare_digest(digest, expected)
+        except (ValueError, TypeError):
+            return False
     return hmac.compare_digest(provided, configured)
 PROTOCOL_DECISIONS = {"", "admit", "reject"}
 MARKETPLACE_DECISIONS = {"", "admit", "reject"}
@@ -835,6 +866,16 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_authorized_officers_active
           ON authorized_officers(active,full_name);
+        CREATE TABLE IF NOT EXISTS auth_users (
+          username TEXT PRIMARY KEY,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('admin','officer','viewer')),
+          officer_id INTEGER REFERENCES authorized_officers(id),
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, created_by TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_users_officer
+          ON auth_users(officer_id) WHERE officer_id IS NOT NULL AND active=1;
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,
           changed_by TEXT NOT NULL, field_name TEXT NOT NULL, old_value TEXT, new_value TEXT
@@ -5606,6 +5647,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
 
+    def send_session(self, data, token: str, status=200):
+        raw = json.dumps(data, ensure_ascii=False).encode()
+        secure = "; Secure" if IS_WEB_ENV else ""
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Set-Cookie", f"{AUTH_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={AUTH_SESSION_TTL}{secure}")
+        self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
+
+    def clear_session(self):
+        secure = "; Secure" if IS_WEB_ENV else ""
+        self.send_response(204); self.send_header("Set-Cookie", f"{AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}")
+        self.end_headers()
+
     def send_file(self, path: Path, content_type: str, filename: str):
         raw = path.read_bytes()
         self.send_response(200)
@@ -5634,13 +5688,26 @@ class Handler(BaseHTTPRequestHandler):
                     and requested in AUTH_ROLES):
                 self.auth_role = requested
             return True
-        if urllib.parse.urlparse(self.path).path == "/api/health":
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/api/health" or path == "/api/login" or not path.startswith("/api/"):
             return True
         try:
-            accounts = configured_auth_accounts()
+            accounts = auth_accounts()
         except RuntimeError as exc:
             self.send_json({"error": str(exc), "status": 503}, 503)
             return False
+        cookie = {}
+        for item in self.headers.get("Cookie", "").split(";"):
+            if "=" in item:
+                key, value = item.strip().split("=", 1); cookie[key] = value
+        token = cookie.get(AUTH_COOKIE, "")
+        with AUTH_SESSIONS_LOCK:
+            session = AUTH_SESSIONS.get(token)
+            if session and session["expires_at"] > time.time():
+                self.auth_user = session["username"]; self.auth_role = session["role"]
+                self.auth_officer_id = session.get("officer_id"); return True
+            if token:
+                AUTH_SESSIONS.pop(token, None)
         header = self.headers.get("Authorization", "")
         try:
             scheme, encoded = header.split(" ", 1)
@@ -5650,11 +5717,11 @@ class Handler(BaseHTTPRequestHandler):
             username = password = ""
             scheme = ""
         account = accounts.get(username)
-        valid = bool(scheme.casefold() == "basic" and account and verify_basic_auth_secret(password, account["secret"]))
+        valid = bool(scheme.casefold() == "basic" and account and account.get("active", True)
+                     and verify_basic_auth_secret(password, account["secret"]))
         if not valid:
             raw = json.dumps({"error": "Потрібна авторизація", "status": 401}, ensure_ascii=False).encode()
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="PQM TEST"')
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
@@ -5669,6 +5736,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorize():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path in {"/api/login", "/api/logout"}:
+            return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if not admin_read_allowed(self.auth_role, path, query):
             return self.send_json({"error": "Недостатньо прав для перегляду цього розділу", "status": 403}, 403)
@@ -5716,6 +5785,12 @@ class Handler(BaseHTTPRequestHandler):
                                    "officer_id": self.auth_officer_id,
                                    "authenticated": bool(AUTH_ENABLED),
                                    "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
+        if parsed.path == "/api/admin/users":
+            with db() as con:
+                rows = con.execute("""SELECT u.username,u.role,u.officer_id,u.active,u.created_at,u.updated_at,
+                  o.full_name officer_name FROM auth_users u LEFT JOIN authorized_officers o ON o.id=u.officer_id
+                  ORDER BY u.active DESC,u.username""").fetchall()
+            return self.send_json({"items": [dict(row) for row in rows]})
         if parsed.path == "/api/runtime-features":
             return self.send_json({
                 "environment": PQM_ENV,
@@ -5938,6 +6013,46 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/login":
+            payload = self.read_json(); username = str(payload.get("username") or "").strip()
+            password = str(payload.get("password") or "")
+            try:
+                account = auth_accounts().get(username)
+            except RuntimeError as exc:
+                return self.send_json({"error": str(exc)}, 503)
+            if not account or not account.get("active", True) or not verify_basic_auth_secret(password, account["secret"]):
+                time.sleep(0.25)
+                return self.send_json({"error": "Невірний логін або пароль"}, 401)
+            token = secrets.token_urlsafe(32)
+            session = {"username": username, "role": account["role"], "officer_id": account.get("officer_id"),
+                       "expires_at": time.time() + AUTH_SESSION_TTL}
+            with AUTH_SESSIONS_LOCK:
+                AUTH_SESSIONS[token] = session
+            return self.send_session({"username": username, "role": account["role"],
+                                      "officer_id": account.get("officer_id")}, token)
+        if parsed.path == "/api/logout":
+            token = next((item.split("=", 1)[1] for item in self.headers.get("Cookie", "").split(";")
+                          if item.strip().startswith(AUTH_COOKIE + "=")), "")
+            with AUTH_SESSIONS_LOCK:
+                AUTH_SESSIONS.pop(token, None)
+            return self.clear_session()
+        if parsed.path == "/api/admin/users":
+            payload = self.read_json(); username = str(payload.get("username") or "").strip()
+            password = str(payload.get("password") or ""); role = str(payload.get("role") or "officer").casefold()
+            officer_id = payload.get("officer_id") or None
+            if not re.fullmatch(r"[A-Za-z0-9._-]{3,50}", username):
+                return self.send_json({"error": "Логін: 3–50 латинських літер, цифр або . _ -"}, 400)
+            if role not in AUTH_ROLES: return self.send_json({"error": "Некоректна роль"}, 400)
+            if role == "officer" and not officer_id: return self.send_json({"error": "Оберіть конкретну УО"}, 400)
+            try: password_hash = hash_password(password)
+            except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
+            try:
+                with db() as con:
+                    con.execute("""INSERT INTO auth_users(username,password_hash,role,officer_id,active,created_at,updated_at,created_by)
+                      VALUES (?,?,?,?,1,?,?,?)""", (username,password_hash,role,officer_id,now_iso(),now_iso(),self.auth_user))
+            except sqlite3.IntegrityError:
+                return self.send_json({"error": "Логін або акаунт цієї УО вже існує"}, 409)
+            return self.send_json({"saved": True, "username": username}, 201)
         if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/protocol/generate"):
             report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/protocol/generate")]).rstrip("/")
             payload = self.read_json()
@@ -6117,6 +6232,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)
+        user_match = re.fullmatch(r"/api/admin/users/([^/]+)", parsed.path)
+        if user_match:
+            username = urllib.parse.unquote(user_match.group(1)); payload = self.read_json()
+            with db() as con:
+                current = con.execute("SELECT * FROM auth_users WHERE username=?", (username,)).fetchone()
+                if not current: return self.send_json({"error": "Користувача не знайдено"}, 404)
+                role = str(payload.get("role", current["role"])).casefold()
+                officer_id = payload.get("officer_id", current["officer_id"]) or None
+                active = 1 if payload.get("active", bool(current["active"])) else 0
+                password_hash = current["password_hash"]
+                if payload.get("password"):
+                    try: password_hash = hash_password(str(payload["password"]))
+                    except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
+                if role not in AUTH_ROLES or (role == "officer" and not officer_id):
+                    return self.send_json({"error": "Для officer потрібно вибрати конкретну УО"}, 400)
+                try:
+                    con.execute("UPDATE auth_users SET password_hash=?,role=?,officer_id=?,active=?,updated_at=? WHERE username=?",
+                                (password_hash,role,officer_id,active,now_iso(),username))
+                except sqlite3.IntegrityError:
+                    return self.send_json({"error": "Ця УО вже має активний акаунт"}, 409)
+            with AUTH_SESSIONS_LOCK:
+                for token, session in list(AUTH_SESSIONS.items()):
+                    if session["username"] == username: AUTH_SESSIONS.pop(token, None)
+            return self.send_json({"saved": True})
         document_match = re.fullmatch(r"/api/violation-reports/([^/]+)/documents/(customer|supplier)/([^/]+)", parsed.path)
         if document_match:
             report_id, source, document_id = (urllib.parse.unquote(value) for value in document_match.groups())

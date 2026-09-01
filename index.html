@@ -10,6 +10,19 @@
   <link rel="stylesheet" href="modules.css">
 </head>
 <body>
+  <section id="loginGate" class="login-gate" aria-labelledby="loginTitle">
+    <form id="loginForm" class="login-card">
+      <img src="assets/professional-purchasing-logo.webp" alt="ДУ «Професійні закупівлі»">
+      <p class="eyebrow">PQM · захищений доступ</p>
+      <h1 id="loginTitle">Вхід до системи</h1>
+      <p class="muted">Введіть логін і пароль, надані адміністратором.</p>
+      <label>Логін<input id="loginUsername" autocomplete="username" required autofocus></label>
+      <label>Пароль<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+      <p id="loginError" class="login-error" role="alert"></p>
+      <button class="primary" type="submit">Увійти</button>
+    </form>
+  </section>
+  <div id="applicationShell" hidden>
   <header class="topbar">
     <div class="brand"><img class="brand-logo" src="assets/professional-purchasing-logo.webp" alt="ДУ Професійні закупівлі"><div><strong>Profzakupivli Qualification Manager</strong><small>Розроблено для ДУ «Професійні закупівлі»</small><em id="environmentBanner">Локальна версія · ручні рішення не публікуються</em></div></div>
     <nav id="mainNav">
@@ -23,7 +36,7 @@
       <button id="administrationNav">Адміністрування</button>
       <button id="auditBtn">Журнал змін</button>
     </nav>
-    <label class="role">Роль <select id="roleSelect"><option value="viewer">Перегляд</option><option value="officer" selected>УО</option><option value="admin">Адміністратор</option></select></label>
+    <div class="account-menu"><label class="role">Роль <select id="roleSelect"><option value="viewer">Перегляд</option><option value="officer" selected>УО</option><option value="admin">Адміністратор</option></select></label><button id="logoutBtn" class="ghost" type="button">Вийти</button></div>
   </header>
 
   <main id="workQueueView" class="module-view" hidden>
@@ -171,7 +184,14 @@
       <section class="bids-sync-panel card"><header><div><h2>Стан синхронізації</h2><p id="bidsSyncHeadline" class="muted">Завантаження…</p></div><span id="bidsSyncBadge" class="bids-sync-badge">—</span></header><dl><div><dt>Охоплення закупівель</dt><dd id="bidsCoverage">—</dd></div><div><dt>Дані змінено до</dt><dd id="bidsModifiedTo">—</dd></div><div><dt>Останній пошук відборів</dt><dd id="bidsLastSearch">—</dd></div><div><dt>Остання деталізація</dt><dd id="bidsLastDetail">—</dd></div><div><dt>Останній завершений запуск</dt><dd id="bidsLastRun">—</dd></div><div><dt>База даних</dt><dd id="bidsDatabase">—</dd></div></dl><p id="bidsSyncWarning" class="bids-sync-warning" hidden></p></section>
       <section class="powerbi-panel card"><header><div><h2>База для Power BI</h2><p id="powerbiHeadline" class="muted">Постійний набір без накопичення копій</p></div><button id="powerbiExportBtn" type="button" class="primary">Оновити базу Power BI</button></header><dl><div><dt>Постійний шлях</dt><dd id="powerbiPath">—</dd></div><div><dt>Останній успішний експорт</dt><dd id="powerbiUpdated">—</dd></div><div><dt>Розмір</dt><dd id="powerbiSize">—</dd></div><div><dt>Рядків у наборах</dt><dd id="powerbiRows">—</dd></div></dl><div id="powerbiDatasets" class="powerbi-datasets"></div><p id="powerbiStatusMessage" class="muted"></p></section>
     </section>
-    <section id="adminOfficersPanel" class="admin-panel" hidden><div class="card admin-officer-add"><input id="adminOfficerName" placeholder="ПІБ уповноваженої особи"><input id="adminOfficerRole" value="УО" placeholder="Роль"><button id="adminOfficerAdd" class="primary">+ Додати УО</button></div><section class="card"><div class="supplier-table-scroll"><table class="supplier-table"><thead><tr><th>ПІБ</th><th>Роль</th><th>Статус</th><th>Активні відбори</th><th>Дії</th></tr></thead><tbody id="adminOfficersBody"></tbody></table></div></section></section>
+    <section id="adminOfficersPanel" class="admin-panel" hidden>
+      <div class="card admin-officer-add"><input id="adminOfficerName" placeholder="ПІБ уповноваженої особи"><input id="adminOfficerRole" value="УО" placeholder="Роль"><button id="adminOfficerAdd" class="primary">+ Додати УО</button></div>
+      <section class="card"><h2>Уповноважені особи</h2><div class="supplier-table-scroll"><table class="supplier-table"><thead><tr><th>ПІБ</th><th>Роль</th><th>Статус</th><th>Активні відбори</th><th>Дії</th></tr></thead><tbody id="adminOfficersBody"></tbody></table></div></section>
+      <section class="card user-management"><div><p class="eyebrow">Доступ до PQM</p><h2>Користувачі та паролі</h2><p class="muted">Створіть окремий логін для конкретної УО. Пароль зберігається лише як захищений хеш.</p></div>
+        <form id="adminUserForm" class="admin-user-form"><label>Логін<input id="adminUserLogin" autocomplete="off" required placeholder="наприклад d.savva"></label><label>Уповноважена особа<select id="adminUserOfficer" required></select></label><label>Пароль<input id="adminUserPassword" type="password" minlength="10" autocomplete="new-password" required></label><label>Повторіть пароль<input id="adminUserPasswordConfirm" type="password" minlength="10" autocomplete="new-password" required></label><button class="primary" type="submit">Створити користувача</button></form>
+        <div class="supplier-table-scroll"><table class="supplier-table"><thead><tr><th>Логін</th><th>УО</th><th>Роль</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="adminUsersBody"></tbody></table></div>
+      </section>
+    </section>
   </main>
   <main id="requestsView" class="module-view" hidden>
     <section class="module-heading">
@@ -208,5 +228,6 @@
   <dialog id="protocolDialog" class="wide"><form id="protocolForm"><header><div><h2>Готовність протоколу</h2><p>Перевірка складу та обов’язкових полів перед формуванням</p></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></header><div class="protocol-controls"><label>№ протоколу<input id="checkProtocolNumber"></label><label>Період від<input id="checkDateFrom" type="date"></label><label>Період до<input id="checkDateTo" type="date"></label><button type="submit" class="primary">Перевірити</button></div><div id="protocolSummary" class="protocol-summary muted">Зазначте номер протоколу або період.</div><div id="protocolIssues" class="protocol-issues"></div><footer><button type="button" class="ghost" onclick="this.closest('dialog').close()">Закрити</button><button id="generateProtocolBtn" type="button" class="primary" disabled>Сформувати протокол</button></footer></form></dialog>
 
   <script src="app.js"></script>
+  </div>
 </body>
 </html>
