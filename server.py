@@ -5738,6 +5738,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path in {"/api/login", "/api/logout"}:
             return method()
+        if (path == "/api/admin/users" or re.fullmatch(r"/api/admin/users/[^/]+", path)) and self.auth_user != "manager":
+            return self.send_json({"error": "Керування користувачами доступне лише manager", "status": 403}, 403)
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if not admin_read_allowed(self.auth_role, path, query):
             return self.send_json({"error": "Недостатньо прав для перегляду цього розділу", "status": 403}, 403)
