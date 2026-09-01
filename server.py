@@ -51,7 +51,7 @@ from nazk_workflow import (
 )
 from reference_directories import (
     init_reference_tables, list_registry, reference_status,
-    refresh_amcu, refresh_nazk,
+    refresh_amcu, refresh_nazk, start_reference_refresh,
 )
 from uo_work_queue import get_uo_work_queue
 
@@ -97,6 +97,7 @@ ENABLE_BROWSER = env_flag("PQM_ENABLE_BROWSER", not IS_WEB_ENV)
 ENABLE_SCHEDULER = env_flag("PQM_ENABLE_SCHEDULER", not IS_WEB_ENV)
 ENABLE_NAZK_SCHEDULER = env_flag("PQM_ENABLE_NAZK_SCHEDULER", not IS_WEB_ENV)
 AUTH_ENABLED = env_flag("PQM_AUTH_ENABLED", False)
+LOCAL_ROLE_IMPERSONATION = env_flag("PQM_LOCAL_ROLE_IMPERSONATION", not IS_WEB_ENV)
 BIDS_MODE = os.environ.get("PQM_BIDS_MODE", "disabled" if IS_WEB_ENV else "readonly").strip().casefold()
 ENABLE_BIDS_UPDATE = env_flag("PQM_ENABLE_BIDS_UPDATE", not IS_WEB_ENV)
 ENABLE_POWERBI = env_flag("PQM_ENABLE_POWERBI", not IS_WEB_ENV)
@@ -105,13 +106,17 @@ EDS_ADAPTER_PATH = ROOT / "tools" / "prozorro_eds_adapter" / "verify-signature.m
 EDS_TIMEOUT_SECONDS = max(5, int(os.environ.get("PQM_EDS_TIMEOUT_SECONDS", "35")))
 BIDS_DB_PATH = Path(os.environ.get(
     "PQM_BIDS_DB",
-    str(DATA_DIR / "prozorro_bids.db") if IS_WEB_ENV else r"D:\ProzorroBids\prozorro_bids.db",
+    str(DATA_DIR / "prozorro_bids.db"),
 ))
 BIDS_STATUS_CACHE: dict = {"at": 0.0, "value": None}
 BIDS_STATUS_LOCK = threading.Lock()
 BIDS_PROJECT_PATH = Path(os.environ.get(
     "PQM_BIDS_PROJECT_DIR",
-    str(DATA_DIR) if IS_WEB_ENV else r"D:\ProzorroBids",
+    str(DATA_DIR),
+))
+BIDS_PYTHON = Path(os.environ.get(
+    "PQM_BIDS_PYTHON",
+    sys.executable,
 ))
 BIDS_UPDATE_STATE = {"running": False, "message": "Ручне оновлення ще не запускали", "started_at": None,
                      "updated_at": None, "date_from": None, "date_to": None, "error": None}
@@ -123,13 +128,12 @@ SUPPLIER_EDR_SHEET_ID = "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA"
 SUPPLIER_EDR_SHEETS = {"ФОП": "1278053622", "ЮО": "511647713"}
 SUPPLIER_NAZK_REVIEW_SHEET_ID = "1hAgy_YQFWf8m6yHQTO4g22Et94Gm46dC9WTBaoyZloA"
 SUPPLIER_NAZK_REVIEW_SHEET = "nazk_data"
-CURRENT_USER = os.environ.get("PQM_CURRENT_USER", "Світлана НАМЯСЕНКО")
+CURRENT_USER = os.environ.get("PQM_CURRENT_USER", "PQM System")
 GOOGLE_OAUTH_DIR = Path(os.environ.get("PQM_GOOGLE_OAUTH_DIR", str((Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "PQM") if not IS_WEB_ENV else (DATA_DIR / "google_oauth"))))
 GOOGLE_OAUTH_CLIENT_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json")))
 GOOGLE_OAUTH_TOKEN_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json")))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 GOOGLE_OAUTH_PENDING: dict[str, dict] = {}
-SYNC_CURSOR_OVERLAP_SECONDS = max(0, int(os.environ.get("PQM_SYNC_CURSOR_OVERLAP_SECONDS", "86400")))
 SUPPLIER_EDR_SYNC_STATE = {"running": False, "message": "Довідник ЄДР ще не синхронізували",
                            "started_at": None, "updated_at": None, "processed": 0,
                            "inserted": 0, "updated": 0, "error": None}
@@ -138,12 +142,12 @@ SUPPLIER_NAZK_REVIEW_SYNC_STATE = {"running": False, "message": "Перевір�
                                    "inserted": 0, "updated": 0, "error": None}
 TESSERACT_EXE = Path(os.environ.get(
     "PQM_TESSERACT_EXE",
-    shutil.which("tesseract") or ("/usr/bin/tesseract" if IS_WEB_ENV else r"D:\Program Files\Tesseract-OCR\tesseract.exe"),
+    shutil.which("tesseract") or ("/usr/bin/tesseract" if IS_WEB_ENV else "tesseract"),
 ))
 TESSDATA_DIR = ROOT / "tools" / "tessdata"
 PDFTOPPM_EXE = Path(os.environ.get(
     "PQM_PDFTOPPM_EXE",
-    shutil.which("pdftoppm") or ("/usr/bin/pdftoppm" if IS_WEB_ENV else r"C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin\pdftoppm.exe"),
+    shutil.which("pdftoppm") or ("/usr/bin/pdftoppm" if IS_WEB_ENV else "pdftoppm"),
 ))
 API_ROOT = "https://public-api.prozorro.gov.ua/api/2.5"
 ORGANIZER_EDRPOU = "40996564"
@@ -154,7 +158,7 @@ REMARKS_CSV = "https://docs.google.com/spreadsheets/d/1S94-jj5ys-BIwiWeWhxVNwRFi
 REMARKS_CACHE = Path(os.environ.get("PQM_REMARKS_CACHE", str(DATA_DIR / "remarks_catalog.json")))
 # Destination selected by the administrator for finished review protocols.
 # The local MVP still generates files on disk first; Drive upload requires the
-# PQM Google OAuth integration and must not depend on the Codex session.
+# PQM Google OAuth integration and must not depend on a local interactive session.
 PROTOCOLS_DRIVE_FOLDER_ID = "1OFlBRzYFtJ8PZ7oAks7NpKb2ZnHds7XF"
 PROTOCOLS_DRIVE_FOLDER_URL = f"https://drive.google.com/drive/folders/{PROTOCOLS_DRIVE_FOLDER_ID}"
 EDITABLE_FIELDS = {
@@ -179,8 +183,15 @@ class BidsUnavailableError(RuntimeError):
     """The optional read-only ProzorroBids source is unavailable."""
 
 
-def configured_basic_auth_users() -> dict[str, str]:
-    """Read Basic Auth users from the environment without writing credentials to disk."""
+class ForeignAuthorityError(PermissionError):
+    """The violation report belongs to another central purchasing body."""
+
+
+AUTH_ROLES = {"admin", "officer", "viewer"}
+
+
+def configured_auth_accounts() -> dict[str, dict]:
+    """Parse TEST/LOCAL accounts. Legacy username:secret entries remain admin."""
     raw = os.environ.get("PQM_USERS_JSON", "").strip()
     if not raw:
         return {}
@@ -190,19 +201,95 @@ def configured_basic_auth_users() -> dict[str, str]:
         raise RuntimeError("PQM_USERS_JSON містить некоректний JSON") from exc
     if isinstance(payload, dict) and isinstance(payload.get("users"), list):
         payload = payload["users"]
+    accounts = {}
     if isinstance(payload, dict):
-        return {str(name): str(secret) for name, secret in payload.items() if str(name).strip()}
+        for name, value in payload.items():
+            if not str(name).strip():
+                continue
+            if isinstance(value, dict):
+                secret = value.get("password") if "password" in value else value.get("password_hash")
+                role = str(value.get("role") or "").strip().casefold()
+                if secret is not None and role in AUTH_ROLES:
+                    accounts[str(name)] = {"secret": str(secret), "role": role,
+                                           "officer_id": value.get("officer_id")}
+            else:
+                accounts[str(name)] = {"secret": str(value), "role": "admin"}
+        return accounts
     if isinstance(payload, list):
-        users = {}
         for item in payload:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("username") or item.get("user") or "").strip()
             secret = item.get("password") if "password" in item else item.get("password_hash")
-            if name and secret is not None:
-                users[name] = str(secret)
-        return users
+            role = str(item.get("role") or "").strip().casefold()
+            # Legacy list entries had no role. Preserve access as admin during migration.
+            if name and secret is not None and (role in AUTH_ROLES or not role):
+                accounts[name] = {"secret": str(secret), "role": role or "admin",
+                                  "officer_id": item.get("officer_id")}
+        return accounts
     raise RuntimeError("PQM_USERS_JSON має містити object або масив users")
+
+
+def configured_basic_auth_users() -> dict[str, str]:
+    """Read Basic Auth users from the environment without writing credentials to disk."""
+    return {name: account["secret"] for name, account in configured_auth_accounts().items()}
+
+
+def mutation_allowed(role: str, method: str, path: str) -> bool:
+    if method not in {"POST", "PATCH", "PUT", "DELETE"}:
+        return True
+    if role == "admin":
+        return True
+    if role != "officer":
+        return False
+    officer_patterns = (
+        r"^/api/applications/[^/]+$",
+        r"^/api/applications/[^/]+/(?:verify-documents|verify-documents/start|nazk-control)$",
+        r"^/api/protocol/(?:readiness|generate)$",
+        r"^/api/violation-reports/[^/]+/(?:review|review/complete|protocol/generate)$",
+        r"^/api/violation-reports/[^/]+/documents/(?:customer|supplier)/[^/]+$",
+        r"^/api/suppliers/[^/]+/nazk-check$",
+    )
+    return any(re.fullmatch(pattern, path) for pattern in officer_patterns)
+
+
+def admin_read_allowed(role: str, path: str, query: dict[str, list[str]] | None = None) -> bool:
+    """Protect administration reads while keeping work-filter data available."""
+    if role == "admin":
+        return True
+    if path == "/api/admin/officers" and (query or {}).get("active") == ["1"]:
+        return True
+    if path == "/api/admin/frameworks":
+        return True
+    return not (path.startswith("/api/admin/") or path == "/api/audit")
+
+
+def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
+    """Restrict officer mutations to assigned work; unassigned appeals may be claimed."""
+    try:
+        officer_id = int(officer_id)
+    except (TypeError, ValueError):
+        return False
+    with db() as con:
+        officer = con.execute("SELECT full_name,active FROM authorized_officers WHERE id=?", (officer_id,)).fetchone()
+        if not officer or not officer["active"]:
+            return False
+        application = re.fullmatch(r"/api/applications/([^/]+)(?:/.*)?", path)
+        if application:
+            row = con.execute("""SELECT COALESCE(NULLIF(af.protocol_officer,''),fo.officer,'') officer
+              FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
+              LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE s.id=?""",
+              (urllib.parse.unquote(application.group(1)),)).fetchone()
+            return bool(row and normalized_officer_name(row["officer"]) == normalized_officer_name(officer["full_name"]))
+        report = re.fullmatch(r"/api/violation-reports/([^/]+)/(?:review(?:/complete)?|protocol/generate|documents/.*)", path)
+        if report:
+            row = con.execute("""SELECT r.assigned_officer_id FROM violation_report_reviews r
+              JOIN violation_reports v ON v.id=r.report_id
+              WHERE v.id=? OR v.report_id=?""", (urllib.parse.unquote(report.group(1)),
+              urllib.parse.unquote(report.group(1)))).fetchone()
+            return not row or row["assigned_officer_id"] in (None, officer_id)
+    # Non-row officer actions (for example protocol readiness) remain allowed.
+    return True
 
 
 def verify_basic_auth_secret(provided: str, configured: str) -> bool:
@@ -215,12 +302,9 @@ PROTOCOL_DECISIONS = {"", "admit", "reject"}
 MARKETPLACE_DECISIONS = {"", "admit", "reject"}
 COMPLIANCE_STATUSES = {"", "approved", "rejected"}
 AUTHORITY_REVIEWS = {"", "approved", "missing", "not_required"}
-INITIAL_AUTHORIZED_OFFICERS = (
-    ("СВІТЛАНА НАМЯСЕНКО", 1), ("ЯНА КАСЬЯН", 0),
-    ("ОКСАНА АБРОСІМОВА", 0), ("ДМИТРО САВВА", 1),
-    ("СЕРГІЙ ЛОЗИНСЬКИЙ", 0), ("ТЕТЯНА ФЕДЧЕНКО", 1),
-    ("ОЛЕНА ЄРЬОМІНА", 1),
-)
+# The public TEST WEB package never seeds personal data. Existing officers live
+# on the persistent disk and a clean environment is configured via the admin UI.
+INITIAL_AUTHORIZED_OFFICERS = ()
 
 
 def normalized_officer_name(value: str) -> str:
@@ -251,8 +335,26 @@ def authorized_officers(active_only: bool = False) -> list[dict]:
     for row in rows:
         row["active"] = bool(row["active"])
         row["active_frameworks"] = counts.get(normalized_officer_name(row["full_name"]), 0)
+        row["usage_count"] = officer_usage_count(row["id"], row["full_name"])
+        row["can_delete"] = row["usage_count"] == 0
         row["full_name"] = formatted_officer_name(row["full_name"])
     return rows
+
+
+def officer_usage_count(officer_id: int, full_name: str) -> int:
+    """Count subject references; creation/deactivation audit is intentionally preserved."""
+    queries = (
+        ("violation_report_reviews", "assigned_officer_id", officer_id),
+        ("violation_report_reviews", "assigned_officer", full_name),
+        ("application_fields", "protocol_officer", full_name),
+        ("application_fields", "review_officer", full_name),
+        ("framework_officers", "officer", full_name),
+        ("framework_service_directory", "responsible_officer", full_name),
+        ("supplier_nazk_reviews", "officer", full_name),
+    )
+    with db() as con:
+        return sum(con.execute(f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (value,)).fetchone()[0]
+                   for table, column, value in queries)
 
 
 def valid_active_officer(value: str) -> bool:
@@ -265,6 +367,7 @@ def valid_active_officer(value: str) -> bool:
         ).fetchone())
 SYNC_STATE = {"running": False, "message": "Синхронізацію ще не запускали", "updated_at": None,
               "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None}
+SYNC_STATE_LOCK = threading.Lock()
 VIOLATION_SYNC_STATE = {"running": False, "message": "Звернення ще не синхронізувалися", "updated_at": None,
                         "processed": 0, "total": 0, "errors": 0, "stop_requested": False}
 DOCUMENT_CHECK_JOBS = {}
@@ -386,15 +489,17 @@ def remarks_catalog(force: bool = False) -> dict:
 
 
 def announcement_officer_name(value: str) -> str:
-    names = {
-        "Намясенко": "Світлана НАМЯСЕНКО",
-        "Савва": "Дмитро САВВА",
-        "Федченко": "Тетяна ФЕДЧЕНКО",
-        "Єрьоміна": "Олена ЄРЬОМІНА",
-        "Абросімова": "Оксана АБРОСІМОВА",
-    }
     clean = (value or "").strip()
-    return names.get(clean, clean)
+    if not clean:
+        return ""
+    normalized = normalized_officer_name(clean)
+    with db() as con:
+        candidates = [row[0] for row in con.execute(
+            "SELECT full_name FROM authorized_officers ORDER BY active DESC, full_name"
+        )]
+    matches = [name for name in candidates
+               if normalized_officer_name(name).split()[-1:] == normalized.split()[-1:]]
+    return formatted_officer_name(matches[0]) if len(matches) == 1 else clean
 
 
 def sync_framework_officers() -> dict:
@@ -469,23 +574,8 @@ def unicode_casefold(value: str | None) -> str:
     return (value or "").casefold()
 
 
-class ClosingConnection(sqlite3.Connection):
-    """Commit/rollback and close connections used as context managers."""
-
-    def __exit__(self, exc_type, exc_value, traceback_value):
-        try:
-            return super().__exit__(exc_type, exc_value, traceback_value)
-        finally:
-            self.close()
-
-
-DB_SETUP_LOCK = threading.Lock()
-DB_WAL_READY = False
-
-
 def db() -> sqlite3.Connection:
-    global DB_WAL_READY
-    con = sqlite3.connect(DB_PATH, timeout=60, factory=ClosingConnection)
+    con = sqlite3.connect(DB_PATH, timeout=60)
     con.row_factory = sqlite3.Row
     con.create_function("CASEFOLD", 1, unicode_casefold, deterministic=True)
     con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
@@ -495,12 +585,8 @@ def db() -> sqlite3.Connection:
         deterministic=True,
     )
     con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=60000")
-    if not DB_WAL_READY:
-        with DB_SETUP_LOCK:
-            if not DB_WAL_READY:
-                con.execute("PRAGMA journal_mode=WAL")
-                DB_WAL_READY = True
     return con
 
 
@@ -873,6 +959,13 @@ def init_db() -> None:
             "justification_source_hash": "TEXT NOT NULL DEFAULT ''",
             "justification_generated_at": "TEXT NOT NULL DEFAULT ''",
             "justification_manually_edited": "INTEGER NOT NULL DEFAULT 0",
+            "customer_protocol_decision_date": "TEXT DEFAULT ''",
+            "customer_protocol_decision_number": "TEXT DEFAULT ''",
+            "customer_protocol_decision_url": "TEXT DEFAULT ''",
+            "generated_protocol_filename": "TEXT DEFAULT ''",
+            "protocol_generated_at": "TEXT DEFAULT ''",
+            "completed_at": "TEXT DEFAULT ''",
+            "completed_by": "TEXT DEFAULT ''",
         }
         for field, definition in review_additions.items():
             if field not in review_columns:
@@ -948,11 +1041,7 @@ def resource_cursor(framework_id: str, table: str) -> str | None:
             continue
     if latest is None:
         return None
-    # Prozorro resources can be modified slightly out of order. Re-reading a
-    # bounded overlap prevents a newer local watermark from hiding a late
-    # qualification decision; UPSERT keeps the operation idempotent.
-    cursor_timestamp = max(0.0, latest[0] - SYNC_CURSOR_OVERLAP_SECONDS)
-    seconds = f"{cursor_timestamp:.3f}".rstrip("0").rstrip(".")
+    seconds = f"{latest[0]:.3f}".rstrip("0").rstrip(".")
     digest = hashlib.md5(latest[1].encode()).hexdigest()
     return f"{seconds}.1.{digest}"
 
@@ -1000,8 +1089,6 @@ def refresh_framework_metadata() -> dict:
 
 
 def refresh_framework_metadata_worker() -> None:
-    if SYNC_STATE["running"]:
-        return
     started = datetime.now(timezone.utc)
     SYNC_STATE.update(running=True, mode="framework_metadata", started_at=started.isoformat(),
                       message="Отримання актуальних відборів із Prozorro…")
@@ -1240,9 +1327,7 @@ def sync_all_tracked_frameworks() -> dict:
 
 def sync_incremental_active_frameworks() -> dict:
     with db() as con:
-        framework_ids = [row[0] for row in con.execute(
-            "SELECT id FROM frameworks WHERE status='active' ORDER BY pretty_id DESC"
-        )]
+        framework_ids = [row[0] for row in con.execute("SELECT id FROM frameworks WHERE status='active' ORDER BY pretty_id")]
     totals = {"frameworks": len(framework_ids), "completed": 0, "submissions": 0,
               "qualifications": 0, "contracts": 0, "errors": []}
     for index, framework_id in enumerate(framework_ids, 1):
@@ -1293,8 +1378,6 @@ def sync_all_worker() -> None:
 
 
 def sync_incremental_worker() -> None:
-    if SYNC_STATE["running"]:
-        return
     started = datetime.now(timezone.utc)
     SYNC_STATE.update(running=True, mode="incremental", started_at=started.isoformat(), message="Підготовка щогодинного оновлення…")
     try:
@@ -1308,6 +1391,21 @@ def sync_incremental_worker() -> None:
         SYNC_STATE["message"] = f"Помилка щогодинного оновлення: {exc}"
     finally:
         SYNC_STATE.update(running=False, updated_at=now_iso(), duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 1))
+
+
+def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = ()) -> bool:
+    """Atomically claim the single Prozorro sync slot before starting a worker."""
+    with SYNC_STATE_LOCK:
+        if SYNC_STATE.get("running"):
+            return False
+        SYNC_STATE.update(running=True, mode=mode, started_at=now_iso(), message=message)
+    try:
+        threading.Thread(target=target, args=args, daemon=True).start()
+    except Exception:
+        with SYNC_STATE_LOCK:
+            SYNC_STATE.update(running=False, message="Не вдалося запустити синхронізацію", updated_at=now_iso())
+        raise
+    return True
 
 
 def next_hourly_run(moment: datetime | None = None) -> datetime:
@@ -1333,7 +1431,8 @@ def hourly_sync_scheduler() -> None:
     if last_value and not SYNC_STATE["updated_at"]:
         SYNC_STATE["updated_at"] = last_value
     if last_sync is None or (datetime.now(timezone.utc) - last_sync.astimezone(timezone.utc)).total_seconds() >= 3600:
-        sync_incremental_worker()
+        start_prozorro_sync(sync_incremental_worker, mode="incremental",
+                            message="Підготовка щогодинного оновлення…")
     while True:
         target = next_hourly_run()
         SYNC_STATE["next_run_at"] = target.isoformat()
@@ -1342,7 +1441,8 @@ def hourly_sync_scheduler() -> None:
             if remaining <= 0:
                 break
             time.sleep(min(30, remaining))
-        sync_incremental_worker()
+        start_prozorro_sync(sync_incremental_worker, mode="incremental",
+                            message="Підготовка щогодинного оновлення…")
 
 
 def decision_label(status: str | None) -> str:
@@ -1743,8 +1843,67 @@ def list_frameworks() -> dict:
     return {"items": [dict(row) for row in rows]}
 
 
+def base_framework_analytics(params: dict) -> dict:
+    """Serve authoritative framework metadata when ProzorroBids is intentionally disabled."""
+    page = max(1, int(params.get("page", [1])[0]))
+    size = min(100, max(1, int(params.get("size", [25])[0])))
+    search = params.get("search", [""])[0].strip().casefold()
+    status_filter = params.get("status", [""])[0].strip()
+    dk_filter = params.get("dk_code", [""])[0].strip().casefold()
+    direction = params.get("direction", ["asc"])[0].lower()
+    with db() as con:
+        rows = con.execute("""SELECT f.id,f.pretty_id,f.title,f.dk_code,f.status,f.agreement_id,
+          f.date_modified,f.raw_json,COUNT(s.id) applications_count
+          FROM frameworks f LEFT JOIN submissions s ON s.framework_id=f.id
+          GROUP BY f.id""").fetchall()
+    items = []
+    for row in rows:
+        framework = dict(row)
+        raw = json.loads(framework.pop("raw_json") or "{}")
+        framework["official_status"] = framework.get("status") or ""
+        framework["status"] = effective_framework_status(framework.get("status") or "", raw)
+        framework.update({
+            "published_at": raw.get("date") or raw.get("dateCreated") or "",
+            "clarifications_until": (raw.get("enquiryPeriod") or {}).get("clarificationsUntil") or "",
+            "applications_until": (raw.get("period") or {}).get("endDate") or "",
+            "valid_until": (raw.get("qualificationPeriod") or {}).get("endDate") or "",
+            "organizer_name": (raw.get("procuringEntity") or {}).get("name") or "",
+            "organizer_code": ((raw.get("procuringEntity") or {}).get("identifier") or {}).get("id") or "",
+        })
+        haystack = " ".join(str(framework.get(key) or "") for key in
+                            ("id", "pretty_id", "title", "dk_code", "agreement_id")).casefold()
+        if search and search not in haystack:
+            continue
+        if dk_filter and dk_filter not in str(framework.get("dk_code") or "").casefold():
+            continue
+        normalized = "active" if framework["status"] == "active" else "inactive"
+        if status_filter and status_filter not in {framework["status"], normalized}:
+            continue
+        qualified = int(framework.get("applications_count") or 0)
+        items.append({"agreement_id": framework.get("agreement_id") or "",
+                      "cpv_code": framework.get("dk_code") or "",
+                      "source_status": framework.get("status") or "",
+                      "last_search_at": "", "search_total": 0,
+                      "tender_count": 0, "complete_count": 0, "unsuccessful_count": 0,
+                      "bids_count": 0, "buyer_count": 0, "expected_amount": 0,
+                      "first_tender": "", "last_tender": "", "supplier_count": 0,
+                      "qualified_supplier_count": qualified, "suppliers_current_year": 0,
+                      "suppliers_without_bids": qualified, "framework": framework,
+                      "agreement_pending": not bool(framework.get("agreement_id"))})
+    items.sort(key=lambda item: (item["cpv_code"], item["framework"].get("pretty_id") or ""),
+               reverse=direction == "desc")
+    total = len(items); offset = (page - 1) * size
+    return {"items": items[offset:offset + size], "total": total, "page": page,
+            "pages": max(1, (total + size - 1) // size), "size": size,
+            "summary": {"tenders": 0, "bids": 0}, "database": "",
+            "updated_at": "", "bids_available": False,
+            "message": "Аналітика ProzorroBids доступна лише в LOCAL"}
+
+
 def framework_analytics(params: dict) -> dict:
     """Paged, indexed analytics over agreements/tenders/bids from ProzorroBids."""
+    if BIDS_MODE == "disabled":
+        return base_framework_analytics(params)
     page = max(1, int(params.get("page", [1])[0]))
     size = min(100, max(1, int(params.get("size", [25])[0])))
     search = params.get("search", [""])[0].strip().casefold()
@@ -2062,14 +2221,11 @@ def framework_analytics_details(agreement_id: str, params: dict) -> dict:
             "analytics": analytics}
 
 
-def bids_sync_status(force: bool = False) -> dict:
-    """Operational status and coverage of the attached ProzorroBids store."""
-    with BIDS_STATUS_LOCK:
-        cached = BIDS_STATUS_CACHE.get("value")
-        if cached is not None and not force and time.time() - float(BIDS_STATUS_CACHE.get("at") or 0) < 600:
-            return {**cached, "update": dict(BIDS_UPDATE_STATE)}
-    with bids_db() as con:
-        counts = dict(con.execute("""SELECT
+def _refresh_bids_status_cache() -> None:
+    """Build the expensive 30+ GB Bids snapshot once, outside the HTTP request."""
+    try:
+        with bids_db() as con:
+            counts = dict(con.execute("""SELECT
           (SELECT COUNT(*) FROM agreements) agreements,
           (SELECT COUNT(*) FROM agreements WHERE last_search_at IS NOT NULL) searched_agreements,
           (SELECT COUNT(*) FROM tenders) tenders,
@@ -2078,26 +2234,43 @@ def bids_sync_status(force: bool = False) -> dict:
           (SELECT COUNT(*) FROM bids) bids,
           (SELECT COUNT(*) FROM awards) awards,
           (SELECT COUNT(*) FROM tenders WHERE last_error IS NOT NULL) tender_errors""").fetchone())
-        coverage = dict(con.execute("""SELECT
+            coverage = dict(con.execute("""SELECT
           MIN(SUBSTR(COALESCE(tender_start,date_created),1,10)) tender_from,
           MAX(SUBSTR(COALESCE(tender_start,date_created),1,10)) tender_to,
           MAX(SUBSTR(date_modified,1,10)) modified_to,
           MAX(last_detail_at) last_detail_at FROM tenders""").fetchone())
-        agreement_state = dict(con.execute("""SELECT MAX(last_search_at) last_search_at,
+            agreement_state = dict(con.execute("""SELECT MAX(last_search_at) last_search_at,
           SUM(CASE WHEN last_error IS NOT NULL AND last_error<>'' THEN 1 ELSE 0 END) agreement_errors
           FROM agreements""").fetchone())
-        completed = con.execute("""SELECT * FROM sync_log WHERE status='completed'
+            completed = con.execute("""SELECT * FROM sync_log WHERE status='completed'
           ORDER BY COALESCE(finished_at,started_at) DESC LIMIT 1""").fetchone()
-        open_logs = [dict(row) for row in con.execute("""SELECT * FROM sync_log WHERE status='running'
+            open_logs = [dict(row) for row in con.execute("""SELECT * FROM sync_log WHERE status='running'
           ORDER BY started_at DESC""").fetchall()]
-    complete = counts["pending_tenders"] == 0 and counts["tenders"] == counts["detailed_tenders"]
-    result = {**counts, **coverage, **agreement_state, "history_complete": complete,
-              "last_completed": dict(completed) if completed else None,
-              "stale_open_logs": open_logs, "database": str(BIDS_DB_PATH), "checked_at": now_iso(),
-              "update": dict(BIDS_UPDATE_STATE)}
-    with BIDS_STATUS_LOCK:
+        complete = counts["pending_tenders"] == 0 and counts["tenders"] == counts["detailed_tenders"]
+        result = {**counts, **coverage, **agreement_state, "history_complete": complete,
+                  "last_completed": dict(completed) if completed else None,
+                  "stale_open_logs": open_logs, "database": str(BIDS_DB_PATH), "checked_at": now_iso(),
+                  "update": dict(BIDS_UPDATE_STATE)}
         BIDS_STATUS_CACHE.update(at=time.time(), value=result)
-    return result
+    except Exception as exc:
+        BIDS_STATUS_CACHE.update(at=time.time(), error=str(exc))
+    finally:
+        BIDS_STATUS_LOCK.release()
+
+
+def bids_sync_status(force: bool = False) -> dict:
+    """Return cached status immediately; refresh heavy counts once in background."""
+    cached = BIDS_STATUS_CACHE.get("value")
+    fresh = cached is not None and time.time() - float(BIDS_STATUS_CACHE.get("at") or 0) < 600
+    if (force or not fresh) and BIDS_STATUS_LOCK.acquire(blocking=False):
+        threading.Thread(target=_refresh_bids_status_cache, daemon=True).start()
+    if cached is not None:
+        return {**cached, "refreshing": BIDS_STATUS_LOCK.locked(), "update": dict(BIDS_UPDATE_STATE)}
+    return {
+        "database": str(BIDS_DB_PATH), "checked_at": None, "refreshing": True,
+        "message": "Статистика ProzorroBids оновлюється у фоновому режимі",
+        "error": BIDS_STATUS_CACHE.get("error", ""), "update": dict(BIDS_UPDATE_STATE),
+    }
 
 
 def bids_update_worker() -> None:
@@ -2110,14 +2283,18 @@ def bids_update_worker() -> None:
         BIDS_UPDATE_STATE.update(running=True, message="Інкрементальне оновлення нових і змінених закупівель…",
                                  started_at=now_iso(), updated_at=None, date_from=date_from.isoformat(),
                                  date_to=today.isoformat(), error=None)
+        if not BIDS_PYTHON.is_file():
+            raise FileNotFoundError(f"Не знайдено робочий Python ProzorroBids: {BIDS_PYTHON}")
+        subprocess.run([str(BIDS_PYTHON), "-c", "import requests"], cwd=BIDS_PROJECT_PATH,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=20)
         log_path = DATA_DIR / "bids_manual_update.log"
         with log_path.open("a", encoding="utf-8") as log:
             log.write(f"\n[{now_iso()}] update {date_from} — {today}\n")
-            subprocess.run([sys.executable, str(BIDS_PROJECT_PATH / "main.py"), "update", "--from", date_from.isoformat(),
+            subprocess.run([str(BIDS_PYTHON), str(BIDS_PROJECT_PATH / "main.py"), "update", "--from", date_from.isoformat(),
                             "--to", today.isoformat(), "--no-export"], cwd=BIDS_PROJECT_PATH,
                            stdout=log, stderr=subprocess.STDOUT, check=True)
             BIDS_UPDATE_STATE["message"] = "Повторна перевірка активних закупівель…"
-            subprocess.run([sys.executable, str(BIDS_PROJECT_PATH / "main.py"), "refresh-active"], cwd=BIDS_PROJECT_PATH,
+            subprocess.run([str(BIDS_PYTHON), str(BIDS_PROJECT_PATH / "main.py"), "refresh-active"], cwd=BIDS_PROJECT_PATH,
                            stdout=log, stderr=subprocess.STDOUT, check=True)
         BIDS_UPDATE_STATE["message"] = "Оновлення Bids завершено"
     except Exception as exc:
@@ -3223,6 +3400,66 @@ def framework_service_directory() -> dict:
     return {"items": items, "total": len(items), "statuses": counts}
 
 
+def create_framework_service_entry(payload: dict, changed_by: str) -> dict:
+    pretty_id = str(payload.get("pretty_id") or "").strip()
+    dk_code = str(payload.get("dk_code") or "").strip()
+    category = str(payload.get("category") or "").strip()
+    marketplace_url = str(payload.get("marketplace_url") or "").strip()
+    officer = formatted_officer_name(payload.get("responsible_officer"))
+    if not pretty_id or not dk_code:
+        raise ValueError("Вкажіть ID відбору та Код ДК")
+    if officer and not valid_active_officer(officer):
+        raise ValueError("Невідома відповідальна УО")
+    now = now_iso()
+    with db() as con:
+        if con.execute("SELECT 1 FROM framework_service_directory WHERE pretty_id=?", (pretty_id,)).fetchone():
+            raise ValueError("Відбір із таким ID уже є у службовому довіднику")
+        framework = con.execute("SELECT id FROM frameworks WHERE pretty_id=?", (pretty_id,)).fetchone()
+        framework_id = framework["id"] if framework else None
+        con.execute("""INSERT INTO framework_service_directory
+          (pretty_id,framework_id,dk_code,category,marketplace_url,responsible_officer,
+           source_title,source,synced_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+          (pretty_id, framework_id, dk_code, category, marketplace_url, officer,
+           str(payload.get("source_title") or "").strip(), "PQM", now))
+        if framework_id:
+            con.execute("""INSERT INTO framework_officers(framework_id,officer,marketplace_url,category,source,synced_at)
+              VALUES (?,?,?,?,?,?) ON CONFLICT(framework_id) DO UPDATE SET officer=excluded.officer,
+              marketplace_url=excluded.marketplace_url,category=excluded.category,source='PQM',synced_at=excluded.synced_at""",
+              (framework_id, officer, marketplace_url, category, "PQM", now))
+        con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+          VALUES (?,?,?,?,?,?)""", (pretty_id, now, changed_by, "framework_directory.created", "", "PQM"))
+    return {"created": True, "pretty_id": pretty_id, "framework_matched": bool(framework_id)}
+
+
+def import_new_framework_service_entries(changed_by: str) -> dict:
+    """Import only absent Google rows; never update an existing PQM directory record."""
+    rows = load_announcement_rows()
+    imported, conflicts, skipped = [], [], 0
+    with db() as con:
+        existing = {row[0] for row in con.execute("SELECT pretty_id FROM framework_service_directory")}
+    for row in rows:
+        pretty_id = str(row.get("ID") or "").strip()
+        if not pretty_id:
+            skipped += 1; continue
+        if pretty_id in existing:
+            conflicts.append(pretty_id); continue
+        try:
+            create_framework_service_entry({
+                "pretty_id": pretty_id, "dk_code": row.get("ДК"),
+                "category": row.get("Категорія") or row.get("КАТЕГ"),
+                "marketplace_url": row.get("Посилання на майданчик"),
+                "responsible_officer": announcement_officer_name(row.get("Хто публікує") or ""),
+                "source_title": row.get("Назва фреймворку") or row.get("Інформація про категорію товару"),
+            }, changed_by)
+            # This record came from the initial-import source, but its future
+            # editable fields are already PQM-owned and cannot be overwritten.
+            imported.append(pretty_id); existing.add(pretty_id)
+        except ValueError:
+            skipped += 1
+    return {"source_rows": len(rows), "imported": len(imported), "imported_ids": imported,
+            "existing_conflicts": len(conflicts), "conflict_ids": conflicts, "skipped": skipped}
+
+
 def submission_nazk_context(con: sqlite3.Connection, submission_id: str) -> dict:
     """Existing registry/supplier context for one application; performs no writes."""
     row = con.execute("""SELECT s.supplier_code,COALESCE(ctrl.manager_name,''),
@@ -3465,6 +3702,8 @@ VIOLATION_REVIEW_FIELDS = {
     "customer_verified_short_name", "actual_contract_date", "actual_contract_number",
     "actual_contract_url", "additional_check_required", "guarantee_documents_visible",
     "supplier_explanation_assessment", "established_discrepancy", "decision_template_key",
+    "customer_protocol_decision_date", "customer_protocol_decision_number",
+    "customer_protocol_decision_url",
 }
 VIOLATION_INTERNAL_DECISIONS = {"", "warning", "decline", "individual_review"}
 
@@ -3524,28 +3763,61 @@ def _add_working_days(start: datetime | None, days: int) -> str | None:
 def _deadline_passed(deadline: str | None, moment: datetime | None = None) -> bool:
     if not deadline:
         return False
+    raw = str(deadline).strip()
+    boundary = _parse_prozorro_date(raw)
+    if boundary and ("T" in raw or " " in raw):
+        current = moment or datetime.now().astimezone()
+        if boundary.tzinfo is None:
+            boundary = boundary.replace(tzinfo=current.tzinfo)
+        elif current.tzinfo is None:
+            current = current.replace(tzinfo=boundary.tzinfo)
+        return current >= boundary
     try:
-        boundary = datetime.strptime(deadline[:10], "%Y-%m-%d").date()
+        boundary_date = datetime.strptime(raw[:10], "%Y-%m-%d").date()
     except (TypeError, ValueError):
         return False
-    return (moment or datetime.now()).date() > boundary
+    return (moment or datetime.now()).date() > boundary_date
 
 
 def violation_deadline_control(report: dict, moment: datetime | None = None) -> dict:
     """Separate the supplier response term from the Administrator review term."""
     received = _parse_prozorro_date(report.get("date_published") or report.get("date_created"))
-    official = str(report.get("defendant_period_end") or "")[:10] or None
+    official = str(report.get("defendant_period_end") or "").strip() or None
     local_control = _add_working_days(received, 3)
-    supplier_deadline = official or local_control
     admin_deadline = _add_working_days(received, 10)
     return {
         "supplier_official_deadline": official,
         "supplier_local_control_deadline": local_control,
-        "supplier_deadline": supplier_deadline,
-        "supplier_ready": _deadline_passed(supplier_deadline, moment),
+        "supplier_deadline": official,
+        "supplier_ready": _deadline_passed(official, moment),
+        "supplier_deadline_missing": not bool(official),
         "admin_deadline": admin_deadline,
         "admin_overdue": _deadline_passed(admin_deadline, moment),
     }
+
+
+def violation_report_owned_by_pqm(report: dict | sqlite3.Row) -> bool:
+    code = report["authority_code"] if isinstance(report, sqlite3.Row) else report.get("authority_code")
+    return re.sub(r"\D", "", str(code or "")) == ORGANIZER_EDRPOU
+
+
+def require_owned_violation_report(report: dict | sqlite3.Row) -> None:
+    if not violation_report_owned_by_pqm(report):
+        raise ForeignAuthorityError(
+            "Інформаційний перегляд. Звернення належить іншій ЦЗО — розгляд у PQM недоступний."
+        )
+
+
+def require_local_violation_report_owned(report_id: str) -> None:
+    """Fail closed before any network refresh can persist data for a foreign CPO report."""
+    with db() as con:
+        report = con.execute(
+            "SELECT authority_code FROM violation_reports WHERE id=? OR report_id=?",
+            (report_id, report_id),
+        ).fetchone()
+    if not report:
+        raise KeyError(report_id)
+    require_owned_violation_report(report)
 
 
 def _justification_basis(report: dict, context: dict, review: dict) -> dict:
@@ -3694,6 +3966,22 @@ def _guarantee_requirements(tender: dict, awards: list[dict]) -> list[dict]:
     return found
 
 
+def procurement_dk_classifications(tender: dict, contract: dict | None) -> list[dict]:
+    """Use contract items first and tender items only as a fallback; preserve every distinct DK."""
+    source_items = (contract or {}).get("items") or tender.get("items") or []
+    result, seen = [], set()
+    for item in source_items:
+        classification = item.get("classification") or {}
+        code = str(classification.get("id") or "").strip()
+        description = str(classification.get("description") or "").strip()
+        marker = (code, description)
+        if not code or marker in seen:
+            continue
+        seen.add(marker)
+        result.append({"code": code, "description": description})
+    return result
+
+
 def _review_dict(row: sqlite3.Row | None) -> dict | None:
     if not row:
         return None
@@ -3807,6 +4095,7 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     report_relevant = report.get("reason") in {"contractBreach", "signingRefusal"}
     contract_info_required = not (report_relevant and bool(rejected) and explicit_non_signing and not contract)
     guarantee = _guarantee_requirements(tender, supplier_awards)
+    dk_classifications = procurement_dk_classifications(tender, contract)
     guarantee_value = next((item.get("value") for item in guarantee if item.get("value") is not None), None)
     guarantee_unit = next((((item.get("unit") or {}).get("name")) for item in guarantee if item.get("unit")), None)
     context = {
@@ -3832,6 +4121,9 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
                              if explicit_non_signing and contract else ""),
         "contract_guarantee_required": bool(guarantee), "contract_guarantee_value": guarantee_value,
         "contract_guarantee_unit": guarantee_unit, "contract_guarantee_related_requirements": guarantee,
+        "dk_classifications": dk_classifications,
+        "dk_code": "; ".join(f"{item['code']} — {item['description']}" if item["description"] else item["code"]
+                              for item in dk_classifications),
         "requirement_responses": [response for award in supplier_awards for response in award.get("requirementResponses") or []],
         "contract_deadline_extended": extended,
         "day_5": _calendar_deadline(winner_selected, 5)["calendar_day"],
@@ -3902,10 +4194,17 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
                 document["checked_at"], document["checked_by"] = state["checked_at"], state["checked_by"]
     item["official_decisions"] = raw.get("decisions") or []
     item["has_official_decision"] = bool(item["official_decisions"])
-    item["is_read_only"] = item["has_official_decision"]
     item["review"], item["active_officers"] = _violation_review_officer_presentation(
         _review_dict(review_row))
     item["review"] = item["review"] or {}
+    item["local_review_completed"] = bool(
+        item["review"].get("completed_at")
+        or item["review"].get("review_status") in {"reviewed", "completed"}
+    )
+    item["owned_by_pqm"] = violation_report_owned_by_pqm(item)
+    item["foreign_authority_read_only"] = not item["owned_by_pqm"]
+    item["is_read_only"] = (item["has_official_decision"] or item["local_review_completed"]
+                            or item["foreign_authority_read_only"])
     # ``completed`` used to mean that the local review was finished.  Keep the
     # stored legacy value intact, but present it as ``reviewed``.  ``completed``
     # is now reserved for an official Prozorro decision and is derived from the
@@ -3970,6 +4269,7 @@ def save_violation_document_review(report_id: str, source: str, document_id: str
         report = con.execute("SELECT * FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
         if not report:
             raise KeyError(report_id)
+        require_owned_violation_report(report)
         raw = json.loads(report["raw_json"] or "{}")
         if raw.get("decisions"):
             raise PermissionError("У Prozorro вже є офіційне рішення адміністратора. Картка доступна лише для перегляду.")
@@ -4001,10 +4301,12 @@ def save_violation_document_review(report_id: str, source: str, document_id: str
 
 
 def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО") -> dict:
+    require_local_violation_report_owned(report_id)
     try:
         fresh = _fresh_violation_report(report_id)
     except Exception as exc:
         raise ConnectionError(f"Не вдалося перевірити актуальний стан у Prozorro: {exc}") from exc
+    require_owned_violation_report({"authority_code": _organization_fields(fresh.get("authority"))[1]})
     if fresh.get("decisions"):
         raise PermissionError("У Prozorro вже є офіційне рішення адміністратора. Картку переведено в режим лише для перегляду.")
     action = str(payload.get("action") or "save")
@@ -4049,14 +4351,7 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
         final_decision = values.get("internal_decision", existing.get("internal_decision", ""))
         discrepancy = str(values.get("established_discrepancy", existing.get("established_discrepancy", "")) or "").strip()
         if final_status == "reviewed":
-            if not deadlines["supplier_ready"]:
-                raise ValueError("Остаточне рішення недоступне до завершення офіційного строку постачальника")
-            if not final_decision:
-                raise ValueError("Для завершення розгляду оберіть рішення УО")
-            if final_decision == "decline" and not discrepancy:
-                raise ValueError("Для відмови в задоволенні зафіксуйте встановлену невідповідність")
-            if not existing.get("reviewed_at"):
-                raise ValueError("Статус «Розглянуто» встановлюється після успішного формування протоколу")
+            raise ValueError("Статус «Розглянуто» встановлюється лише окремою дією «Завершити розгляд»")
         now = now_iso()
         con.execute("INSERT OR IGNORE INTO violation_report_reviews(report_id,updated_at,updated_by) VALUES (?,?,?)",
                     (report["id"], now, updated_by))
@@ -4142,9 +4437,53 @@ def _protocol_date(value) -> str:
     return ".".join(reversed(raw.split("-"))) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) else raw
 
 
-def generate_violation_protocol(report_id: str, payload: dict) -> dict:
-    # violation_report_detail performs the mandatory fail-closed fresh Prozorro read.
+def merged_review_requires_discrepancy(report: dict, review: dict) -> bool:
+    """Require a discrepancy only when the UO explicitly uses that factual scenario."""
+    if str(review.get("internal_decision") or "") != "decline":
+        return False
+    return bool(review.get("additional_check_required") or str(review.get("established_discrepancy") or "").strip())
+
+
+def complete_violation_review(report_id: str, completed_by: str) -> dict:
+    """Complete the internal review without changing any official Prozorro state."""
+    require_local_violation_report_owned(report_id)
     item = violation_report_detail(report_id, refresh=True)
+    require_owned_violation_report(item)
+    if item.get("has_official_decision"):
+        raise PermissionError("У Prozorro вже є офіційне рішення адміністратора. Картка доступна лише для перегляду.")
+    review = item.get("review") or {}
+    deadline = item.get("deadline_control") or {}
+    if not deadline.get("supplier_ready"):
+        raise ValueError("Завершення розгляду недоступне до завершення офіційного строку постачальника")
+    if not review.get("internal_decision"):
+        raise ValueError("Для завершення розгляду оберіть рішення УО")
+    if merged_review_requires_discrepancy(item, review) and not str(review.get("established_discrepancy") or "").strip():
+        raise ValueError("Для обраного сценарію зафіксуйте встановлену невідповідність")
+    now = now_iso()
+    with db() as con:
+        report = con.execute("SELECT id FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
+        if not report:
+            raise KeyError(report_id)
+        current = con.execute("SELECT review_status,completed_at,completed_by FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
+        if not current:
+            raise ValueError("Робочу картку звернення не знайдено")
+        if current["completed_at"]:
+            return {"review_status": "reviewed", "completed_at": current["completed_at"], "completed_by": current["completed_by"], "already_completed": True}
+        con.execute("""UPDATE violation_report_reviews SET review_status='reviewed',reviewed_at=?,
+          completed_at=?,completed_by=?,updated_at=?,updated_by=? WHERE report_id=?""",
+          (now, now, completed_by, now, completed_by, report["id"]))
+        con.execute("""INSERT INTO violation_report_review_events
+          (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
+          VALUES (?,?,?,?,?,?,?)""", (report["id"], "review_completed", "review_status",
+          current["review_status"], "reviewed", now, completed_by))
+    return {"review_status": "reviewed", "completed_at": now, "completed_by": completed_by}
+
+
+def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER) -> dict:
+    # violation_report_detail performs the mandatory fail-closed fresh Prozorro read.
+    require_local_violation_report_owned(report_id)
+    item = violation_report_detail(report_id, refresh=True)
+    require_owned_violation_report(item)
     gate = violation_protocol_readiness(item, payload.get("protocol_number", ""), payload.get("protocol_date", ""))
     if not gate["ready"]:
         raise ValueError("; ".join(gate["reasons"]))
@@ -4176,6 +4515,9 @@ def generate_violation_protocol(report_id: str, payload: dict) -> dict:
         "граничний строк": _protocol_date(context.get("contract_deadline") or context.get("written_refusal_deadline")),
         "дата відхилення": _protocol_date(context.get("rejection_date")), "підстава відхилення": str(context.get("rejection_title") or context.get("rejection_description") or "—"),
         "дата письмової відмови": _protocol_date(review.get("written_refusal_date")), "вих. №": str(review.get("written_refusal_number") or "—"),
+        "дата рішення замовника": _protocol_date(review.get("customer_protocol_decision_date")),
+        "№ рішення замовника": str(review.get("customer_protocol_decision_number") or "—"),
+        "посилання на рішення замовника": str(review.get("customer_protocol_decision_url") or ""),
         "дата договору": _protocol_date(review.get("actual_contract_date") or context.get("contract_date")),
         "номер договору": str(review.get("actual_contract_number") or context.get("contract_pretty_id") or "—"),
         "пояснення постачальника": supplier_text, "рішення": "Попередження" if gate["protocol_type"] == "warning" else "Відмова",
@@ -4189,16 +4531,29 @@ def generate_violation_protocol(report_id: str, payload: dict) -> dict:
         "court": item.get("reason") == "goodsNonCompliance",
     }
     safe_report = safe_archive_name(str(item.get("report_id") or item.get("id")), "report")
-    safe_number = safe_archive_name(gate["protocol_number"], "protocol")
-    suffix = "П" if gate["protocol_type"] == "warning" else "В"
-    filename = f"{safe_report}_{safe_number}_{suffix}.docx"
+    decision_name = "Попередження" if gate["protocol_type"] == "warning" else "Відмова"
+    safe_customer = safe_archive_name(customer_name, "Замовник")[:48]
+    safe_supplier = safe_archive_name(supplier_name, "Постачальник")[:48]
+    safe_date = str(gate["protocol_date"] or "").replace(".", "-")
+    filename = f"{safe_report}_{decision_name}_{safe_customer}_{safe_supplier}_{safe_date}.docx"
     output = PROTOCOLS_DIR / filename
-    build_violation_protocol_docx(gate["protocol_type"], output, values,
-        str(review.get("decision_justification") or ""), item.get("evidence_documents") or [], supplier_documents,
-        flags, {"замовник в р в", "замовника", "постачальника", "постачальнику", "постачальником"})
-    # Generating the protocol is the explicit UO action that completes the
-    # local work stage.  The official ``completed`` state is still derived only
-    # from Prozorro decisions[] during the next detail/sync read.
+    PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = PROTOCOLS_DIR / f".{safe_report}.{uuid.uuid4().hex}.tmp.docx"
+    try:
+        build_violation_protocol_docx(gate["protocol_type"], temporary, values,
+            str(review.get("decision_justification") or ""), item.get("evidence_documents") or [], supplier_documents,
+            flags, {"замовник в р в", "замовника", "постачальника", "постачальнику", "постачальником"})
+        if not temporary.is_file():
+            raise RuntimeError("Генератор не створив DOCX")
+        os.replace(temporary, output)
+    except PermissionError as exc:
+        temporary.unlink(missing_ok=True)
+        raise ValueError("Не вдалося оновити протокол: закрийте поточний DOCX у Word та повторіть формування.") from exc
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    # Generation creates/updates the current document only. Internal completion
+    # is a separate explicit UO action.
     now = now_iso()
     with db() as con:
         report = con.execute("SELECT id FROM violation_reports WHERE id=? OR report_id=?",
@@ -4207,16 +4562,16 @@ def generate_violation_protocol(report_id: str, payload: dict) -> dict:
             raise KeyError(report_id)
         con.execute("INSERT OR IGNORE INTO violation_report_reviews(report_id,updated_at,updated_by) VALUES (?,?,?)",
                     (report["id"], now, CURRENT_USER))
-        previous = con.execute("SELECT review_status,protocol_number,protocol_date FROM violation_report_reviews WHERE report_id=?",
+        previous = con.execute("SELECT review_status,protocol_number,protocol_date,generated_protocol_filename FROM violation_report_reviews WHERE report_id=?",
                                (report["id"],)).fetchone()
         con.execute("""UPDATE violation_report_reviews
-                       SET review_status='reviewed',protocol_number=?,protocol_date=?,reviewed_at=?,updated_at=?,updated_by=?
+                       SET protocol_number=?,protocol_date=?,generated_protocol_filename=?,protocol_generated_at=?,updated_at=?,updated_by=?
                        WHERE report_id=?""",
-                    (gate["protocol_number"], gate["protocol_date"], now, now, CURRENT_USER, report["id"]))
+                    (gate["protocol_number"], gate["protocol_date"], filename, now, now, generated_by, report["id"]))
         changes = {
-            "review_status": (previous["review_status"], "reviewed"),
             "protocol_number": (previous["protocol_number"], gate["protocol_number"]),
             "protocol_date": (previous["protocol_date"], gate["protocol_date"]),
+            "generated_protocol_filename": (previous["generated_protocol_filename"], filename),
         }
         for field, (old, new) in changes.items():
             if old != new:
@@ -4224,10 +4579,18 @@ def generate_violation_protocol(report_id: str, payload: dict) -> dict:
                   (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
                   VALUES (?,?,?,?,?,?,?)""",
                   (report["id"], "protocol_generated", field,
-                   None if old is None else str(old), str(new), now, CURRENT_USER))
+                   None if old is None else str(old), str(new), now, generated_by))
+    previous_filename = str(previous["generated_protocol_filename"] or "")
+    if previous_filename and previous_filename != filename:
+        previous_path = PROTOCOLS_DIR / Path(previous_filename).name
+        try:
+            previous_path.unlink(missing_ok=True)
+        except PermissionError:
+            SERVER_LOG.warning("Previous generated protocol remains locked report=%s file=%s",
+                               safe_report, previous_path.name)
     return {**gate, "filename": filename,
             "download_url": "/api/protocol/files/" + urllib.parse.quote(filename),
-            "review_status": "reviewed"}
+            "review_status": review.get("review_status") or "in_review"}
 
 
 def safe_archive_name(value: str, fallback: str) -> str:
@@ -5262,10 +5625,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _authorize(self) -> bool:
         self.auth_user = CURRENT_USER
-        if not AUTH_ENABLED or urllib.parse.urlparse(self.path).path == "/api/health":
+        self.auth_role = "admin" if not AUTH_ENABLED else "viewer"
+        self.auth_officer_id = None
+        if not AUTH_ENABLED:
+            requested = str(self.headers.get("X-PQM-Local-Role") or "").strip().casefold()
+            client_host = str((self.client_address or ("",))[0])
+            if (LOCAL_ROLE_IMPERSONATION and client_host in {"127.0.0.1", "::1", "localhost"}
+                    and requested in AUTH_ROLES):
+                self.auth_role = requested
+            return True
+        if urllib.parse.urlparse(self.path).path == "/api/health":
             return True
         try:
-            users = configured_basic_auth_users()
+            accounts = configured_auth_accounts()
         except RuntimeError as exc:
             self.send_json({"error": str(exc), "status": 503}, 503)
             return False
@@ -5277,7 +5649,8 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             username = password = ""
             scheme = ""
-        valid = scheme.casefold() == "basic" and username in users and verify_basic_auth_secret(password, users[username])
+        account = accounts.get(username)
+        valid = bool(scheme.casefold() == "basic" and account and verify_basic_auth_secret(password, account["secret"]))
         if not valid:
             raw = json.dumps({"error": "Потрібна авторизація", "status": 401}, ensure_ascii=False).encode()
             self.send_response(401)
@@ -5288,11 +5661,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(raw)
             return False
         self.auth_user = username
+        self.auth_role = account["role"]
+        self.auth_officer_id = account.get("officer_id")
         return True
 
     def _dispatch(self, method) -> None:
         if not self._authorize():
             return
+        path = urllib.parse.urlparse(self.path).path
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if not admin_read_allowed(self.auth_role, path, query):
+            return self.send_json({"error": "Недостатньо прав для перегляду цього розділу", "status": 403}, 403)
+        if not mutation_allowed(self.auth_role, method, path):
+            return self.send_json({"error": "Недостатньо прав для цієї дії", "status": 403}, 403)
+        if (self.auth_role == "officer" and method in {"POST", "PATCH", "PUT", "DELETE"}
+                and not officer_mutation_scope_allowed(path, self.auth_officer_id)):
+            return self.send_json({"error": "Дія доступна лише для призначених вам заявок або звернень",
+                                   "status": 403}, 403)
         try:
             method()
         except BidsUnavailableError as exc:
@@ -5317,12 +5702,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         return self._dispatch(self._do_PATCH)
 
+    def do_DELETE(self):
+        return self._dispatch(self._do_DELETE)
+
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
             with db() as con:
                 counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("frameworks", "submissions", "qualifications")}
             return self.send_json({"ok": True, "counts": counts, "sync": SYNC_STATE})
+        if parsed.path == "/api/auth/me":
+            return self.send_json({"username": self.auth_user, "role": self.auth_role,
+                                   "officer_id": self.auth_officer_id,
+                                   "authenticated": bool(AUTH_ENABLED),
+                                   "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
         if parsed.path == "/api/runtime-features":
             return self.send_json({
                 "environment": PQM_ENV,
@@ -5549,9 +5942,24 @@ class Handler(BaseHTTPRequestHandler):
             report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/protocol/generate")]).rstrip("/")
             payload = self.read_json()
             try:
-                return self.send_json(generate_violation_protocol(report_id, payload))
+                return self.send_json(generate_violation_protocol(report_id, payload, self.auth_user))
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)
+            except ConnectionError as exc:
+                return self.send_json({"error": str(exc)}, 503)
+            except ForeignAuthorityError as exc:
+                return self.send_json({"error": str(exc), "is_read_only": True}, 403)
+        if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/review/complete"):
+            report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/review/complete")]).rstrip("/")
+            try:
+                return self.send_json(complete_violation_review(report_id, self.auth_user))
+            except KeyError:
+                return self.send_json({"error": "Звернення не знайдено"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except PermissionError as exc:
+                status = 403 if isinstance(exc, ForeignAuthorityError) else 409
+                return self.send_json({"error": str(exc), "is_read_only": True}, status)
             except ConnectionError as exc:
                 return self.send_json({"error": str(exc)}, 503)
             except (ValueError, PermissionError) as exc:
@@ -5573,18 +5981,33 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(generate_protocol(self.read_json()))
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 409)
+        if parsed.path == "/api/admin/frameworks":
+            try:
+                return self.send_json(create_framework_service_entry(self.read_json(), self.auth_user), 201)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 409)
+        if parsed.path == "/api/admin/frameworks/import-new":
+            try:
+                return self.send_json(import_new_framework_service_entries(self.auth_user))
+            except (ValueError, ConnectionError) as exc:
+                return self.send_json({"error": str(exc)}, 503)
         if parsed.path == "/api/sync":
-            if SYNC_STATE["running"]: return self.send_json(SYNC_STATE, 409)
             framework_id = self.read_json().get("framework_id")
             if framework_id:
-                threading.Thread(target=sync_worker, args=(framework_id,), daemon=True).start()
+                if not start_prozorro_sync(sync_worker, mode="single",
+                                           message="Підготовка синхронізації відбору…",
+                                           args=(framework_id,)):
+                    return self.send_json(SYNC_STATE, 409)
                 return self.send_json({"started": True, "framework_id": framework_id}, 202)
-            threading.Thread(target=sync_all_worker, daemon=True).start()
+            if not start_prozorro_sync(sync_all_worker, mode="full",
+                                       message="Пошук активних і закритих відборів…"):
+                return self.send_json(SYNC_STATE, 409)
             return self.send_json({"started": True, "scope": "active_and_closed"}, 202)
         if parsed.path == "/api/frameworks/refresh":
-            if SYNC_STATE["running"]:
+            if not start_prozorro_sync(refresh_framework_metadata_worker,
+                                       mode="framework_metadata",
+                                       message="Отримання актуальних відборів із Prozorro…"):
                 return self.send_json(SYNC_STATE, 409)
-            threading.Thread(target=refresh_framework_metadata_worker, daemon=True).start()
             return self.send_json({"started": True, "scope": "framework_metadata"}, 202)
         if parsed.path == "/api/violation-reports/sync":
             if VIOLATION_SYNC_STATE["running"]:
@@ -5597,7 +6020,7 @@ class Handler(BaseHTTPRequestHandler):
             if BIDS_UPDATE_STATE["running"]:
                 return self.send_json(BIDS_UPDATE_STATE, 409)
             BIDS_UPDATE_STATE.update(running=True, message="Підготовка оновлення Bids…", started_at=now_iso(), error=None)
-            threading.Thread(target=bids_update_worker, daemon=True).start()
+            timer = threading.Timer(0.2, bids_update_worker); timer.daemon = True; timer.start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync":
             if SUPPLIER_EDR_SYNC_STATE["running"]:
@@ -5674,10 +6097,12 @@ class Handler(BaseHTTPRequestHandler):
                   "document_template.replaced", "", target.name))
             return self.send_json({"saved": True, "item": next(x for x in template_metadata() if x["key"] == key)})
         if parsed.path == "/api/nazk-registry/refresh":
-            threading.Thread(target=refresh_nazk, args=(DB_PATH,), daemon=True).start()
+            if not start_reference_refresh(DB_PATH, "nazk"):
+                return self.send_json({"error": "Оновлення довідника НАЗК уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/refresh":
-            threading.Thread(target=refresh_amcu, args=(DB_PATH,), daemon=True).start()
+            if not start_reference_refresh(DB_PATH, "amcu"):
+                return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/upload":
             payload = self.read_json()
@@ -5685,7 +6110,8 @@ class Handler(BaseHTTPRequestHandler):
                 raw = base64.b64decode(payload.get("content") or "", validate=True)
             except Exception:
                 return self.send_json({"error": "Не вдалося прочитати Excel-файл"}, 400)
-            threading.Thread(target=refresh_amcu, args=(DB_PATH, raw, str(payload.get("filename") or "АМКУ.xlsx")), daemon=True).start()
+            if not start_reference_refresh(DB_PATH, "amcu", raw, str(payload.get("filename") or "АМКУ.xlsx")):
+                return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         return self.send_error(404)
 
@@ -5704,7 +6130,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
             except PermissionError as exc:
-                return self.send_json({"error": str(exc), "is_read_only": True}, 409)
+                status = 403 if isinstance(exc, ForeignAuthorityError) else 409
+                return self.send_json({"error": str(exc), "is_read_only": True}, status)
         if parsed.path.startswith("/api/admin/officers/"):
             try:
                 officer_id = int(parsed.path.rsplit("/", 1)[-1])
@@ -5818,7 +6245,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
             except PermissionError as exc:
-                return self.send_json({"error": str(exc), "is_read_only": True}, 409)
+                status = 403 if isinstance(exc, ForeignAuthorityError) else 409
+                return self.send_json({"error": str(exc), "is_read_only": True}, status)
             except ConnectionError as exc:
                 return self.send_json({"error": str(exc)}, 503)
         if parsed.path.startswith("/api/remarks-catalog/"):
@@ -5838,9 +6266,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"saved": True})
         if not parsed.path.startswith("/api/applications/"): return self.send_error(404)
         submission_id = parsed.path.rsplit("/", 1)[-1]; payload = self.read_json()
-        role = payload.pop("role", "officer")
-        supplied_user = str(payload.pop("user", "") or "").strip()
-        user = supplied_user if supplied_user and supplied_user not in {"УО", "Перегляд", "Адміністратор"} else self.auth_user
+        # Browser payload is never an authorization source. In LOCAL mode the
+        # effective role is resolved by ``_authorize`` from the loopback-only
+        # impersonation header; in authenticated mode it comes from the account.
+        payload.pop("role", None)
+        payload.pop("user", None)
+        role = self.auth_role
+        user = self.auth_user
         if "protocol_officer" in payload and not valid_active_officer(payload["protocol_officer"]):
             return self.send_json({"error": "Невідома відповідальна особа протоколу"}, 400)
         if "protocol_decision" in payload and payload["protocol_decision"] not in PROTOCOL_DECISIONS:
@@ -5957,6 +6389,22 @@ class Handler(BaseHTTPRequestHandler):
             if "manager_name" in payload:
                 ensure_submission_nazk_control(con, submission_id)
         return self.send_json({"saved": True})
+
+    def _do_DELETE(self):
+        parsed = urllib.parse.urlparse(self.path)
+        match = re.fullmatch(r"/api/admin/officers/(\d+)", parsed.path)
+        if not match:
+            return self.send_error(404)
+        officer_id = int(match.group(1))
+        with db() as con:
+            current = con.execute("SELECT id,full_name FROM authorized_officers WHERE id=?", (officer_id,)).fetchone()
+        if not current:
+            return self.send_json({"error": "УО не знайдено"}, 404)
+        if officer_usage_count(officer_id, current["full_name"]):
+            return self.send_json({"error": "УО вже використовувалась. Доступна лише деактивація."}, 409)
+        with db() as con:
+            con.execute("DELETE FROM authorized_officers WHERE id=?", (officer_id,))
+        return self.send_json({"deleted": True, "id": officer_id})
 
     def log_message(self, fmt, *args):
         message = fmt % args

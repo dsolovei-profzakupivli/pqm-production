@@ -1,7 +1,7 @@
 """DOCX protocol builder for PQM.
 
 The document follows the approved Google Docs protocol structure while the
-local MVP remains independent from Codex and Google OAuth.
+local MVP remains independent from interactive tooling and Google OAuth.
 """
 from __future__ import annotations
 

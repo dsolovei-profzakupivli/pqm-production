@@ -9,6 +9,7 @@ from datetime import datetime
 NAZK_URL = "https://corruptinfo.nazk.gov.ua/ep/1.0/corrupt/getAllData"
 AMCU_PAGE = "https://amcu.gov.ua/napryami/oskarzhennya-publichnih-zakupivel/zvedeni-vidomosti-shchodo-spotvorennya-rezultativ-torgiv/zvedeni-vidomosti-shchodo-spotvorennia-rezultativ-torhiv-za-2026-rik"
 LOCK = threading.Lock()
+START_LOCK = threading.Lock()
 
 
 def _now():
@@ -109,6 +110,23 @@ def refresh_nazk(db_path):
         _state(db_path, "nazk", "error", str(exc))
     finally:
         LOCK.release()
+
+
+def start_reference_refresh(db_path, source, raw=None, filename=""):
+    """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
+    if source not in {"nazk", "amcu"}:
+        raise ValueError("Невідомий довідник")
+    with START_LOCK:
+        state = reference_status(db_path).get(source, {})
+        if state.get("status") == "running" or LOCK.locked():
+            return False
+        _state(db_path, source, "running", "Підготовка фонового оновлення")
+        target = refresh_nazk if source == "nazk" else refresh_amcu
+        args = (db_path,) if source == "nazk" else (db_path, raw, filename)
+        timer = threading.Timer(0.2, target, args=args)
+        timer.daemon = True
+        timer.start()
+    return True
 
 
 def _cell(value):

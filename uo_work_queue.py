@@ -49,6 +49,20 @@ def _is_true(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _latest_nazk_dates(con) -> dict[str, str]:
+    """Return one normalized latest NACP decision date per person."""
+    return {
+        _text(row["manager_key"]): _date_part(row["decision_date"])
+        for row in con.execute(
+            """SELECT NORMALIZE_NAME(full_name) manager_key,MAX(sentence_date) decision_date
+               FROM nazk_registry
+               WHERE COALESCE(full_name,'')<>'' AND COALESCE(sentence_date,'')<>''
+               GROUP BY NORMALIZE_NAME(full_name)"""
+        )
+        if _text(row["manager_key"]) and _date_part(row["decision_date"])
+    }
+
+
 def _officer_label(value) -> str:
     parts = " ".join(_text(value).split()).split()
     if not parts:
@@ -175,6 +189,7 @@ def get_current_qualification_summary(con, filters: dict | None = None) -> dict:
 def _submission_nazk_tasks(con) -> list[dict]:
     rows = con.execute(
         """SELECT c.id control_id,c.submission_id,c.supplier_code,c.manager_name,c.created_at,
+          NORMALIZE_NAME(c.manager_name) manager_key,s.date_published,
           s.supplier_name,f.pretty_id,f.dk_code,COALESCE(fo.category,'') category,sm.manager_tax_id,
           COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'') responsible_user
           FROM submission_nazk_controls c
@@ -190,14 +205,15 @@ def _submission_nazk_tasks(con) -> list[dict]:
               SUBSTR(JSON_EXTRACT(f.raw_json,'$.qualificationPeriod.endDate'),1,10),
               SUBSTR(JSON_EXTRACT(f.raw_json,'$.period.endDate'),1,10),
               '9999-12-31')>=DATE('now')
-            AND (
-              LOWER(COALESCE(q.status,'pending'))='pending'
-              OR (LOWER(COALESCE(q.status,''))='active' AND EXISTS (
-                SELECT 1 FROM registry_contracts rc
-                WHERE rc.qualification_id=q.id AND LOWER(COALESCE(rc.status,''))='active'
-              ))
-            )"""
+            -- Application-level work belongs only to a current undecided
+            -- application. An already admitted historical application is
+            -- handled by the supplier-level workflow and must not be reopened.
+            AND LOWER(COALESCE(q.status,'pending'))='pending'"""
     ).fetchall()
+    latest_nazk_dates = _latest_nazk_dates(con)
+    rows = [row for row in rows
+            if latest_nazk_dates.get(_text(row["manager_key"]), "")
+            > _date_part(row["date_published"])]
     return [{
         "task_id": f"submission_nazk:{row['submission_id']}:check_certificate",
         "task_type": "submission_nazk", "action_type": "check_certificate",
@@ -218,6 +234,7 @@ def _supplier_nazk_tasks(con) -> list[dict]:
     placeholders = ",".join("?" for _ in OPEN_SUPPLIER_NAZK)
     rows = con.execute(
         f"""SELECT sc.id check_id,sc.supplier_code,sc.manager_name,sc.workflow_status,
+          NORMALIZE_NAME(sc.manager_name) manager_key,
           sc.started_at,sc.manager_id,srs.supplier_name,sm.manager_tax_id
           FROM supplier_nazk_checks sc
           JOIN supplier_registry_summary srs ON srs.supplier_code=sc.supplier_code
@@ -225,6 +242,23 @@ def _supplier_nazk_tasks(con) -> list[dict]:
           WHERE sc.workflow_status IN ({placeholders}) AND srs.active_count>0""",
         tuple(sorted(OPEN_SUPPLIER_NAZK)),
     ).fetchall()
+    latest_nazk_dates = _latest_nazk_dates(con)
+    codes = sorted({_text(row["supplier_code"]) for row in rows if _text(row["supplier_code"])})
+    application_dates = {}
+    if codes:
+        code_placeholders = ",".join("?" for _ in codes)
+        application_dates = {
+            _text(row["supplier_code"]): _date_part(row["application_date"])
+            for row in con.execute(
+                f"""SELECT supplier_code,MIN(date_published) application_date
+                    FROM submissions WHERE supplier_code IN ({code_placeholders})
+                    GROUP BY supplier_code""",
+                tuple(codes),
+            )
+        }
+    rows = [row for row in rows
+            if latest_nazk_dates.get(_text(row["manager_key"]), "")
+            > application_dates.get(_text(row["supplier_code"]), "")]
     labels = {
         "needs_review": "Потребує перевірки",
         "request_to_supplier": "Опрацювати запит постачальнику",

@@ -37,6 +37,7 @@ td.auto-filled{background:#fff3bf!important;color:#6d5100}tbody tr:hover td.auto
 .supplier-profile-grid>div:nth-child(odd){border-right:1px solid #d8e2ed}
 .supplier-profile-grid dt{font-size:12px;color:#64748b;margin-bottom:6px}
 .supplier-profile-grid dd{margin:0;font-weight:600;overflow-wrap:anywhere}
+.supplier-manager-source{display:block;margin-top:4px;color:#64748b;font-size:10px;font-weight:400;line-height:1.35}
 .registry-flag.supplier{background:#d9f8e8;color:#087443;border-color:#9eddbd}
 .registry-flag.applicant{background:#fff3cd;color:#805b00;border-color:#efd37a}
 #referenceAmcu tr.amcu-our-supplier td{background:#edf9f3}
@@ -130,3 +131,4 @@ td.auto-filled{background:#fff3bf!important;color:#6d5100}tbody tr:hover td.auto
 @media(max-width:1050px){.violation-top-row{grid-template-columns:1fr 1fr}.violation-top-row>div:last-child{grid-column:1/-1}}
 @media(max-width:760px){.violation-top-row,.violation-supplier-row{grid-template-columns:1fr}.violation-top-row>div:last-child{grid-column:auto}}
 #workQueueBody td:nth-child(2) small{white-space:pre-line}
+#refAmcuRefresh{display:none}

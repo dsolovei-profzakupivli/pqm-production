@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PQM — Реєстр заявок</title>
+  <link rel="icon" href="assets/profzakupivli-favicon.webp" type="image/webp">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="filters.css">
   <link rel="stylesheet" href="modules.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><img class="brand-logo" src="assets/professional-purchasing-logo.webp" alt="ДУ Професійні закупівлі"><div><strong>Profzakupivli Qualification Manager</strong><small>Розроблено для ДУ «Професійні закупівлі»</small><em>Тестова локальна версія · ручні рішення не мігруються</em></div></div>
+    <div class="brand"><img class="brand-logo" src="assets/professional-purchasing-logo.webp" alt="ДУ Професійні закупівлі"><div><strong>Profzakupivli Qualification Manager</strong><small>Розроблено для ДУ «Професійні закупівлі»</small><em id="environmentBanner">Локальна версія · ручні рішення не публікуються</em></div></div>
     <nav id="mainNav">
       <button id="workQueueNav">Робота УО</button>
       <button id="applicationsNav" class="nav-active">Реєстр заявок</button>
@@ -158,7 +159,7 @@
     <section class="module-heading"><div><p class="eyebrow">Службові налаштування PQM</p><h1>Адміністрування</h1><p class="muted">Налаштування, що не належать до щоденного розгляду заявок</p></div></section>
     <div class="reference-tabs card"><button type="button" data-admin-tab="frameworks" class="active">Відбори</button><button type="button" data-admin-tab="remarks">Конструктор зауважень</button><button type="button" data-admin-tab="templates">Шаблони документів</button><button type="button" data-admin-tab="sync">Синхронізація / Дані</button><button type="button" data-admin-tab="officers">Уповноважені особи / ролі</button></div>
     <section id="adminFrameworksPanel" class="admin-panel">
-      <div class="card admin-framework-toolbar"><input id="adminFrameworkSearch" type="search" placeholder="Пошук за ID, назвою або кодом ДК…"><select id="adminFrameworkStatus"><option value="">Усі статуси</option><option>Активний</option><option>Закритий</option><option>Не відбувся</option><option>Статус не визначено</option></select><select id="adminFrameworkCategory"><option value="">Усі категорії</option></select><select id="adminFrameworkOfficer"><option value="">Усі УО</option><option value="__unassigned__">Не призначено</option></select><button id="adminFrameworkReset" class="ghost">Скинути</button><span id="adminFrameworkCount" class="muted"></span></div>
+      <div class="card admin-framework-toolbar"><input id="adminFrameworkSearch" type="search" placeholder="Пошук за ID, назвою або кодом ДК…"><select id="adminFrameworkStatus"><option value="">Усі статуси</option><option>Активний</option><option>Закритий</option><option>Не відбувся</option><option>Статус не визначено</option></select><select id="adminFrameworkCategory"><option value="">Усі категорії</option></select><select id="adminFrameworkOfficer"><option value="">Усі УО</option><option value="__unassigned__">Не призначено</option></select><button id="adminFrameworkReset" class="ghost">Скинути</button><button id="adminFrameworkAdd" class="primary">+ Додати відбір</button><button id="adminFrameworkImportNew" class="ghost">Імпортувати нові відбори</button><span id="adminFrameworkCount" class="muted"></span></div>
       <datalist id="adminFrameworkCategoryOptions"></datalist>
       <section class="card"><div class="supplier-table-scroll"><table class="supplier-table admin-framework-table"><thead><tr><th data-admin-sort="pretty_id">ID відбору</th><th data-admin-sort="dk_code">Код ДК</th><th data-admin-sort="category">Категорія</th><th>Посилання на майданчик</th><th data-admin-sort="responsible_officer">Відповідальна УО</th><th data-admin-sort="status">Статус / кінцева дата</th><th>Prozorro</th><th></th></tr></thead><tbody id="adminFrameworksBody"></tbody></table></div></section>
     </section>
