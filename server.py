@@ -980,6 +980,9 @@ def init_db() -> None:
         if "presence_status" not in preference_columns:
             con.execute("ALTER TABLE user_preferences ADD COLUMN presence_status TEXT NOT NULL DEFAULT 'working'")
         con.execute("UPDATE user_preferences SET color_scheme='light' WHERE color_scheme<>'light'")
+        auth_user_columns = {row[1] for row in con.execute("PRAGMA table_info(auth_users)")}
+        if "last_seen_at" not in auth_user_columns:
+            con.execute("ALTER TABLE auth_users ADD COLUMN last_seen_at TEXT")
         violation_review_columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
         if "decision_justification" not in violation_review_columns:
             con.execute("ALTER TABLE violation_report_reviews ADD COLUMN decision_justification TEXT DEFAULT ''")
@@ -5781,7 +5784,15 @@ class Handler(BaseHTTPRequestHandler):
         with AUTH_SESSIONS_LOCK:
             session = AUTH_SESSIONS.get(token)
             if session and session["expires_at"] > time.time():
-                session["last_seen"] = time.time()
+                seen_now = time.time(); session["last_seen"] = seen_now
+                if seen_now - float(session.get("last_seen_persisted") or 0) >= 60:
+                    session["last_seen_persisted"] = seen_now
+                    try:
+                        with db() as con:
+                            con.execute("UPDATE auth_users SET last_seen_at=? WHERE username=?",
+                                        (datetime.fromtimestamp(seen_now, timezone.utc).isoformat(), session["username"]))
+                    except sqlite3.OperationalError:
+                        pass
                 self.auth_user = session["username"]; self.auth_role = session["role"]
                 self.auth_officer_id = session.get("officer_id"); return True
             if token:
@@ -5896,7 +5907,7 @@ class Handler(BaseHTTPRequestHandler):
                     if username and last_seen > online_users.get(username, 0):
                         online_users[username] = last_seen
             with db() as con:
-                rows = con.execute("""SELECT u.username,u.role,u.officer_id,u.active,u.created_at,u.updated_at,
+                rows = con.execute("""SELECT u.username,u.role,u.officer_id,u.active,u.created_at,u.updated_at,u.last_seen_at,
                   o.full_name officer_name FROM auth_users u LEFT JOIN authorized_officers o ON o.id=u.officer_id
                   ORDER BY u.active DESC,u.username""").fetchall()
                 avatars = {row["username"] for row in con.execute("SELECT username FROM user_avatars")}
@@ -5904,7 +5915,7 @@ class Handler(BaseHTTPRequestHandler):
             items = [{**dict(row), "managed": True, "has_avatar": row["username"] in avatars,
                       "online": now - online_users.get(row["username"], 0) <= AUTH_ONLINE_WINDOW,
                       "last_seen_at": datetime.fromtimestamp(online_users[row["username"]], timezone.utc).isoformat()
-                        if row["username"] in online_users else None} for row in rows]
+                        if row["username"] in online_users else row["last_seen_at"]} for row in rows]
             present = {item["username"] for item in items}
             for username, account in configured_auth_accounts().items():
                 if username in present:
@@ -6202,7 +6213,9 @@ class Handler(BaseHTTPRequestHandler):
             token = secrets.token_urlsafe(32)
             now = time.time()
             session = {"username": username, "role": account["role"], "officer_id": account.get("officer_id"),
-                       "expires_at": now + AUTH_SESSION_TTL, "last_seen": now}
+                       "expires_at": now + AUTH_SESSION_TTL, "last_seen": now, "last_seen_persisted": now}
+            with db() as con:
+                con.execute("UPDATE auth_users SET last_seen_at=? WHERE username=?", (now_iso(), username))
             with AUTH_SESSIONS_LOCK:
                 AUTH_SESSIONS[token] = session
             return self.send_session({"username": username, "role": account["role"],

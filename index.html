@@ -191,7 +191,7 @@
       <section class="card user-management" data-admin-only><div><p class="eyebrow">Доступ до PQM</p><h2>Користувачі та паролі</h2><p class="muted">Адміністратори створюють акаунти УО, глядачів та інших адміністраторів. Пароль зберігається лише як захищений хеш.</p></div>
         <form id="adminUserForm" class="admin-user-form"><label>Логін<input id="adminUserLogin" autocomplete="off" required placeholder="наприклад d.savva"></label><label>Тип акаунта<select id="adminUserRole" required><option value="officer">УО</option><option value="viewer">Глядач</option><option value="admin">Адміністратор</option></select></label><label id="adminUserOfficerField">Уповноважена особа<select id="adminUserOfficer" required></select></label><label>Пароль<input id="adminUserPassword" type="password" minlength="10" autocomplete="new-password" required></label><label>Повторіть пароль<input id="adminUserPasswordConfirm" type="password" minlength="10" autocomplete="new-password" required></label><button class="primary" type="submit">Створити користувача</button></form>
         <input id="adminUserAvatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-        <div class="supplier-table-scroll"><table class="supplier-table"><thead><tr><th>Користувач</th><th>УО</th><th>Роль</th><th>Статус</th><th>Аватар</th><th>Дії</th></tr></thead><tbody id="adminUsersBody"></tbody></table></div>
+        <div class="supplier-table-scroll"><table class="supplier-table"><thead><tr><th>Користувач</th><th>УО</th><th>Роль</th><th>Статус</th><th>Онлайн</th><th>Аватар</th><th>Дії</th></tr></thead><tbody id="adminUsersBody"></tbody></table></div>
       </section>
     </section>
   </main>

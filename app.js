@@ -785,13 +785,11 @@ loadAdminUsers=async function(officers=authorizedOfficerItems){
     const data=await request(`${API}/admin/users`);
     (data.items||[]).forEach(user=>{
       const row=[...$$('#adminUsersBody tr')].find(item=>item.dataset.username===user.username);
-      const cell=row?.children[3];
-      if(!cell)return;
-      const activity=document.createElement('span');
-      activity.className=`online-presence ${user.online?'online':'offline'}`;
-      activity.textContent=user.online?'Онлайн':'Офлайн';
-      activity.title=user.online?'Є активність у PQM протягом останніх 90 секунд':user.last_seen_at?`Остання активність: ${displayDate(user.last_seen_at)}`:'Активності після запуску сервісу ще не було';
-      cell.append(activity);
+      if(!row)return;
+      const cell=row.insertCell(4),lastSeen=user.last_seen_at?displayDate(user.last_seen_at):'';
+      cell.className='admin-online-cell';
+      cell.innerHTML=`<span class="online-presence ${user.online?'online':'offline'}">${user.online?'Онлайн':'Офлайн'}</span>${user.online?'':`<small>${esc(lastSeen||'Ще не входив')}</small>`}`;
+      cell.title=user.online?'Є активність у PQM протягом останніх 90 секунд':lastSeen?`Остання активність: ${lastSeen}`:'Користувач ще не входив після створення акаунта';
     });
   }catch{}
 };
