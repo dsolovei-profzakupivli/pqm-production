@@ -5940,9 +5940,15 @@ class Handler(BaseHTTPRequestHandler):
             with db() as con:
                 if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
                 rows=con.execute("""SELECT m.* FROM chat_messages m WHERE m.chat_id=? AND m.id>? ORDER BY m.id LIMIT 300""",(chat_id,after)).fetchall()
+                read_positions={r["username"]:int(r["last_read_message_id"] or 0) for r in con.execute(
+                  "SELECT username,last_read_message_id FROM chat_members WHERE chat_id=?",(chat_id,))}
                 items=[]
                 for row in rows:
                     item=dict(row)
+                    other_reads=[position for username,position in read_positions.items() if username!=row["sender_username"]]
+                    item["read_count"]=sum(position>=row["id"] for position in other_reads)
+                    item["recipient_count"]=len(other_reads)
+                    item["read_by_all"]=bool(other_reads) and all(position>=row["id"] for position in other_reads)
                     item["attachments"]=[dict(x) for x in con.execute("SELECT id,filename,content_type,size FROM chat_attachments WHERE message_id=?",(row["id"],))]
                     item["submission"]=None
                     if row["submission_id"]:
