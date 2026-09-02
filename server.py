@@ -878,6 +878,13 @@ def init_db() -> None:
         );
         CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_users_officer
           ON auth_users(officer_id) WHERE officer_id IS NOT NULL AND active=1;
+        CREATE TABLE IF NOT EXISTS user_avatars (
+          username TEXT PRIMARY KEY,
+          content_type TEXT NOT NULL,
+          content BLOB NOT NULL,
+          updated_at TEXT NOT NULL,
+          updated_by TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,
           changed_by TEXT NOT NULL, field_name TEXT NOT NULL, old_value TEXT, new_value TEXT
@@ -5787,12 +5794,35 @@ class Handler(BaseHTTPRequestHandler):
                                    "officer_id": self.auth_officer_id,
                                    "authenticated": bool(AUTH_ENABLED),
                                    "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
+        avatar_match = re.fullmatch(r"/api/users/([^/]+)/avatar", parsed.path)
+        if avatar_match:
+            username = urllib.parse.unquote(avatar_match.group(1))
+            with db() as con:
+                row = con.execute("SELECT content_type,content FROM user_avatars WHERE username=?", (username,)).fetchone()
+            if not row:
+                return self.send_error(404, "Аватар не знайдено")
+            raw = bytes(row["content"])
+            self.send_response(200); self.send_header("Content-Type", row["content_type"])
+            self.send_header("Cache-Control", "private, max-age=300")
+            self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/admin/users":
             with db() as con:
                 rows = con.execute("""SELECT u.username,u.role,u.officer_id,u.active,u.created_at,u.updated_at,
                   o.full_name officer_name FROM auth_users u LEFT JOIN authorized_officers o ON o.id=u.officer_id
                   ORDER BY u.active DESC,u.username""").fetchall()
-            return self.send_json({"items": [dict(row) for row in rows]})
+                avatars = {row["username"] for row in con.execute("SELECT username FROM user_avatars")}
+                officer_names = {row["id"]: row["full_name"] for row in con.execute("SELECT id,full_name FROM authorized_officers")}
+            items = [{**dict(row), "managed": True, "has_avatar": row["username"] in avatars} for row in rows]
+            present = {item["username"] for item in items}
+            for username, account in configured_auth_accounts().items():
+                if username in present:
+                    continue
+                officer_id = account.get("officer_id")
+                items.append({"username": username, "role": account["role"], "officer_id": officer_id,
+                              "officer_name": officer_names.get(officer_id), "active": True,
+                              "managed": False, "has_avatar": username in avatars})
+            items.sort(key=lambda item: (not item["active"], item["username"].casefold()))
+            return self.send_json({"items": items})
         if parsed.path == "/api/runtime-features":
             return self.send_json({
                 "environment": PQM_ENV,
@@ -6055,6 +6085,29 @@ class Handler(BaseHTTPRequestHandler):
             except sqlite3.IntegrityError:
                 return self.send_json({"error": "Логін або акаунт цієї УО вже існує"}, 409)
             return self.send_json({"saved": True, "username": username}, 201)
+        avatar_match = re.fullmatch(r"/api/admin/users/([^/]+)/avatar", parsed.path)
+        if avatar_match:
+            username = urllib.parse.unquote(avatar_match.group(1)); payload = self.read_json()
+            if username not in auth_accounts():
+                return self.send_json({"error": "Користувача не знайдено"}, 404)
+            content_type = str(payload.get("content_type") or "").casefold()
+            if content_type not in {"image/png", "image/jpeg", "image/webp"}:
+                return self.send_json({"error": "Дозволено лише PNG, JPEG або WebP"}, 400)
+            try:
+                raw = base64.b64decode(payload.get("content") or "", validate=True)
+            except Exception:
+                return self.send_json({"error": "Не вдалося прочитати зображення"}, 400)
+            signatures = {"image/png": raw.startswith(b"\x89PNG\r\n\x1a\n"),
+                          "image/jpeg": raw.startswith(b"\xff\xd8\xff"),
+                          "image/webp": raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"}
+            if not raw or len(raw) > 2 * 1024 * 1024 or not signatures[content_type]:
+                return self.send_json({"error": "Некоректне зображення або розмір перевищує 2 МБ"}, 400)
+            with db() as con:
+                con.execute("""INSERT INTO user_avatars(username,content_type,content,updated_at,updated_by)
+                  VALUES (?,?,?,?,?) ON CONFLICT(username) DO UPDATE SET content_type=excluded.content_type,
+                  content=excluded.content,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                  (username, content_type, raw, now_iso(), self.auth_user))
+            return self.send_json({"saved": True, "username": username})
         if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/protocol/generate"):
             report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/protocol/generate")]).rstrip("/")
             payload = self.read_json()
@@ -6533,6 +6586,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
+        avatar_match = re.fullmatch(r"/api/admin/users/([^/]+)/avatar", parsed.path)
+        if avatar_match:
+            username = urllib.parse.unquote(avatar_match.group(1))
+            with db() as con:
+                con.execute("DELETE FROM user_avatars WHERE username=?", (username,))
+            return self.send_json({"deleted": True, "username": username})
         match = re.fullmatch(r"/api/admin/officers/(\d+)", parsed.path)
         if not match:
             return self.send_error(404)
