@@ -871,3 +871,21 @@ bindViolationReview=function(item){
   const complete=$('#completeViolationReview');if(complete)complete.onclick=()=>completeViolationReview(item);
   $$('#requestDetailsBody [data-violation-document-id]').forEach(input=>{input.onchange=()=>saveViolationDocumentReview(item,input)});
 }
+const workQueueDateStateKey='pqm.workQueue.protocolDates';
+function saveWorkQueueProtocolDates(){
+  try{localStorage.setItem(workQueueDateStateKey,JSON.stringify({from:$('#queueProtocolFrom').value,to:$('#queueProtocolTo').value}))}catch{}
+}
+function restoreWorkQueueProtocolDates(){
+  try{
+    const state=JSON.parse(localStorage.getItem(workQueueDateStateKey)||'null');
+    if(!state||typeof state!=='object')return;
+    $('#queueProtocolFrom').value=typeof state.from==='string'?state.from:'';
+    $('#queueProtocolTo').value=typeof state.to==='string'?state.to:'';
+  }catch{localStorage.removeItem(workQueueDateStateKey)}
+}
+restoreWorkQueueProtocolDates();
+const loadWorkQueueWithDatePersistence=loadWorkQueue;
+loadWorkQueue=async function(){
+  await loadWorkQueueWithDatePersistence();
+  saveWorkQueueProtocolDates();
+};
