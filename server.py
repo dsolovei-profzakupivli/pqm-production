@@ -5937,6 +5937,8 @@ class Handler(BaseHTTPRequestHandler):
                 chats = con.execute("""SELECT t.*,m.last_read_message_id,
                   (SELECT COUNT(*) FROM chat_messages x WHERE x.chat_id=t.id AND x.id>m.last_read_message_id AND x.sender_username<>?) unread_count,
                   (SELECT body FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_body,
+                  (SELECT sender_username FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_sender,
+                  (SELECT id FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_message_id,
                   (SELECT created_at FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_message_at
                   FROM chat_threads t JOIN chat_members m ON m.chat_id=t.id
                   WHERE m.username=? ORDER BY COALESCE(last_message_at,t.updated_at) DESC""", (self.auth_user,self.auth_user)).fetchall()
