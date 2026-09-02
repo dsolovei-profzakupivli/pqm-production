@@ -5824,18 +5824,30 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method) -> None:
         if not self._authorize():
             return
+        http_method = self.command.upper()
         path = urllib.parse.urlparse(self.path).path
         if path in {"/api/login", "/api/logout"}:
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if not admin_read_allowed(self.auth_role, path, query):
             return self.send_json({"error": "Недостатньо прав для перегляду цього розділу", "status": 403}, 403)
-        if not mutation_allowed(self.auth_role, method, path):
+        if not mutation_allowed(self.auth_role, http_method, path):
             return self.send_json({"error": "Недостатньо прав для цієї дії", "status": 403}, 403)
-        if (self.auth_role == "officer" and method in {"POST", "PATCH", "PUT", "DELETE"}
+        if (self.auth_role == "officer" and http_method in {"POST", "PATCH", "PUT", "DELETE"}
                 and not officer_mutation_scope_allowed(path, self.auth_officer_id)):
             return self.send_json({"error": "Дія доступна лише для призначених вам заявок або звернень",
                                    "status": 403}, 403)
+        application_mutation = re.fullmatch(r"/api/applications/([^/]+)(?:/.*)?", path)
+        if http_method in {"POST", "PATCH", "PUT", "DELETE"} and application_mutation:
+            submission_id = urllib.parse.unquote(application_mutation.group(1))
+            with db() as con:
+                status = con.execute("""SELECT COALESCE(q.status,'pending') FROM submissions s
+                  LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE s.id=?""",
+                  (submission_id,)).fetchone()
+            if status and status[0] in {"active", "unsuccessful"}:
+                label = "Допущено" if status[0] == "active" else "Відхилено"
+                return self.send_json({"error": f"Заявка має фінальний статус «{label}». Будь-які зміни рядка заблоковано для всіх ролей.",
+                                       "code": "application_final_locked", "status": 409}, 409)
         try:
             method()
         except BidsUnavailableError as exc:
