@@ -191,6 +191,7 @@ AUTH_ROLES = {"admin", "officer", "viewer"}
 AUTH_SESSIONS: dict[str, dict] = {}
 AUTH_SESSIONS_LOCK = threading.Lock()
 AUTH_SESSION_TTL = 12 * 60 * 60
+AUTH_ONLINE_WINDOW = 90
 AUTH_COOKIE = "pqm_session"
 
 
@@ -5728,6 +5729,7 @@ class Handler(BaseHTTPRequestHandler):
         with AUTH_SESSIONS_LOCK:
             session = AUTH_SESSIONS.get(token)
             if session and session["expires_at"] > time.time():
+                session["last_seen"] = time.time()
                 self.auth_user = session["username"]; self.auth_role = session["role"]
                 self.auth_officer_id = session.get("officer_id"); return True
             if token:
@@ -5830,13 +5832,27 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "private, max-age=300")
             self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/admin/users":
+            now = time.time()
+            online_users: dict[str, float] = {}
+            with AUTH_SESSIONS_LOCK:
+                for token, session in list(AUTH_SESSIONS.items()):
+                    if session["expires_at"] <= now:
+                        AUTH_SESSIONS.pop(token, None)
+                        continue
+                    last_seen = float(session.get("last_seen") or 0)
+                    username = str(session.get("username") or "")
+                    if username and last_seen > online_users.get(username, 0):
+                        online_users[username] = last_seen
             with db() as con:
                 rows = con.execute("""SELECT u.username,u.role,u.officer_id,u.active,u.created_at,u.updated_at,
                   o.full_name officer_name FROM auth_users u LEFT JOIN authorized_officers o ON o.id=u.officer_id
                   ORDER BY u.active DESC,u.username""").fetchall()
                 avatars = {row["username"] for row in con.execute("SELECT username FROM user_avatars")}
                 officer_names = {row["id"]: row["full_name"] for row in con.execute("SELECT id,full_name FROM authorized_officers")}
-            items = [{**dict(row), "managed": True, "has_avatar": row["username"] in avatars} for row in rows]
+            items = [{**dict(row), "managed": True, "has_avatar": row["username"] in avatars,
+                      "online": now - online_users.get(row["username"], 0) <= AUTH_ONLINE_WINDOW,
+                      "last_seen_at": datetime.fromtimestamp(online_users[row["username"]], timezone.utc).isoformat()
+                        if row["username"] in online_users else None} for row in rows]
             present = {item["username"] for item in items}
             for username, account in configured_auth_accounts().items():
                 if username in present:
@@ -5844,7 +5860,10 @@ class Handler(BaseHTTPRequestHandler):
                 officer_id = account.get("officer_id")
                 items.append({"username": username, "role": account["role"], "officer_id": officer_id,
                               "officer_name": officer_names.get(officer_id), "active": True,
-                              "managed": False, "has_avatar": username in avatars})
+                              "managed": False, "has_avatar": username in avatars,
+                              "online": now - online_users.get(username, 0) <= AUTH_ONLINE_WINDOW,
+                              "last_seen_at": datetime.fromtimestamp(online_users[username], timezone.utc).isoformat()
+                                if username in online_users else None})
             items.sort(key=lambda item: (not item["active"], item["username"].casefold()))
             return self.send_json({"items": items})
         if parsed.path == "/api/runtime-features":
@@ -6080,8 +6099,9 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(0.25)
                 return self.send_json({"error": "Невірний логін або пароль"}, 401)
             token = secrets.token_urlsafe(32)
+            now = time.time()
             session = {"username": username, "role": account["role"], "officer_id": account.get("officer_id"),
-                       "expires_at": time.time() + AUTH_SESSION_TTL}
+                       "expires_at": now + AUTH_SESSION_TTL, "last_seen": now}
             with AUTH_SESSIONS_LOCK:
                 AUTH_SESSIONS[token] = session
             return self.send_session({"username": username, "role": account["role"],

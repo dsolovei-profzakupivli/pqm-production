@@ -778,12 +778,30 @@ async function loadAdminUsers(officers=authorizedOfficerItems){
     $$('.admin-user-avatar-delete').forEach(button=>button.onclick=async()=>{const username=button.closest('tr').dataset.username;if(!confirm(`Видалити аватар ${username}?`))return;try{await request(`${API}/admin/users/${encodeURIComponent(username)}/avatar`,{method:'DELETE'});if(username===currentAuthUser)showCurrentUserAvatar(username,false);toast('Аватар видалено');await loadAdminUsers(officers)}catch(error){toast(error.message)}});
   }catch(error){body.innerHTML=`<tr><td colspan="6">${esc(error.message)}</td></tr>`}
 }
+const loadAdminUsersWithoutPresence=loadAdminUsers;
+loadAdminUsers=async function(officers=authorizedOfficerItems){
+  await loadAdminUsersWithoutPresence(officers);
+  try{
+    const data=await request(`${API}/admin/users`);
+    (data.items||[]).forEach(user=>{
+      const row=[...$$('#adminUsersBody tr')].find(item=>item.dataset.username===user.username);
+      const cell=row?.children[3];
+      if(!cell)return;
+      const activity=document.createElement('span');
+      activity.className=`online-presence ${user.online?'online':'offline'}`;
+      activity.textContent=user.online?'Онлайн':'Офлайн';
+      activity.title=user.online?'Є активність у PQM протягом останніх 90 секунд':user.last_seen_at?`Остання активність: ${displayDate(user.last_seen_at)}`:'Активності після запуску сервісу ще не було';
+      cell.append(activity);
+    });
+  }catch{}
+};
 $('#adminUserAvatarFile').onchange=async event=>{const file=event.target.files[0],username=event.target.dataset.username;event.target.value='';if(!file||!username)return;if(file.size>2*1024*1024)return toast('Максимальний розмір аватара — 2 МБ');if(!['image/png','image/jpeg','image/webp'].includes(file.type))return toast('Дозволено лише PNG, JPEG або WebP');try{const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));await request(`${API}/admin/users/${encodeURIComponent(username)}/avatar`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content_type:file.type,content:btoa(binary)})});if(username===currentAuthUser)showCurrentUserAvatar(username);toast('Аватар збережено');await loadAdminUsers()}catch(error){toast(error.message)}};
 function syncAdminUserOfficerField(){const isOfficer=$('#adminUserRole').value==='officer',field=$('#adminUserOfficerField'),select=$('#adminUserOfficer');field.hidden=!isOfficer;select.required=isOfficer;if(!isOfficer)select.value=''}
 $('#adminUserRole').onchange=syncAdminUserOfficerField;
 syncAdminUserOfficerField();
 $('#adminUserForm').onsubmit=async event=>{event.preventDefault();const password=$('#adminUserPassword').value,accountRole=$('#adminUserRole').value,officerId=accountRole==='officer'?Number($('#adminUserOfficer').value):null;if(password!==$('#adminUserPasswordConfirm').value)return toast('Паролі не збігаються');if(accountRole==='officer'&&!officerId)return toast('Оберіть конкретну УО');try{await request(`${API}/admin/users`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#adminUserLogin').value.trim(),password,role:accountRole,officer_id:officerId})});event.target.reset();syncAdminUserOfficerField();toast('Користувача створено');await loadAdminUsers()}catch(error){toast(error.message)}};
 $('#resetBtn').textContent='Оновити з Prozorro';loadAuthenticatedRole().finally(()=>loadAuthorizedOfficers().then(()=>{renderProfiles();loadPrimaryFilterOptions();loadFrameworks();loadSupplierOptions();loadRows()}).catch(()=>{renderProfiles();loadPrimaryFilterOptions();loadFrameworks();loadSupplierOptions();loadRows()}));refreshSyncStatus();setInterval(refreshSyncStatus,30000);
+setInterval(()=>{if(activeModule==='administration'&&adminTab==='officers')loadAdminUsers()},30000);
 
 // Violation-report workbench: compact, deadline-aware presentation. Official Prozorro
 // data remains read-only; only the local review section is editable.
