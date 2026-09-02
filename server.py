@@ -265,6 +265,8 @@ def mutation_allowed(role: str, method: str, path: str) -> bool:
         return True
     if path == "/api/account" or path == "/api/account/avatar":
         return True
+    if path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
+        return True
     if role == "admin":
         return True
     if role != "officer":
@@ -295,6 +297,8 @@ def admin_read_allowed(role: str, path: str, query: dict[str, list[str]] | None 
 
 def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
     """Restrict officer mutations to assigned work; unassigned appeals may be claimed."""
+    if path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
+        return True
     try:
         officer_id = int(officer_id)
     except (TypeError, ValueError):
@@ -896,6 +900,30 @@ def init_db() -> None:
           density TEXT NOT NULL DEFAULT 'comfortable',
           presence_status TEXT NOT NULL DEFAULT 'working',
           updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS chat_threads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL DEFAULT '', is_group INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS chat_members (
+          chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+          username TEXT NOT NULL, joined_at TEXT NOT NULL, last_read_message_id INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(chat_id,username)
+        );
+        CREATE INDEX IF NOT EXISTS ix_chat_members_username ON chat_members(username,chat_id);
+        CREATE TABLE IF NOT EXISTS chat_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+          sender_username TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', submission_id TEXT DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_chat_messages_chat ON chat_messages(chat_id,id);
+        CREATE TABLE IF NOT EXISTS chat_attachments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+          filename TEXT NOT NULL, content_type TEXT NOT NULL, content BLOB NOT NULL,
+          size INTEGER NOT NULL, created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,
@@ -5697,6 +5725,30 @@ class Handler(BaseHTTPRequestHandler):
     def read_json(self):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
 
+    def chat_member(self, con, chat_id: int) -> bool:
+        return bool(con.execute("SELECT 1 FROM chat_members WHERE chat_id=? AND username=?",
+                                (chat_id, self.auth_user)).fetchone())
+
+    def online_users(self) -> dict[str, float]:
+        now = time.time(); result = {}
+        with AUTH_SESSIONS_LOCK:
+            for token, session in list(AUTH_SESSIONS.items()):
+                if session["expires_at"] <= now:
+                    AUTH_SESSIONS.pop(token, None); continue
+                username = str(session.get("username") or ""); last_seen = float(session.get("last_seen") or 0)
+                if username and last_seen > result.get(username, 0): result[username] = last_seen
+        return result
+
+    def chat_users(self, con, usernames=None):
+        online, now = self.online_users(), time.time()
+        params = tuple(usernames or ()); where = f"WHERE u.username IN ({','.join('?' * len(params))})" if params else "WHERE u.active=1"
+        rows = con.execute(f"""SELECT u.username,u.role,u.active,COALESCE(NULLIF(p.display_name,''),o.full_name,u.username) display_name,
+          p.presence_status,CASE WHEN a.username IS NULL THEN 0 ELSE 1 END has_avatar
+          FROM auth_users u LEFT JOIN user_preferences p ON p.username=u.username
+          LEFT JOIN authorized_officers o ON o.id=u.officer_id LEFT JOIN user_avatars a ON a.username=u.username
+          {where} ORDER BY display_name COLLATE NOCASE""", params).fetchall()
+        return [{**dict(row), "online": now-online.get(row["username"], 0) <= AUTH_ONLINE_WINDOW} for row in rows]
+
     def send_error(self, code, message=None, explain=None):
         if urllib.parse.urlparse(self.path).path.startswith("/api/"):
             return self.send_json({"error": message or "Запит не виконано", "status": code}, code)
@@ -5866,6 +5918,49 @@ class Handler(BaseHTTPRequestHandler):
                                 if username in online_users else None})
             items.sort(key=lambda item: (not item["active"], item["username"].casefold()))
             return self.send_json({"items": items})
+        if parsed.path == "/api/chats/users":
+            with db() as con: items = self.chat_users(con)
+            return self.send_json({"items": items})
+        if parsed.path == "/api/chats":
+            with db() as con:
+                chats = con.execute("""SELECT t.*,m.last_read_message_id,
+                  (SELECT COUNT(*) FROM chat_messages x WHERE x.chat_id=t.id AND x.id>m.last_read_message_id AND x.sender_username<>?) unread_count,
+                  (SELECT body FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_body,
+                  (SELECT created_at FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_message_at
+                  FROM chat_threads t JOIN chat_members m ON m.chat_id=t.id
+                  WHERE m.username=? ORDER BY COALESCE(last_message_at,t.updated_at) DESC""", (self.auth_user,self.auth_user)).fetchall()
+                result=[]
+                for chat in chats:
+                    names=[r[0] for r in con.execute("SELECT username FROM chat_members WHERE chat_id=? ORDER BY username",(chat["id"],))]
+                    result.append({**dict(chat),"members":self.chat_users(con,names)})
+            return self.send_json({"items":result,"unread":sum(x["unread_count"] for x in result)})
+        chat_messages = re.fullmatch(r"/api/chats/(\d+)/messages", parsed.path)
+        if chat_messages:
+            chat_id=int(chat_messages.group(1)); after=max(0,int(urllib.parse.parse_qs(parsed.query).get("after_id",[0])[0]))
+            with db() as con:
+                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
+                rows=con.execute("""SELECT m.* FROM chat_messages m WHERE m.chat_id=? AND m.id>? ORDER BY m.id LIMIT 300""",(chat_id,after)).fetchall()
+                items=[]
+                for row in rows:
+                    item=dict(row)
+                    item["attachments"]=[dict(x) for x in con.execute("SELECT id,filename,content_type,size FROM chat_attachments WHERE message_id=?",(row["id"],))]
+                    item["submission"]=None
+                    if row["submission_id"]:
+                        submission=con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,f.pretty_id framework_pretty_id
+                          FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id WHERE s.id=?""",(row["submission_id"],)).fetchone()
+                        item["submission"]=dict(submission) if submission else {"id":row["submission_id"]}
+                    items.append(item)
+                names=[r[0] for r in con.execute("SELECT username FROM chat_members WHERE chat_id=?",(chat_id,))]
+            return self.send_json({"items":items,"members":self.chat_users(db().__enter__(),names) if False else []})
+        attachment_match=re.fullmatch(r"/api/chats/attachments/(\d+)",parsed.path)
+        if attachment_match:
+            attachment_id=int(attachment_match.group(1))
+            with db() as con:
+                row=con.execute("""SELECT a.*,m.chat_id FROM chat_attachments a JOIN chat_messages m ON m.id=a.message_id WHERE a.id=?""",(attachment_id,)).fetchone()
+                if not row or not self.chat_member(con,row["chat_id"]): return self.send_json({"error":"Файл не знайдено"},404)
+            raw=bytes(row["content"]); filename=re.sub(r"[^A-Za-z0-9._-]","_",row["filename"]) or "attachment"
+            self.send_response(200); self.send_header("Content-Type",row["content_type"]); self.send_header("Content-Disposition",f'attachment; filename="{filename}"')
+            self.send_header("X-Content-Type-Options","nosniff"); self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/runtime-features":
             return self.send_json({
                 "environment": PQM_ENV,
@@ -6128,6 +6223,56 @@ class Handler(BaseHTTPRequestHandler):
                   content=excluded.content,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
                   (self.auth_user,content_type,raw,now_iso(),self.auth_user))
             return self.send_json({"saved": True})
+        if parsed.path == "/api/chats":
+            payload=self.read_json(); members=[]
+            for value in payload.get("members") or []:
+                username=str(value or "").strip()
+                if username and username!=self.auth_user and username not in members: members.append(username)
+            if not members or len(members)>49: return self.send_json({"error":"Оберіть від 1 до 49 учасників"},400)
+            with db() as con:
+                valid={r[0] for r in con.execute(f"SELECT username FROM auth_users WHERE active=1 AND username IN ({','.join('?'*len(members))})",tuple(members))}
+                if valid!=set(members): return self.send_json({"error":"Один або кілька акаунтів недоступні"},400)
+                all_members=[self.auth_user,*members]; is_group=len(all_members)>2
+                if not is_group:
+                    existing=con.execute("""SELECT t.id FROM chat_threads t WHERE t.is_group=0
+                      AND (SELECT COUNT(*) FROM chat_members m WHERE m.chat_id=t.id)=2
+                      AND NOT EXISTS(SELECT 1 FROM chat_members m WHERE m.chat_id=t.id AND m.username NOT IN (?,?))
+                      AND EXISTS(SELECT 1 FROM chat_members m WHERE m.chat_id=t.id AND m.username=?)""",
+                      (all_members[0],all_members[1],all_members[1])).fetchone()
+                    if existing: return self.send_json({"id":existing["id"],"existing":True})
+                title=str(payload.get("title") or "").strip()[:100]
+                if is_group and not title: return self.send_json({"error":"Вкажіть назву групового чату"},400)
+                stamp=now_iso(); cursor=con.execute("INSERT INTO chat_threads(title,is_group,created_by,created_at,updated_at) VALUES (?,?,?,?,?)",(title,int(is_group),self.auth_user,stamp,stamp)); chat_id=cursor.lastrowid
+                con.executemany("INSERT INTO chat_members(chat_id,username,joined_at) VALUES (?,?,?)",[(chat_id,name,stamp) for name in all_members])
+            return self.send_json({"id":chat_id},201)
+        chat_send=re.fullmatch(r"/api/chats/(\d+)/messages",parsed.path)
+        if chat_send:
+            chat_id=int(chat_send.group(1)); payload=self.read_json(); body=str(payload.get("body") or "").strip()[:10000]; submission_id=str(payload.get("submission_id") or "").strip(); attachment=payload.get("attachment")
+            raw=b""; filename=""; content_type=""
+            if attachment:
+                filename=Path(str(attachment.get("filename") or "attachment")).name[:180]
+                content_type=str(attachment.get("content_type") or "application/octet-stream").casefold()[:100]
+                allowed={"application/pdf","image/png","image/jpeg","image/webp","text/plain","text/csv","application/zip","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+                if content_type not in allowed: return self.send_json({"error":"Цей тип файла не підтримується"},400)
+                try: raw=base64.b64decode(attachment.get("content") or "",validate=True)
+                except Exception: return self.send_json({"error":"Не вдалося прочитати вкладення"},400)
+                if not raw or len(raw)>5*1024*1024: return self.send_json({"error":"Файл порожній або перевищує 5 МБ"},400)
+            if not body and not submission_id and not raw: return self.send_json({"error":"Напишіть повідомлення або додайте вкладення"},400)
+            with db() as con:
+                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
+                if submission_id and not con.execute("SELECT 1 FROM submissions WHERE id=?",(submission_id,)).fetchone(): return self.send_json({"error":"Заявку не знайдено"},404)
+                stamp=now_iso(); cursor=con.execute("INSERT INTO chat_messages(chat_id,sender_username,body,submission_id,created_at) VALUES (?,?,?,?,?)",(chat_id,self.auth_user,body,submission_id,stamp)); message_id=cursor.lastrowid
+                if raw: con.execute("INSERT INTO chat_attachments(message_id,filename,content_type,content,size,created_at) VALUES (?,?,?,?,?,?)",(message_id,filename,content_type,raw,len(raw),stamp))
+                con.execute("UPDATE chat_threads SET updated_at=? WHERE id=?",(stamp,chat_id)); con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(message_id,chat_id,self.auth_user))
+            return self.send_json({"id":message_id},201)
+        chat_read=re.fullmatch(r"/api/chats/(\d+)/read",parsed.path)
+        if chat_read:
+            chat_id=int(chat_read.group(1))
+            with db() as con:
+                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
+                latest=con.execute("SELECT COALESCE(MAX(id),0) FROM chat_messages WHERE chat_id=?",(chat_id,)).fetchone()[0]
+                con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
+            return self.send_json({"read":True,"message_id":latest})
         if parsed.path == "/api/admin/users":
             payload = self.read_json(); username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or ""); role = str(payload.get("role") or "officer").casefold()
