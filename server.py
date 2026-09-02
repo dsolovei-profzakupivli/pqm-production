@@ -262,6 +262,8 @@ def auth_accounts() -> dict[str, dict]:
 def mutation_allowed(role: str, method: str, path: str) -> bool:
     if method not in {"POST", "PATCH", "PUT", "DELETE"}:
         return True
+    if path == "/api/account":
+        return True
     if role == "admin":
         return True
     if role != "officer":
@@ -884,6 +886,14 @@ def init_db() -> None:
           content BLOB NOT NULL,
           updated_at TEXT NOT NULL,
           updated_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_preferences (
+          username TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL DEFAULT '',
+          start_view TEXT NOT NULL DEFAULT 'applications',
+          color_scheme TEXT NOT NULL DEFAULT 'system',
+          density TEXT NOT NULL DEFAULT 'comfortable',
+          updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,
@@ -5790,10 +5800,19 @@ class Handler(BaseHTTPRequestHandler):
                 counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("frameworks", "submissions", "qualifications")}
             return self.send_json({"ok": True, "counts": counts, "sync": SYNC_STATE})
         if parsed.path == "/api/auth/me":
-            return self.send_json({"username": self.auth_user, "role": self.auth_role,
+            with db() as con:
+                preference = con.execute("SELECT display_name FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
+            return self.send_json({"username": self.auth_user, "display_name": preference["display_name"] if preference else "", "role": self.auth_role,
                                    "officer_id": self.auth_officer_id,
                                    "authenticated": bool(AUTH_ENABLED),
                                    "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
+        if parsed.path == "/api/account":
+            with db() as con:
+                row = con.execute("SELECT display_name,start_view,color_scheme,density,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
+                managed = bool(con.execute("SELECT 1 FROM auth_users WHERE username=?", (self.auth_user,)).fetchone())
+                has_avatar = bool(con.execute("SELECT 1 FROM user_avatars WHERE username=?", (self.auth_user,)).fetchone())
+            return self.send_json({"username": self.auth_user, "role": self.auth_role, "managed": managed,
+              "has_avatar": has_avatar, **(dict(row) if row else {"display_name":"","start_view":"applications","color_scheme":"system","density":"comfortable","updated_at":None})})
         avatar_match = re.fullmatch(r"/api/users/([^/]+)/avatar", parsed.path)
         if avatar_match:
             username = urllib.parse.unquote(avatar_match.group(1))
@@ -6074,6 +6093,8 @@ class Handler(BaseHTTPRequestHandler):
             officer_id = payload.get("officer_id") or None
             if not re.fullmatch(r"[A-Za-z0-9._-]{3,50}", username):
                 return self.send_json({"error": "Логін: 3–50 латинських літер, цифр або . _ -"}, 400)
+            if username in configured_auth_accounts():
+                return self.send_json({"error": "Цей системний логін уже налаштований через Render"}, 409)
             if role not in AUTH_ROLES: return self.send_json({"error": "Некоректна роль"}, 400)
             if role == "officer" and not officer_id: return self.send_json({"error": "Оберіть конкретну УО"}, 400)
             try: password_hash = hash_password(password)
@@ -6287,6 +6308,37 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/account":
+            payload = self.read_json()
+            display_name = str(payload.get("display_name") or "").strip()[:100]
+            start_view = str(payload.get("start_view") or "applications")
+            color_scheme = str(payload.get("color_scheme") or "system")
+            density = str(payload.get("density") or "comfortable")
+            if start_view not in {"workQueue","applications","suppliers","frameworks","procurements","references","requests"}:
+                return self.send_json({"error": "Некоректний стартовий розділ"}, 400)
+            if color_scheme not in {"system","light","dark"} or density not in {"comfortable","compact"}:
+                return self.send_json({"error": "Некоректні налаштування вигляду"}, 400)
+            with db() as con:
+                current = con.execute("SELECT * FROM auth_users WHERE username=?", (self.auth_user,)).fetchone()
+                new_password = str(payload.get("new_password") or "")
+                if new_password:
+                    if not current:
+                        return self.send_json({"error": "Пароль цього акаунта керується через Render"}, 409)
+                    old_password = str(payload.get("current_password") or "")
+                    if not verify_basic_auth_secret(old_password, current["password_hash"]):
+                        return self.send_json({"error": "Поточний пароль неправильний"}, 403)
+                    try: password_hash = hash_password(new_password)
+                    except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
+                    con.execute("UPDATE auth_users SET password_hash=?,updated_at=? WHERE username=?", (password_hash,now_iso(),self.auth_user))
+                con.execute("""INSERT INTO user_preferences(username,display_name,start_view,color_scheme,density,updated_at)
+                  VALUES (?,?,?,?,?,?) ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name,
+                  start_view=excluded.start_view,color_scheme=excluded.color_scheme,density=excluded.density,updated_at=excluded.updated_at""",
+                  (self.auth_user,display_name,start_view,color_scheme,density,now_iso()))
+            if new_password:
+                with AUTH_SESSIONS_LOCK:
+                    for token, session in list(AUTH_SESSIONS.items()):
+                        if session["username"] == self.auth_user: AUTH_SESSIONS.pop(token, None)
+            return self.send_json({"saved": True, "reauthenticate": bool(new_password)})
         user_match = re.fullmatch(r"/api/admin/users/([^/]+)", parsed.path)
         if user_match:
             username = urllib.parse.unquote(user_match.group(1)); payload = self.read_json()
@@ -6296,12 +6348,19 @@ class Handler(BaseHTTPRequestHandler):
                 role = str(payload.get("role", current["role"])).casefold()
                 officer_id = payload.get("officer_id", current["officer_id"]) or None
                 active = 1 if payload.get("active", bool(current["active"])) else 0
+                if username == self.auth_user and not active:
+                    return self.send_json({"error": "Не можна призупинити власний акаунт"}, 409)
                 password_hash = current["password_hash"]
                 if payload.get("password"):
                     try: password_hash = hash_password(str(payload["password"]))
                     except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
                 if role not in AUTH_ROLES or (role == "officer" and not officer_id):
                     return self.send_json({"error": "Для officer потрібно вибрати конкретну УО"}, 400)
+                if current["role"] == "admin" and (role != "admin" or not active):
+                    managed_admins = con.execute("SELECT COUNT(*) FROM auth_users WHERE role='admin' AND active=1 AND username<>?", (username,)).fetchone()[0]
+                    configured_admins = sum(1 for item in configured_auth_accounts().values() if item.get("role") == "admin")
+                    if managed_admins + configured_admins == 0:
+                        return self.send_json({"error": "Не можна вимкнути останнього активного адміністратора"}, 409)
                 try:
                     con.execute("UPDATE auth_users SET password_hash=?,role=?,officer_id=?,active=?,updated_at=? WHERE username=?",
                                 (password_hash,role,officer_id,active,now_iso(),username))
@@ -6586,6 +6645,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
+        user_match = re.fullmatch(r"/api/admin/users/([^/]+)", parsed.path)
+        if user_match:
+            username = urllib.parse.unquote(user_match.group(1))
+            if username == self.auth_user:
+                return self.send_json({"error": "Не можна видалити власний акаунт"}, 409)
+            with db() as con:
+                current = con.execute("SELECT role,active FROM auth_users WHERE username=?", (username,)).fetchone()
+                if not current: return self.send_json({"error": "Цей акаунт керується через Render або вже видалений"}, 409)
+                if current["role"] == "admin" and current["active"]:
+                    managed_admins = con.execute("SELECT COUNT(*) FROM auth_users WHERE role='admin' AND active=1 AND username<>?", (username,)).fetchone()[0]
+                    configured_admins = sum(1 for item in configured_auth_accounts().values() if item.get("role") == "admin")
+                    if managed_admins + configured_admins == 0:
+                        return self.send_json({"error": "Не можна видалити останнього активного адміністратора"}, 409)
+                con.execute("DELETE FROM user_avatars WHERE username=?", (username,))
+                con.execute("DELETE FROM user_preferences WHERE username=?", (username,))
+                con.execute("DELETE FROM auth_users WHERE username=?", (username,))
+            with AUTH_SESSIONS_LOCK:
+                for token, session in list(AUTH_SESSIONS.items()):
+                    if session["username"] == username: AUTH_SESSIONS.pop(token, None)
+            return self.send_json({"deleted": True, "username": username})
         avatar_match = re.fullmatch(r"/api/admin/users/([^/]+)/avatar", parsed.path)
         if avatar_match:
             username = urllib.parse.unquote(avatar_match.group(1))
