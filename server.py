@@ -262,7 +262,7 @@ def auth_accounts() -> dict[str, dict]:
 def mutation_allowed(role: str, method: str, path: str) -> bool:
     if method not in {"POST", "PATCH", "PUT", "DELETE"}:
         return True
-    if path == "/api/account":
+    if path == "/api/account" or path == "/api/account/avatar":
         return True
     if role == "admin":
         return True
@@ -893,6 +893,7 @@ def init_db() -> None:
           start_view TEXT NOT NULL DEFAULT 'applications',
           color_scheme TEXT NOT NULL DEFAULT 'system',
           density TEXT NOT NULL DEFAULT 'comfortable',
+          presence_status TEXT NOT NULL DEFAULT 'working',
           updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -946,6 +947,10 @@ def init_db() -> None:
           updated_at TEXT NOT NULL
         );
         """)
+        preference_columns = {row[1] for row in con.execute("PRAGMA table_info(user_preferences)")}
+        if "presence_status" not in preference_columns:
+            con.execute("ALTER TABLE user_preferences ADD COLUMN presence_status TEXT NOT NULL DEFAULT 'working'")
+        con.execute("UPDATE user_preferences SET color_scheme='light' WHERE color_scheme<>'light'")
         violation_review_columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
         if "decision_justification" not in violation_review_columns:
             con.execute("ALTER TABLE violation_report_reviews ADD COLUMN decision_justification TEXT DEFAULT ''")
@@ -5808,11 +5813,11 @@ class Handler(BaseHTTPRequestHandler):
                                    "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
         if parsed.path == "/api/account":
             with db() as con:
-                row = con.execute("SELECT display_name,start_view,color_scheme,density,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
+                row = con.execute("SELECT display_name,start_view,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
                 managed = bool(con.execute("SELECT 1 FROM auth_users WHERE username=?", (self.auth_user,)).fetchone())
                 has_avatar = bool(con.execute("SELECT 1 FROM user_avatars WHERE username=?", (self.auth_user,)).fetchone())
             return self.send_json({"username": self.auth_user, "role": self.auth_role, "managed": managed,
-              "has_avatar": has_avatar, **(dict(row) if row else {"display_name":"","start_view":"applications","color_scheme":"system","density":"comfortable","updated_at":None})})
+              "has_avatar": has_avatar, "color_scheme": "light", **(dict(row) if row else {"display_name":"","start_view":"applications","density":"comfortable","presence_status":"working","updated_at":None})})
         avatar_match = re.fullmatch(r"/api/users/([^/]+)/avatar", parsed.path)
         if avatar_match:
             username = urllib.parse.unquote(avatar_match.group(1))
@@ -6087,6 +6092,22 @@ class Handler(BaseHTTPRequestHandler):
             with AUTH_SESSIONS_LOCK:
                 AUTH_SESSIONS.pop(token, None)
             return self.clear_session()
+        if parsed.path == "/api/account/avatar":
+            payload = self.read_json(); content_type = str(payload.get("content_type") or "").casefold()
+            if content_type not in {"image/png", "image/jpeg", "image/webp"}:
+                return self.send_json({"error": "Дозволено лише PNG, JPEG або WebP"}, 400)
+            try: raw = base64.b64decode(payload.get("content") or "", validate=True)
+            except Exception: return self.send_json({"error": "Не вдалося прочитати зображення"}, 400)
+            signatures = {"image/png": raw.startswith(b"\x89PNG\r\n\x1a\n"), "image/jpeg": raw.startswith(b"\xff\xd8\xff"),
+                          "image/webp": raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"}
+            if not raw or len(raw) > 2 * 1024 * 1024 or not signatures[content_type]:
+                return self.send_json({"error": "Некоректне зображення або розмір перевищує 2 МБ"}, 400)
+            with db() as con:
+                con.execute("""INSERT INTO user_avatars(username,content_type,content,updated_at,updated_by)
+                  VALUES (?,?,?,?,?) ON CONFLICT(username) DO UPDATE SET content_type=excluded.content_type,
+                  content=excluded.content,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                  (self.auth_user,content_type,raw,now_iso(),self.auth_user))
+            return self.send_json({"saved": True})
         if parsed.path == "/api/admin/users":
             payload = self.read_json(); username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or ""); role = str(payload.get("role") or "officer").casefold()
@@ -6312,12 +6333,15 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             display_name = str(payload.get("display_name") or "").strip()[:100]
             start_view = str(payload.get("start_view") or "applications")
-            color_scheme = str(payload.get("color_scheme") or "system")
+            color_scheme = "light"
             density = str(payload.get("density") or "comfortable")
+            presence_status = str(payload.get("presence_status") or "working")
             if start_view not in {"workQueue","applications","suppliers","frameworks","procurements","references","requests"}:
                 return self.send_json({"error": "Некоректний стартовий розділ"}, 400)
-            if color_scheme not in {"system","light","dark"} or density not in {"comfortable","compact"}:
+            if density not in {"comfortable","compact"}:
                 return self.send_json({"error": "Некоректні налаштування вигляду"}, 400)
+            if presence_status not in {"working","away","vacation"}:
+                return self.send_json({"error": "Некоректний статус присутності"}, 400)
             with db() as con:
                 current = con.execute("SELECT * FROM auth_users WHERE username=?", (self.auth_user,)).fetchone()
                 new_password = str(payload.get("new_password") or "")
@@ -6330,10 +6354,11 @@ class Handler(BaseHTTPRequestHandler):
                     try: password_hash = hash_password(new_password)
                     except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
                     con.execute("UPDATE auth_users SET password_hash=?,updated_at=? WHERE username=?", (password_hash,now_iso(),self.auth_user))
-                con.execute("""INSERT INTO user_preferences(username,display_name,start_view,color_scheme,density,updated_at)
-                  VALUES (?,?,?,?,?,?) ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name,
-                  start_view=excluded.start_view,color_scheme=excluded.color_scheme,density=excluded.density,updated_at=excluded.updated_at""",
-                  (self.auth_user,display_name,start_view,color_scheme,density,now_iso()))
+                con.execute("""INSERT INTO user_preferences(username,display_name,start_view,color_scheme,density,presence_status,updated_at)
+                  VALUES (?,?,?,?,?,?,?) ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name,
+                  start_view=excluded.start_view,color_scheme='light',density=excluded.density,
+                  presence_status=excluded.presence_status,updated_at=excluded.updated_at""",
+                  (self.auth_user,display_name,start_view,color_scheme,density,presence_status,now_iso()))
             if new_password:
                 with AUTH_SESSIONS_LOCK:
                     for token, session in list(AUTH_SESSIONS.items()):
@@ -6645,6 +6670,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/account/avatar":
+            with db() as con:
+                con.execute("DELETE FROM user_avatars WHERE username=?", (self.auth_user,))
+            return self.send_json({"deleted": True})
         user_match = re.fullmatch(r"/api/admin/users/([^/]+)", parsed.path)
         if user_match:
             username = urllib.parse.unquote(user_match.group(1))
