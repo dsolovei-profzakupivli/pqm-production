@@ -281,11 +281,13 @@ def admin_read_allowed(role: str, path: str, query: dict[str, list[str]] | None 
     """Protect administration reads while keeping work-filter data available."""
     if role == "admin":
         return True
+    if path == "/api/audit":
+        return True
     if path == "/api/admin/officers" and (query or {}).get("active") == ["1"]:
         return True
     if path == "/api/admin/frameworks":
         return True
-    return not (path.startswith("/api/admin/") or path == "/api/audit")
+    return not path.startswith("/api/admin/")
 
 
 def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
@@ -5738,8 +5740,6 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path in {"/api/login", "/api/logout"}:
             return method()
-        if (path == "/api/admin/users" or re.fullmatch(r"/api/admin/users/[^/]+", path)) and self.auth_user != "manager":
-            return self.send_json({"error": "Керування користувачами доступне лише manager", "status": 403}, 403)
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if not admin_read_allowed(self.auth_role, path, query):
             return self.send_json({"error": "Недостатньо прав для перегляду цього розділу", "status": 403}, 403)

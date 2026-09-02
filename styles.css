@@ -138,5 +138,5 @@ body:has(.login-gate:not([hidden])){overflow:hidden;background:#f3f6fa}
 .login-card{width:min(430px,100%);display:grid;gap:18px;padding:36px;border:1px solid #dce5ef;border-radius:20px;background:#fff;box-shadow:0 24px 70px #1f3c5d26}
 .login-card>img{width:190px;height:auto}.login-card h1{margin:0;font-size:32px}.login-card p{margin:0}.login-card label{display:grid;gap:7px;font-weight:700}.login-card input{min-height:48px}.login-card button{min-height:48px;font-size:17px}.login-error{min-height:22px;color:#b42318;font-weight:700}
 .account-menu{display:flex;align-items:center;gap:10px}.account-menu .role{white-space:nowrap}
-.user-management{display:grid;gap:20px}.admin-user-form{display:grid;grid-template-columns:1fr 1.5fr 1fr 1fr auto;gap:12px;align-items:end}.admin-user-form label{display:grid;gap:6px;font-weight:700}.admin-user-form input,.admin-user-form select{width:100%}
+.user-management{display:grid;gap:20px}[data-admin-only][hidden]{display:none!important}.admin-user-form{display:grid;grid-template-columns:1fr 1fr 1.5fr 1fr 1fr auto;gap:12px;align-items:end}.admin-user-form label{display:grid;gap:6px;font-weight:700}.admin-user-form input,.admin-user-form select{width:100%}
 @media(max-width:1100px){.admin-user-form{grid-template-columns:1fr 1fr}.admin-user-form button{grid-column:1/-1}}

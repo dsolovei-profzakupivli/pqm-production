@@ -70,6 +70,7 @@ function applyRoleCapabilities(me){
   document.body.dataset.authRole=me.role||'viewer';
   const admin=me.role==='admin',viewer=me.role==='viewer';
   const adminNav=$('#administrationNav');if(adminNav)adminNav.hidden=!admin;
+  $$('[data-admin-only]').forEach(element=>element.hidden=!admin);
   ['#resetBtn','#supplierRegistryRefresh','#supplierEdrSync','#supplierNazkReviewSync','#frameworksRefresh',
    '#refNazkRefresh','#refAmcuUploadBtn','#bidsDataRefresh'].forEach(selector=>{
     const element=$(selector);if(!element)return;
@@ -760,7 +761,10 @@ async function loadAdminUsers(officers=authorizedOfficerItems){
     $$('.admin-user-password').forEach(button=>button.onclick=async()=>{const row=button.closest('tr'),password=prompt(`Новий пароль для ${row.dataset.username} (мінімум 10 символів)`);if(!password)return;try{await request(`${API}/admin/users/${encodeURIComponent(row.dataset.username)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});toast('Пароль змінено, активні сесії завершено')}catch(error){toast(error.message)}});
   }catch(error){body.innerHTML=`<tr><td colspan="5">${esc(error.message)}</td></tr>`}
 }
-$('#adminUserForm').onsubmit=async event=>{event.preventDefault();const password=$('#adminUserPassword').value;if(password!==$('#adminUserPasswordConfirm').value)return toast('Паролі не збігаються');try{await request(`${API}/admin/users`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#adminUserLogin').value.trim(),password,role:'officer',officer_id:Number($('#adminUserOfficer').value)})});event.target.reset();toast('Користувача УО створено');await loadAdminUsers()}catch(error){toast(error.message)}};
+function syncAdminUserOfficerField(){const isOfficer=$('#adminUserRole').value==='officer',field=$('#adminUserOfficerField'),select=$('#adminUserOfficer');field.hidden=!isOfficer;select.required=isOfficer;if(!isOfficer)select.value=''}
+$('#adminUserRole').onchange=syncAdminUserOfficerField;
+syncAdminUserOfficerField();
+$('#adminUserForm').onsubmit=async event=>{event.preventDefault();const password=$('#adminUserPassword').value,accountRole=$('#adminUserRole').value,officerId=accountRole==='officer'?Number($('#adminUserOfficer').value):null;if(password!==$('#adminUserPasswordConfirm').value)return toast('Паролі не збігаються');if(accountRole==='officer'&&!officerId)return toast('Оберіть конкретну УО');try{await request(`${API}/admin/users`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#adminUserLogin').value.trim(),password,role:accountRole,officer_id:officerId})});event.target.reset();syncAdminUserOfficerField();toast('Користувача створено');await loadAdminUsers()}catch(error){toast(error.message)}};
 $('#resetBtn').textContent='Оновити з Prozorro';loadAuthenticatedRole().finally(()=>loadAuthorizedOfficers().then(()=>{renderProfiles();loadPrimaryFilterOptions();loadFrameworks();loadSupplierOptions();loadRows()}).catch(()=>{renderProfiles();loadPrimaryFilterOptions();loadFrameworks();loadSupplierOptions();loadRows()}));refreshSyncStatus();setInterval(refreshSyncStatus,30000);
 
 // Violation-report workbench: compact, deadline-aware presentation. Official Prozorro
