@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import auth_access
 import base64
 import csv
 import hashlib
@@ -263,7 +264,7 @@ def auth_accounts() -> dict[str, dict]:
 def mutation_allowed(role: str, method: str, path: str) -> bool:
     if method not in {"POST", "PATCH", "PUT", "DELETE"}:
         return True
-    if path == "/api/account" or path == "/api/account/avatar":
+    if path in {"/api/account", "/api/account/avatar", "/api/history-columns"}:
         return True
     if path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
         return True
@@ -272,12 +273,12 @@ def mutation_allowed(role: str, method: str, path: str) -> bool:
     if role != "officer":
         return False
     officer_patterns = (
-        r"^/api/applications/[^/]+$",
-        r"^/api/applications/[^/]+/(?:verify-documents|verify-documents/start|nazk-control)$",
+        r"^/api/applications/[^/]+(?:/(?:verify-documents(?:/start)?|nazk-control|remark-selections))?$",
         r"^/api/protocol/(?:readiness|generate)$",
         r"^/api/violation-reports/[^/]+/(?:review|review/complete|protocol/generate)$",
         r"^/api/violation-reports/[^/]+/documents/(?:customer|supplier)/[^/]+$",
-        r"^/api/suppliers/[^/]+/nazk-check$",
+        r"^/api/suppliers/[^/]+/(?:nazk-check|note)$",
+        r"^/api/application-profiles(?:/[^/]+)?$",
     )
     return any(re.fullmatch(pattern, path) for pattern in officer_patterns)
 
@@ -296,8 +297,7 @@ def admin_read_allowed(role: str, path: str, query: dict[str, list[str]] | None 
 
 
 def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
-    """Restrict officer mutations to assigned work; unassigned appeals may be claimed."""
-    if path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
+    if path in {"/api/account", "/api/account/avatar", "/api/history-columns", "/api/chats"} or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
         return True
     try:
         officer_id = int(officer_id)
@@ -309,8 +309,9 @@ def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
             return False
         application = re.fullmatch(r"/api/applications/([^/]+)(?:/.*)?", path)
         if application:
-            row = con.execute("""SELECT COALESCE(NULLIF(af.protocol_officer,''),fo.officer,'') officer
+            row = con.execute(f"""SELECT {effective_officer_sql()} officer
               FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
+              LEFT JOIN qualifications q ON q.id=s.qualification_id
               LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE s.id=?""",
               (urllib.parse.unquote(application.group(1)),)).fetchone()
             return bool(row and normalized_officer_name(row["officer"]) == normalized_officer_name(officer["full_name"]))
@@ -321,8 +322,7 @@ def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
               WHERE v.id=? OR v.report_id=?""", (urllib.parse.unquote(report.group(1)),
               urllib.parse.unquote(report.group(1)))).fetchone()
             return not row or row["assigned_officer_id"] in (None, officer_id)
-    # Non-row officer actions (for example protocol readiness) remain allowed.
-    return True
+        return True
 
 
 def verify_basic_auth_secret(provided: str, configured: str) -> bool:
@@ -331,12 +331,7 @@ def verify_basic_auth_secret(provided: str, configured: str) -> bool:
         digest = hashlib.sha256(provided.encode("utf-8")).hexdigest()
         return hmac.compare_digest(digest, configured.removeprefix("sha256:"))
     if configured.startswith("pbkdf2_sha256:"):
-        try:
-            _, iterations, salt, expected = configured.split(":", 3)
-            digest = hashlib.pbkdf2_hmac("sha256", provided.encode(), bytes.fromhex(salt), int(iterations)).hex()
-            return hmac.compare_digest(digest, expected)
-        except (ValueError, TypeError):
-            return False
+        return auth_access.verify_password(provided, configured)
     return hmac.compare_digest(provided, configured)
 PROTOCOL_DECISIONS = {"", "admit", "reject"}
 MARKETPLACE_DECISIONS = {"", "admit", "reject"}
@@ -471,12 +466,13 @@ def violation_threshold_summary(decision_dates, moment: datetime | None = None) 
     }
 
 
-def remarks_catalog(force: bool = False) -> dict:
+def remarks_catalog(force: bool = False, include_inactive: bool = False) -> dict:
     """Return the editable local directory; optionally import new Sheet rows."""
     if not force:
         with db() as con:
             rows = [dict(row) for row in con.execute("""SELECT id,point,text,tag,category,active,updated_at
-              FROM remarks_catalog WHERE active=1 ORDER BY point,category,id""")]
+              FROM remarks_catalog WHERE active=1 OR ?""", (int(include_inactive),))]
+        rows.sort(key=legal_reference_sort_key)
         return {"items": rows, "refreshed_at": max((row["updated_at"] for row in rows), default=None), "source": "local-database"}
     cached = None
     if REMARKS_CACHE.exists():
@@ -520,13 +516,159 @@ def remarks_catalog(force: bool = False) -> dict:
         return remarks_catalog(False)
     except Exception as exc:
         if cached:
+            if isinstance(cached.get("items"), list):
+                cached["items"].sort(key=legal_reference_sort_key)
             cached["source"] = "local-cache"; cached["warning"] = str(exc)
             return cached
         items = [{"id": f"local-{index}", "point": point, "text": text, "tag": tag,
                   "category": "", "source_row": None}
                  for index, (point, text, tag) in enumerate(DEFAULT_REMARKS, start=1)]
+        items.sort(key=legal_reference_sort_key)
         return {"items": items, "refreshed_at": None, "source": "built-in", "warning": str(exc)}
 
+
+def effective_officer_sql(q_alias: str = "q", af_alias: str = "af", fo_alias: str = "fo",
+                          undefined: str = "") -> str:
+    """Single business definition used by application lists, cards and filters."""
+    fallback = str(undefined).replace("'", "''")
+    return (f"CASE WHEN COALESCE({q_alias}.status,'pending')='pending' "
+            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),NULLIF({fo_alias}.officer,''),'{fallback}') "
+            f"WHEN {q_alias}.status IN ('active','unsuccessful') "
+            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),'{fallback}') "
+            f"ELSE '{fallback}' END")
+
+def legal_reference_sort_key(item: dict) -> tuple:
+    """Natural order for paragraph/subparagraph references without rewriting labels."""
+    label = re.sub(r"\s+", " ", str(item.get("point") or "").strip().casefold())
+    match = re.search(r"(?:абз\.?\s*(\d+)\s*)?п\.?\s*(\d+(?:\.\d+)*)", label)
+    if not match:
+        item_id = int(item.get("id") or 0) if str(item.get("id") or "").isdigit() else 0
+        return (1, label, str(item.get("category") or "").casefold(), item_id)
+    paragraph = int(match.group(1)) if match.group(1) else 0
+    parts = tuple(int(value) for value in match.group(2).split("."))
+    item_id = int(item.get("id") or 0) if str(item.get("id") or "").isdigit() else 0
+    return (0, parts, 1 if paragraph else 0, paragraph,
+            str(item.get("category") or "").casefold(), item_id)
+
+def application_remark_selections(submission_id: str) -> list[int]:
+    with db() as con:
+        return [int(row[0]) for row in con.execute(
+            "SELECT remark_id FROM application_protocol_remark_selections WHERE submission_id=? ORDER BY remark_id",
+            (submission_id,),
+        )]
+
+def save_application_remark_selections(submission_id: str, remark_ids, user: str) -> list[int]:
+    normalized = []
+    for value in remark_ids if isinstance(remark_ids, list) else []:
+        try: remark_id = int(value)
+        except (TypeError, ValueError): continue
+        if remark_id not in normalized: normalized.append(remark_id)
+    with db() as con:
+        if not con.execute("SELECT 1 FROM submissions WHERE id=?", (submission_id,)).fetchone():
+            raise KeyError(submission_id)
+        valid = {int(row[0]) for row in con.execute(
+            f"SELECT id FROM remarks_catalog WHERE active=1 AND id IN ({','.join('?' for _ in normalized)})", normalized
+        )} if normalized else set()
+        if len(valid) != len(normalized):
+            raise ValueError("Один або кілька пунктів конструктора більше недоступні")
+        con.execute("DELETE FROM application_protocol_remark_selections WHERE submission_id=?", (submission_id,))
+        con.executemany("""INSERT INTO application_protocol_remark_selections
+          (submission_id,remark_id,selected_at,selected_by) VALUES (?,?,?,?)""",
+          [(submission_id, remark_id, now_iso(), user) for remark_id in normalized])
+    return normalized
+
+def _profile_owner(user: str) -> str:
+    return str(user or CURRENT_USER or "local").strip() or "local"
+
+def list_application_view_profiles(user: str) -> dict:
+    owner = _profile_owner(user)
+    with db() as con:
+        rows = con.execute("""SELECT id,owner_key,name,is_system,source_system_profile_id,
+          columns_json,created_at,updated_at FROM application_view_profiles
+          WHERE (is_system=1 OR owner_key=?) AND id NOT LIKE 'history-columns:%'
+          ORDER BY is_system DESC,name COLLATE NOCASE""", (owner,)).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        try: layout = json.loads(item.pop("columns_json") or "[]")
+        except json.JSONDecodeError: layout = []
+        if isinstance(layout, dict):
+            item["columns"] = layout.get("columns") if isinstance(layout.get("columns"), list) else []
+            item["kpis"] = layout.get("kpis") if isinstance(layout.get("kpis"), list) else None
+            item["sorts"] = validated_application_sorts(layout.get("sorts", []))
+        else:
+            item["columns"] = layout if isinstance(layout, list) else []
+            item["kpis"] = None
+        item["is_system"] = bool(item["is_system"])
+        item["owned"] = item["owner_key"] == owner
+        items.append(item)
+    return {"items": items}
+
+def history_column_settings(user, columns=None):
+    owner = _profile_owner(user)
+    identity = 'history-columns:' + hashlib.sha256(owner.encode()).hexdigest()
+    with db() as con:
+        if columns is not None:
+            if not isinstance(columns,list) or len(columns)!=len(HISTORY_COLUMN_KEYS):
+                raise ValueError('Передайте налаштування всіх колонок історії')
+            result=[]
+            for index,c in enumerate(columns):
+                if not isinstance(c,dict) or c.get('key') not in HISTORY_COLUMN_KEYS or not isinstance(c.get('visible'),bool):
+                    raise ValueError('Некоректні налаштування колонок')
+                width=c.get('width')
+                if not isinstance(width,int) or not 60<=width<=1200:raise ValueError('Ширина має бути від 60 до 1200 px')
+                result.append({'key':c['key'],'visible':c['visible'],'width':width,'order':index})
+            if len({c['key'] for c in result})!=len(HISTORY_COLUMN_KEYS):raise ValueError('Повтор колонки')
+            con.execute('''INSERT INTO application_view_profiles
+              (id,owner_key,name,is_system,columns_json,created_at,updated_at,created_by,updated_by)
+              VALUES (?,?,?,0,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET columns_json=excluded.columns_json,
+              updated_at=excluded.updated_at,updated_by=excluded.updated_by''',
+              (identity,owner,'__pqm_history_columns_v1__',json.dumps(result),now_iso(),now_iso(),user,user))
+        row=con.execute('SELECT columns_json FROM application_view_profiles WHERE id=? AND owner_key=?',(identity,owner)).fetchone()
+        return {'columns':json.loads(row[0]) if row else []}
+
+def _validated_profile_columns(value) -> list[dict]:
+    if not isinstance(value, list): raise ValueError("Налаштування колонок мають бути масивом")
+    result, seen = [], set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict): continue
+        key = str(raw.get("key") or "").strip()
+        if not key or key in seen: continue
+        seen.add(key)
+        result.append({"key": key, "visible": bool(raw.get("visible", True)),
+                       "order": int(raw.get("order", index)),
+                       "width": max(40, min(500, int(raw.get("width", 120)))),
+                       "pin": "left" if raw.get("pin") == "left" else ""})
+    return result
+
+def _validated_profile_kpis(value) -> list[str]:
+    if value is None: return []
+    if not isinstance(value, list): raise ValueError("Налаштування KPI мають бути масивом")
+    result = []
+    for raw in value:
+        key = str(raw or "").strip()
+        if key in APPLICATION_PROFILE_KPIS and key not in result: result.append(key)
+    return result
+
+def validated_application_sorts(value) -> list[dict]:
+    keys = {'participant','edrpou','qualificationId','dkCode','receivedDate','documents',
+            'protocolNumber','protocolDate','publicationDate','protocolOfficer','protocolRemarks',
+            'protocolDecision','marketplaceDecision','complianceStatus','complianceComments',
+            'managerName','documentPackage','contractDetails','decision','registryStatus',
+            'registryValidUntil','registryStatusDate','notes'}
+    if not isinstance(value, list): raise ValueError('Сортування має бути масивом')
+    result = []
+    for item in value:
+        if not isinstance(item, dict) or item.get('key') not in keys:
+            raise ValueError('Невідома колонка сортування')
+        if item['key'] not in {x['key'] for x in result}:
+            result.append({'key': item['key'], 'direction': 'desc' if item.get('direction') == 'desc' else 'asc'})
+    return result
+
+def _profile_layout_json(columns, kpis, sorts=None) -> str:
+    return json.dumps({"columns": _validated_profile_columns(columns),
+                       "kpis": _validated_profile_kpis(kpis),
+                       "sorts": validated_application_sorts(sorts or [])}, ensure_ascii=False)
 
 def announcement_officer_name(value: str) -> str:
     clean = (value or "").strip()
@@ -690,6 +832,17 @@ def init_db() -> None:
           source_sheet TEXT DEFAULT '', source_row INTEGER DEFAULT 0, synced_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS ix_supplier_edr_manager ON supplier_edr_profiles(manager_name);
+        CREATE TABLE IF NOT EXISTS supplier_notes (
+          supplier_code TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL, updated_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS supplier_note_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_code TEXT NOT NULL,
+          old_note TEXT NOT NULL DEFAULT '', new_note TEXT NOT NULL DEFAULT '',
+          changed_at TEXT NOT NULL, changed_by TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_supplier_note_events_supplier
+          ON supplier_note_events(supplier_code,changed_at);
         CREATE TABLE IF NOT EXISTS supplier_edr_sync_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,
           status TEXT NOT NULL, processed INTEGER DEFAULT 0, inserted INTEGER DEFAULT 0,
@@ -925,6 +1078,24 @@ def init_db() -> None:
           filename TEXT NOT NULL, content_type TEXT NOT NULL, content BLOB NOT NULL,
           size INTEGER NOT NULL, created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS application_protocol_remark_selections (
+          submission_id TEXT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+          remark_id INTEGER NOT NULL REFERENCES remarks_catalog(id),
+          selected_at TEXT NOT NULL, selected_by TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(submission_id,remark_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_application_remark_selections_submission
+          ON application_protocol_remark_selections(submission_id);
+        CREATE TABLE IF NOT EXISTS application_view_profiles (
+          id TEXT PRIMARY KEY, owner_key TEXT NOT NULL, name TEXT NOT NULL,
+          is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0,1)),
+          source_system_profile_id TEXT REFERENCES application_view_profiles(id),
+          columns_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          created_by TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL DEFAULT '',
+          UNIQUE(owner_key,name)
+        );
+        CREATE INDEX IF NOT EXISTS ix_application_view_profiles_owner
+          ON application_view_profiles(owner_key,is_system,name);
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,
           changed_by TEXT NOT NULL, field_name TEXT NOT NULL, old_value TEXT, new_value TEXT
@@ -976,6 +1147,7 @@ def init_db() -> None:
           updated_at TEXT NOT NULL
         );
         """)
+        auth_access.migrate(con)
         preference_columns = {row[1] for row in con.execute("PRAGMA table_info(user_preferences)")}
         if "presence_status" not in preference_columns:
             con.execute("ALTER TABLE user_preferences ADD COLUMN presence_status TEXT NOT NULL DEFAULT 'working'")
@@ -993,6 +1165,13 @@ def init_db() -> None:
             con.execute("""INSERT INTO authorized_officers(full_name,role,active,created_at,updated_at)
               VALUES (?,'УО',?,?,?) ON CONFLICT(full_name) DO NOTHING""",
               (full_name, active, now_iso(), now_iso()))
+        if con.execute("SELECT COUNT(*) FROM application_view_profiles WHERE is_system=1").fetchone()[0] == 0:
+            for profile_id, profile_name in (("system-review", "Розгляд"), ("system-search", "Пошук"),
+                                             ("system-publication", "Публікація")):
+                con.execute("""INSERT INTO application_view_profiles
+                  (id,owner_key,name,is_system,columns_json,created_at,updated_at,created_by,updated_by)
+                  VALUES (?,'__system__',?,1,'[]',?,?,?,?)""",
+                  (profile_id, profile_name, now_iso(), now_iso(), "system", "system"))
         application_columns = {row[1] for row in con.execute("PRAGMA table_info(application_fields)")}
         if "protocol_remarks" not in application_columns:
             con.execute("ALTER TABLE application_fields ADD COLUMN protocol_remarks TEXT DEFAULT ''")
@@ -1581,6 +1760,16 @@ def multi_param(params: dict, key: str) -> list[str]:
     return [value.strip() for raw in params.get(key, []) for value in raw.split(",") if value.strip()]
 
 
+APPLICATION_SEARCH_FIELDS = (
+    {"key": "supplier", "label": "учасник", "sql": "s.supplier_name"},
+    {"key": "supplier_code", "label": "ЄДРПОУ / РНОКПП", "sql": "s.supplier_code"},
+    {"key": "manager", "label": "ПІБ керівника", "sql": "af.manager_name"},
+    {"key": "framework_id", "label": "ідентифікатор відбору", "sql": "f.pretty_id"},
+    {"key": "framework", "label": "назва відбору", "sql": "f.title"},
+    {"key": "dk", "label": "код ДК", "sql": "f.dk_code"},
+    {"key": "contract", "label": "реквізити договору", "sql": "af.contract_details"},
+)
+
 def application_filter(params: dict) -> tuple[str, list]:
     search = params.get("search", [""])[0].strip()
     statuses = multi_param(params, "status")
@@ -1595,6 +1784,7 @@ def application_filter(params: dict) -> tuple[str, list]:
     submission_id = params.get("submission_id", [""])[0].strip()
     protocol_decision = params.get("protocol_decision", [""])[0].strip()
     compliance_status = params.get("compliance_status", [""])[0].strip()
+    marketplace_decisions = multi_param(params, "marketplace_decision")
     where, args = ["1=1"], []
     if submission_id:
         where.append("s.id=?")
@@ -1605,9 +1795,17 @@ def application_filter(params: dict) -> tuple[str, list]:
     if compliance_status in {"__empty__", "approved", "rejected"}:
         where.append("COALESCE(af.compliance_status,'')=?")
         args.append("" if compliance_status == "__empty__" else compliance_status)
+    valid_marketplace = ["" if value == "__empty__" else value for value in marketplace_decisions
+                         if value in {"__empty__", "admit", "reject"}]
+    if valid_marketplace:
+        where.append(f"COALESCE(af.marketplace_decision,'') IN ({','.join('?' for _ in valid_marketplace)})")
+        args.extend(valid_marketplace)
     if search:
-        where.append("(INSTR(CASEFOLD(s.supplier_name), ?) > 0 OR INSTR(CASEFOLD(s.supplier_code), ?) > 0 OR INSTR(CASEFOLD(f.pretty_id), ?) > 0 OR INSTR(CASEFOLD(f.dk_code), ?) > 0 OR INSTR(CASEFOLD(f.title), ?) > 0 OR INSTR(CASEFOLD(af.manager_name), ?) > 0)")
-        args.extend([search.casefold()] * 6)
+        where.append("(" + " OR ".join(
+            f"INSTR(CASEFOLD({field['sql']}), ?) > 0"
+            for field in APPLICATION_SEARCH_FIELDS
+        ) + ")")
+        args.extend([search.casefold()] * len(APPLICATION_SEARCH_FIELDS))
     if supplier_codes:
         where.append(f"s.supplier_code IN ({','.join('?' for _ in supplier_codes)})")
         args.extend(supplier_codes)
@@ -1623,7 +1821,7 @@ def application_filter(params: dict) -> tuple[str, list]:
     if date_to:
         where.append("SUBSTR(s.date_published,1,10)<=?")
         args.append(date_to)
-    assigned_officer = "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'')"
+    assigned_officer = effective_officer_sql()
     if officer == "__unassigned__":
         where.append(f"{assigned_officer}=''")
     elif officer:
@@ -1659,12 +1857,13 @@ def application_stats(params: dict) -> dict:
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}""", args).fetchone()
-        officers = con.execute(f"""SELECT COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не визначено') officer, COUNT(*) applications
+        officer_expr = effective_officer_sql(undefined="Не визначено")
+        officers = con.execute(f"""SELECT {officer_expr} officer, COUNT(*) applications
           FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {officer_clause}
-          GROUP BY COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не визначено') ORDER BY applications DESC""", officer_args).fetchall()
+          GROUP BY {officer_expr} ORDER BY applications DESC""", officer_args).fetchall()
     result = {key: (value or 0) for key, value in dict(row).items()}
     result["officers"] = [dict(item) for item in officers]
     return result
@@ -1686,7 +1885,7 @@ def list_applications(params: dict) -> dict:
         "protocolNumber": "af.protocol_number",
         "protocolDate": "af.protocol_date",
         "publicationDate": "af.publication_date",
-        "protocolOfficer": "CASEFOLD(af.protocol_officer)",
+        "protocolOfficer": f"CASEFOLD({effective_officer_sql()})",
         "protocolRemarks": "CASEFOLD(af.protocol_remarks)",
         "protocolDecision": "CASE af.protocol_decision WHEN '' THEN 1 WHEN 'admit' THEN 2 WHEN 'reject' THEN 3 ELSE 4 END",
         "marketplaceDecision": "CASE af.marketplace_decision WHEN '' THEN 1 WHEN 'admit' THEN 2 WHEN 'reject' THEN 3 ELSE 4 END",
@@ -1702,6 +1901,9 @@ def list_applications(params: dict) -> dict:
         "notes": "CASEFOLD(af.notes)",
     }
     order_by = sort_expressions.get(sort_key, "s.date_published")
+    sorts = validated_application_sorts(json.loads(params.get('sorts', ['[]'])[0]))
+    order_sql = ','.join(f"{sort_expressions[item['key']]} {item['direction'].upper()}" for item in sorts)
+    if not order_sql: order_sql = f'{order_by} {sort_direction}'
     with db() as con:
         total = con.execute(f"""SELECT COUNT(*) FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id LEFT JOIN application_fields af ON af.submission_id=s.id
@@ -1712,7 +1914,7 @@ def list_applications(params: dict) -> dict:
           (SELECT rc.status FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
           (SELECT rc.milestones_json FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones,
            af.protocol_number,af.protocol_date,af.publication_date,
-           COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'') protocol_officer,
+           {effective_officer_sql()} protocol_officer,
            af.review_officer,
           af.protocol_remarks,af.protocol_decision,af.marketplace_decision,af.compliance_status,af.compliance_comments,
           af.generated_protocol_number,af.generated_protocol_date,af.generated_protocol_decision,af.protocol_generated_at,
@@ -1727,10 +1929,11 @@ def list_applications(params: dict) -> dict:
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN submission_nazk_controls snc ON snc.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}
-          ORDER BY {order_by} {sort_direction}, s.id ASC LIMIT ? OFFSET ?""", (*args, size, (page - 1) * size)).fetchall()]
+          ORDER BY {order_sql}, s.id ASC LIMIT ? OFFSET ?""", (*args, size, (page - 1) * size)).fetchall()]
         supplier_codes = sorted({re.sub(r"\D", "", row.get("supplier_code") or "") for row in records
                                  if re.sub(r"\D", "", row.get("supplier_code") or "")})
         edr_profiles = {}
+        supplier_notes = {}
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
             for profile in con.execute(
@@ -1741,10 +1944,19 @@ def list_applications(params: dict) -> dict:
                 supplier_codes,
             ):
                 edr_profiles[re.sub(r"\D", "", profile["supplier_code"] or "")] = profile
+            for note in con.execute(
+                f"SELECT supplier_code,note,updated_at,updated_by FROM supplier_notes "
+                f"WHERE DIGITS(supplier_code) IN ({placeholders})", supplier_codes):
+                supplier_notes[re.sub(r"\D", "", note["supplier_code"] or "")] = dict(note)
         for row in records:
-            profile = edr_profiles.get(re.sub(r"\D", "", row.get("supplier_code") or ""))
+            normalized_code = re.sub(r"\D", "", row.get("supplier_code") or "")
+            profile = edr_profiles.get(normalized_code)
             row["edr_fallback_manager"] = profile["manager_name"] if profile else ""
             row["edr_fallback_checked_at"] = profile["edr_checked_at"] if profile else ""
+            note = supplier_notes.get(normalized_code) or {}
+            row["supplier_note"] = note.get("note", "")
+            row["supplier_note_updated_at"] = note.get("updated_at")
+            row["supplier_note_updated_by"] = note.get("updated_by", "")
         amcu_codes = {re.sub(r"\D", "", row[0] or "") for row in con.execute(
             "SELECT DISTINCT offender_code FROM amcu_registry WHERE offender_code<>''"
         )}
@@ -1799,6 +2011,88 @@ def list_applications(params: dict) -> dict:
     return {"items": items, "total": total, "page": page, "size": size, "pages": (total + size - 1) // size}
 
 
+def history_order_sql(value: str) -> str:
+    sorts = json.loads(value or '[]')
+    if not isinstance(sorts, list) or len(sorts) > len(HISTORY_SORT_FIELDS):
+        raise ValueError('Некоректне сортування історії заявок')
+    clauses, seen = [], set()
+    for item in sorts:
+        if not isinstance(item, dict) or item.get('key') not in HISTORY_SORT_FIELDS or item.get('direction') not in {'asc','desc'}:
+            raise ValueError('Некоректне сортування історії заявок')
+        key = item['key']
+        if key not in seen:
+            clauses.append(f"CASEFOLD(COALESCE({HISTORY_SORT_FIELDS[key]},'')) {item['direction'].upper()}")
+            seen.add(key)
+    return ','.join(clauses or ['s.date_published DESC']) + ',s.id ASC'
+
+def application_history(params: dict) -> dict:
+    """Read-only paginated submission history; no EDR/NACP enrichment or writes."""
+    page = max(1, int(params.get('page', ['1'])[0]))
+    size = min(100, max(1, int(params.get('size', ['50'])[0])))
+    where, args = ['1=1'], []
+    fields = {'supplier':'s.supplier_name', 'cpv':'f.dk_code', 'framework':'f.title',
+              'contract':'af.contract_details', 'manager':'af.manager_name', 'officer':'af.protocol_officer'}
+    for key, sql in fields.items():
+        value = params.get(key, [''])[0].strip()
+        if value:
+            where.append(f'INSTR(CASEFOLD(COALESCE({sql},\'\')),?)>0'); args.append(value.casefold())
+    code = re.sub(r'\D', '', params.get('code', [''])[0])
+    remarks = params.get('remarks', [''])[0].strip().casefold()
+    if remarks:
+        where.append(f'INSTR(CASEFOLD({HISTORY_REMARKS_SQL}),?)>0'); args.append(remarks)
+    order = history_order_sql(params.get('sorts', ['[]'])[0])
+    if code: where.append('DIGITS(s.supplier_code)=?'); args.append(code)
+    for key, op in [('from','>='),('to','<=')]:
+        value = params.get(key, [''])[0]
+        if value: where.append(f'SUBSTR(s.date_published,1,10){op}?'); args.append(value)
+    state = params.get('status', [''])[0]
+    if state in {'pending','active','unsuccessful'}:
+        where.append("COALESCE(q.status,'pending')=?"); args.append(state)
+    search = params.get('search', [''])[0].strip().casefold()
+    if search:
+        search_fields = [*fields.values(), 's.supplier_code', 'af.protocol_remarks', 'f.pretty_id']
+        where.append('('+' OR '.join(f"INSTR(CASEFOLD(COALESCE({f},'')),?)>0" for f in search_fields)+')')
+        args.extend([search]*len(search_fields))
+    source = """ FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
+      LEFT JOIN application_fields af ON af.submission_id=s.id
+      LEFT JOIN (SELECT id,submission_id,ROW_NUMBER() OVER (PARTITION BY submission_id ORDER BY
+        CASE status WHEN 'active' THEN 3 WHEN 'unsuccessful' THEN 2 ELSE 1 END DESC,
+        COALESCE(NULLIF(decision_date,''),synced_at) DESC,id DESC) rn FROM qualifications
+        WHERE COALESCE(submission_id,'')<>'') final_q ON final_q.submission_id=s.id AND final_q.rn=1
+      LEFT JOIN qualifications q ON q.id=COALESCE(final_q.id,s.qualification_id)
+      WHERE """ + ' AND '.join(where)
+    with db() as con:
+        total = con.execute('SELECT COUNT(*)'+source, args).fetchone()[0]
+        items = [dict(row) for row in con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,
+          s.date_published,s.framework_id,f.pretty_id,f.title framework_title,f.dk_code,
+          COALESCE(q.status,'pending') status,af.protocol_decision,af.protocol_officer,
+          af.protocol_number,af.protocol_date,af.protocol_remarks,af.compliance_comments,
+          af.contract_details,af.manager_name,s.documents_json,q.documents_json decision_documents
+          """+source+' ORDER BY '+order+' LIMIT ? OFFSET ?',
+          [*args,size,(page-1)*size])]
+    for item in items:
+        item['documents'] = json.loads(item.pop('documents_json') or '[]') + json.loads(item.pop('decision_documents') or '[]')
+        item['decision'] = decision_label(item['status'])
+    return {'items':items,'total':total,'page':page,'pages':max(1,(total+size-1)//size),'size':size}
+
+def pqm_schema_metadata() -> dict:
+    """Schema-only metadata. Never expose stored values, credentials or PII."""
+    aliases = {'s':'submissions','af':'application_fields','f':'frameworks'}
+    known = {tuple([aliases[x['sql'].split('.')[0]],x['sql'].split('.')[1]]):x['label']
+             for x in APPLICATION_SEARCH_FIELDS}
+    items=[]
+    with db() as con:
+        tables=[r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        for table in tables:
+            for row in con.execute('PRAGMA table_info("'+table.replace('"','""')+'")'):
+                key=row['name']
+                items.append({'label':known.get((table,key),key),'key':key,'table':table,
+                  'type':row['type'],'required':bool(row['notnull']),'primary_key':bool(row['pk']),
+                  'source':'SQLite PRAGMA table_info','source_field':table+'.'+key,
+                  'notes':'Детальна семантична metadata ще не описана' if (table,key) not in known else 'Поле чинного APPLICATION_SEARCH_FIELDS',
+                  'template_available':False})
+    return {'items':items,'source':'Фактична SQLite schema та APPLICATION_SEARCH_FIELDS; без значень даних'}
+
 def protocol_readiness(payload: dict) -> dict:
     number = str(payload.get("protocol_number") or "").strip()
     date_from = str(payload.get("date_from") or "").strip()
@@ -1821,7 +2115,7 @@ def protocol_readiness(payload: dict) -> dict:
           COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.document_package,'') document_package,
           COALESCE(af.protocol_remarks,'') protocol_remarks,
-          COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'') protocol_officer,
+          {effective_officer_sql()} protocol_officer,
           COALESCE(af.manager_name,'') manager_name,
           COALESCE(af.protocol_date,'') protocol_date,
           COALESCE(q.status,'pending') source_status
@@ -3191,14 +3485,21 @@ def list_qualified_suppliers(params: dict) -> dict:
             "page": page, "size": size, "pages": (total + size - 1) // size}
 
 
+def latest_supplier_submission_name(con, code):
+    row=con.execute('''SELECT supplier_name FROM submissions WHERE DIGITS(supplier_code)=?
+      ORDER BY julianday(date_published) DESC,id DESC LIMIT 1''',(code,)).fetchone()
+    return row[0] if row else ''
+
 def supplier_profile(supplier_code: str) -> dict:
     """Full local PQM/Bids/registry card for one supplier."""
     code = re.sub(r"\D", "", urllib.parse.unquote(supplier_code or ""))
     if not code:
         raise KeyError(supplier_code)
     with db() as con:
+        latest_submission_name = latest_supplier_submission_name(con,code)
         summary = con.execute("SELECT * FROM supplier_registry_summary WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         profile = con.execute("SELECT * FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
+        supplier_note = con.execute("SELECT * FROM supplier_notes WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         current_manager_row = con.execute("""SELECT manager_name,source,valid_from,updated_at
           FROM supplier_managers WHERE DIGITS(supplier_code)=? AND is_current=1
           ORDER BY updated_at DESC,id DESC LIMIT 1""", (code,)).fetchone()
@@ -3263,7 +3564,8 @@ def supplier_profile(supplier_code: str) -> dict:
           SELECT contract_events.*,ROW_NUMBER() OVER (PARTITION BY framework_id
             ORDER BY COALESCE(event_date,'') DESC,id DESC) rn FROM contract_events)
           SELECT id,status,framework_id,framework_title,dk_code,marketplace_url,event_date,event_label FROM ranked
-          WHERE rn=1 ORDER BY COALESCE(event_date,'') DESC LIMIT 200""", (code,))]
+          WHERE rn=1 ORDER BY COALESCE(dk_code,''),COALESCE(framework_title,''),framework_id LIMIT 200""", (code,))]
+        qualification_by_framework = {row["framework_id"]: row for row in qualifications}
         amcu = [dict(row) for row in con.execute("""SELECT offender_name,offender_code,decision_no,
           decision_date,authority,court_case_no FROM amcu_registry
           WHERE DIGITS(offender_code)=? ORDER BY decision_date DESC""", (code,))]
@@ -3330,16 +3632,23 @@ def supplier_profile(supplier_code: str) -> dict:
             })
         application_rows = [dict(row) for row in con.execute("""SELECT s.id,s.framework_id,
           COALESCE(NULLIF(f.pretty_id,''),f.id) framework_pretty_id,f.dk_code,f.title framework_title,
+          COALESCE(fo.marketplace_url,'') marketplace_url,
           s.date_published,COALESCE(q.status,'pending') qualification_status,
           COALESCE(af.protocol_decision,'') protocol_decision,COALESCE(af.protocol_remarks,'') protocol_remarks,
           COALESCE(af.compliance_status,'') compliance_status,COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.protocol_number,'') protocol_number,COALESCE(af.protocol_date,'') protocol_date,
-          COALESCE(af.protocol_officer,'') protocol_officer
+          COALESCE(af.protocol_officer,'') protocol_officer,COALESCE(af.contract_details,'') contract_details
           FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
-          LEFT JOIN qualifications q ON q.id=s.qualification_id
+          LEFT JOIN qualifications q ON q.id=COALESCE((
+            SELECT q2.id FROM qualifications q2 WHERE q2.submission_id=s.id
+            ORDER BY CASE q2.status WHEN 'active' THEN 3 WHEN 'unsuccessful' THEN 2 ELSE 1 END DESC,
+              COALESCE(NULLIF(q2.decision_date,''),q2.synced_at) DESC,q2.id DESC LIMIT 1
+          ),s.qualification_id)
           LEFT JOIN application_fields af ON af.submission_id=s.id
+          LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id
           WHERE DIGITS(s.supplier_code)=?
-          ORDER BY s.framework_id,COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC""", (code,))]
+          ORDER BY COALESCE(f.dk_code,''),COALESCE(f.title,''),s.framework_id,
+            COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC""", (code,))]
         application_history_groups = []
         for framework_id, grouped_rows in itertools.groupby(application_rows, key=lambda row: row["framework_id"]):
             attempts = list(grouped_rows)
@@ -3350,13 +3659,17 @@ def supplier_profile(supplier_code: str) -> dict:
             application_history_groups.append({
                 "framework_id": framework_id,
                 "framework_pretty_id": latest["framework_pretty_id"],
+                "marketplace_url": latest["marketplace_url"],
                 "dk_code": latest["dk_code"], "framework_title": latest["framework_title"],
                 "applications_count": len(attempts), "admitted_count": admitted,
                 "rejected_count": rejected, "latest_date": latest["date_published"],
                 "latest_status": latest["qualification_status"], "latest_remark": latest_remark,
+                "current_qualification": dict(qualification_by_framework.get(latest["framework_pretty_id"], {})),
                 "applications": attempts,
             })
-        application_history_groups.sort(key=lambda group: group["latest_date"] or "", reverse=True)
+        application_history_groups.sort(key=lambda group: ((group["dk_code"] or "").casefold(),
+                                                            (group["framework_title"] or "").casefold(),
+                                                            group["framework_pretty_id"] or ""))
     bids_summary = {"participations": 0, "wins": 0}
     try:
         with bids_db() as con:
@@ -3382,7 +3695,8 @@ def supplier_profile(supplier_code: str) -> dict:
         legacy_result=(latest_current_supplier_check.get("result")
           or (nazk_review_data.get("result") if nazk_review_data.get("is_current_manager") else "")),
     )
-    return {"code": code, "summary": dict(summary) if summary else {}, "edr_profile": dict(profile) if profile else {},
+    return {"code": code, "latest_submission_name": latest_submission_name, "summary": dict(summary) if summary else {}, "edr_profile": dict(profile) if profile else {},
+            "supplier_note": dict(supplier_note) if supplier_note else {"supplier_code": code, "note": "", "updated_at": None, "updated_by": ""},
             "current_manager": dict(current_manager_row) if current_manager_row else {},
             "qualifications": qualifications, "bids_summary": bids_summary,
             "amcu": amcu, "nazk": nazk, "nazk_review": nazk_review_data,
@@ -5829,11 +6143,21 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/login", "/api/logout"}:
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        with db() as con:
+            self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
+        permission = auth_access.permission_key(http_method, path)
+        if (not self.auth_access["active"]
+                or (permission and not self.auth_access["permissions"].get(permission, False))):
+            return self.send_json({"error": "Недостатньо прав для цієї дії", "status": 403}, 403)
         if not admin_read_allowed(self.auth_role, path, query):
             return self.send_json({"error": "Недостатньо прав для перегляду цього розділу", "status": 403}, 403)
-        if not mutation_allowed(self.auth_role, http_method, path):
+        managed_grant = (self.auth_role == "officer" and permission
+                         and not permission.startswith("admin.")
+                         and self.auth_access["permissions"].get(permission, False))
+        if not mutation_allowed(self.auth_role, http_method, path) and not managed_grant:
             return self.send_json({"error": "Недостатньо прав для цієї дії", "status": 403}, 403)
-        if (self.auth_role == "officer" and http_method in {"POST", "PATCH", "PUT", "DELETE"}
+        if (self.auth_role == "officer" and path != "/api/history-columns"
+                and (http_method in {"POST", "PATCH", "PUT", "DELETE"} or permission == "applications.check")
                 and not officer_mutation_scope_allowed(path, self.auth_officer_id)):
             return self.send_json({"error": "Дія доступна лише для призначених вам заявок або звернень",
                                    "status": 403}, 403)
@@ -5877,6 +6201,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/history-columns":
+            return self.send_json(history_column_settings(self.auth_user))
         if parsed.path == "/api/health":
             with db() as con:
                 counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("frameworks", "submissions", "qualifications")}
@@ -5885,6 +6211,8 @@ class Handler(BaseHTTPRequestHandler):
             with db() as con:
                 preference = con.execute("SELECT display_name FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
             return self.send_json({"username": self.auth_user, "display_name": preference["display_name"] if preference else "", "role": self.auth_role,
+                                   "managed_role": self.auth_access["code"],
+                                   "permissions": self.auth_access["permissions"],
                                    "officer_id": self.auth_officer_id,
                                    "authenticated": bool(AUTH_ENABLED),
                                    "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
@@ -5906,6 +6234,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", row["content_type"])
             self.send_header("Cache-Control", "private, max-age=300")
             self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw); return
+        if parsed.path == "/api/admin/access-roles":
+            with db() as con:
+                return self.send_json(auth_access.roles_payload(con))
+        if parsed.path == "/api/application-profiles":
+            return self.send_json(list_application_view_profiles(self.auth_user))
+        if parsed.path == "/api/application-history":
+            try:
+                return self.send_json(application_history(urllib.parse.parse_qs(parsed.query)))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        if parsed.path == "/api/admin/schema":
+            return self.send_json(pqm_schema_metadata())
+        if parsed.path == "/api/applications/search-fields":
+            return self.send_json({"items": [{"key": field["key"], "label": field["label"]}
+                                             for field in APPLICATION_SEARCH_FIELDS]})
+        remark_selection_match = re.fullmatch(r"/api/applications/([^/]+)/remark-selections", parsed.path)
+        if remark_selection_match:
+            submission_id = urllib.parse.unquote(remark_selection_match.group(1))
+            return self.send_json({"submission_id": submission_id,
+                                   "remark_ids": application_remark_selections(submission_id)})
         if parsed.path == "/api/admin/users":
             now = time.time()
             online_users: dict[str, float] = {}
@@ -5920,7 +6268,10 @@ class Handler(BaseHTTPRequestHandler):
                         online_users[username] = last_seen
             with db() as con:
                 rows = con.execute("""SELECT u.username,u.role,u.officer_id,u.active,u.created_at,u.updated_at,u.last_seen_at,
-                  o.full_name officer_name FROM auth_users u LEFT JOIN authorized_officers o ON o.id=u.officer_id
+                  p.display_name,COALESCE(ur.role_code,u.role) role_code,o.full_name officer_name
+                  FROM auth_users u LEFT JOIN authorized_officers o ON o.id=u.officer_id
+                  LEFT JOIN user_preferences p ON p.username=u.username
+                  LEFT JOIN auth_user_roles ur ON ur.username=u.username
                   ORDER BY u.active DESC,u.username""").fetchall()
                 avatars = {row["username"] for row in con.execute("SELECT username FROM user_avatars")}
                 officer_names = {row["id"]: row["full_name"] for row in con.execute("SELECT id,full_name FROM authorized_officers")}
@@ -6214,6 +6565,45 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/history-columns":
+            try:
+                payload = self.read_json()
+                if "columns" not in payload:
+                    raise ValueError("Відсутні налаштування колонок")
+                return self.send_json(history_column_settings(self.auth_user, payload["columns"]))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        if parsed.path == "/api/admin/access-roles":
+            payload = self.read_json()
+            try:
+                with db() as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    auth_access.save_role(con, payload, self.auth_user)
+                return self.send_json({"saved": True})
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                return self.send_json({"error": str(exc) if isinstance(exc, ValueError)
+                                       else "Конфлікт налаштувань ролі"}, 400)
+        if parsed.path == "/api/application-profiles":
+            payload = self.read_json(); name = str(payload.get("name") or "").strip()
+            if not name:
+                return self.send_json({"error": "Вкажіть назву профілю"}, 400)
+            is_system = bool(payload.get("is_system"))
+            if is_system and self.auth_role != "admin":
+                return self.send_json({"error": "Системні профілі може створювати лише адміністратор"}, 403)
+            layout_json = _profile_layout_json(payload.get("columns"), payload.get("kpis"), payload.get("sorts"))
+            profile_id = str(uuid.uuid4())
+            owner = "__system__" if is_system else _profile_owner(self.auth_user)
+            source = str(payload.get("source_system_profile_id") or "").strip() or None
+            with db() as con:
+                try:
+                    con.execute("""INSERT INTO application_view_profiles
+                      (id,owner_key,name,is_system,source_system_profile_id,columns_json,
+                       created_at,updated_at,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                      (profile_id, owner, name, int(is_system), source, layout_json,
+                       now_iso(), now_iso(), self.auth_user, self.auth_user))
+                except sqlite3.IntegrityError:
+                    return self.send_json({"error": "Профіль із такою назвою вже існує"}, 409)
+            return self.send_json({"saved": True, "id": profile_id}, 201)
         if parsed.path == "/api/login":
             payload = self.read_json(); username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
@@ -6307,7 +6697,17 @@ class Handler(BaseHTTPRequestHandler):
                 con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
             return self.send_json({"read":True,"message_id":latest})
         if parsed.path == "/api/admin/users":
-            payload = self.read_json(); username = str(payload.get("username") or "").strip()
+            payload = self.read_json()
+            if "role_code" in payload:
+                try:
+                    with db() as con:
+                        con.execute("BEGIN IMMEDIATE")
+                        auth_access.save_user(con, payload, self.auth_user, configured_auth_accounts())
+                    return self.send_json({"saved": True})
+                except (ValueError, sqlite3.IntegrityError) as exc:
+                    return self.send_json({"error": str(exc) if isinstance(exc, ValueError)
+                                           else "Конфлікт облікового запису або УО"}, 400)
+            username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or ""); role = str(payload.get("role") or "officer").casefold()
             officer_id = payload.get("officer_id") or None
             if not re.fullmatch(r"[A-Za-z0-9._-]{3,50}", username):
@@ -6527,6 +6927,70 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)
+        profile_match = re.fullmatch(r"/api/application-profiles/([^/]+)", parsed.path)
+        if profile_match:
+            profile_id = urllib.parse.unquote(profile_match.group(1)); payload = self.read_json()
+            with db() as con:
+                current = con.execute("SELECT * FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
+                if not current:
+                    return self.send_json({"error": "Профіль не знайдено"}, 404)
+                if current["is_system"] and self.auth_role != "admin":
+                    return self.send_json({"error": "Системний профіль може змінювати лише адміністратор"}, 403)
+                if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):
+                    return self.send_json({"error": "Можна змінювати лише власні профілі"}, 403)
+                fields, values = [], []
+                if "name" in payload:
+                    name = str(payload.get("name") or "").strip()
+                    if not name:
+                        return self.send_json({"error": "Вкажіть назву профілю"}, 400)
+                    fields.append("name=?"); values.append(name)
+                if "columns" in payload or "kpis" in payload or "sorts" in payload:
+                    try:
+                        current_layout = json.loads(current["columns_json"] or "[]")
+                    except json.JSONDecodeError:
+                        current_layout = []
+                    old_columns = current_layout.get("columns", []) if isinstance(current_layout, dict) else current_layout
+                    old_kpis = current_layout.get("kpis", []) if isinstance(current_layout, dict) else []
+                    old_sorts = current_layout.get("sorts", []) if isinstance(current_layout, dict) else []
+                    fields.append("columns_json=?")
+                    values.append(_profile_layout_json(payload.get("columns", old_columns),
+                                                       payload.get("kpis", old_kpis), payload.get("sorts", old_sorts)))
+                if fields:
+                    fields.extend(["updated_at=?", "updated_by=?"]); values.extend([now_iso(), self.auth_user, profile_id])
+                    try:
+                        con.execute(f"UPDATE application_view_profiles SET {','.join(fields)} WHERE id=?", values)
+                    except sqlite3.IntegrityError:
+                        return self.send_json({"error": "Профіль із такою назвою вже існує"}, 409)
+            return self.send_json({"saved": True, "id": profile_id})
+        remark_selection_match = re.fullmatch(r"/api/applications/([^/]+)/remark-selections", parsed.path)
+        if remark_selection_match:
+            submission_id = urllib.parse.unquote(remark_selection_match.group(1)); payload = self.read_json()
+            try:
+                ids = save_application_remark_selections(submission_id, payload.get("remark_ids"), self.auth_user)
+            except KeyError:
+                return self.send_json({"error": "Заявку не знайдено"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            return self.send_json({"saved": True, "remark_ids": ids})
+        supplier_note_match = re.fullmatch(r"/api/suppliers/([^/]+)/note", parsed.path)
+        if supplier_note_match:
+            supplier_code = re.sub(r"\D", "", urllib.parse.unquote(supplier_note_match.group(1)))
+            payload = self.read_json(); note = str(payload.get("note") or "").strip()[:4000]
+            if not supplier_code:
+                return self.send_json({"error": "Некоректний код постачальника"}, 400)
+            changed_at = now_iso()
+            with db() as con:
+                current = con.execute("SELECT note FROM supplier_notes WHERE DIGITS(supplier_code)=?", (supplier_code,)).fetchone()
+                old_note = current[0] if current else ""
+                con.execute("""INSERT INTO supplier_notes(supplier_code,note,updated_at,updated_by)
+                  VALUES (?,?,?,?) ON CONFLICT(supplier_code) DO UPDATE SET note=excluded.note,
+                  updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                  (supplier_code, note, changed_at, self.auth_user))
+                con.execute("""INSERT INTO supplier_note_events
+                  (supplier_code,old_note,new_note,changed_at,changed_by) VALUES (?,?,?,?,?)""",
+                  (supplier_code, old_note, note, changed_at, self.auth_user))
+            return self.send_json({"saved": True, "supplier_code": supplier_code, "note": note,
+                                   "updated_at": changed_at, "updated_by": self.auth_user})
         if parsed.path == "/api/account":
             payload = self.read_json()
             display_name = str(payload.get("display_name") or "").strip()[:100]
@@ -6868,6 +7332,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
+        profile_match = re.fullmatch(r"/api/application-profiles/([^/]+)", parsed.path)
+        if profile_match:
+            profile_id = urllib.parse.unquote(profile_match.group(1))
+            with db() as con:
+                current = con.execute("SELECT owner_key,is_system FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
+                if not current:
+                    return self.send_json({"error": "Профіль не знайдено"}, 404)
+                if current["is_system"] and self.auth_role != "admin":
+                    return self.send_json({"error": "Системний профіль може видаляти лише адміністратор"}, 403)
+                if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):
+                    return self.send_json({"error": "Можна видаляти лише власні профілі"}, 403)
+                con.execute("UPDATE application_view_profiles SET source_system_profile_id=NULL WHERE source_system_profile_id=?", (profile_id,))
+                con.execute("DELETE FROM application_view_profiles WHERE id=?", (profile_id,))
+            return self.send_json({"deleted": True, "id": profile_id})
         if parsed.path == "/api/account/avatar":
             with db() as con:
                 con.execute("DELETE FROM user_avatars WHERE username=?", (self.auth_user,))

@@ -29,6 +29,7 @@
       <button id="workQueueNav">Робота УО</button>
       <button id="applicationsNav" class="nav-active">Реєстр заявок</button>
       <button id="suppliersNav">База постачальників</button>
+      <button id="historyNav">Історія заявок</button>
       <button id="frameworksNav">Відбори</button>
       <button id="procurementsNav">Закупівлі за відборами</button>
       <button id="referencesNav">Довідники</button>
@@ -109,7 +110,7 @@
         <label class="date-filter">Від <input id="dateFromFilter" type="date" aria-label="Дата заявки від"></label>
         <label class="date-filter">До <input id="dateToFilter" type="date" aria-label="Дата заявки до"></label>
       </div></details>
-      <div class="toolbar-services"><select id="profileSelect" aria-label="Профіль"></select><button id="saveProfileBtn" class="ghost">Зберегти</button><button id="cardsBtn" class="ghost">Картки</button><button id="columnsBtn" class="ghost">Колонки</button></div>
+      <div class="toolbar-services"><select id="profileSelect" aria-label="Профіль"></select><button id="saveProfileBtn" class="ghost">Зберегти як</button><button id="createSystemProfileBtn" class="ghost" hidden>Новий системний</button><button id="renameProfileBtn" class="ghost">Перейменувати</button><button id="deleteProfileBtn" class="ghost">Видалити</button><button id="restoreProfileBtn" class="ghost">Відновити</button><button id="cardsBtn" class="ghost">Картки</button><button id="columnsBtn" class="ghost">Колонки</button></div>
       <button id="clearFiltersBtn" class="icon-btn" title="Очистити фільтри">↺</button>
       <span id="saveState" class="save-state"><i></i> Усі зміни збережено</span>
     </section>
@@ -119,6 +120,21 @@
       <div class="table-scroll" id="tableScroll"><table id="applicationsTable"><thead></thead><tbody></tbody></table></div>
       <footer><span id="footerInfo"></span><span>Підказка: натисніть на клітинку, щоб редагувати</span></footer>
     </section>
+  </main>
+
+  <main id="historyView" class="module-view" hidden>
+    <header class="history-heading"><div><h1>Історія заявок</h1><p class="muted">Усі заявки · один рядок — одна заявка · перегляд без зміни даних</p></div><article class="history-total"><span>Заявки</span><strong id="historyTotal" aria-live="polite">—</strong></article><div id="historyHeadingActions"></div></header>
+    <section class="card history-filters" id="historyFilters">
+      <input data-history="search" placeholder="Пошук у всіх полях…"><input data-history="code" placeholder="ЄДРПОУ / РНОКПП (точно)">
+      <input data-history="supplier" placeholder="Постачальник"><input data-history="cpv" placeholder="Код ДК"><input data-history="framework" placeholder="Назва відбору">
+      <input data-history="contract" placeholder="Реквізити договору"><input data-history="manager" placeholder="ПІБ керівника"><input data-history="officer" placeholder="УО протоколу">
+      <input data-history="remarks" placeholder="Зауваження — пошук за фрагментом тексту" aria-label="Зауваження">
+      <label>Від <input type="date" data-history="from"></label><label>До <input type="date" data-history="to"></label>
+      <select data-history="status"><option value="">Усі рішення</option><option value="pending">Очікує рішення</option><option value="active">Допущено</option><option value="unsuccessful">Відхилено</option></select>
+      <button type="button" id="historyReset">Очистити</button>
+    </section>
+    <div class="card history-table"><table><thead><tr><th>Постачальник</th><th>Код ЄДРПОУ / РНОКПП</th><th>Керівник</th><th>Дата заявки</th><th>Код ДК</th><th>Назва відбору</th><th>Рішення</th><th>УО протоколу</th><th>Реквізити договору</th><th>Зауваження</th><th>Заявка / документи</th></tr></thead><tbody id="historyRows"></tbody></table></div>
+    <footer class="pagination"><span id="historyCount"></span><button id="historyPrev" type="button">←</button><button id="historyNext" type="button">→</button></footer>
   </main>
 
   <main id="suppliersView" class="module-view" hidden>
@@ -237,6 +253,9 @@
   <dialog id="protocolDialog" class="wide"><form id="protocolForm"><header><div><h2>Готовність протоколу</h2><p>Перевірка складу та обов’язкових полів перед формуванням</p></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></header><div class="protocol-controls"><label>№ протоколу<input id="checkProtocolNumber"></label><label>Період від<input id="checkDateFrom" type="date"></label><label>Період до<input id="checkDateTo" type="date"></label><button type="submit" class="primary">Перевірити</button></div><div id="protocolSummary" class="protocol-summary muted">Зазначте номер протоколу або період.</div><div id="protocolIssues" class="protocol-issues"></div><footer><button type="button" class="ghost" onclick="this.closest('dialog').close()">Закрити</button><button id="generateProtocolBtn" type="button" class="primary" disabled>Сформувати протокол</button></footer></form></dialog>
 
   <script src="app.js"></script>
+  <script src="history_columns.js"></script>
+  <script src="history_ui.js"></script>
+  <script src="auth_ui.js"></script>
   </div>
 </body>
 </html>
