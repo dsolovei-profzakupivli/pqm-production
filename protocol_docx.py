@@ -1,7 +1,7 @@
 """DOCX protocol builder for PQM.
 
 The document follows the approved Google Docs protocol structure while the
-local MVP remains independent from interactive tooling and Google OAuth.
+local MVP remains independent from Codex and Google OAuth.
 """
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ def _add_protocol_table(doc, rows, rejected=False):
     return table
 
 
-def build_protocol_docx(payload: dict, output_path: Path) -> Path:
+def build_protocol_docx_legacy(payload: dict, output_path: Path) -> Path:
     items = payload["items"]
     admitted = [item for item in items if item.get("protocol_decision") == "admit"]
     rejected = [item for item in items if item.get("protocol_decision") == "reject"]
@@ -234,4 +234,35 @@ def build_protocol_docx(payload: dict, output_path: Path) -> Path:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_path)
+    return output_path
+
+
+def build_protocol_docx(payload: dict, output_path: Path) -> Path:
+    """Template first; retain an explicit, logged legacy fallback during acceptance."""
+    import logging
+    import os
+    import tempfile
+    from protocol_template import TemplateError, build_from_template, context
+
+    context(payload)  # Never bypass the count invariant through fallback.
+    mode = os.environ.get('PQM_PROTOCOL_ENGINE', 'template')
+    if mode not in {'template', 'legacy', 'template_only'}:
+        raise ValueError('Некоректний PQM_PROTOCOL_ENGINE')
+    if mode != 'legacy':
+        try:
+            return build_from_template(payload, output_path)
+        except TemplateError:
+            if mode == 'template_only':
+                raise
+            logging.getLogger('pqm').warning('Application protocol template unavailable/invalid; using legacy generator')
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(suffix='.docx', dir=output_path.parent)
+    os.close(fd)
+    try:
+        build_protocol_docx_legacy(payload, Path(temporary))
+        os.replace(temporary, output_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return output_path

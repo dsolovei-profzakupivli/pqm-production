@@ -1,13 +1,13 @@
-/* Managed accounts extend the existing WEB authentication and session model. */
+/* Managed accounts stay separate from LOCAL debug role selection. */
 (() => {
   document.querySelector('#administrationView .reference-tabs').insertAdjacentHTML('beforeend', '<button type="button" id="accessTab" data-admin-tab="access" hidden>Ролі та доступи</button>');
   document.querySelector('#administrationView').insertAdjacentHTML('beforeend', `<section id="accessPanel" class="admin-panel" hidden>
-    <h2>Ролі та доступи</h2><p>Керовані ролі та права доступу для облікових записів WEB TEST.</p>
+    <h2>Ролі та доступи</h2><p>Права доступу застосовуються до облікового запису користувача.</p>
     <label>Роль <select id="accessRole"></select></label><button id="accessNewRole">Нова роль</button>
     <label>Код <input id="accessCode"></label><label>Назва <input id="accessLabel"></label>
     <label>Базова роль <select id="accessBase"><option value="officer">УО</option><option value="viewer">Перегляд</option><option value="admin">Адміністратор</option></select></label>
     <div id="accessPermissions"></div><button id="accessSaveRole">Зберегти роль</button>
-    <h3>Користувачі</h3><select id="accessUser"><option value="">Новий користувач</option></select>
+    <h3>Облікові записи WEB TEST</h3><select id="accessUser"><option value="">Новий користувач</option></select>
     <label>Логін <input id="accessUsername" autocomplete="off"></label><label>Ім’я <input id="accessName"></label>
     <label>Роль <select id="accessUserRole"></select></label><label>УО <select id="accessOfficer"></select></label>
     <label>Новий пароль <input type="password" id="accessPassword" autocomplete="new-password"></label>
@@ -29,7 +29,7 @@
   function drawPermissions(rights={}) {
     const base=q('accessBase').value;
     const modules=[...new Set(functions.map(f=>f.module))];
-    q('accessPermissions').innerHTML=modules.map(m=>`<fieldset><legend>${esc(m)}</legend>${functions.filter(f=>f.module===m).map(f=>`<label style="display:inline-flex;gap:6px;margin:6px 18px 6px 0"><input type="checkbox" data-permission="${esc(f.key)}" ${rights[f.key]?'checked':''} ${(base==='admin'||base==='viewer'&&f.mutation)?'disabled':''}>${esc(f.label)}</label>`).join('')}</fieldset>`).join('');
+    q('accessPermissions').innerHTML=modules.map(m=>`<fieldset><legend>${esc(m)}</legend>${functions.filter(f=>f.module===m).map(f=>`<label style="display:inline-flex;gap:6px;margin:6px 18px 6px 0"><input type="checkbox" data-permission="${esc(f.key)}" ${rights[f.key]?'checked':''} ${(base==='admin'||base==='viewer'&&f.mutation&&f.key!=='messages.write')?'disabled':''}>${esc(f.label)}</label>`).join('')}</fieldset>`).join('');
   }
   function drawRole(){const r=roles.find(r=>r.code===q('accessRole').value);if(!r)return;q('accessCode').value=r.code;q('accessCode').disabled=true;q('accessLabel').value=r.label;q('accessBase').value=r.base_role;q('accessBase').disabled=true;drawPermissions(r.permissions)}
   async function load(){

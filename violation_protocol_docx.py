@@ -19,6 +19,8 @@ from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from lxml import etree
+from protocol_template import validate as validate_application_template
 
 
 PACKAGED_TEMPLATE_DIR = Path(__file__).with_name("templates") / "violation_protocols"
@@ -28,6 +30,8 @@ TEMPLATES = {
     "warning": TEMPLATE_DIR / "warning.docx",
     "decline_p49_1_2": TEMPLATE_DIR / "decline_p49_1_2.docx",
     "decline_p49_3": TEMPLATE_DIR / "decline_p49_3.docx",
+    "application_protocol": (Path(os.environ["PQM_DATA_DIR"]) / "templates" / "application_protocol.docx"
+                             if os.environ.get("PQM_DATA_DIR") else Path(__file__).with_name("templates") / "application_protocol.docx"),
 }
 TOKEN_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
 
@@ -36,7 +40,8 @@ def ensure_runtime_templates() -> None:
     """Seed a persistent template directory without overwriting operator changes."""
     TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     for key, target in TEMPLATES.items():
-        source = PACKAGED_TEMPLATE_DIR / target.name
+        source = (Path(__file__).with_name("templates") / "application_protocol.docx"
+                  if key == "application_protocol" else PACKAGED_TEMPLATE_DIR / target.name)
         if not target.exists() and source.exists() and source.resolve() != target.resolve():
             shutil.copy2(source, target)
 
@@ -47,6 +52,7 @@ def template_metadata() -> list[dict[str, Any]]:
         "warning": "Попередження за зверненням",
         "decline_p49_1_2": "Відмова за пп. 1–2 п. 49",
         "decline_p49_3": "Відмова за пп. 3 п. 49",
+        "application_protocol": "Протокол розгляду заявок / кваліфікації",
     }
     result = []
     for key, path in TEMPLATES.items():
@@ -73,6 +79,9 @@ def replace_runtime_template(key: str, source_path: str | Path) -> Path:
     try:
         expected = _template_tokens(target)
         supplied = _template_tokens(source)
+        if key == "application_protocol":
+            with zipfile.ZipFile(source) as archive:
+                validate_application_template(etree.fromstring(archive.read("word/document.xml")))
     except Exception as exc:
         raise ValueError("Не вдалося прочитати структуру DOCX") from exc
     missing = sorted(expected - supplied)

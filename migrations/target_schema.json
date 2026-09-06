@@ -1,0 +1,4274 @@
+{
+  "tables": [
+    {
+      "name": "amcu_registry",
+      "sql": "CREATE TABLE amcu_registry (\n          row_key TEXT PRIMARY KEY, ordinal TEXT, division_no TEXT, sequence_no TEXT,\n          decision_no TEXT, decision_date TEXT, authority TEXT, offender_name TEXT,\n          offender_code TEXT, court_case_no TEXT, raw_json TEXT\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "row_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "ordinal",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "division_no",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "sequence_no",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "decision_no",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "decision_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "authority",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "offender_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "offender_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "court_case_no",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "raw_json",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "application_contracts",
+      "sql": "CREATE TABLE application_contracts (\n          submission_id TEXT PRIMARY KEY REFERENCES submissions(id), supplier_code TEXT DEFAULT '',\n          contract_number TEXT DEFAULT '', contract_date TEXT DEFAULT '', amount TEXT DEFAULT '',\n          buyer_code TEXT DEFAULT '', fingerprint TEXT DEFAULT '', updated_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "contract_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "contract_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "amount",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "buyer_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "fingerprint",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "application_fields",
+      "sql": "CREATE TABLE application_fields (\n          submission_id TEXT PRIMARY KEY REFERENCES submissions(id),\n          protocol_number TEXT DEFAULT '', protocol_date TEXT DEFAULT '',\n          publication_date TEXT DEFAULT '', protocol_officer TEXT DEFAULT '',\n          manager_name TEXT DEFAULT '', document_package TEXT DEFAULT '',\n          notes TEXT DEFAULT '', updated_at TEXT, updated_by TEXT\n        , protocol_remarks TEXT DEFAULT '', protocol_decision TEXT DEFAULT '', compliance_status TEXT DEFAULT '', compliance_comments TEXT DEFAULT '', marketplace_decision TEXT DEFAULT '', authority_review TEXT DEFAULT '', mvs_seal_review TEXT DEFAULT '', generated_protocol_number TEXT DEFAULT '', generated_protocol_date TEXT DEFAULT '', generated_protocol_decision TEXT DEFAULT '', protocol_generated_at TEXT DEFAULT '', contract_details TEXT DEFAULT '', document_check_status TEXT DEFAULT '', document_check_summary TEXT DEFAULT '', document_checked_at TEXT DEFAULT '', document_check_result_json TEXT DEFAULT '', manager_name_source TEXT DEFAULT '', manager_name_source_submission_id TEXT DEFAULT '', review_officer TEXT DEFAULT '')",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "protocol_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "protocol_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "publication_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "protocol_officer",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "manager_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "document_package",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "notes",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "protocol_remarks",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "protocol_decision",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "compliance_status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "compliance_comments",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "marketplace_decision",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "authority_review",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "mvs_seal_review",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "generated_protocol_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "generated_protocol_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "generated_protocol_decision",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "protocol_generated_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 21,
+          "name": "contract_details",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 22,
+          "name": "document_check_status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 23,
+          "name": "document_check_summary",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 24,
+          "name": "document_checked_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 25,
+          "name": "document_check_result_json",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 26,
+          "name": "manager_name_source",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 27,
+          "name": "manager_name_source_submission_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 28,
+          "name": "review_officer",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "application_protocol_remark_selections",
+      "sql": "CREATE TABLE application_protocol_remark_selections (\n          submission_id TEXT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,\n          remark_id INTEGER NOT NULL REFERENCES remarks_catalog(id),\n          selected_at TEXT NOT NULL,\n          selected_by TEXT NOT NULL DEFAULT '',\n          PRIMARY KEY(submission_id,remark_id)\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "remark_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "selected_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "selected_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "application_view_profiles",
+      "sql": "CREATE TABLE application_view_profiles (\n          id TEXT PRIMARY KEY,\n          owner_key TEXT NOT NULL,\n          name TEXT NOT NULL,\n          is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0,1)),\n          source_system_profile_id TEXT REFERENCES application_view_profiles(id),\n          columns_json TEXT NOT NULL DEFAULT '[]',\n          created_at TEXT NOT NULL,\n          updated_at TEXT NOT NULL,\n          created_by TEXT NOT NULL DEFAULT '',\n          updated_by TEXT NOT NULL DEFAULT '',\n          UNIQUE(owner_key,name)\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "owner_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "is_system",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "source_system_profile_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "columns_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "audit_log",
+      "sql": "CREATE TABLE audit_log (\n          id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,\n          changed_by TEXT NOT NULL, field_name TEXT NOT NULL, old_value TEXT, new_value TEXT\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "changed_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "changed_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "field_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "old_value",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "new_value",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "auth_role_permissions",
+      "sql": "CREATE TABLE auth_role_permissions (\n      role_code TEXT NOT NULL REFERENCES auth_roles(code),permission_key TEXT NOT NULL,\n      allowed INTEGER NOT NULL CHECK(allowed IN (0,1)),updated_at TEXT NOT NULL,updated_by TEXT NOT NULL,\n      PRIMARY KEY(role_code,permission_key))",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "role_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "permission_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "allowed",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "auth_roles",
+      "sql": "CREATE TABLE auth_roles (\n      code TEXT PRIMARY KEY,label TEXT NOT NULL,base_role TEXT NOT NULL CHECK(base_role IN ('admin','officer','viewer')),\n      active INTEGER NOT NULL DEFAULT 1,protected INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL,updated_by TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "label",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "base_role",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "active",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "1",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "protected",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "auth_user_roles",
+      "sql": "CREATE TABLE auth_user_roles (\n      username TEXT PRIMARY KEY REFERENCES auth_users(username),role_code TEXT NOT NULL REFERENCES auth_roles(code),\n      updated_at TEXT NOT NULL,updated_by TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "username",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "role_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "auth_users",
+      "sql": "CREATE TABLE auth_users (\n      username TEXT PRIMARY KEY, password_hash TEXT NOT NULL,\n      role TEXT NOT NULL CHECK(role IN ('admin','officer','viewer')),\n      officer_id INTEGER REFERENCES authorized_officers(id),active INTEGER NOT NULL DEFAULT 1,\n      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,created_by TEXT NOT NULL, last_seen_at TEXT)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "username",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "password_hash",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "role",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "officer_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "active",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "1",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "last_seen_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "authorized_officers",
+      "sql": "CREATE TABLE authorized_officers (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          full_name TEXT NOT NULL UNIQUE,\n          role TEXT NOT NULL DEFAULT 'УО',\n          active INTEGER NOT NULL DEFAULT 1,\n          created_at TEXT NOT NULL,\n          updated_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "full_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "role",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'УО'",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "active",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "1",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "chat_attachments",
+      "sql": "CREATE TABLE chat_attachments (\n      id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,\n      filename TEXT NOT NULL,content_type TEXT NOT NULL,content BLOB NOT NULL,size INTEGER NOT NULL,created_at TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "message_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "filename",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "content_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "content",
+          "type": "BLOB",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "size",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "chat_members",
+      "sql": "CREATE TABLE chat_members (\n      chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,username TEXT NOT NULL,\n      joined_at TEXT NOT NULL,last_read_message_id INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(chat_id,username))",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "chat_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "username",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "joined_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "last_read_message_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "chat_messages",
+      "sql": "CREATE TABLE chat_messages (\n      id INTEGER PRIMARY KEY AUTOINCREMENT,chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,\n      sender_username TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',submission_id TEXT DEFAULT '',created_at TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "chat_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "sender_username",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "body",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "chat_threads",
+      "sql": "CREATE TABLE chat_threads (\n      id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL DEFAULT '',is_group INTEGER NOT NULL DEFAULT 0,\n      created_by TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "title",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "is_group",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "formed_protocol_members",
+      "sql": "CREATE TABLE formed_protocol_members (\n      protocol_id TEXT NOT NULL REFERENCES formed_protocols(id),\n      submission_id TEXT NOT NULL REFERENCES submissions(id),\n      position INTEGER NOT NULL, snapshot_json TEXT NOT NULL,\n      active INTEGER NOT NULL CHECK(active IN (0,1)),\n      PRIMARY KEY(protocol_id,submission_id))",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "protocol_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "position",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "snapshot_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "active",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "formed_protocols",
+      "sql": "CREATE TABLE formed_protocols (\n      id TEXT PRIMARY KEY, protocol_number TEXT NOT NULL, protocol_date TEXT NOT NULL,\n      officer TEXT NOT NULL, series_key TEXT NOT NULL, version INTEGER NOT NULL,\n      status TEXT NOT NULL CHECK(status IN ('active','cancelled','superseded')),\n      created_at TEXT NOT NULL, created_by TEXT NOT NULL,\n      cancelled_at TEXT, cancelled_by TEXT, reason TEXT,\n      document_path TEXT NOT NULL, document_sha256 TEXT NOT NULL,\n      count_all INTEGER NOT NULL, count_admitted INTEGER NOT NULL, count_rejected INTEGER NOT NULL,\n      CHECK(count_all=count_admitted+count_rejected), UNIQUE(series_key,version))",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "protocol_number",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "protocol_date",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "officer",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "series_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "version",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "cancelled_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "cancelled_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "reason",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "document_path",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "document_sha256",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "count_all",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "count_admitted",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "count_rejected",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "framework_officers",
+      "sql": "CREATE TABLE framework_officers (\n          framework_id TEXT PRIMARY KEY REFERENCES frameworks(id),\n          officer TEXT NOT NULL, source TEXT DEFAULT 'Оголошення', synced_at TEXT NOT NULL\n        , marketplace_url TEXT DEFAULT '', category TEXT DEFAULT '')",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "framework_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "officer",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "'Оголошення'",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "marketplace_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "category",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "framework_service_directory",
+      "sql": "CREATE TABLE framework_service_directory (\n          pretty_id TEXT PRIMARY KEY,\n          framework_id TEXT REFERENCES frameworks(id),\n          dk_code TEXT DEFAULT '', category TEXT DEFAULT '', marketplace_url TEXT DEFAULT '',\n          responsible_officer TEXT DEFAULT '', directory_status TEXT DEFAULT '', source_title TEXT DEFAULT '',\n          source TEXT DEFAULT 'Google Sheets: Оголошення', synced_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "pretty_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "framework_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "dk_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "category",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "marketplace_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "responsible_officer",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "directory_status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "source_title",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "'Google Sheets: Оголошення'",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "frameworks",
+      "sql": "CREATE TABLE frameworks (\n          id TEXT PRIMARY KEY, pretty_id TEXT UNIQUE NOT NULL, title TEXT, dk_code TEXT,\n          status TEXT, organizer_edrpou TEXT, agreement_id TEXT, date_modified TEXT,\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "pretty_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "title",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "dk_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "organizer_edrpou",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "agreement_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "date_modified",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "raw_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "nazk_registry",
+      "sql": "CREATE TABLE nazk_registry (\n          source_id TEXT PRIMARY KEY, punishment_type_code TEXT, punishment_type_name TEXT,\n          entity_type_code TEXT, entity_type_name TEXT, last_name TEXT, first_name TEXT,\n          patronymic TEXT, full_name TEXT, offense_id TEXT, offense_name TEXT, punishment TEXT,\n          court_case_number TEXT, sentence_date TEXT, sentence_number TEXT, punishment_start TEXT,\n          court_id TEXT, court_name TEXT, codex_articles TEXT, decision_url TEXT, raw_json TEXT\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "source_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "punishment_type_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "punishment_type_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "entity_type_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "entity_type_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "last_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "first_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "patronymic",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "full_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "offense_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "offense_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "punishment",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "court_case_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "sentence_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "sentence_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "punishment_start",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "court_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "court_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "codex_articles",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "decision_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "raw_json",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "qualifications",
+      "sql": "CREATE TABLE qualifications (\n          id TEXT PRIMARY KEY, framework_id TEXT NOT NULL, submission_id TEXT,\n          status TEXT, decision_date TEXT, documents_json TEXT NOT NULL DEFAULT '[]',\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "framework_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "decision_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "documents_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "raw_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "reference_sync_state",
+      "sql": "CREATE TABLE reference_sync_state (\n          source TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'idle', message TEXT DEFAULT '',\n          updated_at TEXT DEFAULT '', source_updated_at TEXT DEFAULT '', row_count INTEGER NOT NULL DEFAULT 0\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'idle'",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "message",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "source_updated_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "row_count",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "registry_contracts",
+      "sql": "CREATE TABLE registry_contracts (\n          id TEXT PRIMARY KEY, framework_id TEXT NOT NULL, qualification_id TEXT,\n          supplier_code TEXT, status TEXT, milestones_json TEXT NOT NULL DEFAULT '[]',\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "framework_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "qualification_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "milestones_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "raw_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "remarks_catalog",
+      "sql": "CREATE TABLE remarks_catalog (\n          id INTEGER PRIMARY KEY AUTOINCREMENT, point TEXT NOT NULL, text TEXT NOT NULL,\n          tag TEXT DEFAULT '', category TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,\n          updated_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "point",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "text",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "tag",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "category",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "active",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "1",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "submission_nazk_controls",
+      "sql": "CREATE TABLE submission_nazk_controls (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          submission_id TEXT NOT NULL UNIQUE REFERENCES submissions(id),\n          supplier_code TEXT NOT NULL,\n          manager_id INTEGER REFERENCES supplier_managers(id),\n          manager_name TEXT DEFAULT '',\n          nazk_certificate_required INTEGER NOT NULL DEFAULT 0,\n          nazk_certificate_checked INTEGER NOT NULL DEFAULT 0,\n          selected_document_id TEXT,\n          selected_document_url TEXT,\n          supplier_nazk_check_id INTEGER REFERENCES supplier_nazk_checks(id),\n          checked_at TEXT,\n          checked_by TEXT,\n          comment TEXT DEFAULT '',\n          created_at TEXT NOT NULL,\n          updated_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "manager_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "manager_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "nazk_certificate_required",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "nazk_certificate_checked",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "selected_document_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "selected_document_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "supplier_nazk_check_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "checked_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "checked_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "comment",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "submissions",
+      "sql": "CREATE TABLE submissions (\n          id TEXT PRIMARY KEY, framework_id TEXT NOT NULL REFERENCES frameworks(id),\n          supplier_name TEXT, supplier_code TEXT, date_published TEXT, status TEXT,\n          qualification_id TEXT, documents_json TEXT NOT NULL DEFAULT '[]',\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "framework_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "supplier_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "date_published",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "qualification_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "documents_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "raw_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_edr_profiles",
+      "sql": "CREATE TABLE supplier_edr_profiles (\n          supplier_code TEXT PRIMARY KEY, full_name TEXT DEFAULT '', short_name TEXT DEFAULT '',\n          manager_name TEXT DEFAULT '', edr_status TEXT DEFAULT '', edr_checked_at TEXT DEFAULT '',\n          source_sheet TEXT DEFAULT '', source_row INTEGER DEFAULT 0, synced_at TEXT NOT NULL\n        , termination_decision_details TEXT DEFAULT '', edr_officer TEXT DEFAULT '', edr_notes TEXT DEFAULT '')",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "full_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "short_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "manager_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "edr_status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "edr_checked_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "source_sheet",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "source_row",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "termination_decision_details",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "edr_officer",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "edr_notes",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_edr_sync_log",
+      "sql": "CREATE TABLE supplier_edr_sync_log (\n          id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,\n          status TEXT NOT NULL, processed INTEGER DEFAULT 0, inserted INTEGER DEFAULT 0,\n          updated INTEGER DEFAULT 0, error TEXT DEFAULT ''\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "started_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "finished_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "processed",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "inserted",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "error",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_managers",
+      "sql": "CREATE TABLE supplier_managers (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          supplier_code TEXT NOT NULL,\n          manager_name TEXT NOT NULL,\n          normalized_name TEXT NOT NULL,\n          manager_tax_id TEXT,\n          manager_tax_id_source TEXT,\n          manager_tax_id_verified_at TEXT,\n          manager_tax_id_verified_by TEXT,\n          valid_from TEXT,\n          valid_to TEXT,\n          is_current INTEGER NOT NULL DEFAULT 0,\n          source TEXT DEFAULT '',\n          created_at TEXT NOT NULL,\n          updated_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "manager_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "normalized_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "manager_tax_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "manager_tax_id_source",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "manager_tax_id_verified_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "manager_tax_id_verified_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "valid_from",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "valid_to",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "is_current",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_check_documents",
+      "sql": "CREATE TABLE supplier_nazk_check_documents (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          document_type TEXT NOT NULL,\n          document_date TEXT,\n          document_number TEXT,\n          title TEXT DEFAULT '',\n          url TEXT DEFAULT '',\n          source TEXT DEFAULT '',\n          created_at TEXT NOT NULL,\n          created_by TEXT NOT NULL\n        , submission_id TEXT REFERENCES submissions(id), prozorro_document_id TEXT)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "check_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "document_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "document_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "document_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "title",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "submission_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "prozorro_document_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_check_events",
+      "sql": "CREATE TABLE supplier_nazk_check_events (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          event_type TEXT NOT NULL,\n          event_at TEXT NOT NULL,\n          event_by TEXT NOT NULL,\n          old_workflow_status TEXT,\n          new_workflow_status TEXT,\n          old_result TEXT,\n          new_result TEXT,\n          details_json TEXT NOT NULL DEFAULT '{}'\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "check_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "event_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "event_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "event_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "old_workflow_status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "new_workflow_status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "old_result",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "new_result",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "details_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'{}'",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_check_matches",
+      "sql": "CREATE TABLE supplier_nazk_check_matches (\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          nazk_source_id TEXT NOT NULL REFERENCES nazk_registry(source_id),\n          match_status TEXT NOT NULL DEFAULT 'candidate',\n          created_at TEXT NOT NULL,\n          PRIMARY KEY(check_id,nazk_source_id)\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "check_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "nazk_source_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "match_status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'candidate'",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_check_requests",
+      "sql": "CREATE TABLE supplier_nazk_check_requests (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          request_type TEXT,\n          request_date TEXT,\n          request_number TEXT,\n          request_document_url TEXT DEFAULT '',\n          request_status TEXT NOT NULL DEFAULT 'prepared',\n          response_date TEXT,\n          created_at TEXT NOT NULL,\n          created_by TEXT NOT NULL,\n          updated_at TEXT NOT NULL,\n          updated_by TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "check_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "request_type",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "request_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "request_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "request_document_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "request_status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'prepared'",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "response_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_checks",
+      "sql": "CREATE TABLE supplier_nazk_checks (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          supplier_code TEXT NOT NULL,\n          manager_id INTEGER REFERENCES supplier_managers(id),\n          manager_name TEXT NOT NULL,\n          workflow_status TEXT NOT NULL,\n          result TEXT,\n          started_at TEXT NOT NULL,\n          completed_at TEXT,\n          evidence_date TEXT,\n          covered_nazk_date TEXT,\n          comment TEXT DEFAULT '',\n          is_legacy INTEGER NOT NULL DEFAULT 0,\n          legacy_source_row INTEGER,\n          legacy_key TEXT,\n          created_at TEXT NOT NULL,\n          created_by TEXT NOT NULL,\n          updated_at TEXT NOT NULL,\n          updated_by TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "manager_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "manager_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "workflow_status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "result",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "started_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "completed_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "evidence_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "covered_nazk_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "comment",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "is_legacy",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "legacy_source_row",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "legacy_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_review_sync_log",
+      "sql": "CREATE TABLE supplier_nazk_review_sync_log (\n          id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,\n          status TEXT NOT NULL, processed INTEGER DEFAULT 0, inserted INTEGER DEFAULT 0,\n          updated INTEGER DEFAULT 0, error TEXT DEFAULT ''\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "started_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "finished_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "processed",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "inserted",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "error",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_reviews",
+      "sql": "CREATE TABLE supplier_nazk_reviews (\n          supplier_code TEXT PRIMARY KEY, supplier_name TEXT DEFAULT '', manager_name TEXT DEFAULT '',\n          decision_date TEXT DEFAULT '', case_number TEXT DEFAULT '', result TEXT DEFAULT '',\n          evidence_url TEXT DEFAULT '', comment TEXT DEFAULT '', checked_at TEXT DEFAULT '',\n          officer TEXT DEFAULT '', source_row INTEGER DEFAULT 0, synced_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "supplier_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "manager_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "decision_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "case_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "result",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "evidence_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "comment",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "checked_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "officer",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "source_row",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_note_events",
+      "sql": "CREATE TABLE supplier_note_events (\n          id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_code TEXT NOT NULL,\n          old_note TEXT NOT NULL DEFAULT '', new_note TEXT NOT NULL DEFAULT '',\n          changed_at TEXT NOT NULL, changed_by TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "old_note",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "new_note",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "changed_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "changed_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_notes",
+      "sql": "CREATE TABLE supplier_notes (\n          supplier_code TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '',\n          updated_at TEXT NOT NULL, updated_by TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "note",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_registry_summary",
+      "sql": "CREATE TABLE supplier_registry_summary (\n          supplier_code TEXT PRIMARY KEY, supplier_name TEXT DEFAULT '',\n          qualifications_count INTEGER DEFAULT 0, active_count INTEGER DEFAULT 0,\n          inactive_count INTEGER DEFAULT 0, suspended_count INTEGER DEFAULT 0,\n          frameworks_count INTEGER DEFAULT 0, dk_codes TEXT DEFAULT '',\n          last_qualification TEXT DEFAULT '', refreshed_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "supplier_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "qualifications_count",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "active_count",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "inactive_count",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "suspended_count",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "frameworks_count",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "dk_codes",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "last_qualification",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "refreshed_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "system_table_widths",
+      "sql": "CREATE TABLE system_table_widths (\n      table_key TEXT PRIMARY KEY,widths_json TEXT NOT NULL DEFAULT '{}',\n      updated_at TEXT NOT NULL,updated_by TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "table_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "widths_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'{}'",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "user_avatars",
+      "sql": "CREATE TABLE user_avatars (\n      username TEXT PRIMARY KEY,content_type TEXT NOT NULL,content BLOB NOT NULL,\n      updated_at TEXT NOT NULL,updated_by TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "username",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "content_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "content",
+          "type": "BLOB",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "user_preferences",
+      "sql": "CREATE TABLE user_preferences (\n      username TEXT PRIMARY KEY,display_name TEXT NOT NULL DEFAULT '',\n      start_view TEXT NOT NULL DEFAULT 'applications',color_scheme TEXT NOT NULL DEFAULT 'system',\n      density TEXT NOT NULL DEFAULT 'comfortable',presence_status TEXT NOT NULL DEFAULT 'working',updated_at TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "username",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "display_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "start_view",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'applications'",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "color_scheme",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'system'",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "density",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'comfortable'",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "presence_status",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'working'",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "violation_report_document_reviews",
+      "sql": "CREATE TABLE violation_report_document_reviews (\n      report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,\n      document_source TEXT NOT NULL CHECK(document_source IN ('customer','supplier')),\n      document_id TEXT NOT NULL,\n      original_title TEXT NOT NULL DEFAULT '',\n      original_url TEXT NOT NULL DEFAULT '',\n      file_unavailable INTEGER NOT NULL DEFAULT 0 CHECK(file_unavailable IN (0,1)),\n      checked_at TEXT NOT NULL,\n      checked_by TEXT NOT NULL DEFAULT '',\n      PRIMARY KEY(report_id,document_source,document_id)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "report_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "document_source",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "document_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 3
+        },
+        {
+          "cid": 3,
+          "name": "original_title",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "original_url",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "file_unavailable",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "checked_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "checked_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "violation_report_review_events",
+      "sql": "CREATE TABLE violation_report_review_events (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,\n          event_type TEXT NOT NULL,\n          field_name TEXT NOT NULL DEFAULT '',\n          old_value TEXT,\n          new_value TEXT,\n          changed_at TEXT NOT NULL,\n          changed_by TEXT NOT NULL DEFAULT ''\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "report_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "event_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "field_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "old_value",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "new_value",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "changed_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "changed_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "violation_report_reviews",
+      "sql": "CREATE TABLE violation_report_reviews (\n          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,\n          review_status TEXT DEFAULT 'not_reviewed', assigned_officer TEXT DEFAULT '',\n          internal_decision TEXT DEFAULT '', review_notes TEXT DEFAULT '', protocol_number TEXT DEFAULT '',\n          protocol_date TEXT DEFAULT '', reviewed_at TEXT DEFAULT '', updated_at TEXT NOT NULL, updated_by TEXT DEFAULT 'УО'\n        , contract_deadline_extended INTEGER NOT NULL DEFAULT 0, written_refusal_date TEXT DEFAULT '', written_refusal_number TEXT DEFAULT '', written_refusal_url TEXT DEFAULT '', court_decision_final_present INTEGER, customer_verified_full_name TEXT DEFAULT '', customer_verified_short_name TEXT DEFAULT '', actual_contract_date TEXT DEFAULT '', actual_contract_number TEXT DEFAULT '', actual_contract_url TEXT DEFAULT '', decision_justification TEXT DEFAULT '', assigned_officer_id INTEGER REFERENCES authorized_officers(id), additional_check_required INTEGER NOT NULL DEFAULT 0, guarantee_documents_visible INTEGER, supplier_explanation_assessment TEXT NOT NULL DEFAULT '', established_discrepancy TEXT NOT NULL DEFAULT '', decision_template_key TEXT NOT NULL DEFAULT '', justification_source_hash TEXT NOT NULL DEFAULT '', justification_generated_at TEXT NOT NULL DEFAULT '', justification_manually_edited INTEGER NOT NULL DEFAULT 0, customer_protocol_decision_date TEXT DEFAULT '', customer_protocol_decision_number TEXT DEFAULT '', customer_protocol_decision_url TEXT DEFAULT '', generated_protocol_filename TEXT DEFAULT '', protocol_generated_at TEXT DEFAULT '', completed_at TEXT DEFAULT '', completed_by TEXT DEFAULT '')",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "report_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "review_status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "'not_reviewed'",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "assigned_officer",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "internal_decision",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "review_notes",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "protocol_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "protocol_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "reviewed_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "'УО'",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "contract_deadline_extended",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "written_refusal_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "written_refusal_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "written_refusal_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "court_decision_final_present",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "customer_verified_full_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "customer_verified_short_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "actual_contract_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "actual_contract_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "actual_contract_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "decision_justification",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 21,
+          "name": "assigned_officer_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 22,
+          "name": "additional_check_required",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 23,
+          "name": "guarantee_documents_visible",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 24,
+          "name": "supplier_explanation_assessment",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 25,
+          "name": "established_discrepancy",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 26,
+          "name": "decision_template_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 27,
+          "name": "justification_source_hash",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 28,
+          "name": "justification_generated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 29,
+          "name": "justification_manually_edited",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 30,
+          "name": "customer_protocol_decision_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 31,
+          "name": "customer_protocol_decision_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 32,
+          "name": "customer_protocol_decision_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 33,
+          "name": "generated_protocol_filename",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 34,
+          "name": "protocol_generated_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 35,
+          "name": "completed_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 36,
+          "name": "completed_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "violation_reports",
+      "sql": "CREATE TABLE violation_reports (\n          id TEXT PRIMARY KEY, report_id TEXT DEFAULT '', status TEXT DEFAULT '',\n          date_created TEXT DEFAULT '', date_published TEXT DEFAULT '', date_modified TEXT DEFAULT '',\n          tender_id TEXT DEFAULT '', tender_pretty_id TEXT DEFAULT '', contract_id TEXT DEFAULT '', contract_pretty_id TEXT DEFAULT '',\n          author_name TEXT DEFAULT '', author_code TEXT DEFAULT '', defendant_name TEXT DEFAULT '', defendant_code TEXT DEFAULT '',\n          authority_name TEXT DEFAULT '', reason TEXT DEFAULT '', description TEXT DEFAULT '',\n          defendant_period_start TEXT DEFAULT '', defendant_period_end TEXT DEFAULT '',\n          decision_resolution TEXT DEFAULT '', decision_description TEXT DEFAULT '', decision_date TEXT DEFAULT '',\n          evidence_documents_json TEXT NOT NULL DEFAULT '[]', decision_documents_json TEXT NOT NULL DEFAULT '[]',\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        , authority_code TEXT DEFAULT '')",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "report_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "date_created",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "date_published",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "date_modified",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "tender_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "tender_pretty_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "contract_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "contract_pretty_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "author_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "author_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "defendant_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "defendant_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "authority_name",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "reason",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "description",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "defendant_period_start",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "defendant_period_end",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "decision_resolution",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "decision_description",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 21,
+          "name": "decision_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        },
+        {
+          "cid": 22,
+          "name": "evidence_documents_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 23,
+          "name": "decision_documents_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 24,
+          "name": "raw_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 25,
+          "name": "synced_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 26,
+          "name": "authority_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": "''",
+          "pk": 0
+        }
+      ]
+    }
+  ],
+  "indexes": [
+    {
+      "name": "formed_protocol_active_series",
+      "tbl_name": "formed_protocols",
+      "sql": "CREATE UNIQUE INDEX formed_protocol_active_series\n      ON formed_protocols(series_key) WHERE status='active'"
+    },
+    {
+      "name": "formed_protocol_active_submission",
+      "tbl_name": "formed_protocol_members",
+      "sql": "CREATE UNIQUE INDEX formed_protocol_active_submission\n      ON formed_protocol_members(submission_id) WHERE active=1"
+    },
+    {
+      "name": "idx_amcu_code",
+      "tbl_name": "amcu_registry",
+      "sql": "CREATE INDEX idx_amcu_code ON amcu_registry(offender_code)"
+    },
+    {
+      "name": "idx_nazk_full_name",
+      "tbl_name": "nazk_registry",
+      "sql": "CREATE INDEX idx_nazk_full_name ON nazk_registry(full_name)"
+    },
+    {
+      "name": "ix_application_contracts_lookup",
+      "tbl_name": "application_contracts",
+      "sql": "CREATE INDEX ix_application_contracts_lookup\n          ON application_contracts(supplier_code,contract_number)"
+    },
+    {
+      "name": "ix_application_remark_selections_submission",
+      "tbl_name": "application_protocol_remark_selections",
+      "sql": "CREATE INDEX ix_application_remark_selections_submission\n          ON application_protocol_remark_selections(submission_id)"
+    },
+    {
+      "name": "ix_application_view_profiles_owner",
+      "tbl_name": "application_view_profiles",
+      "sql": "CREATE INDEX ix_application_view_profiles_owner\n          ON application_view_profiles(owner_key,is_system,name)"
+    },
+    {
+      "name": "ix_auth_users_officer",
+      "tbl_name": "auth_users",
+      "sql": "CREATE UNIQUE INDEX ix_auth_users_officer ON auth_users(officer_id)\n      WHERE officer_id IS NOT NULL AND active=1"
+    },
+    {
+      "name": "ix_authorized_officers_active",
+      "tbl_name": "authorized_officers",
+      "sql": "CREATE INDEX ix_authorized_officers_active\n          ON authorized_officers(active,full_name)"
+    },
+    {
+      "name": "ix_chat_members_username",
+      "tbl_name": "chat_members",
+      "sql": "CREATE INDEX ix_chat_members_username ON chat_members(username,chat_id)"
+    },
+    {
+      "name": "ix_chat_messages_chat",
+      "tbl_name": "chat_messages",
+      "sql": "CREATE INDEX ix_chat_messages_chat ON chat_messages(chat_id,id)"
+    },
+    {
+      "name": "ix_framework_service_directory_framework",
+      "tbl_name": "framework_service_directory",
+      "sql": "CREATE INDEX ix_framework_service_directory_framework\n          ON framework_service_directory(framework_id)"
+    },
+    {
+      "name": "ix_qualifications_submission",
+      "tbl_name": "qualifications",
+      "sql": "CREATE INDEX ix_qualifications_submission ON qualifications(submission_id)"
+    },
+    {
+      "name": "ix_registry_contracts_qualification",
+      "tbl_name": "registry_contracts",
+      "sql": "CREATE INDEX ix_registry_contracts_qualification ON registry_contracts(qualification_id)"
+    },
+    {
+      "name": "ix_registry_contracts_supplier",
+      "tbl_name": "registry_contracts",
+      "sql": "CREATE INDEX ix_registry_contracts_supplier ON registry_contracts(supplier_code)"
+    },
+    {
+      "name": "ix_submission_nazk_controls_checked",
+      "tbl_name": "submission_nazk_controls",
+      "sql": "CREATE INDEX ix_submission_nazk_controls_checked\n          ON submission_nazk_controls(nazk_certificate_checked)"
+    },
+    {
+      "name": "ix_submission_nazk_controls_manager",
+      "tbl_name": "submission_nazk_controls",
+      "sql": "CREATE INDEX ix_submission_nazk_controls_manager\n          ON submission_nazk_controls(manager_id)"
+    },
+    {
+      "name": "ix_submission_nazk_controls_required",
+      "tbl_name": "submission_nazk_controls",
+      "sql": "CREATE INDEX ix_submission_nazk_controls_required\n          ON submission_nazk_controls(nazk_certificate_required)"
+    },
+    {
+      "name": "ix_submission_nazk_controls_supplier",
+      "tbl_name": "submission_nazk_controls",
+      "sql": "CREATE INDEX ix_submission_nazk_controls_supplier\n          ON submission_nazk_controls(supplier_code)"
+    },
+    {
+      "name": "ix_submissions_framework",
+      "tbl_name": "submissions",
+      "sql": "CREATE INDEX ix_submissions_framework ON submissions(framework_id)"
+    },
+    {
+      "name": "ix_submissions_supplier",
+      "tbl_name": "submissions",
+      "sql": "CREATE INDEX ix_submissions_supplier ON submissions(supplier_code)"
+    },
+    {
+      "name": "ix_supplier_edr_manager",
+      "tbl_name": "supplier_edr_profiles",
+      "sql": "CREATE INDEX ix_supplier_edr_manager ON supplier_edr_profiles(manager_name)"
+    },
+    {
+      "name": "ix_supplier_managers_name",
+      "tbl_name": "supplier_managers",
+      "sql": "CREATE INDEX ix_supplier_managers_name\n          ON supplier_managers(normalized_name)"
+    },
+    {
+      "name": "ix_supplier_managers_supplier",
+      "tbl_name": "supplier_managers",
+      "sql": "CREATE INDEX ix_supplier_managers_supplier\n          ON supplier_managers(supplier_code)"
+    },
+    {
+      "name": "ix_supplier_nazk_checks_manager",
+      "tbl_name": "supplier_nazk_checks",
+      "sql": "CREATE INDEX ix_supplier_nazk_checks_manager\n          ON supplier_nazk_checks(manager_id,started_at DESC)"
+    },
+    {
+      "name": "ix_supplier_nazk_checks_state",
+      "tbl_name": "supplier_nazk_checks",
+      "sql": "CREATE INDEX ix_supplier_nazk_checks_state\n          ON supplier_nazk_checks(workflow_status,result)"
+    },
+    {
+      "name": "ix_supplier_nazk_checks_supplier",
+      "tbl_name": "supplier_nazk_checks",
+      "sql": "CREATE INDEX ix_supplier_nazk_checks_supplier\n          ON supplier_nazk_checks(supplier_code,started_at DESC)"
+    },
+    {
+      "name": "ix_supplier_nazk_documents_check",
+      "tbl_name": "supplier_nazk_check_documents",
+      "sql": "CREATE INDEX ix_supplier_nazk_documents_check\n          ON supplier_nazk_check_documents(check_id,created_at)"
+    },
+    {
+      "name": "ix_supplier_nazk_documents_submission",
+      "tbl_name": "supplier_nazk_check_documents",
+      "sql": "CREATE INDEX ix_supplier_nazk_documents_submission ON supplier_nazk_check_documents(submission_id)"
+    },
+    {
+      "name": "ix_supplier_nazk_events_check",
+      "tbl_name": "supplier_nazk_check_events",
+      "sql": "CREATE INDEX ix_supplier_nazk_events_check\n          ON supplier_nazk_check_events(check_id,event_at,id)"
+    },
+    {
+      "name": "ix_supplier_nazk_matches_source",
+      "tbl_name": "supplier_nazk_check_matches",
+      "sql": "CREATE INDEX ix_supplier_nazk_matches_source\n          ON supplier_nazk_check_matches(nazk_source_id)"
+    },
+    {
+      "name": "ix_supplier_nazk_requests_check",
+      "tbl_name": "supplier_nazk_check_requests",
+      "sql": "CREATE INDEX ix_supplier_nazk_requests_check\n          ON supplier_nazk_check_requests(check_id,created_at)"
+    },
+    {
+      "name": "ix_supplier_nazk_review_result",
+      "tbl_name": "supplier_nazk_reviews",
+      "sql": "CREATE INDEX ix_supplier_nazk_review_result ON supplier_nazk_reviews(result)"
+    },
+    {
+      "name": "ix_supplier_note_events_supplier",
+      "tbl_name": "supplier_note_events",
+      "sql": "CREATE INDEX ix_supplier_note_events_supplier\n          ON supplier_note_events(supplier_code,changed_at)"
+    },
+    {
+      "name": "ix_violation_document_reviews_report",
+      "tbl_name": "violation_report_document_reviews",
+      "sql": "CREATE INDEX ix_violation_document_reviews_report\n      ON violation_report_document_reviews(report_id,document_source)"
+    },
+    {
+      "name": "ix_violation_reports_date",
+      "tbl_name": "violation_reports",
+      "sql": "CREATE INDEX ix_violation_reports_date ON violation_reports(date_published)"
+    },
+    {
+      "name": "ix_violation_reports_defendant",
+      "tbl_name": "violation_reports",
+      "sql": "CREATE INDEX ix_violation_reports_defendant ON violation_reports(defendant_code)"
+    },
+    {
+      "name": "ix_violation_reports_report_id",
+      "tbl_name": "violation_reports",
+      "sql": "CREATE INDEX ix_violation_reports_report_id ON violation_reports(report_id)"
+    },
+    {
+      "name": "ix_violation_reports_status",
+      "tbl_name": "violation_reports",
+      "sql": "CREATE INDEX ix_violation_reports_status ON violation_reports(status)"
+    },
+    {
+      "name": "ix_violation_review_events_report",
+      "tbl_name": "violation_report_review_events",
+      "sql": "CREATE INDEX ix_violation_review_events_report\n          ON violation_report_review_events(report_id,changed_at)"
+    },
+    {
+      "name": "ux_supplier_managers_current",
+      "tbl_name": "supplier_managers",
+      "sql": "CREATE UNIQUE INDEX ux_supplier_managers_current\n          ON supplier_managers(supplier_code) WHERE is_current=1"
+    },
+    {
+      "name": "ux_supplier_nazk_checks_legacy",
+      "tbl_name": "supplier_nazk_checks",
+      "sql": "CREATE UNIQUE INDEX ux_supplier_nazk_checks_legacy\n          ON supplier_nazk_checks(legacy_key) WHERE legacy_key IS NOT NULL"
+    }
+  ]
+}

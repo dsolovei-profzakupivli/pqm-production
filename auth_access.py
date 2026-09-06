@@ -14,7 +14,7 @@ PERMISSIONS = [
  ('applications.edit','Реєстр заявок','Редагування заявки та зауважень',True,True,r'/api/applications/[^/]+(?:/remark-selections)?'),
  ('applications.check','Реєстр заявок','Перевірка документів / НАЗК',True,True,r'/api/applications/[^/]+/(?:verify-documents(?:/start)?|nazk-control)'),
  ('profiles.edit','Реєстр заявок','Особисті профілі',True,True,r'/api/application-profiles(?:/[^/]+)?'),
- ('protocol.generate','Реєстр заявок','Формування протоколів',True,True,r'/api/protocol/(?:readiness|generate)'),
+ ('protocol.generate','Реєстр заявок','Формування та скасування протоколів',True,True,r'/api/protocol/(?:readiness|generate|formed/[^/]+/cancel|legacy/[^/]+/cancel)'),
  ('prozorro.update','Реєстр заявок','Оновлення Prozorro',False,True,r'/api/(?:sync|frameworks/refresh)'),
  ('suppliers.read','База постачальників','Перегляд постачальників',True,False,r'/api/(?:suppliers-registry|supplier-profile/.*|supplier-procurements/.*)'),
  ('suppliers.note','База постачальників','Спільна примітка',True,True,r'/api/suppliers/[^/]+/note'),
@@ -30,6 +30,8 @@ PERMISSIONS = [
  ('references.update','Довідники','Оновлення та імпорт реєстрів',False,True,r'/api/(?:nazk-registry|amcu-registry|references|nazk|amcu)(?:/.*)?'),
  ('bids.read','Bids','Перегляд статусу',True,False,r'/api/bids-sync-status'),
  ('bids.update','Bids','Запуск оновлення',False,True,r'/api/bids-sync'),
+ ('messages.read','Повідомлення','Перегляд повідомлень',True,False,r'/api/chats(?:/.*)?'),
+ ('messages.write','Повідомлення','Створення чатів і повідомлень',True,True,r'/api/chats(?:/.*)?'),
  ('admin.manage','Адміністрування','Користувачі, ролі та системні налаштування',False,True,r'/api/admin/.*'),
  ('admin.read','Адміністрування','Перегляд адміністрування',False,False,r'/api/(?:admin/.*|audit)'),
 ]
@@ -48,6 +50,23 @@ def migrate(con):
       username TEXT PRIMARY KEY,display_name TEXT NOT NULL DEFAULT '',
       start_view TEXT NOT NULL DEFAULT 'applications',color_scheme TEXT NOT NULL DEFAULT 'system',
       density TEXT NOT NULL DEFAULT 'comfortable',presence_status TEXT NOT NULL DEFAULT 'working',updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS user_avatars (
+      username TEXT PRIMARY KEY,content_type TEXT NOT NULL,content BLOB NOT NULL,
+      updated_at TEXT NOT NULL,updated_by TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS chat_threads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL DEFAULT '',is_group INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS chat_members (
+      chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,username TEXT NOT NULL,
+      joined_at TEXT NOT NULL,last_read_message_id INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(chat_id,username));
+    CREATE INDEX IF NOT EXISTS ix_chat_members_username ON chat_members(username,chat_id);
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+      sender_username TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',submission_id TEXT DEFAULT '',created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ix_chat_messages_chat ON chat_messages(chat_id,id);
+    CREATE TABLE IF NOT EXISTS chat_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+      filename TEXT NOT NULL,content_type TEXT NOT NULL,content BLOB NOT NULL,size INTEGER NOT NULL,created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS auth_roles (
       code TEXT PRIMARY KEY,label TEXT NOT NULL,base_role TEXT NOT NULL CHECK(base_role IN ('admin','officer','viewer')),
       active INTEGER NOT NULL DEFAULT 1,protected INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL,updated_by TEXT NOT NULL);
@@ -78,7 +97,7 @@ def effective(con, username, base):
         return {'code':row['code'],'base_role':base,'active':False,'permissions':{}}
     code=row['code'] if row else base
     overrides={r['permission_key']:bool(r['allowed']) for r in con.execute('SELECT permission_key,allowed FROM auth_role_permissions WHERE role_code=?',(code,))}
-    rights={key:(True if base=='admin' else False if base=='viewer' and mutation else overrides.get(key,default if base=='officer' else not mutation and default)) for key,module,label,default,mutation,pattern in PERMISSIONS}
+    rights={key:(True if base=='admin' else False if base=='viewer' and mutation and key!='messages.write' else overrides.get(key,default if base=='officer' else (not mutation or key=='messages.write') and default)) for key,module,label,default,mutation,pattern in PERMISSIONS}
     return {'code':code,'base_role':base,'active':True,'permissions':rights}
 
 def permission_key(method,path):
@@ -105,7 +124,7 @@ def roles_payload(con):
     for row in con.execute('SELECT * FROM auth_roles ORDER BY protected DESC,label'):
         item=dict(row)
         overrides={r['permission_key']:bool(r['allowed']) for r in con.execute('SELECT * FROM auth_role_permissions WHERE role_code=?',(row['code'],))}
-        item['permissions']={p[0]:True if row['base_role']=='admin' else False if row['base_role']=='viewer' and p[4] else overrides.get(p[0],p[3]) for p in PERMISSIONS}
+        item['permissions']={p[0]:True if row['base_role']=='admin' else False if row['base_role']=='viewer' and p[4] and p[0]!='messages.write' else overrides.get(p[0],p[3]) for p in PERMISSIONS}
         roles.append(item)
     return {'roles':roles,'functions':[{'key':k,'module':m,'label':l,'mutation':mut} for k,m,l,d,mut,p in PERMISSIONS]}
 
@@ -121,7 +140,7 @@ def save_role(con,payload,user):
     if not active and con.execute('SELECT 1 FROM auth_user_roles WHERE role_code=?',(code,)).fetchone():raise ValueError('Спочатку перепризначте користувачів цієї ролі')
     rights=payload.get('permissions',{})
     if not isinstance(rights,dict) or any(k not in BY_KEY or not isinstance(v,bool) for k,v in rights.items()):raise ValueError('Некоректні повноваження')
-    if base=='viewer' and any(v and BY_KEY[k][4] for k,v in rights.items()):raise ValueError('Перегляд не може змінювати дані')
+    if base=='viewer' and any(v and BY_KEY[k][4] and k!='messages.write' for k,v in rights.items()):raise ValueError('Перегляд не може змінювати дані')
     if base!='admin' and any(v and k.startswith('admin.') for k,v in rights.items()):raise ValueError('Керування адміністративним доступом потребує базової ролі Адміністратор')
     if base=='admin' and any(not v for v in rights.values()):raise ValueError('Адміністративний доступ захищений від блокування')
     con.execute('INSERT INTO auth_roles VALUES (?,?,?, ?,0,?,?) ON CONFLICT(code) DO UPDATE SET label=excluded.label,active=excluded.active,updated_at=excluded.updated_at,updated_by=excluded.updated_by',(code,label,base,int(active),stamp(),user))

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import auth_access
+import table_widths
 import base64
 import csv
 import hashlib
@@ -27,16 +28,19 @@ import threading
 import time
 import traceback
 import urllib.parse
+import urllib.error
 import urllib.request
 import uuid
 import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from protocol_docx import build_protocol_docx
+import formed_protocols
 from violation_protocol_docx import (TEMPLATES, build_violation_protocol_docx,
                                      ensure_runtime_templates, replace_runtime_template,
                                      template_metadata)
@@ -94,14 +98,14 @@ PROTOCOLS_DIR = Path(os.environ.get("PQM_PROTOCOLS_DIR", str(DATA_DIR / "protoco
 RUNTIME_CACHE_DIR = Path(os.environ.get("PQM_CACHE_DIR", str(DATA_DIR / "cache"))).resolve()
 HOST = os.environ.get("HOST", "0.0.0.0" if IS_WEB_ENV else "127.0.0.1")
 PORT = int(os.environ.get("PORT", "10000" if IS_WEB_ENV else "8080"))
-ENABLE_BROWSER = env_flag("PQM_ENABLE_BROWSER", not IS_WEB_ENV)
+ENABLE_BROWSER = not IS_WEB_ENV and env_flag("PQM_ENABLE_BROWSER", True)
 ENABLE_SCHEDULER = env_flag("PQM_ENABLE_SCHEDULER", not IS_WEB_ENV)
 ENABLE_NAZK_SCHEDULER = env_flag("PQM_ENABLE_NAZK_SCHEDULER", not IS_WEB_ENV)
-AUTH_ENABLED = env_flag("PQM_AUTH_ENABLED", False)
-LOCAL_ROLE_IMPERSONATION = env_flag("PQM_LOCAL_ROLE_IMPERSONATION", not IS_WEB_ENV)
+AUTH_ENABLED = env_flag("PQM_AUTH_ENABLED", IS_WEB_ENV)
+LOCAL_ROLE_IMPERSONATION = not IS_WEB_ENV and env_flag("PQM_LOCAL_ROLE_IMPERSONATION", True)
 BIDS_MODE = os.environ.get("PQM_BIDS_MODE", "disabled" if IS_WEB_ENV else "readonly").strip().casefold()
-ENABLE_BIDS_UPDATE = env_flag("PQM_ENABLE_BIDS_UPDATE", not IS_WEB_ENV)
-ENABLE_POWERBI = env_flag("PQM_ENABLE_POWERBI", not IS_WEB_ENV)
+ENABLE_BIDS_UPDATE = not IS_WEB_ENV and env_flag("PQM_ENABLE_BIDS_UPDATE", True)
+ENABLE_POWERBI = not IS_WEB_ENV and env_flag("PQM_ENABLE_POWERBI", True)
 ENABLE_GOOGLE = env_flag("PQM_ENABLE_GOOGLE", not IS_WEB_ENV)
 EDS_ADAPTER_PATH = ROOT / "tools" / "prozorro_eds_adapter" / "verify-signature.mjs"
 EDS_TIMEOUT_SECONDS = max(5, int(os.environ.get("PQM_EDS_TIMEOUT_SECONDS", "35")))
@@ -115,21 +119,36 @@ BIDS_PROJECT_PATH = Path(os.environ.get(
     "PQM_BIDS_PROJECT_DIR",
     str(DATA_DIR),
 ))
+_bids_local = {}
+if not IS_WEB_ENV:
+    try:
+        _bids_config = Path(os.environ.get("PQM_BIDS_CONFIG", str(DATA_DIR / "bids.local.json")))
+        if _bids_config.is_file():
+            _bids_local = json.loads(_bids_config.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        SERVER_LOG.exception("Cannot read LOCAL Bids configuration")
+BIDS_SCRIPT = Path(os.environ.get("PQM_BIDS_SCRIPT", str(_bids_local.get("script") or BIDS_PROJECT_PATH / "main.py")))
 BIDS_PYTHON = Path(os.environ.get(
     "PQM_BIDS_PYTHON",
-    sys.executable,
+    str(_bids_local.get("python") or BIDS_PROJECT_PATH / ".venv" / "Scripts" / "python.exe"),
 ))
+BIDS_START_LOCK = threading.Lock()
 BIDS_UPDATE_STATE = {"running": False, "message": "Ручне оновлення ще не запускали", "started_at": None,
-                     "updated_at": None, "date_from": None, "date_to": None, "error": None}
+                     "updated_at": None, "date_from": None, "date_to": None, "error": None,
+                     "run_id": None, "status": "idle", "finished_at": None, "stage": None,
+                     "processed": None, "total": None, "last_activity_at": None,
+                     "current_run_errors": 0, "last_error": None, "pid": None,
+                     "duplicate_attempts": 0}
 POWERBI_EXPORT_STATE = {"running": False, "message": "Експорт ще не запускали", "started_at": None,
                         "updated_at": None, "error": None}
+POWERBI_START_LOCK = threading.Lock()
 POWERBI_OUTPUT_ROOT = BIDS_PROJECT_PATH / "output"
 POWERBI_CURRENT_PATH = POWERBI_OUTPUT_ROOT / "powerbi_current"
 SUPPLIER_EDR_SHEET_ID = "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA"
 SUPPLIER_EDR_SHEETS = {"ФОП": "1278053622", "ЮО": "511647713"}
 SUPPLIER_NAZK_REVIEW_SHEET_ID = "1hAgy_YQFWf8m6yHQTO4g22Et94Gm46dC9WTBaoyZloA"
 SUPPLIER_NAZK_REVIEW_SHEET = "nazk_data"
-CURRENT_USER = os.environ.get("PQM_CURRENT_USER", "PQM System")
+CURRENT_USER = os.environ.get("PQM_CURRENT_USER", "local")
 GOOGLE_OAUTH_DIR = Path(os.environ.get("PQM_GOOGLE_OAUTH_DIR", str((Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "PQM") if not IS_WEB_ENV else (DATA_DIR / "google_oauth"))))
 GOOGLE_OAUTH_CLIENT_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json")))
 GOOGLE_OAUTH_TOKEN_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json")))
@@ -137,18 +156,20 @@ GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.rea
 GOOGLE_OAUTH_PENDING: dict[str, dict] = {}
 SUPPLIER_EDR_SYNC_STATE = {"running": False, "message": "Довідник ЄДР ще не синхронізували",
                            "started_at": None, "updated_at": None, "processed": 0,
-                           "inserted": 0, "updated": 0, "error": None}
+                           "inserted": 0, "updated": 0, "error": None,
+                           "last_completed_at": None, "last_result": None, "last_message": None}
 SUPPLIER_NAZK_REVIEW_SYNC_STATE = {"running": False, "message": "Перевірки НАЗК ще не синхронізували",
                                    "started_at": None, "updated_at": None, "processed": 0,
-                                   "inserted": 0, "updated": 0, "error": None}
+                                   "inserted": 0, "updated": 0, "error": None,
+                                   "last_completed_at": None, "last_result": None, "last_message": None}
 TESSERACT_EXE = Path(os.environ.get(
     "PQM_TESSERACT_EXE",
-    shutil.which("tesseract") or ("/usr/bin/tesseract" if IS_WEB_ENV else "tesseract"),
+    shutil.which("tesseract") or "/usr/bin/tesseract",
 ))
 TESSDATA_DIR = ROOT / "tools" / "tessdata"
 PDFTOPPM_EXE = Path(os.environ.get(
     "PQM_PDFTOPPM_EXE",
-    shutil.which("pdftoppm") or ("/usr/bin/pdftoppm" if IS_WEB_ENV else "pdftoppm"),
+    shutil.which("pdftoppm") or "/usr/bin/pdftoppm",
 ))
 API_ROOT = "https://public-api.prozorro.gov.ua/api/2.5"
 ORGANIZER_EDRPOU = "40996564"
@@ -159,7 +180,7 @@ REMARKS_CSV = "https://docs.google.com/spreadsheets/d/1S94-jj5ys-BIwiWeWhxVNwRFi
 REMARKS_CACHE = Path(os.environ.get("PQM_REMARKS_CACHE", str(DATA_DIR / "remarks_catalog.json")))
 # Destination selected by the administrator for finished review protocols.
 # The local MVP still generates files on disk first; Drive upload requires the
-# PQM Google OAuth integration and must not depend on a local interactive session.
+# PQM Google OAuth integration and must not depend on the Codex session.
 PROTOCOLS_DRIVE_FOLDER_ID = "1OFlBRzYFtJ8PZ7oAks7NpKb2ZnHds7XF"
 PROTOCOLS_DRIVE_FOLDER_URL = f"https://drive.google.com/drive/folders/{PROTOCOLS_DRIVE_FOLDER_ID}"
 EDITABLE_FIELDS = {
@@ -171,7 +192,9 @@ EDITABLE_FIELDS = {
 
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
     """Prevent two PQM processes from sharing port 8080 on Windows."""
-    allow_reuse_address = False
+    # Linux/macOS must be able to restart while old connections are in TIME_WAIT.
+    # SO_REUSEADDR does not permit a second active listener; Windows stays exclusive.
+    allow_reuse_address = os.name != "nt"
 
     def server_bind(self):
         exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
@@ -189,6 +212,8 @@ class ForeignAuthorityError(PermissionError):
 
 
 AUTH_ROLES = {"admin", "officer", "viewer"}
+
+
 AUTH_SESSIONS: dict[str, dict] = {}
 AUTH_SESSIONS_LOCK = threading.Lock()
 AUTH_SESSION_TTL = 12 * 60 * 60
@@ -262,23 +287,27 @@ def auth_accounts() -> dict[str, dict]:
 
 
 def mutation_allowed(role: str, method: str, path: str) -> bool:
+    if path in {"/api/account", "/api/account/avatar"} or path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
+        return role in AUTH_ROLES
+    # Account-owned presentation preferences only; never a business-data mutation.
+    if method == 'POST' and path == '/api/history-columns' and role in AUTH_ROLES:
+        return True
     if method not in {"POST", "PATCH", "PUT", "DELETE"}:
-        return True
-    if path in {"/api/account", "/api/account/avatar", "/api/history-columns"}:
-        return True
-    if path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
         return True
     if role == "admin":
         return True
     if role != "officer":
         return False
     officer_patterns = (
-        r"^/api/applications/[^/]+(?:/(?:verify-documents(?:/start)?|nazk-control|remark-selections))?$",
-        r"^/api/protocol/(?:readiness|generate)$",
+        r"^/api/applications/[^/]+$",
+        r"^/api/applications/[^/]+/(?:verify-documents|verify-documents/start|nazk-control)$",
+        r"^/api/protocol/(?:readiness|generate|formed/[^/]+/cancel|legacy/[^/]+/cancel)$",
         r"^/api/violation-reports/[^/]+/(?:review|review/complete|protocol/generate)$",
         r"^/api/violation-reports/[^/]+/documents/(?:customer|supplier)/[^/]+$",
-        r"^/api/suppliers/[^/]+/(?:nazk-check|note)$",
+        r"^/api/suppliers/[^/]+/nazk-check$",
+        r"^/api/suppliers/[^/]+/note$",
         r"^/api/application-profiles(?:/[^/]+)?$",
+        r"^/api/applications/[^/]+/remark-selections$",
     )
     return any(re.fullmatch(pattern, path) for pattern in officer_patterns)
 
@@ -287,18 +316,15 @@ def admin_read_allowed(role: str, path: str, query: dict[str, list[str]] | None 
     """Protect administration reads while keeping work-filter data available."""
     if role == "admin":
         return True
-    if path == "/api/audit":
-        return True
     if path == "/api/admin/officers" and (query or {}).get("active") == ["1"]:
         return True
     if path == "/api/admin/frameworks":
         return True
-    return not path.startswith("/api/admin/")
+    return not (path.startswith("/api/admin/") or path == "/api/audit")
 
 
 def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
-    if path in {"/api/account", "/api/account/avatar", "/api/history-columns", "/api/chats"} or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
-        return True
+    """Restrict officer mutations to assigned work; unassigned appeals may be claimed."""
     try:
         officer_id = int(officer_id)
     except (TypeError, ValueError):
@@ -322,23 +348,22 @@ def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
               WHERE v.id=? OR v.report_id=?""", (urllib.parse.unquote(report.group(1)),
               urllib.parse.unquote(report.group(1)))).fetchone()
             return not row or row["assigned_officer_id"] in (None, officer_id)
-        return True
+    # Non-row officer actions (for example protocol readiness) remain allowed.
+    return True
 
 
 def verify_basic_auth_secret(provided: str, configured: str) -> bool:
     """Support current env passwords and an explicit sha256: digest for secret rotation."""
+    if configured.startswith("pbkdf2_sha256:"):
+        return auth_access.verify_password(provided, configured)
     if configured.startswith("sha256:"):
         digest = hashlib.sha256(provided.encode("utf-8")).hexdigest()
         return hmac.compare_digest(digest, configured.removeprefix("sha256:"))
-    if configured.startswith("pbkdf2_sha256:"):
-        return auth_access.verify_password(provided, configured)
     return hmac.compare_digest(provided, configured)
 PROTOCOL_DECISIONS = {"", "admit", "reject"}
 MARKETPLACE_DECISIONS = {"", "admit", "reject"}
 COMPLIANCE_STATUSES = {"", "approved", "rejected"}
 AUTHORITY_REVIEWS = {"", "approved", "missing", "not_required"}
-# The public TEST WEB package never seeds personal data. Existing officers live
-# on the persistent disk and a clean environment is configured via the admin UI.
 INITIAL_AUTHORIZED_OFFICERS = ()
 
 
@@ -401,12 +426,22 @@ def valid_active_officer(value: str) -> bool:
             "SELECT 1 FROM authorized_officers WHERE UPPER(full_name)=? AND active=1", (normalized,)
         ).fetchone())
 SYNC_STATE = {"running": False, "message": "Синхронізацію ще не запускали", "updated_at": None,
-              "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None}
+              "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None,
+              "last_completed_at": None, "last_result": None, "last_message": None, "last_mode": None}
 SYNC_STATE_LOCK = threading.Lock()
 VIOLATION_SYNC_STATE = {"running": False, "message": "Звернення ще не синхронізувалися", "updated_at": None,
                         "processed": 0, "total": 0, "errors": 0, "stop_requested": False}
 DOCUMENT_CHECK_JOBS = {}
 DOCUMENT_CHECK_LOCK = threading.Lock()
+CONTRACT_EXPERIENCE_CACHE: dict[tuple[str, str, str], dict] = {}
+CONTRACT_EXPERIENCE_LOCK = threading.Lock()
+CONTRACT_EXPERIENCE_CACHE_TTL = 6 * 60 * 60
+CONTRACT_EXPERIENCE_REQUEST_INTERVAL = 0.4
+CONTRACT_EXPERIENCE_LAST_REQUEST = 0.0
+CONTRACT_EXPERIENCE_PENDING: set[str] = set()
+CONTRACT_EXPERIENCE_PENDING_LOCK = threading.Lock()
+CONTRACT_EXPERIENCE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pqm-contracts")
+CONTRACT_EXPERIENCE_ALGORITHM_VERSION = 2
 DEFAULT_REMARKS = [
     ("п. 1", "заявку підписано за допомогою особистого КЕП/УЕП представника Учасника", "КЕП"),
     ("п. 1", "ідентифікаційний код у підписі не відповідає ідентифікаційному коду Учасника", "КЕП"),
@@ -427,6 +462,31 @@ DEFAULT_REMARKS = [
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def effective_officer_sql(q_alias: str = "q", af_alias: str = "af", fo_alias: str = "fo",
+                          undefined: str = "") -> str:
+    """Single business definition used by application lists, cards and filters."""
+    fallback = str(undefined).replace("'", "''")
+    return (f"CASE WHEN COALESCE({q_alias}.status,'pending')='pending' "
+            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),NULLIF({fo_alias}.officer,''),'{fallback}') "
+            f"WHEN {q_alias}.status IN ('active','unsuccessful') "
+            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),'{fallback}') "
+            f"ELSE '{fallback}' END")
+
+
+def legal_reference_sort_key(item: dict) -> tuple:
+    """Natural order for paragraph/subparagraph references without rewriting labels."""
+    label = re.sub(r"\s+", " ", str(item.get("point") or "").strip().casefold())
+    match = re.search(r"(?:абз\.?\s*(\d+)\s*)?п\.?\s*(\d+(?:\.\d+)*)", label)
+    if not match:
+        item_id = int(item.get("id") or 0) if str(item.get("id") or "").isdigit() else 0
+        return (1, label, str(item.get("category") or "").casefold(), item_id)
+    paragraph = int(match.group(1)) if match.group(1) else 0
+    parts = tuple(int(value) for value in match.group(2).split("."))
+    item_id = int(item.get("id") or 0) if str(item.get("id") or "").isdigit() else 0
+    return (0, parts, 1 if paragraph else 0, paragraph,
+            str(item.get("category") or "").casefold(), item_id)
 
 
 def violation_threshold_summary(decision_dates, moment: datetime | None = None) -> dict:
@@ -527,35 +587,13 @@ def remarks_catalog(force: bool = False, include_inactive: bool = False) -> dict
         return {"items": items, "refreshed_at": None, "source": "built-in", "warning": str(exc)}
 
 
-def effective_officer_sql(q_alias: str = "q", af_alias: str = "af", fo_alias: str = "fo",
-                          undefined: str = "") -> str:
-    """Single business definition used by application lists, cards and filters."""
-    fallback = str(undefined).replace("'", "''")
-    return (f"CASE WHEN COALESCE({q_alias}.status,'pending')='pending' "
-            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),NULLIF({fo_alias}.officer,''),'{fallback}') "
-            f"WHEN {q_alias}.status IN ('active','unsuccessful') "
-            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),'{fallback}') "
-            f"ELSE '{fallback}' END")
-
-def legal_reference_sort_key(item: dict) -> tuple:
-    """Natural order for paragraph/subparagraph references without rewriting labels."""
-    label = re.sub(r"\s+", " ", str(item.get("point") or "").strip().casefold())
-    match = re.search(r"(?:абз\.?\s*(\d+)\s*)?п\.?\s*(\d+(?:\.\d+)*)", label)
-    if not match:
-        item_id = int(item.get("id") or 0) if str(item.get("id") or "").isdigit() else 0
-        return (1, label, str(item.get("category") or "").casefold(), item_id)
-    paragraph = int(match.group(1)) if match.group(1) else 0
-    parts = tuple(int(value) for value in match.group(2).split("."))
-    item_id = int(item.get("id") or 0) if str(item.get("id") or "").isdigit() else 0
-    return (0, parts, 1 if paragraph else 0, paragraph,
-            str(item.get("category") or "").casefold(), item_id)
-
 def application_remark_selections(submission_id: str) -> list[int]:
     with db() as con:
         return [int(row[0]) for row in con.execute(
             "SELECT remark_id FROM application_protocol_remark_selections WHERE submission_id=? ORDER BY remark_id",
             (submission_id,),
         )]
+
 
 def save_application_remark_selections(submission_id: str, remark_ids, user: str) -> list[int]:
     normalized = []
@@ -577,8 +615,10 @@ def save_application_remark_selections(submission_id: str, remark_ids, user: str
           [(submission_id, remark_id, now_iso(), user) for remark_id in normalized])
     return normalized
 
+
 def _profile_owner(user: str) -> str:
     return str(user or CURRENT_USER or "local").strip() or "local"
+
 
 def list_application_view_profiles(user: str) -> dict:
     owner = _profile_owner(user)
@@ -603,6 +643,9 @@ def list_application_view_profiles(user: str) -> dict:
         item["owned"] = item["owner_key"] == owner
         items.append(item)
     return {"items": items}
+
+
+HISTORY_COLUMN_KEYS = ('supplier','code','manager','date','cpv','framework','decision','officer','contract','remarks','documents')
 
 def history_column_settings(user, columns=None):
     owner = _profile_owner(user)
@@ -641,6 +684,13 @@ def _validated_profile_columns(value) -> list[dict]:
                        "pin": "left" if raw.get("pin") == "left" else ""})
     return result
 
+
+APPLICATION_PROFILE_KPIS = {
+    "applications", "suppliers", "pending", "admitted", "rejected",
+    "registry_active", "registry_inactive", "officers",
+}
+
+
 def _validated_profile_kpis(value) -> list[str]:
     if value is None: return []
     if not isinstance(value, list): raise ValueError("Налаштування KPI мають бути масивом")
@@ -649,6 +699,7 @@ def _validated_profile_kpis(value) -> list[str]:
         key = str(raw or "").strip()
         if key in APPLICATION_PROFILE_KPIS and key not in result: result.append(key)
     return result
+
 
 def validated_application_sorts(value) -> list[dict]:
     keys = {'participant','edrpou','qualificationId','dkCode','receivedDate','documents',
@@ -665,23 +716,16 @@ def validated_application_sorts(value) -> list[dict]:
             result.append({'key': item['key'], 'direction': 'desc' if item.get('direction') == 'desc' else 'asc'})
     return result
 
+
 def _profile_layout_json(columns, kpis, sorts=None) -> str:
     return json.dumps({"columns": _validated_profile_columns(columns),
                        "kpis": _validated_profile_kpis(kpis),
                        "sorts": validated_application_sorts(sorts or [])}, ensure_ascii=False)
 
+
 def announcement_officer_name(value: str) -> str:
     clean = (value or "").strip()
-    if not clean:
-        return ""
-    normalized = normalized_officer_name(clean)
-    with db() as con:
-        candidates = [row[0] for row in con.execute(
-            "SELECT full_name FROM authorized_officers ORDER BY active DESC, full_name"
-        )]
-    matches = [name for name in candidates
-               if normalized_officer_name(name).split()[-1:] == normalized.split()[-1:]]
-    return formatted_officer_name(matches[0]) if len(matches) == 1 else clean
+    return clean
 
 
 def sync_framework_officers() -> dict:
@@ -831,7 +875,6 @@ def init_db() -> None:
           manager_name TEXT DEFAULT '', edr_status TEXT DEFAULT '', edr_checked_at TEXT DEFAULT '',
           source_sheet TEXT DEFAULT '', source_row INTEGER DEFAULT 0, synced_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS ix_supplier_edr_manager ON supplier_edr_profiles(manager_name);
         CREATE TABLE IF NOT EXISTS supplier_notes (
           supplier_code TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '',
           updated_at TEXT NOT NULL, updated_by TEXT NOT NULL
@@ -843,6 +886,7 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_supplier_note_events_supplier
           ON supplier_note_events(supplier_code,changed_at);
+        CREATE INDEX IF NOT EXISTS ix_supplier_edr_manager ON supplier_edr_profiles(manager_name);
         CREATE TABLE IF NOT EXISTS supplier_edr_sync_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,
           status TEXT NOT NULL, processed INTEGER DEFAULT 0, inserted INTEGER DEFAULT 0,
@@ -1028,74 +1072,6 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_authorized_officers_active
           ON authorized_officers(active,full_name);
-        CREATE TABLE IF NOT EXISTS auth_users (
-          username TEXT PRIMARY KEY,
-          password_hash TEXT NOT NULL,
-          role TEXT NOT NULL CHECK(role IN ('admin','officer','viewer')),
-          officer_id INTEGER REFERENCES authorized_officers(id),
-          active INTEGER NOT NULL DEFAULT 1,
-          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, created_by TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_users_officer
-          ON auth_users(officer_id) WHERE officer_id IS NOT NULL AND active=1;
-        CREATE TABLE IF NOT EXISTS user_avatars (
-          username TEXT PRIMARY KEY,
-          content_type TEXT NOT NULL,
-          content BLOB NOT NULL,
-          updated_at TEXT NOT NULL,
-          updated_by TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS user_preferences (
-          username TEXT PRIMARY KEY,
-          display_name TEXT NOT NULL DEFAULT '',
-          start_view TEXT NOT NULL DEFAULT 'applications',
-          color_scheme TEXT NOT NULL DEFAULT 'system',
-          density TEXT NOT NULL DEFAULT 'comfortable',
-          presence_status TEXT NOT NULL DEFAULT 'working',
-          updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS chat_threads (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          title TEXT NOT NULL DEFAULT '', is_group INTEGER NOT NULL DEFAULT 0,
-          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS chat_members (
-          chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
-          username TEXT NOT NULL, joined_at TEXT NOT NULL, last_read_message_id INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY(chat_id,username)
-        );
-        CREATE INDEX IF NOT EXISTS ix_chat_members_username ON chat_members(username,chat_id);
-        CREATE TABLE IF NOT EXISTS chat_messages (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          chat_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
-          sender_username TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', submission_id TEXT DEFAULT '',
-          created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS ix_chat_messages_chat ON chat_messages(chat_id,id);
-        CREATE TABLE IF NOT EXISTS chat_attachments (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
-          filename TEXT NOT NULL, content_type TEXT NOT NULL, content BLOB NOT NULL,
-          size INTEGER NOT NULL, created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS application_protocol_remark_selections (
-          submission_id TEXT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
-          remark_id INTEGER NOT NULL REFERENCES remarks_catalog(id),
-          selected_at TEXT NOT NULL, selected_by TEXT NOT NULL DEFAULT '',
-          PRIMARY KEY(submission_id,remark_id)
-        );
-        CREATE INDEX IF NOT EXISTS ix_application_remark_selections_submission
-          ON application_protocol_remark_selections(submission_id);
-        CREATE TABLE IF NOT EXISTS application_view_profiles (
-          id TEXT PRIMARY KEY, owner_key TEXT NOT NULL, name TEXT NOT NULL,
-          is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0,1)),
-          source_system_profile_id TEXT REFERENCES application_view_profiles(id),
-          columns_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-          created_by TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL DEFAULT '',
-          UNIQUE(owner_key,name)
-        );
-        CREATE INDEX IF NOT EXISTS ix_application_view_profiles_owner
-          ON application_view_profiles(owner_key,is_system,name);
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT, submission_id TEXT, changed_at TEXT NOT NULL,
           changed_by TEXT NOT NULL, field_name TEXT NOT NULL, old_value TEXT, new_value TEXT
@@ -1146,18 +1122,38 @@ def init_db() -> None:
           tag TEXT DEFAULT '', category TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS application_protocol_remark_selections (
+          submission_id TEXT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+          remark_id INTEGER NOT NULL REFERENCES remarks_catalog(id),
+          selected_at TEXT NOT NULL,
+          selected_by TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(submission_id,remark_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_application_remark_selections_submission
+          ON application_protocol_remark_selections(submission_id);
+        CREATE TABLE IF NOT EXISTS application_view_profiles (
+          id TEXT PRIMARY KEY,
+          owner_key TEXT NOT NULL,
+          name TEXT NOT NULL,
+          is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0,1)),
+          source_system_profile_id TEXT REFERENCES application_view_profiles(id),
+          columns_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          created_by TEXT NOT NULL DEFAULT '',
+          updated_by TEXT NOT NULL DEFAULT '',
+          UNIQUE(owner_key,name)
+        );
+        CREATE INDEX IF NOT EXISTS ix_application_view_profiles_owner
+          ON application_view_profiles(owner_key,is_system,name);
         """)
-        auth_access.migrate(con)
-        preference_columns = {row[1] for row in con.execute("PRAGMA table_info(user_preferences)")}
-        if "presence_status" not in preference_columns:
-            con.execute("ALTER TABLE user_preferences ADD COLUMN presence_status TEXT NOT NULL DEFAULT 'working'")
-        con.execute("UPDATE user_preferences SET color_scheme='light' WHERE color_scheme<>'light'")
-        auth_user_columns = {row[1] for row in con.execute("PRAGMA table_info(auth_users)")}
-        if "last_seen_at" not in auth_user_columns:
-            con.execute("ALTER TABLE auth_users ADD COLUMN last_seen_at TEXT")
         violation_review_columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
         if "decision_justification" not in violation_review_columns:
             con.execute("ALTER TABLE violation_report_reviews ADD COLUMN decision_justification TEXT DEFAULT ''")
+        edr_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_edr_profiles)")}
+        for column in ("termination_decision_details", "edr_officer", "edr_notes"):
+            if column not in edr_columns:
+                con.execute(f"ALTER TABLE supplier_edr_profiles ADD COLUMN {column} TEXT DEFAULT ''")
         if con.execute("SELECT COUNT(*) FROM remarks_catalog").fetchone()[0] == 0:
             con.executemany("INSERT INTO remarks_catalog(point,text,tag,category,active,updated_at) VALUES (?,?,?,?,1,?)",
                             [(point, text, tag, "", now_iso()) for point, text, tag in DEFAULT_REMARKS])
@@ -1166,12 +1162,13 @@ def init_db() -> None:
               VALUES (?,'УО',?,?,?) ON CONFLICT(full_name) DO NOTHING""",
               (full_name, active, now_iso(), now_iso()))
         if con.execute("SELECT COUNT(*) FROM application_view_profiles WHERE is_system=1").fetchone()[0] == 0:
+            default_columns = json.dumps([], ensure_ascii=False)
             for profile_id, profile_name in (("system-review", "Розгляд"), ("system-search", "Пошук"),
                                              ("system-publication", "Публікація")):
                 con.execute("""INSERT INTO application_view_profiles
                   (id,owner_key,name,is_system,columns_json,created_at,updated_at,created_by,updated_by)
-                  VALUES (?,'__system__',?,1,'[]',?,?,?,?)""",
-                  (profile_id, profile_name, now_iso(), now_iso(), "system", "system"))
+                  VALUES (?,'__system__',?,1,?,?,?,?,?)""",
+                  (profile_id, profile_name, default_columns, now_iso(), now_iso(), "system", "system"))
         application_columns = {row[1] for row in con.execute("PRAGMA table_info(application_fields)")}
         if "protocol_remarks" not in application_columns:
             con.execute("ALTER TABLE application_fields ADD COLUMN protocol_remarks TEXT DEFAULT ''")
@@ -1266,6 +1263,9 @@ def init_db() -> None:
         if "prozorro_document_id" not in nazk_document_columns:
             con.execute("ALTER TABLE supplier_nazk_check_documents ADD COLUMN prozorro_document_id TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS ix_supplier_nazk_documents_submission ON supplier_nazk_check_documents(submission_id)")
+        auth_access.migrate(con)
+        table_widths.migrate(con)
+        formed_protocols.migrate(con)
 
 
 def api_get(url: str) -> dict:
@@ -1383,6 +1383,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
     if not save_framework(framework):
         raise ValueError("Відбір не належить організатору 40996564")
     submission_count = qualification_count = contract_count = 0
+    experience_submission_ids = []
     with db() as con:
         submissions_cursor = resource_cursor(framework_id, "submissions") if incremental else None
         for batch in scoped_pages(framework_id, "submissions", submissions_cursor):
@@ -1444,6 +1445,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                 # Existing submissions must also be reconciled: their manager/profile
                 # can become known after the submission was first synchronized.
                 ensure_submission_nazk_control(con, item["id"])
+                experience_submission_ids.append(item["id"])
                 submission_count += 1
         latest_manager_by_supplier = {}
         manager_rows = con.execute("""SELECT s.id,s.supplier_code,s.date_published,
@@ -1492,6 +1494,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                        json.dumps(item.get("milestones", []), ensure_ascii=False),
                        json.dumps(item, ensure_ascii=False), now_iso()))
                     contract_count += 1
+    enqueue_contract_experience_search(experience_submission_ids)
     return {"framework": framework.get("prettyID"), "submissions": submission_count, "qualifications": qualification_count, "contracts": contract_count}
 
 
@@ -1563,10 +1566,12 @@ def sync_all_active_frameworks() -> dict:
             for key in ("submissions", "qualifications", "contracts"):
                 totals[key] += result[key]
         except Exception as exc:
+            SERVER_LOG.exception("Framework synchronization failed framework=%s", pretty_id)
             totals["errors"].append({"framework": pretty_id, "error": str(exc)})
     try:
         totals["officer_assignments"] = sync_framework_officers()["matched"]
     except Exception as exc:
+        SERVER_LOG.exception("Framework officer synchronization failed")
         totals["officer_assignments_error"] = str(exc)
     totals["supplier_registry"] = refresh_supplier_registry_summary()
     return totals
@@ -1592,10 +1597,12 @@ def sync_all_tracked_frameworks() -> dict:
             for key in ("submissions", "qualifications", "contracts"):
                 totals[key] += result[key]
         except Exception as exc:
+            SERVER_LOG.exception("Tracked framework synchronization failed framework=%s", pretty_id)
             totals["errors"].append({"framework": pretty_id, "error": str(exc)})
     try:
         totals["officer_assignments"] = sync_framework_officers()["matched"]
     except Exception as exc:
+        SERVER_LOG.exception("Tracked framework officer synchronization failed")
         totals["officer_assignments_error"] = str(exc)
     totals["supplier_registry"] = refresh_supplier_registry_summary()
     return totals
@@ -1615,10 +1622,12 @@ def sync_incremental_active_frameworks() -> dict:
             for key in ("submissions", "qualifications", "contracts"):
                 totals[key] += result[key]
         except Exception as exc:
+            SERVER_LOG.exception("Incremental framework synchronization failed framework=%s", framework_id)
             totals["errors"].append({"framework": framework_id, "error": str(exc)})
     try:
         totals["officer_assignments"] = sync_framework_officers()["matched"]
     except Exception as exc:
+        SERVER_LOG.exception("Incremental framework officer synchronization failed")
         totals["officer_assignments_error"] = str(exc)
     totals["supplier_registry"] = refresh_supplier_registry_summary()
     return totals
@@ -1630,8 +1639,13 @@ def sync_worker(framework_id: str) -> None:
         result = sync_one_framework(framework_id)
         sync_framework_officers()
         SYNC_STATE["message"] = f"{result['framework']}: {result['submissions']} заявок, {result['qualifications']} рішень, {result['contracts']} записів реєстру"
+        SYNC_STATE.update(last_completed_at=now_iso(), last_result=result,
+                          last_message=SYNC_STATE["message"], last_mode="single")
     except Exception as exc:
+        SERVER_LOG.exception("Single framework synchronization failed framework=%s", framework_id)
         SYNC_STATE["message"] = f"Помилка: {exc}"
+        SYNC_STATE.update(last_completed_at=now_iso(), last_result={"status": "failed"},
+                          last_message=SYNC_STATE["message"], last_mode="single")
     finally:
         SYNC_STATE.update(running=False, updated_at=now_iso())
 
@@ -1647,8 +1661,13 @@ def sync_all_worker() -> None:
             f"{result['submissions']} заявок, {result['qualifications']} рішень, "
             f"{result['contracts']} записів реєстру; помилок: {len(result['errors'])}"
         )
+        SYNC_STATE.update(last_completed_at=now_iso(), last_result=result,
+                          last_message=SYNC_STATE["message"], last_mode="full")
     except Exception as exc:
+        SERVER_LOG.exception("Full Prozorro synchronization failed")
         SYNC_STATE["message"] = f"Помилка: {exc}"
+        SYNC_STATE.update(last_completed_at=now_iso(), last_result={"status": "failed"},
+                          last_message=SYNC_STATE["message"], last_mode="full")
     finally:
         SYNC_STATE.update(running=False, updated_at=now_iso(), duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 1))
 
@@ -1663,8 +1682,13 @@ def sync_incremental_worker() -> None:
             f"отримано {result['submissions']} заявок, {result['qualifications']} рішень, "
             f"{result['contracts']} записів реєстру; помилок: {len(result['errors'])}"
         )
+        SYNC_STATE.update(last_completed_at=now_iso(), last_result=result,
+                          last_message=SYNC_STATE["message"], last_mode="incremental")
     except Exception as exc:
+        SERVER_LOG.exception("Incremental Prozorro synchronization failed")
         SYNC_STATE["message"] = f"Помилка щогодинного оновлення: {exc}"
+        SYNC_STATE.update(last_completed_at=now_iso(), last_result={"status": "failed"},
+                          last_message=SYNC_STATE["message"], last_mode="incremental")
     finally:
         SYNC_STATE.update(running=False, updated_at=now_iso(), duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 1))
 
@@ -1756,6 +1780,28 @@ def registry_details(milestones_json: str | None, status: str | None) -> dict:
     }
 
 
+def grouped_application_documents(submission_json: str | None, qualification_json: str | None,
+                                  registry_json: str | None, qualification_status: str | None,
+                                  registry_status: str | None) -> dict[str, list[dict]]:
+    """Classify by persisted Prozorro resource relation, never by filename."""
+    sources = [("supplier", json.loads(submission_json or "[]")),
+               ("decision", json.loads(qualification_json or "[]"))]
+    # Registry documents belong to the post-admission chain only after the
+    # admitted application has factually become inactive in the registry.
+    if qualification_status == "active" and registry_status == "terminated":
+        sources.append(("registry", registry_details(registry_json, registry_status)["registry_documents"]))
+    groups: dict[str, list[dict]] = {"supplier": [], "decision": [], "registry": []}
+    seen = set()
+    for group, documents in sources:
+        for document in documents:
+            key = document.get("url") or document.get("id")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            groups[group].append(document)
+    return groups
+
+
 def multi_param(params: dict, key: str) -> list[str]:
     return [value.strip() for raw in params.get(key, []) for value in raw.split(",") if value.strip()]
 
@@ -1769,6 +1815,7 @@ APPLICATION_SEARCH_FIELDS = (
     {"key": "dk", "label": "код ДК", "sql": "f.dk_code"},
     {"key": "contract", "label": "реквізити договору", "sql": "af.contract_details"},
 )
+
 
 def application_filter(params: dict) -> tuple[str, list]:
     search = params.get("search", [""])[0].strip()
@@ -1786,6 +1833,10 @@ def application_filter(params: dict) -> tuple[str, list]:
     compliance_status = params.get("compliance_status", [""])[0].strip()
     marketplace_decisions = multi_param(params, "marketplace_decision")
     where, args = ["1=1"], []
+    protocol_number = params.get("protocol_number", [""])[0].strip()
+    if protocol_number:
+        where.append("af.protocol_number=?")
+        args.append(protocol_number)
     if submission_id:
         where.append("s.id=?")
         args.append(submission_id)
@@ -1930,6 +1981,7 @@ def list_applications(params: dict) -> dict:
           LEFT JOIN submission_nazk_controls snc ON snc.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}
           ORDER BY {order_sql}, s.id ASC LIMIT ? OFFSET ?""", (*args, size, (page - 1) * size)).fetchall()]
+        formed_protocols.enrich(con, records)
         supplier_codes = sorted({re.sub(r"\D", "", row.get("supplier_code") or "") for row in records
                                  if re.sub(r"\D", "", row.get("supplier_code") or "")})
         edr_profiles = {}
@@ -2011,6 +2063,17 @@ def list_applications(params: dict) -> dict:
     return {"items": items, "total": total, "page": page, "size": size, "pages": (total + size - 1) // size}
 
 
+HISTORY_REMARKS_SQL = "COALESCE(NULLIF(af.protocol_remarks,''),af.compliance_comments,'')"
+HISTORY_SORT_FIELDS = {
+    'date': 's.date_published', 'supplier': 's.supplier_name', 'code': 's.supplier_code',
+    'cpv': 'f.dk_code', 'framework': 'f.title',
+    'decision': "CASE COALESCE(q.status,'pending') WHEN 'active' THEN 'Допущено' WHEN 'unsuccessful' THEN 'Відхилено' ELSE 'Очікує рішення' END",
+    'contract': 'af.contract_details', 'manager': 'af.manager_name',
+    'officer': 'af.protocol_officer', 'protocol': 'af.protocol_number',
+    'protocol_date': 'af.protocol_date', 'remarks': HISTORY_REMARKS_SQL,
+}
+
+
 def history_order_sql(value: str) -> str:
     sorts = json.loads(value or '[]')
     if not isinstance(sorts, list) or len(sorts) > len(HISTORY_SORT_FIELDS):
@@ -2024,6 +2087,7 @@ def history_order_sql(value: str) -> str:
             clauses.append(f"CASEFOLD(COALESCE({HISTORY_SORT_FIELDS[key]},'')) {item['direction'].upper()}")
             seen.add(key)
     return ','.join(clauses or ['s.date_published DESC']) + ',s.id ASC'
+
 
 def application_history(params: dict) -> dict:
     """Read-only paginated submission history; no EDR/NACP enrichment or writes."""
@@ -2067,31 +2131,26 @@ def application_history(params: dict) -> dict:
           s.date_published,s.framework_id,f.pretty_id,f.title framework_title,f.dk_code,
           COALESCE(q.status,'pending') status,af.protocol_decision,af.protocol_officer,
           af.protocol_number,af.protocol_date,af.protocol_remarks,af.compliance_comments,
-          af.contract_details,af.manager_name,s.documents_json,q.documents_json decision_documents
+          af.contract_details,af.manager_name,s.documents_json,q.documents_json decision_documents,
+          q.status qualification_status,
+          (SELECT rc.status FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
+          (SELECT rc.milestones_json FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones
           """+source+' ORDER BY '+order+' LIMIT ? OFFSET ?',
           [*args,size,(page-1)*size])]
     for item in items:
-        item['documents'] = json.loads(item.pop('documents_json') or '[]') + json.loads(item.pop('decision_documents') or '[]')
+        groups = grouped_application_documents(item.pop('documents_json'), item.pop('decision_documents'),
+                                               item.pop('registry_milestones'), item['qualification_status'],
+                                               item['registry_status'])
+        item['documents'], item['decision_documents'], item['registry_documents'] = groups['supplier'], groups['decision'], groups['registry']
+        item['document_groups'] = groups
         item['decision'] = decision_label(item['status'])
     return {'items':items,'total':total,'page':page,'pages':max(1,(total+size-1)//size),'size':size}
 
+
 def pqm_schema_metadata() -> dict:
-    """Schema-only metadata. Never expose stored values, credentials or PII."""
-    aliases = {'s':'submissions','af':'application_fields','f':'frameworks'}
-    known = {tuple([aliases[x['sql'].split('.')[0]],x['sql'].split('.')[1]]):x['label']
-             for x in APPLICATION_SEARCH_FIELDS}
-    items=[]
-    with db() as con:
-        tables=[r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-        for table in tables:
-            for row in con.execute('PRAGMA table_info("'+table.replace('"','""')+'")'):
-                key=row['name']
-                items.append({'label':known.get((table,key),key),'key':key,'table':table,
-                  'type':row['type'],'required':bool(row['notnull']),'primary_key':bool(row['pk']),
-                  'source':'SQLite PRAGMA table_info','source_field':table+'.'+key,
-                  'notes':'Детальна семантична metadata ще не описана' if (table,key) not in known else 'Поле чинного APPLICATION_SEARCH_FIELDS',
-                  'template_available':False})
-    return {'items':items,'source':'Фактична SQLite schema та APPLICATION_SEARCH_FIELDS; без значень даних'}
+    from schema_catalog import catalog
+    return catalog(DB_PATH, BIDS_DB_PATH if BIDS_MODE in {'readonly', 'read_only'} else None)
+
 
 def protocol_readiness(payload: dict) -> dict:
     number = str(payload.get("protocol_number") or "").strip()
@@ -2100,6 +2159,11 @@ def protocol_readiness(payload: dict) -> dict:
     if not number and not (date_from and date_to):
         raise ValueError("Зазначте номер протоколу або повний період надходження заявок")
     scope, args = [], []
+    selected_ids = payload.get('submission_ids')
+    if selected_ids is not None:
+        if not isinstance(selected_ids, list) or not selected_ids or len(selected_ids)>1000 or any(not isinstance(x,str) for x in selected_ids):
+            raise ValueError('Некоректний список вибраних заявок')
+        scope.append('s.id IN ('+','.join('?' for _ in selected_ids)+')'); args.extend(selected_ids)
     if number:
         scope.append("af.protocol_number=?"); args.append(number)
     if date_from and date_to:
@@ -2115,7 +2179,7 @@ def protocol_readiness(payload: dict) -> dict:
           COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.document_package,'') document_package,
           COALESCE(af.protocol_remarks,'') protocol_remarks,
-          {effective_officer_sql()} protocol_officer,
+          COALESCE(af.protocol_officer,'') protocol_officer,
           COALESCE(af.manager_name,'') manager_name,
           COALESCE(af.protocol_date,'') protocol_date,
           COALESCE(q.status,'pending') source_status
@@ -2124,9 +2188,13 @@ def protocol_readiness(payload: dict) -> dict:
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id
           WHERE ({filter_clause}) AND ({' AND '.join(scope)}) ORDER BY s.date_published,s.id""", (*filter_args, *args)).fetchall()
+    if selected_ids is not None and set(selected_ids)!={row['id'] for row in rows}:
+        raise ValueError('Частина вибраних заявок більше не відповідає вибірці. Повторіть перевірку.')
     items, admitted, rejected, unresolved = [], 0, 0, 0
     for raw in rows:
         row, errors, warnings = dict(raw), [], []
+        try: formed_protocols.available(con,row['id'])
+        except ValueError as exc: errors.append(str(exc))
         if not row["manager_name"]:
             errors.append("Не заповнено ПІБ керівника")
         if not row["protocol_number"]:
@@ -2185,7 +2253,7 @@ def protocol_readiness(payload: dict) -> dict:
             "warning_count": warning_count, "items": items}
 
 
-def generate_protocol(payload: dict) -> dict:
+def generate_protocol(payload: dict, user='LOCAL', role='admin', officer_id=None) -> dict:
     result = protocol_readiness(payload)
     if not result["ready"]:
         raise ValueError(f"Протокол не готовий: {result['error_count']} помилок")
@@ -2204,25 +2272,28 @@ def generate_protocol(payload: dict) -> dict:
     received_dates = sorted(str(item.get("date_published") or "")[:10] for item in items)
     date_from = str(payload.get("date_from") or "").strip() or received_dates[0]
     date_to = str(payload.get("date_to") or "").strip() or received_dates[-1]
-    safe_number = re.sub(r"[^0-9A-Za-zА-ЯІЇЄҐа-яіїєґ_-]+", "_", protocol_number).strip("_") or "protocol"
-    safe_date = protocol_date.replace(".", "-").replace("/", "-")
-    filename = f"Протокол_{safe_number}_від_{safe_date}.docx"
-    output_path = PROTOCOLS_DIR / filename
-    build_protocol_docx({
+    document_payload = {
         "items": items, "protocol_number": protocol_number, "protocol_date": protocol_date,
         "date_from": date_from, "date_to": date_to, "officer": next(iter(officers)),
-    }, output_path)
-    generated_at = now_iso()
-    with db() as con:
-        for item in items:
-            con.execute("""UPDATE application_fields SET generated_protocol_number=?,generated_protocol_date=?,
-              generated_protocol_decision=protocol_decision,protocol_generated_at=? WHERE submission_id=?""",
-                        (protocol_number, protocol_date, generated_at, item["id"]))
-    return {
-        "generated": True, "protocol_number": protocol_number, "protocol_date": protocol_date,
-        "total": len(items), "admitted": result["admitted"], "rejected": result["rejected"],
-        "filename": filename, "download_url": "/api/protocol/files/" + urllib.parse.quote(filename),
     }
+    with db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        assert_protocol_scope(con,[item['id'] for item in items],role,officer_id)
+        return formed_protocols.create(con,items,document_payload,PROTOCOLS_DIR,build_protocol_docx,user)
+
+
+def assert_protocol_scope(con,ids,role,officer_id):
+    if role=='admin': return
+    if role!='officer': raise PermissionError('Недостатньо прав для протоколу')
+    officer=con.execute('SELECT full_name FROM authorized_officers WHERE id=? AND active=1',(officer_id,)).fetchone()
+    if not officer: raise PermissionError('Не визначено активну УО')
+    for sid in ids:
+        row=con.execute(f'''SELECT {effective_officer_sql()} officer FROM submissions s
+          LEFT JOIN application_fields af ON af.submission_id=s.id
+          LEFT JOIN qualifications q ON q.id=s.qualification_id
+          LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE s.id=?''',(sid,)).fetchone()
+        if not row or normalized_officer_name(row['officer'])!=normalized_officer_name(officer['full_name']):
+            raise PermissionError('Дія доступна лише для призначених вам заявок')
 
 
 def list_frameworks() -> dict:
@@ -2649,6 +2720,17 @@ def _refresh_bids_status_cache() -> None:
         BIDS_STATUS_LOCK.release()
 
 
+def bids_run_snapshot() -> dict:
+    result = dict(BIDS_UPDATE_STATE)
+    try:
+        start = datetime.fromisoformat(result['started_at'])
+        end = datetime.fromisoformat(result['finished_at']) if result.get('finished_at') else datetime.now(timezone.utc)
+        result['duration_seconds'] = max(0, int((end-start).total_seconds()))
+    except (KeyError, ValueError, TypeError):
+        result['duration_seconds'] = None
+    return result
+
+
 def bids_sync_status(force: bool = False) -> dict:
     """Return cached status immediately; refresh heavy counts once in background."""
     cached = BIDS_STATUS_CACHE.get("value")
@@ -2656,12 +2738,58 @@ def bids_sync_status(force: bool = False) -> dict:
     if (force or not fresh) and BIDS_STATUS_LOCK.acquire(blocking=False):
         threading.Thread(target=_refresh_bids_status_cache, daemon=True).start()
     if cached is not None:
-        return {**cached, "refreshing": BIDS_STATUS_LOCK.locked(), "update": dict(BIDS_UPDATE_STATE)}
+        return {**cached, "refreshing": BIDS_STATUS_LOCK.locked(), "update": bids_run_snapshot()}
     return {
         "database": str(BIDS_DB_PATH), "checked_at": None, "refreshing": True,
         "message": "Статистика ProzorroBids оновлюється у фоновому режимі",
-        "error": BIDS_STATUS_CACHE.get("error", ""), "update": dict(BIDS_UPDATE_STATE),
+        "error": BIDS_STATUS_CACHE.get("error", ""), "update": bids_run_snapshot(),
     }
+
+
+def bids_runtime_check() -> None:
+    if IS_WEB_ENV or not ENABLE_BIDS_UPDATE:
+        raise RuntimeError("Оновлення ProzorroBids вимкнене в цьому середовищі")
+    for path in (BIDS_PYTHON, BIDS_SCRIPT):
+        if not path.is_file():
+            raise FileNotFoundError(f"Не знайдено файл ProzorroBids: {path}")
+    subprocess.run([str(BIDS_PYTHON), "-c", "import requests"], cwd=BIDS_SCRIPT.parent,
+                   capture_output=True, check=True, timeout=20)
+
+
+def bids_progress_line(line: str) -> None:
+    text = line.strip()
+    if not text:
+        return
+    BIDS_UPDATE_STATE.update(last_activity_at=now_iso(), message=text[:500])
+    match = re.match(r'^\[(\d+)/(\d+)\]', text)
+    if match:
+        # The worker prints the item number BEFORE processing it.
+        BIDS_UPDATE_STATE.update(processed=max(0,int(match[1])-1), total=int(match[2]))
+    elif text.startswith('bids:') and BIDS_UPDATE_STATE.get('processed') is not None:
+        BIDS_UPDATE_STATE['processed'] = min(BIDS_UPDATE_STATE['total'], BIDS_UPDATE_STATE['processed']+1)
+    if text.startswith(('ПОМИЛКА:', 'КРИТИЧНА ПОМИЛКА:')):
+        BIDS_UPDATE_STATE['current_run_errors'] = BIDS_UPDATE_STATE.get('current_run_errors',0)+1
+        BIDS_UPDATE_STATE.update(last_error=text[:500])
+
+
+def run_bids_command(arguments) -> None:
+    BIDS_UPDATE_STATE.update(stage=arguments[0], processed=None, total=None, last_activity_at=now_iso())
+    # Stream into the rotating server logger; do not keep the whole output in RAM.
+    with subprocess.Popen([str(BIDS_PYTHON), str(BIDS_SCRIPT), *arguments],
+                          cwd=BIDS_SCRIPT.parent, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                          env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}) as process:
+        BIDS_UPDATE_STATE["pid"] = process.pid
+        SERVER_LOG.info("Bids worker pid=%s interpreter=%s", process.pid, BIDS_PYTHON)
+        for line in process.stdout:
+            safe = re.sub(r"(?i)(token|password|authorization|api[_-]?key)(\s*[:=]\s*)\S+", r"\1\2[redacted]", line.rstrip())
+            SERVER_LOG.info("Bids: %s", safe)
+            bids_progress_line(safe)
+        code = process.wait()
+        if code:
+            raise RuntimeError(f"ProzorroBids завершився з кодом {code}; див. logs/server.log")
+        if BIDS_UPDATE_STATE.get('total') is not None:
+            BIDS_UPDATE_STATE['processed'] = BIDS_UPDATE_STATE['total']
 
 
 def bids_update_worker() -> None:
@@ -2672,26 +2800,21 @@ def bids_update_worker() -> None:
         synchronized = datetime.strptime(value, "%Y-%m-%d").date() if value else today - timedelta(days=14)
         date_from = min(synchronized - timedelta(days=2), today)
         BIDS_UPDATE_STATE.update(running=True, message="Інкрементальне оновлення нових і змінених закупівель…",
-                                 started_at=now_iso(), updated_at=None, date_from=date_from.isoformat(),
+                                 updated_at=None, date_from=date_from.isoformat(),
                                  date_to=today.isoformat(), error=None)
-        if not BIDS_PYTHON.is_file():
-            raise FileNotFoundError(f"Не знайдено робочий Python ProzorroBids: {BIDS_PYTHON}")
-        subprocess.run([str(BIDS_PYTHON), "-c", "import requests"], cwd=BIDS_PROJECT_PATH,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=20)
-        log_path = DATA_DIR / "bids_manual_update.log"
-        with log_path.open("a", encoding="utf-8") as log:
-            log.write(f"\n[{now_iso()}] update {date_from} — {today}\n")
-            subprocess.run([str(BIDS_PYTHON), str(BIDS_PROJECT_PATH / "main.py"), "update", "--from", date_from.isoformat(),
-                            "--to", today.isoformat(), "--no-export"], cwd=BIDS_PROJECT_PATH,
-                           stdout=log, stderr=subprocess.STDOUT, check=True)
-            BIDS_UPDATE_STATE["message"] = "Повторна перевірка активних закупівель…"
-            subprocess.run([str(BIDS_PYTHON), str(BIDS_PROJECT_PATH / "main.py"), "refresh-active"], cwd=BIDS_PROJECT_PATH,
-                           stdout=log, stderr=subprocess.STDOUT, check=True)
+        bids_runtime_check()
+        run_bids_command(["update", "--from", date_from.isoformat(), "--to", today.isoformat(), "--no-export"])
+        BIDS_UPDATE_STATE["message"] = "Повторна перевірка активних закупівель…"
+        run_bids_command(["refresh-active"])
         BIDS_UPDATE_STATE["message"] = "Оновлення Bids завершено"
+        BIDS_UPDATE_STATE['status'] = 'completed'
     except Exception as exc:
+        SERVER_LOG.exception("Bids update failed")
         BIDS_UPDATE_STATE.update(message=f"Помилка оновлення Bids: {exc}", error=str(exc))
+        BIDS_UPDATE_STATE.update(status='failed', last_error=str(exc),
+                                current_run_errors=BIDS_UPDATE_STATE.get('current_run_errors',0)+(0 if BIDS_UPDATE_STATE.get('last_error') else 1))
     finally:
-        BIDS_UPDATE_STATE.update(running=False, updated_at=now_iso())
+        BIDS_UPDATE_STATE.update(running=False, updated_at=now_iso(), finished_at=now_iso())
         with BIDS_STATUS_LOCK:
             BIDS_STATUS_CACHE.update(at=0.0, value=None)
 
@@ -2719,23 +2842,37 @@ def powerbi_export_status() -> dict:
 
 
 def powerbi_export_worker() -> None:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     build_name = f".powerbi_build_{stamp}"
     build_path = POWERBI_OUTPUT_ROOT / build_name
-    previous_path = POWERBI_OUTPUT_ROOT / ".powerbi_previous"
+    previous_path = POWERBI_OUTPUT_ROOT / f".powerbi_previous_{stamp}"
     try:
         POWERBI_EXPORT_STATE.update(running=True, message="Формування файлів для Power BI…",
                                     started_at=now_iso(), updated_at=None, error=None)
-        log_path = DATA_DIR / "powerbi_export.log"
-        with log_path.open("a", encoding="utf-8") as log:
-            log.write(f"\n[{now_iso()}] export-powerbi {build_name}\n")
-            subprocess.run([sys.executable, str(BIDS_PROJECT_PATH / "main.py"), "export-powerbi", "--dir", build_name],
-                           cwd=BIDS_PROJECT_PATH, stdout=log, stderr=subprocess.STDOUT, check=True)
+        for path in (BIDS_PYTHON, BIDS_SCRIPT):
+            if not path.is_file():
+                raise FileNotFoundError(f"Не знайдено runtime ProzorroBids: {path}")
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+        tail = []
+        command = [str(BIDS_PYTHON), str(BIDS_SCRIPT), "export-powerbi", "--dir", build_name]
+        SERVER_LOG.info("Power BI export starting interpreter=%s script=%s build=%s", BIDS_PYTHON, BIDS_SCRIPT, build_name)
+        with subprocess.Popen(command, cwd=BIDS_SCRIPT.parent, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace") as process:
+            POWERBI_EXPORT_STATE.update(pid=process.pid, interpreter=str(BIDS_PYTHON))
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    SERVER_LOG.info("Power BI [%s] %s", process.pid, line)
+                    tail.append(line); tail = tail[-12:]
+                    POWERBI_EXPORT_STATE.update(last_activity_at=now_iso())
+            code = process.wait()
+            POWERBI_EXPORT_STATE['exit_code'] = code
+        if code:
+            detail = next((s for s in reversed(tail) if 'Error' in s or 'ПОМИЛКА' in s), tail[-1] if tail else 'Експортер не надав пояснення; див. logs/server.log')
+            raise RuntimeError(detail[:500])
         if not (build_path / "_COMPLETE.txt").is_file():
             raise RuntimeError("Експортер не створив маркер завершення")
         POWERBI_EXPORT_STATE["message"] = "Заміна попереднього набору…"
-        if previous_path.exists():
-            shutil.rmtree(previous_path)
         if POWERBI_CURRENT_PATH.exists():
             POWERBI_CURRENT_PATH.rename(previous_path)
         try:
@@ -2744,13 +2881,28 @@ def powerbi_export_worker() -> None:
             if previous_path.exists() and not POWERBI_CURRENT_PATH.exists():
                 previous_path.rename(POWERBI_CURRENT_PATH)
             raise
-        if previous_path.exists():
-            shutil.rmtree(previous_path)
+        POWERBI_EXPORT_STATE['previous_path'] = str(previous_path) if previous_path.exists() else None
         POWERBI_EXPORT_STATE["message"] = "Експорт Power BI успішно оновлено"
     except Exception as exc:
-        POWERBI_EXPORT_STATE.update(message=f"Помилка експорту Power BI: {exc}", error=str(exc))
+        SERVER_LOG.exception("Power BI export failed")
+        POWERBI_EXPORT_STATE.update(message=f"Експорт Power BI не виконано: {exc}", error=str(exc), error_code="export_failed")
     finally:
-        POWERBI_EXPORT_STATE.update(running=False, updated_at=now_iso())
+        POWERBI_EXPORT_STATE.update(running=False, updated_at=now_iso(), finished_at=now_iso())
+
+
+def start_powerbi_export():
+    with POWERBI_START_LOCK:
+        if POWERBI_EXPORT_STATE.get('running'):
+            return {'error': 'Експорт Power BI вже триває', 'error_code': 'already_running', 'state': dict(POWERBI_EXPORT_STATE)}, 409
+        POWERBI_EXPORT_STATE.update(running=True, message='Підготовка експорту Power BI…', started_at=now_iso(),
+                                    error=None, error_code=None, exit_code=None, pid=None, finished_at=None)
+        try:
+            threading.Thread(target=powerbi_export_worker, daemon=True).start()
+        except Exception:
+            SERVER_LOG.exception('Cannot start Power BI worker')
+            POWERBI_EXPORT_STATE.update(running=False, error='Не вдалося запустити процес експорту')
+            return {'error': POWERBI_EXPORT_STATE['error'], 'error_code': 'start_failed'}, 503
+        return {'started': True, 'state': dict(POWERBI_EXPORT_STATE)}, 202
 
 
 def supplier_options(params: dict) -> dict:
@@ -2876,13 +3028,21 @@ def google_oauth_status() -> dict:
         }
         result = {"configured": bool(client), "authorized": False, "enabled": True,
                   "available": False, "configuration_error": configuration_error,
+                  "client_state": ("access_denied" if GOOGLE_OAUTH_CLIENT_ACCESS_ERROR else "configured" if client else "absent"),
+                  "token_state": ("access_denied" if GOOGLE_OAUTH_TOKEN_ACCESS_ERROR else "present" if token else "absent"),
                   "message": messages.get(configuration_error, "Google OAuth недоступний")}
         if not IS_WEB_ENV:
             result["client_path"] = str(GOOGLE_OAUTH_CLIENT_PATH)
         return result
-    result = {"configured": bool(client), "authorized": bool(token and token.get("refresh_token")),
+    has_refresh_token = bool(token and token.get("refresh_token"))
+    token_expired = bool(token and not has_refresh_token and token.get("access_token") and
+                         time.time() >= float(token.get("obtained_at", 0)) + int(token.get("expires_in", 3600)) - 120)
+    result = {"configured": bool(client), "authorized": has_refresh_token,
             "enabled": True, "available": True, "configuration_error": "",
-            "message": ("Google підключено для читання таблиць" if token and token.get("refresh_token") else
+            "client_state": "configured" if client else "absent",
+            "token_state": "authorized" if has_refresh_token else "expired" if token_expired else "authorization_required" if client else "absent",
+            "message": ("Google підключено для читання таблиць" if has_refresh_token else
+                        "Токен Google прострочений · потрібна повторна авторизація" if token_expired else
                         "Потрібно увійти через Google" if client else
                         "Потрібен OAuth Client ID для локального застосунку")}
     if not IS_WEB_ENV:
@@ -3048,6 +3208,123 @@ def supplier_edr_sync_status() -> dict:
             "state": dict(SUPPLIER_EDR_SYNC_STATE)}
 
 
+EDR_EXPORT_HEADERS = [
+    "Маркер актуальності", "Код ЄДРПОУ", "Найменування", "ПІБ для перевірки",
+    "Статус в реєстрі (ЄДР)", "Статус (Prozorro)", "Реквізити рішення про припинення",
+    "Дата останнього допуску", "Дата перевірки ЄДР", "Дата запису", "Номер запису",
+    "УО", "Примітки", "Повна назва з ЄДР", "Скорочена назва з ЄДР",
+]
+
+
+def _export_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = parse_ukrainian_date(text)
+    if parsed:
+        return parsed
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def build_supplier_edr_export_rows(sheet_type: str, today=None) -> list[dict]:
+    """Build the backward-compatible 15-column EDR input without changing source data."""
+    sheet_type = str(sheet_type or "").strip().upper()
+    if sheet_type not in {"ФОП", "ЮО"}:
+        raise ValueError("Оберіть тип експорту: ФОП або ЮО")
+    today = today or datetime.now().astimezone().date()
+    profiles, latest, managers, admitted_dates, active, supplier_codes = {}, {}, {}, {}, {}, set()
+    registry_member_codes = set()
+    with db() as con:
+        for raw in con.execute("SELECT * FROM supplier_edr_profiles"):
+            item = dict(raw); code = _digits(item.get("supplier_code")); supplier_codes.add(code); profiles[code] = item
+        for raw in con.execute("""SELECT s.supplier_code,s.supplier_name,s.date_published,s.synced_at,s.id,
+          COALESCE(af.manager_name,'') manager_name FROM submissions s
+          LEFT JOIN application_fields af ON af.submission_id=s.id
+          ORDER BY COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC"""):
+            item = dict(raw); code = _digits(item.get("supplier_code"))
+            if code:
+                supplier_codes.add(code); latest.setdefault(code, item)
+        for raw in con.execute("SELECT supplier_code,manager_name FROM supplier_managers WHERE is_current=1 ORDER BY updated_at DESC,id DESC"):
+            code = _digits(raw["supplier_code"]); managers.setdefault(code, str(raw["manager_name"] or ""))
+        for raw in con.execute("""SELECT s.supplier_code,q.status,
+          COALESCE(NULLIF(q.decision_date,''),s.date_published) event_date
+          FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id"""):
+            code = _digits(raw["supplier_code"])
+            if not code:
+                continue
+            active[code] = active.get(code, 0) + (1 if raw["status"] == "active" else 0)
+            if raw["status"] == "active" and str(raw["event_date"] or "") > admitted_dates.get(code, ""):
+                admitted_dates[code] = str(raw["event_date"] or "")
+        for raw in con.execute("""SELECT rc.supplier_code,q.status,
+          COALESCE(NULLIF(q.decision_date,''),NULLIF(json_extract(rc.raw_json,'$.dateModified'),''),
+                   NULLIF(json_extract(rc.raw_json,'$.date'),''),rc.synced_at) event_date
+          FROM registry_contracts rc LEFT JOIN qualifications q ON q.id=rc.qualification_id
+          WHERE COALESCE(rc.supplier_code,'')<>''"""):
+            code = _digits(raw["supplier_code"])
+            if not code:
+                continue
+            registry_member_codes.add(code)
+            if raw["status"] == "active" and str(raw["event_date"] or "") > admitted_dates.get(code, ""):
+                admitted_dates[code] = str(raw["event_date"] or "")
+    rows = []
+    # The export contract is authoritative historical register membership, not
+    # the current active count and not the potentially stale
+    # submissions.qualification_id pointer.  This is the same population source
+    # as the supplier KPI: registry_contracts -> qualifications.
+    for code in sorted(registry_member_codes):
+        profile, last = profiles.get(code, {}), latest.get(code, {})
+        rows.append({"code": code, "full_name": profile.get("full_name", ""),
+          "short_name": profile.get("short_name", ""), "edr_manager": profile.get("manager_name", ""),
+          "edr_status": profile.get("edr_status", ""), "edr_checked_at": profile.get("edr_checked_at", ""),
+          "source_sheet": profile.get("source_sheet", ""),
+          "termination_decision_details": profile.get("termination_decision_details", ""),
+          "edr_officer": profile.get("edr_officer", ""), "edr_notes": profile.get("edr_notes", ""),
+          "latest_name": last.get("supplier_name", ""), "latest_manager": last.get("manager_name", ""),
+          "current_manager": managers.get(code, ""), "last_admit": admitted_dates.get(code, ""),
+          "active_count": active.get(code, 0)})
+    result = []
+    for row in rows:
+        source_type = str(row["source_sheet"] or "").strip().upper()
+        name = str(row["full_name"] or row["latest_name"] or "")
+        inferred_fop = bool(re.search(r"\bФОП\b|ФІЗИЧНА\s+ОСОБА[\s-]*ПІДПРИЄМЕЦЬ", name, re.I))
+        actual_type = source_type if source_type in {"ФОП", "ЮО"} else ("ФОП" if inferred_fop else "ЮО")
+        if actual_type != sheet_type:
+            continue
+        checked = _export_date(row["edr_checked_at"])
+        admitted_date = _export_date(row["last_admit"])
+        effective_checked = max(value for value in (checked, admitted_date) if value) if checked or admitted_date else None
+        age = (today - effective_checked).days if effective_checked else None
+        marker = ("до 30 календарних днів" if age is not None and age <= 30 else
+                  "більше 90 календарних днів" if age is not None and age > 90 else
+                  "більше 30 календарних днів" if age is not None else "")
+        details = str(row["termination_decision_details"] or "")
+        date_match = re.search(r"(?:Дата запису:\s*|від\s*)([\d\.\-]+)", details, re.I)
+        number_match = re.search(r"(?:Номер запису:\s*|Запис\s*№\s*)(\d+)", details, re.I)
+        status = str(row["edr_status"] or "")
+        if admitted_date and (not checked or admitted_date > checked):
+            status = "Зареєстровано"
+        result.append(dict(zip(EDR_EXPORT_HEADERS, [
+            marker, row["code"], name, row["current_manager"] or row["edr_manager"] or row["latest_manager"],
+            status, "Активний" if int(row["active_count"] or 0) else "Неактивний", details,
+            admitted_date.strftime("%d.%m.%Y") if admitted_date else "",
+            effective_checked.strftime("%d.%m.%Y") if effective_checked else "",
+            date_match.group(1) if date_match else "", number_match.group(1) if number_match else "",
+            row["edr_officer"], row["edr_notes"], row["full_name"], row["short_name"],
+        ])))
+    return result
+
+
+def supplier_edr_export_csv(sheet_type: str) -> bytes:
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=EDR_EXPORT_HEADERS, delimiter=";", lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(build_supplier_edr_export_rows(sheet_type))
+    return ("\ufeff" + stream.getvalue()).encode("utf-8")
+
+
 def _supplier_edr_rows(sheet_name: str, gid: str) -> list[dict]:
     values = _google_sheet_values(sheet_name)
     if not values:
@@ -3067,6 +3344,9 @@ def _supplier_edr_rows(sheet_name: str, gid: str) -> list[dict]:
             "manager_name": clean.get("ПІБ для перевірки", ""),
             "edr_status": clean.get("Статус в реєстрі (ЄДР)", ""),
             "edr_checked_at": clean.get("Дата перевірки ЄДР", ""),
+            "termination_decision_details": clean.get("Реквізити рішення про припинення", ""),
+            "edr_officer": clean.get("УО", ""),
+            "edr_notes": clean.get("Примітки", ""),
             "source_sheet": sheet_name,
             "source_row": row_number,
         })
@@ -3099,16 +3379,21 @@ def supplier_edr_sync_worker() -> None:
                     existing.add(item["supplier_code"])
                 con.execute("""INSERT INTO supplier_edr_profiles
                   (supplier_code,full_name,short_name,manager_name,edr_status,edr_checked_at,
-                   source_sheet,source_row,synced_at) VALUES (?,?,?,?,?,?,?,?,?)
+                   termination_decision_details,edr_officer,edr_notes,
+                   source_sheet,source_row,synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                   ON CONFLICT(supplier_code) DO UPDATE SET
                     full_name=CASE WHEN excluded.full_name<>'' THEN excluded.full_name ELSE supplier_edr_profiles.full_name END,
                     short_name=CASE WHEN excluded.short_name<>'' THEN excluded.short_name ELSE supplier_edr_profiles.short_name END,
                     manager_name=CASE WHEN excluded.manager_name<>'' THEN excluded.manager_name ELSE supplier_edr_profiles.manager_name END,
                     edr_status=CASE WHEN excluded.edr_status<>'' THEN excluded.edr_status ELSE supplier_edr_profiles.edr_status END,
                     edr_checked_at=CASE WHEN excluded.edr_checked_at<>'' THEN excluded.edr_checked_at ELSE supplier_edr_profiles.edr_checked_at END,
+                    termination_decision_details=CASE WHEN excluded.termination_decision_details<>'' THEN excluded.termination_decision_details ELSE supplier_edr_profiles.termination_decision_details END,
+                    edr_officer=CASE WHEN excluded.edr_officer<>'' THEN excluded.edr_officer ELSE supplier_edr_profiles.edr_officer END,
+                    edr_notes=CASE WHEN excluded.edr_notes<>'' THEN excluded.edr_notes ELSE supplier_edr_profiles.edr_notes END,
                     source_sheet=excluded.source_sheet,source_row=excluded.source_row,synced_at=excluded.synced_at""",
                   (item["supplier_code"], item["full_name"], item["short_name"], item["manager_name"],
-                   item["edr_status"], item["edr_checked_at"], item["source_sheet"], item["source_row"], synced_at))
+                   item["edr_status"], item["edr_checked_at"], item["termination_decision_details"],
+                   item["edr_officer"], item["edr_notes"], item["source_sheet"], item["source_row"], synced_at))
                 effective_manager = con.execute("SELECT manager_name FROM supplier_edr_profiles WHERE supplier_code=?",
                                                 (item["supplier_code"],)).fetchone()[0]
                 manager_result = sync_current_supplier_manager(
@@ -3120,15 +3405,19 @@ def supplier_edr_sync_worker() -> None:
               WHERE id=?""", (synced_at, len(source_rows), inserted, updated, log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False,
             message=f"Синхронізовано {len(source_rows):,} записів ЄДР".replace(",", " "),
-            updated_at=synced_at, processed=len(source_rows), inserted=inserted, updated=updated, error=None)
+            updated_at=synced_at, processed=len(source_rows), inserted=inserted, updated=updated, error=None,
+            last_completed_at=synced_at, last_result="completed",
+            last_message=f"Синхронізовано {len(source_rows):,} записів ЄДР".replace(",", " "))
     except Exception as exc:
+        SERVER_LOG.exception("Supplier EDR synchronization failed")
         finished_at = now_iso()
         if log_id:
             with db() as con:
                 con.execute("UPDATE supplier_edr_sync_log SET finished_at=?,status='failed',error=? WHERE id=?",
                             (finished_at, str(exc), log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False, message=f"Помилка синхронізації ЄДР: {exc}",
-                                       updated_at=finished_at, error=str(exc))
+                                       updated_at=finished_at, error=str(exc), last_completed_at=finished_at,
+                                       last_result="failed", last_message=f"Помилка синхронізації ЄДР: {exc}")
 
 
 def supplier_nazk_review_sync_status() -> dict:
@@ -3192,15 +3481,19 @@ def supplier_nazk_review_sync_worker() -> None:
               processed=?,inserted=?,updated=? WHERE id=?""", (synced_at,len(source_rows),inserted,updated,log_id))
         SUPPLIER_NAZK_REVIEW_SYNC_STATE.update(running=False,
           message=f"Синхронізовано {len(source_rows)} перевірок НАЗК", updated_at=synced_at,
-          processed=len(source_rows), inserted=inserted, updated=updated, error=None)
+          processed=len(source_rows), inserted=inserted, updated=updated, error=None,
+          last_completed_at=synced_at, last_result="completed",
+          last_message=f"Синхронізовано {len(source_rows)} перевірок НАЗК")
     except Exception as exc:
+        SERVER_LOG.exception("Supplier NACP review synchronization failed")
         finished_at = now_iso()
         if log_id:
             with db() as con:
                 con.execute("UPDATE supplier_nazk_review_sync_log SET finished_at=?,status='failed',error=? WHERE id=?",
                             (finished_at,str(exc),log_id))
         SUPPLIER_NAZK_REVIEW_SYNC_STATE.update(running=False,message=f"Помилка синхронізації перевірок НАЗК: {exc}",
-                                               updated_at=finished_at,error=str(exc))
+                                               updated_at=finished_at,error=str(exc),last_completed_at=finished_at,
+                                               last_result="failed",last_message=f"Помилка синхронізації перевірок НАЗК: {exc}")
 
 
 def list_qualified_suppliers(params: dict) -> dict:
@@ -4037,12 +4330,14 @@ def sync_violation_reports_worker() -> None:
                 if detail:
                     save_violation_report_with_retry(detail)
             except Exception as exc:
+                SERVER_LOG.exception("Violation report synchronization failed report=%s", report_id)
                 VIOLATION_SYNC_STATE["errors"] += 1
                 VIOLATION_SYNC_STATE["last_error"] = f"{report_id}: {exc}"
             VIOLATION_SYNC_STATE.update(processed=index, message=f"Оновлено {index}/{len(pending)} звернень")
         error_note = f"; остання помилка: {VIOLATION_SYNC_STATE.get('last_error')}" if VIOLATION_SYNC_STATE["errors"] else ""
         VIOLATION_SYNC_STATE["message"] = f"Готово: у базі {len(feed)} звернень; оновлено {len(pending) - VIOLATION_SYNC_STATE['errors']}; помилок {VIOLATION_SYNC_STATE['errors']}{error_note}"
     except Exception as exc:
+        SERVER_LOG.exception("Violation report synchronization worker failed")
         VIOLATION_SYNC_STATE["message"] = f"Помилка синхронізації звернень: {exc}"
     finally:
         VIOLATION_SYNC_STATE.update(running=False, updated_at=now_iso())
@@ -4079,15 +4374,19 @@ def list_violation_reports(params: dict) -> dict:
     clause = " AND ".join(where)
     with db() as con:
         total = con.execute(f"SELECT COUNT(*) FROM violation_reports WHERE {clause}", args).fetchone()[0]
+        order_sql = "date_published ASC,report_id ASC" if status == "pending" else "date_published DESC,report_id DESC"
         rows = con.execute(f"""SELECT id,report_id,status,date_published,date_modified,tender_pretty_id,contract_pretty_id,
           author_name,author_code,defendant_name,defendant_code,authority_name,authority_code,reason,description,
           defendant_period_start,defendant_period_end,decision_resolution,decision_description,decision_date,
           evidence_documents_json,decision_documents_json,raw_json
-          FROM violation_reports WHERE {clause} ORDER BY date_published DESC,report_id DESC LIMIT ? OFFSET ?""",
+          FROM violation_reports WHERE {clause} ORDER BY {order_sql} LIMIT ? OFFSET ?""",
           (*args, size, (page - 1) * size)).fetchall()
         statuses = [row[0] for row in con.execute("SELECT DISTINCT status FROM violation_reports WHERE status<>'' ORDER BY status")]
         reasons = [row[0] for row in con.execute("SELECT DISTINCT reason FROM violation_reports WHERE reason<>'' ORDER BY reason")]
-        satisfied = con.execute(f"SELECT COUNT(*) FROM violation_reports WHERE {clause} AND status='satisfied'", args).fetchone()[0]
+        status_counts = {row[0]: row[1] for row in con.execute(
+            "SELECT status,COUNT(*) FROM violation_reports GROUP BY status")}
+        pending, satisfied, declined = (status_counts.get("pending", 0), status_counts.get("satisfied", 0),
+                                        status_counts.get("declined", 0))
         authorities = [dict(row) for row in con.execute(f"""SELECT authority_code,authority_name,COUNT(*) count
           FROM violation_reports WHERE {authority_clause} AND authority_code<>''
           GROUP BY authority_code,authority_name ORDER BY count DESC,authority_name""", authority_args).fetchall()]
@@ -4099,7 +4398,7 @@ def list_violation_reports(params: dict) -> dict:
         raw = json.loads(item.pop("raw_json") or "{}")
         item["defendant_statements"] = raw.get("defendantStatements") or []
         items.append(item)
-    return {"items": items, "total": total, "satisfied": satisfied, "page": page, "size": size,
+    return {"items": items, "total": total, "pending": pending, "satisfied": satisfied, "declined": declined, "page": page, "size": size,
             "pages": (total + size - 1) // size, "statuses": statuses, "reasons": reasons,
             "authorities": authorities,
             "sync": dict(VIOLATION_SYNC_STATE)}
@@ -4139,12 +4438,13 @@ def _calendar_deadline(start: datetime | None, days: int) -> dict:
     deadline = calendar_day
     while deadline.weekday() >= 5:
         deadline += timedelta(days=1)
-    return {
+    result = {
         "calendar_day": _iso_date(calendar_day),
         "weekday": calendar_day.strftime("%A"),
         "shifted": deadline.date() != calendar_day.date(),
         "deadline": _iso_date(deadline),
     }
+    return result
 
 
 def _within_calendar_deadline(moment: datetime | None, deadline_date: str | None) -> bool | None:
@@ -4632,7 +4932,43 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     item["deadline_control"] = violation_deadline_control(item)
     item["refresh_error"] = refresh_error
     item["procurement_context"] = None
-    if not item["is_read_only"]:
+    snapshot_event = next((event for event in events
+                           if event.get("event_type") == "decision_context_snapshotted"
+                           and event.get("field_name") == "decision_context_snapshot"), None)
+    try:
+        item["decision_context_snapshot"] = json.loads((snapshot_event or {}).get("new_value") or "null")
+    except (TypeError, ValueError):
+        item["decision_context_snapshot"] = None
+    item["read_only_reason"] = (
+        "official_decision" if item["has_official_decision"] else
+        "local_completion" if item["local_review_completed"] else
+        "foreign_authority" if item["foreign_authority_read_only"] else ""
+    )
+    # A completed LOCAL review keeps its immutable decision context even when a
+    # later Prozorro sync adds the authoritative decisions[] state.  The two
+    # states are presented separately; the official decision must not erase
+    # the officer's saved CPV/DK, recommendation or justification inputs.
+    if item["is_read_only"] and item["decision_context_snapshot"]:
+        snapshot = item["decision_context_snapshot"] or {}
+        item["procurement_context"] = snapshot.get("procurement_context")
+        item["recommendation"] = snapshot.get("recommendation")
+        item["decision_context_source"] = "completion_snapshot" if snapshot else "recalculated_fallback"
+        if not item["procurement_context"]:
+            try:
+                item["procurement_context"] = build_procurement_context(item, item["review"])
+            except Exception as exc:
+                item["procurement_context"] = {"available": False, "error": str(exc)}
+        if not item["recommendation"]:
+            recommendation_context = dict(item["procurement_context"] or {})
+            recommendation_context["supplier_deadline_ready"] = bool(item["deadline_control"].get("supplier_ready"))
+            recommendation_context["defendant_statements_present"] = bool(item["defendant_statements"])
+            item["recommendation"] = violation_rules_engine(item["reason"], recommendation_context, item["review"])
+        item["justification_draft"] = ""
+        item["justification_template_key"] = str(item["review"].get("decision_template_key") or "")
+        item["justification_generation_ready"] = False
+        item["justification_stale"] = False
+        item["protocol_readiness"] = {"ready": False, "reasons": ["Розгляд доступний лише для перегляду"]}
+    elif not item["is_read_only"]:
         try:
             item["procurement_context"] = build_procurement_context(item, item["review"])
         except Exception as exc:
@@ -4680,6 +5016,9 @@ def save_violation_document_review(report_id: str, source: str, document_id: str
         report = con.execute("SELECT * FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
         if not report:
             raise KeyError(report_id)
+        completed = con.execute("SELECT completed_at FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
+        if completed and completed["completed_at"]:
+            raise PermissionError("Локальний розгляд уже завершено. Зміни в режимі перегляду не зберігаються.")
         require_owned_violation_report(report)
         raw = json.loads(report["raw_json"] or "{}")
         if raw.get("decisions"):
@@ -4727,6 +5066,8 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
             raise KeyError(report_id)
         existing_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
         existing = dict(existing_row) if existing_row else {}
+        if existing.get("completed_at"):
+            raise PermissionError("Локальний розгляд уже завершено. Повторне відкриття або зміна завершеного review заборонені.")
         values = {key: payload[key] for key in VIOLATION_REVIEW_FIELDS if key in payload}
         if values.get("review_status", "") not in {"", "not_reviewed", "in_review", "reviewed"}:
             raise ValueError("Невідомий статус розгляду")
@@ -4855,31 +5196,117 @@ def merged_review_requires_discrepancy(report: dict, review: dict) -> bool:
     return bool(review.get("additional_check_required") or str(review.get("established_discrepancy") or "").strip())
 
 
-def complete_violation_review(report_id: str, completed_by: str) -> dict:
-    """Complete the internal review without changing any official Prozorro state."""
+def violation_decision_context_snapshot(item: dict, review: dict, captured_at: str) -> dict:
+    """Freeze the derived facts used for the completed local decision."""
+    context = item.get("procurement_context") or {}
+    recommendation = item.get("recommendation") or {}
+    return {
+        "version": 1,
+        "captured_at": captured_at,
+        "report_id": item.get("report_id") or item.get("id"),
+        "reason": item.get("reason"),
+        "prozorro_status_at_completion": item.get("status"),
+        "procurement_context": context,
+        "recommendation": recommendation,
+        "deadline_control": item.get("deadline_control") or {},
+        "justification_basis": _justification_basis(item, context, review),
+        "decision": {
+            "internal_decision": review.get("internal_decision"),
+            "decision_template_key": review.get("decision_template_key"),
+            "justification_source_hash": review.get("justification_source_hash"),
+        },
+    }
+
+
+def complete_violation_review(report_id: str, completed_by: str, payload: dict | None = None) -> dict:
+    """Atomically save the current form, snapshot derived facts and complete the review."""
     require_local_violation_report_owned(report_id)
     item = violation_report_detail(report_id, refresh=True)
     require_owned_violation_report(item)
     if item.get("has_official_decision"):
         raise PermissionError("У Prozorro вже є офіційне рішення адміністратора. Картка доступна лише для перегляду.")
-    review = item.get("review") or {}
     deadline = item.get("deadline_control") or {}
     if not deadline.get("supplier_ready"):
         raise ValueError("Завершення розгляду недоступне до завершення офіційного строку постачальника")
-    if not review.get("internal_decision"):
-        raise ValueError("Для завершення розгляду оберіть рішення УО")
-    if merged_review_requires_discrepancy(item, review) and not str(review.get("established_discrepancy") or "").strip():
-        raise ValueError("Для обраного сценарію зафіксуйте встановлену невідповідність")
     now = now_iso()
     with db() as con:
         report = con.execute("SELECT id FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
         if not report:
             raise KeyError(report_id)
-        current = con.execute("SELECT review_status,completed_at,completed_by FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
+        current = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
+        if not current:
+            raise ValueError("Робочу картку звернення не знайдено")
+        if current["completed_at"]:
+            return {"review_status": "reviewed", "completed_at": current["completed_at"],
+                    "completed_by": current["completed_by"], "already_completed": True}
+        baseline = dict(current)
+        values = {key: payload[key] for key in VIOLATION_REVIEW_FIELDS if payload and key in payload}
+        if values.get("review_status", "") not in {"", "not_reviewed", "in_review"}:
+            raise ValueError("Статус «Розглянуто» встановлюється лише дією «Завершити розгляд»")
+        if values.get("internal_decision", "") not in VIOLATION_INTERNAL_DECISIONS:
+            raise ValueError("Невідоме внутрішнє рішення УО")
+        for key in ("contract_deadline_extended", "additional_check_required"):
+            if key in values:
+                values[key] = int(bool(values[key]))
+        for key in ("court_decision_final_present", "guarantee_documents_visible"):
+            if key in values:
+                if values[key] in (None, ""):
+                    values[key] = None
+                elif isinstance(values[key], str):
+                    values[key] = int(values[key].strip().lower() in {"1", "true", "yes", "так"})
+                else:
+                    values[key] = int(bool(values[key]))
+        if "assigned_officer_id" in values:
+            officer_id = values["assigned_officer_id"]
+            officer = con.execute("SELECT id,full_name,active FROM authorized_officers WHERE id=?", (officer_id,)).fetchone() if officer_id else None
+            if officer_id and (not officer or not officer["active"]):
+                raise ValueError("Оберіть активну уповноважену особу")
+            values["assigned_officer_id"] = officer["id"] if officer else None
+            values["assigned_officer"] = officer["full_name"] if officer else baseline.get("assigned_officer", "")
+        if "decision_justification" in values and values["decision_justification"] != baseline.get("decision_justification", ""):
+            values["justification_manually_edited"] = 1
+        merged = {**baseline, **values, "review_status": "reviewed"}
+    if not merged.get("internal_decision"):
+        raise ValueError("Для завершення розгляду оберіть рішення УО")
+    if merged_review_requires_discrepancy(item, merged) and not str(merged.get("established_discrepancy") or "").strip():
+        raise ValueError("Для обраного сценарію зафіксуйте встановлену невідповідність")
+    try:
+        context = build_procurement_context(item, merged)
+    except Exception as exc:
+        raise ConnectionError(f"Не вдалося зафіксувати контекст рішення: {exc}") from exc
+    recommendation_context = dict(context)
+    recommendation_context["supplier_deadline_ready"] = bool(deadline.get("supplier_ready"))
+    recommendation_context["defendant_statements_present"] = bool(item.get("defendant_statements"))
+    item["procurement_context"] = context
+    item["recommendation"] = violation_rules_engine(item.get("reason", ""), recommendation_context, merged)
+    snapshot_json = json.dumps(violation_decision_context_snapshot(item, merged, now),
+                               ensure_ascii=False, sort_keys=True, default=str)
+    with db() as con:
+        report = con.execute("SELECT id FROM violation_reports WHERE id=? OR report_id=?", (report_id, report_id)).fetchone()
+        if not report:
+            raise KeyError(report_id)
+        current = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
         if not current:
             raise ValueError("Робочу картку звернення не знайдено")
         if current["completed_at"]:
             return {"review_status": "reviewed", "completed_at": current["completed_at"], "completed_by": current["completed_by"], "already_completed": True}
+        if current["updated_at"] != baseline.get("updated_at"):
+            raise RuntimeError("Review змінився під час завершення. Оновіть картку та повторіть дію.")
+        if values:
+            assignments = ",".join(f"{key}=?" for key in values)
+            con.execute(f"UPDATE violation_report_reviews SET {assignments} WHERE report_id=?",
+                        (*values.values(), report["id"]))
+            for key, value in values.items():
+                old = baseline.get(key)
+                if old != value:
+                    con.execute("""INSERT INTO violation_report_review_events
+                      (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
+                      VALUES (?,?,?,?,?,?,?)""", (report["id"], "review_updated", key,
+                      None if old is None else str(old), None if value is None else str(value), now, completed_by))
+        con.execute("""INSERT INTO violation_report_review_events
+          (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
+          VALUES (?,?,?,?,?,?,?)""", (report["id"], "decision_context_snapshotted",
+          "decision_context_snapshot", None, snapshot_json, now, completed_by))
         con.execute("""UPDATE violation_report_reviews SET review_status='reviewed',reviewed_at=?,
           completed_at=?,completed_by=?,updated_at=?,updated_by=? WHERE report_id=?""",
           (now, now, completed_by, now, completed_by, report["id"]))
@@ -5013,29 +5440,56 @@ def safe_archive_name(value: str, fallback: str) -> str:
 def application_documents(submission_id: str) -> tuple[str, list[tuple[str, dict]]] | None:
     with db() as con:
         row = con.execute("""SELECT s.supplier_name, s.documents_json,
-          q.documents_json qualification_documents,
+          q.documents_json qualification_documents,q.status qualification_status,
+          (SELECT rc.status FROM registry_contracts rc
+           WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
           (SELECT rc.milestones_json FROM registry_contracts rc
            WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones
-          FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id
+          FROM submissions s
+          LEFT JOIN (SELECT id,submission_id,ROW_NUMBER() OVER (PARTITION BY submission_id ORDER BY
+            CASE status WHEN 'active' THEN 3 WHEN 'unsuccessful' THEN 2 ELSE 1 END DESC,
+            COALESCE(NULLIF(decision_date,''),synced_at) DESC,id DESC) rn FROM qualifications
+            WHERE COALESCE(submission_id,'')<>'') final_q ON final_q.submission_id=s.id AND final_q.rn=1
+          LEFT JOIN qualifications q ON q.id=COALESCE(final_q.id,s.qualification_id)
           WHERE s.id=?""", (submission_id,)).fetchone()
     if not row:
         return None
-    grouped = [
-        ("01-заявка", json.loads(row["documents_json"] or "[]")),
-        ("02-кваліфікація", json.loads(row["qualification_documents"] or "[]")),
-        ("03-реєстр", registry_details(row["registry_milestones"], None)["registry_documents"]),
-    ]
-    documents, seen = [], set()
-    for folder, items in grouped:
-        for document in items:
-            key = document.get("url") or document.get("id")
-            if key and key not in seen:
-                seen.add(key)
-                documents.append((folder, document))
+    groups = grouped_application_documents(row["documents_json"], row["qualification_documents"],
+                                           row["registry_milestones"], row["qualification_status"],
+                                           row["registry_status"])
+    documents = [(folder, document) for key, folder in (("supplier", "01-документи-постачальника"),
+                 ("decision", "02-документи-розгляду"), ("registry", "03-документи-реєстру"))
+                 for document in groups[key]]
     return row["supplier_name"] or submission_id, documents
 
 
-def build_application_archive(submission_id: str, opener=urllib.request.urlopen):
+def _download_archive_document(document: dict, opener=urllib.request.urlopen, sleeper=time.sleep,
+                               max_attempts: int = 5, base_delay: float = 2.0) -> tuple[bytes, int]:
+    """Download one archive member, retrying only HTTP 429 for this document."""
+    request = urllib.request.Request(document["url"], headers={"User-Agent": "PQM/0.1"})
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with opener(request, timeout=60, context=ssl.create_default_context()) as response:
+                return response.read(), attempt
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or attempt >= max_attempts:
+                raise
+            retry_after = str((exc.headers or {}).get("Retry-After") or "").strip()
+            try:
+                server_delay = max(0.0, float(retry_after))
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    server_delay = max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+                except (TypeError, ValueError, OverflowError):
+                    server_delay = 0.0
+            sleeper(max(base_delay * (2 ** (attempt - 1)), server_delay))
+    raise RuntimeError("Не вдалося завантажити документ")
+
+
+def build_application_archive(submission_id: str, opener=urllib.request.urlopen, sleeper=time.sleep):
     collected = application_documents(submission_id)
     if not collected:
         return None
@@ -5054,13 +5508,18 @@ def build_application_archive(submission_id: str, opener=urllib.request.urlopen)
             used_names.add(entry_name.casefold())
             record = {"folder": folder, "title": document.get("title", ""), "url": document.get("url", ""), "file": entry_name}
             try:
-                request = urllib.request.Request(document["url"], headers={"User-Agent": "PQM/0.1"})
-                with opener(request, timeout=60, context=ssl.create_default_context()) as response:
-                    bundle.writestr(entry_name, response.read())
-                record["status"] = "downloaded"
+                content, attempts = _download_archive_document(document, opener=opener, sleeper=sleeper)
+                bundle.writestr(entry_name, content)
+                record.update(status="downloaded", attempts=attempts)
             except Exception as exc:
-                record.update(status="error", error=str(exc))
+                record.update(status="error", error=str(exc),
+                              attempts=5 if isinstance(exc, urllib.error.HTTPError) and exc.code == 429 else 1)
             manifest.append(record)
+        failed = [record for record in manifest if record["status"] == "error"]
+        if failed:
+            bundle.writestr("ПОМИЛКИ_ЗАВАНТАЖЕННЯ.txt", "\n".join(
+                f"- {record['title'] or record['file']}: {record['error']}" for record in failed
+            ))
         bundle.writestr("manifest.json", json.dumps({
             "submission_id": submission_id,
             "supplier_name": supplier_name,
@@ -5070,7 +5529,7 @@ def build_application_archive(submission_id: str, opener=urllib.request.urlopen)
     archive.seek(0, os.SEEK_END)
     size = archive.tell()
     archive.seek(0)
-    return archive, size
+    return archive, size, failed
 
 
 def normalized_value(value: str) -> str:
@@ -5681,9 +6140,122 @@ def analyze_mvs_extract(text: str, manager_name: str, submitted_at: str) -> dict
     }
 
 
+def _contract_experience_http_json(url: str, payload: dict | None = None) -> dict:
+    global CONTRACT_EXPERIENCE_LAST_REQUEST
+    wait = CONTRACT_EXPERIENCE_REQUEST_INTERVAL - (time.monotonic() - CONTRACT_EXPERIENCE_LAST_REQUEST)
+    if wait > 0:
+        time.sleep(wait)
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    headers = {"User-Agent": "PQM/0.1", "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    finally:
+        CONTRACT_EXPERIENCE_LAST_REQUEST = time.monotonic()
+    if not isinstance(result, dict):
+        raise ValueError("Prozorro повернув некоректну відповідь пошуку договорів")
+    return result
+
+
+def _contract_experience_cutoff(value: str):
+    moment = _document_date(value)
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def search_supplier_contract_experience(supplier_code: str, cpv_code: str, submitted_at: str) -> dict:
+    """Return neutral contract candidates; dateModified is only a technical cutoff proxy."""
+    supplier = _digits(supplier_code)
+    cpv_match = re.search(r"\b(\d{8}-\d)\b", str(cpv_code or ""))
+    cutoff = _contract_experience_cutoff(submitted_at)
+    if not supplier or not cpv_match or cutoff is None:
+        return {"status": "unavailable", "symbol": "−", "candidates": [],
+                "message": "Недостатньо даних для допоміжного пошуку договорів"}
+    cpv = cpv_match.group(1)
+    cache_key = (str(CONTRACT_EXPERIENCE_ALGORITHM_VERSION), supplier, cpv, cutoff.isoformat())
+    now = time.monotonic()
+    cached = CONTRACT_EXPERIENCE_CACHE.get(cache_key)
+    if cached and now - float(cached.get("cached_at", 0)) < CONTRACT_EXPERIENCE_CACHE_TTL:
+        return dict(cached["value"])
+    with CONTRACT_EXPERIENCE_LOCK:
+        cached = CONTRACT_EXPERIENCE_CACHE.get(cache_key)
+        now = time.monotonic()
+        if cached and now - float(cached.get("cached_at", 0)) < CONTRACT_EXPERIENCE_CACHE_TTL:
+            return dict(cached["value"])
+        candidates = []
+        inspected_ids = set()
+        try:
+            for page in range(1, 4):
+                search = _contract_experience_http_json(
+                    "https://prozorro.gov.ua/api/search/contracts",
+                    {"supplier": [supplier], "cpv": [cpv], "page": page},
+                )
+                rows = search.get("data") if isinstance(search.get("data"), list) else []
+                for summary in rows:
+                    if not isinstance(summary, dict) or summary.get("status") != "terminated":
+                        continue
+                    public_id = str(summary.get("contractID") or "").strip()
+                    if not public_id or public_id in inspected_ids:
+                        continue
+                    inspected_ids.add(public_id)
+                    detail_response = _contract_experience_http_json(
+                        f"https://prozorro.gov.ua/api/contracts/{urllib.parse.quote(public_id, safe='')}"
+                    )
+                    detail = detail_response.get("data") if isinstance(detail_response.get("data"), dict) else detail_response
+                    if not isinstance(detail, dict) or detail.get("status") != "terminated":
+                        continue
+                    termination_details = detail.get("terminationDetails")
+                    if ((isinstance(termination_details, str) and termination_details.strip())
+                            or (not isinstance(termination_details, str)
+                                and termination_details not in (None, [], {}))):
+                        continue
+                    modified = _contract_experience_cutoff(detail.get("dateModified"))
+                    if modified is None or modified > cutoff:
+                        continue
+                    contract_id = str(detail.get("id") or "")
+                    public_id = str(detail.get("contractID") or public_id)
+                    candidates.append({
+                        "id": contract_id,
+                        "contract_id": public_id,
+                        "url": f"https://prozorro.gov.ua/uk/contract/{urllib.parse.quote(public_id)}",
+                        "date_modified": str(detail.get("dateModified") or ""),
+                        "date_signed": str(detail.get("dateSigned") or summary.get("dateSigned") or ""),
+                        "buyer": str((detail.get("buyer") or summary.get("buyer") or {}).get("name") or ""),
+                    })
+                    if len(candidates) == 3:
+                        break
+                if len(candidates) == 3 or not rows or page * int(search.get("per_page") or 20) >= int(search.get("total") or 0):
+                    break
+            result = {
+                "status": "found" if candidates else "none",
+                "symbol": "+" if candidates else "−",
+                "candidates": candidates,
+                "message": (f"Знайдено договорів-кандидатів: {len(candidates)}" if candidates
+                            else "Договорів-кандидатів за кодом постачальника та CPV не знайдено"),
+                "cpv": cpv,
+                "cutoff": cutoff.isoformat(),
+                "cutoff_note": "dateModified використано лише як технічний proxy cutoff",
+                "algorithm_version": CONTRACT_EXPERIENCE_ALGORITHM_VERSION,
+            }
+        except Exception:
+            SERVER_LOG.warning("Contract experience search unavailable supplier=%s cpv=%s", supplier, cpv)
+            result = {"status": "unavailable", "symbol": "−", "candidates": [],
+                      "message": "Пошук договорів Prozorro тимчасово недоступний",
+                      "cpv": cpv, "cutoff": cutoff.isoformat(),
+                      "cutoff_note": "Нейтральний стан; автоматичний висновок не формується"}
+        CONTRACT_EXPERIENCE_CACHE[cache_key] = {"cached_at": time.monotonic(), "value": result}
+        return dict(result)
+
+
 def analyze_application_documents(submission_id: str, selection: dict | None = None) -> dict | None:
     with db() as con:
-        row = con.execute("""SELECT s.supplier_name,s.supplier_code,s.date_published,f.pretty_id,
+        row = con.execute("""SELECT s.supplier_name,s.supplier_code,s.date_published,f.pretty_id,COALESCE(f.dk_code,'') dk_code,
           COALESCE(af.manager_name,'') manager_name,COALESCE(af.contract_details,'') contract_details,COALESCE(af.authority_review,'') authority_review,
           COALESCE(af.mvs_seal_review,'') mvs_seal_review
           FROM submissions s JOIN frameworks f ON f.id=s.framework_id
@@ -5693,15 +6265,17 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         return None
     _, documents = collected
     selection = selection or {}
-    main_signature_index, signature_selection_source = select_main_signature_document(documents, selection)
     selected_indexes = {int(index) for index in selection if str(index).isdigit()}
     selected_categories = {category for categories in selection.values() for category in categories}
+    main_signature_index, signature_selection_source = (None, "none")
+    if "signature" in selected_categories:
+        main_signature_index, signature_selection_source = select_main_signature_document(documents, selection)
     included_indexes = set(selected_indexes)
     if main_signature_index is not None:
         included_indexes.add(main_signature_index)
     files, downloaded, extracted_texts = [], {}, {}
     for index, (_, document) in enumerate(documents):
-        if included_indexes and index not in included_indexes:
+        if index not in included_indexes:
             continue
         title = document.get("title") or document.get("title_en") or f"Документ {index + 1}"
         item = {
@@ -5787,52 +6361,43 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         "signer_comparison": signer_comparison,
         "qualified_certificate": None,
     }
-    mvs_docs = [item for item in files if not is_signature(item) and any(word in (item["title"] + " " + item.get("source_title", "") + " " + item.get("text_preview", "")).casefold() for word in ("мвс", "несудим", "витяг"))]
-    def signature_base(title):
-        clean = re.sub(r"\.(p7s|pk7)$", "", title, flags=re.I)
-        return normalized_value(re.sub(r"(?:файл\s*підпису|підпис|sign)", "", clean, flags=re.I))
-    mvs_pairs = []
-    for document in mvs_docs:
-        base = normalized_value(re.sub(r"\.pdf$", "", document["title"], flags=re.I))
-        related = []
-        for i in signature_indexes:
-            signature_name = signature_base(file_by_index[i]["title"])
-            if base and signature_name and (base in signature_name or signature_name in base):
-                related.append(file_by_index[i])
-        method = "name" if related else ""
-        if not related:
-            adjacent = next((file_by_index[i] for i in signature_indexes if i == document["index"] + 1 and any(word in (file_by_index[i]["title"] + " " + file_by_index[i].get("source_title", "")).casefold() for word in ("підпис", "sign", ".p7s"))), None)
-            if adjacent:
-                related = [adjacent]
-                method = "adjacent"
-        if not related:
-            # Generic filenames cannot be associated by name. The MVS seal is
-            # identified reliably by the organisation code in its certificate.
-            certified_mvs = next((file_by_index[i] for i in signature_indexes
-                                  if certificate_details(downloaded.get(i, b"")).get("code") == "00032684"), None)
-            if certified_mvs:
-                related = [certified_mvs]
-                method = "mvs_certificate"
-        mvs_pairs.append({"document": document["title"], "signature": related[0]["title"] if related else "", "signature_index": related[0]["index"] if related else None, "association": method})
-    mvs_signature_index = next((pair["signature_index"] for pair in mvs_pairs if pair["signature_index"] is not None), None)
+    mvs_doc_indexes = [int(index) for index, categories in selection.items()
+                       if str(index).isdigit() and "mvs" in (categories if isinstance(categories, list) else [])]
+    mvs_signature_indexes = [int(index) for index, categories in selection.items()
+                             if str(index).isdigit() and "mvs_signature" in (categories if isinstance(categories, list) else [])]
+    if len(mvs_signature_indexes) > 1:
+        raise ValueError("Залиште позначку «Печатка МВС» лише біля одного документа.")
+    mvs_docs = [file_by_index[index] for index in mvs_doc_indexes if index in file_by_index and not is_signature(file_by_index[index])]
+    mvs_signature_index = mvs_signature_indexes[0] if mvs_signature_indexes and mvs_signature_indexes[0] in file_by_index else None
+    mvs_pairs = [{"document": document["title"],
+                  "signature": file_by_index[mvs_signature_index]["title"] if mvs_signature_index is not None else "",
+                  "signature_index": mvs_signature_index, "association": "manual" if mvs_signature_index is not None else ""}
+                 for document in mvs_docs]
     primary_mvs_doc = mvs_docs[0] if mvs_docs else None
     mvs_extract = analyze_mvs_extract(
         extracted_texts.get(primary_mvs_doc["index"], "") if primary_mvs_doc else "",
         manager_name,
         row["date_published"] or "",
     )
-    mvs_seal = certificate_details(downloaded.get(mvs_signature_index, b"")) if mvs_signature_index is not None else {}
-    mvs_code_ok = mvs_seal.get("code") == "00032684"
-    mvs_org_ok = "міністерствовнутрішніхсправукраїни" in normalized_value(mvs_seal.get("organization", "") or mvs_seal.get("common_name", ""))
-    if mvs_seal.get("certificate_found"):
+    mvs_eds = verify_prozorro_eds(file_by_index[mvs_signature_index].get("url", "")) if mvs_signature_index is not None else {}
+    mvs_signers = mvs_eds.get("signers") if isinstance(mvs_eds.get("signers"), list) else []
+    mvs_signer = mvs_signers[0] if mvs_signers and isinstance(mvs_signers[0], dict) else {}
+    mvs_code = _digits(mvs_signer.get("subjectEDRPOUCode", ""))
+    mvs_org = str(mvs_signer.get("subjectOrg") or mvs_signer.get("subjectCN") or "")
+    mvs_verified = mvs_eds.get("status") == "success"
+    mvs_code_ok = mvs_code == "00032684"
+    mvs_org_ok = "міністерствовнутрішніхсправукраїни" in normalized_value(mvs_org)
+    mvs_seal = {"technical_status": mvs_eds.get("status", "not_checked"), "code": mvs_code,
+                "organization": mvs_org, "error": mvs_eds.get("error", "")}
+    if mvs_verified:
         mvs_seal_status = "ok" if mvs_code_ok and mvs_org_ok else "error"
-        mvs_seal_detail = f"{mvs_seal.get('organization') or mvs_seal.get('common_name') or 'Організацію не прочитано'} · {mvs_seal.get('code') or 'код не прочитано'}"
+        mvs_seal_detail = f"{mvs_org or 'Організацію не прочитано'} · {mvs_code or 'код не прочитано'}"
     elif row["mvs_seal_review"] == "approved":
-        mvs_seal_status, mvs_seal_detail = "ok", "Електронну печатку МВС підтверджено вручну через ЦЗО"
+        mvs_seal_status, mvs_seal_detail = "warning", "Печатку підтверджено вручну; автоматичну перевірку підпису не завершено"
     elif row["mvs_seal_review"] == "rejected":
         mvs_seal_status, mvs_seal_detail = "error", "Електронна печатка не належить МВС або не підтверджена"
     else:
-        mvs_seal_status, mvs_seal_detail = "warning", "Перевірте через ЦЗО: МВС України · ЄДРПОУ 00032684 · електронна печатка"
+        mvs_seal_status, mvs_seal_detail = "warning", (mvs_eds.get("error") or "Печатку МВС не перевірено")
     authority_required = bool(signature.get("signer")) and (not manager_name or not signer_match)
     is_fop = len(supplier_digits) == 10 or normalized_value(supplier_name).startswith("фоп")
     eds_success = signature.get("technical_status") == "success"
@@ -5849,7 +6414,7 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         "⚠ ПІБ підписанта не прочитано"
     )
     checks = [
-        {"key": "main_signature", "label": "Основний файл sign.p7s", "status": "ok" if main_signature_index is not None else "error", "detail": file_by_index[main_signature_index]["title"] if main_signature_index is not None else "Не знайдено"},
+        {"key": "main_signature", "label": "Основний файл sign.p7s", "status": "ok" if main_signature_index is not None else "warning", "detail": file_by_index[main_signature_index]["title"] if main_signature_index is not None else "Не вибрано"},
         {"key": "eds_verification", "label": "Автоматичне читання КЕП", "status": "ok" if eds_success else "warning", "detail": eds_technical_detail},
         {"key": "certificate_issuer", "label": "Видавець сертифіката", "status": "ok" if signature.get("issuer") else "warning", "detail": signature.get("issuer") or "Не прочитано"},
         {"key": "code", "label": "Код ЄДРПОУ / РНОКПП", "status": "ok" if code_match else "warning", "detail": code_detail},
@@ -5858,7 +6423,7 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         {"key": "signer_drfo", "label": "РНОКПП підписанта", "status": "ok" if drfo_code else "warning", "detail": drfo_code or "Не прочитано"},
         {"key": "signing_time", "label": "Дата/час підписання", "status": "ok" if signature.get("signing_time") else "warning", "detail": signature.get("signing_time") or "Не прочитано"},
         {"key": "authority", "label": "Повноваження підписанта", "status": "warning" if not signature.get("signer") or (authority_required and row["authority_review"] != "approved") else "ok", "detail": "Спочатку визначте підписанта через перевірку КЕП" if not signature.get("signer") else "Потрібна ручна перевірка" if authority_required and row["authority_review"] != "approved" else "Підтверджено"},
-        {"key": "mvs_extract", "label": "Витяг МВС", "status": "ok" if mvs_docs else "error", "detail": ", ".join(item["title"] for item in mvs_docs) or "Не знайдено"},
+        {"key": "mvs_extract", "label": "Витяг МВС", "status": "ok" if mvs_docs else "warning", "detail": ", ".join(item["title"] for item in mvs_docs) or "Не вибрано"},
         {"key": "mvs_extract_type", "label": "Тип витягу МВС", "status": "ok" if mvs_extract["type"] == "full" else "error" if mvs_extract["type"] == "short" else "warning", "detail": "ПОВНИЙ" if mvs_extract["type"] == "full" else "СКОРОЧЕНИЙ — не відповідає вимозі" if mvs_extract["type"] == "short" else "Не вдалося визначити тип витягу"},
         {"key": "mvs_person", "label": "ПІБ у витягу МВС", "status": "ok" if mvs_extract["person_matches_manager"] else "error" if mvs_extract["person_name"] and manager_name else "warning", "detail": f"{mvs_extract['person_name'] or 'Не прочитано'} · керівник: {manager_name or 'не визначений'}"},
         {"key": "mvs_age", "label": "Строк дії витягу — 30 к.д.", "status": "ok" if mvs_extract["within_30_days"] else "error" if mvs_extract["age_days"] is not None else "warning", "detail": (f"{mvs_extract['age_days']} к.д. · {mvs_extract['issue_date']} → {mvs_extract['submitted_date']}" if mvs_extract["age_days"] is not None else "Не вдалося визначити дату витягу або подання документів")},
@@ -5876,18 +6441,20 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
             "status": "ok" if statement["absent"] else "error" if statement["found"] else "warning",
             "detail": statement["value"] if statement["found"] else "Не вдалося прочитати відповідний рядок у витягу",
         })
-    checks.extend(analyze_business_document_set(files, extracted_texts, supplier_code))
-    checks.extend(compare_manual_contract_history(submission_id, supplier_code, row["contract_details"]))
+    # Experience is refreshed separately after submission sync. This manual
+    # workflow remains strictly KEP/MVS-only.
     if selected_categories:
         def selected_check(item):
             key = item["key"]
-            if key.startswith("business_") or key == "contract_history":
+            if key == "contract_experience":
                 return "experience" in selected_categories
             if key.startswith("mvs_"):
                 return bool({"mvs", "mvs_signature"} & selected_categories)
             return "signature" in selected_categories
         checks = [item for item in checks if selected_check(item)]
-    counts = {status: sum(item["status"] == status for item in checks) for status in ("ok", "warning", "error")}
+    else:
+        checks = []
+    counts = {status: sum(item["status"] == status for item in checks) for status in ("ok", "warning", "error", "neutral")}
     checked_signature_document = None
     if selected_signature_document:
         checked_signature_document = {
@@ -5913,26 +6480,90 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
 
 
 def document_check_category(key: str) -> str:
-    if key.startswith("business_") or key == "contract_history":
+    if key == "contract_experience" or key.startswith("business_") or key == "contract_history":
         return "experience"
     if key.startswith("mvs_"):
         return "mvs"
     return "signature"
 
 
+def document_check_status(checks: list[dict]) -> tuple[dict, str]:
+    counts = {status: sum(item.get("status") == status for item in checks)
+              for status in ("ok", "warning", "error", "neutral")}
+    status = ("error" if counts["error"] else "warning" if counts["warning"] else
+              "ok" if counts["ok"] else "neutral")
+    return counts, status
+
+
 def document_check_category_summaries(result: dict) -> dict:
     stored = result.get("category_results") if isinstance(result, dict) else None
     if isinstance(stored, dict):
-        return {key: value.get("status", "warning") for key, value in stored.items() if isinstance(value, dict)}
+        summaries = {key: value.get("status", "warning") for key, value in stored.items()
+                     if isinstance(value, dict) and (key != "experience" or any(
+                         isinstance(item, dict) and item.get("key") == "contract_experience"
+                         for item in value.get("checks", [])))}
+        experience = stored.get("experience")
+        if isinstance(experience, dict):
+            contract_check = next((item for item in experience.get("checks", [])
+                                   if isinstance(item, dict) and item.get("key") == "contract_experience"), None)
+            if contract_check is not None:
+                # Green means only that at least one candidate was found; every
+                # other search outcome stays neutral and is not a verdict.
+                summaries["experience"] = "ok" if contract_check.get("search_status") == "found" else "neutral"
+        return summaries
     summaries = {}
     for check in result.get("checks", []) if isinstance(result, dict) else []:
         if not isinstance(check, dict):
             continue
         category = document_check_category(str(check.get("key") or ""))
-        current = summaries.get(category, "ok")
+        if category == "experience" and check.get("key") == "contract_experience":
+            summaries[category] = "ok" if check.get("search_status") == "found" else "neutral"
+            continue
+        current = summaries.get(category, "neutral")
         status = check.get("status", "warning")
-        summaries[category] = "error" if "error" in {current, status} else "warning" if "warning" in {current, status} else "ok"
+        summaries[category] = ("error" if "error" in {current, status} else
+                               "warning" if "warning" in {current, status} else
+                               "ok" if "ok" in {current, status} else "neutral")
     return summaries
+
+
+def current_document_check_result(result: dict) -> dict:
+    """Hide legacy document-based experience verdicts without rewriting stored history."""
+    if not isinstance(result, dict):
+        return {}
+    # Work on an isolated presentation copy: old cached candidates may contain
+    # an internal UUID URL even though their public contractID is correct.
+    visible = json.loads(json.dumps(result, ensure_ascii=False))
+    def normalize_contract_rows(rows):
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            contract_id = str(row.get("contract_id") or "").strip()
+            if contract_id:
+                row["url"] = f"https://prozorro.gov.ua/uk/contract/{urllib.parse.quote(contract_id)}"
+    for check in visible.get("checks", []):
+        if isinstance(check, dict) and check.get("key") == "contract_experience":
+            normalize_contract_rows(check.get("rows"))
+    experience = (visible.get("category_results") or {}).get("experience")
+    if isinstance(experience, dict):
+        for check in experience.get("checks", []):
+            if isinstance(check, dict) and check.get("key") == "contract_experience":
+                normalize_contract_rows(check.get("rows"))
+    normalize_contract_rows((visible.get("contract_experience") or {}).get("candidates"))
+    checks = [item for item in visible.get("checks", []) if isinstance(item, dict)
+              and not (str(item.get("key") or "").startswith("business_")
+                       or item.get("key") == "contract_history")]
+    visible["checks"] = checks
+    categories = dict(visible.get("category_results") or {})
+    experience = categories.get("experience")
+    if isinstance(experience, dict) and not any(
+            isinstance(item, dict) and item.get("key") == "contract_experience"
+            for item in experience.get("checks", [])):
+        categories.pop("experience", None)
+    visible["category_results"] = categories
+    visible["counts"], _ = document_check_status(checks)
+    visible["ready"] = not visible["counts"]["error"] and not visible["counts"]["warning"]
+    return visible
 
 
 def merge_document_check_results(existing: dict, current: dict) -> dict:
@@ -5945,17 +6576,20 @@ def merge_document_check_results(existing: dict, current: dict) -> dict:
         for category in ("signature", "mvs", "experience"):
             checks = [item for item in existing_checks if isinstance(item, dict) and document_check_category(str(item.get("key") or "")) == category]
             if checks:
-                counts = {status: sum(item.get("status") == status for item in checks) for status in ("ok", "warning", "error")}
-                category_results[category] = {"checks": checks, "counts": counts, "status": "error" if counts["error"] else "warning" if counts["warning"] else "ok"}
+                counts, status = document_check_status(checks)
+                category_results[category] = {"checks": checks, "counts": counts, "status": status}
     selected = set(current.get("selected_categories") or [])
     if not selected:
         selected = {document_check_category(str(item.get("key") or "")) for item in current.get("checks", []) if isinstance(item, dict)}
     for category in selected:
         checks = [item for item in current.get("checks", []) if isinstance(item, dict) and document_check_category(str(item.get("key") or "")) == category]
-        counts = {status: sum(item.get("status") == status for item in checks) for status in ("ok", "warning", "error")}
-        category_results[category] = {"checks": checks, "counts": counts, "status": "error" if counts["error"] else "warning" if counts["warning"] else "ok", "checked_at": now_iso()}
+        counts, status = document_check_status(checks)
+        if category == "experience":
+            contract_check = next((item for item in checks if item.get("key") == "contract_experience"), None)
+            status = "ok" if contract_check and contract_check.get("search_status") == "found" else "neutral"
+        category_results[category] = {"checks": checks, "counts": counts, "status": status, "checked_at": now_iso()}
     combined_checks = [item for category in ("signature", "mvs", "experience") for item in category_results.get(category, {}).get("checks", [])]
-    combined_counts = {status: sum(item.get("status") == status for item in combined_checks) for status in ("ok", "warning", "error")}
+    combined_counts, _ = document_check_status(combined_checks)
     existing = existing or {}
     merged = dict(existing)
     merged.update(current)
@@ -5977,21 +6611,34 @@ def merge_document_check_results(existing: dict, current: dict) -> dict:
     return merged
 
 
-def document_check_worker(job_id: str, submission_id: str, selection: dict | None = None) -> None:
-    try:
-        result = analyze_application_documents(submission_id, selection)
-        if not result:
-            raise ValueError("Заявку не знайдено")
+def _stored_experience_is_fresh(existing: dict) -> bool:
+    experience = (existing.get("category_results") or {}).get("experience") if isinstance(existing, dict) else None
+    if not isinstance(experience, dict):
+        return False
+    checks = experience.get("checks") if isinstance(experience.get("checks"), list) else []
+    contract_check = next((item for item in checks if isinstance(item, dict)
+                           and item.get("key") == "contract_experience"), {})
+    if int(contract_check.get("algorithm_version") or 0) < CONTRACT_EXPERIENCE_ALGORITHM_VERSION:
+        return False
+    checked_at = _contract_experience_cutoff(experience.get("checked_at"))
+    return bool(checked_at and (datetime.now(timezone.utc) - checked_at).total_seconds() < CONTRACT_EXPERIENCE_CACHE_TTL)
+
+
+def _store_document_check_result(submission_id: str, current: dict, updated_by: str) -> dict:
+    """Merge one category without losing a concurrent KEP/MVS result."""
+    with DOCUMENT_CHECK_LOCK:
         with db() as con:
             stored = con.execute("SELECT document_check_result_json FROM application_fields WHERE submission_id=?", (submission_id,)).fetchone()
             try:
                 existing = json.loads(stored[0] or "{}") if stored else {}
             except (TypeError, ValueError):
                 existing = {}
-            result = merge_document_check_results(existing, result)
+            result = merge_document_check_results(existing, current)
             counts = result.get("counts") or {}
-            check_status = "error" if counts.get("error") else "warning" if counts.get("warning") else "ok"
-            summary = f"Перевірено: {counts.get('ok', 0)}; попереджень: {counts.get('warning', 0)}; помилок: {counts.get('error', 0)}"
+            check_status = ("error" if counts.get("error") else "warning" if counts.get("warning") else
+                            "ok" if counts.get("ok") else "neutral")
+            summary = (f"Перевірено: {counts.get('ok', 0)}; попереджень: {counts.get('warning', 0)}; "
+                       f"помилок: {counts.get('error', 0)}; довідково: {counts.get('neutral', 0)}")
             con.execute("""INSERT INTO application_fields
               (submission_id,document_check_status,document_check_summary,document_checked_at,document_check_result_json,updated_at,updated_by)
               VALUES (?,?,?,?,?,?,?) ON CONFLICT(submission_id) DO UPDATE SET
@@ -6000,9 +6647,68 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
               document_checked_at=excluded.document_checked_at,
               document_check_result_json=excluded.document_check_result_json,
               updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
-              (submission_id, check_status, summary, now_iso(), json.dumps(result, ensure_ascii=False), now_iso(), "PQM auto-check"))
+              (submission_id, check_status, summary, now_iso(), json.dumps(result, ensure_ascii=False), now_iso(), updated_by))
+    return result
+
+
+def contract_experience_worker(submission_ids: list[str]) -> None:
+    try:
+        for submission_id in submission_ids:
+            try:
+                with db() as con:
+                    row = con.execute("""SELECT s.supplier_name,s.supplier_code,s.date_published,
+                      COALESCE(f.dk_code,'') dk_code,COALESCE(f.pretty_id,'') pretty_id,
+                      COALESCE(af.document_check_result_json,'') stored_result
+                      FROM submissions s JOIN frameworks f ON f.id=s.framework_id
+                      LEFT JOIN application_fields af ON af.submission_id=s.id WHERE s.id=?""",
+                      (submission_id,)).fetchone()
+                if not row:
+                    continue
+                try:
+                    existing = json.loads(row["stored_result"] or "{}")
+                except (TypeError, ValueError):
+                    existing = {}
+                if _stored_experience_is_fresh(existing):
+                    continue
+                search = search_supplier_contract_experience(row["supplier_code"], row["dk_code"], row["date_published"] or "")
+                check = {"key": "contract_experience", "label": "Договори постачальника в Prozorro",
+                         "status": "neutral", "detail": f"{search['symbol']} · {search['message']}",
+                         "rows": search.get("candidates") or [], "search_status": search.get("status"),
+                         "cutoff_note": search.get("cutoff_note", ""),
+                         "algorithm_version": CONTRACT_EXPERIENCE_ALGORITHM_VERSION}
+                current = {"submission_id": submission_id, "supplier_name": row["supplier_name"],
+                           "supplier_code": row["supplier_code"], "pretty_id": row["pretty_id"],
+                           "checks": [check], "selected_categories": ["experience"],
+                           "contract_experience": search,
+                           "counts": {"ok": 0, "warning": 0, "error": 0, "neutral": 1},
+                           "ready": True, "notice": ""}
+                _store_document_check_result(submission_id, current, "PQM background contract search")
+            except Exception:
+                SERVER_LOG.exception("Background contract experience failed submission=%s", submission_id)
+    finally:
+        with CONTRACT_EXPERIENCE_PENDING_LOCK:
+            CONTRACT_EXPERIENCE_PENDING.difference_update(submission_ids)
+
+
+def enqueue_contract_experience_search(submission_ids) -> int:
+    unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
+    with CONTRACT_EXPERIENCE_PENDING_LOCK:
+        queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
+        CONTRACT_EXPERIENCE_PENDING.update(queued)
+    if queued:
+        CONTRACT_EXPERIENCE_EXECUTOR.submit(contract_experience_worker, queued)
+    return len(queued)
+
+
+def document_check_worker(job_id: str, submission_id: str, selection: dict | None = None) -> None:
+    try:
+        result = analyze_application_documents(submission_id, selection)
+        if not result:
+            raise ValueError("Заявку не знайдено")
+        result = _store_document_check_result(submission_id, result, "PQM manual document check")
         update = {"status": "complete", "result": result}
     except Exception as exc:
+        SERVER_LOG.exception("Document check worker failed submission=%s", submission_id)
         update = {"status": "error", "error": f"Не вдалося перевірити документи: {exc}"}
     with DOCUMENT_CHECK_LOCK:
         if job_id in DOCUMENT_CHECK_JOBS:
@@ -6076,6 +6782,9 @@ class Handler(BaseHTTPRequestHandler):
         self.auth_role = "admin" if not AUTH_ENABLED else "viewer"
         self.auth_officer_id = None
         if not AUTH_ENABLED:
+            if IS_WEB_ENV:
+                self.send_json({"error": "WEB authentication must be enabled"}, 503)
+                return False
             requested = str(self.headers.get("X-PQM-Local-Role") or "").strip().casefold()
             client_host = str((self.client_address or ("",))[0])
             if (LOCAL_ROLE_IMPERSONATION and client_host in {"127.0.0.1", "::1", "localhost"}
@@ -6097,7 +6806,7 @@ class Handler(BaseHTTPRequestHandler):
         token = cookie.get(AUTH_COOKIE, "")
         with AUTH_SESSIONS_LOCK:
             session = AUTH_SESSIONS.get(token)
-            if session and session["expires_at"] > time.time():
+            if session and session["expires_at"] > time.time() and session["username"] in accounts and accounts[session["username"]].get("active", True):
                 seen_now = time.time(); session["last_seen"] = seen_now
                 if seen_now - float(session.get("last_seen_persisted") or 0) >= 60:
                     session["last_seen_persisted"] = seen_now
@@ -6107,8 +6816,8 @@ class Handler(BaseHTTPRequestHandler):
                                         (datetime.fromtimestamp(seen_now, timezone.utc).isoformat(), session["username"]))
                     except sqlite3.OperationalError:
                         pass
-                self.auth_user = session["username"]; self.auth_role = session["role"]
-                self.auth_officer_id = session.get("officer_id"); return True
+                self.auth_user = session["username"]; self.auth_role = accounts[self.auth_user]["role"]
+                self.auth_officer_id = accounts[self.auth_user].get("officer_id"); return True
             if token:
                 AUTH_SESSIONS.pop(token, None)
         header = self.headers.get("Authorization", "")
@@ -6145,19 +6854,25 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         with db() as con:
             self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
-        permission = auth_access.permission_key(http_method, path)
-        if (not self.auth_access["active"]
-                or (permission and not self.auth_access["permissions"].get(permission, False))):
-            return self.send_json({"error": "Недостатньо прав для цієї дії", "status": 403}, 403)
+        permission = auth_access.permission_key(self.command, path)
+        if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False)):
+            length = int(self.headers.get('Content-Length', '0'))
+            if 0 < length <= 1024 * 1024:
+                self.rfile.read(length)
+            return self.send_json({'error': 'Недостатньо прав для цієї дії', 'status': 403}, 403)
         if not admin_read_allowed(self.auth_role, path, query):
             return self.send_json({"error": "Недостатньо прав для перегляду цього розділу", "status": 403}, 403)
-        managed_grant = (self.auth_role == "officer" and permission
-                         and not permission.startswith("admin.")
-                         and self.auth_access["permissions"].get(permission, False))
-        if not mutation_allowed(self.auth_role, http_method, path) and not managed_grant:
+        managed_grant = (self.auth_role == 'officer' and permission
+                         and not permission.startswith('admin.')
+                         and self.auth_access['permissions'].get(permission, False))
+        if not mutation_allowed(self.auth_role, self.command, path) and not managed_grant:
+            # Drain the small mutation body before closing the connection on Windows.
+            # Otherwise the client may see a TCP reset instead of the JSON 403.
+            length = int(self.headers.get("Content-Length", "0"))
+            if 0 < length <= 1024 * 1024:
+                self.rfile.read(length)
             return self.send_json({"error": "Недостатньо прав для цієї дії", "status": 403}, 403)
-        if (self.auth_role == "officer" and path != "/api/history-columns"
-                and (http_method in {"POST", "PATCH", "PUT", "DELETE"} or permission == "applications.check")
+        if (self.auth_role == "officer" and path not in {'/api/history-columns','/api/account','/api/account/avatar'} and not path.startswith('/api/chats') and (self.command in {"POST", "PATCH", "PUT", "DELETE"} or permission == 'applications.check')
                 and not officer_mutation_scope_allowed(path, self.auth_officer_id)):
             return self.send_json({"error": "Дія доступна лише для призначених вам заявок або звернень",
                                    "status": 403}, 403)
@@ -6201,21 +6916,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/api/history-columns":
-            return self.send_json(history_column_settings(self.auth_user))
-        if parsed.path == "/api/health":
-            with db() as con:
-                counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("frameworks", "submissions", "qualifications")}
-            return self.send_json({"ok": True, "counts": counts, "sync": SYNC_STATE})
-        if parsed.path == "/api/auth/me":
-            with db() as con:
-                preference = con.execute("SELECT display_name FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
-            return self.send_json({"username": self.auth_user, "display_name": preference["display_name"] if preference else "", "role": self.auth_role,
-                                   "managed_role": self.auth_access["code"],
-                                   "permissions": self.auth_access["permissions"],
-                                   "officer_id": self.auth_officer_id,
-                                   "authenticated": bool(AUTH_ENABLED),
-                                   "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
         if parsed.path == "/api/account":
             with db() as con:
                 row = con.execute("SELECT display_name,start_view,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
@@ -6234,26 +6934,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", row["content_type"])
             self.send_header("Cache-Control", "private, max-age=300")
             self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw); return
-        if parsed.path == "/api/admin/access-roles":
-            with db() as con:
-                return self.send_json(auth_access.roles_payload(con))
-        if parsed.path == "/api/application-profiles":
-            return self.send_json(list_application_view_profiles(self.auth_user))
-        if parsed.path == "/api/application-history":
-            try:
-                return self.send_json(application_history(urllib.parse.parse_qs(parsed.query)))
-            except ValueError as exc:
-                return self.send_json({"error": str(exc)}, 400)
-        if parsed.path == "/api/admin/schema":
-            return self.send_json(pqm_schema_metadata())
-        if parsed.path == "/api/applications/search-fields":
-            return self.send_json({"items": [{"key": field["key"], "label": field["label"]}
-                                             for field in APPLICATION_SEARCH_FIELDS]})
-        remark_selection_match = re.fullmatch(r"/api/applications/([^/]+)/remark-selections", parsed.path)
-        if remark_selection_match:
-            submission_id = urllib.parse.unquote(remark_selection_match.group(1))
-            return self.send_json({"submission_id": submission_id,
-                                   "remark_ids": application_remark_selections(submission_id)})
         if parsed.path == "/api/admin/users":
             now = time.time()
             online_users: dict[str, float] = {}
@@ -6292,57 +6972,92 @@ class Handler(BaseHTTPRequestHandler):
                                 if username in online_users else None})
             items.sort(key=lambda item: (not item["active"], item["username"].casefold()))
             return self.send_json({"items": items})
+        if parsed.path == '/api/table-widths':
+            with db() as con: return self.send_json({'tables':table_widths.list_all(con)})
         if parsed.path == "/api/chats/users":
-            with db() as con: items = self.chat_users(con)
-            return self.send_json({"items": items})
+            with db() as con:
+                return self.send_json({"items": self.chat_users(con)})
         if parsed.path == "/api/chats":
             with db() as con:
-                chats = con.execute("""SELECT t.*,m.last_read_message_id,
+                rows = con.execute("""SELECT t.*,m.last_read_message_id,
                   (SELECT COUNT(*) FROM chat_messages x WHERE x.chat_id=t.id AND x.id>m.last_read_message_id AND x.sender_username<>?) unread_count,
                   (SELECT body FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_body,
                   (SELECT sender_username FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_sender,
-                  (SELECT id FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_message_id,
                   (SELECT created_at FROM chat_messages x WHERE x.chat_id=t.id ORDER BY x.id DESC LIMIT 1) last_message_at
                   FROM chat_threads t JOIN chat_members m ON m.chat_id=t.id
-                  WHERE m.username=? ORDER BY COALESCE(last_message_at,t.updated_at) DESC""", (self.auth_user,self.auth_user)).fetchall()
-                result=[]
-                for chat in chats:
-                    names=[r[0] for r in con.execute("SELECT username FROM chat_members WHERE chat_id=? ORDER BY username",(chat["id"],))]
-                    result.append({**dict(chat),"members":self.chat_users(con,names)})
-            return self.send_json({"items":result,"unread":sum(x["unread_count"] for x in result)})
-        chat_messages = re.fullmatch(r"/api/chats/(\d+)/messages", parsed.path)
-        if chat_messages:
-            chat_id=int(chat_messages.group(1)); after=max(0,int(urllib.parse.parse_qs(parsed.query).get("after_id",[0])[0]))
-            with db() as con:
-                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
-                rows=con.execute("""SELECT m.* FROM chat_messages m WHERE m.chat_id=? AND m.id>? ORDER BY m.id LIMIT 300""",(chat_id,after)).fetchall()
-                read_positions={r["username"]:int(r["last_read_message_id"] or 0) for r in con.execute(
-                  "SELECT username,last_read_message_id FROM chat_members WHERE chat_id=?",(chat_id,))}
+                  WHERE m.username=? ORDER BY COALESCE(last_message_at,t.updated_at) DESC""",
+                  (self.auth_user,self.auth_user)).fetchall()
                 items=[]
                 for row in rows:
-                    item=dict(row)
-                    other_reads=[position for username,position in read_positions.items() if username!=row["sender_username"]]
-                    item["read_count"]=sum(position>=row["id"] for position in other_reads)
-                    item["recipient_count"]=len(other_reads)
-                    item["read_by_all"]=bool(other_reads) and all(position>=row["id"] for position in other_reads)
-                    item["attachments"]=[dict(x) for x in con.execute("SELECT id,filename,content_type,size FROM chat_attachments WHERE message_id=?",(row["id"],))]
+                    item=dict(row); names=[x[0] for x in con.execute(
+                        "SELECT username FROM chat_members WHERE chat_id=? ORDER BY username",(row["id"],))]
+                    item["members"]=self.chat_users(con,names); items.append(item)
+                return self.send_json({"items":items,"unread":sum(int(x["unread_count"] or 0) for x in items)})
+        message_match=re.fullmatch(r"/api/chats/(\d+)/messages",parsed.path)
+        if message_match:
+            chat_id=int(message_match.group(1))
+            with db() as con:
+                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
+                rows=con.execute("SELECT * FROM chat_messages WHERE chat_id=? ORDER BY id LIMIT 300",(chat_id,)).fetchall()
+                positions={r["username"]:int(r["last_read_message_id"] or 0) for r in con.execute(
+                    "SELECT username,last_read_message_id FROM chat_members WHERE chat_id=?",(chat_id,))}
+                items=[]
+                for row in rows:
+                    item=dict(row); reads=[v for k,v in positions.items() if k!=row["sender_username"]]
+                    item["read_by_all"]=bool(reads) and all(v>=row["id"] for v in reads)
+                    item["attachments"]=[dict(x) for x in con.execute(
+                        "SELECT id,filename,content_type,size FROM chat_attachments WHERE message_id=?",(row["id"],))]
                     item["submission"]=None
                     if row["submission_id"]:
                         submission=con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,f.pretty_id framework_pretty_id
                           FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id WHERE s.id=?""",(row["submission_id"],)).fetchone()
                         item["submission"]=dict(submission) if submission else {"id":row["submission_id"]}
                     items.append(item)
-                names=[r[0] for r in con.execute("SELECT username FROM chat_members WHERE chat_id=?",(chat_id,))]
-            return self.send_json({"items":items,"members":self.chat_users(db().__enter__(),names) if False else []})
+                return self.send_json({"items":items})
         attachment_match=re.fullmatch(r"/api/chats/attachments/(\d+)",parsed.path)
         if attachment_match:
-            attachment_id=int(attachment_match.group(1))
             with db() as con:
-                row=con.execute("""SELECT a.*,m.chat_id FROM chat_attachments a JOIN chat_messages m ON m.id=a.message_id WHERE a.id=?""",(attachment_id,)).fetchone()
+                row=con.execute("""SELECT a.*,m.chat_id FROM chat_attachments a JOIN chat_messages m ON m.id=a.message_id
+                  WHERE a.id=?""",(int(attachment_match.group(1)),)).fetchone()
                 if not row or not self.chat_member(con,row["chat_id"]): return self.send_json({"error":"Файл не знайдено"},404)
-            raw=bytes(row["content"]); filename=re.sub(r"[^A-Za-z0-9._-]","_",row["filename"]) or "attachment"
-            self.send_response(200); self.send_header("Content-Type",row["content_type"]); self.send_header("Content-Disposition",f'attachment; filename="{filename}"')
-            self.send_header("X-Content-Type-Options","nosniff"); self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw); return
+                raw=bytes(row["content"]); content_type=row["content_type"]
+                filename=re.sub(r"[^A-Za-z0-9._-]","_",row["filename"]) or "attachment"
+            self.send_response(200); self.send_header("Content-Type",content_type)
+            self.send_header("Content-Disposition",f'attachment; filename="{filename}"')
+            self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw); return
+        if parsed.path == '/api/history-columns':
+            return self.send_json(history_column_settings(self.auth_user))
+        if parsed.path == "/api/health":
+            with db() as con:
+                counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("frameworks", "submissions", "qualifications")}
+            return self.send_json({"ok": True, "counts": counts, "sync": SYNC_STATE})
+        if parsed.path == "/api/auth/me":
+            return self.send_json({"username": self.auth_user, "role": self.auth_role,
+                                   "managed_role": self.auth_access['code'],
+                                   "permissions": self.auth_access['permissions'],
+                                   "officer_id": self.auth_officer_id,
+                                   "authenticated": bool(AUTH_ENABLED),
+                                   "local_impersonation": bool(not AUTH_ENABLED and LOCAL_ROLE_IMPERSONATION)})
+        if parsed.path in {'/api/admin/access-roles', '/api/admin/users'}:
+            with db() as con:
+                return self.send_json(auth_access.roles_payload(con) if parsed.path.endswith('access-roles') else auth_access.users_payload(con))
+        if parsed.path == "/api/application-profiles":
+            return self.send_json(list_application_view_profiles(self.auth_user))
+        if parsed.path == '/api/application-history':
+            try:
+                return self.send_json(application_history(urllib.parse.parse_qs(parsed.query)))
+            except ValueError as exc:
+                return self.send_json({'error':str(exc)}, 400)
+        if parsed.path == '/api/admin/schema':
+            return self.send_json(pqm_schema_metadata())
+        if parsed.path == "/api/applications/search-fields":
+            return self.send_json({"items": [{"key": field["key"], "label": field["label"]}
+                                             for field in APPLICATION_SEARCH_FIELDS]})
+        remark_selection_match = re.fullmatch(r"/api/applications/([^/]+)/remark-selections", parsed.path)
+        if remark_selection_match:
+            submission_id = urllib.parse.unquote(remark_selection_match.group(1))
+            return self.send_json({"submission_id": submission_id,
+                                   "remark_ids": application_remark_selections(submission_id)})
         if parsed.path == "/api/runtime-features":
             return self.send_json({
                 "environment": PQM_ENV,
@@ -6369,7 +7084,7 @@ class Handler(BaseHTTPRequestHandler):
                   FROM application_fields WHERE submission_id=?""", (submission_id,)).fetchone()
             if not row or not row[3]:
                 return self.send_json({"error": "Збереженого результату перевірки ще немає"}, 404)
-            result = json.loads(row[3])
+            result = current_document_check_result(json.loads(row[3]))
             result["authority_review"] = row[4] or ""
             result["mvs_seal_review"] = row[5] or ""
             result["saved_status"] = row[0] or ""
@@ -6467,22 +7182,47 @@ class Handler(BaseHTTPRequestHandler):
             result = build_application_archive(submission_id)
             if not result:
                 return self.send_json({"error": "Заявку не знайдено"}, 404)
-            archive, size = result
+            archive, size, failed = result
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Disposition", f'attachment; filename="PQM-{submission_id}.zip"')
+                suffix = "-INCOMPLETE" if failed else ""
+                self.send_header("Content-Disposition", f'attachment; filename="PQM-{submission_id}{suffix}.zip"')
                 self.send_header("Content-Length", str(size))
+                self.send_header("X-PQM-Archive-Complete", "false" if failed else "true")
+                self.send_header("X-PQM-Failed-Count", str(len(failed)))
+                if failed:
+                    titles = [record.get("title") or record.get("file") for record in failed[:10]]
+                    self.send_header("X-PQM-Failed-Documents",
+                                     urllib.parse.quote(json.dumps(titles, ensure_ascii=False)))
                 self.end_headers()
                 while chunk := archive.read(1024 * 1024):
                     self.wfile.write(chunk)
             finally:
                 archive.close()
             return
+        formed_match = re.fullmatch(r'/api/protocol/formed/([a-f0-9]{32})(/download)?',parsed.path)
+        if formed_match:
+            try:
+                with db() as con:
+                    data=formed_protocols.detail(con,formed_match.group(1),PROTOCOLS_DIR)
+                    if not formed_match.group(2): return self.send_json(data)
+                    relative=con.execute('SELECT document_path FROM formed_protocols WHERE id=?',(data['id'],)).fetchone()[0]
+                target=(PROTOCOLS_DIR/relative).resolve()
+                if PROTOCOLS_DIR not in target.parents or not target.is_file(): return self.send_json({'error':'DOCX не знайдено'},404)
+                raw=target.read_bytes()
+                self.send_response(200)
+                self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+                self.send_header('Content-Disposition',"attachment; filename=protocol.docx; filename*=UTF-8''"+urllib.parse.quote(data['filename']))
+                self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+                return
+            except ValueError as exc: return self.send_json({'error':str(exc)},404)
         if parsed.path.startswith("/api/protocol/files/"):
             filename = urllib.parse.unquote(parsed.path[len("/api/protocol/files/"):])
             protocols_dir = PROTOCOLS_DIR
             target = (protocols_dir / filename).resolve()
+            if not target.is_relative_to(protocols_dir) or '_formed' in target.relative_to(protocols_dir).parts:
+                return self.send_json({'error':'Використайте посилання чинного сформованого протоколу'},404)
             if protocols_dir not in target.parents or not target.is_file():
                 return self.send_error(404)
             raw = target.read_bytes()
@@ -6511,11 +7251,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(result)
         if parsed.path == "/api/remarks-catalog":
             query = urllib.parse.parse_qs(parsed.query)
-            return self.send_json(remarks_catalog(force=query.get("refresh") == ["1"]))
+            return self.send_json(remarks_catalog(force=query.get("refresh") == ["1"],
+                include_inactive=self.auth_role == 'admin' and query.get('all') == ['1']))
         if parsed.path == "/api/reference-status":
             return self.send_json(reference_status(DB_PATH))
         if parsed.path == "/api/supplier-edr-sync-status":
             return self.send_json(supplier_edr_sync_status())
+        if parsed.path == "/api/supplier-edr-export":
+            sheet_type = (urllib.parse.parse_qs(parsed.query).get("type") or [""])[0].upper()
+            try:
+                raw = supplier_edr_export_csv(sheet_type)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            filename = f"{sheet_type}_ЄДР.csv"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(filename))
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/supplier-nazk-review-sync-status":
             return self.send_json(supplier_nazk_review_sync_status())
         if parsed.path == "/api/google-oauth/status":
@@ -6556,7 +7309,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"items": rows, "total": total, "page": page, "pages": pages, "size": size})
         path = parsed.path.lstrip("/") or "index.html"
         target = (ROOT / path).resolve()
-        if ROOT not in target.parents or not target.is_file():
+        if (ROOT not in target.parents or not target.is_file()
+                or not (path in {"index.html"} or (target.parent == ROOT and target.suffix in {".js", ".css"})
+                        or (ROOT / "assets") in target.parents)):
             return self.send_error(404)
         raw = target.read_bytes(); self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
@@ -6565,45 +7320,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/api/history-columns":
-            try:
-                payload = self.read_json()
-                if "columns" not in payload:
-                    raise ValueError("Відсутні налаштування колонок")
-                return self.send_json(history_column_settings(self.auth_user, payload["columns"]))
-            except ValueError as exc:
-                return self.send_json({"error": str(exc)}, 400)
-        if parsed.path == "/api/admin/access-roles":
-            payload = self.read_json()
-            try:
-                with db() as con:
-                    con.execute("BEGIN IMMEDIATE")
-                    auth_access.save_role(con, payload, self.auth_user)
-                return self.send_json({"saved": True})
-            except (ValueError, sqlite3.IntegrityError) as exc:
-                return self.send_json({"error": str(exc) if isinstance(exc, ValueError)
-                                       else "Конфлікт налаштувань ролі"}, 400)
-        if parsed.path == "/api/application-profiles":
-            payload = self.read_json(); name = str(payload.get("name") or "").strip()
-            if not name:
-                return self.send_json({"error": "Вкажіть назву профілю"}, 400)
-            is_system = bool(payload.get("is_system"))
-            if is_system and self.auth_role != "admin":
-                return self.send_json({"error": "Системні профілі може створювати лише адміністратор"}, 403)
-            layout_json = _profile_layout_json(payload.get("columns"), payload.get("kpis"), payload.get("sorts"))
-            profile_id = str(uuid.uuid4())
-            owner = "__system__" if is_system else _profile_owner(self.auth_user)
-            source = str(payload.get("source_system_profile_id") or "").strip() or None
-            with db() as con:
-                try:
-                    con.execute("""INSERT INTO application_view_profiles
-                      (id,owner_key,name,is_system,source_system_profile_id,columns_json,
-                       created_at,updated_at,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                      (profile_id, owner, name, int(is_system), source, layout_json,
-                       now_iso(), now_iso(), self.auth_user, self.auth_user))
-                except sqlite3.IntegrityError:
-                    return self.send_json({"error": "Профіль із такою назвою вже існує"}, 409)
-            return self.send_json({"saved": True, "id": profile_id}, 201)
         if parsed.path == "/api/login":
             payload = self.read_json(); username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
@@ -6646,56 +7362,6 @@ class Handler(BaseHTTPRequestHandler):
                   content=excluded.content,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
                   (self.auth_user,content_type,raw,now_iso(),self.auth_user))
             return self.send_json({"saved": True})
-        if parsed.path == "/api/chats":
-            payload=self.read_json(); members=[]
-            for value in payload.get("members") or []:
-                username=str(value or "").strip()
-                if username and username!=self.auth_user and username not in members: members.append(username)
-            if not members or len(members)>49: return self.send_json({"error":"Оберіть від 1 до 49 учасників"},400)
-            with db() as con:
-                valid={r[0] for r in con.execute(f"SELECT username FROM auth_users WHERE active=1 AND username IN ({','.join('?'*len(members))})",tuple(members))}
-                if valid!=set(members): return self.send_json({"error":"Один або кілька акаунтів недоступні"},400)
-                all_members=[self.auth_user,*members]; is_group=len(all_members)>2
-                if not is_group:
-                    existing=con.execute("""SELECT t.id FROM chat_threads t WHERE t.is_group=0
-                      AND (SELECT COUNT(*) FROM chat_members m WHERE m.chat_id=t.id)=2
-                      AND NOT EXISTS(SELECT 1 FROM chat_members m WHERE m.chat_id=t.id AND m.username NOT IN (?,?))
-                      AND EXISTS(SELECT 1 FROM chat_members m WHERE m.chat_id=t.id AND m.username=?)""",
-                      (all_members[0],all_members[1],all_members[1])).fetchone()
-                    if existing: return self.send_json({"id":existing["id"],"existing":True})
-                title=str(payload.get("title") or "").strip()[:100]
-                if is_group and not title: return self.send_json({"error":"Вкажіть назву групового чату"},400)
-                stamp=now_iso(); cursor=con.execute("INSERT INTO chat_threads(title,is_group,created_by,created_at,updated_at) VALUES (?,?,?,?,?)",(title,int(is_group),self.auth_user,stamp,stamp)); chat_id=cursor.lastrowid
-                con.executemany("INSERT INTO chat_members(chat_id,username,joined_at) VALUES (?,?,?)",[(chat_id,name,stamp) for name in all_members])
-            return self.send_json({"id":chat_id},201)
-        chat_send=re.fullmatch(r"/api/chats/(\d+)/messages",parsed.path)
-        if chat_send:
-            chat_id=int(chat_send.group(1)); payload=self.read_json(); body=str(payload.get("body") or "").strip()[:10000]; submission_id=str(payload.get("submission_id") or "").strip(); attachment=payload.get("attachment")
-            raw=b""; filename=""; content_type=""
-            if attachment:
-                filename=Path(str(attachment.get("filename") or "attachment")).name[:180]
-                content_type=str(attachment.get("content_type") or "application/octet-stream").casefold()[:100]
-                allowed={"application/pdf","image/png","image/jpeg","image/webp","text/plain","text/csv","application/zip","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
-                if content_type not in allowed: return self.send_json({"error":"Цей тип файла не підтримується"},400)
-                try: raw=base64.b64decode(attachment.get("content") or "",validate=True)
-                except Exception: return self.send_json({"error":"Не вдалося прочитати вкладення"},400)
-                if not raw or len(raw)>5*1024*1024: return self.send_json({"error":"Файл порожній або перевищує 5 МБ"},400)
-            if not body and not submission_id and not raw: return self.send_json({"error":"Напишіть повідомлення або додайте вкладення"},400)
-            with db() as con:
-                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
-                if submission_id and not con.execute("SELECT 1 FROM submissions WHERE id=?",(submission_id,)).fetchone(): return self.send_json({"error":"Заявку не знайдено"},404)
-                stamp=now_iso(); cursor=con.execute("INSERT INTO chat_messages(chat_id,sender_username,body,submission_id,created_at) VALUES (?,?,?,?,?)",(chat_id,self.auth_user,body,submission_id,stamp)); message_id=cursor.lastrowid
-                if raw: con.execute("INSERT INTO chat_attachments(message_id,filename,content_type,content,size,created_at) VALUES (?,?,?,?,?,?)",(message_id,filename,content_type,raw,len(raw),stamp))
-                con.execute("UPDATE chat_threads SET updated_at=? WHERE id=?",(stamp,chat_id)); con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(message_id,chat_id,self.auth_user))
-            return self.send_json({"id":message_id},201)
-        chat_read=re.fullmatch(r"/api/chats/(\d+)/read",parsed.path)
-        if chat_read:
-            chat_id=int(chat_read.group(1))
-            with db() as con:
-                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
-                latest=con.execute("SELECT COALESCE(MAX(id),0) FROM chat_messages WHERE chat_id=?",(chat_id,)).fetchone()[0]
-                con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
-            return self.send_json({"read":True,"message_id":latest})
         if parsed.path == "/api/admin/users":
             payload = self.read_json()
             if "role_code" in payload:
@@ -6703,6 +7369,12 @@ class Handler(BaseHTTPRequestHandler):
                     with db() as con:
                         con.execute("BEGIN IMMEDIATE")
                         auth_access.save_user(con, payload, self.auth_user, configured_auth_accounts())
+                    if payload.get("password") or payload.get("active") is False:
+                        username = str(payload.get("username") or "").strip()
+                        with AUTH_SESSIONS_LOCK:
+                            for token, session in list(AUTH_SESSIONS.items()):
+                                if session["username"] == username:
+                                    AUTH_SESSIONS.pop(token, None)
                     return self.send_json({"saved": True})
                 except (ValueError, sqlite3.IntegrityError) as exc:
                     return self.send_json({"error": str(exc) if isinstance(exc, ValueError)
@@ -6748,6 +7420,98 @@ class Handler(BaseHTTPRequestHandler):
                   content=excluded.content,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
                   (username, content_type, raw, now_iso(), self.auth_user))
             return self.send_json({"saved": True, "username": username})
+        if parsed.path == '/api/admin/table-widths':
+            payload=self.read_json()
+            try:
+                with db() as con: widths=table_widths.save(con,payload.get('table_key'),payload.get('widths'),self.auth_user)
+            except (TypeError,ValueError) as exc: return self.send_json({'error':str(exc)},400)
+            return self.send_json({'saved':True,'widths':widths})
+        if parsed.path == "/api/chats":
+            payload=self.read_json(); members=[]
+            for value in payload.get("members") or []:
+                username=str(value or "").strip()
+                if username and username!=self.auth_user and username not in members: members.append(username)
+            if not members or len(members)>49: return self.send_json({"error":"Оберіть від 1 до 49 учасників"},400)
+            with db() as con:
+                marks=','.join('?'*len(members)); valid={r[0] for r in con.execute(
+                    f"SELECT username FROM auth_users WHERE active=1 AND username IN ({marks})",tuple(members))}
+                if valid!=set(members): return self.send_json({"error":"Один або кілька акаунтів недоступні"},400)
+                all_members=[self.auth_user,*members]; is_group=len(all_members)>2
+                title=str(payload.get("title") or "").strip()[:100]
+                if is_group and not title: return self.send_json({"error":"Вкажіть назву групового чату"},400)
+                stamp=now_iso(); cur=con.execute("INSERT INTO chat_threads(title,is_group,created_by,created_at,updated_at) VALUES (?,?,?,?,?)",
+                    (title,int(is_group),self.auth_user,stamp,stamp)); chat_id=cur.lastrowid
+                con.executemany("INSERT INTO chat_members(chat_id,username,joined_at) VALUES (?,?,?)",
+                    [(chat_id,name,stamp) for name in all_members])
+            return self.send_json({"id":chat_id},201)
+        send_match=re.fullmatch(r"/api/chats/(\d+)/messages",parsed.path)
+        if send_match:
+            chat_id=int(send_match.group(1)); payload=self.read_json(); body=str(payload.get("body") or "").strip()[:10000]
+            submission_id=str(payload.get("submission_id") or "").strip(); attachment=payload.get("attachment")
+            raw=b""; filename=""; content_type=""
+            if attachment:
+                filename=Path(str(attachment.get("filename") or "attachment")).name[:180]
+                content_type=str(attachment.get("content_type") or "application/octet-stream").casefold()[:100]
+                try: raw=base64.b64decode(attachment.get("content") or "",validate=True)
+                except Exception: return self.send_json({"error":"Не вдалося прочитати вкладення"},400)
+                if not raw or len(raw)>5*1024*1024: return self.send_json({"error":"Файл порожній або перевищує 5 МБ"},400)
+            if not body and not submission_id and not raw: return self.send_json({"error":"Напишіть повідомлення або додайте вкладення"},400)
+            with db() as con:
+                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
+                stamp=now_iso(); cur=con.execute("INSERT INTO chat_messages(chat_id,sender_username,body,submission_id,created_at) VALUES (?,?,?,?,?)",
+                    (chat_id,self.auth_user,body,submission_id,stamp)); message_id=cur.lastrowid
+                if raw: con.execute("INSERT INTO chat_attachments(message_id,filename,content_type,content,size,created_at) VALUES (?,?,?,?,?,?)",
+                                    (message_id,filename,content_type,raw,len(raw),stamp))
+                con.execute("UPDATE chat_threads SET updated_at=? WHERE id=?",(stamp,chat_id))
+                con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(message_id,chat_id,self.auth_user))
+            return self.send_json({"id":message_id},201)
+        read_match=re.fullmatch(r"/api/chats/(\d+)/read",parsed.path)
+        if read_match:
+            chat_id=int(read_match.group(1))
+            with db() as con:
+                if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
+                latest=con.execute("SELECT COALESCE(MAX(id),0) FROM chat_messages WHERE chat_id=?",(chat_id,)).fetchone()[0]
+                con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
+            return self.send_json({"read":True,"message_id":latest})
+        if parsed.path == '/api/history-columns':
+            try:
+                payload=self.read_json()
+                if 'columns' not in payload:raise ValueError('Відсутні налаштування колонок')
+                return self.send_json(history_column_settings(self.auth_user,payload['columns']))
+            except ValueError as exc:
+                return self.send_json({'error':str(exc)},400)
+        if parsed.path in {'/api/admin/access-roles', '/api/admin/users'}:
+            payload = self.read_json()
+            try:
+                with db() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    if parsed.path.endswith('access-roles'):
+                        auth_access.save_role(con, payload, self.auth_user)
+                    else:
+                        auth_access.save_user(con, payload, self.auth_user, configured_auth_accounts())
+                return self.send_json({'saved': True})
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                return self.send_json({'error': str(exc) if isinstance(exc, ValueError) else 'Конфлікт облікового запису або УО'}, 400)
+        if parsed.path == "/api/application-profiles":
+            payload = self.read_json(); name = str(payload.get("name") or "").strip()
+            if not name: return self.send_json({"error": "Вкажіть назву профілю"}, 400)
+            is_system = bool(payload.get("is_system"))
+            if is_system and self.auth_role != "admin":
+                return self.send_json({"error": "Системні профілі може створювати лише адміністратор"}, 403)
+            layout_json = _profile_layout_json(payload.get("columns"), payload.get("kpis"), payload.get("sorts"))
+            profile_id = str(uuid.uuid4())
+            owner = "__system__" if is_system else _profile_owner(self.auth_user)
+            source = str(payload.get("source_system_profile_id") or "").strip() or None
+            with db() as con:
+                try:
+                    con.execute("""INSERT INTO application_view_profiles
+                      (id,owner_key,name,is_system,source_system_profile_id,columns_json,
+                       created_at,updated_at,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                      (profile_id, owner, name, int(is_system), source,
+                       layout_json, now_iso(), now_iso(), self.auth_user, self.auth_user))
+                except sqlite3.IntegrityError:
+                    return self.send_json({"error": "Профіль із такою назвою вже існує"}, 409)
+            return self.send_json({"saved": True, "id": profile_id}, 201)
         if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/protocol/generate"):
             report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/protocol/generate")]).rstrip("/")
             payload = self.read_json()
@@ -6761,8 +7525,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": str(exc), "is_read_only": True}, 403)
         if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/review/complete"):
             report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/review/complete")]).rstrip("/")
+            payload = self.read_json()
             try:
-                return self.send_json(complete_violation_review(report_id, self.auth_user))
+                return self.send_json(complete_violation_review(report_id, self.auth_user, payload))
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)
             except ValueError as exc:
@@ -6772,6 +7537,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": str(exc), "is_read_only": True}, status)
             except ConnectionError as exc:
                 return self.send_json({"error": str(exc)}, 503)
+            except RuntimeError as exc:
+                return self.send_json({"error": str(exc)}, 409)
             except (ValueError, PermissionError) as exc:
                 return self.send_json({"error": str(exc)}, 409)
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/verify-documents"):
@@ -6788,9 +7555,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/protocol/generate":
             try:
-                return self.send_json(generate_protocol(self.read_json()))
+                return self.send_json(generate_protocol(self.read_json(),self.auth_user,self.auth_role,self.auth_officer_id))
+            except PermissionError as exc:
+                return self.send_json({'error':str(exc)},403)
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 409)
+        cancel_match=re.fullmatch(r'/api/protocol/(formed|legacy)/([^/]+)/cancel',parsed.path)
+        if cancel_match:
+            payload=self.read_json();kind,identifier=cancel_match.groups();identifier=urllib.parse.unquote(identifier)
+            try:
+                with db() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    ids=([x['id'] for x in formed_protocols.detail(con,identifier)['items']] if kind=='formed' else [identifier])
+                    assert_protocol_scope(con,ids,self.auth_role,self.auth_officer_id)
+                    fn=formed_protocols.cancel if kind=='formed' else formed_protocols.release_legacy
+                    result=fn(con,identifier,self.auth_user,payload.get('confirmed'),payload.get('reason',''))
+                return self.send_json(result)
+            except PermissionError as exc: return self.send_json({'error':str(exc)},403)
+            except ValueError as exc: return self.send_json({'error':str(exc)},409)
         if parsed.path == "/api/admin/frameworks":
             try:
                 return self.send_json(create_framework_service_entry(self.read_json(), self.auth_user), 201)
@@ -6825,12 +7607,33 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=sync_violation_reports_worker, daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/bids-sync":
-            if not ENABLE_BIDS_UPDATE or BIDS_MODE not in {"readonly", "read_only"}:
+            payload = self.read_json()
+            if IS_WEB_ENV or not ENABLE_BIDS_UPDATE or BIDS_MODE not in {"readonly", "read_only"}:
                 return self.send_json({"error": "Оновлення ProzorroBids вимкнене в цьому середовищі"}, 403)
-            if BIDS_UPDATE_STATE["running"]:
-                return self.send_json(BIDS_UPDATE_STATE, 409)
-            BIDS_UPDATE_STATE.update(running=True, message="Підготовка оновлення Bids…", started_at=now_iso(), error=None)
-            timer = threading.Timer(0.2, bids_update_worker); timer.daemon = True; timer.start()
+            with BIDS_START_LOCK:
+                if BIDS_UPDATE_STATE["running"]:
+                    BIDS_UPDATE_STATE['duplicate_attempts'] = BIDS_UPDATE_STATE.get('duplicate_attempts',0)+1
+                    SERVER_LOG.info('Bids duplicate launch rejected run_id=%s pid=%s', BIDS_UPDATE_STATE.get('run_id'), BIDS_UPDATE_STATE.get('pid'))
+                    return self.send_json({**bids_run_snapshot(), 'code':'already_running'}, 409)
+                try:
+                    bids_runtime_check()
+                    if payload.get("check_only") is True:
+                        return self.send_json({"started": False, "runtime_ready": True}, 200)
+                    BIDS_UPDATE_STATE.update(running=True, status='running', run_id=uuid.uuid4().hex,
+                        message="Підготовка оновлення Bids…", started_at=now_iso(), error=None,
+                        finished_at=None, updated_at=None, stage='preparing', processed=None, total=None,
+                        last_activity_at=now_iso(), current_run_errors=0, last_error=None, pid=None, duplicate_attempts=0)
+                    worker = threading.Thread(target=bids_update_worker, daemon=True)
+                    worker.start()
+                except Exception as exc:
+                    SERVER_LOG.exception("Bids startup failed")
+                    if BIDS_UPDATE_STATE.get('status') != 'running':
+                        BIDS_UPDATE_STATE.update(run_id=uuid.uuid4().hex,started_at=now_iso(),
+                                                stage='preflight',current_run_errors=1,pid=None,
+                                                processed=None,total=None,last_activity_at=now_iso())
+                    BIDS_UPDATE_STATE.update(running=False, status='failed', finished_at=now_iso(),
+                        last_error=str(exc), error=str(exc), message="Не вдалося запустити ProzorroBids; див. logs/server.log")
+                    return self.send_json({"started": False, "code": "bids_start_failed", "error": BIDS_UPDATE_STATE["message"]}, 503)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync":
             if SUPPLIER_EDR_SYNC_STATE["running"]:
@@ -6852,20 +7655,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Google OAuth вимкнено в цьому середовищі"}, 403)
             try:
                 return self.send_json({"authorization_url": google_oauth_authorization_url()}, 200)
-            except FileNotFoundError as exc:
+            except (FileNotFoundError, RuntimeError, OSError) as exc:
                 return self.send_json({"error": str(exc), "oauth": google_oauth_status()}, 409)
         if parsed.path == "/api/powerbi-export":
             if not ENABLE_POWERBI:
                 return self.send_json({"error": "Power BI export вимкнено в цьому середовищі"}, 403)
-            if POWERBI_EXPORT_STATE["running"]:
-                return self.send_json(POWERBI_EXPORT_STATE, 409)
-            POWERBI_EXPORT_STATE.update(running=True, message="Підготовка експорту Power BI…", started_at=now_iso(), error=None)
-            threading.Thread(target=powerbi_export_worker, daemon=True).start()
-            return self.send_json({"started": True, "path": str(POWERBI_CURRENT_PATH)}, 202)
+            result, status = start_powerbi_export()
+            return self.send_json(result, status)
         if parsed.path == "/api/remarks-catalog":
             payload = self.read_json(); point = str(payload.get("point") or "").strip(); text = str(payload.get("text") or "").strip()
             if not point or not text: return self.send_json({"error": "Заповніть пункт і текст шаблону"}, 400)
             with db() as con:
+                con.execute('BEGIN IMMEDIATE')
+                normalize = lambda value: ' '.join(str(value or '').casefold().split())
+                duplicate = next((row for row in con.execute('SELECT id,point,text FROM remarks_catalog')
+                                  if normalize(row['point']) == normalize(point) and normalize(row['text']) == normalize(text)), None)
+                if duplicate:
+                    return self.send_json({'error':'Такий пункт і текст уже є у довіднику', 'duplicate_id':duplicate['id']},409)
                 cursor = con.execute("INSERT INTO remarks_catalog(point,text,tag,category,active,updated_at) VALUES (?,?,?,?,1,?)",
                                      (point, text, str(payload.get("tag") or "").strip(), str(payload.get("category") or "").strip(), now_iso()))
             return self.send_json({"saved": True, "id": cursor.lastrowid}, 201)
@@ -6927,70 +7733,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)
-        profile_match = re.fullmatch(r"/api/application-profiles/([^/]+)", parsed.path)
-        if profile_match:
-            profile_id = urllib.parse.unquote(profile_match.group(1)); payload = self.read_json()
-            with db() as con:
-                current = con.execute("SELECT * FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
-                if not current:
-                    return self.send_json({"error": "Профіль не знайдено"}, 404)
-                if current["is_system"] and self.auth_role != "admin":
-                    return self.send_json({"error": "Системний профіль може змінювати лише адміністратор"}, 403)
-                if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):
-                    return self.send_json({"error": "Можна змінювати лише власні профілі"}, 403)
-                fields, values = [], []
-                if "name" in payload:
-                    name = str(payload.get("name") or "").strip()
-                    if not name:
-                        return self.send_json({"error": "Вкажіть назву профілю"}, 400)
-                    fields.append("name=?"); values.append(name)
-                if "columns" in payload or "kpis" in payload or "sorts" in payload:
-                    try:
-                        current_layout = json.loads(current["columns_json"] or "[]")
-                    except json.JSONDecodeError:
-                        current_layout = []
-                    old_columns = current_layout.get("columns", []) if isinstance(current_layout, dict) else current_layout
-                    old_kpis = current_layout.get("kpis", []) if isinstance(current_layout, dict) else []
-                    old_sorts = current_layout.get("sorts", []) if isinstance(current_layout, dict) else []
-                    fields.append("columns_json=?")
-                    values.append(_profile_layout_json(payload.get("columns", old_columns),
-                                                       payload.get("kpis", old_kpis), payload.get("sorts", old_sorts)))
-                if fields:
-                    fields.extend(["updated_at=?", "updated_by=?"]); values.extend([now_iso(), self.auth_user, profile_id])
-                    try:
-                        con.execute(f"UPDATE application_view_profiles SET {','.join(fields)} WHERE id=?", values)
-                    except sqlite3.IntegrityError:
-                        return self.send_json({"error": "Профіль із такою назвою вже існує"}, 409)
-            return self.send_json({"saved": True, "id": profile_id})
-        remark_selection_match = re.fullmatch(r"/api/applications/([^/]+)/remark-selections", parsed.path)
-        if remark_selection_match:
-            submission_id = urllib.parse.unquote(remark_selection_match.group(1)); payload = self.read_json()
-            try:
-                ids = save_application_remark_selections(submission_id, payload.get("remark_ids"), self.auth_user)
-            except KeyError:
-                return self.send_json({"error": "Заявку не знайдено"}, 404)
-            except ValueError as exc:
-                return self.send_json({"error": str(exc)}, 400)
-            return self.send_json({"saved": True, "remark_ids": ids})
-        supplier_note_match = re.fullmatch(r"/api/suppliers/([^/]+)/note", parsed.path)
-        if supplier_note_match:
-            supplier_code = re.sub(r"\D", "", urllib.parse.unquote(supplier_note_match.group(1)))
-            payload = self.read_json(); note = str(payload.get("note") or "").strip()[:4000]
-            if not supplier_code:
-                return self.send_json({"error": "Некоректний код постачальника"}, 400)
-            changed_at = now_iso()
-            with db() as con:
-                current = con.execute("SELECT note FROM supplier_notes WHERE DIGITS(supplier_code)=?", (supplier_code,)).fetchone()
-                old_note = current[0] if current else ""
-                con.execute("""INSERT INTO supplier_notes(supplier_code,note,updated_at,updated_by)
-                  VALUES (?,?,?,?) ON CONFLICT(supplier_code) DO UPDATE SET note=excluded.note,
-                  updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
-                  (supplier_code, note, changed_at, self.auth_user))
-                con.execute("""INSERT INTO supplier_note_events
-                  (supplier_code,old_note,new_note,changed_at,changed_by) VALUES (?,?,?,?,?)""",
-                  (supplier_code, old_note, note, changed_at, self.auth_user))
-            return self.send_json({"saved": True, "supplier_code": supplier_code, "note": note,
-                                   "updated_at": changed_at, "updated_by": self.auth_user})
         if parsed.path == "/api/account":
             payload = self.read_json()
             display_name = str(payload.get("display_name") or "").strip()[:100]
@@ -7057,6 +7799,42 @@ class Handler(BaseHTTPRequestHandler):
                 for token, session in list(AUTH_SESSIONS.items()):
                     if session["username"] == username: AUTH_SESSIONS.pop(token, None)
             return self.send_json({"saved": True})
+        profile_match = re.fullmatch(r"/api/application-profiles/([^/]+)", parsed.path)
+        if profile_match:
+            profile_id = urllib.parse.unquote(profile_match.group(1)); payload = self.read_json()
+            with db() as con:
+                current = con.execute("SELECT * FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
+                if not current: return self.send_json({"error": "Профіль не знайдено"}, 404)
+                if current["is_system"] and self.auth_role != "admin":
+                    return self.send_json({"error": "Системний профіль може змінювати лише адміністратор"}, 403)
+                if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):
+                    return self.send_json({"error": "Можна змінювати лише власні профілі"}, 403)
+                fields, values = [], []
+                if "name" in payload:
+                    name = str(payload.get("name") or "").strip()
+                    if not name: return self.send_json({"error": "Вкажіть назву профілю"}, 400)
+                    fields.append("name=?"); values.append(name)
+                if "columns" in payload or "kpis" in payload or "sorts" in payload:
+                    try: current_layout = json.loads(current["columns_json"] or "[]")
+                    except json.JSONDecodeError: current_layout = []
+                    old_columns = current_layout.get("columns", []) if isinstance(current_layout, dict) else current_layout
+                    old_kpis = current_layout.get("kpis", []) if isinstance(current_layout, dict) else []
+                    old_sorts = current_layout.get("sorts", []) if isinstance(current_layout, dict) else []
+                    fields.append("columns_json=?")
+                    values.append(_profile_layout_json(payload.get("columns", old_columns),
+                                                       payload.get("kpis", old_kpis), payload.get("sorts", old_sorts)))
+                if fields:
+                    fields.extend(["updated_at=?", "updated_by=?"]); values.extend([now_iso(), self.auth_user, profile_id])
+                    try: con.execute(f"UPDATE application_view_profiles SET {','.join(fields)} WHERE id=?", values)
+                    except sqlite3.IntegrityError: return self.send_json({"error": "Профіль із такою назвою вже існує"}, 409)
+            return self.send_json({"saved": True, "id": profile_id})
+        remark_selection_match = re.fullmatch(r"/api/applications/([^/]+)/remark-selections", parsed.path)
+        if remark_selection_match:
+            submission_id = urllib.parse.unquote(remark_selection_match.group(1)); payload = self.read_json()
+            try: ids = save_application_remark_selections(submission_id, payload.get("remark_ids"), self.auth_user)
+            except KeyError: return self.send_json({"error": "Заявку не знайдено"}, 404)
+            except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
+            return self.send_json({"saved": True, "remark_ids": ids})
         document_match = re.fullmatch(r"/api/violation-reports/([^/]+)/documents/(customer|supplier)/([^/]+)", parsed.path)
         if document_match:
             report_id, source, document_id = (urllib.parse.unquote(value) for value in document_match.groups())
@@ -7153,6 +7931,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(result)
             except (TypeError, ValueError) as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        supplier_note_match = re.fullmatch(r"/api/suppliers/([^/]+)/note", parsed.path)
+        if supplier_note_match:
+            supplier_code = re.sub(r"\D", "", urllib.parse.unquote(supplier_note_match.group(1)))
+            if not supplier_code:
+                return self.send_json({"error": "Не визначено код постачальника"}, 400)
+            payload = self.read_json()
+            note = str(payload.get("note") or "").strip()
+            changed_at = now_iso()
+            with db() as con:
+                current = con.execute("SELECT note FROM supplier_notes WHERE DIGITS(supplier_code)=?",
+                                      (supplier_code,)).fetchone()
+                old_note = str(current["note"] or "") if current else ""
+                if old_note != note:
+                    con.execute("""INSERT INTO supplier_notes(supplier_code,note,updated_at,updated_by)
+                      VALUES (?,?,?,?) ON CONFLICT(supplier_code) DO UPDATE SET
+                      note=excluded.note,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                      (supplier_code, note, changed_at, self.auth_user))
+                    con.execute("""INSERT INTO supplier_note_events
+                      (supplier_code,old_note,new_note,changed_at,changed_by) VALUES (?,?,?,?,?)""",
+                      (supplier_code, old_note, note, changed_at, self.auth_user))
+            return self.send_json({"saved": True, "supplier_code": supplier_code, "note": note,
+                                   "updated_at": changed_at, "updated_by": self.auth_user})
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/nazk-control"):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
             payload = self.read_json()
@@ -7228,6 +8028,9 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             decision = con.execute("SELECT COALESCE(q.status,'pending') FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE s.id=?", (submission_id,)).fetchone()
             if not decision: return self.send_json({"error": "Заявку не знайдено"}, 404)
+            con.execute('BEGIN IMMEDIATE')
+            try: formed_protocols.guard_edit(con,submission_id,payload)
+            except ValueError as exc: return self.send_json({'error':str(exc)},409)
             current_controls = con.execute("""SELECT protocol_decision,compliance_status,marketplace_decision,
               protocol_number,protocol_date,manager_name,compliance_comments,
               generated_protocol_number,generated_protocol_date,generated_protocol_decision,protocol_generated_at,protocol_remarks
@@ -7332,20 +8135,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
-        profile_match = re.fullmatch(r"/api/application-profiles/([^/]+)", parsed.path)
-        if profile_match:
-            profile_id = urllib.parse.unquote(profile_match.group(1))
-            with db() as con:
-                current = con.execute("SELECT owner_key,is_system FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
-                if not current:
-                    return self.send_json({"error": "Профіль не знайдено"}, 404)
-                if current["is_system"] and self.auth_role != "admin":
-                    return self.send_json({"error": "Системний профіль може видаляти лише адміністратор"}, 403)
-                if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):
-                    return self.send_json({"error": "Можна видаляти лише власні профілі"}, 403)
-                con.execute("UPDATE application_view_profiles SET source_system_profile_id=NULL WHERE source_system_profile_id=?", (profile_id,))
-                con.execute("DELETE FROM application_view_profiles WHERE id=?", (profile_id,))
-            return self.send_json({"deleted": True, "id": profile_id})
         if parsed.path == "/api/account/avatar":
             with db() as con:
                 con.execute("DELETE FROM user_avatars WHERE username=?", (self.auth_user,))
@@ -7365,6 +8154,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"error": "Не можна видалити останнього активного адміністратора"}, 409)
                 con.execute("DELETE FROM user_avatars WHERE username=?", (username,))
                 con.execute("DELETE FROM user_preferences WHERE username=?", (username,))
+                con.execute("DELETE FROM auth_user_roles WHERE username=?", (username,))
                 con.execute("DELETE FROM auth_users WHERE username=?", (username,))
             with AUTH_SESSIONS_LOCK:
                 for token, session in list(AUTH_SESSIONS.items()):
@@ -7376,6 +8166,23 @@ class Handler(BaseHTTPRequestHandler):
             with db() as con:
                 con.execute("DELETE FROM user_avatars WHERE username=?", (username,))
             return self.send_json({"deleted": True, "username": username})
+        if parsed.path == '/api/admin/table-widths':
+            key=urllib.parse.parse_qs(parsed.query).get('table_key',[''])[0]
+            with db() as con: table_widths.reset(con,key)
+            return self.send_json({'reset':True})
+        profile_match = re.fullmatch(r"/api/application-profiles/([^/]+)", parsed.path)
+        if profile_match:
+            profile_id = urllib.parse.unquote(profile_match.group(1))
+            with db() as con:
+                current = con.execute("SELECT owner_key,is_system FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
+                if not current: return self.send_json({"error": "Профіль не знайдено"}, 404)
+                if current["is_system"] and self.auth_role != "admin":
+                    return self.send_json({"error": "Системний профіль може видаляти лише адміністратор"}, 403)
+                if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):
+                    return self.send_json({"error": "Можна видаляти лише власні профілі"}, 403)
+                con.execute("UPDATE application_view_profiles SET source_system_profile_id=NULL WHERE source_system_profile_id=?", (profile_id,))
+                con.execute("DELETE FROM application_view_profiles WHERE id=?", (profile_id,))
+            return self.send_json({"deleted": True, "id": profile_id})
         match = re.fullmatch(r"/api/admin/officers/(\d+)", parsed.path)
         if not match:
             return self.send_error(404)
@@ -7400,8 +8207,12 @@ def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
     RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    init_db()
-    init_reference_tables(DB_PATH)
+    if IS_WEB_ENV:
+        from integration.safe_startup import require_current_schema
+        require_current_schema(DB_PATH, ROOT)
+    else:
+        init_db()
+        init_reference_tables(DB_PATH)
 
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
     print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
@@ -7411,6 +8222,7 @@ def main():
     SERVER_LOG.info("PQM startup environment=%s host=%s port=%s data_dir=%s db=%s",
                     PQM_ENV, HOST, PORT, DATA_DIR, DB_PATH)
     if ENABLE_SCHEDULER:
+        print("Starting Prozorro scheduler", flush=True)
         threading.Thread(target=hourly_sync_scheduler, daemon=True).start()
     def reference_scheduler():
         last_date = ""

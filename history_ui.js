@@ -9,6 +9,8 @@ function historyDateCell(value){
 }
 let historyPage=1,historyPages=1,historyRequest=0,historyTimer,historyItems=[];
 let historySorts=[{key:'date',direction:'desc'}];
+function historySupplierCode(){return document.querySelector('[data-history="code"]').value.trim()}
+function syncHistorySupplierCardButton(){const button=document.querySelector('#historySupplierCard'),code=historySupplierCode();button.disabled=!code;button.dataset.supplierCode=code;button.title=code?`Відкрити картку постачальника ${code}`:'Встановіть точний фільтр ЄДРПОУ / РНОКПП'}
 function drawHistorySort(){
   document.querySelectorAll('[data-history-sort]').forEach(button=>{const i=historySorts.findIndex(x=>x.key===button.dataset.historySort);button.querySelector('small').textContent=i<0?'':`${historySorts[i].direction==='asc'?'↑':'↓'}${i+1}`;button.setAttribute('aria-label',`${button.dataset.label}${i<0?'':`, ${historySorts[i].direction}, пріоритет ${i+1}`}`)});
 }
@@ -29,7 +31,7 @@ async function loadApplicationHistory(){
   try{
     const data=await request(`/api/application-history?${q}`);if(ticket!==historyRequest)return;
     historyItems=data.items;historyPages=data.pages;
-    $('#historyTotal').textContent=String(data.total);
+    $('#historyTotal').textContent=String(data.total);syncHistorySupplierCardButton();
     renderHistoryTable();
     $('#historyCount').textContent=`${data.total} заявок · сторінка ${data.page} із ${data.pages}`;
     $('#historyPrev').disabled=historyPage<=1;$('#historyNext').disabled=historyPage>=historyPages;
@@ -37,14 +39,16 @@ async function loadApplicationHistory(){
 }
 function openSupplierHistory(code){
   $('#supplierProfileDialog').close();document.querySelectorAll('[data-history]').forEach(el=>el.value='');
-  document.querySelector('[data-history="code"]').value=code;historyPage=1;showModule('history');loadApplicationHistory();
+  document.querySelector('[data-history="code"]').value=String(code||'').trim();historyPage=1;syncHistorySupplierCardButton();showModule('history');loadApplicationHistory();
 }
+document.querySelector('#historyHeadingActions').insertAdjacentHTML('afterbegin','<button type="button" id="historySupplierCard" disabled>Картка постачальника</button>');
+document.querySelector('#historySupplierCard').onclick=()=>{const code=historySupplierCode();if(code)openSupplierProfile(code)};
 $('#historyNav').onclick=()=>{showModule('history');loadApplicationHistory()};
-$('#historyFilters').oninput=()=>{clearTimeout(historyTimer);historyTimer=setTimeout(()=>{historyPage=1;loadApplicationHistory()},300)};
-$('#historyReset').onclick=()=>{document.querySelectorAll('[data-history]').forEach(el=>el.value='');historyPage=1;loadApplicationHistory()};
+$('#historyFilters').oninput=()=>{syncHistorySupplierCardButton();clearTimeout(historyTimer);historyTimer=setTimeout(()=>{historyPage=1;loadApplicationHistory()},300)};
+$('#historyReset').onclick=()=>{document.querySelectorAll('[data-history]').forEach(el=>el.value='');historyPage=1;syncHistorySupplierCardButton();loadApplicationHistory()};
 $('#historyPrev').onclick=()=>{if(historyPage>1){historyPage--;loadApplicationHistory()}};
 $('#historyNext').onclick=()=>{if(historyPage<historyPages){historyPage++;loadApplicationHistory()}};
-$('#historyRows').onclick=e=>{const b=e.target.closest('[data-history-docs]');if(b){const x=historyItems[Number(b.dataset.historyDocs)];openDocs(mapRow(x),x.documents,'Документи історичної заявки')}};
+$('#historyRows').onclick=e=>{const b=e.target.closest('[data-history-docs]');if(b){const x=historyItems[Number(b.dataset.historyDocs)];openHistoryDocuments(mapRow(x),x.document_groups||{supplier:x.documents||[],decision:x.decision_documents||[],registry:x.registry_documents||[]})}};
 if(new URLSearchParams(location.search).get('view')==='history'){showModule('history');loadApplicationHistory()}
 
 // Existing remarks catalogue: presentation/revision only, no copy of historical text.
@@ -62,9 +66,4 @@ loadReferenceRemarks=async function(){try{remarksItems=(await request('/api/rema
 function showSimilarRemarks(){const point=normalizedRemark($('#refRemarkPoint').value),text=normalizedRemark($('#refRemarkText').value),words=new Set(text.split(' ').filter(x=>x.length>3));const similar=remarksItems.filter(x=>point&&normalizedRemark(x.point)===point||words.size&&[...words].filter(w=>normalizedRemark(x.text).includes(w)).length/words.size>=0.5).slice(0,5);$('#remarkSimilar').textContent=(point||text)&&similar.length?'Схожі записи (не автоматичні дублікати): '+similar.map(x=>x.point+' — '+x.text).join(' | '):''}
 $('#refRemarkPoint').addEventListener('input',showSimilarRemarks);$('#refRemarkText').addEventListener('input',showSimilarRemarks);
 
-// Admin-only, schema-backed field inventory. Unmapped semantics stay explicitly unknown.
-document.querySelector('#administrationView .reference-tabs').insertAdjacentHTML('beforeend','<button type="button" id="schemaTab" data-admin-tab="schema">Схема PQM</button>');
-$('#administrationView').insertAdjacentHTML('beforeend','<section id="adminSchemaPanel" class="admin-panel" hidden><h2>Схема PQM</h2><p>Фактичні поля SQLite та metadata пошуку. Значення даних не відображаються. Template engine не реалізовано.</p><input id="schemaSearch" placeholder="Таблиця / поле…"><div class="history-table"><table><thead><tr><th>Назва</th><th>Key</th><th>Таблиця</th><th>Тип</th><th>Джерело / поле</th><th>Примітки</th><th>У шаблонах</th></tr></thead><tbody id="schemaRows"></tbody></table></div></section>');
-let schemaItems=[];function drawSchema(){const q=$('#schemaSearch').value.toLowerCase();$('#schemaRows').innerHTML=schemaItems.filter(x=>(x.table+' '+x.key+' '+x.label).toLowerCase().includes(q)).map(x=>`<tr><td>${esc(x.label)}</td><td>${esc(x.key)}</td><td>${esc(x.table)}</td><td>${esc(x.type)}</td><td>${esc(x.source)}<small>${esc(x.source_field)}</small></td><td>${esc(x.notes)}</td><td>Не позначено</td></tr>`).join('')}
-const baseAdminTab=setAdminTab;setAdminTab=function(name){$('#adminSchemaPanel').hidden=name!=='schema';if(name!=='schema')return baseAdminTab(name);document.querySelectorAll('#administrationView .admin-panel').forEach(x=>x.hidden=x.id!=='adminSchemaPanel');document.querySelectorAll('[data-admin-tab]').forEach(x=>x.classList.toggle('active',x.dataset.adminTab==='schema'));request('/api/admin/schema').then(data=>{schemaItems=data.items;drawSchema()}).catch(e=>$('#schemaRows').textContent=e.message)};
-$('#schemaTab').onclick=()=>setAdminTab('schema');$('#schemaSearch').oninput=drawSchema;
+// The read-only data dictionary tab is implemented in schema_ui.js.
