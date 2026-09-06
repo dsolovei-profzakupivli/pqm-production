@@ -189,6 +189,28 @@ class WebAcceptance(unittest.TestCase):
                 self.assertTrue(result['local_review_completed']);self.assertTrue(result['is_read_only'])
                 self.assertEqual(bool(attempt),result['has_official_decision'])
 
+    def test_09_public_favicons(self):
+        from html.parser import HTMLParser
+        import struct
+        class IconLinks(HTMLParser):
+            def __init__(self):super().__init__();self.items=[]
+            def handle_starttag(self, tag, attrs):
+                data=dict(attrs)
+                if tag=='link' and data.get('rel') in {'icon','apple-touch-icon'}:self.items.append(data)
+        status,html,_=self.request('/',None)
+        self.assertEqual(200,status)
+        links=IconLinks();links.feed(html.decode())
+        expected={'/assets/pqm-search-icon.png':192,'/assets/pqm-tab-icon.png':32}
+        self.assertEqual(set(expected),{item['href'] for item in links.items})
+        for item in links.items:
+            status,raw,headers=self.request(item['href'],None)
+            self.assertEqual(200,status)
+            self.assertEqual('image/png',headers['Content-Type'])
+            self.assertEqual(b'\x89PNG\r\n\x1a\n',raw[:8])
+            size=expected[item['href']]
+            self.assertEqual((size,size),struct.unpack('>II',raw[16:24]))
+            if item['rel']=='icon':self.assertEqual(f'{size}x{size}',item['sizes'])
+
 if __name__=='__main__':
     if '--serve' in sys.argv:
         fixture();print('Synthetic preview: http://127.0.0.1:18080',flush=True)
