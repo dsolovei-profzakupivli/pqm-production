@@ -476,6 +476,8 @@ SYNC_STATE = {"running": False, "message": "Синхронізацію ще не
               "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None,
               "last_completed_at": None, "last_result": None, "last_message": None, "last_mode": None}
 SYNC_STATE_LOCK = threading.Lock()
+PROZORRO_SCHEDULER_THREAD = None
+SCHEDULER_HEARTBEAT_AT = None
 VIOLATION_SYNC_STATE = {"running": False, "message": "Звернення ще не синхронізувалися", "updated_at": None,
                         "processed": 0, "total": 0, "errors": 0, "stop_requested": False}
 VIOLATION_SYNC_LOCK = threading.Lock()
@@ -1737,6 +1739,8 @@ def sync_all_worker() -> None:
 
 def sync_incremental_worker() -> None:
     started = datetime.now(timezone.utc)
+    SYNC_STATE['last_automatic_started_at'] = started.isoformat()
+    SERVER_LOG.info('Prozorro automatic sync started')
     SYNC_STATE.update(running=True, mode="incremental", started_at=started.isoformat(), message="Підготовка щогодинного оновлення…")
     try:
         result = sync_incremental_active_frameworks()
@@ -1750,11 +1754,18 @@ def sync_incremental_worker() -> None:
                           last_message=SYNC_STATE["message"], last_mode="incremental")
     except Exception as exc:
         SERVER_LOG.exception("Incremental Prozorro synchronization failed")
+        result = {'status': 'failed'}
         SYNC_STATE["message"] = f"Помилка щогодинного оновлення: {exc}"
         SYNC_STATE.update(last_completed_at=now_iso(), last_result={"status": "failed"},
                           last_message=SYNC_STATE["message"], last_mode="incremental")
     finally:
-        SYNC_STATE.update(running=False, updated_at=now_iso(), duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 1))
+        summary = {'status': 'failed' if result.get('status') == 'failed' else ('partial' if result.get('errors') else 'ok'),
+                   'frameworks': result.get('frameworks'), 'completed': result.get('completed'),
+                   'errors': len(result.get('errors') or [])}
+        SYNC_STATE.update(last_automatic_completed_at=now_iso(), last_automatic_result=summary,
+                          updated_at=now_iso(), duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 1))
+        SERVER_LOG.info('Prozorro automatic sync completed result=%s duration_seconds=%s', summary, SYNC_STATE['duration_seconds'])
+        SYNC_STATE['running'] = False
 
 
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = ()) -> bool:
@@ -1782,32 +1793,62 @@ def next_hourly_run(moment: datetime | None = None) -> datetime:
     return candidate
 
 
+def restore_sync_data_timestamp() -> None:
+    """Restore a data timestamp, not an invented successful full-run history."""
+    try:
+        with db() as con:
+            last_value = con.execute('SELECT MAX(synced_at) FROM submissions').fetchone()[0]
+        SYNC_STATE['last_data_sync_at'] = last_value
+    except Exception:
+        SERVER_LOG.exception('Could not restore persisted sync data timestamp')
+
+
+def sync_status_payload() -> dict:
+    payload = dict(SYNC_STATE)
+    alive = bool(ENABLE_SCHEDULER and PROZORRO_SCHEDULER_THREAD and PROZORRO_SCHEDULER_THREAD.is_alive())
+    payload.update(scheduler_enabled=ENABLE_SCHEDULER, scheduler_running=alive,
+                   scheduler_heartbeat_at=SCHEDULER_HEARTBEAT_AT,
+                   next_run_at=payload.get('next_run_at') if alive else None)
+    return payload
+
+
+def trigger_scheduled_syncs(reason: str) -> None:
+    # Separate guards: one busy/failed job must not suppress the other one.
+    for name, trigger in (
+        ('prozorro', lambda: start_prozorro_sync(sync_incremental_worker, mode='incremental',
+                                               message='Підготовка щогодинного оновлення…')),
+        ('appeals', start_violation_reports_sync),
+    ):
+        try:
+            started = trigger()
+            SERVER_LOG.info('Scheduled job trigger job=%s reason=%s started=%s', name, reason, started)
+        except Exception:
+            SERVER_LOG.exception('Scheduled job trigger failed job=%s reason=%s; next cycle remains enabled', name, reason)
+
+
 def hourly_sync_scheduler() -> None:
-    # Run a missed update shortly after startup, then every hour at :05 local time.
-    SYNC_STATE["next_run_at"] = next_hourly_run().isoformat()
+    global SCHEDULER_HEARTBEAT_AT
+    # Run a missed update shortly after startup, then every hour at :05.
+    SYNC_STATE['next_run_at'] = next_hourly_run().isoformat()
+    SCHEDULER_HEARTBEAT_AT = now_iso()
     time.sleep(10)
-    with db() as con:
-        last_value = con.execute("SELECT MAX(synced_at) FROM submissions").fetchone()[0]
+    last_value = SYNC_STATE.get('last_data_sync_at')
     try:
         last_sync = datetime.fromisoformat((last_value or "").replace("Z", "+00:00"))
     except ValueError:
         last_sync = None
-    if last_value and not SYNC_STATE["updated_at"]:
-        SYNC_STATE["updated_at"] = last_value
     if last_sync is None or (datetime.now(timezone.utc) - last_sync.astimezone(timezone.utc)).total_seconds() >= 3600:
-        start_prozorro_sync(sync_incremental_worker, mode="incremental",
-                            message="Підготовка щогодинного оновлення…")
+        trigger_scheduled_syncs('startup_catchup')
     while True:
         target = next_hourly_run()
         SYNC_STATE["next_run_at"] = target.isoformat()
         while True:
+            SCHEDULER_HEARTBEAT_AT = now_iso()
             remaining = (target - datetime.now().astimezone()).total_seconds()
             if remaining <= 0:
                 break
             time.sleep(min(30, remaining))
-        start_prozorro_sync(sync_incremental_worker, mode="incremental",
-                            message="Підготовка щогодинного оновлення…")
-        start_violation_reports_sync()
+        trigger_scheduled_syncs('hourly')
 
 
 def decision_label(status: str | None) -> str:
@@ -7306,7 +7347,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             with db() as con:
                 counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("frameworks", "submissions", "qualifications")}
-            return self.send_json({"ok": True, "counts": counts, "sync": SYNC_STATE})
+            return self.send_json({"ok": True, "counts": counts, "sync": sync_status_payload()})
         if parsed.path == "/api/auth/me":
             return self.send_json({"username": self.auth_user, "role": self.auth_role,
                                    "managed_role": self.auth_access['code'],
@@ -8667,11 +8708,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global PROZORRO_SCHEDULER_THREAD
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
     RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     init_reference_tables(DB_PATH)
+    restore_sync_data_timestamp()
     try:
         counts = {} if env_flag("PQM_RELEASE_SCHEMA_ONLY", IS_WEB_ENV) else rebuild_operational_tasks()
         SERVER_LOG.info("Operational task builder completed counts=%s", counts)
@@ -8687,7 +8730,9 @@ def main():
                     PQM_ENV, HOST, PORT, DATA_DIR, DB_PATH)
     if ENABLE_SCHEDULER:
         print("Starting Prozorro scheduler", flush=True)
-        threading.Thread(target=hourly_sync_scheduler, daemon=True).start()
+        PROZORRO_SCHEDULER_THREAD = threading.Thread(target=hourly_sync_scheduler, name='pqm-prozorro-scheduler', daemon=True)
+        PROZORRO_SCHEDULER_THREAD.start()
+        SERVER_LOG.info('Prozorro scheduler started schedule=hourly_at_05')
     def reference_scheduler():
         last_date = ""
         while True:
