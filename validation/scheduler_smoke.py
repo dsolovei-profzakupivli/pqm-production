@@ -61,6 +61,15 @@ class SchedulerTests(unittest.TestCase):
             self.assertFalse(s.start_prozorro_sync(lambda: None, mode='incremental', message='fixture'))
             thread.assert_not_called()
 
+    def test_appeals_thread_start_failure_releases_slot(self):
+        with patch.dict(s.VIOLATION_SYNC_STATE, {'running': False}), patch.object(s.threading, 'Thread') as thread:
+            thread.return_value.start.side_effect = RuntimeError('synthetic')
+            with self.assertRaises(RuntimeError):
+                s.start_violation_reports_sync()
+            self.assertFalse(s.VIOLATION_SYNC_STATE['running'])
+            thread.return_value.start.side_effect = None
+            self.assertTrue(s.start_violation_reports_sync())
+
     def test_clock_runs_hourly_and_only_catches_up_when_stale(self):
         class EndClock(Exception):
             pass

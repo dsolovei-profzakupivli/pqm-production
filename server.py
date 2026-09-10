@@ -4407,6 +4407,9 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
         VIOLATION_SYNC_STATE["message"] = f"Помилка синхронізації звернень: {exc}"
     finally:
         VIOLATION_SYNC_STATE.update(running=False, updated_at=now_iso())
+        SERVER_LOG.info('Appeals sync completed processed=%s total=%s errors=%s failed=%s',
+                        VIOLATION_SYNC_STATE['processed'], VIOLATION_SYNC_STATE['total'],
+                        VIOLATION_SYNC_STATE['errors'], VIOLATION_SYNC_STATE['message'].startswith('Помилка'))
 
 
 def start_violation_reports_sync() -> bool:
@@ -4416,7 +4419,11 @@ def start_violation_reports_sync() -> bool:
             return False
         VIOLATION_SYNC_STATE.update(running=True, message="Отримання переліку звернень…",
                                     processed=0, total=0, errors=0)
-        threading.Thread(target=sync_violation_reports_worker, args=(True,), daemon=True).start()
+        try:
+            threading.Thread(target=sync_violation_reports_worker, args=(True,), name='pqm-appeals-sync', daemon=True).start()
+        except Exception:
+            VIOLATION_SYNC_STATE.update(running=False, message='Не вдалося запустити синхронізацію звернень')
+            raise
         return True
 
 
