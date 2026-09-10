@@ -231,6 +231,19 @@ class WebAcceptance(unittest.TestCase):
 
 if __name__=='__main__':
     if '--serve' in sys.argv:
-        fixture();print('Synthetic preview: http://127.0.0.1:18080',flush=True)
+        fixture()
+        # A populated heading is essential for responsive checks: an empty
+        # appeals registry hides authority cards and masks a collapsed table.
+        with server.db() as con:
+            for index in range(12):
+                con.execute('''INSERT INTO violation_reports
+                    (id,report_id,status,date_published,author_name,defendant_name,
+                     authority_name,authority_code,reason,raw_json,synced_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                    (f'layout-{index}',f'UA-D-SYNTHETIC-{index:03d}','pending',
+                     '2026-09-10T08:00:00Z','Synthetic Customer','Synthetic Supplier',
+                     f'Synthetic authority {index%3+1}',f'0000000{index%3+1}',
+                     'goodsNonCompliance','{}','fixture'))
+        print('Synthetic preview: http://127.0.0.1:18080',flush=True)
         server.ThreadingHTTPServer(('127.0.0.1',18080),server.Handler).serve_forever()
     else:unittest.main(verbosity=2)
