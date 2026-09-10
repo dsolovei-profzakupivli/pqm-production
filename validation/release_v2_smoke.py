@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import unittest
+from lxml import html
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import web_smoke as web
@@ -18,6 +19,16 @@ class ReleaseV2Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         web.fixture()
+
+    def test_web_account_controls_belong_to_admin_not_appeals(self):
+        tree=html.fromstring((web.ROOT/'index.html').read_text())
+        for ident in ('adminUserForm','adminUserAvatarFile','adminUsersBody'):
+            nodes=tree.xpath('//*[@id=$id]',id=ident)
+            self.assertEqual(1,len(nodes),ident)
+            self.assertTrue(nodes[0].xpath('ancestor::section[@id="adminOfficersPanel"]'),ident)
+            self.assertTrue(nodes[0].xpath('ancestor::main[@id="administrationView"]'),ident)
+            self.assertFalse(nodes[0].xpath('ancestor::main[@id="requestsView"]'),ident)
+        self.assertTrue(tree.xpath('//main[@id="requestsView"]/section[contains(@class,"requests-toolbar")]'))
 
     def test_additive_release_twice_preserves_every_existing_business_value(self):
         with web.server.db() as con:
