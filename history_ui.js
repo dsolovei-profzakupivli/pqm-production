@@ -63,7 +63,9 @@ function drawReferenceRemarks(){
 }
 loadReferenceRemarks=async function(){try{remarksItems=(await request('/api/remarks-catalog?all=1')).items;drawReferenceRemarks()}catch(e){$('#refRemarksList').textContent=e.message}};
 ['remarkRevisionSearch','remarkRevisionSort','remarkRevisionDuplicates','remarkRevisionInactive'].forEach(id=>$('#'+id).oninput=drawReferenceRemarks);
-function showSimilarRemarks(){const point=normalizedRemark($('#refRemarkPoint').value),text=normalizedRemark($('#refRemarkText').value),words=new Set(text.split(' ').filter(x=>x.length>3));const similar=remarksItems.filter(x=>point&&normalizedRemark(x.point)===point||words.size&&[...words].filter(w=>normalizedRemark(x.text).includes(w)).length/words.size>=0.5).slice(0,5);$('#remarkSimilar').textContent=(point||text)&&similar.length?'Схожі записи (не автоматичні дублікати): '+similar.map(x=>x.point+' — '+x.text).join(' | '):''}
-$('#refRemarkPoint').addEventListener('input',showSimilarRemarks);$('#refRemarkText').addEventListener('input',showSimilarRemarks);
+function showSimilarRemarks(){const point=normalizedRemark($('#referenceRemarkPoint').value),text=normalizedRemark($('#referenceRemarkText').value),words=new Set(text.split(' ').filter(x=>x.length>3));const similar=remarksItems.filter(x=>point&&normalizedRemark(x.point)===point||words.size&&[...words].filter(w=>normalizedRemark(x.text).includes(w)).length/words.size>=0.5).slice(0,5);$('#remarkSimilar').textContent=(point||text)&&similar.length?'Схожі записи (не автоматичні дублікати): '+similar.map(x=>x.point+' — '+x.text).join(' | '):''}
+$('#referenceRemarkPoint').addEventListener('input',showSimilarRemarks);$('#referenceRemarkText').addEventListener('input',showSimilarRemarks);
+$('#referenceRemarkText').after($('#remarkSimilar'));
+$('#referenceRemarkDialog').addEventListener('close',()=>{$('#remarkSimilar').textContent=''});
 
 // The read-only data dictionary tab is implemented in schema_ui.js.

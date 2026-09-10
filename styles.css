@@ -331,3 +331,16 @@ body[data-density="compact"] table th,body[data-density="compact"] table td{padd
 
 #applicationShell[hidden]{display:none!important}
 .account-menu{flex-shrink:0;gap:5px}.account-menu .role{display:none}.account-settings-button{max-width:115px;padding:5px}.account-menu #logoutBtn{padding:5px}.account-menu .current-user-avatar{width:28px;height:28px}
+
+/* WEB account controls must not cover configurable LOCAL navigation buttons. */
+.topbar .brand{flex:0 0 270px;min-width:0}
+.topbar #mainNav{justify-content:flex-start;overflow-x:auto}
+@media(max-width:1600px){
+  .topbar{height:auto;min-height:72px;flex-wrap:wrap;gap:8px 14px;padding-block:8px}
+  .topbar .brand{order:1;flex:1 1 270px}
+  .topbar .service-nav{order:2}
+  .topbar .account-menu{order:3}
+  .topbar #pqmBack{order:4}
+  .topbar #mainNav{order:5;flex:1 0 100%;align-self:auto;min-height:44px;flex-wrap:wrap;overflow:visible}
+  .topbar #mainNav .main-nav-text{min-height:40px}
+}
