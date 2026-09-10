@@ -8,7 +8,13 @@
   button.style.cssText='margin:4px 12px;flex:0 0 auto';document.querySelector('header')?.append(button);
   if(!button.isConnected)document.body.prepend(button);
   const dialog=document.getElementById('supplierProfileDialog'),dialogButton=button.cloneNode(true);dialogButton.id='pqmDialogBack';dialog.prepend(dialogButton);
-  function update(){for(const b of [button,dialogButton]){b.hidden=!current?.previous;b.disabled=restoring}}
+  function update(){button.hidden=!current?.previous;button.disabled=restoring;
+    // The sibling Back button is not part of a floating form or a nested task card.
+    dialogButton.hidden=!current?.previous||dialog.dataset.detailWindow==='floating'||Boolean(document.getElementById('operationalTaskDialog')?.open);
+    dialogButton.disabled=restoring}
+  const contextObserver=new MutationObserver(update);
+  contextObserver.observe(dialog,{attributes:true,attributeFilter:['open','data-detail-window']});
+  const taskDialog=document.getElementById('operationalTaskDialog');if(taskDialog)contextObserver.observe(taskDialog,{attributes:true,attributeFilter:['open']});
   function values(){const root=view();return [...(root?.querySelectorAll('input[id],select[id],textarea[id]')||[])].filter(e=>!e.closest('tbody,dialog')&&!['password','file','hidden'].includes(e.type)&&(activeModule!=='administration'||e.closest('#adminSchemaPanel'))).map(e=>({id:e.id,value:e.value,checked:e.checked,selected:e.multiple?[...e.selectedOptions].map(o=>o.value):null}))}
   function restoreValues(items){for(const x of items||[]){const e=document.getElementById(x.id);if(!e)continue;e.value=x.value;if('checked'in e)e.checked=x.checked;if(x.selected)for(const o of e.options)o.selected=x.selected.includes(o.value)}}
   const models={
@@ -27,11 +33,14 @@
   function enter(route){if(restoring)return;if(current&&JSON.stringify(current.route)===JSON.stringify(route))return;
     if(current?.fresh&&current.route.module===route.module&&!route.supplier&&!current.route.supplier){current.route=route;return}
     snapshot();const previous=current?.id||null;current={id:++serial,previous,route,fresh:true};const added=current;queueMicrotask(()=>added.fresh=false);entries.set(current.id,current);const url=new URL(location.href);url.searchParams.set('view',route.module);history.pushState({pqmNavigation:{session,id:current.id}},'',url);update()}
-  const originalModule=showModule,originalTab=setAdminTab,originalSupplier=openSupplierProfile,originalReference=setReferenceTab;
-  showModule=function(name){if(!moduleNames.includes(name))name='applications';enter({module:name,tab:name==='administration'?tab:null,...(name==='references'?{reference:referenceTab}:{})});if(dialog.open)dialog.close();return originalModule(name)};
+  const requestDialog=document.getElementById('requestDetailsDialog');
+  const originalModule=showModule,originalTab=setAdminTab,originalSupplier=openSupplierProfile,originalReference=setReferenceTab,originalRequestById=openViolationReportById,originalRequestByIndex=openViolationReport;
+  showModule=function(name){if(!moduleNames.includes(name))name='applications';enter({module:name,tab:name==='administration'?tab:null,...(name==='references'?{reference:referenceTab}:{})});if(dialog.open)dialog.close();if(requestDialog?.open)requestDialog.close();return originalModule(name)};
   setAdminTab=function(name){if(activeModule==='administration')enter({module:'administration',tab:name});tab=name;return originalTab(name)};
   setReferenceTab=function(name){if(activeModule==='references')enter({module:'references',tab:null,reference:name});return originalReference(name)};
   openSupplierProfile=async function(code,context={}){enter({module:activeModule,tab:activeModule==='administration'?tab:null,supplier:String(code),context});const result=await originalSupplier(code,context);update();return result};
+  openViolationReportById=async function(id){enter({module:'requests',request:String(id)});const result=await originalRequestById(id);update();return result};
+  openViolationReport=async function(index){const id=violationReports[index]?.id;if(id)enter({module:'requests',request:String(id)});const result=await originalRequestByIndex(index);update();return result};
   async function restore(entry){restoring=true;update();try{
     clearTimeout(searchTimer);clearTimeout(historyTimer);clearTimeout(supplierRegistryTimer);clearTimeout(frameworkTimer);clearTimeout(workQueueTimer);clearTimeout(requestsTimer);clearTimeout(referenceTimer);
     if(dialog.open)dialog.close();current=entry;originalModule(entry.route.module);
@@ -46,6 +55,7 @@
     if(entry.model)await models[entry.route.module]?.load();
     if(entry.route.module==='applications'&&entry.model){models.applications.set(clone(entry.model));render()}
     if(entry.route.supplier)await originalSupplier(entry.route.supplier,entry.route.context);
+    if(entry.route.request)await originalRequestById(entry.route.request);
     restoreValues(entry.controls);
     if(entry.route.tab==='schema')document.getElementById('schemaSearch').dispatchEvent(new Event('input',{bubbles:true}));
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
@@ -56,7 +66,7 @@
   let restoreQueue=Promise.resolve();
   function enqueue(entry){restoreQueue=restoreQueue.then(()=>restore(entry)).catch(()=>toast('Не вдалося повністю відновити екран.','warning'))}
   window.addEventListener('popstate',event=>{snapshot();const token=event.state?.pqmNavigation,entry=token?.session===session?entries.get(token.id):null;if(entry){enqueue(entry)}else{current={id:++serial,previous:null,route:{module:new URL(location.href).searchParams.get('view')||'applications',tab:null}};entries.set(current.id,current);enqueue(current);nativeReplace({pqmNavigation:{session,id:current.id}},'',location.href)}});
-  const back=()=>{if(current?.previous&&!restoring){snapshot();history.back()}};button.onclick=dialogButton.onclick=back;
+  const back=()=>{if(current?.previous&&!restoring){snapshot();history.back()}};button.onclick=dialogButton.onclick=back;window.pqmNavigationBack=back;
   // Capture before legacy links close the supplier dialog or alter destination filters.
   document.addEventListener('click',snapshot,true);
   dialog.addEventListener('close',()=>{if(!restoring&&current?.route.supplier&&!dialog.open)back()});

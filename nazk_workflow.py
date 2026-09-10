@@ -228,6 +228,42 @@ def get_submission_nazk_control(con: sqlite3.Connection, submission_id: str) -> 
     return dict(row) if row else None
 
 
+def submission_manager_tax_context(con, submission_id):
+    row=con.execute("""SELECT s.supplier_code,af.manager_name FROM submissions s
+      LEFT JOIN application_fields af ON af.submission_id=s.id WHERE s.id=?""",(submission_id,)).fetchone()
+    if not row: raise ValueError('Заявку не знайдено')
+    control=get_submission_nazk_control(con,submission_id) or {}
+    name=row['manager_name'] or control.get('manager_name') or ''
+    managers=con.execute('SELECT * FROM supplier_managers WHERE supplier_code=? AND is_current=1',(row['supplier_code'],)).fetchall()
+    manager=dict(managers[0]) if len(managers)==1 else {}
+    same=bool(manager and normalize_name(name)==normalize_name(manager['manager_name']))
+    if control.get('manager_id') and control['manager_id']!=manager.get('id'): same=False
+    # Never carry a submission value across manager identities.
+    local_same=bool(same and normalize_name(control.get('manager_name'))==normalize_name(name))
+    canonical=(manager.get('manager_tax_id') or '') if same else ''
+    local=(control.get('manager_tax_id') or '') if local_same else ''
+    return {'manager_id':manager.get('id') if same else None,'value':canonical or local,
+            'source':'manager' if canonical else 'submission' if local else '', 'editable':same}
+
+
+def save_submission_manager_tax_id(con,submission_id,value,actor,expected_manager_id=None,timestamp=None):
+    context=submission_manager_tax_context(con,submission_id)
+    manager_id=context['manager_id']
+    if not manager_id or (expected_manager_id is not None and str(expected_manager_id)!=str(manager_id)):
+        raise ValueError('Поточний керівник змінився або його identity не підтверджено. Оновіть картку.')
+    digits=str(value or '').strip()
+    if not re.fullmatch(r'[0-9]{10}',digits): raise ValueError('РНОКПП керівника повинен містити 10 цифр')
+    old=con.execute('SELECT manager_tax_id FROM supplier_managers WHERE id=?',(manager_id,)).fetchone()[0] or ''
+    if old!=digits:
+        stamp=timestamp or now_iso()
+        con.execute("""UPDATE supplier_managers SET manager_tax_id=?,manager_tax_id_source='qualification_manual',
+          manager_tax_id_verified_at=?,manager_tax_id_verified_by=?,updated_at=? WHERE id=? AND is_current=1""",
+          (digits,stamp,actor,stamp,manager_id))
+        con.execute('INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value) VALUES(?,?,?,?,?,?)',
+          (submission_id,stamp,actor,f'manager_tax_id:{manager_id}',old,digits))
+    return submission_manager_tax_context(con,submission_id)
+
+
 def get_submission_nazk_state(con: sqlite3.Connection, submission_id: str,
                               registry_names: set[str] | None = None) -> dict:
     """Return the authoritative, computed NАЗК state of one application.
@@ -577,11 +613,7 @@ def complete_submission_nazk_check(
             raise ValueError("РНОКПП керівника повинен містити 10 цифр")
         if not manager_id:
             raise ValueError("Неможливо зберегти РНОКПП без надійного manager_id")
-        con.execute(
-            """UPDATE supplier_managers SET manager_tax_id=?,manager_tax_id_source='qualification_manual',
-               manager_tax_id_verified_at=?,manager_tax_id_verified_by=?,updated_at=? WHERE id=?""",
-            (digits, timestamp, checked_by, timestamp, manager_id),
-        )
+        save_submission_manager_tax_id(con,submission_id,digits,checked_by,manager_id,timestamp)
     cursor = con.execute(
         """INSERT INTO supplier_nazk_checks
            (supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,

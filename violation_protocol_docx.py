@@ -11,14 +11,17 @@ import shutil
 import os
 import uuid
 import zipfile
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from docx import Document
-from docx.enum.text import WD_COLOR_INDEX
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Cm, Pt, RGBColor
 from lxml import etree
 from protocol_template import validate as validate_application_template
 
@@ -34,6 +37,59 @@ TEMPLATES = {
                              if os.environ.get("PQM_DATA_DIR") else Path(__file__).with_name("templates") / "application_protocol.docx"),
 }
 TOKEN_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
+LEGAL_REFERENCE_RE = re.compile(r"(?<!\w)(№|пп\.|п\.|ст\.|ч\.|абз\.)[ \u00a0]+(?=\d)", re.IGNORECASE)
+ENTITY_NAME_TOKENS = {
+    "customer_name", "customer_name_genitive", "customer_name_dative", "customer_name_accusative",
+    "supplier_name", "supplier_short_name", "supplier_name_genitive", "supplier_name_dative",
+    "supplier_name_accusative",
+}
+
+
+class ProtocolContextValidationError(ValueError):
+    """Expected missing/unknown template data, safe to return as HTTP 422."""
+
+    def __init__(self, message: str, *, missing=(), unknown=()):
+        super().__init__(message)
+        self.missing = tuple(sorted(set(missing)))
+        self.unknown = tuple(sorted(set(unknown)))
+CONDITIONAL_TOKEN_FLAGS = {
+    "customer_documents": "has_customer_documents",
+    "refusal_date": "has_written_refusal",
+    "refusal_document": "has_written_refusal",
+    "refusal_outgoing_number": "has_written_refusal",
+    "contract_date": "has_contract",
+    "contract_number": "has_contract",
+}
+DOCUMENT_TOKENS = {"customer_documents", "supplier_documents"}
+FIELD_LABELS = {
+    "protocol_number": "Номер протоколу", "protocol_date": "Дата протоколу",
+    "report_id": "Номер звернення", "procurement_id": "Номер закупівлі",
+    "procurement_date": "Дата оголошення закупівлі", "cpv_category": "Код ДК",
+    "customer_name": "Назва замовника", "customer_name_genitive": "Назва замовника (родовий відмінок)",
+    "customer_name_accusative": "Назва замовника (знахідний відмінок)",
+    "customer_code": "ЄДРПОУ замовника", "supplier_name": "Назва постачальника",
+    "supplier_name_genitive": "Назва постачальника (родовий відмінок)",
+    "supplier_name_dative": "Назва постачальника (давальний відмінок)",
+    "supplier_name_accusative": "Назва постачальника (знахідний відмінок)",
+    "supplier_code": "ЄДРПОУ / РНОКПП постачальника", "supplier_code_label": "Тип коду постачальника",
+    "officer_name": "Уповноважена особа", "decision_justification": "Обґрунтування рішення",
+    "contract_number": "Номер договору", "contract_date": "Дата договору",
+}
+MINISTRY_EXPLANATION_URLS = (
+    "https://www.me.gov.ua/InfoRez/Details?id=3d8b5293-1542-45e7-8cab-60768b9ecc09&lang=uk-UA",
+    "https://me.gov.ua/InfoRez/Details?id=1c50d66b-a34f-4b83-8ae3-e1fdea208d80&lang=uk-UA",
+    "https://me.gov.ua/InfoRez/Details?id=011d5df6-768e-46e9-9f66-86a71737584d&lang=uk-UA",
+)
+CIVIL_CODE_TEXTS = (
+    "Закон України «Про публічні закупівлі» (далі – Закон) визначає правові та економічні засади здійснення закупівель товарів, робіт і послуг для забезпечення потреб держави, територіальних громад та об’єднаних територіальних громад. При цьому відповідно до ч. 1 ст. 253 Цивільного кодексу України перебіг строку починається з наступного дня після відповідної календарної дати або настання події, з якою пов’язано його початок.",
+    "За змістом ч. 5 ст. 254 Цивільного кодексу України якщо останній день строку припадає на вихідний, святковий або інший неробочий день, що визначений відповідно до закону у місці вчинення певної дії, днем закінчення строку є перший за ним робочий день.",
+    "Частиною 1 ст. 255 Цивільного кодексу України встановлено, якщо строк встановлено для вчинення дії, вона може бути вчинена до закінчення останнього дня строку.",
+)
+
+
+def _token_name(value: str) -> str:
+    """Canonicalize whitespace around/inside a marker without changing its name."""
+    return re.sub(r"\s+", " ", (value or "").strip()).lower()
 
 
 def ensure_runtime_templates() -> None:
@@ -65,7 +121,7 @@ def template_metadata() -> list[dict[str, Any]]:
 
 def _template_tokens(path: Path) -> set[str]:
     document = Document(path)
-    return {_norm(match.group(1)) for paragraph in _all_paragraphs(document)
+    return {_token_name(match.group(1)) for paragraph in _all_paragraphs(document)
             for match in TOKEN_RE.finditer(paragraph.text)}
 
 
@@ -102,6 +158,25 @@ def _norm(value: str) -> str:
     return re.sub(r"[\s_.–—/-]+", " ", (value or "").strip().lower())
 
 
+def _presentation_text(value: Any) -> str:
+    """Keep a normative designator and its number together in Word."""
+    return LEGAL_REFERENCE_RE.sub(lambda match: match.group(1) + "\u00a0", str(value or ""))
+
+
+def _presentation_entity_name(value: Any) -> str:
+    """Normalize only paired outer ASCII quotes; preserve apostrophes."""
+    return re.sub(r'"([^"\r\n]+)"', lambda match: f"«{match.group(1)}»", str(value or ""))
+
+
+def _copy_paragraph_properties(source, target) -> None:
+    """Copy the complete template pPr instead of inheriting Word defaults."""
+    target_ppr = target._p.pPr
+    if target_ppr is not None:
+        target._p.remove(target_ppr)
+    if source._p.pPr is not None:
+        target._p.insert(0, deepcopy(source._p.pPr))
+
+
 def _all_paragraphs(document):
     yield from document.paragraphs
     for table in document.tables:
@@ -118,28 +193,67 @@ def _replace_in_paragraph(paragraph, values: dict[str, str], highlighted: set[st
     matches = list(TOKEN_RE.finditer(text))
     if not matches:
         return
-    result, cursor = [], 0
-    used_highlight = False
+    runs = list(paragraph.runs)
+    if not runs:
+        runs = [paragraph.add_run()]
+    # A standalone multiline placeholder represents semantic Word paragraphs,
+    # not a sequence of line-breaks inside one paragraph.  Clone the complete
+    # template paragraph and run properties for every additional block.
+    if len(matches) == 1 and text.strip() == matches[0].group(0):
+        key = _token_name(matches[0].group(1))
+        if key not in values:
+            raise ValueError(f"Невідомий placeholder у DOCX: {matches[0].group(1).strip()}")
+        blocks = [part.strip() for part in re.split(r"(?:\r?\n){2,}", str(values[key])) if part.strip()]
+        if len(blocks) > 1:
+            source_run = runs[0]
+            base_ppr = deepcopy(paragraph._p.pPr) if paragraph._p.pPr is not None else None
+            current = paragraph
+            for index, block in enumerate(blocks):
+                if index:
+                    node = OxmlElement("w:p")
+                    if base_ppr is not None:
+                        node.append(deepcopy(base_ppr))
+                    current._p.addnext(node)
+                    from docx.text.paragraph import Paragraph
+                    current = Paragraph(node, paragraph._parent)
+                _clear_paragraph_content(current)
+                run = current.add_run(block)
+                if source_run._r.rPr is not None:
+                    run._r.insert(0, deepcopy(source_run._r.rPr))
+                if key in highlighted:
+                    run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+            return
+    ranges, position = [], 0
+    for run in runs:
+        ranges.append((position, position + len(run.text), run))
+        position += len(run.text)
+
+    def source_run(offset):
+        return next((run for start, end, run in ranges if start <= offset < end), runs[0])
+
+    pieces, cursor = [], 0
     for match in matches:
-        result.append(text[cursor:match.start()])
-        key = _norm(match.group(1))
-        result.append(str(values.get(key, "—") or "—"))
-        used_highlight = used_highlight or key in highlighted
+        if match.start() > cursor:
+            pieces.append((text[cursor:match.start()], source_run(cursor), False))
+        key = _token_name(match.group(1))
+        if key not in values:
+            raise ValueError(f"Невідомий placeholder у DOCX: {match.group(1).strip()}")
+        pieces.append((str(values[key]), source_run(match.start()), key in highlighted))
         cursor = match.end()
-    result.append(text[cursor:])
-    value = "".join(result)
-    runs = paragraph.runs
-    if runs:
-        runs[0].text = value
-        if used_highlight:
-            runs[0].font.highlight_color = WD_COLOR_INDEX.YELLOW
-        for run in runs[1:]:
-            run.text = ""
-    else:
-        paragraph.add_run(value)
+    if cursor < len(text):
+        pieces.append((text[cursor:], source_run(cursor), False))
+    for run in runs:
+        run._element.getparent().remove(run._element)
+    for value, source, highlight in pieces:
+        run = paragraph.add_run(value)
+        if source._r.rPr is not None:
+            run._r.insert(0, deepcopy(source._r.rPr))
+        if highlight:
+            run.font.highlight_color = WD_COLOR_INDEX.YELLOW
 
 
-def _add_hyperlink(paragraph, label: str, url: str):
+def _add_hyperlink(paragraph, label: str, url: str, font_name: str | None = None,
+                   font_size: float | None = None):
     part = paragraph.part
     rel_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
     hyperlink = OxmlElement("w:hyperlink")
@@ -148,27 +262,88 @@ def _add_hyperlink(paragraph, label: str, url: str):
     props = OxmlElement("w:rPr")
     color = OxmlElement("w:color"); color.set(qn("w:val"), "0563C1")
     underline = OxmlElement("w:u"); underline.set(qn("w:val"), "single")
-    props.extend((color, underline)); run.append(props)
+    props.extend((color, underline))
+    if font_name:
+        fonts = OxmlElement("w:rFonts")
+        for attr in ("ascii", "hAnsi", "eastAsia", "cs"):
+            fonts.set(qn(f"w:{attr}"), font_name)
+        props.append(fonts)
+    if font_size:
+        size = OxmlElement("w:sz"); size.set(qn("w:val"), str(int(font_size * 2)))
+        size_cs = OxmlElement("w:szCs"); size_cs.set(qn("w:val"), str(int(font_size * 2)))
+        props.extend((size, size_cs))
+    run.append(props)
     node = OxmlElement("w:t"); node.text = label
     run.append(node); hyperlink.append(run); paragraph._p.append(hyperlink)
 
 
+def _display_document_datetime(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return parsed.strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return raw
+
+
+def _clear_paragraph_content(paragraph) -> None:
+    for child in list(paragraph._p):
+        if child.tag != qn("w:pPr"):
+            paragraph._p.remove(child)
+
+
+def _document_label(document: dict[str, Any]) -> str:
+    return str(document.get("title") or document.get("name") or
+               document.get("documentType") or "Документ").strip()
+
+
 def _set_document_links(paragraph, documents: list[dict[str, Any]]):
-    for run in paragraph.runs:
-        run.text = ""
-    seen = set()
+    """Render one physical document per Word paragraph, without duplicates."""
+    unique, seen = [], set()
     for document in documents:
-        label = str(document.get("title") or document.get("name") or document.get("documentType") or "Документ").strip()
         url = str(document.get("url") or "").strip()
-        marker = (label, url)
-        if marker in seen or not url:
+        label = _presentation_text(_document_label(document))
+        marker = (str(document.get("id") or ""), label, url)
+        if marker in seen:
             continue
-        if seen:
-            paragraph.add_run("; ")
-        _add_hyperlink(paragraph, label, url)
         seen.add(marker)
-    if not seen:
-        paragraph.add_run("не надано")
+        unique.append((label, url))
+    if not unique:
+        _clear_paragraph_content(paragraph)
+        run = paragraph.add_run("не надано")
+        _set_run_font(run, 11, italic=True)
+        return
+    current = paragraph
+    base_ppr = deepcopy(paragraph._p.pPr) if paragraph._p.pPr is not None else None
+    for index, (label, url) in enumerate(unique):
+        if index:
+            node = OxmlElement("w:p")
+            if base_ppr is not None:
+                node.append(deepcopy(base_ppr))
+            current._p.addnext(node)
+            from docx.text.paragraph import Paragraph
+            current = Paragraph(node, paragraph._parent)
+        _clear_paragraph_content(current)
+        if url:
+            _add_hyperlink(current, label, url, "Times New Roman")
+        else:
+            run = current.add_run(label)
+            _set_run_font(run, 11)
+
+
+def _normalized_documents(documents: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Preserve authoritative source order while dropping exact duplicates."""
+    result, seen = [], set()
+    for item in documents or []:
+        marker = (str(item.get("id") or ""), str(item.get("url") or ""),
+                  str(item.get("title") or item.get("name") or ""))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(item)
+    return result
 
 
 def _clear_paragraph(paragraph):
@@ -177,21 +352,24 @@ def _clear_paragraph(paragraph):
 
 
 def _configure_customer_document_block(document, documents: list[dict[str, Any]]):
-    """Keep the approved damaged-file wording only when an officer marked a file.
+    """Render source documents without inferring corruption from local access.
 
-    The exact wording is already present in each approved DOCX.  We select the
-    singular/plural paragraph rather than constructing or paraphrasing it.
+    ``file_unavailable`` is a manual PQM access check, not authoritative proof
+    of zero bytes or source corruption, so it must not trigger the template's
+    legal damaged-file statement.
     """
-    unavailable = [item for item in documents if item.get("file_unavailable")]
-    available = [item for item in documents if not item.get("file_unavailable")]
     for table in document.tables:
         for row in table.rows:
-            if not any("докази порушення" in _norm(paragraph.text)
-                       for cell in row.cells for paragraph in cell.paragraphs):
+            row_tokens = {_token_name(match.group(1)) for cell in row.cells
+                          for paragraph in cell.paragraphs
+                          for match in TOKEN_RE.finditer(paragraph.text)}
+            if "customer_documents" not in row_tokens:
                 continue
             target = row.cells[-1]
             paragraphs = target.paragraphs
-            token = next((p for p in paragraphs if "докази порушення" in _norm(p.text)), None)
+            token = next((p for p in paragraphs if any(
+                _token_name(match.group(1)) == "customer_documents"
+                for match in TOKEN_RE.finditer(p.text))), None)
             singular = next((p for p in paragraphs if "додано файл" in _norm(p.text)
                              and "технічно пошкоджен" in _norm(p.text)), None)
             plural = next((p for p in paragraphs if "додані файли" in _norm(p.text)
@@ -199,23 +377,188 @@ def _configure_customer_document_block(document, documents: list[dict[str, Any]]
             if not token:
                 return
             if singular:
-                if len(unavailable) != 1:
-                    singular._element.getparent().remove(singular._element)
+                singular._element.getparent().remove(singular._element)
             if plural:
-                if len(unavailable) <= 1:
-                    plural._element.getparent().remove(plural._element)
+                plural._element.getparent().remove(plural._element)
             # Remove empty separator paragraphs from the template.
             for paragraph in list(target.paragraphs):
                 if paragraph is not token and not paragraph.text.strip():
                     paragraph._element.getparent().remove(paragraph._element)
-            _set_document_links(token, unavailable if unavailable else documents)
-            if unavailable and available:
-                extra = target.add_paragraph()
-                _set_document_links(extra, available)
+            _set_document_links(token, documents)
             return
 
 
-def _replace_justification(document, justification: str):
+def _set_run_font(run, size: float, bold: bool = False, italic: bool = False):
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.italic = italic
+    run.font.color.rgb = RGBColor(0, 0, 0)
+    fonts = run._element.get_or_add_rPr().get_or_add_rFonts()
+    for attr in ("ascii", "hAnsi", "eastAsia", "cs"):
+        fonts.set(qn(f"w:{attr}"), "Times New Roman")
+
+
+def _clear_cell(cell):
+    first = cell.paragraphs[0]
+    for paragraph in list(cell.paragraphs[1:]):
+        paragraph._element.getparent().remove(paragraph._element)
+    for child in list(first._p):
+        if child.tag != qn("w:pPr"):
+            first._p.remove(child)
+    return first
+
+
+def _set_paragraph_geometry(paragraph, size: float, first_line: bool = False):
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(0)
+    fmt.space_after = Pt(0)
+    fmt.line_spacing = 1.0
+    fmt.first_line_indent = Cm(0.5) if first_line else None
+    for run in paragraph.runs:
+        _set_run_font(run, size, bool(run.bold), bool(run.italic))
+
+
+def _format_reason_block(document, values: dict[str, str]):
+    for table in document.tables:
+        for index, row in enumerate(table.rows):
+            if "причина звернення" not in " ".join(cell.text for cell in row.cells).lower():
+                continue
+            label_cell, value_cell = row.cells[0], row.cells[-1]
+            label_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            value_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            label_p = _clear_cell(label_cell)
+            label_run = label_p.add_run("Причина звернення:")
+            _set_run_font(label_run, 10, bold=True)
+            reason_label = _clear_cell(value_cell)
+            label = reason_label.add_run(values.get("reason_label", ""))
+            _set_run_font(label, 10, bold=True)
+            reason_text = value_cell.add_paragraph()
+            _copy_paragraph_properties(reason_label, reason_text)
+            text_run = reason_text.add_run(values.get("reason_text", ""))
+            _set_run_font(text_run, 10)
+            if index + 1 >= len(table.rows):
+                raise ValueError("У шаблоні немає рядка для опису Замовника")
+            description_cell = table.rows[index + 1].cells[0]
+            description_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            description_p = _clear_cell(description_cell)
+            description = values.get("violation_description", "").strip()
+            # Preserve an existing Ukrainian quotation (including punctuation
+            # after the closing mark) and never create doubled quotation marks.
+            quoted = description if description.startswith("«") and "»" in description else f"«{description}»"
+            description_run = description_p.add_run(quoted)
+            _set_run_font(description_run, 10, italic=True)
+            return
+    raise ValueError("У погодженому шаблоні не знайдено блок «Причина звернення»")
+
+
+def _format_supplier_result_rows(document) -> None:
+    """Keep supplier response/document outcomes visible in every protocol."""
+    labels = ("відповідь постачальника на звернення", "документи подані постачальником")
+    for table in document.tables:
+        for row in table.rows:
+            text = " ".join(cell.text for cell in row.cells).casefold()
+            if not any(label in text for label in labels):
+                continue
+            unique_cells = []
+            seen = set()
+            for cell in row.cells:
+                marker = id(cell._tc)
+                if marker not in seen:
+                    seen.add(marker); unique_cells.append(cell)
+            label_cell, value_cell = unique_cells[0], unique_cells[-1]
+            for paragraph in label_cell.paragraphs:
+                for run in paragraph.runs:
+                    if run.text:
+                        _set_run_font(run, 11, bold=True)
+            if value_cell.text.strip().casefold() == "не надано":
+                for paragraph in value_cell.paragraphs:
+                    for run in paragraph.runs:
+                        if run.text:
+                            _set_run_font(run, 11, italic=True)
+
+
+def _justification_emphasis(protocol_type: str, values: dict[str, str]) -> list[str]:
+    common = ["п. 51 Порядку № 822", "відмову в задоволенні звернення Замовника"]
+    if protocol_type == "decline_p49_3":
+        return ["рішенням суду, що набрало законної сили", "рішення про відмову в задоволенні звернення Замовника", *common]
+    if protocol_type == "decline_p49_1_2":
+        return ["пп. 1 п. 49 Порядку № 822", "пп. 2 п. 49 Порядку № 822",
+                "після закінчення трьох календарних днів", "після спливу трьох календарних днів",
+                values.get("supplier_deadline", ""), values.get("contract_deadline", ""), *common]
+    return ["п. 66 Порядку № 822", "п’ять календарних днів", "пп. 1 п. 49 Порядку № 822", *common]
+
+
+def _append_justification_text(paragraph, text: str, emphasis: list[str]):
+    phrases = sorted({_presentation_text(phrase) for phrase in emphasis if phrase}, key=len, reverse=True)
+    pattern_parts = [r"https?://[^\s]+"] + [re.escape(phrase) for phrase in phrases]
+    pattern = re.compile("(" + "|".join(pattern_parts) + ")", re.IGNORECASE)
+    cursor = 0
+    for match in pattern.finditer(text):
+        if match.start() > cursor:
+            _set_run_font(paragraph.add_run(text[cursor:match.start()]), 11)
+        fragment = match.group(0)
+        if re.match(r"https?://", fragment, re.IGNORECASE):
+            _add_hyperlink(paragraph, fragment, fragment, "Times New Roman", 11)
+        else:
+            _set_run_font(paragraph.add_run(fragment), 11, bold=True)
+        cursor = match.end()
+    if cursor < len(text):
+        _set_run_font(paragraph.add_run(text[cursor:]), 11)
+
+
+def _set_thin_black_borders(cell):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shading = tc_pr.find(qn("w:shd"))
+    if shading is not None:
+        tc_pr.remove(shading)
+    borders = tc_pr.find(qn("w:tcBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tcBorders")
+        tc_pr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        node = borders.find(qn(f"w:{edge}"))
+        if node is None:
+            node = OxmlElement(f"w:{edge}")
+            borders.append(node)
+        node.set(qn("w:val"), "single")
+        node.set(qn("w:sz"), "4")
+        node.set(qn("w:color"), "000000")
+
+
+def _normalize_all_text_run_fonts(document) -> None:
+    """Pin every emitted text run to TNR without changing its other styling."""
+    for part in document.part.package.parts:
+        root = getattr(part, "_element", None)
+        if root is None:
+            continue
+        for run in root.xpath(".//w:r[.//w:t[string-length(.) > 0]]"):
+            r_pr = run.find(qn("w:rPr"))
+            if r_pr is None:
+                r_pr = OxmlElement("w:rPr")
+                run.insert(0, r_pr)
+            fonts = r_pr.find(qn("w:rFonts"))
+            if fonts is None:
+                fonts = OxmlElement("w:rFonts")
+                r_pr.insert(0, fonts)
+            for attr in ("ascii", "hAnsi", "eastAsia", "cs"):
+                fonts.set(qn(f"w:{attr}"), "Times New Roman")
+
+
+def _normalize_legal_reference_spaces(document) -> None:
+    """Apply non-breaking spaces to all visible template/generated text."""
+    for part in document.part.package.parts:
+        root = getattr(part, "_element", None)
+        if root is None:
+            continue
+        for node in root.xpath(".//w:t"):
+            if node.text:
+                node.text = _presentation_text(node.text)
+
+
+def _replace_justification(document, justification: str, protocol_type: str,
+                           values: dict[str, str]):
     for table in document.tables:
         for row in table.rows:
             row_text = " ".join(cell.text for cell in row.cells)
@@ -224,14 +567,33 @@ def _replace_justification(document, justification: str):
             target = row.cells[-1]
             if len(row.cells) == 1:
                 target = row.cells[0]
-            paragraphs = target.paragraphs
-            # Preserve the first paragraph formatting and remove all sample variants.
-            first = paragraphs[0]
-            for run in first.runs:
-                run.text = ""
-            first.add_run(justification)
-            for paragraph in paragraphs[1:]:
-                paragraph._element.getparent().remove(paragraph._element)
+            label = row.cells[0]
+            label.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            target.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            label_p = label.paragraphs[0]
+            for run in label_p.runs:
+                _set_run_font(run, 11, bold=True)
+            _set_paragraph_geometry(label_p, 11)
+            first = _clear_cell(target)
+            template_paragraph = deepcopy(first._p.pPr) if first._p.pPr is not None else None
+            blocks = [part.strip() for part in re.split(r"(?:\r?\n){2,}", justification.strip()) if part.strip()]
+            emphasis = _justification_emphasis(protocol_type, values)
+            for index, block in enumerate(blocks):
+                paragraph = first if index == 0 else target.add_paragraph()
+                if index and template_paragraph is not None:
+                    current_ppr = paragraph._p.pPr
+                    if current_ppr is not None:
+                        paragraph._p.remove(current_ppr)
+                    paragraph._p.insert(0, deepcopy(template_paragraph))
+                _append_justification_text(paragraph, block, emphasis)
+                for run in paragraph.runs:
+                    _set_run_font(run, 11, bool(run.bold), bool(run.italic))
+            for cell in {label._tc: label, target._tc: target}.values():
+                _set_thin_black_borders(cell)
+            tr_pr = row._tr.get_or_add_trPr()
+            for node in list(tr_pr):
+                if node.tag in {qn("w:cantSplit"), qn("w:trHeight")}:
+                    tr_pr.remove(node)
             return
     raise ValueError("У погодженому шаблоні не знайдено блок «Обґрунтування рішення»")
 
@@ -250,10 +612,101 @@ def _remove_optional_rows(document, flags: dict[str, bool]):
                 if not flags.get(key, False) and all(needle in text for needle in needles):
                     row._element.getparent().remove(row._element)
                     break
-    if not flags.get("civil_code", False):
-        for paragraph in list(document.paragraphs):
-            if "цивільн" in paragraph.text.lower() and "кодекс" in paragraph.text.lower():
-                paragraph._element.getparent().remove(paragraph._element)
+
+
+def _configure_civil_code_block(document, enabled: bool) -> None:
+    markers = ("роз’яснень Міністерства економіки України", "ч. 5 ст. 254 Цивільного кодексу України",
+               "Частиною 1 ст. 255 Цивільного кодексу України")
+    normalized_markers = tuple(_presentation_text(marker).casefold() for marker in markers)
+    existing = [paragraph for paragraph in document.paragraphs
+                if any(marker in _presentation_text(paragraph.text).casefold()
+                       for marker in normalized_markers)]
+    if not enabled:
+        for paragraph in existing:
+            paragraph._element.getparent().remove(paragraph._element)
+        anchor = next((paragraph for paragraph in document.paragraphs
+                       if "за результатами розгляду встановлено" in paragraph.text.casefold()), None)
+        if anchor is not None:
+            previous = anchor._p.getprevious()
+            while previous is not None and previous.tag == qn("w:p") and not "".join(previous.itertext()).strip():
+                candidate = previous.getprevious()
+                previous.getparent().remove(previous)
+                previous = candidate
+        return
+    anchor = next((paragraph for paragraph in document.paragraphs
+                   if "за результатами розгляду встановлено" in paragraph.text.casefold()), None)
+    if anchor is None:
+        raise ValueError("У шаблоні не знайдено місце для нормативного блоку ЦКУ")
+    source_pprs = [deepcopy(paragraph._p.pPr) if paragraph._p.pPr is not None else None
+                   for paragraph in existing]
+    # Recompose the block in the generated copy. Some Word-edited templates
+    # contain nested/duplicated hyperlink XML even though the visible text is
+    # correct; canonical rendering guarantees exactly three real links.
+    for paragraph in existing:
+        paragraph._element.getparent().remove(paragraph._element)
+
+    def insert_paragraph(index: int) -> Any:
+        node = OxmlElement("w:p")
+        source_ppr = source_pprs[index] if index < len(source_pprs) else None
+        if source_ppr is not None:
+            node.append(deepcopy(source_ppr))
+        elif anchor._p.pPr is not None:
+            node.append(deepcopy(anchor._p.pPr))
+        anchor._p.addprevious(node)
+        from docx.text.paragraph import Paragraph
+        return Paragraph(node, anchor._parent)
+
+    first = insert_paragraph(0)
+    first.add_run(_presentation_text("Відповідно до роз’яснень Міністерства економіки України, що опубліковані за посиланнями: "))
+    for index, url in enumerate(MINISTRY_EXPLANATION_URLS):
+        _add_hyperlink(first, url, url)
+        first.add_run(", " if index < len(MINISTRY_EXPLANATION_URLS) - 1 else ", ")
+    first.add_run(_presentation_text(CIVIL_CODE_TEXTS[0]))
+    for index, text in enumerate(CIVIL_CODE_TEXTS[1:], start=1):
+        paragraph = insert_paragraph(index)
+        paragraph.add_run(_presentation_text(text))
+
+
+def _remove_conditional_token_blocks(document, flags: dict[str, bool]):
+    """Remove complete rows/paragraphs controlled by structured facts.
+
+    The approved DOCX files contain no Jinja tags.  Each optional value occupies
+    a dedicated table row, so removing that row is deterministic and leaves no
+    empty legal sentence or synthetic dash.
+    """
+    for table in document.tables:
+        for row in list(table.rows):
+            tokens = {_token_name(match.group(1)) for cell in row.cells
+                      for paragraph in cell.paragraphs for match in TOKEN_RE.finditer(paragraph.text)}
+            if any(not flags.get(flag, False) for token, flag in CONDITIONAL_TOKEN_FLAGS.items() if token in tokens):
+                row._element.getparent().remove(row._element)
+    for paragraph in list(document.paragraphs):
+        tokens = {_token_name(match.group(1)) for match in TOKEN_RE.finditer(paragraph.text)}
+        if any(not flags.get(flag, False) for token, flag in CONDITIONAL_TOKEN_FLAGS.items() if token in tokens):
+            paragraph._element.getparent().remove(paragraph._element)
+
+
+def _validate_context(document, values: dict[str, str], justification: str) -> None:
+    missing, unknown = set(), set()
+    for paragraph in _all_paragraphs(document):
+        for match in TOKEN_RE.finditer(paragraph.text):
+            key = _token_name(match.group(1))
+            if key in DOCUMENT_TOKENS:
+                continue
+            if key not in values:
+                unknown.add(key)
+            elif not str(values[key]).strip():
+                missing.add(key)
+    if unknown:
+        raise ProtocolContextValidationError(
+            "Невідомі placeholders у DOCX: " + ", ".join(sorted(unknown)), unknown=unknown)
+    if not str(justification or "").strip():
+        missing.add("decision_justification")
+    if missing:
+        labels = [FIELD_LABELS.get(key, key) for key in sorted(missing)]
+        raise ProtocolContextValidationError(
+            "Не заповнено обов’язкові поля: " + ", ".join(labels) + ". Заповніть їх перед формуванням протоколу.",
+            missing=missing)
 
 
 def build_violation_protocol_docx(
@@ -284,20 +737,50 @@ def build_violation_protocol_docx(
     try:
         shutil.copy2(template, temporary)
         document = Document(temporary)
-        _configure_customer_document_block(document, customer_documents or [])
-        normalized_values = {_norm(key): str(value or "—") for key, value in values.items()}
-        highlighted = {_norm(key) for key in (highlighted_tokens or set())}
+        customer_documents = _normalized_documents(customer_documents)
+        supplier_documents = _normalized_documents(supplier_documents)
+        normalized_values = {
+            _token_name(key): _presentation_text(
+                _presentation_entity_name(value) if _token_name(key) in ENTITY_NAME_TOKENS else value
+            ).strip()
+            for key, value in values.items()
+        }
+        normalized_values["supplier_response"] = normalized_values.get("supplier_response") or "не надано"
+        justification = _presentation_text(justification).strip()
+        normalized_values.setdefault("decision_justification", justification)
+        effective_flags = dict(flags or {})
+        effective_flags.setdefault("has_customer_documents", bool(customer_documents))
+        effective_flags.setdefault("has_supplier_documents", bool(supplier_documents))
+        effective_flags.setdefault("has_supplier_response", bool(normalized_values.get("supplier_response")))
+        effective_flags.setdefault("has_written_refusal", False)
+        effective_flags.setdefault("has_contract", False)
+        _remove_conditional_token_blocks(document, effective_flags)
+        _remove_optional_rows(document, {
+            "written_refusal": effective_flags["has_written_refusal"],
+            "contract": effective_flags["has_contract"],
+            "guarantee": effective_flags.get("has_contract_security", False),
+            "civil_code": effective_flags.get("has_civil_code_basis", False),
+            "court": effective_flags.get("has_court_decision", False),
+        })
+        _configure_civil_code_block(document, effective_flags.get("has_civil_code_basis", False))
+        _validate_context(document, normalized_values, justification)
+        _format_reason_block(document, normalized_values)
+        if customer_documents:
+            _configure_customer_document_block(document, customer_documents)
+        highlighted = {_token_name(key) for key in (highlighted_tokens or set())}
         for paragraph in list(_all_paragraphs(document)):
             source = paragraph.text
-            token_names = [_norm(m.group(1)) for m in TOKEN_RE.finditer(source)]
-            if any("документ" in name and ("замов" in name or "скарж" in name) for name in token_names):
+            token_names = [_token_name(m.group(1)) for m in TOKEN_RE.finditer(source)]
+            if "customer_documents" in token_names:
                 _set_document_links(paragraph, customer_documents or [])
-            elif any("документ" in name and ("постач" in name or "відпов" in name) for name in token_names):
+            elif "supplier_documents" in token_names:
                 _set_document_links(paragraph, supplier_documents or [])
             else:
                 _replace_in_paragraph(paragraph, normalized_values, highlighted)
-        _replace_justification(document, justification)
-        _remove_optional_rows(document, flags or {})
+        _format_supplier_result_rows(document)
+        _replace_justification(document, justification, protocol_type, normalized_values)
+        _normalize_legal_reference_spaces(document)
+        _normalize_all_text_run_fonts(document)
         unresolved = [p.text for p in _all_paragraphs(document) if "{{" in p.text or "}}" in p.text]
         if unresolved:
             raise ValueError("У DOCX залишилися незаповнені плейсхолдери")

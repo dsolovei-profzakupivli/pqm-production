@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,13 +24,14 @@ from integration.safe_startup import require_current_schema
 
 PASSWORD='Synthetic-test-only-2026'
 def fixture():
+    shutil.copytree(ROOT/'templates',Path(TEMP.name)/'templates',dirs_exist_ok=True)
     server.init_db();server.init_reference_tables(server.DB_PATH)
     from migrations.additive import migrate
     migrate(server.DB_PATH,json.loads((ROOT/'migrations/target_schema.json').read_text()),Path(TEMP.name)/'backups')
     with server.db() as con:
         for i,name in [(1,'Synthetic Officer'),(2,'Other Officer')]:
             con.execute('INSERT INTO authorized_officers(id,full_name,role,active,created_at,updated_at) VALUES (?,?,?,1,?,?)',(i,name,'УО','before','before'))
-        for username,role,officer in [('fixture-admin','admin',None),('fixture-officer','officer',1),('fixture-viewer','viewer',None)]:
+        for username,role,officer in [('fixture-admin','admin',None),('fixture-officer','officer',1),('fixture-officer-b','officer',2),('fixture-viewer','viewer',None)]:
             con.execute('INSERT INTO auth_users(username,password_hash,role,officer_id,active,created_at,updated_at,created_by) VALUES (?,?,?,?,1,?,?,?)',(username,server.hash_password(PASSWORD),role,officer,'before','before','fixture'))
         con.execute("INSERT INTO frameworks(id,pretty_id,dk_code,raw_json,synced_at) VALUES ('framework','UA-F-SYNTHETIC','12345678-9','{}','before')")
         con.execute("INSERT INTO framework_officers(framework_id,officer,synced_at) VALUES ('framework','Synthetic Officer','before')")
@@ -71,7 +73,7 @@ class WebAcceptance(unittest.TestCase):
         for path in ['/api/health','/api/auth/me','/api/account','/api/applications','/api/application-history','/api/application-profiles','/api/admin/access-roles','/api/admin/users','/api/admin/schema','/api/admin/frameworks','/api/admin/templates','/api/uo-work-queue','/api/violation-reports','/api/chats','/api/table-widths','/api/runtime-features','/api/supplier-profile/00000000']:
             self.assertEqual(200,self.request(path)[0],path)
         templates=self.request('/api/admin/templates')[1]
-        self.assertEqual(4,len(templates['items']))
+        self.assertEqual(5,len(templates['items']))
         for item in templates['items']:
             self.assertEqual(200,self.request('/api/admin/templates/'+item['key']+'/download')[0])
         self.assertEqual(404,self.request('/api/nonexistent')[0])
@@ -85,8 +87,24 @@ class WebAcceptance(unittest.TestCase):
             for sid in ['admitted','rejected']:
                 self.assertEqual(409,self.request('/api/applications/'+sid,role,'PATCH',{'notes':'forbidden'})[0])
         with server.db() as con:con.execute("UPDATE application_fields SET protocol_officer='Other Officer' WHERE submission_id='pending'")
-        self.assertEqual(403,self.request('/api/applications/pending','officer','PATCH',{'notes':'other officer'})[0])
+        self.assertEqual(200,self.request('/api/applications/pending','officer','PATCH',{'notes':'other officer'})[0])
         with server.db() as con:con.execute("UPDATE application_fields SET protocol_officer='Synthetic Officer' WHERE submission_id='pending'")
+        self.assertEqual(200,self.request('/api/applications/pending','officer-b','PATCH',{'notes':'A assignment reviewed by B'})[0])
+        with server.db() as con:
+            server.assert_protocol_scope(con,['pending'],'officer',2)
+            con.execute("UPDATE authorized_officers SET active=0 WHERE id=2")
+        self.assertEqual(403,self.request('/api/applications/pending','officer-b','PATCH',{'notes':'inactive forbidden'})[0])
+        with server.db() as con:
+            with self.assertRaises(PermissionError):server.assert_protocol_scope(con,['pending'],'officer',2)
+            con.execute("UPDATE authorized_officers SET active=1 WHERE id=2")
+            con.execute("INSERT INTO auth_role_permissions VALUES ('officer','applications.edit',0,'fixture','fixture')")
+        self.assertEqual(403,self.request('/api/applications/pending','officer','PATCH',{'notes':'granular denial'})[0])
+        with server.db() as con:
+            con.execute("DELETE FROM auth_role_permissions WHERE role_code='officer' AND permission_key='applications.edit'")
+            con.execute("INSERT INTO auth_role_permissions VALUES ('viewer','applications.edit',1,'fixture','fixture')")
+        self.assertEqual(403,self.request('/api/applications/pending','viewer','PATCH',{'notes':'viewer override forbidden'})[0])
+        with server.db() as con:
+            con.execute("DELETE FROM auth_role_permissions WHERE role_code='viewer' AND permission_key='applications.edit'")
     def test_04_chat_and_account_isolation(self):
         status,result,_=self.request('/api/chats','viewer','POST',{'members':['fixture-admin'],'title':''})
         self.assertIn(status,[200,201]);chat=result['id']

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "templates": {
+    "nazk_supplier_request": {
+      "document_type": "nazk_supplier_request",
+      "template_key": "nazk_supplier_request",
+      "name": "НАЗК — запит постачальнику",
+      "format": "docx",
+      "generation_provider": "docx_local",
+      "active": true,
+      "file": "nazk_supplier_request.docx",
+      "source_reference": "https://docs.google.com/document/d/16fmgZ54NtnYGFZGIvn6ZnjKfif9sep40T3ARpiA6xlQ/edit",
+      "output_name_pattern": "НАЗК_запит_{supplier_code}_{date}_v{version}.docx",
+      "required_fields": [
+        "supplier.name",
+        "supplier.code",
+        "supplier.code_label",
+        "supplier.email",
+        "supplier.entity_type",
+        "manager.full_name",
+        "manager.full_name_genitive"
+      ],
+      "conditional_variants": {
+        "supplier.entity_type": [
+          "individual_entrepreneur",
+          "legal_entity"
+        ]
+      }
+    }
+  }
+}

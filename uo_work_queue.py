@@ -6,14 +6,6 @@ from datetime import date, timedelta
 import math
 
 
-OPEN_SUPPLIER_NAZK = {
-    "needs_review",
-    "request_to_supplier",
-    "request_to_nazk",
-    "waiting_response",
-}
-
-
 def _text(value) -> str:
     return str(value or "").strip()
 
@@ -230,58 +222,6 @@ def _submission_nazk_tasks(con) -> list[dict]:
     } for row in rows]
 
 
-def _supplier_nazk_tasks(con) -> list[dict]:
-    placeholders = ",".join("?" for _ in OPEN_SUPPLIER_NAZK)
-    rows = con.execute(
-        f"""SELECT sc.id check_id,sc.supplier_code,sc.manager_name,sc.workflow_status,
-          NORMALIZE_NAME(sc.manager_name) manager_key,
-          sc.started_at,sc.manager_id,srs.supplier_name,sm.manager_tax_id
-          FROM supplier_nazk_checks sc
-          JOIN supplier_registry_summary srs ON srs.supplier_code=sc.supplier_code
-          LEFT JOIN supplier_managers sm ON sm.id=sc.manager_id
-          WHERE sc.workflow_status IN ({placeholders}) AND srs.active_count>0""",
-        tuple(sorted(OPEN_SUPPLIER_NAZK)),
-    ).fetchall()
-    latest_nazk_dates = _latest_nazk_dates(con)
-    codes = sorted({_text(row["supplier_code"]) for row in rows if _text(row["supplier_code"])})
-    application_dates = {}
-    if codes:
-        code_placeholders = ",".join("?" for _ in codes)
-        application_dates = {
-            _text(row["supplier_code"]): _date_part(row["application_date"])
-            for row in con.execute(
-                f"""SELECT supplier_code,MIN(date_published) application_date
-                    FROM submissions WHERE supplier_code IN ({code_placeholders})
-                    GROUP BY supplier_code""",
-                tuple(codes),
-            )
-        }
-    rows = [row for row in rows
-            if latest_nazk_dates.get(_text(row["manager_key"]), "")
-            > application_dates.get(_text(row["supplier_code"]), "")]
-    labels = {
-        "needs_review": "Потребує перевірки",
-        "request_to_supplier": "Опрацювати запит постачальнику",
-        "request_to_nazk": "Опрацювати запит до НАЗК",
-        "waiting_response": "Очікується відповідь",
-    }
-    return [{
-        "task_id": f"supplier_nazk:{row['check_id']}:{row['workflow_status']}",
-        "task_type": "supplier_nazk", "action_type": row["workflow_status"],
-        "source_id": str(row["check_id"]), "title": labels.get(row["workflow_status"], "Перевірити НАЗК"),
-        "subject_name": row["supplier_name"] or "", "subject_code": row["supplier_code"] or "",
-        "person_name": row["manager_name"] or "", "tax_id_present": bool(row["manager_tax_id"]),
-        "object_label": "Постачальник", "object_pretty_id": row["supplier_code"] or "",
-        "dk_code": "", "reason": ("НАЗК · Потрібно визначити подальшу дію"
-          if row["workflow_status"] == "needs_review"
-          else f"НАЗК · {labels.get(row['workflow_status'], row['workflow_status'])}"),
-        "status": row["workflow_status"], "created_at": row["started_at"] or "", "deadline_date": "",
-        "responsible_user": "", "priority": "high" if row["workflow_status"] == "needs_review" else "normal",
-        "source_view": "suppliers",
-        "source_params": {"supplier_code": row["supplier_code"], "nazk_check_id": row["check_id"]},
-    } for row in rows]
-
-
 def _violation_tasks(con) -> list[dict]:
     rows = con.execute(
         """SELECT vr.id,vr.report_id,vr.date_published,vr.defendant_period_end,
@@ -323,8 +263,7 @@ def _all_tasks(con) -> list[dict]:
     # Qualification work remains in the native application register. Including
     # it here duplicates the primary workflow and mixes current applications
     # with historical pending anomalies from completed/legacy frameworks.
-    tasks = (_submission_nazk_tasks(con) + _supplier_nazk_tasks(con)
-             + _violation_tasks(con))
+    tasks = _submission_nazk_tasks(con) + _violation_tasks(con)
     seen, unique = set(), []
     for task in tasks:
         task.setdefault("overdue", False)
@@ -351,7 +290,7 @@ def _filter_tasks(tasks: list[dict], filters: dict, current_user: str) -> list[d
         )).casefold()
         created = _date_part(task.get("created_at"))
         if search and search not in haystack: continue
-        if task_type == "nazk" and task["task_type"] not in {"submission_nazk", "supplier_nazk"}: continue
+        if task_type == "nazk" and task["task_type"] != "submission_nazk": continue
         if task_type and task_type != "nazk" and task["task_type"] != task_type: continue
         if status and task["status"] != status: continue
         if mine and task.get("responsible_user") != current_user: continue
@@ -376,9 +315,9 @@ def get_uo_work_queue_kpi(tasks: list[dict]) -> dict:
     return {
         "total": len(tasks),
         "qualification": sum(task["task_type"] == "qualification" for task in tasks),
-        "nazk": sum(task["task_type"] in {"submission_nazk", "supplier_nazk"} for task in tasks),
+        "nazk": sum(task["task_type"] == "submission_nazk" for task in tasks),
         "violation_report": sum(task["task_type"] == "violation_report" for task in tasks),
-        "other": sum(task["task_type"] not in {"qualification", "submission_nazk", "supplier_nazk", "violation_report"} for task in tasks),
+        "other": sum(task["task_type"] not in {"qualification", "submission_nazk", "violation_report"} for task in tasks),
         "waiting_response": sum(task["status"] == "waiting_response" for task in tasks),
         "overdue": sum(bool(task.get("overdue")) for task in tasks),
     }

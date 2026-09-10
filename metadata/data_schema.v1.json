@@ -47,11 +47,7 @@
       "navigation": null,
       "note": "Контекст адміністрування; binding не задано"
     },
-    "audit": {
-      "label": "Журнал змін",
-      "navigation": null,
-      "note": "Binding потребує перевірки"
-    },
+    "audit": [],
     "procurements": {
       "label": "Закупівлі",
       "navigation": "procurementsNav"

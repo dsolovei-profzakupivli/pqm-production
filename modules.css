@@ -32,3 +32,23 @@
 .framework-details-dialog .framework-details-body{display:block;width:100%;box-sizing:border-box}
 .framework-details-dialog .framework-detail-table{width:100%;box-sizing:border-box}
 .framework-details-dialog{width:min(1500px,98vw);max-width:none}.framework-details-body{max-height:76vh}
+.declension-toolbar{grid-template-columns:minmax(240px,1fr) minmax(280px,520px) auto}
+.declension-toolbar>div{display:flex;flex-direction:column;gap:3px}
+.declension-table th:nth-child(1){width:145px}.declension-table th:nth-child(7){width:185px}
+.declension-table td{vertical-align:top;white-space:normal;overflow-wrap:anywhere}
+.declension-actions{display:flex;gap:6px;white-space:nowrap}.declension-actions .danger{color:#b42318}
+.declension-dialog{width:min(1120px,calc(100vw - 32px));max-width:none}.declension-dialog form{overflow-x:hidden}.declension-form{padding:18px 24px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.declension-form label{display:grid;grid-template-columns:105px minmax(0,1fr);gap:14px;align-items:center;font-weight:600;min-width:0}.declension-form label>span{white-space:nowrap}.declension-form label:has(textarea){align-items:start}.declension-form input,.declension-form select,.declension-form textarea{width:100%;min-width:0;box-sizing:border-box}
+.declension-form input,.declension-form select,.declension-form textarea{font-weight:400}
+.declension-form .required-case{padding:10px;border:1px solid #d97706;border-radius:8px;background:#fff8e6}
+#violationProtocolReasons [data-add-declension]{margin-left:8px}
+#suppliersView>.supplier-toolbar{flex-wrap:wrap;align-items:flex-end}
+#suppliersView .supplier-filter-field{display:flex;flex-direction:column;gap:4px;flex:1 1 180px;min-width:0}
+#suppliersView .supplier-filter-search{flex:2 1 300px}
+#suppliersView .supplier-filter-field>label{font-size:12px;font-weight:600;line-height:16px;color:#61748b;margin:0}
+#suppliersView .supplier-filter-field select,#suppliersView .supplier-filter-field>input,#suppliersView .supplier-filter-field .search-wrap{width:100%;min-width:0;max-width:none;height:38px;box-sizing:border-box;flex:none}
+#suppliersView .supplier-filter-field>input{padding:8px 12px;border:1px solid #cbd6e2;border-radius:8px;background:#fff;color:#172b43}
+#suppliersView .supplier-toolbar-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;max-width:100%;border-left:1px solid #d5dce2;padding-left:10px}
+#suppliersView .supplier-toolbar-actions>*{white-space:nowrap;flex-shrink:0}
+@media(max-width:900px){#suppliersView>.supplier-toolbar{align-items:stretch}#suppliersView .supplier-filter-field{flex:initial}#suppliersView .supplier-toolbar-actions>*{white-space:normal}}
+@media(max-width:800px){.declension-toolbar{grid-template-columns:1fr}.declension-form label{grid-template-columns:70px minmax(0,1fr)}}

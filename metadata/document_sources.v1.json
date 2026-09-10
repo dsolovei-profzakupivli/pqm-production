@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "schema_scopes": {
+    "pqm.supplier_registry_summary": "supplier",
+    "pqm.supplier_managers": "manager",
+    "pqm.authorized_officers": "officer",
+    "pqm.operational_tasks": "task",
+    "pqm.nazk_registry": "task.nazk_records",
+    "pqm.amcu_registry": "task.amcu_decisions",
+    "pqm.operational_task_amcu_decisions": "task.amcu_decisions",
+    "pqm.violation_reports": "task.warnings",
+    "pqm.operational_task_warnings": "task.warnings"
+  },
+  "semantic_sources": {
+    "document_semantics.supplier_code_label": "code_semantics.code_label",
+    "document_semantics.supplier_entity_type": "code_semantics.entity_type",
+    "supplier_contacts.supplier_email": "contacts.current.email"
+  }
+}
