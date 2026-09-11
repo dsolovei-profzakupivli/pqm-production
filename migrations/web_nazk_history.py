@@ -153,9 +153,11 @@ def apply(con, manifest, manifest_sha):
                            historical_check_date=e['checked_date'], fact_date=e['registry_fact_date'],
                            strict_cycle_scope=True, no_request_sent=True)
             if cid:
+                # This is still the existing current cycle, not a newly imported
+                # factual check. Preserve its identity/coverage rules so a future
+                # explicit completion behaves normally. History lives in events.
                 con.execute("""UPDATE supplier_nazk_checks SET workflow_status='waiting_response',
-                  legacy_key=?,legacy_source_row=?,updated_at=?,updated_by=? WHERE id=?""",
-                  (e['key'],r['source_row'],stamp,ACTOR,cid))
+                  updated_at=?,updated_by=? WHERE id=?""", (stamp,ACTOR,cid))
             else:
                 cid = con.execute('''INSERT INTO supplier_nazk_checks
                   (supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,

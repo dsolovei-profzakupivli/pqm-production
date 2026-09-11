@@ -58,6 +58,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(1,p['summary']['waiting_restored'])
         self.assertEqual(1,self.con.execute('SELECT COUNT(*) FROM supplier_nazk_checks').fetchone()[0])
         self.assertEqual('waiting_response',self.con.execute('SELECT workflow_status FROM supplier_nazk_checks WHERE id=?',(cid,)).fetchone()[0])
+        self.assertEqual((None,0),tuple(self.con.execute('SELECT legacy_key,is_legacy FROM supplier_nazk_checks WHERE id=?',(cid,)).fetchone()))
         self.assertEqual('awaiting_response',self.con.execute('SELECT status FROM operational_tasks').fetchone()[0])
         for t in ['supplier_nazk_check_requests','supplier_nazk_check_documents','operational_task_responses']:
             self.assertEqual(0,self.con.execute('SELECT COUNT(*) FROM '+t).fetchone()[0])
