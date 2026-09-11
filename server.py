@@ -1348,13 +1348,23 @@ def init_db() -> None:
 
 
 def rebuild_operational_tasks(actor: str = "PQM task builder") -> dict:
-    """Use already stored LOCAL facts only; never starts an external sync."""
+    """Generic rebuild: unrelated startup/sync paths must never mutate NAZK."""
+    with db() as con:
+        return operational_tasks.build(con, actor, include_nazk=False)
+
+
+def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
+    """Explicit NAZK-only workflow; no external fetch and no unrelated tasks."""
+    if workflow not in {"nazk_job", "maintenance"}:
+        raise ValueError("Explicit NAZK workflow or maintenance action required")
+    if workflow == "nazk_job" and not env_flag("PQM_ENABLE_NAZK_WORKFLOW", False):
+        SERVER_LOG.info("NAZK materialization skipped: workflow not explicitly enabled")
+        return {"skipped": "nazk_workflow_disabled", "created": 0}
     with db() as con:
         supplier_nazk = reconcile_active_supplier_nazk(con, apply=True)
-        counts = operational_tasks.build(con, actor)
-        counts["supplier_nazk_checks_created"] = sum(
-            1 for item in supplier_nazk.get("items", []) if item.get("created")
-        )
+        counts = operational_tasks.materialize_nazk_tasks(con, actor)
+        counts["supplier_nazk_checks_created"] = sum(bool(item.get("created"))
+                                                   for item in supplier_nazk.get("items", []))
         return counts
 
 
@@ -4636,7 +4646,12 @@ def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
         try:
             state = reference_status(DB_PATH).get("nazk", {})
             error = str(state.get("message") or "") if state.get("status") == "error" else ""
+            if not error:
+                rebuild_nazk_tasks("PQM NAZK job", workflow="nazk_job")
             _finish_scheduler_lease("nazk_registry", owner, "error" if error else "ok", error)
+        except Exception as exc:
+            _finish_scheduler_lease("nazk_registry", owner, "error", str(exc))
+            SERVER_LOG.exception("Explicit NAZK workflow failed")
         finally:
             heartbeat.__exit__(None, None, None)
     try:

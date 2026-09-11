@@ -47,14 +47,14 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
         before=self.con.execute("SELECT result,manager_name FROM supplier_nazk_checks WHERE id=10").fetchone()
         self.assertEqual(tuple(before),('confirmed','PERSON_A'))
         self.assertEqual(len(operational_tasks._active_application_map(self.con)[self.CODE]),1)
-        operational_tasks.build(self.con,'fixture'); operational_tasks.build(self.con,'fixture repeat')
+        operational_tasks.build(self.con,'fixture',include_nazk=True); operational_tasks.build(self.con,'fixture repeat',include_nazk=True)
         self.assertEqual(self.active_for_record('RECORD_A'),0)
         self.assertEqual(tuple(self.con.execute("SELECT result,manager_name FROM supplier_nazk_checks WHERE id=10").fetchone()),('confirmed','PERSON_A'))
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_task_events WHERE task_id='history'").fetchone()[0],1)
 
     def test_current_manager_match_creates_one_task_idempotently(self):
         self.con.execute("UPDATE supplier_managers SET is_current=CASE id WHEN 1 THEN 1 ELSE 0 END")
-        operational_tasks.build(self.con,'fixture'); operational_tasks.build(self.con,'fixture repeat')
+        operational_tasks.build(self.con,'fixture',include_nazk=True); operational_tasks.build(self.con,'fixture repeat',include_nazk=True)
         self.assertEqual(self.active_for_record('RECORD_A'),1)
         self.assertEqual(self.con.execute("SELECT task_key FROM operational_tasks WHERE source_context LIKE '%RECORD_A%'").fetchone()[0],
                          f'nazk_check:{self.CODE}:1:RECORD_A')
@@ -62,7 +62,7 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
     def test_new_current_manager_match_is_a_new_business_event(self):
         self.con.execute("INSERT INTO supplier_nazk_checks VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')",(self.CODE,))
         self.con.execute("INSERT INTO supplier_nazk_check_matches VALUES(11,'RECORD_B','confirmed')")
-        operational_tasks.build(self.con,'fixture'); operational_tasks.build(self.con,'fixture repeat')
+        operational_tasks.build(self.con,'fixture',include_nazk=True); operational_tasks.build(self.con,'fixture repeat',include_nazk=True)
         self.assertEqual(self.active_for_record('RECORD_A'),0)
         self.assertEqual(self.active_for_record('RECORD_B'),1)
         self.assertEqual(self.con.execute("SELECT task_key FROM operational_tasks WHERE source_context LIKE '%RECORD_B%'").fetchone()[0],
@@ -72,23 +72,23 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
 class CanonicalRelationCycleTests(NazkTaskPersonRelevanceTests):
     def test_missing_record_cancellation_and_new_record(self):
         self.con.execute("INSERT INTO supplier_nazk_checks VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')",(self.CODE,))
-        operational_tasks.build(self.con,'fixture')
+        operational_tasks.build(self.con,'fixture',include_nazk=True)
         row=self.con.execute("SELECT id,task_key FROM operational_tasks WHERE status='in_progress'").fetchone()
         self.con.execute("UPDATE operational_tasks SET status='cancelled',resolution_code='nazk_record_no_longer_present' WHERE id=?",(row['id'],))
-        operational_tasks.build(self.con,'repeat')
+        operational_tasks.build(self.con,'repeat',include_nazk=True)
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE status='in_progress'").fetchone()[0],0)
         self.con.execute("INSERT INTO supplier_nazk_check_matches VALUES(11,'NEW_RECORD','candidate')")
-        operational_tasks.build(self.con,'new event')
-        operational_tasks.build(self.con,'repeat')
+        operational_tasks.build(self.con,'new event',include_nazk=True)
+        operational_tasks.build(self.con,'repeat',include_nazk=True)
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE status='in_progress'").fetchone()[0],1)
         self.assertEqual(self.con.execute('SELECT status FROM operational_tasks WHERE id=?',(row['id'],)).fetchone()[0],'cancelled')
 
     def test_additive_relation_preserves_existing_task_key(self):
         self.con.execute("INSERT INTO supplier_nazk_checks VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')",(self.CODE,))
-        operational_tasks.build(self.con,'fixture')
+        operational_tasks.build(self.con,'fixture',include_nazk=True)
         key=self.con.execute("SELECT task_key FROM operational_tasks WHERE status='in_progress'").fetchone()[0]
         self.con.execute("INSERT INTO supplier_nazk_check_matches VALUES(11,'LINKED_RECORD','candidate')")
-        operational_tasks.build(self.con,'repeat')
+        operational_tasks.build(self.con,'repeat',include_nazk=True)
         self.assertEqual([r[0] for r in self.con.execute("SELECT task_key FROM operational_tasks WHERE status='in_progress'")],[key])
 
 if __name__=='__main__': unittest.main()

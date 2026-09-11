@@ -433,12 +433,14 @@ def _next_warning_event(rows, used_ids=(), moment=None):
     return events[0] if events else None
 
 
-def build(con, actor="PQM task builder"):
+def build(con, actor="PQM task builder", *, include_nazk=False):
+    """Generic materialization is NAZK-free unless explicitly opted in."""
     migrate(con); counts={"created":0,"existing":0,"completed":0,"amcu":0,"nazk":0,"warning":0}
     active_applications = _active_application_map(con)
-    counts["completed"] += reconcile_stale_nazk_tasks(
-        con, actor, active_applications=active_applications)["cancelled"]
-    counts["completed"] += reconcile_irrelevant_nazk_managers(con, actor)["cancelled"]
+    if include_nazk:
+        counts["completed"] += reconcile_stale_nazk_tasks(
+            con, actor, active_applications=active_applications)["cancelled"]
+        counts["completed"] += reconcile_irrelevant_nazk_managers(con, actor)["cancelled"]
     supplier_names = _supplier_name_map(con)
     amcu_decisions = {}
     for row in con.execute("SELECT * FROM amcu_registry ORDER BY decision_date,row_key"):
@@ -476,12 +478,13 @@ def build(con, actor="PQM task builder"):
         task_id,created=_create(con,key,"amcu_exclusion",code,"high",source,document,supplier_name=supplier_names.get(code,""))
         counts["created" if created else "existing"]+=1; counts["amcu"]+=1; _link_apps(con,task_id,apps)
         stamp=now_iso(); con.executemany("INSERT OR IGNORE INTO operational_task_amcu_decisions VALUES (?,?, '',?,?,?)",[(task_id,x["row_key"],stamp,stamp,actor) for x in decisions])
-    nazk_counts=materialize_nazk_tasks(con,actor,active_applications=active_applications,
-                                      supplier_names=supplier_names)
-    counts["created"]+=nazk_counts["created"]
-    counts["existing"]+=nazk_counts["existing"]
-    counts["completed"]+=nazk_counts["completed"]
-    counts["nazk"]+=nazk_counts["nazk"]
+    if include_nazk:
+        nazk_counts=materialize_nazk_tasks(con,actor,active_applications=active_applications,
+                                          supplier_names=supplier_names)
+        counts["created"]+=nazk_counts["created"]
+        counts["existing"]+=nazk_counts["existing"]
+        counts["completed"]+=nazk_counts["completed"]
+        counts["nazk"]+=nazk_counts["nazk"]
     # Warning threshold: rolling calendar-month windows and immutable references.
     supplier_codes=[row[0] for row in con.execute("SELECT DISTINCT defendant_code FROM violation_reports WHERE status='satisfied' AND COALESCE(decision_date,'')<>''")]
     for raw_code in supplier_codes:
