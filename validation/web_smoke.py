@@ -18,7 +18,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 TEMP=tempfile.TemporaryDirectory(prefix='pqm-web-acceptance-')
-os.environ.update(PQM_ENV='test_web',PQM_DATA_DIR=TEMP.name,PQM_DB_PATH=TEMP.name+'/test.sqlite3',PQM_AUTH_ENABLED='1',PQM_USERS_JSON='',PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_BIDS_UPDATE='0',PQM_ENABLE_POWERBI='0',PQM_ENABLE_BROWSER='0',PQM_BIDS_MODE='disabled')
+os.environ.update(PQM_ENV='test_web',PQM_DATA_DIR=TEMP.name,PQM_DB_PATH=TEMP.name+'/test.sqlite3',PQM_AUTH_ENABLED='1',PQM_USERS_JSON='',PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_PROZORRO_SCHEDULER='0',PQM_ENABLE_VIOLATION_SCHEDULER='0',PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_BIDS_UPDATE='0',PQM_ENABLE_POWERBI='0',PQM_ENABLE_BROWSER='0',PQM_BIDS_MODE='disabled')
 import server
 from integration.safe_startup import require_current_schema
 

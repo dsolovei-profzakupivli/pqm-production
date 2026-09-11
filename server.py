@@ -6,6 +6,7 @@ import auth_access
 import table_widths
 import navigation_settings
 import supplier_activity
+import supplier_registry_integration
 import base64
 import csv
 import hashlib
@@ -50,7 +51,12 @@ from declension_overrides import (OverrideConflictError, delete_override,
 import formed_protocols
 import operational_tasks
 import task_documents
+import document_metadata
+import document_bindings
 import template_runtime
+import template_catalog
+import scheduler_runtime
+import protocol_pdf
 from violation_protocol_docx import (TEMPLATES, build_violation_protocol_docx,
                                      ensure_runtime_templates, replace_runtime_template,
                                      template_metadata, ProtocolContextValidationError)
@@ -72,6 +78,8 @@ from reference_directories import (
 from uo_work_queue import get_uo_work_queue
 
 ROOT = Path(__file__).resolve().parent
+SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
+SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
 
 
 def configure_file_logging() -> logging.Logger:
@@ -111,8 +119,13 @@ RUNTIME_CACHE_DIR = Path(os.environ.get("PQM_CACHE_DIR", str(DATA_DIR / "cache")
 HOST = os.environ.get("HOST", "0.0.0.0" if IS_WEB_ENV else "127.0.0.1")
 PORT = int(os.environ.get("PORT", "10000" if IS_WEB_ENV else "8080"))
 ENABLE_BROWSER = not IS_WEB_ENV and env_flag("PQM_ENABLE_BROWSER", True)
-ENABLE_SCHEDULER = env_flag("PQM_ENABLE_SCHEDULER", not IS_WEB_ENV)
+SCHEDULERS_ENABLED_BY_DEFAULT = scheduler_runtime.enabled_by_default(PQM_ENV)
+_legacy_scheduler_default = env_flag("PQM_ENABLE_SCHEDULER", SCHEDULERS_ENABLED_BY_DEFAULT)
+ENABLE_PROZORRO_SCHEDULER = env_flag("PQM_ENABLE_PROZORRO_SCHEDULER", _legacy_scheduler_default)
+ENABLE_VIOLATION_SCHEDULER = env_flag("PQM_ENABLE_VIOLATION_SCHEDULER", _legacy_scheduler_default)
 ENABLE_NAZK_SCHEDULER = env_flag("PQM_ENABLE_NAZK_SCHEDULER", not IS_WEB_ENV)
+# Backward-compatible aggregate exposed to older UI/tests.
+ENABLE_SCHEDULER = ENABLE_PROZORRO_SCHEDULER or ENABLE_VIOLATION_SCHEDULER
 AUTH_ENABLED = env_flag("PQM_AUTH_ENABLED", IS_WEB_ENV)
 LOCAL_ROLE_IMPERSONATION = not IS_WEB_ENV and env_flag("PQM_LOCAL_ROLE_IMPERSONATION", True)
 BIDS_MODE = os.environ.get("PQM_BIDS_MODE", "disabled" if IS_WEB_ENV else "readonly").strip().casefold()
@@ -481,6 +494,10 @@ SCHEDULER_HEARTBEAT_AT = None
 VIOLATION_SYNC_STATE = {"running": False, "message": "Звернення ще не синхронізувалися", "updated_at": None,
                         "processed": 0, "total": 0, "errors": 0, "stop_requested": False}
 VIOLATION_SYNC_LOCK = threading.Lock()
+SCHEDULER_REGISTRATION_LOCK = threading.Lock()
+REGISTERED_SCHEDULER_JOBS: set[str] = set()
+SCHEDULER_THREADS: dict[str, threading.Thread] = {}
+SCHEDULER_HEARTBEATS: dict[str, str] = {}
 DOCUMENT_CHECK_JOBS = {}
 DOCUMENT_CHECK_LOCK = threading.Lock()
 CONTRACT_EXPERIENCE_CACHE: dict[tuple[str, str, str], dict] = {}
@@ -903,12 +920,14 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_submissions_framework ON submissions(framework_id);
         CREATE INDEX IF NOT EXISTS ix_submissions_supplier ON submissions(supplier_code);
+        CREATE INDEX IF NOT EXISTS ix_submissions_integration_latest ON submissions(supplier_code,date_published DESC,id DESC);
         CREATE TABLE IF NOT EXISTS qualifications (
           id TEXT PRIMARY KEY, framework_id TEXT NOT NULL, submission_id TEXT,
           status TEXT, decision_date TEXT, documents_json TEXT NOT NULL DEFAULT '[]',
           raw_json TEXT NOT NULL, synced_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS ix_qualifications_submission ON qualifications(submission_id);
+        CREATE INDEX IF NOT EXISTS ix_qualifications_status_submission ON qualifications(status,submission_id);
         CREATE TABLE IF NOT EXISTS registry_contracts (
           id TEXT PRIMARY KEY, framework_id TEXT NOT NULL, qualification_id TEXT,
           supplier_code TEXT, status TEXT, milestones_json TEXT NOT NULL DEFAULT '[]',
@@ -916,6 +935,7 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_registry_contracts_qualification ON registry_contracts(qualification_id);
         CREATE INDEX IF NOT EXISTS ix_registry_contracts_supplier ON registry_contracts(supplier_code);
+        CREATE INDEX IF NOT EXISTS ix_registry_contracts_integration_activity ON registry_contracts(supplier_code,status,framework_id);
         CREATE TABLE IF NOT EXISTS supplier_registry_summary (
           supplier_code TEXT PRIMARY KEY, supplier_name TEXT DEFAULT '',
           qualifications_count INTEGER DEFAULT 0, active_count INTEGER DEFAULT 0,
@@ -1290,6 +1310,7 @@ def init_db() -> None:
             "customer_protocol_decision_number": "TEXT DEFAULT ''",
             "customer_protocol_decision_url": "TEXT DEFAULT ''",
             "generated_protocol_filename": "TEXT DEFAULT ''",
+            "generated_protocol_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
             "protocol_generated_at": "TEXT DEFAULT ''",
             "completed_at": "TEXT DEFAULT ''",
             "completed_by": "TEXT DEFAULT ''",
@@ -1323,12 +1344,18 @@ def init_db() -> None:
         operational_tasks.migrate(con)
         task_documents.migrate(con)
         navigation_settings.migrate(con)
+        scheduler_runtime.migrate(con)
 
 
 def rebuild_operational_tasks(actor: str = "PQM task builder") -> dict:
     """Use already stored LOCAL facts only; never starts an external sync."""
     with db() as con:
-        return operational_tasks.build(con, actor)
+        supplier_nazk = reconcile_active_supplier_nazk(con, apply=True)
+        counts = operational_tasks.build(con, actor)
+        counts["supplier_nazk_checks_created"] = sum(
+            1 for item in supplier_nazk.get("items", []) if item.get("created")
+        )
+        return counts
 
 
 def api_get(url: str) -> dict:
@@ -1400,6 +1427,12 @@ def save_framework(item: dict) -> bool:
            item.get("classification", {}).get("id", ""), item.get("status", ""), organizer,
            item.get("agreementID", ""), item.get("dateModified", ""),
            json.dumps(item, ensure_ascii=False), now_iso()))
+        # A manually registered directory row is the canonical source of the
+        # tracked selection before Prozorro exposes its factual payload. Link
+        # it additively as soon as the matching framework becomes available.
+        con.execute("""UPDATE framework_service_directory SET framework_id=?
+          WHERE pretty_id=? AND framework_id IS NULL""",
+          (item["id"], item.get("prettyID", "")))
     return True
 
 
@@ -1590,6 +1623,11 @@ def discover_tracked_frameworks() -> list[dict]:
         if (row.get("ID") or "").strip()
         and (row.get("status") or "").strip().casefold() in {"активне", "закрите"}
     })
+    with db() as con:
+        manually_registered = {str(row[0] or "").strip() for row in con.execute(
+            "SELECT pretty_id FROM framework_service_directory WHERE source='PQM'"
+        ) if str(row[0] or "").strip()}
+    tracked_pretty_ids = sorted(set(tracked_pretty_ids) | manually_registered)
     framework_ids = [
         item["id"]
         for batch in paginated_pages(f"{API_ROOT}/frameworks")
@@ -1613,7 +1651,10 @@ def discover_tracked_frameworks() -> list[dict]:
     found_pretty_ids = {item.get("prettyID") for item in tracked}
     missing = sorted(set(tracked_pretty_ids) - found_pretty_ids)
     if missing:
-        raise RuntimeError(f"API Prozorro не повернув {len(missing)} відборів із довідника: {', '.join(missing[:5])}")
+        # Keep the directory rows visible as "Не визначено". A future
+        # idempotent refresh will link them when Prozorro starts returning data.
+        SERVER_LOG.warning("Prozorro has no factual data for %s tracked frameworks: %s",
+                           len(missing), ", ".join(missing[:5]))
     return sorted(tracked, key=lambda item: item.get("prettyID", ""))
 
 
@@ -1768,29 +1809,52 @@ def sync_incremental_worker() -> None:
         SYNC_STATE['running'] = False
 
 
-def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = ()) -> bool:
-    """Atomically claim the single Prozorro sync slot before starting a worker."""
+def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error: str = "") -> None:
+    try:
+        scheduler_runtime.finish(DB_PATH, job_key, owner, status=status, error=error)
+    except Exception:
+        SERVER_LOG.exception("Cannot finish scheduler lease job=%s owner=%s", job_key, owner)
+
+
+def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
+                        trigger: str = "manual") -> bool:
+    """Claim process and SQLite job locks before starting any Prozorro refresh."""
     with SYNC_STATE_LOCK:
         if SYNC_STATE.get("running"):
             return False
+        owner = scheduler_runtime.claim(DB_PATH, "prozorro", trigger=trigger)
+        if not owner:
+            return False
         SYNC_STATE.update(running=True, mode=mode, started_at=now_iso(), message=message)
+    def guarded_target():
+        error = ""
+        status = "ok"
+        try:
+            with scheduler_runtime.keepalive(DB_PATH, "prozorro", owner):
+                target(*args)
+            result = SYNC_STATE.get("last_result") or {}
+            if result.get("status") == "failed" or result.get("errors"):
+                status = "error" if result.get("status") == "failed" else "partial"
+                error = str(SYNC_STATE.get("last_message") or SYNC_STATE.get("message") or "")
+        except Exception as exc:
+            error = str(exc)
+            status = "error"
+            raise
+        finally:
+            SYNC_STATE['running'] = False
+            _finish_scheduler_lease("prozorro", owner, status, error)
     try:
-        threading.Thread(target=target, args=args, daemon=True).start()
+        threading.Thread(target=guarded_target, daemon=True).start()
     except Exception:
         with SYNC_STATE_LOCK:
             SYNC_STATE.update(running=False, message="Не вдалося запустити синхронізацію", updated_at=now_iso())
+        scheduler_runtime.release(DB_PATH, "prozorro", owner)
         raise
     return True
 
 
 def next_hourly_run(moment: datetime | None = None) -> datetime:
-    current = moment or datetime.now().astimezone()
-    candidate = current.replace(minute=5, second=0, microsecond=0)
-    if candidate <= current:
-        candidate = candidate.replace(hour=(candidate.hour + 1) % 24)
-        if candidate.hour == 0:
-            candidate = candidate.replace(day=candidate.day) + timedelta(days=1)
-    return candidate
+    return scheduler_runtime.next_hourly_run(moment)
 
 
 def restore_sync_data_timestamp() -> None:
@@ -1803,52 +1867,129 @@ def restore_sync_data_timestamp() -> None:
         SERVER_LOG.exception('Could not restore persisted sync data timestamp')
 
 
+
 def sync_status_payload() -> dict:
     payload = dict(SYNC_STATE)
-    alive = bool(ENABLE_SCHEDULER and PROZORRO_SCHEDULER_THREAD and PROZORRO_SCHEDULER_THREAD.is_alive())
-    payload.update(scheduler_enabled=ENABLE_SCHEDULER, scheduler_running=alive,
-                   scheduler_heartbeat_at=SCHEDULER_HEARTBEAT_AT,
+    thread = SCHEDULER_THREADS.get('prozorro')
+    alive = bool(ENABLE_PROZORRO_SCHEDULER and thread and thread.is_alive())
+    payload.update(scheduler_enabled=ENABLE_PROZORRO_SCHEDULER, scheduler_running=alive,
+                   scheduler_heartbeat_at=SCHEDULER_HEARTBEATS.get('prozorro'),
                    next_run_at=payload.get('next_run_at') if alive else None)
     return payload
 
 
-def trigger_scheduled_syncs(reason: str) -> None:
-    # Separate guards: one busy/failed job must not suppress the other one.
-    for name, trigger in (
-        ('prozorro', lambda: start_prozorro_sync(sync_incremental_worker, mode='incremental',
-                                               message='Підготовка щогодинного оновлення…')),
-        ('appeals', start_violation_reports_sync),
-    ):
-        try:
-            started = trigger()
-            SERVER_LOG.info('Scheduled job trigger job=%s reason=%s started=%s', name, reason, started)
-        except Exception:
-            SERVER_LOG.exception('Scheduled job trigger failed job=%s reason=%s; next cycle remains enabled', name, reason)
 
-
-def hourly_sync_scheduler() -> None:
-    global SCHEDULER_HEARTBEAT_AT
-    # Run a missed update shortly after startup, then every hour at :05.
-    SYNC_STATE['next_run_at'] = next_hourly_run().isoformat()
-    SCHEDULER_HEARTBEAT_AT = now_iso()
-    time.sleep(10)
-    last_value = SYNC_STATE.get('last_data_sync_at')
-    try:
-        last_sync = datetime.fromisoformat((last_value or "").replace("Z", "+00:00"))
-    except ValueError:
-        last_sync = None
-    if last_sync is None or (datetime.now(timezone.utc) - last_sync.astimezone(timezone.utc)).total_seconds() >= 3600:
-        trigger_scheduled_syncs('startup_catchup')
+def _wait_until(target: datetime, job_key: str = 'prozorro') -> None:
     while True:
+        SCHEDULER_HEARTBEATS[job_key] = now_iso()
+        remaining = (target.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            return
+        time.sleep(min(30, remaining))
+
+
+def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
+    try:
+        if job_key == 'prozorro':
+            started = start_prozorro_sync(sync_incremental_worker, mode='incremental',
+                                         message='Підготовка щогодинного оновлення…', trigger=trigger)
+        else:
+            started = start_violation_reports_sync(trigger=trigger)
+        SERVER_LOG.info('Scheduled sync trigger job=%s reason=%s started=%s', job_key, trigger, started)
+        return started
+    except Exception:
+        SERVER_LOG.exception('Scheduled trigger failed job=%s; next cycle remains enabled', job_key)
+        return False
+
+
+def _hourly_scheduler(job_key: str, state: dict) -> None:
+    """Independent loop; failed starts/expired leases retry without losing :05."""
+    state['next_run_at'] = next_hourly_run().isoformat()
+    SCHEDULER_HEARTBEATS[job_key] = now_iso()
+    time.sleep(10)
+    persisted = next(row for row in scheduler_runtime.state(DB_PATH, {}) if row['job'] == job_key)
+    last = persisted.get('last_finished_at')
+    if not last and job_key == 'prozorro':
+        last = SYNC_STATE.get('last_data_sync_at')
+    due = scheduler_runtime.hourly_catchup_due(datetime.now(timezone.utc), last)
+    trigger = 'startup_catchup'
+    while True:
+        if due:
+            if not _trigger_scheduler_job(job_key, trigger) and not state.get('running'):
+                _wait_until(datetime.now(timezone.utc) + timedelta(seconds=30), job_key)
+                continue
         target = next_hourly_run()
-        SYNC_STATE["next_run_at"] = target.isoformat()
-        while True:
-            SCHEDULER_HEARTBEAT_AT = now_iso()
-            remaining = (target - datetime.now().astimezone()).total_seconds()
-            if remaining <= 0:
-                break
-            time.sleep(min(30, remaining))
-        trigger_scheduled_syncs('hourly')
+        state['next_run_at'] = target.isoformat()
+        _wait_until(target, job_key)
+        due, trigger = True, 'scheduled'
+
+
+def prozorro_scheduler() -> None:
+    _hourly_scheduler('prozorro', SYNC_STATE)
+
+
+def violation_reports_scheduler() -> None:
+    """Independent Europe/Kyiv hourly scheduler and persistent startup catch-up."""
+    _hourly_scheduler('violation_reports', VIOLATION_SYNC_STATE)
+
+
+def nazk_registry_scheduler() -> None:
+    """Run once per Kyiv working day, with restart-safe persisted protection."""
+    while True:
+        current = datetime.now(timezone.utc)
+        jobs = scheduler_runtime.state(DB_PATH, {"nazk_registry": True}, current)
+        persisted = next(row for row in jobs if row["job"] == "nazk_registry")
+        source_day = str(reference_status(DB_PATH).get("nazk", {}).get("source_updated_at") or "")[:10]
+        kyiv_day = scheduler_runtime.as_kyiv(current).date().isoformat()
+        if (scheduler_runtime.nazk_due_today(current, persisted.get("last_finished_at"))
+                and source_day != kyiv_day):
+            start_nazk_registry_refresh(trigger="scheduled_catchup")
+        target = scheduler_runtime.next_nazk_run(current)
+        _wait_until(target, 'nazk_registry')
+        start_nazk_registry_refresh(trigger="scheduled")
+
+
+def register_scheduler_job(job_key: str, target) -> bool:
+    """Register one scheduler thread per process; SQLite lease protects instances."""
+    with SCHEDULER_REGISTRATION_LOCK:
+        if job_key in REGISTERED_SCHEDULER_JOBS:
+            return False
+        REGISTERED_SCHEDULER_JOBS.add(job_key)
+        def supervised():
+            while True:
+                try:
+                    target()
+                    return
+                except Exception:
+                    SERVER_LOG.exception('Scheduler loop failed job=%s; retry in 30s', job_key)
+                    time.sleep(30)
+        thread = threading.Thread(target=supervised, name=f"pqm-scheduler-{job_key}", daemon=True)
+        SCHEDULER_THREADS[job_key] = thread
+        SCHEDULER_HEARTBEATS[job_key] = now_iso()
+        try:
+            thread.start()
+        except Exception:
+            REGISTERED_SCHEDULER_JOBS.discard(job_key)
+            SCHEDULER_THREADS.pop(job_key, None)
+            raise
+        SERVER_LOG.info('Scheduler started job=%s timezone=Europe/Kyiv schedule=%s', job_key, scheduler_runtime.SCHEDULES[job_key])
+        return True
+
+
+def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
+    jobs = scheduler_runtime.state(DB_PATH, {
+        "prozorro": ENABLE_PROZORRO_SCHEDULER,
+        "violation_reports": ENABLE_VIOLATION_SCHEDULER,
+        "nazk_registry": ENABLE_NAZK_SCHEDULER,
+    }, moment)
+    for job in jobs:
+        key = job['job']
+        thread = SCHEDULER_THREADS.get(key)
+        job['running'] = bool(job['enabled'] and thread and thread.is_alive())
+        job['heartbeat_at'] = SCHEDULER_HEARTBEATS.get(key)
+        if not job['running']:
+            job['next_run'] = None
+    return jobs
 
 
 def decision_label(status: str | None) -> str:
@@ -2411,6 +2552,17 @@ def list_frameworks() -> dict:
     return {"items": [dict(row) for row in rows]}
 
 
+def pending_directory_framework_rows(con: sqlite3.Connection) -> list[dict]:
+    """Project PQM-owned selections before their first factual Prozorro match."""
+    return [{
+        "id": "", "pretty_id": row["pretty_id"], "title": row["source_title"] or "",
+        "dk_code": row["dk_code"] or "", "status": "", "agreement_id": "",
+        "date_modified": "", "raw_json": "{}", "applications_count": 0,
+    } for row in con.execute("""SELECT pretty_id,dk_code,source_title
+      FROM framework_service_directory
+      WHERE framework_id IS NULL AND source='PQM' ORDER BY pretty_id""")]
+
+
 def base_framework_analytics(params: dict) -> dict:
     """Serve authoritative framework metadata when ProzorroBids is intentionally disabled."""
     page = max(1, int(params.get("page", [1])[0]))
@@ -2420,10 +2572,11 @@ def base_framework_analytics(params: dict) -> dict:
     dk_filter = params.get("dk_code", [""])[0].strip().casefold()
     direction = params.get("direction", ["asc"])[0].lower()
     with db() as con:
-        rows = con.execute("""SELECT f.id,f.pretty_id,f.title,f.dk_code,f.status,f.agreement_id,
+        rows = [dict(row) for row in con.execute("""SELECT f.id,f.pretty_id,f.title,f.dk_code,f.status,f.agreement_id,
           f.date_modified,f.raw_json,COUNT(s.id) applications_count
           FROM frameworks f LEFT JOIN submissions s ON s.framework_id=f.id
-          GROUP BY f.id""").fetchall()
+          GROUP BY f.id""").fetchall()]
+        rows.extend(pending_directory_framework_rows(con))
     items = []
     for row in rows:
         framework = dict(row)
@@ -2599,9 +2752,10 @@ def framework_analytics(params: dict) -> dict:
     qualified_by_agreement = {}
     local_only = []
     with db() as con:
-        framework_rows = con.execute("""SELECT f.id,f.pretty_id,f.title,f.dk_code,f.status,f.agreement_id,f.date_modified,f.raw_json,
+        framework_rows = [dict(row) for row in con.execute("""SELECT f.id,f.pretty_id,f.title,f.dk_code,f.status,f.agreement_id,f.date_modified,f.raw_json,
           COUNT(s.id) applications_count FROM frameworks f LEFT JOIN submissions s ON s.framework_id=f.id
-          GROUP BY f.id""").fetchall()
+          GROUP BY f.id""").fetchall()]
+        framework_rows.extend(pending_directory_framework_rows(con))
         for agreement, supplier_code in con.execute("""SELECT f.agreement_id,rc.supplier_code
           FROM frameworks f JOIN registry_contracts rc ON rc.framework_id=f.id
           WHERE COALESCE(f.agreement_id,'')<>'' AND COALESCE(rc.supplier_code,'')<>''"""):
@@ -3763,8 +3917,18 @@ def list_qualified_suppliers(params: dict) -> dict:
         }
         open_supplier_nazk_workflows = {}
         latest_supplier_nazk_checks = {}
+        current_manager_registry_matches = set()
+        missing_registry_cancelled = set()
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
+            current_manager_registry_matches = {row[0] for row in con.execute(f"""SELECT DISTINCT sm.supplier_code
+              FROM supplier_managers sm JOIN nazk_registry nr
+                ON NORMALIZE_NAME(nr.full_name)=sm.normalized_name
+              WHERE sm.is_current=1 AND sm.supplier_code IN ({placeholders})""", supplier_codes)}
+            missing_registry_cancelled = {row[0] for row in con.execute(f"""SELECT DISTINCT supplier_code
+              FROM operational_tasks WHERE task_type='nazk_check'
+                AND status='cancelled' AND resolution_code='nazk_record_no_longer_present'
+                AND supplier_code IN ({placeholders})""", supplier_codes)}
             for check in con.execute(f"""SELECT sc.id,sc.supplier_code,sc.manager_name,
               sc.workflow_status,sc.result,sc.started_at,sc.completed_at,sc.is_legacy
               FROM supplier_nazk_checks sc
@@ -3845,13 +4009,18 @@ def list_qualified_suppliers(params: dict) -> dict:
             item["nazk_review_is_current"] = review_is_current
             item["nazk_match"] = review_is_current and review.get("result") in {"підтверджено", "на запит", "можливо"}
             item["nazk_manager_name"] = review.get("manager_name") or item["nazk_manager_name"]
+        record_no_longer_present = (
+            item.get("code") in missing_registry_cancelled
+            and item.get("code") not in current_manager_registry_matches
+        )
         item["nazk_presentation_state"] = get_supplier_nazk_presentation_state(
             item["nazk_application_state"].get("state"),
             item["nazk_supplier_workflow"].get("workflow_status"),
-            registry_match=bool(item["nazk_match"]),
+            registry_match=bool(item["nazk_match"]) and not record_no_longer_present,
             legacy_result=(latest_supplier_check.get("result")
               if latest_supplier_check.get("workflow_status") == "completed"
               else ((review or {}).get("result") if item.get("nazk_review_is_current", not review) else "")),
+            registry_record_no_longer_present=record_no_longer_present,
         )
     return {"items": items, "total": total,
             "edr_statuses": edr_statuses,
@@ -3962,6 +4131,15 @@ def supplier_profile(supplier_code: str) -> dict:
             nazk = [dict(row) for row in con.execute(f"""SELECT full_name,offense_name,court_case_number,
               sentence_date,punishment_start,court_name,decision_url FROM nazk_registry
               WHERE NORMALIZE_NAME(full_name) IN ({placeholders}) ORDER BY sentence_date DESC""", tuple(normalized_managers))]
+        current_registry_match = bool(current_manager_row and con.execute(
+            "SELECT 1 FROM nazk_registry WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?) LIMIT 1",
+            (current_manager_row["manager_name"],),
+        ).fetchone())
+        missing_registry_cancelled = bool(con.execute("""SELECT 1 FROM operational_tasks
+          WHERE task_type='nazk_check' AND DIGITS(supplier_code)=?
+            AND status='cancelled' AND resolution_code='nazk_record_no_longer_present' LIMIT 1""",
+          (code,)).fetchone())
+        record_no_longer_present = missing_registry_cancelled and not current_registry_match
         nazk_application_state = get_supplier_application_nazk_state(con, code)
         violation_reports = [dict(row) for row in con.execute("""SELECT report_id,status,date_published,
           reason,description,decision_resolution,decision_description,decision_date,tender_pretty_id,
@@ -4026,11 +4204,13 @@ def supplier_profile(supplier_code: str) -> dict:
         application_history_groups.sort(key=lambda group: ((group["dk_code"] or "").casefold(),
                                                             (group["framework_title"] or "").casefold(),
                                                             group["framework_pretty_id"] or ""))
-    bids_summary = {"participations": 0, "wins": 0}
+    bids_summary = {"participations": 0, "wins": 0, "last_participation_date": ""}
     try:
         with bids_db() as con:
-            row = con.execute("""SELECT COUNT(DISTINCT tender_id) participations
-              FROM bids WHERE supplier_id=?""", (code,)).fetchone()
+            row = con.execute("""SELECT COUNT(DISTINCT b.tender_id) participations,
+              MAX(COALESCE(t.tender_start,t.date_created,b.bid_date)) last_participation_date
+              FROM bids b LEFT JOIN tenders t ON t.tender_id=b.tender_id
+              WHERE b.supplier_id=?""", (code,)).fetchone()
             wins = con.execute("""SELECT COUNT(DISTINCT tender_id) FROM awards
               WHERE supplier_id=? AND LOWER(COALESCE(status,''))='active'""", (code,)).fetchone()[0]
             bids_summary = {**dict(row), "wins": int(wins or 0)}
@@ -4047,9 +4227,10 @@ def supplier_profile(supplier_code: str) -> dict:
     nazk_presentation_state = get_supplier_nazk_presentation_state(
         nazk_application_state.get("state"),
         supplier_nazk_workflow.get("workflow_status"),
-        registry_match=bool(nazk),
+        registry_match=bool(nazk) and not record_no_longer_present,
         legacy_result=(latest_current_supplier_check.get("result")
           or (nazk_review_data.get("result") if nazk_review_data.get("is_current_manager") else "")),
+        registry_record_no_longer_present=record_no_longer_present,
     )
     return {"code": code, "latest_submission_name": latest_submission_name, "summary": dict(summary) if summary else {}, "edr_profile": dict(profile) if profile else {},
             "supplier_note": dict(supplier_note) if supplier_note else {"supplier_code": code, "note": "", "updated_at": None, "updated_by": ""},
@@ -4149,7 +4330,9 @@ def framework_service_directory() -> dict:
         effective = effective_framework_status(item.get("official_status") or "", raw)
         item["missing_end_date"] = item.get("official_status") == "active" and not valid_until
         if not item.get("framework_id"):
-            item["status"] = "Не відбувся"
+            # A manually registered selection has no factual Prozorro status
+            # until the first successful metadata sync.
+            item["status"] = "Не визначено"
             counts["unknown"] += 1
         elif effective == "active":
             item["status"] = "Активний"
@@ -4412,19 +4595,61 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
                         VIOLATION_SYNC_STATE['errors'], VIOLATION_SYNC_STATE['message'].startswith('Помилка'))
 
 
-def start_violation_reports_sync() -> bool:
-    """Share one guarded background job between manual and hourly triggers."""
+def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
+    """Share process and SQLite locks between manual and scheduled refreshes."""
     with VIOLATION_SYNC_LOCK:
         if VIOLATION_SYNC_STATE["running"]:
             return False
+        owner = scheduler_runtime.claim(DB_PATH, "violation_reports", trigger=trigger)
+        if not owner:
+            return False
         VIOLATION_SYNC_STATE.update(running=True, message="Отримання переліку звернень…",
                                     processed=0, total=0, errors=0)
+        def guarded_worker():
+            error = ''
+            try:
+                with scheduler_runtime.keepalive(DB_PATH, 'violation_reports', owner):
+                    sync_violation_reports_worker(True)
+                if VIOLATION_SYNC_STATE.get('errors'):
+                    error = str(VIOLATION_SYNC_STATE.get('last_error') or VIOLATION_SYNC_STATE.get('message') or 'Sync errors')
+            except Exception as exc:
+                error = str(exc)
+                raise
+            finally:
+                VIOLATION_SYNC_STATE['running'] = False
+                _finish_scheduler_lease("violation_reports", owner, "error" if error else "ok", error)
         try:
-            threading.Thread(target=sync_violation_reports_worker, args=(True,), name='pqm-appeals-sync', daemon=True).start()
+            threading.Thread(target=guarded_worker, daemon=True).start()
         except Exception:
-            VIOLATION_SYNC_STATE.update(running=False, message='Не вдалося запустити синхронізацію звернень')
+            scheduler_runtime.release(DB_PATH, "violation_reports", owner)
+            VIOLATION_SYNC_STATE["running"] = False
             raise
         return True
+
+
+def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
+    owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger)
+    if not owner:
+        return False
+    heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner)
+    def completed():
+        try:
+            state = reference_status(DB_PATH).get("nazk", {})
+            error = str(state.get("message") or "") if state.get("status") == "error" else ""
+            _finish_scheduler_lease("nazk_registry", owner, "error" if error else "ok", error)
+        finally:
+            heartbeat.__exit__(None, None, None)
+    try:
+        heartbeat.__enter__()
+        if start_reference_refresh(DB_PATH, "nazk", on_complete=completed):
+            return True
+    except Exception:
+        scheduler_runtime.release(DB_PATH, "nazk_registry", owner)
+        heartbeat.__exit__(None, None, None)
+        raise
+    scheduler_runtime.release(DB_PATH, "nazk_registry", owner)
+    heartbeat.__exit__(None, None, None)
+    return False
 
 
 def list_violation_reports(params: dict) -> dict:
@@ -4887,6 +5112,13 @@ def _review_dict(row: sqlite3.Row | None) -> dict | None:
     if not row:
         return None
     result = dict(row)
+    try:
+        result["generated_protocol_metadata"] = json.loads(
+            result.pop("generated_protocol_metadata_json", "{}") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        result["generated_protocol_metadata"] = {}
+    result["generated_protocol_resolved_metadata"] = document_metadata.resolved_items(
+        result["generated_protocol_metadata"])
     result["contract_deadline_extended"] = bool(result.get("contract_deadline_extended"))
     if result.get("court_decision_final_present") is not None:
         result["court_decision_final_present"] = bool(result["court_decision_final_present"])
@@ -4895,6 +5127,63 @@ def _review_dict(row: sqlite3.Row | None) -> dict | None:
     if result.get("guarantee_documents_visible") is not None:
         result["guarantee_documents_visible"] = bool(result["guarantee_documents_visible"])
     return result
+
+
+def _reuse_customer_names(con: sqlite3.Connection, report: sqlite3.Row, review: dict | None) -> dict:
+    """Fill missing manual names from the newest saved review for this customer code."""
+    result = dict(review or {})
+    missing = [key for key in ("customer_verified_full_name", "customer_verified_short_name")
+               if not str(result.get(key) or "").strip()]
+    code = re.sub(r"\D", "", str(report["author_code"] or ""))
+    if not missing or not code:
+        return result
+    candidates = con.execute("""SELECT vr.report_id source_report_id,
+          rr.customer_verified_full_name,rr.customer_verified_short_name,
+          rr.updated_at,vr.date_published
+        FROM violation_report_reviews rr
+        JOIN violation_reports vr ON vr.id=rr.report_id
+        WHERE vr.id<>? AND DIGITS(vr.author_code)=?
+          AND (TRIM(COALESCE(rr.customer_verified_full_name,''))<>''
+               OR TRIM(COALESCE(rr.customer_verified_short_name,''))<>'')
+        ORDER BY COALESCE(NULLIF(rr.updated_at,''),vr.date_published) DESC,
+                 vr.date_published DESC,vr.report_id DESC""",
+        (report["id"], code)).fetchall()
+    sources = {}
+    for candidate in candidates:
+        for key in tuple(missing):
+            value = str(candidate[key] or "").strip()
+            if value:
+                result[key] = value
+                sources[key] = candidate["source_report_id"]
+                missing.remove(key)
+        if not missing:
+            break
+    if sources:
+        result["customer_name_reuse_sources"] = sources
+    return result
+
+
+def _resolve_violation_protocol_metadata(item: dict, values: dict) -> dict:
+    """Resolve configured metadata through the shared Catalog binding engine."""
+    document_type = document_metadata.VIOLATION_REVIEW_PROTOCOL
+    fields = template_catalog.validate(template_catalog.load(), pqm_schema_metadata())
+    index = {field["key"]: field for field in fields}
+    context = {
+        "report": {
+            "report_id": values["report_id"],
+            "tender_id": str(item.get("tender_pretty_id") or ""),
+        },
+        "customer": {"short_name": str((item.get("review") or {}).get("customer_verified_short_name") or "")},
+        "supplier": {
+            "supplier_code": values["supplier_code"],
+            "document_short_name": values["supplier_short_name"] or values["supplier_name"],
+        },
+    }
+    resolve_binding = document_bindings.resolver(context)
+    def resolve(keys):
+        return {key: resolve_binding(index[key]) for key in keys}
+    with db() as con:
+        return document_metadata.resolve_all(con, document_type, fields, resolve)
 
 
 def _violation_review_officer_presentation(review: dict | None) -> tuple[dict | None, list[dict]]:
@@ -5079,6 +5368,7 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
         if not row:
             raise KeyError(report_id)
         review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (row["id"],)).fetchone()
+        effective_review = _reuse_customer_names(con, row, _review_dict(review_row))
         supplier = con.execute("SELECT full_name,short_name FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=DIGITS(?)", (row["defendant_code"],)).fetchone()
         warning_dates = [value[0] for value in con.execute(
             "SELECT decision_date FROM violation_reports WHERE DIGITS(defendant_code)=DIGITS(?) AND status='satisfied' AND decision_date<>''",
@@ -5108,7 +5398,7 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     item["official_decisions"] = raw.get("decisions") or []
     item["has_official_decision"] = bool(item["official_decisions"])
     item["review"], item["active_officers"] = _violation_review_officer_presentation(
-        _review_dict(review_row))
+        effective_review)
     item["review"] = item["review"] or {}
     item["local_review_completed"] = bool(
         item["review"].get("completed_at")
@@ -5657,6 +5947,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "contract_number": "" if rejected else str(review.get("actual_contract_number") or ""),
         "decision_justification": str(review.get("decision_justification") or ""),
     }
+    protocol_metadata = _resolve_violation_protocol_metadata(item, values)
     flags = {
         "has_written_refusal": bool(review.get("written_refusal_date") or review.get("written_refusal_number") or review.get("written_refusal_url")),
         "has_contract": bool(review.get("actual_contract_signed")) and not rejected,
@@ -5676,8 +5967,14 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     safe_supplier = safe_archive_name(supplier_name, "Постачальник")[:48]
     safe_date = str(gate["protocol_date"] or "").replace(".", "-")
     filename = f"{safe_report}_{decision_name}_{safe_customer}_{safe_supplier}_{safe_date}.docx"
-    output = PROTOCOLS_DIR / filename
     PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
+    output = PROTOCOLS_DIR / filename
+    # Regeneration can happen while the current file is open in desktop Word.
+    # Windows locks that path and rejects os.replace(). Publish a new physical
+    # version instead; the DB pointer changes only after the new DOCX exists.
+    if output.exists():
+        output = output.with_name(f"{output.stem}__{uuid.uuid4().hex[:8]}{output.suffix}")
+        filename = output.name
     temporary = PROTOCOLS_DIR / f".{safe_report}.{uuid.uuid4().hex}.tmp.docx"
     renderer_module = Path(sys.modules[build_violation_protocol_docx.__module__].__file__).resolve()
     SERVER_LOG.info(
@@ -5690,8 +5987,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     try:
         build_violation_protocol_docx(gate["protocol_type"], temporary, values,
             str(review.get("decision_justification") or ""), item.get("evidence_documents") or [], supplier_documents,
-            flags, {"customer_name_genitive", "customer_name_accusative", "supplier_name_genitive",
-                    "supplier_name_dative", "supplier_name_accusative"})
+            flags)
         if not temporary.is_file():
             raise RuntimeError("Генератор не створив DOCX")
         os.replace(temporary, output)
@@ -5707,7 +6003,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         raise
     except PermissionError as exc:
         temporary.unlink(missing_ok=True)
-        raise ValueError("Не вдалося оновити протокол: закрийте поточний DOCX у Word та повторіть формування.") from exc
+        raise ValueError("Не вдалося зберегти нову версію протоколу: перевірте доступ до папки документів.") from exc
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
@@ -5724,9 +6020,10 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         previous = con.execute("SELECT review_status,protocol_number,protocol_date,generated_protocol_filename FROM violation_report_reviews WHERE report_id=?",
                                (report["id"],)).fetchone()
         con.execute("""UPDATE violation_report_reviews
-                       SET protocol_number=?,protocol_date=?,generated_protocol_filename=?,protocol_generated_at=?,updated_at=?,updated_by=?
+                       SET protocol_number=?,protocol_date=?,generated_protocol_filename=?,generated_protocol_metadata_json=?,protocol_generated_at=?,updated_at=?,updated_by=?
                        WHERE report_id=?""",
-                    (gate["protocol_number"], gate["protocol_date"], filename, now, now, generated_by, report["id"]))
+                    (gate["protocol_number"], gate["protocol_date"], filename,
+                     json.dumps(protocol_metadata, ensure_ascii=False), now, now, generated_by, report["id"]))
         changes = {
             "protocol_number": (previous["protocol_number"], gate["protocol_number"]),
             "protocol_date": (previous["protocol_date"], gate["protocol_date"]),
@@ -5749,7 +6046,31 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
                                safe_report, previous_path.name)
     return {**gate, "filename": filename,
             "download_url": "/api/protocol/files/" + urllib.parse.quote(filename),
+            "pdf_download_url": f"/api/violation-reports/{urllib.parse.quote(str(item['id']))}/protocol/pdf",
+            "metadata": protocol_metadata,
+            "resolved_metadata": document_metadata.resolved_items(protocol_metadata),
             "review_status": review.get("review_status") or "in_review"}
+
+
+def violation_protocol_pdf(report_id: str) -> tuple[Path, str]:
+    """Resolve the current generated protocol and export its cached PDF copy."""
+    with db() as con:
+        row = con.execute("""SELECT v.id,v.report_id,r.internal_decision,r.protocol_number,
+          r.generated_protocol_filename FROM violation_reports v
+          JOIN violation_report_reviews r ON r.report_id=v.id
+          WHERE v.id=? OR v.report_id=?""", (report_id, report_id)).fetchone()
+    if not row or not str(row["generated_protocol_filename"] or "").strip():
+        raise FileNotFoundError("Сформований протокол не знайдено")
+    protocols_root = PROTOCOLS_DIR.resolve()
+    source = (protocols_root / Path(row["generated_protocol_filename"]).name).resolve()
+    if protocols_root not in source.parents or not source.is_file():
+        raise FileNotFoundError("DOCX протоколу не знайдено")
+    suffix = "П" if str(row["internal_decision"] or "") == "warning" else "В"
+    pretty_report = safe_archive_name(str(row["report_id"] or row["id"]), "report")
+    protocol_number = safe_archive_name(str(row["protocol_number"] or "без номера"), "без номера")
+    filename = f"{pretty_report}_{protocol_number}_{suffix}.pdf"
+    output = protocols_root / "_pdf" / filename
+    return protocol_pdf.ensure_pdf(source, output), filename
 
 
 def safe_archive_name(value: str, fallback: str) -> str:
@@ -7165,7 +7486,29 @@ class Handler(BaseHTTPRequestHandler):
         self.auth_officer_id = account.get("officer_id")
         return True
 
+    def _authorize_supplier_registry_integration(self) -> bool:
+        configured = str(os.environ.get(SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV) or "")
+        if not configured:
+            self.send_json({"error": "Integration token не налаштовано", "status": 503}, 503)
+            return False
+        header = str(self.headers.get("Authorization") or "")
+        scheme, _, supplied = header.partition(" ")
+        valid = scheme.casefold() == "bearer" and bool(supplied) and hmac.compare_digest(supplied, configured)
+        if not valid:
+            self.send_json({"error": "Потрібен чинний Bearer integration token", "status": 401}, 401)
+            return False
+        return True
+
     def _dispatch(self, method) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        if path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
+            if self.command != "GET":
+                return self.send_json({"error": "Endpoint підтримує тільки GET", "status": 405}, 405)
+            if not self._authorize_supplier_registry_integration():
+                return
+            self.auth_user = "integration:suppliers-full-registry"
+            self.auth_role = "integration"
+            return method()
         if not self._authorize():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -7292,6 +7635,10 @@ class Handler(BaseHTTPRequestHandler):
                                 if username in online_users else None})
             items.sort(key=lambda item: (not item["active"], item["username"].casefold()))
             return self.send_json({"items": items})
+        if parsed.path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
+            with db() as con:
+                result=supplier_registry_integration.full_registry(con)
+            return self.send_json(result)
         if parsed.path == '/api/navigation-settings':
             with db() as con: return self.send_json(navigation_settings.get(con))
         if parsed.path == '/api/navigation-icons':
@@ -7390,7 +7737,10 @@ class Handler(BaseHTTPRequestHandler):
                 "powerbi": ENABLE_POWERBI,
                 "google": ENABLE_GOOGLE,
                 "scheduler": ENABLE_SCHEDULER,
+                "prozorro_scheduler": ENABLE_PROZORRO_SCHEDULER,
+                "violation_reports_scheduler": ENABLE_VIOLATION_SCHEDULER,
                 "nazk_scheduler": ENABLE_NAZK_SCHEDULER,
+                "scheduler_jobs": scheduler_status_payload(),
             })
         if parsed.path.startswith("/api/document-check-jobs/"):
             job_id = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
@@ -7480,6 +7830,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"items": authorized_officers(query.get("active") == ["1"])})
         if parsed.path == "/api/admin/templates":
             return self.send_json({"items": template_runtime.metadata(pqm_schema_metadata())})
+        if parsed.path == "/api/admin/document-metadata":
+            try:
+                with db() as con:
+                    fields=template_catalog.validate(template_catalog.load(),pqm_schema_metadata())
+                    return self.send_json(document_metadata.admin_catalog(
+                        con,fields,template_runtime.configurations()))
+            except ValueError as exc:return self.send_json({'error':str(exc)},400)
         if parsed.path == '/api/admin/template-fields':
             from template_catalog import catalog
             query=urllib.parse.parse_qs(parsed.query)
@@ -7503,7 +7860,8 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/uo-work-queue":
             query = {key: values[0] if values else "" for key, values in urllib.parse.parse_qs(parsed.query).items()}
             with db() as con:
-                return self.send_json(get_uo_work_queue(con, query, self.auth_user))
+                return self.send_json(get_uo_work_queue(
+                    con, query, self.auth_user, violation_report_owned_by_pqm))
         if parsed.path == "/api/operational-tasks":
             with db() as con:
                 return self.send_json(operational_tasks.list_tasks(con, urllib.parse.parse_qs(parsed.query)))
@@ -7527,8 +7885,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Disposition',"attachment; filename=request.docx; filename*=UTF-8''"+urllib.parse.quote(filename))
                 self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
             except KeyError:return self.send_json({'error':'Документ не знайдено'},404)
-        if parsed.path.startswith("/api/violation-reports/") and not parsed.path.endswith("/sync"):
-            report_id = urllib.parse.unquote(parsed.path.removeprefix("/api/violation-reports/"))
+        violation_detail = re.fullmatch(r"/api/violation-reports/([^/]+)", parsed.path)
+        if violation_detail:
+            report_id = urllib.parse.unquote(violation_detail.group(1))
             try:
                 return self.send_json(violation_report_detail(report_id))
             except KeyError:
@@ -7575,6 +7934,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
                 return
             except ValueError as exc: return self.send_json({'error':str(exc)},404)
+        violation_pdf = re.fullmatch(r"/api/violation-reports/([^/]+)/protocol/pdf", parsed.path)
+        if violation_pdf:
+            try:
+                target, filename = violation_protocol_pdf(urllib.parse.unquote(violation_pdf.group(1)))
+            except FileNotFoundError as exc:
+                return self.send_json({"error": str(exc)}, 404)
+            except RuntimeError as exc:
+                SERVER_LOG.exception(
+                    "Protocol PDF generation failed report=%s error=%s",
+                    urllib.parse.unquote(violation_pdf.group(1)), exc,
+                )
+                return self.send_json({
+                    "error": "Не вдалося сформувати PDF. Повторіть спробу або зверніться до адміністратора.",
+                    "code": "protocol_pdf_generation_failed",
+                }, 503)
+            raw = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", "attachment; filename=protocol.pdf; filename*=UTF-8''" + urllib.parse.quote(filename))
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers(); self.wfile.write(raw)
+            return
         if parsed.path.startswith("/api/protocol/files/"):
             filename = urllib.parse.unquote(parsed.path[len("/api/protocol/files/"):])
             protocols_dir = PROTOCOLS_DIR
@@ -8146,6 +8527,43 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": str(exc), "code": "duplicate_declension"}, 409)
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        if parsed.path == "/api/admin/document-metadata":
+            try:
+                payload=self.read_json()
+                fields=template_catalog.validate(template_catalog.load(),pqm_schema_metadata())
+                runtime=document_metadata.registered_document_types(template_runtime.configurations())
+                used=document_metadata.validate_definition(payload.get('document_type'),payload.get('metadata_key'),
+                    payload.get('label'),payload.get('template_text'),fields,runtime)
+                if payload.get('validate_only'):
+                    with db() as con:
+                        if con.execute("SELECT 1 FROM document_metadata_templates WHERE document_type=? AND metadata_key=?",
+                          (str(payload.get('document_type') or '').strip(),str(payload.get('metadata_key') or '').strip())).fetchone():
+                            return self.send_json({'error':'Метадані з таким key уже існують для цього типу документа',
+                              'code':'duplicate_document_metadata'},409)
+                    return self.send_json({'valid':True,'used_fields':used})
+                with db() as con:
+                    item,used=document_metadata.create(con,payload,fields,runtime,self.auth_user)
+                return self.send_json({'saved':True,'changed':True,'item':item,'used_fields':used},201)
+            except document_metadata.MetadataConflict as exc:
+                return self.send_json({'error':str(exc),'code':'duplicate_document_metadata'},409)
+            except ValueError as exc:return self.send_json({'error':str(exc)},400)
+        metadata_save = re.fullmatch(r"/api/admin/document-metadata/([a-z][a-z0-9_]{0,63})/([a-z][a-z0-9_]{0,63})", parsed.path)
+        if metadata_save:
+            document_type,metadata_key=metadata_save.groups()
+            try:
+                payload=self.read_json()
+                fields=template_catalog.validate(template_catalog.load(),pqm_schema_metadata())
+                runtime=document_metadata.registered_document_types(template_runtime.configurations())
+                if payload.get('validate_only'):
+                    used=document_metadata.validate_definition(document_type,metadata_key,
+                      payload.get('label') or metadata_key,payload.get('template_text'),fields,runtime)
+                    return self.send_json({'valid':True,'used_fields':used})
+                with db() as con:
+                    item,changed,used=document_metadata.update(con,document_type,metadata_key,
+                      payload,fields,runtime,self.auth_user)
+                return self.send_json({'saved':True,'changed':changed,'item':item,'used_fields':used})
+            except KeyError:return self.send_json({'error':'Метадані документа не знайдено'},404)
+            except ValueError as exc:return self.send_json({'error':str(exc)},400)
         template_replace = re.fullmatch(r"/api/admin/templates/([^/]+)/replace", parsed.path)
         if template_replace:
             key = urllib.parse.unquote(template_replace.group(1))
@@ -8187,7 +8605,7 @@ class Handler(BaseHTTPRequestHandler):
                 temporary.unlink(missing_ok=True)
             return self.send_json({"saved": True, "item": response_item})
         if parsed.path == "/api/nazk-registry/refresh":
-            if not start_reference_refresh(DB_PATH, "nazk"):
+            if not start_nazk_registry_refresh(trigger="manual"):
                 return self.send_json({"error": "Оновлення довідника НАЗК уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/refresh":
@@ -8715,13 +9133,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global PROZORRO_SCHEDULER_THREAD
+    if IS_WEB_ENV and not DB_PATH.is_file():
+        raise RuntimeError('Existing persistent WEB database missing. STOP; do not create an empty replacement.')
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
     RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     init_reference_tables(DB_PATH)
     restore_sync_data_timestamp()
+    with db() as con:
+        scheduler_runtime.migrate(con)
     try:
         counts = {} if env_flag("PQM_RELEASE_SCHEMA_ONLY", IS_WEB_ENV) else rebuild_operational_tasks()
         SERVER_LOG.info("Operational task builder completed counts=%s", counts)
@@ -8730,29 +9151,18 @@ def main():
 
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
     print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
-    print(f"Features: scheduler={ENABLE_SCHEDULER}, nazk_scheduler={ENABLE_NAZK_SCHEDULER}, "
+    print(f"Features: prozorro_scheduler={ENABLE_PROZORRO_SCHEDULER}, "
+          f"violation_scheduler={ENABLE_VIOLATION_SCHEDULER}, nazk_scheduler={ENABLE_NAZK_SCHEDULER}, "
           f"bids={BIDS_MODE}, bids_update={ENABLE_BIDS_UPDATE}, powerbi={ENABLE_POWERBI}, "
           f"google={ENABLE_GOOGLE}, auth={AUTH_ENABLED}")
     SERVER_LOG.info("PQM startup environment=%s host=%s port=%s data_dir=%s db=%s",
                     PQM_ENV, HOST, PORT, DATA_DIR, DB_PATH)
-    if ENABLE_SCHEDULER:
-        print("Starting Prozorro scheduler", flush=True)
-        PROZORRO_SCHEDULER_THREAD = threading.Thread(target=hourly_sync_scheduler, name='pqm-prozorro-scheduler', daemon=True)
-        PROZORRO_SCHEDULER_THREAD.start()
-        SERVER_LOG.info('Prozorro scheduler started schedule=hourly_at_05')
-    def reference_scheduler():
-        last_date = ""
-        while True:
-            now = datetime.now()
-            if now.weekday() < 5 and (now.hour, now.minute) >= (9, 20) and last_date != now.date().isoformat():
-                state = reference_status(DB_PATH).get("nazk", {})
-                updated = str(state.get("source_updated_at") or "")[:10]
-                if updated != now.date().isoformat():
-                    refresh_nazk(DB_PATH)
-                last_date = now.date().isoformat()
-            time.sleep(60)
+    if ENABLE_PROZORRO_SCHEDULER:
+        register_scheduler_job("prozorro", prozorro_scheduler)
+    if ENABLE_VIOLATION_SCHEDULER:
+        register_scheduler_job("violation_reports", violation_reports_scheduler)
     if ENABLE_NAZK_SCHEDULER:
-        threading.Thread(target=reference_scheduler, daemon=True).start()
+        register_scheduler_job("nazk_registry", nazk_registry_scheduler)
     if ENABLE_BROWSER:
         threading.Timer(1, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
     ExclusiveThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

@@ -13,7 +13,9 @@ from declension import normalize_document_name
 from document_semantics import supplier_code_semantics
 import derived_fields
 import document_bindings
+import document_metadata
 from supplier_contacts import supplier_contacts
+from supplier_identity import document_name as supplier_document_name, document_short_name as supplier_document_short_name
 from docx_conditionals import render, condition_keys, retained_scalar_keys
 
 KEY='nazk_supplier_request'  # Server-owned action mapping, never supplied by client.
@@ -28,9 +30,17 @@ def migrate(con):
       sha256 TEXT NOT NULL, UNIQUE(task_id,document_type,document_date,version));
       CREATE INDEX IF NOT EXISTS ix_generated_documents_task ON generated_documents(task_id,created_at);
     ''')
+    columns={row[1] for row in con.execute('PRAGMA table_info(generated_documents)')}
+    if 'metadata_json' not in columns:
+        con.execute("ALTER TABLE generated_documents ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+    document_metadata.migrate(con)
 
 def public_document(row):
     item=dict(row);item.pop('storage_name',None)
+    raw=item.pop('metadata_json',None)
+    try:item['metadata']=json.loads(raw or '{}')
+    except (TypeError,json.JSONDecodeError):item['metadata']={}
+    item['resolved_metadata']=document_metadata.resolved_items(item['metadata'])
     item['download_url']=f"/api/operational-tasks/{item['task_id']}/documents/{item['id']}/download"
     return item
 
@@ -50,11 +60,22 @@ def resolve_context(con,item,fields,config,keys=None):
     data=dict(row) if row else {}
     semantics=supplier_code_semantics(str(data.get('supplier_code') or ''))
     contacts=supplier_contacts(con,code)
-    if semantics['entity_type']=='legal_entity':data['supplier_name']=normalize_document_name(data.get('supplier_name'))
+    name=supplier_document_name(con,code)
+    data['document_name']=normalize_document_name(name) if semantics['entity_type']=='legal_entity' else name
+    short_name=supplier_document_short_name(con,code)
+    data['document_short_name']=normalize_document_name(short_name) if semantics['entity_type']=='legal_entity' else short_name
+    # For an individual entrepreneur the canonical 10-digit supplier code is
+    # the RNOKPP of that same person. The current-person guard above still
+    # applies, so this never carries a previous manager's value forward.
+    if semantics['entity_type']=='individual_entrepreneur' and not manager.get('manager_tax_id'):
+        manager={**manager,'manager_tax_id':semantics['normalized_code']}
     def manager_record():
         row=con.execute('SELECT * FROM supplier_managers WHERE id=? AND DIGITS(supplier_code)=? AND is_current=1',(manager.get('id'),code)).fetchone()
         if not row:raise ValueError('Поточний керівник змінився. Оновіть картку.')
-        return dict(row)
+        result=dict(row)
+        if semantics['entity_type']=='individual_entrepreneur' and not result.get('manager_tax_id'):
+            result['manager_tax_id']=semantics['normalized_code']
+        return result
     def officer_record():
         row=con.execute('SELECT * FROM authorized_officers WHERE id=?',(item.get('assigned_officer_id'),)).fetchone()
         return dict(row) if row else {}
@@ -85,7 +106,9 @@ def prepared(con,item,schema):
     retained=retained_scalar_keys(source,fields,KEY,context)
     missing=retained-set(context)
     if missing:context.update(resolve_context(con,item,fields,config,sorted(missing)))
-    return config,fields,context
+    metadata=document_metadata.resolve_all(con,KEY,fields,
+      lambda keys: resolve_context(con,item,fields,config,keys))
+    return config,fields,context,metadata
 
 def readiness(con,item,schema):
     result={'ready':False,'errors':[],'documents':documents(con,item['id'])}
@@ -95,7 +118,7 @@ def readiness(con,item,schema):
 
 def generate(con,item,schema,storage,actor):
     """Caller holds BEGIN IMMEDIATE until commit, including task identity read."""
-    config,fields,context=prepared(con,item,schema)
+    config,fields,context,metadata=prepared(con,item,schema)
     source=template_runtime.template_path(KEY)
     reference=hashlib.sha256(source.read_bytes()).hexdigest()
     stamp=datetime.now(timezone.utc).isoformat();day=datetime.now(ZoneInfo('Europe/Kyiv')).date().isoformat()
@@ -108,9 +131,13 @@ def generate(con,item,schema,storage,actor):
     try:
         render(source,target,context,fields,KEY)
         if reference!=hashlib.sha256(source.read_bytes()).hexdigest():raise ValueError('Шаблон змінився під час generation. Повторіть дію.')
-        con.execute('''INSERT INTO generated_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        con.execute('''INSERT INTO generated_documents
+          (id,task_id,supplier_code,document_type,template_key,template_reference,filename,storage_name,
+           created_at,created_by,generation_provider,status,document_date,version,sha256,metadata_json)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (docid,item['id'],str(context['supplier.code']),KEY,KEY,reference,filename,storage_name,stamp,actor,
-             config['generation_provider'],'generated',day,version,hashlib.sha256(target.read_bytes()).hexdigest()))
+             config['generation_provider'],'generated',day,version,hashlib.sha256(target.read_bytes()).hexdigest(),
+             json.dumps(metadata,ensure_ascii=False)))
         operational_tasks._event(con,item['id'],'supplier_request_generated',actor,metadata={'document_id':docid,'filename':filename,'template_reference':reference})
     except Exception:
         target.unlink(missing_ok=True)

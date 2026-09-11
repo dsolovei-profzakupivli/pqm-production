@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import uuid
 import threading
 from datetime import datetime
@@ -17,7 +18,22 @@ from docx_conditionals import plan
 ROOT=Path(__file__).parent
 REPLACE_LOCK=threading.RLock()
 CONFIG=ROOT/'metadata/runtime_templates.v1.json'
-TEMPLATE_ROOT=(Path(os.environ['PQM_DATA_DIR'])/'templates' if os.environ.get('PQM_DATA_DIR') else ROOT/'templates')
+SOURCE_TEMPLATE_ROOT=ROOT/'templates'
+TEMPLATE_ROOT=Path(os.environ.get('PQM_DATA_DIR',ROOT/'data'))/'templates'
+
+
+def _replace_with_retry(source, target, attempts=8):
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if attempt == attempts - 1:
+                raise PermissionError(
+                    f"Не вдалося активувати шаблон «{Path(target).name}»: файл тимчасово заблокований Windows. "
+                    "Закрийте відкриту копію шаблону у Word та повторіть дію."
+                ) from exc
+            time.sleep(0.05 * (attempt + 1))
 
 def configurations():
     return json.loads(CONFIG.read_text(encoding='utf-8'))['templates']
@@ -27,10 +43,19 @@ def registered(key):
     if not config:raise ValueError('Шаблон не зареєстровано')
     return config
 
+def _ensure_registered_template(config):
+    """Migrate the current source-tree version once into writable runtime storage."""
+    target=(TEMPLATE_ROOT/config['file']).resolve()
+    source=(SOURCE_TEMPLATE_ROOT/config['file']).resolve()
+    if not target.exists() and source.is_file():
+        target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,target)
+    return target
+
 def template_path(key):
     if key in legacy.TEMPLATES:return legacy.TEMPLATES[key]
     config=registered(key)
-    path=(TEMPLATE_ROOT/config['file']).resolve()
+    path=_ensure_registered_template(config)
     if not path.is_relative_to(TEMPLATE_ROOT.resolve()) or path.suffix!='.docx':
         raise ValueError('Некоректний шлях зареєстрованого шаблону')
     return path
@@ -92,11 +117,11 @@ def _replace(key, source, schema, finalize, diagnostics):
     replaced=False
     try:
         diagnostics['failure_stage']='atomic_replace'
-        shutil.copyfile(source,temp);os.replace(temp,target);replaced=True
+        shutil.copyfile(source,temp);_replace_with_retry(temp,target);replaced=True
         if finalize:finalize(target)
     except Exception:
         if replaced:
-            if backup:os.replace(backup,target)
+            if backup:_replace_with_retry(backup,target)
             else:target.unlink(missing_ok=True)
         elif backup:backup.unlink(missing_ok=True)
         raise

@@ -37,7 +37,8 @@ TRANSITIONS = {
 }
 RESOLUTIONS = {"completed", "not_applicable", "cancelled", "nazk_refuted",
                "nazk_confirmed", "nazk_not_relevant", "amcu_excluded",
-               "supplier_blocked", "blocking_completed", "legacy_blocking_confirmed", "no_active_qualifications", "manager_changed", "nazk_record_no_longer_present", ""}
+               "supplier_blocked", "blocking_completed", "legacy_blocking_confirmed", "no_active_qualifications", "manager_changed", "nazk_record_no_longer_present",
+               "duplicate_cycle_existing_factual", "covered_by_later_qualification", ""}
 
 
 def now_iso():
@@ -280,6 +281,117 @@ def _create(con, key, task_type, code, priority, source, document, status="new",
     return task_id, True
 
 
+def materialize_nazk_tasks(con, actor="PQM task builder", *, supplier_codes=None,
+                           active_applications=None, supplier_names=None):
+    """Create only NAZK operational tasks from existing supplier-level checks."""
+    migrate(con)
+    allowed={_digits(code) for code in supplier_codes or [] if _digits(code)} if supplier_codes is not None else None
+    active_applications = active_applications if active_applications is not None else _active_application_map(con)
+    supplier_names = supplier_names if supplier_names is not None else _supplier_name_map(con)
+    counts={"created":0,"existing":0,"completed":0,"nazk":0}
+    checks=[dict(r) for r in con.execute("""SELECT c.*,GROUP_CONCAT(m.nazk_source_id) source_ids
+      FROM supplier_nazk_checks c
+      JOIN supplier_managers sm ON DIGITS(sm.supplier_code)=DIGITS(c.supplier_code) AND sm.is_current=1
+        AND ((c.manager_id IS NOT NULL AND c.manager_id=sm.id)
+          OR (c.manager_id IS NULL AND NORMALIZE_NAME(c.manager_name)=sm.normalized_name))
+      LEFT JOIN supplier_nazk_check_matches m ON m.check_id=c.id
+      GROUP BY c.id ORDER BY c.id""")]
+    for check in checks:
+        code=_digits(check["supplier_code"])
+        if allowed is not None and code not in allowed: continue
+        apps=active_applications.get(code, [])
+        if check.get("result")=="refuted":
+            for task in con.execute("""SELECT id FROM operational_tasks WHERE task_type='nazk_check'
+              AND supplier_code=? AND status NOT IN ('completed','cancelled')
+              AND CAST(json_extract(source_context,'$.nazk_check_id') AS INTEGER)=?""",(code,check["id"])):
+                con.execute("UPDATE operational_tasks SET status='completed',resolution_code='nazk_refuted',resolved_at=?,updated_at=?,version=version+1 WHERE id=?",(now_iso(),now_iso(),task["id"])); _event(con,task["id"],"nazk_refuted",actor)
+                counts["completed"]+=1
+            continue
+        actionable=check["workflow_status"] in {"needs_review","waiting_response"} or check.get("result")=="confirmed"
+        if not actionable or not apps: continue
+        record_key=(check.get("source_ids") or str(check["id"])).split(",")[0]
+        key=f"nazk_check:{code}:{check['manager_id'] or check['manager_name']}:{record_key}"
+        existing_cycle=con.execute("""SELECT task_key FROM operational_tasks WHERE task_type='nazk_check'
+          AND supplier_code=? AND CAST(json_extract(source_context,'$.nazk_check_id') AS INTEGER)=?
+          AND status NOT IN ('completed','cancelled') ORDER BY created_at,id LIMIT 1""",(code,check['id'])).fetchone()
+        if existing_cycle:
+            key=existing_cycle['task_key']
+        elif not check.get('source_ids') and con.execute("""SELECT 1 FROM operational_tasks
+          WHERE task_type='nazk_check' AND supplier_code=?
+          AND CAST(json_extract(source_context,'$.nazk_check_id') AS INTEGER)=?
+          AND resolution_code='nazk_record_no_longer_present'""",(code,check['id'])).fetchone():
+            continue
+        status="awaiting_response" if check["workflow_status"]=="waiting_response" else "in_progress"
+        source={"source_type":"nazk_registry","supplier_code":code,"person_name":check["manager_name"],"nazk_check_id":check["id"],"nazk_record_ids":(check.get("source_ids") or "").split(",") if check.get("source_ids") else [],"detected_at":now_iso(),"active_application_ids":[x["id"] for x in apps],"active_application_count":len(apps),"trigger_reason":"person_match_requires_verification"}
+        document={"document_type":"supplier_exclusion","legal_basis":"пп. 3 п. 40","supplier":{"code":code,"name":supplier_names.get(code,"")},"officer":{},"protocol":{"number":"","date":""},"nazk":{"person_name":check["manager_name"],"check_id":check["id"]}}
+        _,created=_create(con,key,"nazk_check",code,"critical" if check.get("result")=="confirmed" else "high",source,document,status,supplier_name=supplier_names.get(code,""))
+        counts["created" if created else "existing"]+=1; counts["nazk"]+=1
+    return counts
+
+
+def reconcile_duplicate_nazk_tasks(con, task_ids, actor="PQM NАЗК safe correction", *, apply=False):
+    """Cancel only explicitly selected redundant cycles covered by another factual check."""
+    import nazk_workflow
+    result = {"mode": "apply" if apply else "dry-run", "selected": len(set(task_ids)),
+              "proposed": 0, "changed": 0, "skipped": 0, "items": []}
+    for task_id in dict.fromkeys(task_ids):
+        task = con.execute("SELECT * FROM operational_tasks WHERE id=? AND task_type='nazk_check'", (task_id,)).fetchone()
+        if not task:
+            result["skipped"] += 1
+            continue
+        source = _loads(task["source_context"])
+        check_id = int(source.get("nazk_check_id") or 0)
+        check = con.execute("SELECT * FROM supplier_nazk_checks WHERE id=?", (check_id,)).fetchone()
+        manager = con.execute("""SELECT * FROM supplier_managers WHERE supplier_code=? AND is_current=1
+          ORDER BY id DESC LIMIT 1""", (task["supplier_code"],)).fetchone()
+        if not check or not manager or not (
+            (check["manager_id"] is not None and int(check["manager_id"]) == int(manager["id"])) or
+            (check["manager_id"] is None and nazk_workflow.normalize_name(check["manager_name"]) ==
+             nazk_workflow.normalize_name(manager["manager_name"]))
+        ):
+            result["skipped"] += 1
+            continue
+        matches = nazk_workflow.registry_matches(con, manager["manager_name"])
+        checks = [dict(row) for row in con.execute("""SELECT c.*,GROUP_CONCAT(cm.nazk_source_id) source_ids
+          FROM supplier_nazk_checks c LEFT JOIN supplier_nazk_check_matches cm ON cm.check_id=c.id
+          WHERE c.supplier_code=? AND (c.manager_id=? OR
+            (c.manager_id IS NULL AND NORMALIZE_NAME(c.manager_name)=?))
+          GROUP BY c.id""", (task["supplier_code"], manager["id"],
+                              nazk_workflow.normalize_name(manager["manager_name"]))).fetchall()]
+        covering = nazk_workflow.find_covering_factual_check(checks, matches, exclude_check_id=check_id)
+        if not covering:
+            result["skipped"] += 1
+            result["items"].append({"task_id": task_id, "supplier_code": task["supplier_code"],
+                                    "transition": "unchanged", "reason": "no_covering_factual_check"})
+            continue
+        if task["resolution_code"] == "duplicate_cycle_existing_factual":
+            result["skipped"] += 1
+            continue
+        if not apply:
+            result["proposed"] += 1
+            result["items"].append({"task_id": task_id, "supplier_code": task["supplier_code"],
+                                    "transition": "cancelled", "covering_check_id": covering["check_id"]})
+            continue
+        stamp = now_iso()
+        old_status, old_resolution = task["status"], task["resolution_code"]
+        source["duplicate_cycle_provenance"] = covering
+        metadata = _loads(task["metadata"])
+        metadata["duplicate_cycle_provenance"] = covering
+        con.execute("""UPDATE operational_tasks SET status='cancelled',resolution_code=?,resolution_text=?,
+          source_context=?,metadata=?,resolved_at=?,resolved_by=?,updated_at=?,version=version+1 WHERE id=?""",
+          ("duplicate_cycle_existing_factual",
+           "Скасовано — цей самий факт НАЗК уже має канонічний фактичний результат.",
+           _json(source), _json(metadata), stamp, actor, stamp, task_id))
+        _event(con, task_id, "duplicate_cycle_reconciled_to_existing_factual", actor,
+               f"{old_status}:{old_resolution}", "cancelled:duplicate_cycle_existing_factual",
+               {"covering_factual_check": covering, "redundant_check_id": check_id})
+        nazk_workflow.archive_duplicate_nazk_checks(con, [check_id], covering, actor=actor, timestamp=stamp)
+        result["changed"] += 1
+        result["items"].append({"task_id": task_id, "supplier_code": task["supplier_code"],
+                                "transition": "cancelled", "covering_check_id": covering["check_id"]})
+    return result
+
+
 def _link_apps(con, task_id, applications, relation="active_application"):
     con.executemany("INSERT OR IGNORE INTO operational_task_applications VALUES (?,?,?)",
                     [(task_id,item["id"],relation) for item in applications])
@@ -364,39 +476,12 @@ def build(con, actor="PQM task builder"):
         task_id,created=_create(con,key,"amcu_exclusion",code,"high",source,document,supplier_name=supplier_names.get(code,""))
         counts["created" if created else "existing"]+=1; counts["amcu"]+=1; _link_apps(con,task_id,apps)
         stamp=now_iso(); con.executemany("INSERT OR IGNORE INTO operational_task_amcu_decisions VALUES (?,?, '',?,?,?)",[(task_id,x["row_key"],stamp,stamp,actor) for x in decisions])
-    # NAZK: reuse existing supplier workflow; never duplicate its history.
-    checks=[dict(r) for r in con.execute("""SELECT c.*,GROUP_CONCAT(m.nazk_source_id) source_ids
-      FROM supplier_nazk_checks c
-      JOIN supplier_managers sm ON DIGITS(sm.supplier_code)=DIGITS(c.supplier_code) AND sm.is_current=1
-        AND ((c.manager_id IS NOT NULL AND c.manager_id=sm.id)
-          OR (c.manager_id IS NULL AND NORMALIZE_NAME(c.manager_name)=sm.normalized_name))
-      LEFT JOIN supplier_nazk_check_matches m ON m.check_id=c.id
-      GROUP BY c.id ORDER BY c.id""")]
-    for check in checks:
-        code=_digits(check["supplier_code"]); apps=active_applications.get(code, [])
-        if check.get("result")=="refuted":
-            for task in con.execute("SELECT id FROM operational_tasks WHERE task_type='nazk_check' AND supplier_code=? AND status NOT IN ('completed','cancelled')",(code,)):
-                con.execute("UPDATE operational_tasks SET status='completed',resolution_code='nazk_refuted',resolved_at=?,updated_at=?,version=version+1 WHERE id=?",(now_iso(),now_iso(),task["id"])); _event(con,task["id"],"nazk_refuted",actor); counts["completed"]+=1
-            continue
-        actionable=check["workflow_status"] in {"needs_review","waiting_response"} or check.get("result")=="confirmed"
-        if not actionable or not apps: continue
-        record_key=(check.get("source_ids") or str(check["id"])).split(",")[0]
-        key=f"nazk_check:{code}:{check['manager_id'] or check['manager_name']}:{record_key}"
-        existing_cycle=con.execute("""SELECT task_key FROM operational_tasks WHERE task_type='nazk_check'
-          AND supplier_code=? AND CAST(json_extract(source_context,'$.nazk_check_id') AS INTEGER)=?
-          AND status NOT IN ('completed','cancelled') ORDER BY created_at,id LIMIT 1""",(code,check['id'])).fetchone()
-        if existing_cycle:
-            key=existing_cycle['task_key']
-        elif not check.get('source_ids') and con.execute("""SELECT 1 FROM operational_tasks
-          WHERE task_type='nazk_check' AND supplier_code=?
-          AND CAST(json_extract(source_context,'$.nazk_check_id') AS INTEGER)=?
-          AND resolution_code='nazk_record_no_longer_present'""",(code,check['id'])).fetchone():
-            continue
-        status="awaiting_response" if check["workflow_status"]=="waiting_response" else "in_progress"
-        source={"source_type":"nazk_registry","supplier_code":code,"person_name":check["manager_name"],"nazk_check_id":check["id"],"nazk_record_ids":(check.get("source_ids") or "").split(",") if check.get("source_ids") else [],"detected_at":now_iso(),"active_application_ids":[x["id"] for x in apps],"active_application_count":len(apps),"trigger_reason":"person_match_requires_verification"}
-        document={"document_type":"supplier_exclusion","legal_basis":"пп. 3 п. 40","supplier":{"code":code,"name":supplier_names.get(code,"")},"officer":{},"protocol":{"number":"","date":""},"nazk":{"person_name":check["manager_name"],"check_id":check["id"]}}
-        _,created=_create(con,key,"nazk_check",code,"critical" if check.get("result")=="confirmed" else "high",source,document,status,supplier_name=supplier_names.get(code,""))
-        counts["created" if created else "existing"]+=1; counts["nazk"]+=1
+    nazk_counts=materialize_nazk_tasks(con,actor,active_applications=active_applications,
+                                      supplier_names=supplier_names)
+    counts["created"]+=nazk_counts["created"]
+    counts["existing"]+=nazk_counts["existing"]
+    counts["completed"]+=nazk_counts["completed"]
+    counts["nazk"]+=nazk_counts["nazk"]
     # Warning threshold: rolling calendar-month windows and immutable references.
     supplier_codes=[row[0] for row in con.execute("SELECT DISTINCT defendant_code FROM violation_reports WHERE status='satisfied' AND COALESCE(decision_date,'')<>''")]
     for raw_code in supplier_codes:

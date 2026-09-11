@@ -222,10 +222,11 @@ def _submission_nazk_tasks(con) -> list[dict]:
     } for row in rows]
 
 
-def _violation_tasks(con) -> list[dict]:
+def _violation_tasks(con, ownership_predicate=None) -> list[dict]:
     rows = con.execute(
         """SELECT vr.id,vr.report_id,vr.date_published,vr.defendant_period_end,
           vr.author_name,vr.author_code,vr.defendant_name,vr.defendant_code,vr.reason,
+          vr.authority_code,
           COALESCE(vrr.review_status,'not_reviewed') review_status,
           COALESCE(vrr.assigned_officer,'') assigned_officer
           FROM violation_reports vr
@@ -236,6 +237,11 @@ def _violation_tasks(con) -> list[dict]:
     today = date.today().isoformat()
     tasks = []
     for row in rows:
+        # The Requests register is informational for every CPO, but the UO
+        # workload contains only requests owned by PQM's CPO. The predicate
+        # is supplied by the server's canonical ownership rule.
+        if ownership_predicate and not ownership_predicate(row):
+            continue
         supplier_deadline = _date_part(row["defendant_period_end"]) or _working_day_deadline(row["date_published"], 3)
         deadline = _working_day_deadline(row["date_published"], 10)
         overdue = bool(deadline and deadline < today)
@@ -249,8 +255,7 @@ def _violation_tasks(con) -> list[dict]:
             "customer_name": row["author_name"] or "",
             "person_name": "", "tax_id_present": None,
             "object_label": "Звернення", "object_pretty_id": row["report_id"] or row["id"],
-            "dk_code": "", "reason": (("Строк постачальника сплив · " if supplier_ready else "Очікуємо пояснення постачальника · ")
-                                             + (row["reason"] or "Звернення очікує розгляду")),
+            "dk_code": "", "reason": row["reason"] or "Звернення очікує розгляду",
             "status": row["review_status"], "created_at": row["date_published"] or "",
             "deadline_date": deadline, "responsible_user": row["assigned_officer"] or "",
             "priority": "urgent" if overdue else ("high" if supplier_ready else "normal"), "overdue": overdue,
@@ -259,11 +264,11 @@ def _violation_tasks(con) -> list[dict]:
     return tasks
 
 
-def _all_tasks(con) -> list[dict]:
+def _all_tasks(con, ownership_predicate=None) -> list[dict]:
     # Qualification work remains in the native application register. Including
     # it here duplicates the primary workflow and mixes current applications
     # with historical pending anomalies from completed/legacy frameworks.
-    tasks = _submission_nazk_tasks(con) + _violation_tasks(con)
+    tasks = _submission_nazk_tasks(con) + _violation_tasks(con, ownership_predicate)
     seen, unique = set(), []
     for task in tasks:
         task.setdefault("overdue", False)
@@ -323,9 +328,10 @@ def get_uo_work_queue_kpi(tasks: list[dict]) -> dict:
     }
 
 
-def get_uo_work_queue(con, filters: dict | None = None, current_user: str = "") -> dict:
+def get_uo_work_queue(con, filters: dict | None = None, current_user: str = "",
+                      ownership_predicate=None) -> dict:
     filters = filters or {}
-    all_tasks = _all_tasks(con)
+    all_tasks = _all_tasks(con, ownership_predicate)
     filtered = _filter_tasks(all_tasks, filters, current_user)
     page = max(1, int(filters.get("page") or 1))
     size = min(200, max(10, int(filters.get("size") or 50)))

@@ -23,13 +23,13 @@ class SchedulerTests(unittest.TestCase):
         web.fixture()
 
     def test_disabled_and_dead_scheduler_never_advertise_next_run(self):
-        with patch.dict(s.SYNC_STATE, {'next_run_at': 'future'}), patch.object(s, 'ENABLE_SCHEDULER', False):
+        with patch.dict(s.SYNC_STATE, {'next_run_at': 'future'}), patch.object(s, 'ENABLE_PROZORRO_SCHEDULER', False):
             self.assertFalse(s.sync_status_payload()['scheduler_enabled'])
             self.assertIsNone(s.sync_status_payload()['next_run_at'])
-        with patch.object(s, 'ENABLE_SCHEDULER', True), patch.object(s, 'PROZORRO_SCHEDULER_THREAD', Mock(is_alive=lambda: False)):
+        with patch.object(s, 'ENABLE_PROZORRO_SCHEDULER', True), patch.dict(s.SCHEDULER_THREADS, {'prozorro': Mock(is_alive=lambda: False)}):
             self.assertFalse(s.sync_status_payload()['scheduler_running'])
             self.assertIsNone(s.sync_status_payload()['next_run_at'])
-        with patch.object(s, 'ENABLE_SCHEDULER', True), patch.object(s, 'PROZORRO_SCHEDULER_THREAD', Mock(is_alive=lambda: True)), patch.dict(s.SYNC_STATE, {'next_run_at': 'future'}):
+        with patch.object(s, 'ENABLE_PROZORRO_SCHEDULER', True), patch.dict(s.SCHEDULER_THREADS, {'prozorro': Mock(is_alive=lambda: True)}), patch.dict(s.SYNC_STATE, {'next_run_at': 'future'}):
             self.assertTrue(s.sync_status_payload()['scheduler_running'])
             self.assertEqual('future', s.sync_status_payload()['next_run_at'])
 
@@ -47,12 +47,13 @@ class SchedulerTests(unittest.TestCase):
         for value, expected in [('2026-09-10T12:04:59+00:00', '2026-09-10T12:05:00+00:00'),
                                 ('2026-09-10T12:05:00+00:00', '2026-09-10T13:05:00+00:00'),
                                 ('2026-12-31T23:06:00+00:00', '2027-01-01T00:05:00+00:00')]:
-            self.assertEqual(expected, s.next_hourly_run(datetime.datetime.fromisoformat(value)).isoformat())
+            self.assertEqual(expected, s.next_hourly_run(datetime.datetime.fromisoformat(value)).astimezone(datetime.timezone.utc).isoformat())
 
     def test_failed_or_busy_prozorro_does_not_stop_appeals_or_next_trigger(self):
         with patch.object(s, 'start_prozorro_sync', side_effect=[RuntimeError('synthetic'), False, True]) as prozorro, patch.object(s, 'start_violation_reports_sync', return_value=True) as appeals:
             for _ in range(3):
-                s.trigger_scheduled_syncs('fixture')
+                s._trigger_scheduler_job('prozorro', 'fixture')
+                s._trigger_scheduler_job('violation_reports', 'fixture')
             self.assertEqual(3, prozorro.call_count)
             self.assertEqual(3, appeals.call_count)
 
@@ -85,10 +86,10 @@ class SchedulerTests(unittest.TestCase):
                 Clock.current += datetime.timedelta(seconds=seconds)
                 if Clock.current.minute > 5:
                     raise EndClock()
-            with patch.object(s, 'datetime', Clock), patch.object(s.time, 'sleep', sleep), patch.object(s, 'trigger_scheduled_syncs') as trigger, patch.dict(s.SYNC_STATE, {'last_data_sync_at': last.isoformat()}):
+            with patch.object(s, 'datetime', Clock), patch.object(s.scheduler_runtime, 'utc_now', lambda: Clock.now(datetime.timezone.utc)), patch.object(s.time, 'sleep', sleep), patch.object(s, '_trigger_scheduler_job', return_value=True) as trigger, patch.dict(s.SYNC_STATE, {'last_data_sync_at': last.isoformat()}):
                 with self.assertRaises(EndClock):
-                    s.hourly_sync_scheduler()
-                self.assertEqual(['startup_catchup', 'hourly'] if stale else ['hourly'], [c.args[0] for c in trigger.call_args_list])
+                    s.prozorro_scheduler()
+                self.assertEqual(['startup_catchup', 'scheduled'] if stale else ['scheduled'], [c.args[1] for c in trigger.call_args_list])
 
     def test_automatic_outcome_distinguishes_success_partial_failure(self):
         base = {'frameworks': 2, 'completed': 2, 'submissions': 3, 'qualifications': 3, 'contracts': 0, 'errors': []}
@@ -106,7 +107,7 @@ class SchedulerTests(unittest.TestCase):
             con.execute('UPDATE submissions SET synced_at=?', (stamp,))
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
-        environment = dict(os.environ, HOST='127.0.0.1', PORT=str(port), PQM_ENABLE_SCHEDULER='1', PYTHONUNBUFFERED='1')
+        environment = dict(os.environ, HOST='127.0.0.1', PORT=str(port), PQM_ENABLE_PROZORRO_SCHEDULER='1', PQM_ENABLE_VIOLATION_SCHEDULER='1', PYTHONUNBUFFERED='1')
         with (Path(web.TEMP.name)/'scheduler-startup.log').open('w') as log:
             process = subprocess.Popen([sys.executable, str(web.ROOT/'server.py')], cwd=web.ROOT, env=environment, stdout=log, stderr=subprocess.STDOUT)
             try:
@@ -145,6 +146,40 @@ assert.match(show({running:true,message:'Ручне оновлення',schedule
 '''
         result = subprocess.run([os.environ.get('PQM_TEST_NODE') or shutil.which('node') or 'node', '-e', script], capture_output=True, text=True)
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_registration_start_failure_can_retry(self):
+        with patch.object(s, 'REGISTERED_SCHEDULER_JOBS', set()), patch.dict(s.SCHEDULER_THREADS, {}, clear=True), patch.object(s.threading, 'Thread') as thread:
+            thread.return_value.start.side_effect = RuntimeError('synthetic')
+            with self.assertRaises(RuntimeError):s.register_scheduler_job('prozorro', lambda: None)
+            self.assertNotIn('prozorro', s.REGISTERED_SCHEDULER_JOBS)
+            self.assertNotIn('prozorro', s.SCHEDULER_THREADS)
+            thread.return_value.start.side_effect = None
+            self.assertTrue(s.register_scheduler_job('prozorro', lambda: None))
+
+    def test_persistent_lease_renewal_and_owner_fencing(self):
+        from tempfile import TemporaryDirectory
+        runtime = s.scheduler_runtime
+        at = datetime.datetime(2026, 9, 11, 6, tzinfo=datetime.timezone.utc)
+        with TemporaryDirectory() as folder:
+            path = Path(folder)/'lease.sqlite3'
+            one = runtime.claim(path, 'prozorro', trigger='scheduled', now=at, owner_id='one')
+            self.assertTrue(runtime.renew(path, 'prozorro', one, now=at+datetime.timedelta(seconds=120)))
+            self.assertIsNone(runtime.claim(path, 'prozorro', trigger='manual', now=at+datetime.timedelta(seconds=200)))
+            two = runtime.claim(path, 'prozorro', trigger='scheduled', now=at+datetime.timedelta(seconds=301), owner_id='two')
+            self.assertEqual('two', two)
+            self.assertFalse(runtime.renew(path, 'prozorro', one, now=at+datetime.timedelta(seconds=302)))
+            self.assertFalse(runtime.finish(path, 'prozorro', one))
+            self.assertTrue(runtime.finish(path, 'prozorro', two, status='error', error='synthetic'))
+            self.assertEqual('error', runtime.state(path, {})[0]['last_status'])
+
+    def test_runtime_status_is_read_only_and_dead_threads_have_no_next_run(self):
+        with patch.dict(s.SCHEDULER_THREADS, {}, clear=True), patch.object(s, 'ENABLE_PROZORRO_SCHEDULER', True):
+            job=s.scheduler_status_payload()[0]
+            self.assertTrue(job['enabled']);self.assertFalse(job['running']);self.assertIsNone(job['next_run'])
+        # Hold a writer lock; a status read must not attempt migration/INSERT.
+        with s.db() as con:
+            con.execute('BEGIN IMMEDIATE')
+            self.assertEqual(3,len(s.scheduler_runtime.state(s.DB_PATH, {})))
 
 
 if __name__ == '__main__':

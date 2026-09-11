@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 import shutil
 import os
+import tempfile
+import time
 import uuid
 import zipfile
 from copy import deepcopy
@@ -18,7 +20,7 @@ from typing import Any
 
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
@@ -26,15 +28,15 @@ from lxml import etree
 from protocol_template import validate as validate_application_template
 
 
-PACKAGED_TEMPLATE_DIR = Path(__file__).with_name("templates") / "violation_protocols"
-TEMPLATE_DIR = (Path(os.environ["PQM_DATA_DIR"]) / "templates" / "violation_protocols"
-                if os.environ.get("PQM_DATA_DIR") else PACKAGED_TEMPLATE_DIR)
+ROOT = Path(__file__).parent
+PACKAGED_TEMPLATE_DIR = ROOT / "templates" / "violation_protocols"
+DATA_DIR = Path(os.environ.get("PQM_DATA_DIR", ROOT / "data"))
+TEMPLATE_DIR = DATA_DIR / "templates" / "violation_protocols"
 TEMPLATES = {
     "warning": TEMPLATE_DIR / "warning.docx",
     "decline_p49_1_2": TEMPLATE_DIR / "decline_p49_1_2.docx",
     "decline_p49_3": TEMPLATE_DIR / "decline_p49_3.docx",
-    "application_protocol": (Path(os.environ["PQM_DATA_DIR"]) / "templates" / "application_protocol.docx"
-                             if os.environ.get("PQM_DATA_DIR") else Path(__file__).with_name("templates") / "application_protocol.docx"),
+    "application_protocol": DATA_DIR / "templates" / "application_protocol.docx",
 }
 TOKEN_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
 LEGAL_REFERENCE_RE = re.compile(r"(?<!\w)(№|пп\.|п\.|ст\.|ч\.|абз\.)[ \u00a0]+(?=\d)", re.IGNORECASE)
@@ -93,12 +95,18 @@ def _token_name(value: str) -> str:
 
 
 def ensure_runtime_templates() -> None:
-    """Seed a persistent template directory without overwriting operator changes."""
+    """Seed writable runtime storage without overwriting operator changes.
+
+    Source-tree templates are immutable deployment seeds.  Keeping active files
+    under DATA_DIR also avoids Windows ACL/ownership conflicts when the app and
+    the source checkout are owned by different local identities.
+    """
     TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     for key, target in TEMPLATES.items():
-        source = (Path(__file__).with_name("templates") / "application_protocol.docx"
+        source = (ROOT / "templates" / "application_protocol.docx"
                   if key == "application_protocol" else PACKAGED_TEMPLATE_DIR / target.name)
-        if not target.exists() and source.exists() and source.resolve() != target.resolve():
+        if not target.exists() and source.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
 
 
@@ -145,12 +153,32 @@ def replace_runtime_template(key: str, source_path: str | Path) -> Path:
         raise ValueError("У DOCX відсутні обов’язкові маркери: " + ", ".join(missing))
     versions = TEMPLATE_DIR / "_versions"
     versions.mkdir(parents=True, exist_ok=True)
+    backup = None
     if target.exists():
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(target, versions / f"{target.stem}_{stamp}{target.suffix}")
-    temporary = target.with_suffix(".docx.new")
-    shutil.copy2(source, temporary)
-    temporary.replace(target)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup = versions / f"{target.stem}_{stamp}{target.suffix}"
+        shutil.copy2(target, backup)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.stem}.", suffix=".tmp.docx")
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        shutil.copyfile(source, temporary)
+        for attempt in range(8):
+            try:
+                os.replace(temporary, target)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    if backup:
+                        backup.unlink(missing_ok=True)
+                    raise PermissionError(
+                        f"Не вдалося активувати шаблон «{target.name}»: файл тимчасово заблокований Windows. "
+                        "Закрийте відкриту копію шаблону у Word та повторіть дію."
+                    )
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        temporary.unlink(missing_ok=True)
     return target
 
 
@@ -188,7 +216,18 @@ def _all_paragraphs(document):
         yield from section.footer.paragraphs
 
 
-def _replace_in_paragraph(paragraph, values: dict[str, str], highlighted: set[str]):
+def _clear_resolved_run_marking(run) -> None:
+    """Remove editor/service marking only from a resolved placeholder run."""
+    rpr = run._r.rPr
+    if rpr is None:
+        return
+    for name in ("w:highlight", "w:shd"):
+        node = rpr.find(qn(name))
+        if node is not None:
+            rpr.remove(node)
+
+
+def _replace_in_paragraph(paragraph, values: dict[str, str]):
     text = paragraph.text
     matches = list(TOKEN_RE.finditer(text))
     if not matches:
@@ -220,36 +259,55 @@ def _replace_in_paragraph(paragraph, values: dict[str, str], highlighted: set[st
                 run = current.add_run(block)
                 if source_run._r.rPr is not None:
                     run._r.insert(0, deepcopy(source_run._r.rPr))
-                if key in highlighted:
-                    run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+                _clear_resolved_run_marking(run)
             return
     ranges, position = [], 0
-    for run in runs:
-        ranges.append((position, position + len(run.text), run))
+    for index, run in enumerate(runs):
+        ranges.append((position, position + len(run.text), index))
         position += len(run.text)
 
-    def source_run(offset):
-        return next((run for start, end, run in ranges if start <= offset < end), runs[0])
-
-    pieces, cursor = [], 0
+    # Edit the original runs in place.  Rebuilding the paragraph from broad
+    # text segments used to copy the formatting of the first character over
+    # the whole segment.  A harmless shaded space next to p49_reference could
+    # therefore paint the resolved/reference text orange.  Per-run edits keep
+    # every static run and its author formatting at its original extent.
+    edits: dict[int, list[tuple[int, int, str]]] = {}
+    resolved_runs = set()
+    adjacent_whitespace_runs = set()
     for match in matches:
-        if match.start() > cursor:
-            pieces.append((text[cursor:match.start()], source_run(cursor), False))
         key = _token_name(match.group(1))
         if key not in values:
             raise ValueError(f"Невідомий placeholder у DOCX: {match.group(1).strip()}")
-        pieces.append((str(values[key]), source_run(match.start()), key in highlighted))
-        cursor = match.end()
-    if cursor < len(text):
-        pieces.append((text[cursor:], source_run(cursor), False))
-    for run in runs:
-        run._element.getparent().remove(run._element)
-    for value, source, highlight in pieces:
-        run = paragraph.add_run(value)
-        if source._r.rPr is not None:
-            run._r.insert(0, deepcopy(source._r.rPr))
-        if highlight:
-            run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        overlaps = [(start, end, index) for start, end, index in ranges
+                    if end > match.start() and start < match.end()]
+        if not overlaps:
+            continue
+        first_run_index = overlaps[0][2]
+        last_run_index = overlaps[-1][2]
+        for neighbor_index in (first_run_index - 1, last_run_index + 1):
+            if 0 <= neighbor_index < len(runs) and runs[neighbor_index].text.isspace():
+                adjacent_whitespace_runs.add(neighbor_index)
+        for overlap_index, (start, end, run_index) in enumerate(overlaps):
+            local_start = max(0, match.start() - start)
+            local_end = min(end, match.end()) - start
+            replacement = str(values[key]) if overlap_index == 0 else ""
+            edits.setdefault(run_index, []).append((local_start, local_end, replacement))
+            if replacement:
+                resolved_runs.add(run_index)
+    for run_index, run_edits in edits.items():
+        value = runs[run_index].text
+        for start, end, replacement in sorted(run_edits, reverse=True):
+            value = value[:start] + replacement + value[end:]
+        runs[run_index].text = value
+        if run_index in resolved_runs:
+            _clear_resolved_run_marking(runs[run_index])
+    # Some Word/editor exports keep review shading on a standalone separator
+    # run next to a placeholder.  It is invisible in the source document but
+    # becomes an orange strip after rendering.  A whitespace-only separator
+    # carries no author-visible highlighted content, so discard only its
+    # highlight/shading while preserving marked static text elsewhere.
+    for run_index in adjacent_whitespace_runs:
+        _clear_resolved_run_marking(runs[run_index])
 
 
 def _add_hyperlink(paragraph, label: str, url: str, font_name: str | None = None,
@@ -717,7 +775,6 @@ def build_violation_protocol_docx(
     customer_documents: list[dict[str, Any]] | None = None,
     supplier_documents: list[dict[str, Any]] | None = None,
     flags: dict[str, bool] | None = None,
-    highlighted_tokens: set[str] | None = None,
 ) -> Path:
     """Create a protocol by editing a copy and atomically publishing it.
 
@@ -767,7 +824,6 @@ def build_violation_protocol_docx(
         _format_reason_block(document, normalized_values)
         if customer_documents:
             _configure_customer_document_block(document, customer_documents)
-        highlighted = {_token_name(key) for key in (highlighted_tokens or set())}
         for paragraph in list(_all_paragraphs(document)):
             source = paragraph.text
             token_names = [_token_name(m.group(1)) for m in TOKEN_RE.finditer(source)]
@@ -776,7 +832,7 @@ def build_violation_protocol_docx(
             elif "supplier_documents" in token_names:
                 _set_document_links(paragraph, supplier_documents or [])
             else:
-                _replace_in_paragraph(paragraph, normalized_values, highlighted)
+                _replace_in_paragraph(paragraph, normalized_values)
         _format_supplier_result_rows(document)
         _replace_justification(document, justification, protocol_type, normalized_values)
         _normalize_legal_reference_spaces(document)

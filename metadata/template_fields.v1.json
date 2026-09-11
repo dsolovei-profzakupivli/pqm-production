@@ -1,8 +1,9 @@
 {
   "version": 1,
-  "revision": 21,
+  "revision": 25,
   "namespaces": [
     "supplier",
+    "customer",
     "manager",
     "submission",
     "qualification",
@@ -25,7 +26,8 @@
     "application_review_protocol",
     "warning_notice",
     "decline_p49_1_2",
-    "decline_p49_3"
+    "decline_p49_3",
+    "violation_review_protocol"
   ],
   "fields": [
     {
@@ -59,10 +61,15 @@
       "group": "Постачальник",
       "value_type": "string",
       "source_binding": {
-        "source_type": "schema_field",
-        "schema_field": "pqm.supplier_registry_summary.supplier_name"
+        "source_type": "derived",
+        "resolver": "supplier_identity.document_name",
+        "dependencies": [
+          "pqm.supplier_edr_profiles.full_name",
+          "pqm.submissions.supplier_name"
+        ],
+        "description": "Current supplier_edr_profiles.full_name; fallback to the latest non-empty submissions.supplier_name by date_published and id. Missing both is a validation error."
       },
-      "description": "Назва постачальника",
+      "description": "Повна назва з current snapshot ЄДР; fallback — назва з останньої заявки.",
       "available_for": [
         "nazk_supplier_request",
         "nazk_authority_request",
@@ -77,6 +84,34 @@
       "required_for": [],
       "default_format": null,
       "example": null,
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "supplier.short_name",
+      "label": "Скорочена назва постачальника з ЄДР",
+      "group": "Постачальник",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "resolver": "supplier_identity.document_short_name",
+        "dependencies": [
+          "pqm.supplier_edr_profiles.short_name",
+          "pqm.supplier_edr_profiles.full_name",
+          "pqm.submissions.supplier_name"
+        ],
+        "description": "Current supplier_edr_profiles.short_name; fallback to canonical supplier.name (EDR full name, then latest submission). Missing all sources is a validation error."
+      },
+      "description": "Скорочена назва з current snapshot ЄДР; fallback — canonical назва документа.",
+      "available_for": [
+        "nazk_supplier_request",
+        "violation_review_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "ТОВ «ФМТ»",
       "nullable": true,
       "active": true,
       "deprecated": false,
@@ -101,12 +136,76 @@
         "application_review_protocol",
         "warning_notice",
         "decline_p49_1_2",
-        "decline_p49_3"
+        "decline_p49_3",
+        "violation_review_protocol"
       ],
       "required_for": [],
       "default_format": null,
       "example": null,
       "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "report_id",
+      "label": "Номер звернення",
+      "group": "Звернення замовників",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "context_path": "report.report_id",
+        "dependencies": ["pqm.violation_reports.report_id"],
+        "description": "Canonical report_id поточного звернення."
+      },
+      "description": "Номер поточного звернення UA-D.",
+      "available_for": ["violation_review_protocol"],
+      "required_for": [],
+      "default_format": null,
+      "example": "UA-D-2026-09-07-000001",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "tender_id",
+      "label": "Номер закупівлі",
+      "group": "Звернення замовників",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "context_path": "report.tender_id",
+        "dependencies": ["pqm.violation_reports.tender_pretty_id"],
+        "description": "Canonical tender_pretty_id поточного звернення."
+      },
+      "description": "Номер закупівлі, якої стосується звернення.",
+      "available_for": ["violation_review_protocol"],
+      "required_for": [],
+      "default_format": null,
+      "example": "UA-2026-09-01-000001-a",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "customer.short_name",
+      "label": "Скорочена назва замовника для протоколу",
+      "group": "Замовник",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "context_path": "customer.short_name",
+        "dependencies": ["pqm.violation_report_reviews.customer_verified_short_name"],
+        "description": "Manual canonical назва поточного review; fallback — останнє збережене значення за тим самим customer code."
+      },
+      "description": "Перевірена скорочена назва замовника з canonical/manual reuse за кодом.",
+      "available_for": ["violation_review_protocol"],
+      "required_for": [],
+      "default_format": null,
+      "example": "ГЕНЕРАЛЬНА ДИРЕКЦІЯ ДКВС УКРАЇНИ",
+      "nullable": false,
       "active": true,
       "deprecated": false,
       "replacement_key": null
@@ -147,15 +246,17 @@
         "entity_type": "person",
         "unresolved_policy": "error",
         "dependencies": [],
-        "description": "Від manager.full_name через shared decline_name(original, person, genitive): exact manual override перед погодженими Apps Script rules. Unresolved → null, без fallback; original не змінюється."
+        "description": "manager.full_name → declension / genitive"
       },
-      "description": "ПІБ поточного керівника у родовому відмінку для фрази «стосовно». Винятки — спільний довідник Відмінювання, entity_type=person.",
+      "description": "manager.full_name → declension / genitive",
       "available_for": [
-        "nazk_supplier_request"
+        "nazk_supplier_request",
+        "nazk_authority_request",
+        "nazk_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
-      "example": "БОНДАРЯ СЕРГІЯ ВОЛОДИМИРОВИЧА",
+      "example": null,
       "nullable": true,
       "active": true,
       "deprecated": false,
@@ -1165,5 +1266,1236 @@
       "replacement_key": null
     }
   ],
-  "audit": []
+  "audit": [
+    {
+      "at": "2026-09-09T15:51:42Z",
+      "by": "Codex — LOCAL migration explicitly requested by user",
+      "key": "supplier.code_label",
+      "old": null,
+      "new": {
+        "key": "supplier.code_label",
+        "label": "Тип коду постачальника",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "resolver": "supplier_code_label",
+          "dependencies": [
+            "pqm.supplier_registry_summary.supplier_code"
+          ],
+          "description": "Семантика чинного supplier_code_label у server.py: РНОКПП для 10 цифр, код ЄДРПОУ для 8. Невідомий/порожній код → null; адреса та тип керівника не використовуються."
+        },
+        "description": "Підпис перед ідентифікатором постачальника: код ЄДРПОУ або РНОКПП. Не значення самого коду.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": "код ЄДРПОУ",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T16:00:50.101Z",
+      "by": "Codex — LOCAL conditional contract correction requested by user",
+      "key": "supplier.entity_type",
+      "old": null,
+      "new": {
+        "key": "supplier.entity_type",
+        "label": "Тип постачальника",
+        "group": "Постачальник",
+        "value_type": "enum",
+        "enum_values": [
+          "legal_entity",
+          "individual_entrepreneur"
+        ],
+        "source_binding": {
+          "source_type": "unbound",
+          "description": "Canonical supplier type source потребує підтвердження. Не використовувати infer_entity_type, назву або довжину коду як ad-hoc document resolver."
+        },
+        "description": "Тип адресата для взаємовиключних варіантів запиту: legal_entity — юридична особа; individual_entrepreneur — ФОП. Невідоме значення блокує вибір абзацу, а не підставляє варіант за замовчуванням.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [
+          "nazk_supplier_request"
+        ],
+        "default_format": null,
+        "example": "legal_entity",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T16:19:11.414Z",
+      "by": "Codex — LOCAL canonical code-label reuse requested by user",
+      "key": "supplier.code_label",
+      "old": {
+        "key": "supplier.code_label",
+        "label": "Тип коду постачальника",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "resolver": "supplier_code_label",
+          "dependencies": [
+            "pqm.supplier_registry_summary.supplier_code"
+          ],
+          "description": "Семантика чинного supplier_code_label у server.py: РНОКПП для 10 цифр, код ЄДРПОУ для 8. Невідомий/порожній код → null; адреса та тип керівника не використовуються."
+        },
+        "description": "Підпис перед ідентифікатором постачальника: код ЄДРПОУ або РНОКПП. Не значення самого коду.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": "код ЄДРПОУ",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "supplier.code_label",
+        "label": "Тип коду постачальника",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "resolver": "document_semantics.supplier_code_label",
+          "dependencies": [
+            "pqm.supplier_registry_summary.supplier_code"
+          ],
+          "description": "Shared із generate_violation_protocol/{{ supplier_code_label }}: після видалення нецифрових символів 10 цифр → РНОКПП, усе інше → код ЄДРПОУ. Не визначає supplier.entity_type. Canonical source передає рядок коду."
+        },
+        "description": "Підпис перед ідентифікатором постачальника: код ЄДРПОУ або РНОКПП. Не значення самого коду.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": "код ЄДРПОУ",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T16:22:37.907Z",
+      "by": "Codex — approved shared document entity semantics",
+      "key": "supplier.code_label",
+      "old": {
+        "key": "supplier.code_label",
+        "label": "Тип коду постачальника",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "resolver": "document_semantics.supplier_code_label",
+          "dependencies": [
+            "pqm.supplier_registry_summary.supplier_code"
+          ],
+          "description": "Shared із generate_violation_protocol/{{ supplier_code_label }}: після видалення нецифрових символів 10 цифр → РНОКПП, усе інше → код ЄДРПОУ. Не визначає supplier.entity_type. Canonical source передає рядок коду."
+        },
+        "description": "Підпис перед ідентифікатором постачальника: код ЄДРПОУ або РНОКПП. Не значення самого коду.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": "код ЄДРПОУ",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "supplier.code_label",
+        "label": "Тип коду постачальника",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "resolver": "document_semantics.supplier_code_label",
+          "dependencies": [
+            "pqm.supplier_registry_summary.supplier_code"
+          ],
+          "description": "Один canonical result document_semantics.supplier_code_semantics: видалення нецифрових символів; 10 цифр → РНОКПП + individual_entrepreneur, інакше → код ЄДРПОУ + legal_entity. Погоджене document-only business rule; без аналізу назви."
+        },
+        "description": "Підпис перед ідентифікатором постачальника: код ЄДРПОУ або РНОКПП. Не значення самого коду.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": "код ЄДРПОУ",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T16:22:37.907Z",
+      "by": "Codex — approved shared document entity semantics",
+      "key": "supplier.entity_type",
+      "old": {
+        "key": "supplier.entity_type",
+        "label": "Тип постачальника",
+        "group": "Постачальник",
+        "value_type": "enum",
+        "enum_values": [
+          "legal_entity",
+          "individual_entrepreneur"
+        ],
+        "source_binding": {
+          "source_type": "unbound",
+          "description": "Canonical supplier type source потребує підтвердження. Не використовувати infer_entity_type, назву або довжину коду як ad-hoc document resolver."
+        },
+        "description": "Тип адресата для взаємовиключних варіантів запиту: legal_entity — юридична особа; individual_entrepreneur — ФОП. Невідоме значення блокує вибір абзацу, а не підставляє варіант за замовчуванням.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [
+          "nazk_supplier_request"
+        ],
+        "default_format": null,
+        "example": "legal_entity",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "supplier.entity_type",
+        "label": "Тип постачальника",
+        "group": "Постачальник",
+        "value_type": "enum",
+        "enum_values": [
+          "legal_entity",
+          "individual_entrepreneur"
+        ],
+        "source_binding": {
+          "source_type": "derived",
+          "resolver": "document_semantics.supplier_entity_type",
+          "dependencies": [
+            "pqm.supplier_registry_summary.supplier_code"
+          ],
+          "description": "Один canonical result document_semantics.supplier_code_semantics: видалення нецифрових символів; 10 цифр → РНОКПП + individual_entrepreneur, інакше → код ЄДРПОУ + legal_entity. Погоджене document-only business rule; без аналізу назви."
+        },
+        "description": "Тип адресата для conditional paragraph: 10 цифр normalized code → individual_entrepreneur (ФОП), інакше legal_entity (юридична особа). Похідне від спільного результату з supplier.code_label.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [
+          "nazk_supplier_request"
+        ],
+        "default_format": null,
+        "example": "legal_entity",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T16:27:50.194Z",
+      "by": "Codex — approved latest submission email binding",
+      "key": "supplier.email",
+      "old": null,
+      "new": {
+        "key": "supplier.email",
+        "label": "Електронна адреса постачальника",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "resolver": "supplier_contacts.supplier_email",
+          "dependencies": [
+            "pqm.submissions.supplier_code",
+            "pqm.submissions.date_published",
+            "pqm.submissions.synced_at",
+            "pqm.submissions.raw_json"
+          ],
+          "allow_technical": [
+            "pqm.submissions.raw_json",
+            "pqm.submissions.synced_at"
+          ],
+          "description": "Shared supplier_contacts: contacts.current.email із останньої заявки ORDER BY COALESCE(NULLIF(date_published,''),synced_at) DESC,id DESC; tenderers[0].contactPoint.email. Порожній email → null; без fallback до history. Якщо contacts вже є в context, reuse current.email без повторного query."
+        },
+        "description": "Email із блоку «Контакти з останньої заявки» картки постачальника. Попередні контакти не підставляються. Обов’язковий для запиту НАЗК постачальнику.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [
+          "nazk_supplier_request"
+        ],
+        "default_format": null,
+        "example": "opt@gurkit.com.ua",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09",
+      "by": "LOCAL controlled migration — user-approved manager genitive",
+      "key": "manager.full_name_genitive",
+      "old": null,
+      "new": {
+        "source_type": "derived",
+        "source_field": "manager.full_name",
+        "transformation_type": "declension",
+        "grammatical_case": "genitive",
+        "entity_type": "person",
+        "unresolved_policy": "error"
+      },
+      "description": "Revision 6 → 7: configurable canonical person genitive; nominative unchanged."
+    },
+    {
+      "at": "2026-09-09T21:28:41.445950+00:00",
+      "by": "Світлана НАМЯСЕНКО",
+      "key": "supplier.name_genitive",
+      "old": null,
+      "new": {
+        "key": "supplier.name_genitive",
+        "label": "Назва постачальника у родовому відмінку",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "source_field": "supplier.name",
+          "transformation_type": "declension",
+          "grammatical_case": "genitive",
+          "entity_type": "legal_entity",
+          "unresolved_policy": "error",
+          "dependencies": [],
+          "description": "supplier.name → declension / genitive"
+        },
+        "description": "supplier.name → declension / genitive",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.479382+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "task.responsible_uo",
+      "old": {
+        "key": "task.responsible_uo",
+        "label": "Відповідальна УО",
+        "group": "Операційна задача",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "ПІБ через assigned_officer_id → authorized_officers.id.",
+          "dependencies": [
+            "pqm.operational_tasks.assigned_officer_id",
+            "pqm.authorized_officers.full_name"
+          ]
+        },
+        "description": "Відповідальна УО",
+        "available_for": [
+          "nazk_supplier_request",
+          "nazk_authority_request",
+          "nazk_exclusion_protocol",
+          "amcu_exclusion_protocol",
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "task.responsible_uo",
+        "label": "Відповідальна УО",
+        "group": "Операційна задача",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "ПІБ через assigned_officer_id → authorized_officers.id.",
+          "dependencies": [
+            "pqm.operational_tasks.assigned_officer_id",
+            "pqm.authorized_officers.full_name"
+          ],
+          "context_path": "officer.full_name"
+        },
+        "description": "Відповідальна УО",
+        "available_for": [
+          "nazk_supplier_request",
+          "nazk_authority_request",
+          "nazk_exclusion_protocol",
+          "amcu_exclusion_protocol",
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.520375+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "amcu.count",
+      "old": {
+        "key": "amcu.count",
+        "label": "Кількість рішень АМКУ",
+        "group": "АМКУ",
+        "value_type": "integer",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Кількість linked рішень цієї задачі, не всіх рішень постачальника.",
+          "dependencies": [
+            "pqm.operational_task_amcu_decisions.amcu_decision_id"
+          ]
+        },
+        "description": "Кількість рішень АМКУ",
+        "available_for": [
+          "amcu_exclusion_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "amcu.count",
+        "label": "Кількість рішень АМКУ",
+        "group": "АМКУ",
+        "value_type": "integer",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Кількість linked рішень цієї задачі, не всіх рішень постачальника.",
+          "dependencies": [
+            "pqm.operational_task_amcu_decisions.amcu_decision_id"
+          ],
+          "context_path": "task.amcu_decisions",
+          "aggregate": "count"
+        },
+        "description": "Кількість рішень АМКУ",
+        "available_for": [
+          "amcu_exclusion_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.559378+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "amcu.decisions[]",
+      "old": {
+        "key": "amcu.decisions[]",
+        "label": "Рішення АМКУ",
+        "group": "АМКУ",
+        "value_type": "array<object>",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Масив linked canonical рішень у operational_tasks.detail; repeat-row contract. row_key дозволено лише як identity залежність масиву, не як доступне значення документа.",
+          "allow_technical": [
+            "pqm.amcu_registry.row_key"
+          ],
+          "dependencies": [
+            "pqm.operational_task_amcu_decisions.amcu_decision_id",
+            "pqm.amcu_registry.row_key"
+          ]
+        },
+        "description": "Рішення АМКУ",
+        "available_for": [
+          "amcu_exclusion_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null,
+        "item_schema": [
+          {
+            "key": "amcu.decisions[].number",
+            "value_type": "string"
+          },
+          {
+            "key": "amcu.decisions[].date",
+            "value_type": "date"
+          },
+          {
+            "key": "amcu.decisions[].authority",
+            "value_type": "string"
+          },
+          {
+            "key": "amcu.decisions[].extract_url",
+            "value_type": "url"
+          }
+        ]
+      },
+      "new": {
+        "key": "amcu.decisions[]",
+        "label": "Рішення АМКУ",
+        "group": "АМКУ",
+        "value_type": "array<object>",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Масив linked canonical рішень у operational_tasks.detail; repeat-row contract. row_key дозволено лише як identity залежність масиву, не як доступне значення документа.",
+          "allow_technical": [
+            "pqm.amcu_registry.row_key"
+          ],
+          "dependencies": [
+            "pqm.operational_task_amcu_decisions.amcu_decision_id",
+            "pqm.amcu_registry.row_key"
+          ],
+          "context_path": "task.amcu_decisions"
+        },
+        "description": "Рішення АМКУ",
+        "available_for": [
+          "amcu_exclusion_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null,
+        "item_schema": [
+          {
+            "key": "amcu.decisions[].number",
+            "value_type": "string"
+          },
+          {
+            "key": "amcu.decisions[].date",
+            "value_type": "date"
+          },
+          {
+            "key": "amcu.decisions[].authority",
+            "value_type": "string"
+          },
+          {
+            "key": "amcu.decisions[].extract_url",
+            "value_type": "url"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.601377+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "warning.count",
+      "old": {
+        "key": "warning.count",
+        "label": "Кількість попереджень",
+        "group": "Попередження",
+        "value_type": "integer",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Кількість frozen warning references поточної задачі.",
+          "dependencies": [
+            "pqm.operational_task_warnings.violation_report_id"
+          ]
+        },
+        "description": "Кількість попереджень",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "warning.count",
+        "label": "Кількість попереджень",
+        "group": "Попередження",
+        "value_type": "integer",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Кількість frozen warning references поточної задачі.",
+          "dependencies": [
+            "pqm.operational_task_warnings.violation_report_id"
+          ],
+          "context_path": "task.warnings",
+          "aggregate": "count"
+        },
+        "description": "Кількість попереджень",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.635387+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "warning.threshold_type",
+      "old": {
+        "key": "warning.threshold_type",
+        "label": "Поріг попереджень",
+        "group": "Попередження",
+        "value_type": "enum",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "source_context.threshold_type, погоджений rolling threshold.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ]
+        },
+        "description": "Поріг попереджень",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "warning.threshold_type",
+        "label": "Поріг попереджень",
+        "group": "Попередження",
+        "value_type": "enum",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "source_context.threshold_type, погоджений rolling threshold.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ],
+          "context_path": "task.source_context.threshold_type"
+        },
+        "description": "Поріг попереджень",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.673368+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "warning.references[]",
+      "old": {
+        "key": "warning.references[]",
+        "label": "Попередження — підстави блокування",
+        "group": "Попередження",
+        "value_type": "array<object>",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Frozen operational_task_warnings → violation_reports, порядок sequence_no.",
+          "dependencies": [
+            "pqm.operational_task_warnings.violation_report_id",
+            "pqm.violation_reports.report_id"
+          ]
+        },
+        "description": "Попередження — підстави блокування",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null,
+        "item_schema": [
+          {
+            "key": "warning.references[].ua_d",
+            "value_type": "string"
+          },
+          {
+            "key": "warning.references[].date",
+            "value_type": "datetime"
+          },
+          {
+            "key": "warning.references[].procurement_id",
+            "value_type": "string"
+          },
+          {
+            "key": "warning.references[].customer_name",
+            "value_type": "string"
+          },
+          {
+            "key": "warning.references[].url",
+            "value_type": "url"
+          }
+        ]
+      },
+      "new": {
+        "key": "warning.references[]",
+        "label": "Попередження — підстави блокування",
+        "group": "Попередження",
+        "value_type": "array<object>",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Frozen operational_task_warnings → violation_reports, порядок sequence_no.",
+          "dependencies": [
+            "pqm.operational_task_warnings.violation_report_id",
+            "pqm.violation_reports.report_id"
+          ],
+          "context_path": "task.warnings"
+        },
+        "description": "Попередження — підстави блокування",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null,
+        "item_schema": [
+          {
+            "key": "warning.references[].ua_d",
+            "value_type": "string"
+          },
+          {
+            "key": "warning.references[].date",
+            "value_type": "datetime"
+          },
+          {
+            "key": "warning.references[].procurement_id",
+            "value_type": "string"
+          },
+          {
+            "key": "warning.references[].customer_name",
+            "value_type": "string"
+          },
+          {
+            "key": "warning.references[].url",
+            "value_type": "url"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.702368+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "warning.references[].url",
+      "old": {
+        "key": "warning.references[].url",
+        "label": "Посилання на звернення",
+        "group": "Попередження",
+        "value_type": "url",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Shared requestViolationUrl: contract_pretty_id /violation-reports#report-report_id; якщо договору немає — null.",
+          "dependencies": [
+            "pqm.violation_reports.contract_pretty_id",
+            "pqm.violation_reports.report_id"
+          ]
+        },
+        "description": "Посилання на звернення",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "warning.references[].url",
+        "label": "Посилання на звернення",
+        "group": "Попередження",
+        "value_type": "url",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Shared requestViolationUrl: contract_pretty_id /violation-reports#report-report_id; якщо договору немає — null.",
+          "dependencies": [
+            "pqm.violation_reports.contract_pretty_id",
+            "pqm.violation_reports.report_id"
+          ],
+          "context_path": "task.warnings.canonical_url"
+        },
+        "description": "Посилання на звернення",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.736378+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "blocking.start_date",
+      "old": {
+        "key": "blocking.start_date",
+        "label": "Початок блокування",
+        "group": "Блокування",
+        "value_type": "date",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Збережений structured source_context.blocking_start_date, без нового обчислення business rule.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ]
+        },
+        "description": "Початок блокування",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "blocking.start_date",
+        "label": "Початок блокування",
+        "group": "Блокування",
+        "value_type": "date",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Збережений structured source_context.blocking_start_date, без нового обчислення business rule.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ],
+          "context_path": "task.source_context.blocking_start_date"
+        },
+        "description": "Початок блокування",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.777381+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "blocking.end_date",
+      "old": {
+        "key": "blocking.end_date",
+        "label": "Завершення блокування",
+        "group": "Блокування",
+        "value_type": "date",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Збережений structured source_context.blocking_end_date, без нового обчислення business rule.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ]
+        },
+        "description": "Завершення блокування",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "blocking.end_date",
+        "label": "Завершення блокування",
+        "group": "Блокування",
+        "value_type": "date",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Збережений structured source_context.blocking_end_date, без нового обчислення business rule.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ],
+          "context_path": "task.source_context.blocking_end_date"
+        },
+        "description": "Завершення блокування",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.840379+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "blocking.days",
+      "old": {
+        "key": "blocking.days",
+        "label": "Тривалість блокування, днів",
+        "group": "Блокування",
+        "value_type": "integer",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Збережений structured source_context.block_days, без нового обчислення business rule.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ]
+        },
+        "description": "Тривалість блокування, днів",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "blocking.days",
+        "label": "Тривалість блокування, днів",
+        "group": "Блокування",
+        "value_type": "integer",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Збережений structured source_context.block_days, без нового обчислення business rule.",
+          "dependencies": [
+            "pqm.operational_tasks.source_context"
+          ],
+          "context_path": "task.source_context.block_days"
+        },
+        "description": "Тривалість блокування, днів",
+        "available_for": [
+          "warning_block_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:29.965379+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "system.today",
+      "old": {
+        "key": "system.today",
+        "label": "Поточна дата",
+        "group": "Система",
+        "value_type": "date",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Дата Europe/Kyiv на момент формування; передається контекстом генерації.",
+          "dependencies": []
+        },
+        "description": "Поточна дата",
+        "available_for": [
+          "nazk_supplier_request",
+          "nazk_authority_request",
+          "nazk_exclusion_protocol",
+          "amcu_exclusion_protocol",
+          "warning_block_protocol",
+          "application_review_protocol",
+          "warning_notice",
+          "decline_p49_1_2",
+          "decline_p49_3"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "system.today",
+        "label": "Поточна дата",
+        "group": "Система",
+        "value_type": "date",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Дата Europe/Kyiv на момент формування; передається контекстом генерації.",
+          "dependencies": [],
+          "context_path": "system.today"
+        },
+        "description": "Поточна дата",
+        "available_for": [
+          "nazk_supplier_request",
+          "nazk_authority_request",
+          "nazk_exclusion_protocol",
+          "amcu_exclusion_protocol",
+          "warning_block_protocol",
+          "application_review_protocol",
+          "warning_notice",
+          "decline_p49_1_2",
+          "decline_p49_3"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:08:30.024389+00:00",
+      "by": "LOCAL binding metadata migration",
+      "key": "system.generated_at",
+      "old": {
+        "key": "system.generated_at",
+        "label": "Час формування документа",
+        "group": "Система",
+        "value_type": "datetime",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Timestamp Europe/Kyiv; один на весь document_context.",
+          "dependencies": []
+        },
+        "description": "Час формування документа",
+        "available_for": [
+          "nazk_supplier_request",
+          "nazk_authority_request",
+          "nazk_exclusion_protocol",
+          "amcu_exclusion_protocol",
+          "warning_block_protocol",
+          "application_review_protocol",
+          "warning_notice",
+          "decline_p49_1_2",
+          "decline_p49_3"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy HH:mm",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "system.generated_at",
+        "label": "Час формування документа",
+        "group": "Система",
+        "value_type": "datetime",
+        "source_binding": {
+          "source_type": "derived",
+          "description": "Timestamp Europe/Kyiv; один на весь document_context.",
+          "dependencies": [],
+          "context_path": "system.generated_at"
+        },
+        "description": "Час формування документа",
+        "available_for": [
+          "nazk_supplier_request",
+          "nazk_authority_request",
+          "nazk_exclusion_protocol",
+          "amcu_exclusion_protocol",
+          "warning_block_protocol",
+          "application_review_protocol",
+          "warning_notice",
+          "decline_p49_1_2",
+          "decline_p49_3"
+        ],
+        "required_for": [],
+        "default_format": "dd.MM.yyyy HH:mm",
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-09T22:13:32.893679+00:00",
+      "by": "Світлана НАМЯСЕНКО",
+      "key": "supplier.display_name",
+      "old": null,
+      "new": {
+        "key": "supplier.display_name",
+        "label": "Назва постачальника для документа",
+        "group": "Постачальник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "source_field": "supplier.name",
+          "transformation_type": "conditional_prefix",
+          "unresolved_policy": "error",
+          "dependencies": [],
+          "description": "supplier.name → conditional prefix / supplier.entity_type == individual_entrepreneur",
+          "condition_field": "supplier.entity_type",
+          "equals": "individual_entrepreneur",
+          "prefix": "ФОП "
+        },
+        "description": "supplier.name → conditional prefix / supplier.entity_type == individual_entrepreneur",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-10T00:00:00+00:00",
+      "by": "CURRENT LOCAL implementation",
+      "key": "supplier.name",
+      "old": {
+        "source_type": "schema_field",
+        "schema_field": "pqm.supplier_registry_summary.supplier_name"
+      },
+      "new": {
+        "source_type": "derived",
+        "resolver": "supplier_identity.document_name",
+        "dependencies": [
+          "pqm.supplier_edr_profiles.full_name",
+          "pqm.submissions.supplier_name"
+        ],
+        "description": "Current supplier_edr_profiles.full_name; fallback to the latest non-empty submissions.supplier_name by date_published and id. Missing both is a validation error."
+      }
+    },
+    {
+      "at": "2026-09-10T00:00:00+00:00",
+      "by": "CURRENT LOCAL implementation",
+      "key": "supplier.short_name",
+      "old": null,
+      "new": {
+        "source_type": "derived",
+        "resolver": "supplier_identity.document_short_name",
+        "dependencies": [
+          "pqm.supplier_edr_profiles.short_name",
+          "pqm.supplier_edr_profiles.full_name",
+          "pqm.submissions.supplier_name"
+        ],
+        "description": "Current supplier_edr_profiles.short_name; fallback to canonical supplier.name (EDR full name, then latest submission). Missing all sources is a validation error."
+      }
+    },
+    {
+      "at": "2026-09-11T08:24:38.660073+00:00",
+      "by": "Світлана НАМЯСЕНКО",
+      "key": "manager.full_name_genitive",
+      "old": {
+        "key": "manager.full_name_genitive",
+        "label": "ПІБ керівника у родовому відмінку",
+        "group": "Керівник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "source_field": "manager.full_name",
+          "transformation_type": "declension",
+          "grammatical_case": "genitive",
+          "entity_type": "person",
+          "unresolved_policy": "error",
+          "dependencies": [],
+          "description": "Від manager.full_name через shared decline_name(original, person, genitive): exact manual override перед погодженими Apps Script rules. Unresolved → null, без fallback; original не змінюється."
+        },
+        "description": "ПІБ поточного керівника у родовому відмінку для фрази «стосовно». Винятки — спільний довідник Відмінювання, entity_type=person.",
+        "available_for": [
+          "nazk_supplier_request"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": "БОНДАРЯ СЕРГІЯ ВОЛОДИМИРОВИЧА",
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      },
+      "new": {
+        "key": "manager.full_name_genitive",
+        "label": "ПІБ керівника у родовому відмінку",
+        "group": "Керівник",
+        "value_type": "string",
+        "source_binding": {
+          "source_type": "derived",
+          "source_field": "manager.full_name",
+          "transformation_type": "declension",
+          "grammatical_case": "genitive",
+          "entity_type": "person",
+          "unresolved_policy": "error",
+          "dependencies": [],
+          "description": "manager.full_name → declension / genitive"
+        },
+        "description": "manager.full_name → declension / genitive",
+        "available_for": [
+          "nazk_supplier_request",
+          "nazk_authority_request",
+          "nazk_exclusion_protocol"
+        ],
+        "required_for": [],
+        "default_format": null,
+        "example": null,
+        "nullable": true,
+        "active": true,
+        "deprecated": false,
+        "replacement_key": null
+      }
+    }
+  ]
 }

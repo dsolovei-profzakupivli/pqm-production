@@ -12,6 +12,8 @@
     "pqm.operational_task_warnings": "task.warnings"
   },
   "semantic_sources": {
+    "supplier_identity.document_name": "supplier.document_name",
+    "supplier_identity.document_short_name": "supplier.document_short_name",
     "document_semantics.supplier_code_label": "code_semantics.code_label",
     "document_semantics.supplier_entity_type": "code_semantics.entity_type",
     "supplier_contacts.supplier_email": "contacts.current.email"

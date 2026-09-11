@@ -7,11 +7,12 @@ parser.add_argument('--apply-navigation',action='store_true',help='Apply authori
 args=parser.parse_args()
 path=Path(args.db).resolve()
 if not path.is_file():raise SystemExit('Existing WEB database required; restore/create separately')
-os.environ.update(PQM_DB_PATH=str(path),PQM_DATA_DIR=str(path.parent),PQM_RELEASE_SCHEMA_ONLY='1',PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_BIDS_UPDATE='0',PQM_BIDS_MODE='disabled',PQM_ENABLE_BROWSER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_POWERBI='0')
-import server,navigation_settings
+os.environ.update(PQM_DB_PATH=str(path),PQM_DATA_DIR=str(path.parent),PQM_RELEASE_SCHEMA_ONLY='1',PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_PROZORRO_SCHEDULER='0',PQM_ENABLE_VIOLATION_SCHEDULER='0',PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_BIDS_UPDATE='0',PQM_BIDS_MODE='disabled',PQM_ENABLE_BROWSER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_POWERBI='0')
+import server,navigation_settings,scheduler_runtime
 server.init_db()
 server.init_reference_tables(path)
 with sqlite3.connect(path) as con:
+ scheduler_runtime.migrate(con)
  con.row_factory=sqlite3.Row
  con.execute('PRAGMA foreign_keys=ON')
  if args.apply_navigation:

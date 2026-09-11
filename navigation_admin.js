@@ -30,5 +30,5 @@
   async function loadGlobal(){try{const [data,library]=await Promise.all([request(`${API}/navigation-settings`),request(`${API}/navigation-icons`)]);customItems=library.items||[];window.pqmSetNavigationIcons(customItems);overrides=data.overrides||{};window.pqmRenderNavigation(overrides);if(currentMe)window.pqmApplyNavigationAccess(currentMe);draft=resolve(overrides)}catch(error){console.warn('Navigation settings unavailable',error)}}
   window.loadNavigationEditor=async()=>{if(currentMe?.role!=='admin')return;await loadGlobal();renderEditor()};
   $('#navigationResetConfirm').onclick=reset;
-  loadGlobal();
+  authReady.then(()=>loadGlobal());
 })();

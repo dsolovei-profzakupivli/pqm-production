@@ -27,16 +27,24 @@
   const nav=document.getElementById('mainNav');let currentOverrides={};let currentAccess=null;
   const resolvedItems=overrides=>ITEMS.map(base=>({...base,...(overrides[base.id]||{})})).sort((a,b)=>a.order-b.order);
   const permissionAllows=item=>!currentAccess||!item.permission||(item.permission==='role:admin'?currentAccess.role==='admin':Boolean(currentAccess.permissions?.[item.permission]));
+  function canonicalActiveModule(){
+    const modules=new Set(ITEMS.map(item=>item.module));
+    const route=new URL(location.href).searchParams.get('view');
+    if(modules.has(route))return route;
+    try{const persisted=localStorage.getItem('pqm.activeModule');if(modules.has(persisted))return persisted}catch{}
+    return'applications';
+  }
   function render(overrides=currentOverrides){currentOverrides=overrides&&typeof overrides==='object'?overrides:{};
+   const selectedModule=canonicalActiveModule();
    for(const item of resolvedItems(currentOverrides)){
-    let button=document.getElementById(item.id);if(!button){button=document.createElement('button');button.type='button';button.id=item.id;button.classList.toggle('nav-active',item.module==='applications')}
+    let button=document.getElementById(item.id);if(!button){button=document.createElement('button');button.type='button';button.id=item.id}
     button.dataset.navModule=item.module;
     button.dataset.navRoute=item.route;
     if(item.permission)button.dataset.navPermission=item.permission;
     button.classList.toggle('main-nav-icon',item.displayMode==='icon');
     button.classList.toggle('main-nav-text',item.displayMode==='text');
     button.classList.toggle('main-nav-icon-text',item.displayMode==='icon-text');
-    button.classList.toggle('nav-active',item.module==='applications');
+    button.classList.toggle('nav-active',item.module===selectedModule);
     button.title=item.tooltip;button.setAttribute('aria-label',item.label);
     const icon=icons()[item.iconKey]||'<span class="nav-icon-slot" aria-hidden="true"></span>';
     if(item.displayMode==='icon')button.innerHTML=icon;

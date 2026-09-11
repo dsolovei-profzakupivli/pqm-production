@@ -81,7 +81,7 @@ def _fetch(url, timeout=900):
         return response.read()
 
 
-def refresh_nazk(db_path):
+def refresh_nazk(db_path, on_complete=None):
     if not LOCK.acquire(blocking=False):
         return
     try:
@@ -110,9 +110,11 @@ def refresh_nazk(db_path):
         _state(db_path, "nazk", "error", str(exc))
     finally:
         LOCK.release()
+        if on_complete:
+            on_complete()
 
 
-def start_reference_refresh(db_path, source, raw=None, filename=""):
+def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=None):
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")
@@ -122,7 +124,7 @@ def start_reference_refresh(db_path, source, raw=None, filename=""):
             return False
         _state(db_path, source, "running", "Підготовка фонового оновлення")
         target = refresh_nazk if source == "nazk" else refresh_amcu
-        args = (db_path,) if source == "nazk" else (db_path, raw, filename)
+        args = (db_path, on_complete) if source == "nazk" else (db_path, raw, filename)
         timer = threading.Timer(0.2, target, args=args)
         timer.daemon = True
         timer.start()

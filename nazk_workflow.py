@@ -15,11 +15,17 @@ OPEN_WORKFLOW_STATUSES = {"needs_review", "request_to_supplier", "request_to_naz
 def get_supplier_nazk_presentation_state(
     application_state: str | None, workflow_status: str | None,
     *, registry_match: bool, legacy_result: str | None = None,
+    registry_record_no_longer_present: bool = False,
 ) -> str:
     """Combine application work, transitional workflow and registry history for one badge."""
     application_state = str(application_state or "not_required")
     workflow_status = str(workflow_status or "")
     legacy_result = str(legacy_result or "").strip().casefold()
+    # A targeted cancellation records that the canonical current-person match
+    # disappeared.  Historical supplier workflow is still audit evidence, but
+    # must not keep presenting the supplier as if an external reply were due.
+    if registry_record_no_longer_present and not registry_match:
+        return "inactive"
     if workflow_status == "waiting_response":
         return "waiting_response"
     if workflow_status in {"request_to_supplier", "request_to_nazk"}:
@@ -131,10 +137,91 @@ def registry_matches(con: sqlite3.Connection, manager_name: str) -> list[dict]:
     if not normalized:
         return []
     return [dict(row) for row in con.execute(
-        """SELECT source_id,full_name,offense_name,court_case_number,sentence_date,punishment_start,decision_url
+        """SELECT source_id,full_name,offense_name,court_case_number,sentence_date,punishment_start,
+                  decision_url,raw_json
            FROM nazk_registry WHERE NORMALIZE_NAME(full_name)=? ORDER BY sentence_date,source_id""",
         (normalized,),
     )]
+
+
+def _date_value(value: object) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+    if match:
+        return match.group(1)
+    match = re.search(r"(\d{2})[.\-/](\d{2})[.\-/](\d{4})", text)
+    return f"{match.group(3)}-{match.group(2)}-{match.group(1)}" if match else ""
+
+
+def registry_fact_date(match: dict) -> str:
+    """Return the latest canonical date carried by one NАЗК registry fact."""
+    raw = {}
+    try:
+        raw = json.loads(match.get("raw_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        pass
+    candidates = [match.get("sentence_date"), match.get("punishment_start")]
+    for key in ("decision_date", "decisionDate", "decreeDate", "effective_date", "effectiveDate"):
+        candidates.append(raw.get(key))
+    return max((_date_value(value) for value in candidates), default="")
+
+
+def _check_source_ids(check: dict) -> set[str]:
+    return {part.strip() for part in str(check.get("source_ids") or "").split(",") if part.strip()}
+
+
+def find_covering_factual_check(checks: list[dict], matches: list[dict], *,
+                                exclude_check_id: int | None = None) -> dict | None:
+    """Find a same-person factual result that covers the current registry cycle."""
+    registry_ids = {str(row.get("source_id") or "").strip() for row in matches}
+    registry_ids.discard("")
+    latest_fact_date = max((registry_fact_date(row) for row in matches), default="")
+    candidates = []
+    for check in checks:
+        if exclude_check_id is not None and int(check.get("id") or 0) == int(exclude_check_id):
+            continue
+        if check.get("workflow_status") != "completed" or check.get("result") not in {"confirmed", "refuted"}:
+            continue
+        linked_ids = _check_source_ids(check)
+        exact_relation = bool(registry_ids and registry_ids.issubset(linked_ids))
+        coverage_date = max((_date_value(check.get(key)) for key in (
+            "covered_nazk_date", "evidence_date", "completed_at", "started_at"
+        )), default="")
+        temporal_coverage = bool(latest_fact_date and coverage_date and coverage_date >= latest_fact_date)
+        if not exact_relation and not temporal_coverage:
+            continue
+        candidates.append({
+            "check_id": int(check["id"]), "result": check["result"],
+            "coverage_date": coverage_date, "registry_fact_date": latest_fact_date,
+            "registry_source_ids": sorted(registry_ids),
+            "basis": "exact_registry_relation" if exact_relation else "same_person_factual_after_registry_fact",
+        })
+    return max(candidates, key=lambda item: (item["coverage_date"], item["check_id"]), default=None)
+
+
+def archive_duplicate_nazk_checks(con: sqlite3.Connection, check_ids: list[int], covering: dict,
+                                  *, actor: str = "PQM SYSTEM", timestamp: str | None = None) -> int:
+    """Archive redundant non-factual cycles and retain append-only provenance."""
+    timestamp = timestamp or now_iso()
+    changed = 0
+    for check_id in sorted({int(value) for value in check_ids if value}):
+        row = con.execute("SELECT * FROM supplier_nazk_checks WHERE id=?", (check_id,)).fetchone()
+        if not row or row["workflow_status"] not in OPEN_WORKFLOW_STATUSES or row["result"]:
+            continue
+        con.execute(
+            "UPDATE supplier_nazk_checks SET workflow_status='legacy_archived',updated_at=?,updated_by=? WHERE id=?",
+            (timestamp, actor, check_id),
+        )
+        con.execute(
+            """INSERT INTO supplier_nazk_check_events
+               (check_id,event_type,event_at,event_by,old_workflow_status,new_workflow_status,
+                old_result,new_result,details_json)
+               VALUES (?,'duplicate_cycle_reconciled_to_existing_factual',?,?,?,'legacy_archived',NULL,NULL,?)""",
+            (check_id, timestamp, actor, row["workflow_status"],
+             json.dumps({"covering_factual_check": covering}, ensure_ascii=False)),
+        )
+        changed += 1
+    return changed
 
 
 def transitional_submission_backfill_dry_run(
@@ -668,54 +755,78 @@ def get_supplier_nazk_state(con: sqlite3.Connection, supplier_code: str) -> dict
     if not matches:
         return {"state": "no_matches", "action": None, "active_count": active_count,
                 "manager_id": manager["id"], "manager_name": manager["manager_name"]}
-    checks = con.execute(
-        """SELECT * FROM supplier_nazk_checks WHERE supplier_code=? AND manager_id=?
-           ORDER BY COALESCE(completed_at,started_at,created_at) DESC,id DESC""",
-        (supplier_code, manager["id"]),
-    ).fetchall()
-    open_check = next((row for row in checks if row["workflow_status"] in OPEN_WORKFLOW_STATUSES), None)
+    checks = [dict(row) for row in con.execute(
+        """SELECT c.*,GROUP_CONCAT(cm.nazk_source_id) source_ids
+           FROM supplier_nazk_checks c
+           LEFT JOIN supplier_nazk_check_matches cm ON cm.check_id=c.id
+           WHERE c.supplier_code=? AND (c.manager_id=? OR
+             (c.manager_id IS NULL AND NORMALIZE_NAME(c.manager_name)=?))
+           GROUP BY c.id ORDER BY COALESCE(c.completed_at,c.started_at,c.created_at) DESC,c.id DESC""",
+        (supplier_code, manager["id"], normalize_name(manager["manager_name"])),
+    ).fetchall()]
+    open_checks = [row for row in checks if row["workflow_status"] in OPEN_WORKFLOW_STATUSES]
+    covering = find_covering_factual_check(checks, matches)
     base = {"active_count": active_count, "manager_id": manager["id"],
             "manager_name": manager["manager_name"], "matches": len(matches)}
-    if open_check:
-        return {**base, "state": open_check["workflow_status"], "action": None, "check_id": open_check["id"]}
+    if covering:
+        return {**base, "state": covering["result"],
+                "action": "archive_duplicate_cycles" if open_checks else None,
+                "check_id": covering["check_id"], "covering_factual_check": covering,
+                "duplicate_check_ids": [row["id"] for row in open_checks]}
+    if open_checks:
+        return {**base, "state": open_checks[0]["workflow_status"], "action": None,
+                "check_id": open_checks[0]["id"]}
     latest = checks[0] if checks else None
     if latest and latest["workflow_status"] == "completed" and latest["result"] == "confirmed":
-        return {**base, "state": "confirmed", "action": None, "check_id": latest["id"]}
+        return {**base, "state": "needs_review", "action": "create_needs_review",
+                "reason": "confirmed_does_not_cover_current_registry_cycle",
+                "previous_check_id": latest["id"]}
     if latest and latest["workflow_status"] == "completed" and latest["result"] == "refuted":
         if not latest["covered_nazk_date"]:
             reason = "legacy_refuted_without_coverage" if latest["is_legacy"] else "refuted_without_coverage"
             return {**base, "state": "needs_review", "action": "create_needs_review",
                     "reason": reason, "previous_check_id": latest["id"]}
-        return {**base, "state": "coverage_policy_unresolved", "action": None,
-                "reason": "legal_registry_date_field_not_approved", "previous_check_id": latest["id"]}
+        return {**base, "state": "needs_review", "action": "create_needs_review",
+                "reason": "refuted_does_not_cover_current_registry_cycle",
+                "previous_check_id": latest["id"]}
     reason = "legacy_archived_current_match" if latest and latest["workflow_status"] == "legacy_archived" else "current_match_without_result"
     return {**base, "state": "needs_review", "action": "create_needs_review", "reason": reason,
             "previous_check_id": latest["id"] if latest else None}
 
 
 def _supplier_state_from_prefetched(active_count: int, manager: dict | None,
-                                    match_count: int, checks: list[dict]) -> dict:
+                                    matches: list[dict], checks: list[dict]) -> dict:
     if active_count <= 0:
         return {"state": "inactive", "action": None, "active_count": active_count}
     if not manager or not normalize_name(manager.get("manager_name")):
         return {"state": "missing_manager", "action": None, "active_count": active_count}
     base = {"active_count": active_count, "manager_id": manager["id"],
-            "manager_name": manager["manager_name"], "matches": match_count}
-    if not match_count:
+            "manager_name": manager["manager_name"], "matches": len(matches)}
+    if not matches:
         return {**base, "state": "no_matches", "action": None}
-    open_check = next((row for row in checks if row["workflow_status"] in OPEN_WORKFLOW_STATUSES), None)
-    if open_check:
-        return {**base, "state": open_check["workflow_status"], "action": None, "check_id": open_check["id"]}
+    open_checks = [row for row in checks if row["workflow_status"] in OPEN_WORKFLOW_STATUSES]
+    covering = find_covering_factual_check(checks, matches)
+    if covering:
+        return {**base, "state": covering["result"],
+                "action": "archive_duplicate_cycles" if open_checks else None,
+                "check_id": covering["check_id"], "covering_factual_check": covering,
+                "duplicate_check_ids": [row["id"] for row in open_checks]}
+    if open_checks:
+        return {**base, "state": open_checks[0]["workflow_status"], "action": None,
+                "check_id": open_checks[0]["id"]}
     latest = checks[0] if checks else None
     if latest and latest["workflow_status"] == "completed" and latest["result"] == "confirmed":
-        return {**base, "state": "confirmed", "action": None, "check_id": latest["id"]}
+        return {**base, "state": "needs_review", "action": "create_needs_review",
+                "reason": "confirmed_does_not_cover_current_registry_cycle",
+                "previous_check_id": latest["id"]}
     if latest and latest["workflow_status"] == "completed" and latest["result"] == "refuted":
         if not latest.get("covered_nazk_date"):
             reason = "legacy_refuted_without_coverage" if latest.get("is_legacy") else "refuted_without_coverage"
             return {**base, "state": "needs_review", "action": "create_needs_review",
                     "reason": reason, "previous_check_id": latest["id"]}
-        return {**base, "state": "coverage_policy_unresolved", "action": None,
-                "reason": "legal_registry_date_field_not_approved", "previous_check_id": latest["id"]}
+        return {**base, "state": "needs_review", "action": "create_needs_review",
+                "reason": "refuted_does_not_cover_current_registry_cycle",
+                "previous_check_id": latest["id"]}
     reason = "legacy_archived_current_match" if latest and latest["workflow_status"] == "legacy_archived" else "current_match_without_result"
     return {**base, "state": "needs_review", "action": "create_needs_review", "reason": reason,
             "previous_check_id": latest["id"] if latest else None}
@@ -724,6 +835,12 @@ def _supplier_state_from_prefetched(active_count: int, manager: dict | None,
 def reconcile_supplier_nazk(con: sqlite3.Connection, supplier_code: str, *, apply: bool = False,
                             timestamp: str | None = None) -> dict:
     state = get_supplier_nazk_state(con, supplier_code)
+    if apply and state.get("action") == "archive_duplicate_cycles":
+        changed = archive_duplicate_nazk_checks(
+            con, state.get("duplicate_check_ids") or [], state["covering_factual_check"],
+            timestamp=timestamp,
+        )
+        return {**state, "archived": changed}
     if not apply or state.get("action") != "create_needs_review":
         return state
     existing = con.execute(
@@ -762,33 +879,44 @@ def reconcile_supplier_nazk(con: sqlite3.Connection, supplier_code: str, *, appl
     return {**state, "check_id": check_id, "created": True}
 
 
-def reconcile_active_supplier_nazk(con: sqlite3.Connection, *, apply: bool = False) -> dict:
+def reconcile_active_supplier_nazk(con: sqlite3.Connection, *, apply: bool = False,
+                                   supplier_codes: list[str] | None = None) -> dict:
     counters = Counter()
     reasons = Counter()
     items = []
+    allowed = {str(code or "").strip() for code in supplier_codes or []} if supplier_codes is not None else None
     suppliers = [dict(row) for row in con.execute(
         """SELECT s.supplier_code,s.active_count,m.id manager_id,m.manager_name
            FROM supplier_registry_summary s LEFT JOIN supplier_managers m
              ON m.supplier_code=s.supplier_code AND m.is_current=1
-           WHERE s.active_count>0 ORDER BY s.supplier_code""")]
-    registry_names = Counter(normalize_name(row[0]) for row in con.execute(
-        "SELECT full_name FROM nazk_registry WHERE COALESCE(full_name,'')<>''"
-    ))
+           WHERE s.active_count>0 ORDER BY s.supplier_code""")
+        if allowed is None or str(row["supplier_code"]) in allowed]
+    registry_by_name: dict[str, list[dict]] = {}
+    for registry_row in con.execute(
+        """SELECT source_id,full_name,offense_name,court_case_number,sentence_date,punishment_start,
+                  decision_url,raw_json FROM nazk_registry WHERE COALESCE(full_name,'')<>''"""
+    ):
+        registry_by_name.setdefault(normalize_name(registry_row["full_name"]), []).append(dict(registry_row))
     checks_by_supplier: dict[str, list[dict]] = {}
     for row in con.execute(
-        """SELECT c.* FROM supplier_nazk_checks c
-           JOIN supplier_managers m ON m.id=c.manager_id AND m.is_current=1
+        """SELECT c.*,GROUP_CONCAT(cm.nazk_source_id) source_ids FROM supplier_nazk_checks c
+           JOIN supplier_managers m ON m.supplier_code=c.supplier_code AND m.is_current=1
+             AND (m.id=c.manager_id OR (c.manager_id IS NULL AND NORMALIZE_NAME(c.manager_name)=m.normalized_name))
            JOIN supplier_registry_summary s ON s.supplier_code=c.supplier_code AND s.active_count>0
+           LEFT JOIN supplier_nazk_check_matches cm ON cm.check_id=c.id
+           GROUP BY c.id
            ORDER BY c.supplier_code,COALESCE(c.completed_at,c.started_at,c.created_at) DESC,c.id DESC"""):
+        if allowed is not None and str(row["supplier_code"]) not in allowed:
+            continue
         checks_by_supplier.setdefault(row["supplier_code"], []).append(dict(row))
     for row in suppliers:
         manager = {"id": row["manager_id"], "manager_name": row["manager_name"]} if row["manager_id"] else None
         state = _supplier_state_from_prefetched(
             int(row["active_count"] or 0), manager,
-            registry_names.get(normalize_name(row["manager_name"]), 0) if manager else 0,
+            registry_by_name.get(normalize_name(row["manager_name"]), []) if manager else [],
             checks_by_supplier.get(row["supplier_code"], []),
         )
-        if apply and state.get("action") == "create_needs_review":
+        if apply and state.get("action") in {"create_needs_review", "archive_duplicate_cycles"}:
             state = reconcile_supplier_nazk(con, row["supplier_code"], apply=True)
         counters[state["state"]] += 1
         if state.get("reason"):
