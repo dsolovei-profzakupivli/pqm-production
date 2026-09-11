@@ -300,6 +300,10 @@ def materialize_nazk_tasks(con, actor="PQM task builder", *, supplier_codes=None
         code=_digits(check["supplier_code"])
         if allowed is not None and code not in allowed: continue
         apps=active_applications.get(code, [])
+        # Imported waiting history without a verified registry cycle is audit
+        # evidence, not permission to manufacture another request/task.
+        if str(check.get('legacy_key') or '').startswith('web_nazk_history:v1:') and not check.get('source_ids'):
+            continue
         if check.get("result")=="refuted":
             for task in con.execute("""SELECT id FROM operational_tasks WHERE task_type='nazk_check'
               AND supplier_code=? AND status NOT IN ('completed','cancelled')

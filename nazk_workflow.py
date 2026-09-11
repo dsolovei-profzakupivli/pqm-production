@@ -188,6 +188,14 @@ def find_covering_factual_check(checks: list[dict], matches: list[dict], *,
             "covered_nazk_date", "evidence_date", "completed_at", "started_at"
         )), default="")
         temporal_coverage = bool(latest_fact_date and coverage_date and coverage_date >= latest_fact_date)
+        # WEB legacy imports carry evidence for an explicitly identified cycle,
+        # not a blanket clearance of every fact for this person's name. Neither
+        # import time nor a later check date may cover an unlinked registry fact.
+        if str(check.get("legacy_key") or "").startswith("web_nazk_history:v1:"):
+            coverage_date = _date_value(check.get("covered_nazk_date"))
+            temporal_coverage = bool(latest_fact_date and coverage_date and coverage_date >= latest_fact_date)
+            if not (exact_relation and temporal_coverage):
+                continue
         if not exact_relation and not temporal_coverage:
             continue
         candidates.append({
