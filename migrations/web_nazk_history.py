@@ -111,6 +111,11 @@ def plan(con):
                 not any(d['task_id'] == related[0]['id'] for d in data['operational_task_responses']) and
                 not any(d['task_id'] == related[0]['id'] and d['status'] != 'not_sent' for d in data['operational_task_channels'])):
                 entry.update(cancel_check_id=target['id'], cancel_task_id=related[0]['id'])
+        if entry['result'] == 'refuted' and opened and not entry['cancel_check_id']:
+            # A live correspondence/changed cycle must not be implicitly archived
+            # by a later reconciliation simply because history was imported.
+            entry.update(workflow_status='legacy_imported',result=None,registry_ids=[],
+                         reason='current_cycle_changed_requires_review')
         entries.append(entry)
     return dict(version=1, source='WEB supplier_nazk_reviews', input_sha256=digest(data), entries=entries,
                 summary=dict(source_rows=len(entries), new_checks=sum(not e['reuse_check_id'] for e in entries),

@@ -99,6 +99,15 @@ class MigrationTests(unittest.TestCase):
             m.apply(self.con,p,m.digest(p))
         self.assertEqual(1,self.con.execute('SELECT COUNT(*) FROM supplier_nazk_checks').fetchone()[0])
 
+    def test_started_correspondence_is_not_implicitly_covered(self):
+        self.seed()
+        self.con.execute("UPDATE operational_tasks SET status='awaiting_response'")
+        self.con.commit()
+        p=self.run_plan()
+        self.assertEqual(0,p['summary']['factual_refuted'])
+        self.assertEqual('current_cycle_changed_requires_review',p['entries'][0]['reason'])
+        self.assertEqual('awaiting_response',self.con.execute('SELECT status FROM operational_tasks').fetchone()[0])
+
     def test_failure_rolls_back_entire_migration(self):
         self.seed();p=m.plan(self.con)
         with patch.object(m,'check_event',side_effect=RuntimeError('test fault')):
