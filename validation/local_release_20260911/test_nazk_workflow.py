@@ -65,6 +65,11 @@ class NazkWorkflowTests(unittest.TestCase):
         with server.db() as con:
             return workflow.get_supplier_nazk_state(con, code)
 
+    def link_check(self, con, check_id, source_id="nazk-10000001"):
+        con.execute("""INSERT INTO supplier_nazk_check_matches
+          (check_id,nazk_source_id,match_status,created_at)
+          VALUES (?,?,'candidate',?)""", (check_id, source_id, server.now_iso()))
+
     def test_manager_tax_id_reused_and_audited_across_submissions(self):
         mid=self.seed_supplier()
         for i in range(20):self.seed_submission(submission_id=f'reuse-{i}')
@@ -154,6 +159,93 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertEqual(second["created"], 0)
         self.assertEqual([tuple(row) for row in task], [("in_progress", "nazk_check")])
 
+    def test_check_evidence_is_shared_by_active_closed_task_and_supplier_profile(self):
+        self.seed_supplier(); self.seed_submission()
+        with server.db() as con:
+            con.execute("""INSERT INTO qualifications
+              (id,framework_id,submission_id,status,documents_json,raw_json,synced_at)
+              VALUES ('qualification-submission-1','framework-1','submission-1','active','[]','{}',?)""",
+              (server.now_iso(),))
+            con.execute("UPDATE submissions SET qualification_id='qualification-submission-1' WHERE id='submission-1'")
+            con.execute("UPDATE frameworks SET raw_json=? WHERE id='framework-1'",(
+                json.dumps({"qualificationPeriod":{"endDate":"2099-12-31T00:00:00"}}),))
+            con.execute("""INSERT INTO registry_contracts
+              (id,framework_id,qualification_id,supplier_code,status,milestones_json,raw_json,synced_at)
+              VALUES ('contract-1','framework-1','qualification-submission-1','10000001','active','[]','{}',?)""",
+              (server.now_iso(),))
+            created=workflow.reconcile_supplier_nazk(con,"10000001",apply=True)
+            operational_tasks.materialize_nazk_tasks(con,"test",supplier_codes=["10000001"])
+            task_id=con.execute("SELECT id FROM operational_tasks WHERE task_type='nazk_check'").fetchone()[0]
+            officer_id=con.execute("""INSERT INTO authorized_officers(full_name,role,active,created_at,updated_at)
+              VALUES ('УО ТЕСТ','УО',1,?,?)""",(server.now_iso(),server.now_iso())).lastrowid
+            operational_tasks.update(con,task_id,{"assigned_officer_id":officer_id},"УО ТЕСТ")
+            operational_tasks.set_task_manager_tax_id(con,task_id,"1234567890","УО ТЕСТ")
+            operational_tasks.record_channel_sent(con,task_id,"supplier",{
+                "sent_at":"2026-09-12","outgoing_number":"12","reference_url":"https://example/request",
+                "comment":"Направлено постачальнику"},"УО ТЕСТ")
+            operational_tasks.add_response(con,task_id,{
+                "source":"supplier","response_date":"2026-09-12","incoming_number":"34",
+                "reference_url":"https://example/evidence","document_reference":"response.pdf",
+                "summary":"Отримано довідку","information_result":"neutral"},"УО ТЕСТ")
+            active=operational_tasks.detail(con,task_id)
+            self.assertEqual(active["nazk_check_id"],created["check_id"])
+            self.assertEqual(active["nazk_current_state"]["person_tax_id"],"1234567890")
+            self.assertEqual(active["assigned_officer_name"],"УО ТЕСТ")
+            self.assertEqual(active["responses"][0]["incoming_number"],"34")
+            payload=active["nazk_evidence"]
+            self.assertEqual(payload["person_rnokpp"],"1234567890")
+            self.assertEqual(payload["responsible_officer"]["name"],"УО ТЕСТ")
+            self.assertEqual(payload["registry_source_ids"],["nazk-10000001"])
+            self.assertEqual(payload["responses_info"][0]["source_task_id"],task_id)
+            self.assertEqual(payload["provenance"]["operational_tasks"][0]["task_id"],task_id)
+            evidence_id=active["responses"][0]["id"]
+            operational_tasks.update_response(con,task_id,evidence_id,{
+                "source":"supplier","response_date":"2026-09-12","incoming_number":"34-A",
+                "reference_url":"https://example/evidence-updated","document_reference":"response.pdf",
+                "summary":"Уточнена довідка","comment":"Перевірено","information_result":"neutral"},"УО ТЕСТ")
+            edited=operational_tasks.detail(con,task_id)
+            self.assertEqual(edited["responses"][0]["incoming_number"],"34-A")
+            self.assertEqual(edited["responses"][0]["comment"],"Перевірено")
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_nazk_check_evidence WHERE check_id=?",
+                                         (created["check_id"],)).fetchone()[0],1)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_task_events WHERE task_id=? AND event_type='response_information_edited'",
+                                         (task_id,)).fetchone()[0],1)
+            operational_tasks.set_nazk_result(con,task_id,"refuted","УО ТЕСТ")
+            closed=operational_tasks.detail(con,task_id)
+            self.assertEqual(closed["nazk_evidence"]["evidence"],edited["nazk_evidence"]["evidence"])
+            with self.assertRaisesRegex(ValueError,"лише для перегляду"):
+                operational_tasks.update_response(con,task_id,evidence_id,{"source":"supplier"},"УО ТЕСТ")
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_task_responses").fetchone()[0],0)
+        profile=server.supplier_profile("10000001")
+        check=next(item for item in profile["supplier_nazk_checks"] if item["id"]==created["check_id"])
+        self.assertEqual(check["evidence_set"]["evidence"],closed["nazk_evidence"]["evidence"])
+        self.assertEqual(check["evidence_set"]["channels"],closed["nazk_evidence"]["channels"])
+        self.assertEqual(check["evidence_set"]["registry_records"],closed["nazk_evidence"]["registry_records"])
+
+    def test_legacy_task_evidence_backfill_is_idempotent(self):
+        self.seed_supplier(); self.seed_submission()
+        with server.db() as con:
+            check_id=con.execute("""INSERT INTO supplier_nazk_checks
+              (supplier_code,manager_id,manager_name,workflow_status,result,started_at,is_legacy,
+               created_at,created_by,updated_at,updated_by)
+              SELECT '10000001',id,manager_name,'needs_review',NULL,?,0,?,'test',?,'test'
+              FROM supplier_managers WHERE supplier_code='10000001' AND is_current=1""",
+              (server.now_iso(),server.now_iso(),server.now_iso())).lastrowid
+            task_id='legacy-task'
+            con.execute("""INSERT INTO operational_tasks
+              (id,task_key,task_type,supplier_code,status,priority,created_at,updated_at,source_context)
+              VALUES (?,?, 'nazk_check','10000001','in_progress','high',?,?,?)""",
+              (task_id,'legacy-key',server.now_iso(),server.now_iso(),json.dumps({'nazk_check_id':check_id})))
+            con.execute("""INSERT INTO operational_task_responses
+              (task_id,source,response_date,incoming_number,reference_url,document_reference,summary,
+               information_result,post_close,recorded_at,recorded_by)
+              VALUES (?,'supplier','2026-09-01','1','https://example/e','legacy.pdf','Legacy evidence',
+                      'neutral',0,?,'test')""",(task_id,server.now_iso()))
+            import nazk_evidence
+            nazk_evidence.migrate(con); nazk_evidence.migrate(con)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_nazk_check_evidence WHERE check_id=?",
+                                         (check_id,)).fetchone()[0],1)
+
     def test_supplier_profile_returns_registry_fact_independently_of_workflow(self):
         manager_id = self.seed_supplier()
         self.seed_submission()
@@ -191,26 +283,28 @@ class NazkWorkflowTests(unittest.TestCase):
               (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso()))
         self.assertEqual(self.state()["reason"], "legacy_refuted_without_coverage")
 
-    def test_nonlegacy_factual_result_after_registry_fact_covers_cycle(self):
+    def test_nonlegacy_factual_result_with_exact_registry_relation_covers_cycle(self):
         manager_id = self.seed_supplier()
         with server.db() as con:
-            con.execute("""INSERT INTO supplier_nazk_checks
+            check_id = con.execute("""INSERT INTO supplier_nazk_checks
               (supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,
                evidence_date,covered_nazk_date,is_legacy,created_at,created_by,updated_at,updated_by)
               VALUES ('10000001',?,?,'completed','refuted','2026-03-01','2026-03-01',
                       '2026-03-01','2026-02-10',0,?,'УО',?,'УО')""",
-              (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso()))
+              (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso())).lastrowid
+            self.link_check(con, check_id)
         self.assertEqual(self.state()["state"], "refuted")
         self.assertEqual(self.state()["check_id"], 1)
 
     def test_current_confirmed_is_current_state(self):
         manager_id = self.seed_supplier()
         with server.db() as con:
-            con.execute("""INSERT INTO supplier_nazk_checks
+            check_id = con.execute("""INSERT INTO supplier_nazk_checks
               (supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,is_legacy,
                created_at,created_by,updated_at,updated_by)
               VALUES ('10000001',?,?,'completed','confirmed','2026-03-01','2026-03-01',1,?,'УО',?,'УО')""",
-              (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso()))
+              (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso())).lastrowid
+            self.link_check(con, check_id)
         self.assertEqual(self.state()["state"], "confirmed")
 
     def test_historical_confirmed_is_not_transferred(self):
@@ -258,6 +352,27 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertIsNone(second.get("action"))
         self.assertEqual(total, 1)
 
+    def test_not_current_covers_only_the_same_registry_cycle(self):
+        manager_id = self.seed_supplier()
+        with server.db() as con:
+            check_id = con.execute("""INSERT INTO supplier_nazk_checks
+              (supplier_code,manager_id,manager_name,workflow_status,result,started_at,is_legacy,
+               created_at,created_by,updated_at,updated_by)
+              VALUES ('10000001',?,?,'not_current',NULL,'2026-09-12',0,?,'УО',?,'УО')""",
+              (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso())).lastrowid
+            con.execute("""INSERT INTO supplier_nazk_check_matches
+              (check_id,nazk_source_id,match_status,created_at) VALUES (?,'nazk-10000001','candidate',?)""",
+              (check_id, server.now_iso()))
+            same = workflow.get_supplier_nazk_state(con, "10000001")
+            con.execute("""INSERT INTO nazk_registry(source_id,full_name,court_case_number,sentence_date,
+              punishment_start,decision_url,raw_json)
+              VALUES ('nazk-new','КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ','2/2/26','2026-09-11',
+                      '2026-09-12','https://example.test/new','{}')""")
+            newer = workflow.get_supplier_nazk_state(con, "10000001")
+        self.assertEqual(same["state"], "inactive")
+        self.assertIsNone(same["action"])
+        self.assertEqual(newer["action"], "create_needs_review")
+
     def test_same_person_factual_cycle_archives_redundant_check_without_changing_result(self):
         manager_id = self.seed_supplier()
         with server.db() as con:
@@ -267,6 +382,7 @@ class NazkWorkflowTests(unittest.TestCase):
               VALUES ('10000001',?,?,'completed','refuted','2026-03-01','2026-03-01',
                       '2026-03-01',0,?,'УО',?,'УО')""",
               (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso())).lastrowid
+            self.link_check(con, factual_id)
             duplicate_id = con.execute("""INSERT INTO supplier_nazk_checks
               (supplier_code,manager_id,manager_name,workflow_status,result,started_at,is_legacy,
                created_at,created_by,updated_at,updated_by)
@@ -328,6 +444,7 @@ class NazkWorkflowTests(unittest.TestCase):
                created_at,created_by,updated_at,updated_by)
               VALUES ('10000001',?,?,'completed','refuted','2026-03-01','2026-03-01','2026-03-01',0,?,'УО',?,'УО')""",
               (manager_id, "КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ", server.now_iso(), server.now_iso())).lastrowid
+            self.link_check(con, factual_id)
             duplicate_id = con.execute("""INSERT INTO supplier_nazk_checks
               (supplier_code,manager_id,manager_name,workflow_status,result,started_at,is_legacy,
                created_at,created_by,updated_at,updated_by)
@@ -441,10 +558,12 @@ class NazkWorkflowTests(unittest.TestCase):
                 con, "submission-1", document_id=document["id"], document_url=document["url"],
                 evidence_date="2026-08-24", checked_by="Світлана НАМЯСЕНКО")
             counts = (con.execute("SELECT COUNT(*) FROM supplier_nazk_checks").fetchone()[0],
-                      con.execute("SELECT COUNT(*) FROM supplier_nazk_check_documents").fetchone()[0])
+                      con.execute("SELECT COUNT(*) FROM supplier_nazk_check_documents").fetchone()[0],
+                      con.execute("SELECT COUNT(*) FROM supplier_nazk_check_matches WHERE check_id=?",
+                                  (first["check_id"],)).fetchone()[0])
         self.assertTrue(first["created"])
         self.assertFalse(second["created"])
-        self.assertEqual(counts, (1, 1))
+        self.assertEqual(counts, (1, 1, 1))
 
     def test_submission_check_rejects_document_from_another_submission(self):
         self.seed_supplier(); self.seed_submission(submission_id="submission-current")
@@ -770,6 +889,9 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertIn("supplierOnlyNazkHistory=supplierNazkHistory.filter", source)
         self.assertIn("supplier-nazk-completed-history", source)
         self.assertIn(".supplier-nazk-completed-history", css)
+        self.assertIn("latestFactualSupplierNazkCheck", source)
+        self.assertIn("item.workflow_status==='completed'&&['confirmed','refuted'].includes(item.result)", source)
+        self.assertIn("operational-edit-response", source)
 
     def test_application_renderer_keeps_completed_nazk_badge_and_editable_trusted_manager_value(self):
         source = Path("app.js").read_text(encoding="utf-8")

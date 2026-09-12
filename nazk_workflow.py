@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import nazk_evidence
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -25,6 +26,8 @@ def get_supplier_nazk_presentation_state(
     # disappeared.  Historical supplier workflow is still audit evidence, but
     # must not keep presenting the supplier as if an external reply were due.
     if registry_record_no_longer_present and not registry_match:
+        return "inactive"
+    if workflow_status == "not_current":
         return "inactive"
     if workflow_status == "waiting_response":
         return "waiting_response"
@@ -64,6 +67,9 @@ def mark_supplier_nazk_request_sent(
            updated_at=?,updated_by=? WHERE id=?""",
         (new_comment, timestamp, changed_by, check_id),
     )
+    nazk_evidence.record_channel(con,check_id,"supplier",{
+        "sent_at":timestamp,"comment":str(comment or "").strip()
+    },changed_by)
     con.execute(
         """INSERT INTO supplier_nazk_check_events
            (check_id,event_type,event_at,event_by,old_workflow_status,new_workflow_status,details_json)
@@ -101,8 +107,8 @@ def complete_supplier_nazk_check(
     timestamp = timestamp or now_iso()
     con.execute(
         """UPDATE supplier_nazk_checks SET workflow_status='completed',result=?,completed_at=?,
-           evidence_date=?,comment=?,updated_at=?,updated_by=? WHERE id=?""",
-        (result, timestamp, str(evidence_date).strip(), str(comment or "").strip(),
+           result_at=?,result_by=?,evidence_date=?,comment=?,updated_at=?,updated_by=? WHERE id=?""",
+        (result, timestamp, timestamp, checked_by, str(evidence_date).strip(), str(comment or "").strip(),
          timestamp, checked_by, check_id),
     )
     con.execute(
@@ -112,6 +118,11 @@ def complete_supplier_nazk_check(
         (check_id, str(evidence_date).strip(), str(document_title or "").strip(),
          str(document_url).strip(), timestamp, checked_by),
     )
+    nazk_evidence.add_evidence(con,check_id,{
+        "evidence_type":"document","source":"supplier","response_date":str(evidence_date).strip(),
+        "summary":str(document_title or "").strip(),"reference_url":str(document_url).strip(),
+        "comment":str(comment or "").strip(),"information_result":"refutes" if result=="refuted" else "confirms",
+    },checked_by,post_close=False)
     con.execute(
         """INSERT INTO supplier_nazk_check_events
            (check_id,event_type,event_at,event_by,old_workflow_status,new_workflow_status,new_result,details_json)
@@ -172,7 +183,14 @@ def _check_source_ids(check: dict) -> set[str]:
 
 def find_covering_factual_check(checks: list[dict], matches: list[dict], *,
                                 exclude_check_id: int | None = None) -> dict | None:
-    """Find a same-person factual result that covers the current registry cycle."""
+    """Find factual coverage for the current manager *and* registry cycle.
+
+    ``checks`` is scoped to the canonical current-manager identity by the caller.
+    A factual result covers the current cycle only when its persisted registry
+    relations include every currently linked source fact.  Dates remain useful
+    provenance, but cannot prove fact identity: a later result for one source ID
+    must not silently cover another distinct source ID.
+    """
     registry_ids = {str(row.get("source_id") or "").strip() for row in matches}
     registry_ids.discard("")
     latest_fact_date = max((registry_fact_date(row) for row in matches), default="")
@@ -187,22 +205,19 @@ def find_covering_factual_check(checks: list[dict], matches: list[dict], *,
         coverage_date = max((_date_value(check.get(key)) for key in (
             "covered_nazk_date", "evidence_date", "completed_at", "started_at"
         )), default="")
-        temporal_coverage = bool(latest_fact_date and coverage_date and coverage_date >= latest_fact_date)
-        # WEB legacy imports carry evidence for an explicitly identified cycle,
-        # not a blanket clearance of every fact for this person's name. Neither
-        # import time nor a later check date may cover an unlinked registry fact.
+        # WEB historical imports retain their exact-cycle, historical-date bound.
+        # No check may fall back to date-only coverage, including non-legacy ones.
         if str(check.get("legacy_key") or "").startswith("web_nazk_history:v1:"):
             coverage_date = _date_value(check.get("covered_nazk_date"))
-            temporal_coverage = bool(latest_fact_date and coverage_date and coverage_date >= latest_fact_date)
-            if not (exact_relation and temporal_coverage):
+            if not (latest_fact_date and coverage_date and coverage_date >= latest_fact_date):
                 continue
-        if not exact_relation and not temporal_coverage:
+        if not exact_relation:
             continue
         candidates.append({
             "check_id": int(check["id"]), "result": check["result"],
             "coverage_date": coverage_date, "registry_fact_date": latest_fact_date,
             "registry_source_ids": sorted(registry_ids),
-            "basis": "exact_registry_relation" if exact_relation else "same_person_factual_after_registry_fact",
+            "basis": "exact_registry_relation",
         })
     return max(candidates, key=lambda item: (item["coverage_date"], item["check_id"]), default=None)
 
@@ -712,12 +727,22 @@ def complete_submission_nazk_check(
     cursor = con.execute(
         """INSERT INTO supplier_nazk_checks
            (supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,
-            evidence_date,covered_nazk_date,comment,is_legacy,created_at,created_by,updated_at,updated_by)
-            VALUES (?,?,?,'completed','refuted',?,?,?,NULL,?,0,?,?,?,?)""",
+            evidence_date,covered_nazk_date,comment,is_legacy,created_at,created_by,updated_at,updated_by,
+            person_tax_id,result_at,result_by)
+            VALUES (?,?,?,'completed','refuted',?,?,?,NULL,?,0,?,?,?,?,?,?,?)""",
         (control["supplier_code"], manager_id, control["manager_name"], timestamp, timestamp,
-         evidence_date, comment, timestamp, checked_by, timestamp, checked_by),
+         evidence_date, comment, timestamp, checked_by, timestamp, checked_by,digits,timestamp,checked_by),
     )
     check_id = int(cursor.lastrowid)
+    # Persist the exact registry cycle covered by this factual application
+    # result.  Manager identity or dates alone are not sufficient provenance.
+    for match in registry_matches(con, control["manager_name"]):
+        con.execute(
+            """INSERT OR IGNORE INTO supplier_nazk_check_matches
+               (check_id,nazk_source_id,match_status,created_at)
+               VALUES (?,?,'candidate',?)""",
+            (check_id, match["source_id"], timestamp),
+        )
     con.execute(
         """INSERT INTO supplier_nazk_check_documents
            (check_id,document_type,document_date,title,url,source,created_at,created_by,
@@ -726,6 +751,14 @@ def complete_submission_nazk_check(
         (check_id, evidence_date, str(selected.get("title") or ""), str(selected.get("url") or document_url),
          "prozorro_submission", timestamp, checked_by, submission_id, str(selected.get("id") or document_id)),
     )
+    nazk_evidence.add_evidence(con,check_id,{
+        "evidence_type":"uploaded_document","source":"supplier","response_date":evidence_date,
+        "summary":str(selected.get("title") or ""),
+        "uploaded_document_name":str(selected.get("title") or ""),
+        "uploaded_document_url":str(selected.get("url") or document_url),
+        "reference_url":str(selected.get("url") or document_url),"comment":comment,
+        "information_result":"refutes",
+    },checked_by,post_close=False)
     con.execute(
         """UPDATE submission_nazk_controls SET nazk_certificate_checked=1,selected_document_id=?,
            selected_document_url=?,supplier_nazk_check_id=?,checked_at=?,checked_by=?,comment=?,updated_at=?
@@ -785,6 +818,11 @@ def get_supplier_nazk_state(con: sqlite3.Connection, supplier_code: str) -> dict
         return {**base, "state": open_checks[0]["workflow_status"], "action": None,
                 "check_id": open_checks[0]["id"]}
     latest = checks[0] if checks else None
+    registry_ids = {str(row.get("source_id") or "").strip() for row in matches}
+    registry_ids.discard("")
+    if latest and latest["workflow_status"] == "not_current" and registry_ids and registry_ids.issubset(_check_source_ids(latest)):
+        return {**base, "state": "inactive", "action": None, "check_id": latest["id"],
+                "reason": "same_registry_cycle_marked_not_current"}
     if latest and latest["workflow_status"] == "completed" and latest["result"] == "confirmed":
         return {**base, "state": "needs_review", "action": "create_needs_review",
                 "reason": "confirmed_does_not_cover_current_registry_cycle",
@@ -823,6 +861,11 @@ def _supplier_state_from_prefetched(active_count: int, manager: dict | None,
         return {**base, "state": open_checks[0]["workflow_status"], "action": None,
                 "check_id": open_checks[0]["id"]}
     latest = checks[0] if checks else None
+    registry_ids = {str(row.get("source_id") or "").strip() for row in matches}
+    registry_ids.discard("")
+    if latest and latest.get("workflow_status") == "not_current" and registry_ids and registry_ids.issubset(_check_source_ids(latest)):
+        return {**base, "state": "inactive", "action": None, "check_id": latest["id"],
+                "reason": "same_registry_cycle_marked_not_current"}
     if latest and latest["workflow_status"] == "completed" and latest["result"] == "confirmed":
         return {**base, "state": "needs_review", "action": "create_needs_review",
                 "reason": "confirmed_does_not_cover_current_registry_cycle",
@@ -860,12 +903,14 @@ def reconcile_supplier_nazk(con: sqlite3.Connection, supplier_code: str, *, appl
     if existing:
         return {**state, "check_id": existing["id"], "created": False}
     timestamp = timestamp or now_iso()
+    manager_tax_id = con.execute("SELECT COALESCE(manager_tax_id,'') FROM supplier_managers WHERE id=?",
+                                 (state["manager_id"],)).fetchone()[0]
     cursor = con.execute(
         """INSERT INTO supplier_nazk_checks
            (supplier_code,manager_id,manager_name,workflow_status,result,started_at,comment,is_legacy,
-            created_at,created_by,updated_at,updated_by)
-           VALUES (?,?,?,'needs_review',NULL,?,'',0,?,'PQM SYSTEM',?,'PQM SYSTEM')""",
-        (supplier_code, state["manager_id"], state["manager_name"], timestamp, timestamp, timestamp),
+            created_at,created_by,updated_at,updated_by,person_tax_id)
+           VALUES (?,?,?,'needs_review',NULL,?,'',0,?,'PQM SYSTEM',?,'PQM SYSTEM',?)""",
+        (supplier_code, state["manager_id"], state["manager_name"], timestamp, timestamp, timestamp,manager_tax_id),
     )
     check_id = int(cursor.lastrowid)
     for match in registry_matches(con, state["manager_name"]):

@@ -49,7 +49,7 @@ class OperationalStatusGroupTests(unittest.TestCase):
     def test_groups_are_single_source_for_kpi_and_list(self):
         con=sqlite3.connect(":memory:"); con.row_factory=sqlite3.Row
         con.create_function("CASEFOLD",1,lambda value:(value or "").casefold())
-        con.executescript("""CREATE TABLE operational_tasks(id TEXT,status TEXT,priority TEXT,created_at TEXT,task_type TEXT,assigned_officer_id TEXT,supplier_name_snapshot TEXT,supplier_code TEXT,source_context TEXT,document_context TEXT,metadata TEXT,due_at TEXT); CREATE TABLE authorized_officers(id TEXT,full_name TEXT); CREATE TABLE supplier_nazk_checks(id INTEGER,workflow_status TEXT,result TEXT,manager_name TEXT,completed_at TEXT,updated_at TEXT);""")
+        con.executescript("""CREATE TABLE operational_tasks(id TEXT,status TEXT,priority TEXT,created_at TEXT,task_type TEXT,assigned_officer_id TEXT,supplier_name_snapshot TEXT,supplier_code TEXT,source_context TEXT,document_context TEXT,metadata TEXT,due_at TEXT); CREATE TABLE authorized_officers(id TEXT,full_name TEXT); CREATE TABLE supplier_nazk_checks(id INTEGER,workflow_status TEXT,result TEXT,manager_name TEXT,completed_at TEXT,updated_at TEXT,responsible_officer_id TEXT,responsible_officer_name TEXT);""")
         rows=[("a","new"),("b","awaiting_response"),("c","completed"),("d","cancelled")]
         con.executemany("INSERT INTO operational_tasks VALUES(?,?, 'normal','2026-09-09','nazk_check',NULL,'Supplier','1','{}','{}','{}',NULL)",rows)
         queries=[]; con.set_trace_callback(lambda sql: queries.append(sql) if sql.lstrip().upper().startswith(('SELECT','WITH')) else None)
@@ -58,6 +58,23 @@ class OperationalStatusGroupTests(unittest.TestCase):
         self.assertEqual(len(queries),2)  # list projection + KPI statuses, independent of row count
         history=operational_tasks.list_tasks(con,{"status_group":["historical"]})
         self.assertEqual(history["total"],2); self.assertEqual({x["status"] for x in history["items"]},{"completed","cancelled"})
+
+    def test_search_filters_by_unicode_supplier_name_or_code(self):
+        con=sqlite3.connect(":memory:"); con.row_factory=sqlite3.Row
+        con.create_function("CASEFOLD",1,lambda value:(value or "").casefold())
+        con.executescript("""CREATE TABLE operational_tasks(id TEXT,status TEXT,priority TEXT,created_at TEXT,task_type TEXT,assigned_officer_id INTEGER,supplier_name_snapshot TEXT,supplier_code TEXT,source_context TEXT,document_context TEXT,metadata TEXT,due_at TEXT); CREATE TABLE authorized_officers(id INTEGER,full_name TEXT); CREATE TABLE supplier_nazk_checks(id INTEGER,workflow_status TEXT,result TEXT,manager_name TEXT,completed_at TEXT,updated_at TEXT,responsible_officer_id INTEGER,responsible_officer_name TEXT);""")
+        con.executemany("INSERT INTO operational_tasks VALUES(?, 'in_progress','normal','2026-09-09','nazk_check',1,?,?, '{}','{}','{}',NULL)",[
+            ("a",'ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "ГУРКІТ ГРУП"',"43897155"),
+            ("b",'ІНШИЙ ПОСТАЧАЛЬНИК',"12345678"),
+        ])
+        by_name=operational_tasks.list_tasks(con,{"search":["гуркі"]})
+        by_code=operational_tasks.list_tasks(con,{"search":["43897155"]})
+        combined=operational_tasks.list_tasks(con,{"search":["гуркі"],"type":["nazk_check"],"officer":["1"],"date_from":["2026-09-01"]})
+        cleared=operational_tasks.list_tasks(con,{"search":[""]})
+        self.assertEqual([item["supplier_code"] for item in by_name["items"]],["43897155"])
+        self.assertEqual([item["supplier_code"] for item in by_code["items"]],["43897155"])
+        self.assertEqual([item["supplier_code"] for item in combined["items"]],["43897155"])
+        self.assertEqual(cleared["total"],2)
 
     def test_nazk_task_becomes_cancelled_when_effective_activity_disappears(self):
         con=sqlite3.connect(":memory:"); con.row_factory=sqlite3.Row
@@ -76,13 +93,14 @@ class OperationalTaskCardTests(unittest.TestCase):
         con=sqlite3.connect(":memory:"); con.row_factory=sqlite3.Row
         con.executescript("""CREATE TABLE operational_tasks(id TEXT PRIMARY KEY,status TEXT,resolution_code TEXT,resolved_at TEXT,resolved_by TEXT,updated_at TEXT,version INTEGER);
           CREATE TABLE operational_task_events(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,event_type TEXT,created_at TEXT,actor TEXT,old_value TEXT,new_value TEXT,metadata TEXT);
-          CREATE TABLE supplier_nazk_checks(id INTEGER PRIMARY KEY,result TEXT,workflow_status TEXT,completed_at TEXT,updated_at TEXT,updated_by TEXT);
+          CREATE TABLE supplier_nazk_checks(id INTEGER PRIMARY KEY,result TEXT,workflow_status TEXT,completed_at TEXT,updated_at TEXT,updated_by TEXT,result_at TEXT,result_by TEXT);
+          CREATE TABLE supplier_nazk_check_events(id INTEGER PRIMARY KEY AUTOINCREMENT,check_id INTEGER,event_type TEXT,event_at TEXT,event_by TEXT,details_json TEXT);
           CREATE TABLE operational_task_blocking_decisions(task_id TEXT PRIMARY KEY,decision_date TEXT,protocol_number TEXT,prozorro_url TEXT,document_url TEXT,officer_note TEXT,attached_at TEXT,attached_by TEXT,used_for_blocking INTEGER);""")
         con.execute("INSERT INTO operational_tasks VALUES('t','in_progress','',NULL,NULL,'',1)")
         return con
 
     def test_manual_nazk_result_confirmed_and_insufficient(self):
-        con=self.action_connection(); con.execute("INSERT INTO supplier_nazk_checks VALUES(7,'needs_review','in_progress',NULL,'','')")
+        con=self.action_connection(); con.execute("INSERT INTO supplier_nazk_checks VALUES(7,'needs_review','in_progress',NULL,'','','','')")
         current={'id':'t','task_type':'nazk_check','status':'in_progress','source_context':{'nazk_check_id':7},'channels':{},'effective_active_count':1}
         with patch.object(operational_tasks,'detail',return_value=current):
             operational_tasks.set_nazk_result(con,'t','confirmed','uo')
@@ -91,6 +109,14 @@ class OperationalTaskCardTests(unittest.TestCase):
         current['channels']={'supplier':{'status':'waiting'}}
         with patch.object(operational_tasks,'detail',return_value=current): operational_tasks.set_nazk_result(con,'t','insufficient','uo')
         self.assertEqual(con.execute("SELECT status FROM operational_tasks").fetchone()[0],'waiting_external')
+
+    def test_nazk_not_current_is_terminal_but_nonfactual(self):
+        con=self.action_connection(); con.execute("INSERT INTO supplier_nazk_checks VALUES(7,'needs_review','in_progress',NULL,'','','','')")
+        current={'id':'t','task_type':'nazk_check','status':'in_progress','source_context':{'nazk_check_id':7},'channels':{},'effective_active_count':1}
+        with patch.object(operational_tasks,'detail',return_value=current):
+            operational_tasks.set_nazk_result(con,'t','not_current','uo','Перевірено УО')
+        self.assertEqual(tuple(con.execute("SELECT status,resolution_code FROM operational_tasks").fetchone()),('completed','nazk_not_current'))
+        self.assertEqual(tuple(con.execute("SELECT result,workflow_status FROM supplier_nazk_checks").fetchone()),(None,'not_current'))
 
     def test_warning_protocol_validation_and_completion(self):
         con=self.action_connection(); current={'id':'t','task_type':'warning_block','status':'in_progress'}

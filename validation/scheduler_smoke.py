@@ -82,13 +82,16 @@ class SchedulerTests(unittest.TestCase):
         for stale in (False, True):
             Clock.current = datetime.datetime(2026, 9, 10, 10, 4, 40, tzinfo=datetime.timezone.utc)
             last = Clock.current - datetime.timedelta(hours=2 if stale else 0)
+            with s.db() as con:
+                con.execute('UPDATE submissions SET synced_at=?', (last.isoformat(),))
             def sleep(seconds):
                 Clock.current += datetime.timedelta(seconds=seconds)
                 if Clock.current.minute > 5:
                     raise EndClock()
-            with patch.object(s, 'datetime', Clock), patch.object(s.scheduler_runtime, 'utc_now', lambda: Clock.now(datetime.timezone.utc)), patch.object(s.time, 'sleep', sleep), patch.object(s, '_trigger_scheduler_job', return_value=True) as trigger, patch.dict(s.SYNC_STATE, {'last_data_sync_at': last.isoformat()}):
+            stop=Mock(wait=sleep, is_set=lambda:False)
+            with patch.object(s, 'datetime', Clock), patch.object(s, '_scheduler_is_configured', return_value=True), patch.object(s.scheduler_runtime, 'utc_now', lambda: Clock.now(datetime.timezone.utc)), patch.object(s, '_trigger_scheduler_job', return_value=True) as trigger, patch.dict(s.SYNC_STATE, {'last_data_sync_at': last.isoformat()}):
                 with self.assertRaises(EndClock):
-                    s.prozorro_scheduler()
+                    s.prozorro_scheduler(stop)
                 self.assertEqual(['startup_catchup', 'scheduled'] if stale else ['scheduled'], [c.args[1] for c in trigger.call_args_list])
 
     def test_automatic_outcome_distinguishes_success_partial_failure(self):
@@ -175,7 +178,8 @@ assert.match(show({running:true,message:'Ручне оновлення',schedule
     def test_runtime_status_is_read_only_and_dead_threads_have_no_next_run(self):
         with patch.dict(s.SCHEDULER_THREADS, {}, clear=True), patch.object(s, 'ENABLE_PROZORRO_SCHEDULER', True):
             job=s.scheduler_status_payload()[0]
-            self.assertTrue(job['enabled']);self.assertFalse(job['running']);self.assertIsNone(job['next_run'])
+            self.assertTrue(job['configured_enabled']);self.assertFalse(job['enabled'])
+            self.assertFalse(job['running']);self.assertIsNone(job['next_run'])
         # Hold a writer lock; a status read must not attempt migration/INSERT.
         with s.db() as con:
             con.execute('BEGIN IMMEDIATE')

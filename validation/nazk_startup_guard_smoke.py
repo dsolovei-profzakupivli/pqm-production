@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import web_smoke as web
@@ -45,10 +45,11 @@ class GuardTests(unittest.TestCase):
              patch.object(s, 'paginated_pages', return_value=iter([])), \
              patch.object(s.scheduler_runtime, 'state', return_value=[{'job':'violation_reports','last_finished_at':None}]), \
              patch.object(s, 'start_violation_reports_sync', side_effect=start_job) as start, \
-             patch.object(s.time, 'sleep'), patch.object(s, '_wait_until', side_effect=EndLoop), \
+             patch.object(s, '_scheduler_is_configured', return_value=True), \
+             patch.object(s, '_wait_until', side_effect=EndLoop), \
              patch.object(s, 'reconcile_active_supplier_nazk', side_effect=AssertionError('unrelated NAZK write')):
             with self.assertRaises(EndLoop):
-                s.violation_reports_scheduler()
+                s.violation_reports_scheduler(Mock(wait=lambda _:False, is_set=lambda:False))
             start.assert_called_once_with(trigger='startup_catchup')
         self.assert_no_nazk()
 

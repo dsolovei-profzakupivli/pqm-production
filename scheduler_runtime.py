@@ -94,9 +94,50 @@ def migrate(con: sqlite3.Connection) -> None:
       acquired_at TEXT NOT NULL,
       lease_until TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS scheduler_job_settings (
+      job_key TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+      updated_at TEXT NOT NULL,
+      updated_by TEXT NOT NULL
+    );
     """)
     con.executemany("INSERT OR IGNORE INTO scheduler_job_state(job_key) VALUES (?)",
                     [(key,) for key in SCHEDULES])
+
+
+def effective_enabled(con: sqlite3.Connection, defaults: dict[str, bool]) -> dict[str, bool]:
+    """Apply persistent Admin overrides on top of environment startup defaults."""
+    try:
+        overrides = {str(row[0]): bool(row[1]) for row in con.execute(
+            "SELECT job_key,enabled FROM scheduler_job_settings"
+        )}
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).casefold():
+            raise
+        overrides = {}
+    return {key: overrides.get(key, bool(defaults.get(key))) for key in SCHEDULES}
+
+
+def setting_sources(con: sqlite3.Connection) -> dict[str, str]:
+    try:
+        overridden = {str(row[0]) for row in con.execute("SELECT job_key FROM scheduler_job_settings")}
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).casefold():
+            raise
+        overridden = set()
+    return {key: "runtime" if key in overridden else "environment" for key in SCHEDULES}
+
+
+def save_enabled(con: sqlite3.Connection, job_key: str, enabled: bool, actor: str,
+                 *, moment: datetime | None = None) -> None:
+    if job_key not in SCHEDULES:
+        raise ValueError(f"Unknown scheduler job: {job_key}")
+    migrate(con)
+    stamp = _iso((moment or utc_now()).astimezone(timezone.utc))
+    con.execute("""INSERT INTO scheduler_job_settings(job_key,enabled,updated_at,updated_by)
+      VALUES (?,?,?,?) ON CONFLICT(job_key) DO UPDATE SET enabled=excluded.enabled,
+      updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+      (job_key, int(bool(enabled)), stamp, str(actor or "Administrator")))
 
 
 def _iso(moment: datetime) -> str:

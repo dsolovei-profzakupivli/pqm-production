@@ -30,7 +30,9 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
         self.con.execute("INSERT INTO qualifications VALUES('Q','S','active','2026-01-02')")
         self.con.execute("INSERT INTO registry_contracts VALUES('RC','Q','F',?,'active')",(self.CODE,))
         self.con.executemany("INSERT INTO supplier_managers VALUES(?,?,?,?,?,?)",[(1,self.CODE,'PERSON_A','person_a','111',0),(2,self.CODE,'PERSON_B','person_b','222',1)])
-        self.con.execute("INSERT INTO supplier_nazk_checks VALUES(10,?,1,'PERSON_A','completed','confirmed','2025-01-01','2025-01-02','2025-01-02')",(self.CODE,))
+        self.con.execute("""INSERT INTO supplier_nazk_checks
+          (id,supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,updated_at)
+          VALUES(10,?,1,'PERSON_A','completed','confirmed','2025-01-01','2025-01-02','2025-01-02')""",(self.CODE,))
         self.con.execute("INSERT INTO supplier_nazk_check_matches VALUES(10,'RECORD_A','confirmed')")
         stamp=operational_tasks.now_iso()
         self.con.execute("""INSERT INTO operational_tasks(id,task_key,task_type,supplier_code,supplier_name_snapshot,status,priority,created_at,updated_at,source_context,document_context)
@@ -60,7 +62,9 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
                          f'nazk_check:{self.CODE}:1:RECORD_A')
 
     def test_new_current_manager_match_is_a_new_business_event(self):
-        self.con.execute("INSERT INTO supplier_nazk_checks VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')",(self.CODE,))
+        self.con.execute("""INSERT INTO supplier_nazk_checks
+          (id,supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,updated_at)
+          VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')""",(self.CODE,))
         self.con.execute("INSERT INTO supplier_nazk_check_matches VALUES(11,'RECORD_B','confirmed')")
         operational_tasks.build(self.con,'fixture',include_nazk=True); operational_tasks.build(self.con,'fixture repeat',include_nazk=True)
         self.assertEqual(self.active_for_record('RECORD_A'),0)
@@ -71,7 +75,9 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
 
 class CanonicalRelationCycleTests(NazkTaskPersonRelevanceTests):
     def test_missing_record_cancellation_and_new_record(self):
-        self.con.execute("INSERT INTO supplier_nazk_checks VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')",(self.CODE,))
+        self.con.execute("""INSERT INTO supplier_nazk_checks
+          (id,supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,updated_at)
+          VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')""",(self.CODE,))
         operational_tasks.build(self.con,'fixture',include_nazk=True)
         row=self.con.execute("SELECT id,task_key FROM operational_tasks WHERE status='in_progress'").fetchone()
         self.con.execute("UPDATE operational_tasks SET status='cancelled',resolution_code='nazk_record_no_longer_present' WHERE id=?",(row['id'],))
@@ -84,7 +90,9 @@ class CanonicalRelationCycleTests(NazkTaskPersonRelevanceTests):
         self.assertEqual(self.con.execute('SELECT status FROM operational_tasks WHERE id=?',(row['id'],)).fetchone()[0],'cancelled')
 
     def test_additive_relation_preserves_existing_task_key(self):
-        self.con.execute("INSERT INTO supplier_nazk_checks VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')",(self.CODE,))
+        self.con.execute("""INSERT INTO supplier_nazk_checks
+          (id,supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,updated_at)
+          VALUES(11,?,2,'PERSON_B','needs_review',NULL,'2026-01-03',NULL,'2026-01-03')""",(self.CODE,))
         operational_tasks.build(self.con,'fixture',include_nazk=True)
         key=self.con.execute("SELECT task_key FROM operational_tasks WHERE status='in_progress'").fetchone()[0]
         self.con.execute("INSERT INTO supplier_nazk_check_matches VALUES(11,'LINKED_RECORD','candidate')")

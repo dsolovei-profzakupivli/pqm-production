@@ -7,6 +7,7 @@ import uuid
 import calendar
 from urllib.parse import urlsplit
 import supplier_activity
+import nazk_evidence
 from datetime import date, datetime, timedelta, timezone
 
 TASK_TYPES = {"amcu_exclusion", "nazk_check", "warning_block", "manual",
@@ -36,7 +37,7 @@ TRANSITIONS = {
     "active_blocking": {"completed"}, "completed": set(), "cancelled": set(),
 }
 RESOLUTIONS = {"completed", "not_applicable", "cancelled", "nazk_refuted",
-               "nazk_confirmed", "nazk_not_relevant", "amcu_excluded",
+               "nazk_confirmed", "nazk_not_relevant", "nazk_not_current", "amcu_excluded",
                "supplier_blocked", "blocking_completed", "legacy_blocking_confirmed", "no_active_qualifications", "manager_changed", "nazk_record_no_longer_present",
                "duplicate_cycle_existing_factual", "covered_by_later_qualification", ""}
 
@@ -119,6 +120,7 @@ def migrate(con):
         INSERT INTO operational_task_responses SELECT * FROM operational_task_responses_legacy;
         DROP TABLE operational_task_responses_legacy;
         CREATE INDEX ix_operational_task_responses_task ON operational_task_responses(task_id,recorded_at,id);""")
+    nazk_evidence.migrate(con)
 
 
 def _json(value):
@@ -276,8 +278,10 @@ def _create(con, key, task_type, code, priority, source, document, status="new",
       (task_id,key,task_type,code,supplier_name or _supplier_name(con,code),status,priority,stamp,stamp,_json(source),_json(document)))
     _event(con, task_id, "created", metadata={"trigger_reason": source.get("trigger_reason")})
     if task_type=="nazk_check":
-        con.executemany("INSERT OR IGNORE INTO operational_task_channels(task_id,channel) VALUES (?,?)",
-                        [(task_id,"supplier"),(task_id,"nazk")])
+        check_id=int(source.get("nazk_check_id") or 0)
+        if not check_id: raise ValueError("НАЗК-задачу не пов’язано з canonical check")
+        con.executemany("INSERT OR IGNORE INTO supplier_nazk_check_channels(check_id,channel) VALUES (?,?)",
+                        [(check_id,"supplier"),(check_id,"nazk")])
     return task_id, True
 
 
@@ -558,6 +562,9 @@ def _task(con,row,detail=False):
         item["assigned_officer_name"]=item.pop("_assigned_officer_name") or ""
     else:
         officer=con.execute("SELECT full_name FROM authorized_officers WHERE id=?",(item.get("assigned_officer_id"),)).fetchone(); item["assigned_officer_name"]=officer[0] if officer else ""
+    canonical_officer_id=item.pop("_nazk_responsible_officer_id",None)
+    if item.get("task_type")=="nazk_check" and canonical_officer_id is not None:
+        item["assigned_officer_id"]=canonical_officer_id
     effective_apps=_effective_active_applications(con,item["supplier_code"]) if detail else None
     item["effective_active_count"]=(len(effective_apps) if detail else int(item["source_context"].get("active_application_count") or 0))
     item["active_application_count"]=item["effective_active_count"]  # backward-compatible API alias
@@ -592,10 +599,21 @@ def _task(con,row,detail=False):
               WHERE DIGITS(supplier_code)=? AND is_current=1""",(_digits(item["supplier_code"]),)).fetchone()
             item["current_manager"]=dict(current) if current else {}
             check_id=item["source_context"].get("nazk_check_id")
-            item["nazk_records"]=[dict(r) for r in con.execute("""SELECT n.source_id,n.full_name,n.offense_name,
-              n.punishment,n.court_case_number,n.sentence_date,n.sentence_number,n.punishment_start,n.court_name,n.decision_url,m.match_status
-              FROM supplier_nazk_check_matches m JOIN nazk_registry n ON n.source_id=m.nazk_source_id
-              WHERE m.check_id=? ORDER BY n.sentence_date,n.source_id""",(check_id,))]
+            evidence=nazk_evidence.get(con,int(check_id))
+            item["nazk_check_id"]=int(check_id)
+            item["nazk_evidence"]=evidence
+            item["nazk_current_state"]={**item.get("nazk_current_state",{}),**{
+              key:evidence.get(key) for key in ("id","workflow_status","result","manager_name","person_tax_id",
+                "evidence_date","result_at","result_by","completed_at","responsible_officer_id","responsible_uo_name")}}
+            item["nazk_records"]=evidence["registry_records"]
+            item["channels"]={key:{**value,"outgoing_number":value.get("document_number",""),
+              "reference_url":value.get("evidence_url","")} for key,value in evidence["channels"].items()}
+            item["responses"]=[{**value,"response_date":value.get("evidence_date"),
+              "incoming_number":value.get("document_number","")+"","reference_url":value.get("evidence_url",""),
+              "document_reference":value.get("uploaded_document_name","")+"","summary":value.get("short_summary","")}
+              for value in evidence["evidence"]]
+            item["assigned_officer_id"]=evidence.get("responsible_officer_id")
+            item["assigned_officer_name"]=evidence.get("responsible_uo_name") or ""
             check_manager=item.get("nazk_current_state",{}).get("manager_name") or item["source_context"].get("person_name") or ""
             check_manager_id=con.execute("SELECT manager_id FROM supplier_nazk_checks WHERE id=?",(check_id,)).fetchone()
             item["task_person_is_current"]=bool(current and ((check_manager_id and check_manager_id[0] is not None and check_manager_id[0]==current["id"])
@@ -641,21 +659,31 @@ def list_tasks(con,params):
     where=[]; args=[]
     def value(key):
         raw=params.get(key,[""]); return (raw[0] if isinstance(raw,list) else raw).strip()
-    for key,column in (("type","task_type"),("officer","assigned_officer_id")):
-        if value(key): where.append(f"{column}=?"); args.append(value(key))
+    if value("type"): where.append("task_type=?"); args.append(value("type"))
+    if value("officer"): where.append("CAST(assigned_officer_id AS TEXT)=?"); args.append(value("officer"))
     group=value("status_group") or "active"
     if group not in STATUS_GROUPS: raise ValueError("Невідома група статусів")
     grouped=sorted(STATUS_GROUPS[group]); where.append("status IN (%s)" % ",".join("?" for _ in grouped)); args.extend(grouped)
     search=value("search").casefold()
-    if search: where.append("(CASEFOLD(supplier_name_snapshot) LIKE ? OR supplier_code LIKE ?)"); args.extend([f"%{search}%",f"%{_digits(search)}%"])
+    if search:
+        search_predicates=["INSTR(CASEFOLD(COALESCE(supplier_name_snapshot,'')),?)>0"]
+        search_args=[search]
+        search_digits=_digits(search)
+        if search_digits:
+            search_predicates.append("INSTR(supplier_code,?)>0")
+            search_args.append(search_digits)
+        where.append("("+" OR ".join(search_predicates)+")")
+        args.extend(search_args)
     if value("date_from"): where.append("SUBSTR(created_at,1,10)>=?"); args.append(value("date_from"))
     clause=" WHERE "+" AND ".join(where) if where else ""
-    projection="""SELECT t.*,o.full_name _assigned_officer_name,
+    projection="""SELECT t.*,COALESCE(nuo.full_name,c.responsible_officer_name,o.full_name) _assigned_officer_name,
+      c.responsible_officer_id _nazk_responsible_officer_id,
       c.id _nazk_id,c.workflow_status _nazk_workflow_status,c.result _nazk_result,
       c.manager_name _nazk_manager_name,c.completed_at _nazk_completed_at,c.updated_at _nazk_updated_at
       FROM operational_tasks t LEFT JOIN authorized_officers o ON o.id=t.assigned_officer_id
-      LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)"""
-    qualified_clause=clause.replace("status", "t.status").replace("task_type", "t.task_type").replace("assigned_officer_id", "t.assigned_officer_id").replace("supplier_name_snapshot", "t.supplier_name_snapshot").replace("supplier_code", "t.supplier_code").replace("created_at", "t.created_at")
+      LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+      LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id"""
+    qualified_clause=clause.replace("status", "t.status").replace("task_type", "t.task_type").replace("assigned_officer_id", "COALESCE(c.responsible_officer_id,t.assigned_officer_id)").replace("supplier_name_snapshot", "t.supplier_name_snapshot").replace("supplier_code", "t.supplier_code").replace("created_at", "t.created_at")
     rows=con.execute(projection+qualified_clause+" ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,t.created_at DESC",args).fetchall()
     items=[_task(con,row) for row in rows]
     all_rows=con.execute("SELECT status FROM operational_tasks").fetchall()
@@ -664,11 +692,13 @@ def list_tasks(con,params):
 
 
 def detail(con,task_id):
-    row=con.execute("""SELECT t.*,o.full_name _assigned_officer_name,
+    row=con.execute("""SELECT t.*,COALESCE(nuo.full_name,c.responsible_officer_name,o.full_name) _assigned_officer_name,
+      c.responsible_officer_id _nazk_responsible_officer_id,
       c.id _nazk_id,c.workflow_status _nazk_workflow_status,c.result _nazk_result,
       c.manager_name _nazk_manager_name,c.completed_at _nazk_completed_at,c.updated_at _nazk_updated_at
       FROM operational_tasks t LEFT JOIN authorized_officers o ON o.id=t.assigned_officer_id
       LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+      LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id
       WHERE t.id=?""",(task_id,)).fetchone()
     if not row: raise KeyError(task_id)
     return _task(con,row,True)
@@ -690,9 +720,14 @@ def update(con,task_id,payload,actor):
             not str(x.get("extract_url") or "").strip() for x in current.get("amcu_decisions") or []):
         raise ValueError("Додайте посилання на витяг для всіх рішень АМКУ")
     stamp=now_iso(); resolved=stamp if status=="completed" else current.get("resolved_at")
+    task_officer=officer
+    if current["task_type"]=="nazk_check":
+        check_id=nazk_evidence.check_id_for_task(current)
+        nazk_evidence.set_responsible_officer(con,check_id,officer,actor,stamp)
+        task_officer=None  # responsible UO is canonical on supplier_nazk_checks
     cursor=con.execute("""UPDATE operational_tasks SET status=?,assigned_officer_id=?,resolution_code=?,resolution_text=?,
       protocol_number=?,protocol_date=?,protocol_reference=?,published_reference=?,resolved_at=?,resolved_by=?,updated_at=?,version=version+1 WHERE id=? AND version=?""",
-      (status,officer,resolution,str(payload.get("resolution_text",current.get("resolution_text") or "")),str(payload.get("protocol_number",current.get("protocol_number") or "")),str(payload.get("protocol_date",current.get("protocol_date") or "")),str(payload.get("protocol_reference",current.get("protocol_reference") or "")),str(payload.get("published_reference",current.get("published_reference") or "")),resolved,actor if resolved else current.get("resolved_by"),stamp,task_id,current["version"]))
+      (status,task_officer,resolution,str(payload.get("resolution_text",current.get("resolution_text") or "")),str(payload.get("protocol_number",current.get("protocol_number") or "")),str(payload.get("protocol_date",current.get("protocol_date") or "")),str(payload.get("protocol_reference",current.get("protocol_reference") or "")),str(payload.get("published_reference",current.get("published_reference") or "")),resolved,actor if resolved else current.get("resolved_by"),stamp,task_id,current["version"]))
     if cursor.rowcount==0: raise ValueError("Задачу вже змінив інший користувач; оновіть сторінку")
     if status!=current["status"]: _event(con,task_id,"status_changed",actor,current["status"],status)
     if officer!=current.get("assigned_officer_id"): _event(con,task_id,"assigned",actor,str(current.get("assigned_officer_id") or ""),str(officer or ""))
@@ -708,7 +743,7 @@ def set_amcu_extract(con,task_id,decision_id,url,actor):
 
 CHANNEL_STATES={"not_sent","document_prepared","waiting","response_received","closed","cancelled"}
 INFORMATION_RESULTS={"neutral","refutes","confirms"}
-NAZK_RESULTS={"confirmed","refuted","insufficient"}
+NAZK_RESULTS={"confirmed","refuted","insufficient","not_current"}
 
 
 def record_channel_sent(con,task_id,channel,payload,actor):
@@ -717,15 +752,14 @@ def record_channel_sent(con,task_id,channel,payload,actor):
     if current["status"] in TERMINAL: raise ValueError("Закриту задачу не можна перевести в очікування")
     sent_at=str(payload.get("sent_at") or "").strip()
     if not sent_at: raise ValueError("Зазначте дату направлення")
-    con.execute("""INSERT INTO operational_task_channels(task_id,channel,status,sent_at,outgoing_number,reference_url,comment,recorded_at,recorded_by)
-      VALUES (?,?, 'waiting',?,?,?,?,?,?) ON CONFLICT(task_id,channel) DO UPDATE SET status='waiting',sent_at=excluded.sent_at,
-      outgoing_number=excluded.outgoing_number,reference_url=excluded.reference_url,comment=excluded.comment,
-      recorded_at=excluded.recorded_at,recorded_by=excluded.recorded_by""",
-      (task_id,channel,sent_at,str(payload.get("outgoing_number") or "").strip(),str(payload.get("reference_url") or "").strip(),
-       str(payload.get("comment") or "").strip(),now_iso(),actor))
+    check_id=nazk_evidence.check_id_for_task(current)
+    nazk_evidence.record_channel(con,check_id,channel,payload,actor,source_task_id=task_id)
+    con.execute("""UPDATE supplier_nazk_checks SET workflow_status='waiting_response',updated_at=?,updated_by=?
+      WHERE id=? AND workflow_status NOT IN ('completed','legacy_archived')""",(now_iso(),actor,check_id))
     if current["status"]!="waiting_external":
         con.execute("UPDATE operational_tasks SET status='waiting_external',updated_at=?,version=version+1 WHERE id=?",(now_iso(),task_id))
     _event(con,task_id,"request_sent",actor,current.get("channels",{}).get(channel,{}).get("status","not_sent"),"waiting",{"channel":channel,"sent_at":sent_at})
+    nazk_evidence.event(con,check_id,"request_sent",actor,{"task_id":task_id,"channel":channel,"sent_at":sent_at})
     return detail(con,task_id)
 
 
@@ -735,46 +769,78 @@ def add_response(con,task_id,payload,actor):
     result=str(payload.get("information_result") or "neutral")
     if result not in INFORMATION_RESULTS: raise ValueError("Невідомий результат інформації")
     post_close=int(current["status"] in TERMINAL)
-    con.execute("""INSERT INTO operational_task_responses(task_id,source,response_date,incoming_number,reference_url,
-      document_reference,summary,information_result,post_close,recorded_at,recorded_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-      (task_id,source,str(payload.get("response_date") or "").strip(),str(payload.get("incoming_number") or "").strip(),
-       str(payload.get("reference_url") or "").strip(),str(payload.get("document_reference") or "").strip(),
-       str(payload.get("summary") or "").strip(),result,post_close,now_iso(),actor))
+    check_id=nazk_evidence.check_id_for_task(current)
+    evidence_id=nazk_evidence.add_evidence(
+        con,check_id,payload,actor,post_close=bool(post_close),source_task_id=task_id)
     if source in {"supplier","nazk"}:
-        con.execute("UPDATE operational_task_channels SET status='response_received',recorded_at=?,recorded_by=? WHERE task_id=? AND channel=?",
-                    (now_iso(),actor,task_id,source))
+        con.execute("UPDATE supplier_nazk_check_channels SET status='response_received',recorded_at=?,recorded_by=? WHERE check_id=? AND channel=?",
+                    (now_iso(),actor,check_id,source))
     if not post_close:
-        check_id=current.get("source_context",{}).get("nazk_check_id")
         if result in {"refutes","confirms"}:
             factual="refuted" if result=="refutes" else "confirmed"
-            con.execute("UPDATE supplier_nazk_checks SET result=?,workflow_status='completed',completed_at=?,updated_at=?,updated_by=? WHERE id=?",
-                        (factual,now_iso(),now_iso(),actor,check_id))
+            stamp=now_iso()
+            con.execute("""UPDATE supplier_nazk_checks SET result=?,workflow_status='completed',completed_at=?,
+              result_at=?,result_by=?,evidence_date=COALESCE(NULLIF(?,''),evidence_date),updated_at=?,updated_by=? WHERE id=?""",
+                        (factual,stamp,stamp,actor,str(payload.get("response_date") or "").strip(),stamp,actor,check_id))
             next_status="completed" if factual=="refuted" else ("ready_for_document" if current["effective_active_count"] else "cancelled")
             resolution="nazk_refuted" if factual=="refuted" else ("nazk_confirmed" if next_status!="cancelled" else "no_active_qualifications")
             con.execute("UPDATE operational_tasks SET status=?,resolution_code=?,resolved_at=?,resolved_by=?,updated_at=?,version=version+1 WHERE id=?",
                         (next_status,resolution,now_iso() if next_status in TERMINAL else None,actor if next_status in TERMINAL else None,now_iso(),task_id))
-    _event(con,task_id,"post_close_information" if post_close else "response_received",actor,metadata={"source":source,"information_result":result})
+    details={"task_id":task_id,"evidence_id":evidence_id,"source":source,"information_result":result}
+    _event(con,task_id,"post_close_information" if post_close else "response_received",actor,metadata=details)
+    nazk_evidence.event(con,check_id,"post_close_information" if post_close else "response_received",actor,details)
     return detail(con,task_id)
 
 
-def set_nazk_result(con,task_id,result,actor):
+def update_response(con,task_id,evidence_id,payload,actor):
+    current=detail(con,task_id)
+    if current["task_type"]!="nazk_check": raise ValueError("Дія доступна лише для НАЗК-перевірки")
+    if current["status"] in TERMINAL: raise ValueError("У завершеній задачі інформація доступна лише для перегляду")
+    source=str(payload.get("source") or "")
+    if source not in {"supplier","nazk","other"}: raise ValueError("Оберіть джерело інформації")
+    information_result=str(payload.get("information_result") or "neutral")
+    if information_result not in INFORMATION_RESULTS: raise ValueError("Невідомий результат інформації")
+    check_id=nazk_evidence.check_id_for_task(current)
+    old,new=nazk_evidence.update_evidence(con,check_id,int(evidence_id),payload,actor)
+    changes={key:{"old":old.get(key),"new":new.get(key)} for key in (
+        "source","evidence_date","document_number","short_summary","uploaded_document_name",
+        "evidence_url","comment","information_result") if old.get(key)!=new.get(key)}
+    if changes:
+        details={"task_id":task_id,"evidence_id":int(evidence_id),"changes":changes}
+        _event(con,task_id,"response_information_edited",actor,metadata=details)
+        nazk_evidence.event(con,check_id,"response_information_edited",actor,details)
+    return detail(con,task_id)
+
+
+def set_nazk_result(con,task_id,result,actor,comment=""):
     current=detail(con,task_id)
     if current["task_type"]!="nazk_check" or current["status"] in TERMINAL: raise ValueError("Результат недоступний для цієї задачі")
     if result not in NAZK_RESULTS: raise ValueError("Оберіть результат перевірки")
     check_id=current.get("source_context",{}).get("nazk_check_id")
-    factual=result if result!="insufficient" else "needs_review"
-    workflow="completed" if result in {"confirmed","refuted"} else "in_progress"
-    con.execute("UPDATE supplier_nazk_checks SET result=?,workflow_status=?,completed_at=?,updated_at=?,updated_by=? WHERE id=?",
-                (factual,workflow,now_iso() if workflow=="completed" else None,now_iso(),actor,check_id))
+    factual=result if result in {"confirmed","refuted"} else ("needs_review" if result=="insufficient" else None)
+    workflow="completed" if result in {"confirmed","refuted"} else ("not_current" if result=="not_current" else "in_progress")
+    stamp=now_iso()
+    con.execute("""UPDATE supplier_nazk_checks SET result=?,workflow_status=?,completed_at=?,result_at=?,result_by=?,
+      updated_at=?,updated_by=? WHERE id=?""",
+                (factual,workflow,stamp if workflow=="completed" else None,stamp if workflow=="completed" else None,
+                 actor if workflow=="completed" else "",stamp,actor,check_id))
     waiting=any(x.get("status")=="waiting" for x in current.get("channels",{}).values())
-    if result=="refuted": status,resolution="completed","nazk_refuted"
+    if result=="not_current": status,resolution="completed","nazk_not_current"
+    elif result=="refuted": status,resolution="completed","nazk_refuted"
     elif result=="confirmed" and current["effective_active_count"]: status,resolution="ready_for_document","nazk_confirmed"
     elif result=="confirmed": status,resolution="cancelled","no_active_qualifications"
     else: status,resolution=("waiting_external" if waiting else "in_progress"),""
     terminal=status in TERMINAL
     con.execute("UPDATE operational_tasks SET status=?,resolution_code=?,resolved_at=?,resolved_by=?,updated_at=?,version=version+1 WHERE id=?",
                 (status,resolution,now_iso() if terminal else None,actor if terminal else None,now_iso(),task_id))
-    _event(con,task_id,{"confirmed":"nazk_result_confirmed","refuted":"nazk_result_refuted","insufficient":"nazk_result_insufficient"}[result],actor,metadata={"result":result})
+    if result=="not_current" and "resolution_text" in {row[1] for row in con.execute("PRAGMA table_info(operational_tasks)")}:
+        con.execute("UPDATE operational_tasks SET resolution_text=? WHERE id=?",("НАЗК · Не актуально",task_id))
+    metadata={"result":result}
+    if comment.strip(): metadata["comment"]=comment.strip()
+    task_event={"confirmed":"nazk_result_confirmed","refuted":"nazk_result_refuted","insufficient":"nazk_result_insufficient","not_current":"nazk_result_not_current"}[result]
+    check_event={"confirmed":"result_confirmed","refuted":"result_refuted","insufficient":"result_insufficient","not_current":"result_not_current"}[result]
+    _event(con,task_id,task_event,actor,metadata=metadata)
+    nazk_evidence.event(con,check_id,check_event,actor,{"task_id":task_id,**metadata})
     return detail(con,task_id)
 
 
@@ -788,6 +854,11 @@ def set_task_manager_tax_id(con,task_id,value,actor):
     con.execute("""UPDATE supplier_managers SET manager_tax_id=?,manager_tax_id_source='operational_manual',
       manager_tax_id_verified_at=?,manager_tax_id_verified_by=?,updated_at=? WHERE id=? AND is_current=1""",
       (digits,now_iso(),actor,now_iso(),manager["id"]))
+    # Runtime NAZK tasks always carry nazk_check_id. Keep isolated legacy/import
+    # rows compatible without inventing a canonical relation for them.
+    check_id=int((current.get("source_context") or {}).get("nazk_check_id") or 0)
+    if check_id:
+        nazk_evidence.set_person_tax_id(con,check_id,digits,actor)
     _event(con,task_id,"manager_tax_id_added",actor,metadata={"manager_id":manager["id"]})
     return detail(con,task_id)
 

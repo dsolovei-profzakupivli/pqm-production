@@ -50,6 +50,7 @@ from declension_overrides import (OverrideConflictError, delete_override,
                                   ensure_pending_overrides, list_overrides, save_override)
 import formed_protocols
 import operational_tasks
+import nazk_evidence
 import task_documents
 import document_metadata
 import document_bindings
@@ -164,6 +165,7 @@ BIDS_UPDATE_STATE = {"running": False, "message": "Ручне оновлення
                      "processed": None, "total": None, "last_activity_at": None,
                      "current_run_errors": 0, "last_error": None, "pid": None,
                      "duplicate_attempts": 0}
+BIDS_MANUAL_FEATURE_KEY = "manual_bids_update"
 POWERBI_EXPORT_STATE = {"running": False, "message": "Експорт ще не запускали", "started_at": None,
                         "updated_at": None, "error": None}
 POWERBI_START_LOCK = threading.Lock()
@@ -178,7 +180,9 @@ GOOGLE_OAUTH_DIR = Path(os.environ.get("PQM_GOOGLE_OAUTH_DIR", str((Path(os.envi
 GOOGLE_OAUTH_CLIENT_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json")))
 GOOGLE_OAUTH_TOKEN_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json")))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
-GOOGLE_OAUTH_PENDING: dict[str, dict] = {}
+GOOGLE_RUNTIME_FEATURE_KEY = "google_integration"
+GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS = 600
+GOOGLE_TOKEN_WRITE_LOCK = threading.RLock()
 SUPPLIER_EDR_SYNC_STATE = {"running": False, "message": "Довідник ЄДР ще не синхронізували",
                            "started_at": None, "updated_at": None, "processed": 0,
                            "inserted": 0, "updated": 0, "error": None,
@@ -496,6 +500,7 @@ VIOLATION_SYNC_STATE = {"running": False, "message": "Звернення ще н
 VIOLATION_SYNC_LOCK = threading.Lock()
 SCHEDULER_REGISTRATION_LOCK = threading.Lock()
 REGISTERED_SCHEDULER_JOBS: set[str] = set()
+SCHEDULER_STOP_EVENTS: dict[str, threading.Event] = {}
 SCHEDULER_THREADS: dict[str, threading.Thread] = {}
 SCHEDULER_HEARTBEATS: dict[str, str] = {}
 DOCUMENT_CHECK_JOBS = {}
@@ -503,12 +508,25 @@ DOCUMENT_CHECK_LOCK = threading.Lock()
 CONTRACT_EXPERIENCE_CACHE: dict[tuple[str, str, str], dict] = {}
 CONTRACT_EXPERIENCE_LOCK = threading.Lock()
 CONTRACT_EXPERIENCE_CACHE_TTL = 6 * 60 * 60
+CONTRACT_EXPERIENCE_UNAVAILABLE_CACHE_TTL = 60
 CONTRACT_EXPERIENCE_REQUEST_INTERVAL = 0.4
+CONTRACT_EXPERIENCE_HTTP_ATTEMPTS = 3
+CONTRACT_EXPERIENCE_HTTP_BACKOFF = (0.5, 1.5)
+CONTRACT_EXPERIENCE_EXACT_PAGE_LIMIT = 3
+CONTRACT_EXPERIENCE_FALLBACK_PAGE_LIMIT = 20
+CONTRACT_EXPERIENCE_MAX_CANDIDATES = 3
+CONTRACT_EXPERIENCE_CPV_PREFIX_DIGITS = max(
+    1, min(8, int(os.environ.get("PQM_EXPERIENCE_CPV_PREFIX_DIGITS", "4")))
+)
+CONTRACT_EXPERIENCE_RETRY_DELAY = 60
+CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES = 2
 CONTRACT_EXPERIENCE_LAST_REQUEST = 0.0
 CONTRACT_EXPERIENCE_PENDING: set[str] = set()
 CONTRACT_EXPERIENCE_PENDING_LOCK = threading.Lock()
+CONTRACT_EXPERIENCE_RETRY_PENDING: set[str] = set()
+CONTRACT_EXPERIENCE_RETRY_ATTEMPTS: dict[str, int] = {}
 CONTRACT_EXPERIENCE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pqm-contracts")
-CONTRACT_EXPERIENCE_ALGORITHM_VERSION = 2
+CONTRACT_EXPERIENCE_ALGORITHM_VERSION = 3
 DEFAULT_REMARKS = [
     ("п. 1", "заявку підписано за допомогою особистого КЕП/УЕП представника Учасника", "КЕП"),
     ("п. 1", "ідентифікаційний код у підписі не відповідає ідентифікаційному коду Учасника", "КЕП"),
@@ -884,6 +902,133 @@ def db() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=60000")
     return con
+
+
+def ensure_runtime_feature_settings(con: sqlite3.Connection) -> None:
+    con.execute("""CREATE TABLE IF NOT EXISTS runtime_feature_settings (
+      feature_key TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+      updated_at TEXT NOT NULL,
+      updated_by TEXT NOT NULL
+    )""")
+
+
+def ensure_google_oauth_transactions(con: sqlite3.Connection) -> None:
+    """Persist short-lived PKCE transactions so a LOCAL/WEB restart is safe."""
+    con.execute("""CREATE TABLE IF NOT EXISTS google_oauth_transactions (
+      state_hash TEXT PRIMARY KEY,
+      code_verifier TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      expected_origin TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      expires_at REAL NOT NULL,
+      created_by TEXT NOT NULL DEFAULT ''
+    )""")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_google_oauth_transactions_expiry ON google_oauth_transactions(expires_at)")
+
+
+def runtime_feature_state(feature_key: str, environment_default: bool,
+                          con: sqlite3.Connection | None = None) -> dict:
+    own_connection = con is None
+    if own_connection:
+        con = db()
+    try:
+        ensure_runtime_feature_settings(con)
+        row = con.execute(
+            "SELECT enabled,updated_at,updated_by FROM runtime_feature_settings WHERE feature_key=?",
+            (feature_key,),
+        ).fetchone()
+        enabled = bool(row[0]) if row else bool(environment_default)
+        return {
+            "feature_key": feature_key,
+            "enabled": enabled,
+            "configured_enabled": enabled,
+            "configuration_source": "runtime" if row else "environment",
+            "updated_at": row[1] if row else None,
+            "updated_by": row[2] if row else None,
+        }
+    finally:
+        if own_connection:
+            con.close()
+
+
+def set_runtime_feature_enabled(feature_key: str, enabled: bool, actor: str,
+                                environment_default: bool) -> dict:
+    with db() as con:
+        ensure_runtime_feature_settings(con)
+        before = runtime_feature_state(feature_key, environment_default, con)
+        changed_at = now_iso()
+        con.execute("""INSERT INTO runtime_feature_settings(feature_key,enabled,updated_at,updated_by)
+          VALUES (?,?,?,?) ON CONFLICT(feature_key) DO UPDATE SET
+          enabled=excluded.enabled,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+          (feature_key, int(enabled), changed_at, actor))
+        if bool(before["enabled"]) != bool(enabled):
+            con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+              VALUES (?,?,?,?,?,?)""", (f"runtime_feature:{feature_key}", changed_at, actor,
+              "runtime_feature.enabled", "enabled" if before["enabled"] else "disabled",
+              "enabled" if enabled else "disabled"))
+        return runtime_feature_state(feature_key, environment_default, con)
+
+
+def manual_bids_update_state(con: sqlite3.Connection | None = None) -> dict:
+    own_connection = con is None
+    if own_connection:
+        con = db()
+    try:
+        ensure_runtime_feature_settings(con)
+        row = con.execute(
+            "SELECT enabled,updated_at,updated_by FROM runtime_feature_settings WHERE feature_key=?",
+            (BIDS_MANUAL_FEATURE_KEY,),
+        ).fetchone()
+        configured = bool(row[0]) if row else bool(ENABLE_BIDS_UPDATE)
+        mode_supported = BIDS_MODE in {"readonly", "read_only"}
+        return {
+            "feature_key": BIDS_MANUAL_FEATURE_KEY,
+            "enabled": configured and mode_supported,
+            "configured_enabled": configured,
+            "configuration_source": "runtime" if row else "environment",
+            "mode_supported": mode_supported,
+            "updated_at": row[1] if row else None,
+            "updated_by": row[2] if row else None,
+        }
+    finally:
+        if own_connection:
+            con.close()
+
+
+def set_manual_bids_update_enabled(enabled: bool, actor: str) -> dict:
+    if enabled and BIDS_MODE not in {"readonly", "read_only"}:
+        raise ValueError("Ручне оновлення Bids недоступне для поточного режиму Bids")
+    with db() as con:
+        ensure_runtime_feature_settings(con)
+        before = manual_bids_update_state(con)
+        con.execute("""INSERT INTO runtime_feature_settings(feature_key,enabled,updated_at,updated_by)
+          VALUES (?,?,?,?) ON CONFLICT(feature_key) DO UPDATE SET
+          enabled=excluded.enabled,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+          (BIDS_MANUAL_FEATURE_KEY, int(enabled), now_iso(), actor))
+        if bool(before["enabled"]) != bool(enabled):
+            con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+              VALUES (?,?,?,?,?,?)""", (f"runtime_feature:{BIDS_MANUAL_FEATURE_KEY}", now_iso(), actor,
+              "runtime_feature.enabled", "enabled" if before["enabled"] else "disabled",
+              "enabled" if enabled else "disabled"))
+        return manual_bids_update_state(con)
+
+
+def google_runtime_state(con: sqlite3.Connection | None = None) -> dict:
+    return runtime_feature_state(GOOGLE_RUNTIME_FEATURE_KEY, ENABLE_GOOGLE, con)
+
+
+def google_effective_enabled() -> bool:
+    return bool(google_runtime_state()["enabled"])
+
+
+def set_google_runtime_enabled(enabled: bool, actor: str) -> dict:
+    result = set_runtime_feature_enabled(GOOGLE_RUNTIME_FEATURE_KEY, enabled, actor, ENABLE_GOOGLE)
+    if not enabled:
+        with db() as con:
+            ensure_google_oauth_transactions(con)
+            con.execute("DELETE FROM google_oauth_transactions")
+    return result
 
 
 def bids_db() -> sqlite3.Connection:
@@ -1345,6 +1490,8 @@ def init_db() -> None:
         task_documents.migrate(con)
         navigation_settings.migrate(con)
         scheduler_runtime.migrate(con)
+        ensure_runtime_feature_settings(con)
+        ensure_google_oauth_transactions(con)
 
 
 def rebuild_operational_tasks(actor: str = "PQM task builder") -> dict:
@@ -1880,31 +2027,48 @@ def restore_sync_data_timestamp() -> None:
 
 def sync_status_payload() -> dict:
     payload = dict(SYNC_STATE)
+    configured, _ = effective_scheduler_settings()
     thread = SCHEDULER_THREADS.get('prozorro')
-    alive = bool(ENABLE_PROZORRO_SCHEDULER and thread and thread.is_alive())
-    payload.update(scheduler_enabled=ENABLE_PROZORRO_SCHEDULER, scheduler_running=alive,
+    enabled = bool(configured.get('prozorro'))
+    alive = bool(enabled and thread and thread.is_alive())
+    payload.update(scheduler_enabled=enabled, scheduler_running=alive,
                    scheduler_heartbeat_at=SCHEDULER_HEARTBEATS.get('prozorro'),
                    next_run_at=payload.get('next_run_at') if alive else None)
     return payload
 
 
 
-def _wait_until(target: datetime, job_key: str = 'prozorro') -> None:
+def _scheduler_is_configured(job_key: str) -> bool:
+    enabled, _ = effective_scheduler_settings()
+    return bool(enabled.get(job_key))
+
+
+def _wait_until(target: datetime, stop_event: threading.Event | None = None,
+                job_key: str | None = None) -> bool:
     while True:
         SCHEDULER_HEARTBEATS[job_key] = now_iso()
         remaining = (target.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
         if remaining <= 0:
-            return
-        time.sleep(min(30, remaining))
+            return False
+        if stop_event:
+            if stop_event.wait(min(30, remaining)):
+                return True
+        else:
+            time.sleep(min(30, remaining))
+        if job_key and not _scheduler_is_configured(job_key):
+            return True
 
 
 def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
+    """A failed/busy launch must not terminate either independent hourly loop."""
     try:
         if job_key == 'prozorro':
             started = start_prozorro_sync(sync_incremental_worker, mode='incremental',
                                          message='Підготовка щогодинного оновлення…', trigger=trigger)
-        else:
+        elif job_key == 'violation_reports':
             started = start_violation_reports_sync(trigger=trigger)
+        else:
+            raise ValueError('Unknown hourly job')
         SERVER_LOG.info('Scheduled sync trigger job=%s reason=%s started=%s', job_key, trigger, started)
         return started
     except Exception:
@@ -1912,40 +2076,69 @@ def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
         return False
 
 
-def _hourly_scheduler(job_key: str, state: dict) -> None:
-    """Independent loop; failed starts/expired leases retry without losing :05."""
-    state['next_run_at'] = next_hourly_run().isoformat()
-    SCHEDULER_HEARTBEATS[job_key] = now_iso()
-    time.sleep(10)
-    persisted = next(row for row in scheduler_runtime.state(DB_PATH, {}) if row['job'] == job_key)
-    last = persisted.get('last_finished_at')
-    if not last and job_key == 'prozorro':
-        last = SYNC_STATE.get('last_data_sync_at')
-    due = scheduler_runtime.hourly_catchup_due(datetime.now(timezone.utc), last)
-    trigger = 'startup_catchup'
-    while True:
-        if due:
-            if not _trigger_scheduler_job(job_key, trigger) and not state.get('running'):
-                _wait_until(datetime.now(timezone.utc) + timedelta(seconds=30), job_key)
-                continue
+def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
+    """Independent Europe/Kyiv hourly scheduler with safe startup catch-up."""
+    SYNC_STATE["next_run_at"] = next_hourly_run().isoformat()
+    if stop_event.wait(10):
+        SYNC_STATE["next_run_at"] = None
+        return
+    if not _scheduler_is_configured("prozorro"):
+        SYNC_STATE["next_run_at"] = None
+        return
+    with db() as con:
+        last_value = con.execute("SELECT MAX(synced_at) FROM submissions").fetchone()[0]
+    try:
+        last_sync = datetime.fromisoformat((last_value or "").replace("Z", "+00:00"))
+    except ValueError:
+        last_sync = None
+    SYNC_STATE['last_data_sync_at'] = last_value
+    if catch_up and scheduler_runtime.hourly_catchup_due(
+            datetime.now(timezone.utc), last_sync.isoformat() if last_sync else None):
+        _trigger_scheduler_job('prozorro', 'startup_catchup')
+    while not stop_event.is_set():
         target = next_hourly_run()
-        state['next_run_at'] = target.isoformat()
-        _wait_until(target, job_key)
-        due, trigger = True, 'scheduled'
+        SYNC_STATE["next_run_at"] = target.isoformat()
+        if _wait_until(target, stop_event, "prozorro"):
+            break
+        if not _scheduler_is_configured("prozorro"):
+            break
+        _trigger_scheduler_job('prozorro', 'scheduled')
+    SYNC_STATE["next_run_at"] = None
 
 
-def prozorro_scheduler() -> None:
-    _hourly_scheduler('prozorro', SYNC_STATE)
-
-
-def violation_reports_scheduler() -> None:
+def violation_reports_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Independent Europe/Kyiv hourly scheduler and persistent startup catch-up."""
-    _hourly_scheduler('violation_reports', VIOLATION_SYNC_STATE)
+    if stop_event.wait(10):
+        VIOLATION_SYNC_STATE["next_run_at"] = None
+        return
+    if not _scheduler_is_configured("violation_reports"):
+        VIOLATION_SYNC_STATE["next_run_at"] = None
+        return
+    state = next((row for row in scheduler_runtime.state(DB_PATH, {"violation_reports": True})
+                  if row["job"] == "violation_reports"), {})
+    try:
+        last = datetime.fromisoformat(str(state.get("last_finished_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        last = None
+    if catch_up and scheduler_runtime.hourly_catchup_due(
+            datetime.now(timezone.utc), last.isoformat() if last else None):
+        _trigger_scheduler_job('violation_reports', 'startup_catchup')
+    while not stop_event.is_set():
+        target = next_hourly_run()
+        VIOLATION_SYNC_STATE["next_run_at"] = target.isoformat()
+        if _wait_until(target, stop_event, "violation_reports"):
+            break
+        if not _scheduler_is_configured("violation_reports"):
+            break
+        _trigger_scheduler_job('violation_reports', 'scheduled')
+    VIOLATION_SYNC_STATE["next_run_at"] = None
 
 
-def nazk_registry_scheduler() -> None:
+def nazk_registry_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Run once per Kyiv working day, with restart-safe persisted protection."""
-    while True:
+    if not _scheduler_is_configured("nazk_registry"):
+        return
+    if catch_up and not stop_event.is_set():
         current = datetime.now(timezone.utc)
         jobs = scheduler_runtime.state(DB_PATH, {"nazk_registry": True}, current)
         persisted = next(row for row in jobs if row["job"] == "nazk_registry")
@@ -1954,52 +2147,146 @@ def nazk_registry_scheduler() -> None:
         if (scheduler_runtime.nazk_due_today(current, persisted.get("last_finished_at"))
                 and source_day != kyiv_day):
             start_nazk_registry_refresh(trigger="scheduled_catchup")
+    while not stop_event.is_set():
+        current = datetime.now(timezone.utc)
         target = scheduler_runtime.next_nazk_run(current)
-        _wait_until(target, 'nazk_registry')
+        if _wait_until(target, stop_event, "nazk_registry"):
+            break
+        if not _scheduler_is_configured("nazk_registry"):
+            break
         start_nazk_registry_refresh(trigger="scheduled")
 
 
-def register_scheduler_job(job_key: str, target) -> bool:
+def register_scheduler_job(job_key: str, target, *, catch_up: bool = True) -> bool:
     """Register one scheduler thread per process; SQLite lease protects instances."""
     with SCHEDULER_REGISTRATION_LOCK:
         if job_key in REGISTERED_SCHEDULER_JOBS:
             return False
+        stop_event = threading.Event()
+        def run():
+            try:
+                while not stop_event.is_set():
+                    try:
+                        target(stop_event, catch_up=catch_up)
+                        return
+                    except Exception:
+                        SERVER_LOG.exception('Scheduler loop failed job=%s; retry in 30s', job_key)
+                        if stop_event.wait(30):
+                            return
+            finally:
+                with SCHEDULER_REGISTRATION_LOCK:
+                    if SCHEDULER_STOP_EVENTS.get(job_key) is stop_event:
+                        REGISTERED_SCHEDULER_JOBS.discard(job_key)
+                        SCHEDULER_STOP_EVENTS.pop(job_key, None)
+                        SCHEDULER_THREADS.pop(job_key, None)
+        thread = threading.Thread(target=run, name=f"pqm-scheduler-{job_key}", daemon=True)
         REGISTERED_SCHEDULER_JOBS.add(job_key)
-        def supervised():
-            while True:
-                try:
-                    target()
-                    return
-                except Exception:
-                    SERVER_LOG.exception('Scheduler loop failed job=%s; retry in 30s', job_key)
-                    time.sleep(30)
-        thread = threading.Thread(target=supervised, name=f"pqm-scheduler-{job_key}", daemon=True)
+        SCHEDULER_STOP_EVENTS[job_key] = stop_event
         SCHEDULER_THREADS[job_key] = thread
         SCHEDULER_HEARTBEATS[job_key] = now_iso()
         try:
             thread.start()
         except Exception:
             REGISTERED_SCHEDULER_JOBS.discard(job_key)
+            SCHEDULER_STOP_EVENTS.pop(job_key, None)
             SCHEDULER_THREADS.pop(job_key, None)
             raise
-        SERVER_LOG.info('Scheduler started job=%s timezone=Europe/Kyiv schedule=%s', job_key, scheduler_runtime.SCHEDULES[job_key])
+        SERVER_LOG.info('Scheduler started job=%s timezone=Europe/Kyiv schedule=%s',
+                        job_key, scheduler_runtime.SCHEDULES[job_key])
         return True
 
 
-def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
-    jobs = scheduler_runtime.state(DB_PATH, {
+def unregister_scheduler_job(job_key: str) -> bool:
+    with SCHEDULER_REGISTRATION_LOCK:
+        stop_event = SCHEDULER_STOP_EVENTS.pop(job_key, None)
+        thread = SCHEDULER_THREADS.pop(job_key, None)
+        was_registered = job_key in REGISTERED_SCHEDULER_JOBS
+        REGISTERED_SCHEDULER_JOBS.discard(job_key)
+        if stop_event:
+            stop_event.set()
+    if thread and thread is not threading.current_thread():
+        thread.join(timeout=2)
+    return was_registered
+
+
+SCHEDULER_TARGETS = {
+    "prozorro": prozorro_scheduler,
+    "violation_reports": violation_reports_scheduler,
+    "nazk_registry": nazk_registry_scheduler,
+}
+
+
+def scheduler_environment_defaults() -> dict[str, bool]:
+    return {
         "prozorro": ENABLE_PROZORRO_SCHEDULER,
         "violation_reports": ENABLE_VIOLATION_SCHEDULER,
         "nazk_registry": ENABLE_NAZK_SCHEDULER,
-    }, moment)
-    for job in jobs:
-        key = job['job']
+    }
+
+
+def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
+    with db() as con:
+        return (scheduler_runtime.effective_enabled(con, scheduler_environment_defaults()),
+                scheduler_runtime.setting_sources(con))
+
+
+def apply_scheduler_settings(*, catch_up: bool) -> dict[str, bool]:
+    enabled, _ = effective_scheduler_settings()
+    for job_key, target in SCHEDULER_TARGETS.items():
+        if enabled[job_key]:
+            register_scheduler_job(job_key, target, catch_up=catch_up)
+        else:
+            unregister_scheduler_job(job_key)
+    return enabled
+
+
+def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
+    if job_key not in SCHEDULER_TARGETS:
+        raise ValueError("Невідома scheduler job")
+    before, _ = effective_scheduler_settings()
+    old_enabled = bool(before[job_key])
+    if enabled:
+        register_scheduler_job(job_key, SCHEDULER_TARGETS[job_key], catch_up=False)
+    else:
+        unregister_scheduler_job(job_key)
+    try:
+        if old_enabled != bool(enabled):
+            with db() as con:
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor)
+                con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+                  VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
+                  "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
+                  "enabled" if enabled else "disabled"))
+        elif not enabled:
+            # Heal an impossible stale process registration without creating a duplicate audit event.
+            unregister_scheduler_job(job_key)
+    except Exception:
+        if old_enabled:
+            register_scheduler_job(job_key, SCHEDULER_TARGETS[job_key], catch_up=False)
+        else:
+            unregister_scheduler_job(job_key)
+        raise
+    return next(item for item in scheduler_status_payload() if item["job"] == job_key)
+
+
+def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
+    configured, sources = effective_scheduler_settings()
+    with SCHEDULER_REGISTRATION_LOCK:
+        registered = set(REGISTERED_SCHEDULER_JOBS)
+    factual = {key: configured[key] and key in registered for key in scheduler_runtime.SCHEDULES}
+    rows = scheduler_runtime.state(DB_PATH, factual, moment)
+    for row in rows:
+        key = row['job']
         thread = SCHEDULER_THREADS.get(key)
-        job['running'] = bool(job['enabled'] and thread and thread.is_alive())
-        job['heartbeat_at'] = SCHEDULER_HEARTBEATS.get(key)
-        if not job['running']:
-            job['next_run'] = None
-    return jobs
+        row['running'] = bool(configured[key] and key in registered and thread and thread.is_alive())
+        row['heartbeat_at'] = SCHEDULER_HEARTBEATS.get(key)
+        if not row['running']:
+            row['enabled'] = False
+            row['next_run'] = None
+        row["configured_enabled"] = configured[key]
+        row["registered"] = key in registered
+        row["configuration_source"] = sources[key]
+    return rows
 
 
 def decision_label(status: str | None) -> str:
@@ -3017,7 +3304,7 @@ def bids_sync_status(force: bool = False) -> dict:
 
 
 def bids_runtime_check() -> None:
-    if IS_WEB_ENV or not ENABLE_BIDS_UPDATE:
+    if not manual_bids_update_state()["enabled"]:
         raise RuntimeError("Оновлення ProzorroBids вимкнене в цьому середовищі")
     for path in (BIDS_PYTHON, BIDS_SCRIPT):
         if not path.is_file():
@@ -3218,6 +3505,76 @@ GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = ""
 GOOGLE_OAUTH_TOKEN_ACCESS_ERROR = ""
 
 
+def _google_oauth_redirect_uri() -> str:
+    redirect_uri = os.environ.get(
+        "PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback"
+    ).strip()
+    parsed = urllib.parse.urlparse(redirect_uri)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Некоректний Google OAuth callback URI")
+    return redirect_uri
+
+
+def _google_origin(uri: str) -> str:
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Некоректний Google OAuth origin")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _google_state_hash(state: str) -> str:
+    return hashlib.sha256(str(state or "").encode("utf-8")).hexdigest()
+
+
+def _store_google_oauth_transaction(state: str, verifier: str, redirect_uri: str, actor: str) -> None:
+    created_at = time.time()
+    with db() as con:
+        ensure_google_oauth_transactions(con)
+        con.execute("DELETE FROM google_oauth_transactions WHERE expires_at<=?", (created_at,))
+        con.execute("""INSERT INTO google_oauth_transactions
+          (state_hash,code_verifier,redirect_uri,expected_origin,created_at,expires_at,created_by)
+          VALUES (?,?,?,?,?,?,?)""", (_google_state_hash(state), verifier, redirect_uri,
+          _google_origin(redirect_uri), created_at, created_at + GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS, actor))
+
+
+def _consume_google_oauth_transaction(state: str) -> dict:
+    now = time.time()
+    with db() as con:
+        ensure_google_oauth_transactions(con)
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("DELETE FROM google_oauth_transactions WHERE expires_at<=?", (now,))
+        row = con.execute("""SELECT code_verifier,redirect_uri,expected_origin,created_at,expires_at,created_by
+          FROM google_oauth_transactions WHERE state_hash=?""", (_google_state_hash(state),)).fetchone()
+        if row:
+            con.execute("DELETE FROM google_oauth_transactions WHERE state_hash=?", (_google_state_hash(state),))
+        if not row:
+            con.commit()
+            raise ValueError("Сеанс авторизації недійсний, уже використаний або прострочений")
+        return dict(row)
+
+
+def _atomic_write_google_json(path: Path, payload: dict) -> None:
+    """Publish secret JSON atomically; never expose its contents to logs."""
+    with GOOGLE_TOKEN_WRITE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            for attempt in range(5):
+                try:
+                    os.replace(temporary, path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def _google_oauth_client() -> dict | None:
     global GOOGLE_OAUTH_CLIENT_ACCESS_ERROR
     GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = ""
@@ -3277,9 +3634,7 @@ def _google_oauth_token() -> dict | None:
 
 
 def google_oauth_status() -> dict:
-    if not ENABLE_GOOGLE:
-        return {"configured": False, "authorized": False, "enabled": False,
-                "message": "Google OAuth вимкнено у цьому середовищі"}
+    feature = google_runtime_state()
     client = _google_oauth_client()
     token = _google_oauth_token()
     configuration_error = GOOGLE_OAUTH_CLIENT_ACCESS_ERROR or GOOGLE_OAUTH_TOKEN_ACCESS_ERROR
@@ -3289,32 +3644,35 @@ def google_oauth_status() -> dict:
             "unavailable": "Локальна конфігурація Google OAuth недоступна",
             "invalid_configuration": "Локальна конфігурація Google OAuth пошкоджена",
         }
-        result = {"configured": bool(client), "authorized": False, "enabled": True,
+        result = {"configured": bool(client), "authorized": False, "enabled": feature["enabled"],
                   "available": False, "configuration_error": configuration_error,
+                  "configuration_source": feature["configuration_source"],
                   "client_state": ("access_denied" if GOOGLE_OAUTH_CLIENT_ACCESS_ERROR else "configured" if client else "absent"),
                   "token_state": ("access_denied" if GOOGLE_OAUTH_TOKEN_ACCESS_ERROR else "present" if token else "absent"),
                   "message": messages.get(configuration_error, "Google OAuth недоступний")}
-        if not IS_WEB_ENV:
+        if not IS_WEB_ENV and feature["enabled"]:
             result["client_path"] = str(GOOGLE_OAUTH_CLIENT_PATH)
         return result
     has_refresh_token = bool(token and token.get("refresh_token"))
     token_expired = bool(token and not has_refresh_token and token.get("access_token") and
                          time.time() >= float(token.get("obtained_at", 0)) + int(token.get("expires_in", 3600)) - 120)
     result = {"configured": bool(client), "authorized": has_refresh_token,
-            "enabled": True, "available": True, "configuration_error": "",
+            "enabled": feature["enabled"], "available": True, "configuration_error": "",
+            "configuration_source": feature["configuration_source"],
             "client_state": "configured" if client else "absent",
             "token_state": "authorized" if has_refresh_token else "expired" if token_expired else "authorization_required" if client else "absent",
-            "message": ("Google підключено для читання таблиць" if has_refresh_token else
+            "message": ("Google integration вимкнено адміністратором" if not feature["enabled"] else
+                        "Google підключено для читання таблиць" if has_refresh_token else
                         "Токен Google прострочений · потрібна повторна авторизація" if token_expired else
                         "Потрібно увійти через Google" if client else
                         "Потрібен OAuth Client ID для локального застосунку")}
-    if not IS_WEB_ENV:
+    if not IS_WEB_ENV and feature["enabled"]:
         result["client_path"] = str(GOOGLE_OAUTH_CLIENT_PATH)
     return result
 
 
-def google_oauth_authorization_url() -> str:
-    if not ENABLE_GOOGLE:
+def google_oauth_authorization_url(actor: str = "") -> str:
+    if not google_effective_enabled():
         raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
     client = _google_oauth_client()
     if not client:
@@ -3324,58 +3682,97 @@ def google_oauth_authorization_url() -> str:
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    redirect_uri = os.environ.get(
-        "PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback"
-    ).strip()
-    GOOGLE_OAUTH_PENDING[state] = {"verifier": verifier, "redirect_uri": redirect_uri, "created_at": time.time()}
+    redirect_uri = _google_oauth_redirect_uri()
+    _store_google_oauth_transaction(state, verifier, redirect_uri, actor)
     params = {"client_id": client["client_id"], "redirect_uri": redirect_uri, "response_type": "code",
               "scope": GOOGLE_SHEETS_READONLY_SCOPE, "access_type": "offline", "prompt": "consent",
               "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
     return (client.get("auth_uri") or "https://accounts.google.com/o/oauth2/auth") + "?" + urllib.parse.urlencode(params)
 
 
-def google_oauth_exchange(code: str, state: str) -> None:
-    pending = GOOGLE_OAUTH_PENDING.pop(state, None)
+def google_oauth_exchange(code: str, state: str) -> dict:
+    if not google_effective_enabled():
+        raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
+    pending = _consume_google_oauth_transaction(state)
     client = _google_oauth_client()
-    if not pending or not client or time.time() - pending["created_at"] > 600:
-        raise ValueError("Сеанс авторизації недійсний або прострочений")
+    if not client:
+        raise ValueError("Конфігурація Google OAuth недоступна")
     payload = {"code": code, "client_id": client["client_id"], "client_secret": client.get("client_secret", ""),
                "redirect_uri": pending["redirect_uri"], "grant_type": "authorization_code",
-               "code_verifier": pending["verifier"]}
+               "code_verifier": pending["code_verifier"]}
     request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
         data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
     with urllib.request.urlopen(request, timeout=60) as response:
         token = json.loads(response.read().decode())
     token["obtained_at"] = time.time()
-    GOOGLE_OAUTH_DIR.mkdir(parents=True, exist_ok=True)
-    GOOGLE_OAUTH_TOKEN_PATH.write_text(json.dumps(token, ensure_ascii=False), encoding="utf-8")
+    with GOOGLE_TOKEN_WRITE_LOCK:
+        _atomic_write_google_json(GOOGLE_OAUTH_TOKEN_PATH, token)
+    return {"expected_origin": pending["expected_origin"]}
 
 
 def _google_access_token() -> str:
-    token = _google_oauth_token()
-    client = _google_oauth_client()
-    if not token or not client or not token.get("refresh_token"):
-        raise PermissionError("Google не авторизовано. Спочатку підключіть Google у модулі постачальників.")
-    if token.get("access_token") and time.time() < float(token.get("obtained_at", 0)) + int(token.get("expires_in", 3600)) - 120:
+    if not google_effective_enabled():
+        raise PermissionError("Google integration вимкнено адміністратором")
+    with GOOGLE_TOKEN_WRITE_LOCK:
+        token = _google_oauth_token()
+        client = _google_oauth_client()
+        if not token or not client or not token.get("refresh_token"):
+            raise PermissionError("Google не авторизовано. Спочатку підключіть Google у модулі постачальників.")
+        if token.get("access_token") and time.time() < float(token.get("obtained_at", 0)) + int(token.get("expires_in", 3600)) - 120:
+            return token["access_token"]
+        payload = {"client_id": client["client_id"], "client_secret": client.get("client_secret", ""),
+                   "refresh_token": token["refresh_token"], "grant_type": "refresh_token"}
+        request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
+            data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            refreshed = json.loads(response.read().decode())
+        token.update(refreshed); token["obtained_at"] = time.time()
+        _atomic_write_google_json(GOOGLE_OAUTH_TOKEN_PATH, token)
         return token["access_token"]
-    payload = {"client_id": client["client_id"], "client_secret": client.get("client_secret", ""),
-               "refresh_token": token["refresh_token"], "grant_type": "refresh_token"}
-    request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
-        data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        refreshed = json.loads(response.read().decode())
-    token.update(refreshed); token["obtained_at"] = time.time()
-    GOOGLE_OAUTH_TOKEN_PATH.write_text(json.dumps(token, ensure_ascii=False), encoding="utf-8")
-    return token["access_token"]
 
 
 def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHEET_ID,
                          columns: str = "A:O") -> list[list]:
+    if not google_effective_enabled():
+        raise PermissionError("Google integration вимкнено адміністратором")
     cell_range = urllib.parse.quote(f"'{sheet_name}'!{columns}", safe="")
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{cell_range}?majorDimension=ROWS"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return json.loads(response.read().decode()).get("values", [])
+
+
+def google_integration_status() -> dict:
+    oauth = google_oauth_status()
+    with db() as con:
+        last = con.execute("""SELECT finished_at,status FROM supplier_edr_sync_log
+          ORDER BY id DESC LIMIT 1""").fetchone()
+    return {
+        **google_runtime_state(),
+        "client_configured": bool(oauth.get("configured")),
+        "oauth_connected": bool(oauth.get("authorized")),
+        "client_state": oauth.get("client_state", "absent"),
+        "token_state": oauth.get("token_state", "absent"),
+        "available": oauth.get("available", True),
+        "message": oauth.get("message", ""),
+        "last_edr_sync_at": last["finished_at"] if last else None,
+        "last_edr_sync_status": last["status"] if last else None,
+    }
+
+
+def disconnect_google(actor: str) -> dict:
+    with GOOGLE_TOKEN_WRITE_LOCK:
+        existed = GOOGLE_OAUTH_TOKEN_PATH.is_file()
+        if existed:
+            GOOGLE_OAUTH_TOKEN_PATH.unlink()
+    with db() as con:
+        ensure_google_oauth_transactions(con)
+        con.execute("DELETE FROM google_oauth_transactions")
+        if existed:
+            con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+              VALUES (?,?,?,?,?,?)""", (f"runtime_feature:{GOOGLE_RUNTIME_FEATURE_KEY}", now_iso(), actor,
+              "google_oauth.connection", "connected", "removed_locally"))
+    return google_integration_status()
 
 
 def normalize_manager_name(value: str) -> str:
@@ -4025,7 +4422,9 @@ def list_qualified_suppliers(params: dict) -> dict:
         )
         item["nazk_presentation_state"] = get_supplier_nazk_presentation_state(
             item["nazk_application_state"].get("state"),
-            item["nazk_supplier_workflow"].get("workflow_status"),
+            (item["nazk_supplier_workflow"].get("workflow_status")
+              or (latest_supplier_check.get("workflow_status")
+                  if latest_supplier_check.get("workflow_status") == "not_current" else "")),
             registry_match=bool(item["nazk_match"]) and not record_no_longer_present,
             legacy_result=(latest_supplier_check.get("result")
               if latest_supplier_check.get("workflow_status") == "completed"
@@ -4074,16 +4473,38 @@ def supplier_profile(supplier_code: str) -> dict:
           WHERE DIGITS(ctrl.supplier_code)=? AND chk.workflow_status='completed'
             AND chk.result IN ('refuted','confirmed')
           ORDER BY COALESCE(ctrl.checked_at,chk.completed_at,chk.created_at) DESC,chk.id DESC""", (code,))]
-        supplier_nazk_checks = [dict(row) for row in con.execute("""SELECT
+        nazk_check_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_nazk_checks)")}
+        canonical_select = {
+          "result_at": "chk.result_at" if "result_at" in nazk_check_columns else "NULL",
+          "result_by": "chk.result_by" if "result_by" in nazk_check_columns else "''",
+          "person_tax_id": "chk.person_tax_id" if "person_tax_id" in nazk_check_columns else "''",
+          "responsible_officer_id": "chk.responsible_officer_id" if "responsible_officer_id" in nazk_check_columns else "NULL",
+          "responsible_officer_name": "chk.responsible_officer_name" if "responsible_officer_name" in nazk_check_columns else "''",
+        }
+        officer_join = ("LEFT JOIN authorized_officers officer ON officer.id=chk.responsible_officer_id"
+          if "responsible_officer_id" in nazk_check_columns else "LEFT JOIN authorized_officers officer ON 1=0")
+        supplier_nazk_checks = [dict(row) for row in con.execute(f"""SELECT
           chk.id,chk.manager_name,chk.workflow_status,chk.result,chk.started_at,chk.completed_at,
-          chk.evidence_date,chk.comment,chk.is_legacy,chk.created_by,chk.updated_by,
+          chk.evidence_date,{canonical_select['result_at']} result_at,{canonical_select['result_by']} result_by,
+          {canonical_select['person_tax_id']} person_tax_id,
+          {canonical_select['responsible_officer_id']} responsible_officer_id,
+          COALESCE(officer.full_name,{canonical_select['responsible_officer_name']},'') responsible_uo_name,
+          chk.comment,chk.is_legacy,chk.created_by,chk.updated_by,
           doc.title document_title,doc.url document_url,doc.document_date
           FROM supplier_nazk_checks chk
+          {officer_join}
           LEFT JOIN supplier_nazk_check_documents doc ON doc.id=(
             SELECT d.id FROM supplier_nazk_check_documents d WHERE d.check_id=chk.id
             ORDER BY d.created_at DESC,d.id DESC LIMIT 1)
           WHERE DIGITS(chk.supplier_code)=?
           ORDER BY COALESCE(chk.completed_at,chk.updated_at,chk.started_at) DESC,chk.id DESC""", (code,))]
+        evidence_tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for check in supplier_nazk_checks:
+            check["nazk_evidence"] = (nazk_evidence.get(con, int(check["id"]))
+              if {"supplier_nazk_check_channels", "supplier_nazk_check_evidence"} <= evidence_tables
+              else {**check, "nazk_check_id": check["id"], "registry_records": [],
+                    "channels": {}, "evidence": [], "documents": []})
+            check["evidence_set"] = check["nazk_evidence"]  # compatibility alias
         supplier_nazk_workflow = next((row for row in supplier_nazk_checks
           if row["workflow_status"] in ("needs_review","request_to_supplier","request_to_nazk","waiting_response")), {})
         qualifications = [dict(row) for row in con.execute("""WITH contract_events AS (
@@ -4231,12 +4652,16 @@ def supplier_profile(supplier_code: str) -> dict:
     nazk_review_data = dict(nazk_review) if nazk_review else {}
     if nazk_review_data:
         nazk_review_data["is_current_manager"] = bool(normalized_current_manager and review_manager and normalized_current_manager == review_manager)
+    latest_current_supplier_cycle = next((item for item in supplier_nazk_checks
+        if " ".join(re.sub(r"[’'`\-]+", " ", str(item.get("manager_name") or "").casefold()).split()) == normalized_current_manager), {})
     latest_current_supplier_check = next((item for item in supplier_nazk_checks
         if item.get("workflow_status") == "completed"
         and " ".join(re.sub(r"[’'`\-]+", " ", str(item.get("manager_name") or "").casefold()).split()) == normalized_current_manager), {})
     nazk_presentation_state = get_supplier_nazk_presentation_state(
         nazk_application_state.get("state"),
-        supplier_nazk_workflow.get("workflow_status"),
+        (supplier_nazk_workflow.get("workflow_status")
+          or (latest_current_supplier_cycle.get("workflow_status")
+              if latest_current_supplier_cycle.get("workflow_status") == "not_current" else "")),
         registry_match=bool(nazk) and not record_no_longer_present,
         legacy_result=(latest_current_supplier_check.get("result")
           or (nazk_review_data.get("result") if nazk_review_data.get("is_current_manager") else "")),
@@ -6799,22 +7224,46 @@ def analyze_mvs_extract(text: str, manager_name: str, submitted_at: str) -> dict
 
 def _contract_experience_http_json(url: str, payload: dict | None = None) -> dict:
     global CONTRACT_EXPERIENCE_LAST_REQUEST
-    wait = CONTRACT_EXPERIENCE_REQUEST_INTERVAL - (time.monotonic() - CONTRACT_EXPERIENCE_LAST_REQUEST)
-    if wait > 0:
-        time.sleep(wait)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
     headers = {"User-Agent": "PQM/0.1", "Accept": "application/json"}
     if data is not None:
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
-    try:
-        with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    finally:
-        CONTRACT_EXPERIENCE_LAST_REQUEST = time.monotonic()
-    if not isinstance(result, dict):
-        raise ValueError("Prozorro повернув некоректну відповідь пошуку договорів")
-    return result
+    for attempt in range(1, CONTRACT_EXPERIENCE_HTTP_ATTEMPTS + 1):
+        wait = CONTRACT_EXPERIENCE_REQUEST_INTERVAL - (time.monotonic() - CONTRACT_EXPERIENCE_LAST_REQUEST)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("Prozorro повернув некоректну відповідь пошуку договорів")
+            return result
+        except urllib.error.HTTPError as exc:
+            transient = exc.code == 429 or 500 <= exc.code < 600
+            SERVER_LOG.warning(
+                "Contract experience HTTP error endpoint=%s status=%s attempt=%s type=%s",
+                url, exc.code, attempt, type(exc).__name__,
+            )
+            if not transient or attempt >= CONTRACT_EXPERIENCE_HTTP_ATTEMPTS:
+                raise
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            try:
+                delay = float(retry_after) if retry_after is not None else CONTRACT_EXPERIENCE_HTTP_BACKOFF[attempt - 1]
+            except (TypeError, ValueError):
+                delay = CONTRACT_EXPERIENCE_HTTP_BACKOFF[attempt - 1]
+            time.sleep(max(0.0, delay))
+        except (urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout) as exc:
+            SERVER_LOG.warning(
+                "Contract experience network error endpoint=%s attempt=%s type=%s",
+                url, attempt, type(exc).__name__,
+            )
+            if attempt >= CONTRACT_EXPERIENCE_HTTP_ATTEMPTS:
+                raise
+            time.sleep(CONTRACT_EXPERIENCE_HTTP_BACKOFF[attempt - 1])
+        finally:
+            CONTRACT_EXPERIENCE_LAST_REQUEST = time.monotonic()
+    raise RuntimeError("Пошук договорів Prozorro недоступний")
 
 
 def _contract_experience_cutoff(value: str):
@@ -6826,86 +7275,284 @@ def _contract_experience_cutoff(value: str):
     return moment.astimezone(timezone.utc)
 
 
-def search_supplier_contract_experience(supplier_code: str, cpv_code: str, submitted_at: str) -> dict:
-    """Return neutral contract candidates; dateModified is only a technical cutoff proxy."""
+def normalize_experience_cpv(value: str) -> str:
+    compact = re.sub(r"\s+", "", str(value or ""))
+    match = re.search(r"(?<!\d)(\d{8}-\d)(?!\d)", compact)
+    return match.group(1) if match else ""
+
+
+def cpv_matches_experience(framework_cpv: str, candidate_cpv: str) -> tuple[bool, str]:
+    """Apply the single configurable experience CPV policy."""
+    framework = normalize_experience_cpv(framework_cpv)
+    candidate = normalize_experience_cpv(candidate_cpv)
+    if not framework or not candidate:
+        return False, "missing"
+    if framework == candidate:
+        return True, "exact"
+    prefix = CONTRACT_EXPERIENCE_CPV_PREFIX_DIGITS
+    if framework[:prefix] == candidate[:prefix]:
+        return True, f"cpv_prefix_{prefix}"
+    return False, "unrelated"
+
+
+def supplier_matches_experience(expected_supplier: str, parties) -> bool:
+    expected = _digits(expected_supplier)
+    identifiers = [
+        _digits((party.get("identifier") or {}).get("id"))
+        for party in (parties or []) if isinstance(party, dict)
+    ]
+    return bool(expected and expected in identifiers)
+
+
+def _experience_item_cpvs(items, lot_id: str = "") -> list[str]:
+    result = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        related_lot = str(item.get("relatedLot") or "")
+        if lot_id and related_lot and related_lot != lot_id:
+            continue
+        classification = item.get("classification") or {}
+        cpv = normalize_experience_cpv(classification.get("id") or classification.get("description") or "")
+        if cpv and cpv not in result:
+            result.append(cpv)
+    return result
+
+
+def resolve_contract_context(detail: dict) -> dict:
+    """Resolve canonical contract → award → tender → lot/items context."""
+    internal_id = str(detail.get("id") or "").strip()
+    if not internal_id:
+        raise ValueError("contract_internal_id_missing")
+    raw_response = _contract_experience_http_json(
+        f"https://public-api.prozorro.gov.ua/api/2.5/contracts/{urllib.parse.quote(internal_id, safe='')}"
+    )
+    contract = raw_response.get("data") if isinstance(raw_response.get("data"), dict) else raw_response
+    if not isinstance(contract, dict):
+        raise ValueError("contract_raw_detail_invalid")
+    tender_internal_id = str(contract.get("tender_id") or "").strip()
+    award_id = str(contract.get("awardID") or "").strip()
+    contract_lots = {
+        str(item.get("relatedLot") or "") for item in contract.get("items") or []
+        if isinstance(item, dict) and item.get("relatedLot")
+    }
+    lot_id = next(iter(contract_lots), "") if len(contract_lots) == 1 else ""
+    context = {
+        "contract": contract,
+        "award": None,
+        "tender": None,
+        "lot_id": lot_id,
+        "candidate_cpvs": _experience_item_cpvs(contract.get("items"), lot_id),
+    }
+    if not tender_internal_id or not award_id:
+        return context
+    tender_response = _contract_experience_http_json(
+        f"https://public-api.prozorro.gov.ua/api/2.5/tenders/{urllib.parse.quote(tender_internal_id, safe='')}"
+    )
+    tender = tender_response.get("data") if isinstance(tender_response.get("data"), dict) else tender_response
+    if not isinstance(tender, dict):
+        raise ValueError("tender_detail_invalid")
+    award = next((item for item in tender.get("awards") or []
+                  if isinstance(item, dict) and str(item.get("id") or "") == award_id), None)
+    if award is None:
+        raise ValueError("contract_award_not_found")
+    related_lots = award.get("relatedLots") or []
+    if isinstance(related_lots, str):
+        related_lots = [related_lots]
+    award_lots = [str(value) for value in related_lots if value]
+    award_lot = str(award.get("lotID") or award.get("relatedLot")
+                    or (award_lots[0] if len(award_lots) == 1 else ""))
+    if award_lot:
+        lot_id = award_lot
+    tender_cpvs = _experience_item_cpvs(tender.get("items"), lot_id)
+    context.update({
+        "award": award,
+        "tender": tender,
+        "lot_id": lot_id,
+        "candidate_cpvs": tender_cpvs or _experience_item_cpvs(contract.get("items"), lot_id),
+    })
+    return context
+
+
+def validate_contract_candidate(detail: dict, supplier: str, framework_cpv: str,
+                                cutoff, discovery_mode: str) -> tuple[dict | None, str]:
+    if not isinstance(detail, dict) or detail.get("status") != "terminated":
+        return None, "detail_status"
+    termination_details = detail.get("terminationDetails")
+    if ((isinstance(termination_details, str) and termination_details.strip())
+            or (not isinstance(termination_details, str) and termination_details not in (None, [], {}))):
+        return None, "termination_details"
+    modified = _contract_experience_cutoff(detail.get("dateModified"))
+    if modified is None:
+        return None, "date_parse"
+    if modified > cutoff:
+        return None, "date_modified_cutoff"
+    resolved = {"lot_id": "", "resolved_cpvs": [framework_cpv], "cpv_match": "external_exact"}
+    if discovery_mode == "fallback":
+        context = resolve_contract_context(detail)
+        contract = context["contract"]
+        award = context.get("award")
+        if not supplier_matches_experience(supplier, contract.get("suppliers")):
+            return None, "supplier_identifier"
+        if award is not None and not supplier_matches_experience(supplier, award.get("suppliers")):
+            return None, "award_supplier_identifier"
+        matches = [(candidate_cpv, cpv_matches_experience(framework_cpv, candidate_cpv))
+                   for candidate_cpv in context.get("candidate_cpvs") or []]
+        matched = next(((candidate_cpv, mode) for candidate_cpv, (ok, mode) in matches if ok), None)
+        if not matched:
+            return None, "cpv_unrelated"
+        resolved = {
+            "lot_id": context.get("lot_id") or "",
+            "resolved_cpvs": context.get("candidate_cpvs") or [],
+            "cpv_match": matched[1],
+            "resolved_cpv": matched[0],
+        }
+    return resolved, "accepted"
+
+
+def _discover_contract_summaries(supplier: str, cpv: str | None, page_limit: int,
+                                 mode: str, submission_id: str = "") -> tuple[list[dict], bool]:
+    summaries = []
+    had_success = False
+    for page in range(1, page_limit + 1):
+        payload = {"supplier": [supplier], "page": page}
+        if cpv:
+            payload["cpv"] = [cpv]
+        try:
+            search = _contract_experience_http_json("https://prozorro.gov.ua/api/search/contracts", payload)
+        except Exception:
+            SERVER_LOG.exception(
+                "Contract experience discovery failed submission=%s supplier=%s cpv=%s mode=%s page=%s",
+                submission_id, supplier, cpv or "", mode, page,
+            )
+            break
+        had_success = True
+        rows = search.get("data") if isinstance(search.get("data"), list) else []
+        SERVER_LOG.info(
+            "Contract experience discovery submission=%s supplier=%s cpv=%s mode=%s page=%s total=%s",
+            submission_id, supplier, cpv or "", mode, page, search.get("total", 0),
+        )
+        summaries.extend(item for item in rows if isinstance(item, dict))
+        if not rows or page * int(search.get("per_page") or 20) >= int(search.get("total") or 0):
+            break
+    return summaries, had_success
+
+
+def search_supplier_contract_experience(supplier_code: str, cpv_code: str, submitted_at: str,
+                                        submission_id: str = "") -> dict:
+    """Return locally validated neutral candidates; dateModified remains a technical cutoff proxy."""
     supplier = _digits(supplier_code)
-    cpv_match = re.search(r"\b(\d{8}-\d)\b", str(cpv_code or ""))
+    cpv = normalize_experience_cpv(cpv_code)
     cutoff = _contract_experience_cutoff(submitted_at)
-    if not supplier or not cpv_match or cutoff is None:
+    if not supplier or not cpv or cutoff is None:
         return {"status": "unavailable", "symbol": "−", "candidates": [],
                 "message": "Недостатньо даних для допоміжного пошуку договорів"}
-    cpv = cpv_match.group(1)
     cache_key = (str(CONTRACT_EXPERIENCE_ALGORITHM_VERSION), supplier, cpv, cutoff.isoformat())
     now = time.monotonic()
     cached = CONTRACT_EXPERIENCE_CACHE.get(cache_key)
-    if cached and now - float(cached.get("cached_at", 0)) < CONTRACT_EXPERIENCE_CACHE_TTL:
+    if cached and now - float(cached.get("cached_at", 0)) < (
+            CONTRACT_EXPERIENCE_UNAVAILABLE_CACHE_TTL
+            if cached.get("value", {}).get("status") == "unavailable" else CONTRACT_EXPERIENCE_CACHE_TTL):
         return dict(cached["value"])
     with CONTRACT_EXPERIENCE_LOCK:
         cached = CONTRACT_EXPERIENCE_CACHE.get(cache_key)
         now = time.monotonic()
-        if cached and now - float(cached.get("cached_at", 0)) < CONTRACT_EXPERIENCE_CACHE_TTL:
+        if cached and now - float(cached.get("cached_at", 0)) < (
+                CONTRACT_EXPERIENCE_UNAVAILABLE_CACHE_TTL
+                if cached.get("value", {}).get("status") == "unavailable" else CONTRACT_EXPERIENCE_CACHE_TTL):
             return dict(cached["value"])
         candidates = []
         inspected_ids = set()
-        try:
-            for page in range(1, 4):
-                search = _contract_experience_http_json(
-                    "https://prozorro.gov.ua/api/search/contracts",
-                    {"supplier": [supplier], "cpv": [cpv], "page": page},
-                )
-                rows = search.get("data") if isinstance(search.get("data"), list) else []
-                for summary in rows:
-                    if not isinstance(summary, dict) or summary.get("status") != "terminated":
-                        continue
-                    public_id = str(summary.get("contractID") or "").strip()
-                    if not public_id or public_id in inspected_ids:
-                        continue
-                    inspected_ids.add(public_id)
+        discovery_success = False
+        detail_attempts = detail_successes = 0
+        technical_failures = 0
+
+        def inspect(summaries, mode):
+            nonlocal detail_attempts, detail_successes, technical_failures
+            for summary in summaries:
+                if len(candidates) >= CONTRACT_EXPERIENCE_MAX_CANDIDATES:
+                    break
+                if summary.get("status") != "terminated":
+                    continue
+                public_id = str(summary.get("contractID") or "").strip()
+                if not public_id or public_id in inspected_ids:
+                    continue
+                inspected_ids.add(public_id)
+                detail_attempts += 1
+                try:
                     detail_response = _contract_experience_http_json(
                         f"https://prozorro.gov.ua/api/contracts/{urllib.parse.quote(public_id, safe='')}"
                     )
                     detail = detail_response.get("data") if isinstance(detail_response.get("data"), dict) else detail_response
-                    if not isinstance(detail, dict) or detail.get("status") != "terminated":
-                        continue
-                    termination_details = detail.get("terminationDetails")
-                    if ((isinstance(termination_details, str) and termination_details.strip())
-                            or (not isinstance(termination_details, str)
-                                and termination_details not in (None, [], {}))):
-                        continue
-                    modified = _contract_experience_cutoff(detail.get("dateModified"))
-                    if modified is None or modified > cutoff:
-                        continue
-                    contract_id = str(detail.get("id") or "")
-                    public_id = str(detail.get("contractID") or public_id)
-                    candidates.append({
-                        "id": contract_id,
-                        "contract_id": public_id,
-                        "url": f"https://prozorro.gov.ua/uk/contract/{urllib.parse.quote(public_id)}",
-                        "date_modified": str(detail.get("dateModified") or ""),
-                        "date_signed": str(detail.get("dateSigned") or summary.get("dateSigned") or ""),
-                        "buyer": str((detail.get("buyer") or summary.get("buyer") or {}).get("name") or ""),
-                    })
-                    if len(candidates) == 3:
-                        break
-                if len(candidates) == 3 or not rows or page * int(search.get("per_page") or 20) >= int(search.get("total") or 0):
-                    break
+                    resolved, reason = validate_contract_candidate(detail, supplier, cpv, cutoff, mode)
+                    detail_successes += 1
+                except Exception as exc:
+                    technical_failures += 1
+                    SERVER_LOG.warning(
+                        "Contract experience candidate error submission=%s supplier=%s cpv=%s mode=%s contract=%s type=%s",
+                        submission_id, supplier, cpv, mode, public_id, type(exc).__name__, exc_info=True,
+                    )
+                    continue
+                SERVER_LOG.info(
+                    "Contract experience candidate submission=%s supplier=%s cpv=%s mode=%s contract=%s "
+                    "resolved_cpv=%s lot=%s supplier_match=%s cpv_match=%s reject=%s",
+                    submission_id, supplier, cpv, mode, public_id,
+                    (resolved or {}).get("resolved_cpv", ""), (resolved or {}).get("lot_id", ""),
+                    reason not in {"supplier_identifier", "award_supplier_identifier"},
+                    (resolved or {}).get("cpv_match", ""), "" if resolved else reason,
+                )
+                if not resolved:
+                    continue
+                contract_id = str(detail.get("id") or "")
+                canonical_public_id = str(detail.get("contractID") or public_id)
+                candidates.append({
+                    "id": contract_id,
+                    "contract_id": canonical_public_id,
+                    "url": f"https://prozorro.gov.ua/uk/contract/{urllib.parse.quote(canonical_public_id)}",
+                    "date_modified": str(detail.get("dateModified") or ""),
+                    "date_signed": str(detail.get("dateSigned") or summary.get("dateSigned") or ""),
+                    "buyer": str((detail.get("buyer") or summary.get("buyer") or {}).get("name") or ""),
+                    "discovery_mode": mode,
+                    **resolved,
+                })
+
+        exact, exact_ok = _discover_contract_summaries(
+            supplier, cpv, CONTRACT_EXPERIENCE_EXACT_PAGE_LIMIT, "exact", submission_id
+        )
+        discovery_success = discovery_success or exact_ok
+        inspect(exact, "exact")
+        if not candidates:
+            fallback, fallback_ok = _discover_contract_summaries(
+                supplier, None, CONTRACT_EXPERIENCE_FALLBACK_PAGE_LIMIT, "fallback", submission_id
+            )
+            discovery_success = discovery_success or fallback_ok
+            inspect(fallback, "fallback")
+        if candidates:
             result = {
-                "status": "found" if candidates else "none",
-                "symbol": "+" if candidates else "−",
+                "status": "found", "symbol": "+",
                 "candidates": candidates,
-                "message": (f"Знайдено договорів-кандидатів: {len(candidates)}" if candidates
-                            else "Договорів-кандидатів за кодом постачальника та CPV не знайдено"),
+                "message": f"Знайдено договорів-кандидатів: {len(candidates)}",
                 "cpv": cpv,
                 "cutoff": cutoff.isoformat(),
                 "cutoff_note": "dateModified використано лише як технічний proxy cutoff",
                 "algorithm_version": CONTRACT_EXPERIENCE_ALGORITHM_VERSION,
             }
-        except Exception:
-            SERVER_LOG.warning("Contract experience search unavailable supplier=%s cpv=%s", supplier, cpv)
+        elif not discovery_success or (detail_attempts and detail_successes == 0 and technical_failures == detail_attempts):
             result = {"status": "unavailable", "symbol": "−", "candidates": [],
                       "message": "Пошук договорів Prozorro тимчасово недоступний",
                       "cpv": cpv, "cutoff": cutoff.isoformat(),
-                      "cutoff_note": "Нейтральний стан; автоматичний висновок не формується"}
+                      "cutoff_note": "Нейтральний стан; автоматичний висновок не формується",
+                      "algorithm_version": CONTRACT_EXPERIENCE_ALGORITHM_VERSION}
+        else:
+            result = {"status": "none", "symbol": "−", "candidates": [],
+                      "message": "Валідних договорів-кандидатів за кодом постачальника та CPV не знайдено",
+                      "cpv": cpv, "cutoff": cutoff.isoformat(),
+                      "cutoff_note": "dateModified використано лише як технічний proxy cutoff",
+                      "algorithm_version": CONTRACT_EXPERIENCE_ALGORITHM_VERSION}
+        SERVER_LOG.info(
+            "Contract experience completed submission=%s supplier=%s cpv=%s status=%s candidates=%s",
+            submission_id, supplier, cpv, result["status"], len(candidates),
+        )
         CONTRACT_EXPERIENCE_CACHE[cache_key] = {"cached_at": time.monotonic(), "value": result}
         return dict(result)
 
@@ -7277,6 +7924,8 @@ def _stored_experience_is_fresh(existing: dict) -> bool:
                            and item.get("key") == "contract_experience"), {})
     if int(contract_check.get("algorithm_version") or 0) < CONTRACT_EXPERIENCE_ALGORITHM_VERSION:
         return False
+    if contract_check.get("search_status") == "unavailable":
+        return False
     checked_at = _contract_experience_cutoff(experience.get("checked_at"))
     return bool(checked_at and (datetime.now(timezone.utc) - checked_at).total_seconds() < CONTRACT_EXPERIENCE_CACHE_TTL)
 
@@ -7308,6 +7957,25 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
     return result
 
 
+def _schedule_contract_experience_retry(submission_id: str) -> bool:
+    with CONTRACT_EXPERIENCE_PENDING_LOCK:
+        attempts = CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(submission_id, 0)
+        if attempts >= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES or submission_id in CONTRACT_EXPERIENCE_RETRY_PENDING:
+            return False
+        CONTRACT_EXPERIENCE_RETRY_ATTEMPTS[submission_id] = attempts + 1
+        CONTRACT_EXPERIENCE_RETRY_PENDING.add(submission_id)
+
+    def retry():
+        with CONTRACT_EXPERIENCE_PENDING_LOCK:
+            CONTRACT_EXPERIENCE_RETRY_PENDING.discard(submission_id)
+        enqueue_contract_experience_search([submission_id])
+
+    timer = threading.Timer(CONTRACT_EXPERIENCE_RETRY_DELAY, retry)
+    timer.daemon = True
+    timer.start()
+    return True
+
+
 def contract_experience_worker(submission_ids: list[str]) -> None:
     try:
         for submission_id in submission_ids:
@@ -7327,7 +7995,9 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                     existing = {}
                 if _stored_experience_is_fresh(existing):
                     continue
-                search = search_supplier_contract_experience(row["supplier_code"], row["dk_code"], row["date_published"] or "")
+                search = search_supplier_contract_experience(
+                    row["supplier_code"], row["dk_code"], row["date_published"] or "", submission_id
+                )
                 check = {"key": "contract_experience", "label": "Договори постачальника в Prozorro",
                          "status": "neutral", "detail": f"{search['symbol']} · {search['message']}",
                          "rows": search.get("candidates") or [], "search_status": search.get("status"),
@@ -7340,6 +8010,12 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                            "counts": {"ok": 0, "warning": 0, "error": 0, "neutral": 1},
                            "ready": True, "notice": ""}
                 _store_document_check_result(submission_id, current, "PQM background contract search")
+                if search.get("status") == "unavailable":
+                    _schedule_contract_experience_retry(submission_id)
+                else:
+                    with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                        CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(submission_id, None)
+                        CONTRACT_EXPERIENCE_RETRY_PENDING.discard(submission_id)
             except Exception:
                 SERVER_LOG.exception("Background contract experience failed submission=%s", submission_id)
     finally:
@@ -7745,17 +8421,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"submission_id": submission_id,
                                    "remark_ids": application_remark_selections(submission_id)})
         if parsed.path == "/api/runtime-features":
+            # Reconcile this process with the shared persistent setting. This never
+            # performs startup catch-up, so a status read cannot trigger a sync.
+            apply_scheduler_settings(catch_up=False)
+            scheduler_jobs = scheduler_status_payload()
+            scheduler_flags = {item["job"]: bool(item["enabled"]) for item in scheduler_jobs}
+            manual_bids = manual_bids_update_state()
+            google = google_integration_status()
             return self.send_json({
                 "environment": PQM_ENV,
                 "bids_mode": BIDS_MODE,
-                "bids_update": ENABLE_BIDS_UPDATE and BIDS_MODE in {"readonly", "read_only"},
+                "bids_update": manual_bids["enabled"],
+                "manual_bids_update": manual_bids,
                 "powerbi": ENABLE_POWERBI,
-                "google": ENABLE_GOOGLE,
-                "scheduler": ENABLE_SCHEDULER,
-                "prozorro_scheduler": ENABLE_PROZORRO_SCHEDULER,
-                "violation_reports_scheduler": ENABLE_VIOLATION_SCHEDULER,
-                "nazk_scheduler": ENABLE_NAZK_SCHEDULER,
-                "scheduler_jobs": scheduler_status_payload(),
+                "google": google["enabled"],
+                "google_integration": google,
+                "scheduler": any(scheduler_flags.values()),
+                "prozorro_scheduler": scheduler_flags.get("prozorro", False),
+                "violation_reports_scheduler": scheduler_flags.get("violation_reports", False),
+                "nazk_scheduler": scheduler_flags.get("nazk_registry", False),
+                "scheduler_jobs": scheduler_jobs,
             })
         if parsed.path.startswith("/api/document-check-jobs/"):
             job_id = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
@@ -8029,18 +8714,28 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(google_oauth_status())
         if parsed.path == "/api/google-oauth/callback":
             query = urllib.parse.parse_qs(parsed.query)
+            expected_origin = _google_origin(_google_oauth_redirect_uri())
             try:
                 if query.get("error"):
+                    if query.get("state"):
+                        try:
+                            pending = _consume_google_oauth_transaction(query["state"][0])
+                            expected_origin = pending["expected_origin"]
+                        except ValueError:
+                            pass
                     raise ValueError(query["error"][0])
-                google_oauth_exchange(query.get("code", [""])[0], query.get("state", [""])[0])
+                exchange = google_oauth_exchange(query.get("code", [""])[0], query.get("state", [""])[0])
+                expected_origin = exchange["expected_origin"]
                 message = "Google успішно підключено. Це вікно можна закрити."
                 ok = True
             except Exception as exc:
                 message = f"Помилка підключення Google: {exc}"
                 ok = False
+            callback_message = json.dumps({"type": "pqm-google-oauth", "ok": ok}, ensure_ascii=False)
+            target_origin = json.dumps(expected_origin)
             raw = ("<!doctype html><meta charset='utf-8'><title>Google OAuth — PQM</title>"
                    f"<body style='font:16px system-ui;padding:40px'><h2>{'Готово' if ok else 'Помилка'}</h2>"
-                   f"<p>{html.escape(message)}</p><script>if(window.opener)window.opener.postMessage('pqm-google-oauth','*')</script></body>").encode("utf-8")
+                   f"<p>{html.escape(message)}</p><script>if(window.opener)window.opener.postMessage({callback_message},{target_origin})</script></body>").encode("utf-8")
             self.send_response(200 if ok else 400); self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/nazk-registry":
@@ -8168,6 +8863,34 @@ class Handler(BaseHTTPRequestHandler):
                   content=excluded.content,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
                   (username, content_type, raw, now_iso(), self.auth_user))
             return self.send_json({"saved": True, "username": username})
+        if parsed.path == "/api/admin/runtime-features/google":
+            payload = self.read_json()
+            if type(payload.get("enabled")) is not bool:
+                return self.send_json({"error": "Поле enabled має бути true або false"}, 400)
+            set_google_runtime_enabled(payload["enabled"], self.auth_user)
+            return self.send_json({"saved": True, "feature": google_integration_status()})
+        if parsed.path == "/api/admin/google/disconnect":
+            self.read_json()
+            return self.send_json({"saved": True, "feature": disconnect_google(self.auth_user)})
+        if parsed.path == "/api/admin/runtime-features/manual-bids-update":
+            payload = self.read_json()
+            if type(payload.get("enabled")) is not bool:
+                return self.send_json({"error": "Поле enabled має бути true або false"}, 400)
+            try:
+                feature = set_manual_bids_update_enabled(payload["enabled"], self.auth_user)
+                return self.send_json({"saved": True, "feature": feature})
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        scheduler_toggle = re.fullmatch(r"/api/admin/scheduler-jobs/([a-z_]+)", parsed.path)
+        if scheduler_toggle:
+            payload = self.read_json()
+            if type(payload.get("enabled")) is not bool:
+                return self.send_json({"error": "Поле enabled має бути true або false"}, 400)
+            try:
+                item = set_scheduler_job_enabled(scheduler_toggle.group(1), payload["enabled"], self.auth_user)
+                return self.send_json({"saved": True, "job": item})
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         generate_request=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/nazk-supplier-request",parsed.path)
         if generate_request:
             try:
@@ -8204,7 +8927,7 @@ class Handler(BaseHTTPRequestHandler):
         if operational_nazk_result:
             try:
                 payload=self.read_json()
-                with db() as con: result=operational_tasks.set_nazk_result(con,operational_nazk_result.group(1),str(payload.get("result") or ""),self.auth_user)
+                with db() as con: result=operational_tasks.set_nazk_result(con,operational_nazk_result.group(1),str(payload.get("result") or ""),self.auth_user,str(payload.get("comment") or ""))
                 return self.send_json(result)
             except KeyError: return self.send_json({"error":"Задачу не знайдено"},404)
             except ValueError as exc: return self.send_json({"error":str(exc)},400)
@@ -8453,7 +9176,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/bids-sync":
             payload = self.read_json()
-            if IS_WEB_ENV or not ENABLE_BIDS_UPDATE or BIDS_MODE not in {"readonly", "read_only"}:
+            if not manual_bids_update_state()["enabled"]:
                 return self.send_json({"error": "Оновлення ProzorroBids вимкнене в цьому середовищі"}, 403)
             with BIDS_START_LOCK:
                 if BIDS_UPDATE_STATE["running"]:
@@ -8481,6 +9204,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"started": False, "code": "bids_start_failed", "error": BIDS_UPDATE_STATE["message"]}, 503)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync":
+            self.read_json()
+            if not google_effective_enabled():
+                return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
             if SUPPLIER_EDR_SYNC_STATE["running"]:
                 return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
             SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
@@ -8488,6 +9214,9 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=supplier_edr_sync_worker, daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-nazk-review-sync":
+            self.read_json()
+            if not google_effective_enabled():
+                return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
             if SUPPLIER_NAZK_REVIEW_SYNC_STATE["running"]:
                 return self.send_json(SUPPLIER_NAZK_REVIEW_SYNC_STATE, 409)
             SUPPLIER_NAZK_REVIEW_SYNC_STATE.update(running=True,
@@ -8496,11 +9225,12 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=supplier_nazk_review_sync_worker, daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/google-oauth/start":
-            if not ENABLE_GOOGLE:
+            self.read_json()
+            if not google_effective_enabled():
                 return self.send_json({"error": "Google OAuth вимкнено в цьому середовищі"}, 403)
             try:
-                return self.send_json({"authorization_url": google_oauth_authorization_url()}, 200)
-            except (FileNotFoundError, RuntimeError, OSError) as exc:
+                return self.send_json({"authorization_url": google_oauth_authorization_url(self.auth_user)}, 200)
+            except (FileNotFoundError, RuntimeError, OSError, ValueError) as exc:
                 return self.send_json({"error": str(exc), "oauth": google_oauth_status()}, 409)
         if parsed.path == "/api/powerbi-export":
             if not ENABLE_POWERBI:
@@ -8706,6 +9436,17 @@ class Handler(BaseHTTPRequestHandler):
                 for token, session in list(AUTH_SESSIONS.items()):
                     if session["username"] == username: AUTH_SESSIONS.pop(token, None)
             return self.send_json({"saved": True})
+        operational_response = re.fullmatch(
+            r"/api/operational-tasks/([a-f0-9]{32})/responses/(\d+)", parsed.path)
+        if operational_response:
+            try:
+                with db() as con:
+                    result=operational_tasks.update_response(
+                        con,operational_response.group(1),int(operational_response.group(2)),
+                        self.read_json(),self.auth_user)
+                return self.send_json(result)
+            except KeyError: return self.send_json({"error":"Інформацію не знайдено"},404)
+            except ValueError as exc: return self.send_json({"error":str(exc)},400)
         operational_extract = re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/amcu-decisions/(.+)", parsed.path)
         if operational_extract:
             try:
@@ -9164,20 +9905,15 @@ def main():
     except Exception:
         SERVER_LOG.exception("Operational task builder failed during startup")
 
+    scheduler_enabled = apply_scheduler_settings(catch_up=True)
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
     print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
-    print(f"Features: prozorro_scheduler={ENABLE_PROZORRO_SCHEDULER}, "
-          f"violation_scheduler={ENABLE_VIOLATION_SCHEDULER}, nazk_scheduler={ENABLE_NAZK_SCHEDULER}, "
+    print(f"Features: prozorro_scheduler={scheduler_enabled['prozorro']}, "
+          f"violation_scheduler={scheduler_enabled['violation_reports']}, nazk_scheduler={scheduler_enabled['nazk_registry']}, "
           f"bids={BIDS_MODE}, bids_update={ENABLE_BIDS_UPDATE}, powerbi={ENABLE_POWERBI}, "
-          f"google={ENABLE_GOOGLE}, auth={AUTH_ENABLED}")
+          f"google={google_effective_enabled()}, auth={AUTH_ENABLED}")
     SERVER_LOG.info("PQM startup environment=%s host=%s port=%s data_dir=%s db=%s",
                     PQM_ENV, HOST, PORT, DATA_DIR, DB_PATH)
-    if ENABLE_PROZORRO_SCHEDULER:
-        register_scheduler_job("prozorro", prozorro_scheduler)
-    if ENABLE_VIOLATION_SCHEDULER:
-        register_scheduler_job("violation_reports", violation_reports_scheduler)
-    if ENABLE_NAZK_SCHEDULER:
-        register_scheduler_job("nazk_registry", nazk_registry_scheduler)
     if ENABLE_BROWSER:
         threading.Timer(1, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
     ExclusiveThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
