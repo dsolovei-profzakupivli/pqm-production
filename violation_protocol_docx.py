@@ -26,6 +26,9 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 from lxml import etree
 from protocol_template import validate as validate_application_template
+from docx_conditionals import plan as plan_conditionals, render_conditionals
+import template_catalog
+from violation_text import normalize_justification_text
 
 
 ROOT = Path(__file__).parent
@@ -77,18 +80,6 @@ FIELD_LABELS = {
     "officer_name": "Уповноважена особа", "decision_justification": "Обґрунтування рішення",
     "contract_number": "Номер договору", "contract_date": "Дата договору",
 }
-MINISTRY_EXPLANATION_URLS = (
-    "https://www.me.gov.ua/InfoRez/Details?id=3d8b5293-1542-45e7-8cab-60768b9ecc09&lang=uk-UA",
-    "https://me.gov.ua/InfoRez/Details?id=1c50d66b-a34f-4b83-8ae3-e1fdea208d80&lang=uk-UA",
-    "https://me.gov.ua/InfoRez/Details?id=011d5df6-768e-46e9-9f66-86a71737584d&lang=uk-UA",
-)
-CIVIL_CODE_TEXTS = (
-    "Закон України «Про публічні закупівлі» (далі – Закон) визначає правові та економічні засади здійснення закупівель товарів, робіт і послуг для забезпечення потреб держави, територіальних громад та об’єднаних територіальних громад. При цьому відповідно до ч. 1 ст. 253 Цивільного кодексу України перебіг строку починається з наступного дня після відповідної календарної дати або настання події, з якою пов’язано його початок.",
-    "За змістом ч. 5 ст. 254 Цивільного кодексу України якщо останній день строку припадає на вихідний, святковий або інший неробочий день, що визначений відповідно до закону у місці вчинення певної дії, днем закінчення строку є перший за ним робочий день.",
-    "Частиною 1 ст. 255 Цивільного кодексу України встановлено, якщо строк встановлено для вчинення дії, вона може бути вчинена до закінчення останнього дня строку.",
-)
-
-
 def _token_name(value: str) -> str:
     """Canonicalize whitespace around/inside a marker without changing its name."""
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
@@ -129,8 +120,28 @@ def template_metadata() -> list[dict[str, Any]]:
 
 def _template_tokens(path: Path) -> set[str]:
     document = Document(path)
-    return {_token_name(match.group(1)) for paragraph in _all_paragraphs(document)
-            for match in TOKEN_RE.finditer(paragraph.text)}
+    return {token for paragraph in _all_paragraphs(document)
+            for match in TOKEN_RE.finditer(paragraph.text)
+            if not (token := _token_name(match.group(1))).startswith("#if ") and token != "/if"}
+
+
+def _condition_fields() -> list[dict[str, Any]]:
+    # The condition field is a document-only derived value with no physical
+    # dependencies.  Full DB schema validation remains owned by the Admin API.
+    return template_catalog.validate(template_catalog.load(), {"items": []})
+
+
+def _condition_variants(path: Path, document_type: str) -> set[tuple[str, str]]:
+    variants: set[tuple[str, str]] = set()
+    fields = _condition_fields()
+    with zipfile.ZipFile(path) as archive:
+        for name in archive.namelist():
+            if not (name.startswith("word/") and name.endswith(".xml")):
+                continue
+            root = etree.fromstring(archive.read(name))
+            blocks, _ = plan_conditionals(root, fields, document_type, validate_scalars=False)
+            variants.update((condition.key, condition.literal) for condition, _ in blocks)
+    return variants
 
 
 def replace_runtime_template(key: str, source_path: str | Path) -> Path:
@@ -143,9 +154,14 @@ def replace_runtime_template(key: str, source_path: str | Path) -> Path:
     try:
         expected = _template_tokens(target)
         supplied = _template_tokens(source)
+        document_type = template_catalog.RUNTIME_TYPES.get(key)
+        if document_type and _condition_variants(target, document_type) != _condition_variants(source, document_type):
+            raise ValueError("У DOCX змінено або втрачено declarative conditional blocks")
         if key == "application_protocol":
             with zipfile.ZipFile(source) as archive:
                 validate_application_template(etree.fromstring(archive.read("word/document.xml")))
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError("Не вдалося прочитати структуру DOCX") from exc
     missing = sorted(expected - supplied)
@@ -310,14 +326,74 @@ def _replace_in_paragraph(paragraph, values: dict[str, str]):
         _clear_resolved_run_marking(runs[run_index])
 
 
+def _font_run_properties(run_properties) -> Any:
+    """Copy only typography inherited from a template run.
+
+    Generated protocol text must not inherit editor highlights/review shading,
+    but it does need the template's font family and size.  Restricting the
+    copy to font properties also leaves emphasis and hyperlink decoration
+    under the control of the generated semantic fragment.
+    """
+    result = OxmlElement("w:rPr")
+    if run_properties is not None:
+        for name in ("w:rFonts", "w:sz", "w:szCs", "w:lang"):
+            node = run_properties.find(qn(name))
+            if node is not None:
+                result.append(deepcopy(node))
+    if result.find(qn("w:sz")) is None:
+        size = OxmlElement("w:sz")
+        size.set(qn("w:val"), "24")
+        result.append(size)
+    if result.find(qn("w:szCs")) is None:
+        size_cs = OxmlElement("w:szCs")
+        size_cs.set(qn("w:val"), "24")
+        result.append(size_cs)
+    return result
+
+
+def _protocol_body_run_properties(document) -> Any:
+    """Resolve the approved template's main-body typography.
+
+    The normative block is an explicit 12 pt body-style specimen in all
+    approved protocol templates.  The decision heading is a safe fallback;
+    only font properties are copied, so its bold/italic emphasis is ignored.
+    """
+    preferred = ("роз’яснень міністерства економіки україни",
+                 "за результатами розгляду встановлено")
+    for marker in preferred:
+        for paragraph in document.paragraphs:
+            if marker not in _presentation_text(paragraph.text).casefold():
+                continue
+            for run in paragraph.runs:
+                if run.text.strip():
+                    return _font_run_properties(run._r.rPr)
+    return _font_run_properties(None)
+
+
+def _add_body_run(paragraph, text: str, run_properties, *, bold: bool = False,
+                  italic: bool = False):
+    run = paragraph.add_run(text)
+    current = run._r.rPr
+    if current is not None:
+        run._r.remove(current)
+    run._r.insert(0, deepcopy(run_properties))
+    run.bold = bold
+    run.italic = italic
+    return run
+
+
 def _add_hyperlink(paragraph, label: str, url: str, font_name: str | None = None,
-                   font_size: float | None = None):
+                   font_size: float | None = None, run_properties=None):
     part = paragraph.part
     rel_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
     hyperlink = OxmlElement("w:hyperlink")
     hyperlink.set(qn("r:id"), rel_id)
     run = OxmlElement("w:r")
-    props = OxmlElement("w:rPr")
+    props = deepcopy(run_properties) if run_properties is not None else OxmlElement("w:rPr")
+    for name in ("w:color", "w:u"):
+        existing = props.find(qn(name))
+        if existing is not None:
+            props.remove(existing)
     color = OxmlElement("w:color"); color.set(qn("w:val"), "0563C1")
     underline = OxmlElement("w:u"); underline.set(qn("w:val"), "single")
     props.extend((color, underline))
@@ -467,13 +543,14 @@ def _clear_cell(cell):
     return first
 
 
-def _set_paragraph_geometry(paragraph, size: float, first_line: bool = False):
+def _set_paragraph_geometry(paragraph, size: float, first_line: bool = False,
+                            first_line_cm: float = 0.5):
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     fmt = paragraph.paragraph_format
     fmt.space_before = Pt(0)
     fmt.space_after = Pt(0)
     fmt.line_spacing = 1.0
-    fmt.first_line_indent = Cm(0.5) if first_line else None
+    fmt.first_line_indent = Cm(first_line_cm) if first_line else None
     for run in paragraph.runs:
         _set_run_font(run, size, bool(run.bold), bool(run.italic))
 
@@ -548,22 +625,22 @@ def _justification_emphasis(protocol_type: str, values: dict[str, str]) -> list[
     return ["п. 66 Порядку № 822", "п’ять календарних днів", "пп. 1 п. 49 Порядку № 822", *common]
 
 
-def _append_justification_text(paragraph, text: str, emphasis: list[str]):
+def _append_justification_text(paragraph, text: str, emphasis: list[str], run_properties):
     phrases = sorted({_presentation_text(phrase) for phrase in emphasis if phrase}, key=len, reverse=True)
     pattern_parts = [r"https?://[^\s]+"] + [re.escape(phrase) for phrase in phrases]
     pattern = re.compile("(" + "|".join(pattern_parts) + ")", re.IGNORECASE)
     cursor = 0
     for match in pattern.finditer(text):
         if match.start() > cursor:
-            _set_run_font(paragraph.add_run(text[cursor:match.start()]), 11)
+            _add_body_run(paragraph, text[cursor:match.start()], run_properties)
         fragment = match.group(0)
         if re.match(r"https?://", fragment, re.IGNORECASE):
-            _add_hyperlink(paragraph, fragment, fragment, "Times New Roman", 11)
+            _add_hyperlink(paragraph, fragment, fragment, run_properties=run_properties)
         else:
-            _set_run_font(paragraph.add_run(fragment), 11, bold=True)
+            _add_body_run(paragraph, fragment, run_properties, bold=True)
         cursor = match.end()
     if cursor < len(text):
-        _set_run_font(paragraph.add_run(text[cursor:]), 11)
+        _add_body_run(paragraph, text[cursor:], run_properties)
 
 
 def _set_thin_black_borders(cell):
@@ -617,6 +694,7 @@ def _normalize_legal_reference_spaces(document) -> None:
 
 def _replace_justification(document, justification: str, protocol_type: str,
                            values: dict[str, str]):
+    body_run_properties = _protocol_body_run_properties(document)
     for table in document.tables:
         for row in table.rows:
             row_text = " ".join(cell.text for cell in row.cells)
@@ -634,7 +712,7 @@ def _replace_justification(document, justification: str, protocol_type: str,
             _set_paragraph_geometry(label_p, 11)
             first = _clear_cell(target)
             template_paragraph = deepcopy(first._p.pPr) if first._p.pPr is not None else None
-            blocks = [part.strip() for part in re.split(r"(?:\r?\n){2,}", justification.strip()) if part.strip()]
+            blocks = normalize_justification_text(justification).split("\n")
             emphasis = _justification_emphasis(protocol_type, values)
             for index, block in enumerate(blocks):
                 paragraph = first if index == 0 else target.add_paragraph()
@@ -643,9 +721,9 @@ def _replace_justification(document, justification: str, protocol_type: str,
                     if current_ppr is not None:
                         paragraph._p.remove(current_ppr)
                     paragraph._p.insert(0, deepcopy(template_paragraph))
-                _append_justification_text(paragraph, block, emphasis)
-                for run in paragraph.runs:
-                    _set_run_font(run, 11, bool(run.bold), bool(run.italic))
+                _append_justification_text(paragraph, block, emphasis, body_run_properties)
+                _set_paragraph_geometry(paragraph, 12, first_line=True,
+                                        first_line_cm=1.0)
             for cell in {label._tc: label, target._tc: target}.values():
                 _set_thin_black_borders(cell)
             tr_pr = row._tr.get_or_add_trPr()
@@ -670,59 +748,6 @@ def _remove_optional_rows(document, flags: dict[str, bool]):
                 if not flags.get(key, False) and all(needle in text for needle in needles):
                     row._element.getparent().remove(row._element)
                     break
-
-
-def _configure_civil_code_block(document, enabled: bool) -> None:
-    markers = ("роз’яснень Міністерства економіки України", "ч. 5 ст. 254 Цивільного кодексу України",
-               "Частиною 1 ст. 255 Цивільного кодексу України")
-    normalized_markers = tuple(_presentation_text(marker).casefold() for marker in markers)
-    existing = [paragraph for paragraph in document.paragraphs
-                if any(marker in _presentation_text(paragraph.text).casefold()
-                       for marker in normalized_markers)]
-    if not enabled:
-        for paragraph in existing:
-            paragraph._element.getparent().remove(paragraph._element)
-        anchor = next((paragraph for paragraph in document.paragraphs
-                       if "за результатами розгляду встановлено" in paragraph.text.casefold()), None)
-        if anchor is not None:
-            previous = anchor._p.getprevious()
-            while previous is not None and previous.tag == qn("w:p") and not "".join(previous.itertext()).strip():
-                candidate = previous.getprevious()
-                previous.getparent().remove(previous)
-                previous = candidate
-        return
-    anchor = next((paragraph for paragraph in document.paragraphs
-                   if "за результатами розгляду встановлено" in paragraph.text.casefold()), None)
-    if anchor is None:
-        raise ValueError("У шаблоні не знайдено місце для нормативного блоку ЦКУ")
-    source_pprs = [deepcopy(paragraph._p.pPr) if paragraph._p.pPr is not None else None
-                   for paragraph in existing]
-    # Recompose the block in the generated copy. Some Word-edited templates
-    # contain nested/duplicated hyperlink XML even though the visible text is
-    # correct; canonical rendering guarantees exactly three real links.
-    for paragraph in existing:
-        paragraph._element.getparent().remove(paragraph._element)
-
-    def insert_paragraph(index: int) -> Any:
-        node = OxmlElement("w:p")
-        source_ppr = source_pprs[index] if index < len(source_pprs) else None
-        if source_ppr is not None:
-            node.append(deepcopy(source_ppr))
-        elif anchor._p.pPr is not None:
-            node.append(deepcopy(anchor._p.pPr))
-        anchor._p.addprevious(node)
-        from docx.text.paragraph import Paragraph
-        return Paragraph(node, anchor._parent)
-
-    first = insert_paragraph(0)
-    first.add_run(_presentation_text("Відповідно до роз’яснень Міністерства економіки України, що опубліковані за посиланнями: "))
-    for index, url in enumerate(MINISTRY_EXPLANATION_URLS):
-        _add_hyperlink(first, url, url)
-        first.add_run(", " if index < len(MINISTRY_EXPLANATION_URLS) - 1 else ", ")
-    first.add_run(_presentation_text(CIVIL_CODE_TEXTS[0]))
-    for index, text in enumerate(CIVIL_CODE_TEXTS[1:], start=1):
-        paragraph = insert_paragraph(index)
-        paragraph.add_run(_presentation_text(text))
 
 
 def _remove_conditional_token_blocks(document, flags: dict[str, bool]):
@@ -792,7 +817,17 @@ def build_violation_protocol_docx(
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.tmp.docx")
     try:
-        shutil.copy2(template, temporary)
+        document_type = template_catalog.RUNTIME_TYPES.get(protocol_type, protocol_type)
+        render_conditionals(
+            template,
+            temporary,
+            {"decision.civil_code_basis": (
+                "applicable" if bool((flags or {}).get("has_civil_code_basis"))
+                else "not_applicable"
+            )},
+            _condition_fields(),
+            document_type,
+        )
         document = Document(temporary)
         customer_documents = _normalized_documents(customer_documents)
         supplier_documents = _normalized_documents(supplier_documents)
@@ -803,7 +838,8 @@ def build_violation_protocol_docx(
             for key, value in values.items()
         }
         normalized_values["supplier_response"] = normalized_values.get("supplier_response") or "не надано"
-        justification = _presentation_text(justification).strip()
+        justification = _presentation_text(
+            normalize_justification_text(justification)).strip()
         normalized_values.setdefault("decision_justification", justification)
         effective_flags = dict(flags or {})
         effective_flags.setdefault("has_customer_documents", bool(customer_documents))
@@ -819,7 +855,6 @@ def build_violation_protocol_docx(
             "civil_code": effective_flags.get("has_civil_code_basis", False),
             "court": effective_flags.get("has_court_decision", False),
         })
-        _configure_civil_code_block(document, effective_flags.get("has_civil_code_basis", False))
         _validate_context(document, normalized_values, justification)
         _format_reason_block(document, normalized_values)
         if customer_documents:

@@ -1,6 +1,6 @@
 """Data-only expansion of an operator-formatted DOCX. No layout decisions here."""
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import os
 import re
@@ -16,6 +16,7 @@ SCALARS = {'protocol_number', 'protocol_date', 'officer_name', 'officer_signatur
 GROUPS = ('applications_all', 'applications_admitted', 'applications_rejected')
 ROW_FIELDS = {'row_number', 'supplier_name', 'supplier_code', 'framework_id_display',
               'cpv_category', 'submission_date'}
+CPV_CODE = re.compile(r'^\d{8}-\d$')
 
 
 class TemplateError(ValueError):
@@ -37,8 +38,53 @@ def date_text(value):
         return value or '—'
 
 
+def canonical_cpv_code(value):
+    """Return the canonical CPV token used for protocol sorting/display."""
+    candidate = str(value or '').strip()
+    return candidate if CPV_CODE.fullmatch(candidate) else candidate
+
+
+def protocol_cpv_category(item):
+    """Compose protocol-only CPV/title text without a duplicated leading CPV."""
+    code = canonical_cpv_code(item.get('dk_code'))
+    title = str(item.get('category_title') or '').strip()
+    if code and title.startswith(code):
+        suffix = title[len(code):]
+        if not suffix or suffix[0].isspace() or suffix[0] in '-–—:':
+            title = re.sub(r'^\s*[-–—:]?\s*', '', suffix)
+    if code and title:
+        return f'{code} — {title}'
+    return code or title or '—'
+
+
+def _submission_timestamp(value):
+    raw = str(value or '').strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return 0, parsed.astimezone(timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return 1, raw.casefold()
+
+
+def protocol_item_sort_key(item):
+    code = canonical_cpv_code(item.get('dk_code'))
+    return (
+        0 if CPV_CODE.fullmatch(code) else 1,
+        code,
+        *_submission_timestamp(item.get('date_published')),
+        str(item.get('id') or item.get('submission_id') or ''),
+    )
+
+
+def sorted_protocol_items(items):
+    """Stable deterministic order: canonical CPV, full submission time, ID."""
+    return sorted(items, key=protocol_item_sort_key)
+
+
 def context(payload):
-    items = payload['items']
+    items = sorted_protocol_items(payload['items'])
     admitted = [x for x in items if x.get('protocol_decision') == 'admit']
     rejected = [x for x in items if x.get('protocol_decision') == 'reject']
     if len(items) != len(admitted) + len(rejected):
@@ -54,7 +100,7 @@ def context(payload):
     for key, rows in zip(GROUPS, (items, admitted, rejected)):
         groups[key] = [dict(row_number=i, supplier_name=x.get('supplier_name') or '—',
                             supplier_code=x.get('supplier_code') or '—', framework_id_display=x.get('pretty_id') or '—',
-                            cpv_category=f"{x.get('dk_code') or '—'} - {x.get('category_title') or '—'}",
+                            cpv_category=protocol_cpv_category(x),
                             submission_date=date_text(x.get('date_published')),
                             protocol_remarks=x.get('protocol_remarks') or '—') for i, x in enumerate(rows, 1)]
     return values, groups

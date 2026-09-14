@@ -15,7 +15,8 @@ import derived_fields
 import document_bindings
 import document_metadata
 from supplier_contacts import supplier_contacts
-from supplier_identity import document_name as supplier_document_name, document_short_name as supplier_document_short_name
+from supplier_identity import (current_manager_rnokpp, document_name as supplier_document_name,
+                               document_short_name as supplier_document_short_name)
 from docx_conditionals import render, condition_keys, retained_scalar_keys
 
 KEY='nazk_supplier_request'  # Server-owned action mapping, never supplied by client.
@@ -64,17 +65,18 @@ def resolve_context(con,item,fields,config,keys=None):
     data['document_name']=normalize_document_name(name) if semantics['entity_type']=='legal_entity' else name
     short_name=supplier_document_short_name(con,code)
     data['document_short_name']=normalize_document_name(short_name) if semantics['entity_type']=='legal_entity' else short_name
-    # For an individual entrepreneur the canonical 10-digit supplier code is
-    # the RNOKPP of that same person. The current-person guard above still
-    # applies, so this never carries a previous manager's value forward.
-    if semantics['entity_type']=='individual_entrepreneur' and not manager.get('manager_tax_id'):
-        manager={**manager,'manager_tax_id':semantics['normalized_code']}
+    resolved_rnokpp=current_manager_rnokpp(con,code,manager)
+    if resolved_rnokpp['value']:
+        manager={**manager,'manager_tax_id':resolved_rnokpp['value'],
+                 'manager_tax_id_resolved_source':resolved_rnokpp['source']}
     def manager_record():
         row=con.execute('SELECT * FROM supplier_managers WHERE id=? AND DIGITS(supplier_code)=? AND is_current=1',(manager.get('id'),code)).fetchone()
         if not row:raise ValueError('Поточний керівник змінився. Оновіть картку.')
         result=dict(row)
-        if semantics['entity_type']=='individual_entrepreneur' and not result.get('manager_tax_id'):
-            result['manager_tax_id']=semantics['normalized_code']
+        current_value=current_manager_rnokpp(con,code,result)
+        if current_value['value']:
+            result['manager_tax_id']=current_value['value']
+            result['manager_tax_id_resolved_source']=current_value['source']
         return result
     def officer_record():
         row=con.execute('SELECT * FROM authorized_officers WHERE id=?',(item.get('assigned_officer_id'),)).fetchone()

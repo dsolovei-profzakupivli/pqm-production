@@ -119,13 +119,33 @@ class DeclensionValidationContractTests(unittest.TestCase):
             "customer_name_accusative": decline_name("ДЕРЖАВНА УСТАНОВА «ТЕСТ»", "legal_entity", "accusative",
                                                        OverrideStore(Path(self.temp_path()))),
         }
-        items = server.unresolved_declension_items(names.keys(), names)
+        items = server.unresolved_declension_items(names.keys(), names, {
+            "id": "internal-report-id", "report_id": "UA-D-TEST",
+            "author_code": "CUSTOMER-1", "defendant_code": "SUPPLIER-1",
+        })
         error = server.DeclensionValidationError(items)
         payload = error.payload()
         self.assertEqual(payload["code"], "declension_unresolved")
         self.assertEqual(payload["status"], 422)
         self.assertEqual({item["grammatical_case"] for item in payload["unresolved"]},
                          {"genitive", "accusative"})
+        self.assertEqual({item["subject_type"] for item in payload["unresolved"]}, {"customer"})
+        self.assertEqual({item["subject_label"] for item in payload["unresolved"]}, {"Замовник"})
+        self.assertEqual({item["entity_identifier"] for item in payload["unresolved"]}, {"CUSTOMER-1"})
+        self.assertEqual({item["report_id"] for item in payload["unresolved"]}, {"UA-D-TEST"})
+
+    def test_supplier_unresolved_payload_carries_case_return_context(self):
+        unresolved = decline_name("ПОСТАЧАЛЬНИК", "other", "dative",
+                                  OverrideStore(Path(self.temp_path())))
+        items = server.unresolved_declension_items(["supplier_name_dative"],
+            {"supplier_name_dative": unresolved}, {
+                "report_id": "UA-D-SUPPLIER", "author_code": "CUSTOMER-1",
+                "defendant_code": "SUPPLIER-1",
+            })
+        self.assertEqual(items[0]["subject_type"], "supplier")
+        self.assertEqual(items[0]["subject_label"], "Постачальник")
+        self.assertEqual(items[0]["entity_identifier"], "SUPPLIER-1")
+        self.assertEqual(items[0]["report_id"], "UA-D-SUPPLIER")
 
     @staticmethod
     def temp_path():

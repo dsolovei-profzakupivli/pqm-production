@@ -3,8 +3,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 from unittest.mock import patch
+from docx import Document
 from lxml import etree
-from protocol_template import build_from_template, context, template_path, NS, TemplateError
+from protocol_template import (
+    NS,
+    TemplateError,
+    build_from_template,
+    context,
+    protocol_cpv_category,
+    sorted_protocol_items,
+    template_path,
+)
 from protocol_docx import build_protocol_docx
 
 
@@ -23,7 +32,63 @@ class ProtocolTemplateTests(unittest.TestCase):
         self.assertEqual('склала',values['officer_verb'])
         self.payload['officer']='Олег ІВАНЕНКО'
         self.assertEqual('склав',context(self.payload)[0]['officer_verb'])
-        self.assertEqual('00123456',groups['applications_all'][0]['supplier_code'])
+        self.assertEqual('00123456',groups['applications_admitted'][0]['supplier_code'])
+
+    def test_protocol_rows_are_sorted_by_cpv_timestamp_and_id(self):
+        rows = [
+            dict(id='z', protocol_decision='admit', dk_code='31430000-9', date_published='2026-09-01T08:00:00'),
+            dict(id='b', protocol_decision='admit', dk_code='03410000-7', date_published='2026-09-02T10:00:00'),
+            dict(id='early', protocol_decision='reject', dk_code='03410000-7', date_published='2026-09-02T09:00:00'),
+            dict(id='a', protocol_decision='admit', dk_code='03410000-7', date_published='2026-09-02T10:00:00'),
+        ]
+        first = [item['id'] for item in sorted_protocol_items(rows)]
+        second = [item['id'] for item in sorted_protocol_items(list(reversed(rows)))]
+        self.assertEqual(['early', 'a', 'b', 'z'], first)
+        self.assertEqual(first, second)
+
+        payload = dict(self.payload, items=rows)
+        _values, groups = context(payload)
+        self.assertEqual([1, 2, 3, 4], [row['row_number'] for row in groups['applications_all']])
+
+    def test_protocol_cpv_display_removes_only_same_leading_code(self):
+        expected = '34330000-9 — Назва'
+        for title in (
+            '34330000-9 Назва',
+            '34330000-9 - Назва',
+            '34330000-9 – Назва',
+            '34330000-9 — Назва',
+            '34330000-9: Назва',
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(expected, protocol_cpv_category({'dk_code': '34330000-9', 'category_title': title}))
+        self.assertEqual(
+            '34330000-9 — Запасні частини 34330000-9 для авто',
+            protocol_cpv_category({'dk_code': '34330000-9', 'category_title': 'Запасні частини 34330000-9 для авто'}),
+        )
+        self.assertEqual(
+            '34330000-9 — 31430000-9 Інша назва',
+            protocol_cpv_category({'dk_code': '34330000-9', 'category_title': '31430000-9 Інша назва'}),
+        )
+
+    def test_rendered_table_uses_sorted_rows_and_normalized_cpv_display(self):
+        base = dict(
+            protocol_decision='admit', supplier_name='Учасник', supplier_code='12345678',
+            pretty_id='UA-F-TEST', protocol_remarks='Без зауважень',
+        )
+        self.payload['items'] = [
+            dict(base, id='late', dk_code='34330000-9', category_title='34330000-9 - Запасні частини', date_published='2026-09-02T12:00:00'),
+            dict(base, id='other', dk_code='31430000-9', category_title='Акумулятори', date_published='2026-09-03T09:00:00'),
+            dict(base, id='early', dk_code='34330000-9', category_title='34330000-9 — Запасні частини', date_published='2026-09-02T08:00:00'),
+        ]
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'sorted.docx'
+            build_from_template(self.payload, path)
+            table = Document(path).tables[-3]
+        self.assertEqual(['1', '2', '3'], [row.cells[0].text for row in table.rows[1:]])
+        self.assertEqual(
+            ['31430000-9 — Акумулятори', '34330000-9 — Запасні частини', '34330000-9 — Запасні частини'],
+            [row.cells[4].text for row in table.rows[1:]],
+        )
 
     def test_unknown_decision_cannot_fallback(self):
         self.payload['items'][0]['protocol_decision']='pending'

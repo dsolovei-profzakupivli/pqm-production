@@ -16,10 +16,16 @@ import violation_protocol_docx as generator
 
 
 EXPECTED_HASHES = {
-    "warning": "a7d3ca6977d3247dc7962fae23156bf3ccded214c51f94fee8d0c45f47d1915a",
-    "decline_p49_1_2": "202143274d78eefcaea85a24f8afd952fda542b992256e8b9f572185fcaab5e7",
-    "decline_p49_3": "6e6b44defa90e174d3231ab53b70f4139fe39819636e35fb8b092463d5a67d1d",
+    "warning": "33d1a471142377ea01ac11b403708d77718e506e814103215d66a8954d58e32e",
+    "decline_p49_1_2": "262d9ccbebdbe7b82e9fb260e90649be3fef8c2c542c354c77f4f62a27bd3be4",
+    "decline_p49_3": "5bf29f6a84f7136a60a48f16b9b0f8722451071bdf1654446b79e61805234622",
 }
+
+MINISTRY_URLS = (
+    "https://www.me.gov.ua/InfoRez/Details?id=3d8b5293-1542-45e7-8cab-60768b9ecc09&lang=uk-UA",
+    "https://me.gov.ua/InfoRez/Details?id=1c50d66b-a34f-4b83-8ae3-e1fdea208d80&lang=uk-UA",
+    "https://me.gov.ua/InfoRez/Details?id=011d5df6-768e-46e9-9f66-86a71737584d&lang=uk-UA",
+)
 
 BASE_VALUES = {
     "protocol_number": "TEST-1", "protocol_date": "08.09.2026", "report_id": "UA-D-TEST",
@@ -202,8 +208,9 @@ class ViolationProtocolDocxTests(unittest.TestCase):
                 self.assertTrue(run.italic)
 
     def test_justification_preserves_paragraphs_and_has_explicit_effective_formatting(self):
-        justification = ("Відповідно до пп. 2 п. 49 Порядку № 822 застосовується правило.\n\n"
-                         "Гранична дата 05.09.2026. https://example.test/source\nНаступний рядок.")
+        justification = ("\tВідповідно до пп. 2 п. 49 Порядку № 822 застосовується правило.\r\n\r\n"
+                         "  Гранична дата 05.09.2026. https://example.test/source\r"
+                         "Наступний рядок.\n\n")
         output = Path(self.temp.name) / "justification.docx"
         generator.build_violation_protocol_docx(
             "decline_p49_1_2", output, BASE_VALUES, justification, [], [],
@@ -213,9 +220,18 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         row = next(row for table in document.tables for row in table.rows
                    if "Обґрунтування рішення" in " ".join(cell.text for cell in row.cells))
         label, target = row.cells[0], row.cells[-1]
-        self.assertEqual(len(target.paragraphs), 2)
-        expected_justification = generator._presentation_text(justification)
-        self.assertEqual("\n\n".join(p.text for p in target.paragraphs), expected_justification)
+        self.assertEqual(len(target.paragraphs), 3)
+        expected_justification = generator._presentation_text(
+            "Відповідно до пп. 2 п. 49 Порядку № 822 застосовується правило.\n"
+            "Гранична дата 05.09.2026. https://example.test/source\n"
+            "Наступний рядок.")
+        self.assertEqual("\n".join(p.text for p in target.paragraphs), expected_justification)
+        self.assertTrue(all(p.text for p in target.paragraphs))
+        for paragraph in target.paragraphs:
+            self.assertEqual(paragraph.alignment, generator.WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertAlmostEqual(paragraph.paragraph_format.first_line_indent.cm, 1.0, places=2)
+            self.assertEqual(paragraph.paragraph_format.space_before.pt, 0)
+            self.assertEqual(paragraph.paragraph_format.space_after.pt, 0)
         self.assertTrue(all(run.bold for run in label.paragraphs[0].runs if run.text))
         self.assertTrue(any(run.bold and "пп.\u00a02 п.\u00a049" in run.text
                             for run in target.paragraphs[0].runs))
@@ -240,7 +256,7 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             self.assertIsNotNone(fonts)
             self.assertEqual(fonts.get(qn("w:ascii")), "Times New Roman")
             self.assertIsNotNone(size)
-            self.assertEqual(size.get(qn("w:val")), "22")
+            self.assertEqual(size.get(qn("w:val")), "24")
 
     def test_local_unavailable_flag_does_not_claim_source_file_is_damaged(self):
         output = self.build(customer=[{
@@ -477,11 +493,29 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             root = etree.fromstring(package.read("word/document.xml"))
             relationships = package.read("word/_rels/document.xml.rels").decode("utf-8")
         ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-        ministry = next(p for p in root.xpath(".//w:p", namespaces=ns)
-                        if "роз’яснень Міністерства економіки України" in "".join(p.itertext()))
-        self.assertEqual(len(ministry.xpath(".//w:hyperlink", namespaces=ns)), 3)
-        for url in generator.MINISTRY_EXPLANATION_URLS:
+        paragraphs = root.xpath(".//w:body/w:p", namespaces=ns)
+        texts = ["".join(p.xpath(".//w:t/text()", namespaces=ns)) for p in paragraphs]
+        start = next(i for i, text in enumerate(texts)
+                     if "роз’яснень Міністерства економіки України" in text)
+        heading = next(i for i, text in enumerate(texts)
+                       if "За результатами розгляду встановлено" in text)
+        normative = paragraphs[start:heading]
+        self.assertEqual(len(normative), 8)
+        self.assertEqual(sum(len(p.xpath(".//w:hyperlink", namespaces=ns))
+                             for p in normative), 3)
+        self.assertEqual(sum(bool("".join(p.xpath(".//w:hyperlink//w:t/text()", namespaces=ns)))
+                             for p in normative), 3)
+        for paragraph in normative:
+            self.assertFalse(paragraph.xpath(".//w:highlight | .//w:shd", namespaces=ns))
+            for run in paragraph.xpath(".//w:r[.//w:t[string-length(.) > 0]]", namespaces=ns):
+                run_properties = run.find(qn("w:rPr"))
+                self.assertIsNotNone(run_properties)
+                self.assertEqual(run_properties.find(qn("w:sz")).get(qn("w:val")), "24")
+                self.assertEqual(run_properties.find(qn("w:szCs")).get(qn("w:val")), "24")
+        for url in MINISTRY_URLS:
             self.assertEqual(relationships.count(url.replace("&", "&amp;")), 1)
+        self.assertNotIn("{{#if", enabled_text)
+        self.assertNotIn("{{/if}}", enabled_text)
 
         disabled = Path(self.temp.name) / "no-civil-code.docx"
         generator.build_violation_protocol_docx(
@@ -492,6 +526,21 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         disabled_text = all_text(disabled)
         self.assertNotIn("роз’яснень Міністерства економіки України", disabled_text)
         self.assertNotIn("ч.\u00a05 ст.\u00a0254 Цивільного кодексу України", disabled_text)
+        with zipfile.ZipFile(disabled) as package:
+            from lxml import etree
+            root = etree.fromstring(package.read("word/document.xml"))
+        paragraphs = root.xpath(".//w:body/w:p", namespaces=ns)
+        texts = ["".join(p.xpath(".//w:t/text()", namespaces=ns)).strip()
+                 for p in paragraphs]
+        heading = next(i for i, text in enumerate(texts)
+                       if "За результатами розгляду встановлено" in text)
+        self.assertGreater(heading, 0)
+        self.assertTrue(texts[heading - 1])
+        heading_properties = paragraphs[heading].find(qn("w:pPr"))
+        self.assertTrue(
+            heading_properties is None
+            or heading_properties.find(qn("w:pageBreakBefore")) is None
+        )
 
     def test_runtime_templates_are_seeded_without_overwriting_operator_version(self):
         runtime = Path(self.temp.name) / "runtime"
@@ -511,7 +560,7 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         with patch.object(generator, "TEMPLATE_DIR", runtime), patch.object(generator, "TEMPLATES", templates):
             generator.ensure_runtime_templates()
             original = sha256(templates["warning"])
-            with self.assertRaisesRegex(ValueError, "обов’язкові маркери"):
+            with self.assertRaisesRegex(ValueError, "conditional blocks"):
                 generator.replace_runtime_template("warning", invalid)
             self.assertEqual(sha256(templates["warning"]), original)
 

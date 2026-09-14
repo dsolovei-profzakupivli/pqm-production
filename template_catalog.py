@@ -173,7 +173,8 @@ def scan_docx(path,fields,document_type,runtime_key=''):
                    for p in root.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p')]
             if any('{{#if' in t or '{{/if' in t for t in texts):
                 try:
-                    blocks,_=plan(etree.fromstring(raw),fields,document_type)
+                    blocks,_=plan(etree.fromstring(raw),fields,document_type,
+                                  validate_scalars=not bool(runtime_key))
                     tokens.update(condition.key for condition,_ in blocks)
                 except ConditionalError as exc:conditional_errors.append(str(exc))
             for paragraph in root.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p'):

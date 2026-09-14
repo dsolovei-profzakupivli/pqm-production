@@ -16,6 +16,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
+from protocol_template import protocol_cpv_category, sorted_protocol_items
+
 
 def _date(value: str, short: bool = False) -> str:
     raw = (value or "")[:10]
@@ -146,7 +148,7 @@ def _add_protocol_table(doc, rows, rejected=False):
             item.get("supplier_name"),
             item.get("supplier_code"),
             item.get("pretty_id"),
-            f"{item.get('dk_code') or '—'} - {item.get('category_title') or '—'}",
+            protocol_cpv_category(item),
             _date(item.get("date_published")),
         ]
         if rejected:
@@ -158,7 +160,7 @@ def _add_protocol_table(doc, rows, rejected=False):
 
 
 def build_protocol_docx_legacy(payload: dict, output_path: Path) -> Path:
-    items = payload["items"]
+    items = sorted_protocol_items(payload["items"])
     admitted = [item for item in items if item.get("protocol_decision") == "admit"]
     rejected = [item for item in items if item.get("protocol_decision") == "reject"]
     number = payload["protocol_number"]

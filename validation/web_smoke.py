@@ -207,6 +207,38 @@ class WebAcceptance(unittest.TestCase):
                 self.assertTrue(result['local_review_completed']);self.assertTrue(result['is_read_only'])
                 self.assertEqual(bool(attempt),result['has_official_decision'])
 
+    def test_10_historical_read_only_and_chat(self):
+        import historical_applications
+        sid='0'*31+'1'
+        with server.db() as con:
+            con.execute("INSERT INTO submissions(id,framework_id,supplier_name,supplier_code,date_published,raw_json,synced_at) VALUES (?,?,?,?,?,?,?)",(sid,'framework','Synthetic historical','00000000','2024-01-01','{}','fixture'))
+            con.execute("INSERT INTO application_fields(submission_id,protocol_officer) VALUES (?,?)",(sid,'Other Officer'))
+            before=tuple(con.execute('SELECT * FROM application_fields WHERE submission_id=?',(sid,)).fetchone())
+        with patch.object(historical_applications,'manifest',return_value={'version':1,'applications':{sid:{'source_row':2}}}):
+            for role in ['officer','admin']:
+                status,payload,_=self.request('/api/applications/'+sid,role,'PATCH',{'notes':'blocked historical'})
+                self.assertEqual(409,status);self.assertTrue(payload['historical_read_only'])
+            status,payload,_=self.request('/api/chats','officer','POST',{'members':['fixture-admin']})
+            self.assertIn(status,[200,201]);chat=payload['id']
+            status,_,_=self.request(f'/api/chats/{chat}/messages','officer','POST',{'body':'Synthetic historical selection','submission_id':sid})
+            self.assertIn(status,[200,201])
+            self.assertEqual(sid,self.request(f'/api/chats/{chat}/messages')[1]['items'][0]['submission']['id'])
+        with server.db() as con:
+            self.assertEqual(before,tuple(con.execute('SELECT * FROM application_fields WHERE submission_id=?',(sid,)).fetchone()))
+
+    def test_11_new_decision_records_canonical_officer(self):
+        sid='canonical-decision-fixture'
+        with server.db() as con:
+            con.execute("INSERT INTO submissions(id,framework_id,supplier_name,supplier_code,date_published,raw_json,synced_at) VALUES (?,?,?,?,?,?,?)",(sid,'framework','Synthetic new','00000000','2026-09-14','{}','fixture'))
+            con.execute("INSERT INTO application_fields(submission_id,protocol_officer,compliance_status) VALUES (?,?,'rejected')",(sid,'Other Officer'))
+            expected=server.canonical_officer_identity(con,'fixture-officer',1)
+        status,payload,_=self.request('/api/applications/'+sid,'officer','PATCH',{'protocol_decision':'reject'})
+        self.assertEqual(200,status,payload)
+        with server.db() as con:
+            actual=con.execute('SELECT review_officer FROM application_fields WHERE submission_id=?',(sid,)).fetchone()[0]
+        self.assertEqual(expected,actual);self.assertNotEqual('fixture-officer',actual)
+        self.assertEqual('Synthetic OFFICER',actual)
+
     def test_09_public_favicons(self):
         from html.parser import HTMLParser
         import struct

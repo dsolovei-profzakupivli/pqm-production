@@ -23,7 +23,7 @@ def fixture(code='43897155'):
     CREATE TABLE operational_task_events(id INTEGER PRIMARY KEY,task_id TEXT,event_type TEXT,created_at TEXT,actor TEXT,old_value TEXT,new_value TEXT,metadata TEXT);
     CREATE TABLE operational_task_channels(task_id TEXT,channel TEXT);
     CREATE TABLE supplier_registry_summary(supplier_code TEXT,supplier_name TEXT);
-    CREATE TABLE supplier_edr_profiles(supplier_code TEXT,full_name TEXT,short_name TEXT);
+    CREATE TABLE supplier_edr_profiles(supplier_code TEXT,full_name TEXT,short_name TEXT,manager_name TEXT,source_sheet TEXT);
     CREATE TABLE supplier_managers(
       id INTEGER PRIMARY KEY,supplier_code TEXT,manager_name TEXT,manager_tax_id TEXT,
       is_current INTEGER,manager_tax_id_source TEXT,manager_tax_id_verified_at TEXT,
@@ -65,8 +65,9 @@ class TaskDocumentTests(unittest.TestCase):
         for code,kind in [('43897155','legal_entity'),('1234567890','individual_entrepreneur')]:
             con,item=fixture(code)
             if kind=='individual_entrepreneur':
-                con.execute('INSERT INTO supplier_edr_profiles VALUES(?,?,?)',
-                  (code,'ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ БАБІЙ СЕРГІЙ ПЕТРОВИЧ','ФОП БАБІЙ С.П.'))
+                con.execute('INSERT INTO supplier_edr_profiles VALUES(?,?,?,?,?)',
+                  (code,'ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ БАБІЙ СЕРГІЙ ПЕТРОВИЧ','ФОП БАБІЙ С.П.',
+                   'КОНТРОЛЬНИЙ КЕРІВНИК','ФОП'))
                 con.commit()
             with con:
                 con.execute('BEGIN IMMEDIATE')
@@ -103,7 +104,7 @@ class TaskDocumentTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
 
     def test_supplier_name_prefers_edr_full_name(self):
-        self.con.execute("INSERT INTO supplier_edr_profiles VALUES(?,?,?)",
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,short_name) VALUES(?,?,?)",
                          ('43897155','ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "ЄДР НАЗВА"','ТОВ "ЄДР"'))
         self.con.execute("UPDATE supplier_registry_summary SET supplier_name='НЕ CANONICAL SUMMARY'")
         self.con.execute("UPDATE submissions SET supplier_name='НАЗВА З ОСТАННЬОЇ ЗАЯВКИ'")
@@ -126,7 +127,7 @@ class TaskDocumentTests(unittest.TestCase):
             td.resolve_context(self.con,self.item,fields,{'required_fields':['supplier.name']})
 
     def test_short_name_prefers_edr_and_falls_back_to_document_name(self):
-        self.con.execute("INSERT INTO supplier_edr_profiles VALUES(?,?,?)",
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,short_name) VALUES(?,?,?)",
                          ('43897155','ПОВНА НАЗВА','ТОВ "КОРОТКА"'))
         fields=template_catalog.validate(template_catalog.load(),self.schema)
         values=td.resolve_context(self.con,self.item,fields,{'required_fields':['supplier.short_name']})
@@ -136,7 +137,7 @@ class TaskDocumentTests(unittest.TestCase):
         self.assertEqual(values['supplier.short_name'],'ПОВНА НАЗВА')
 
     def test_resolved_askod_metadata_is_immutable_per_version(self):
-        self.con.execute("INSERT INTO supplier_edr_profiles VALUES(?,?,?)",
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,short_name) VALUES(?,?,?)",
                          ('43897155','ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "ПОВНА НАЗВА"','ТОВ "ПЕРША"'))
         self.con.commit()
         first=self.generate()

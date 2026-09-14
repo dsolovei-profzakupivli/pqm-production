@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import nazk_workflow as workflow
 import operational_tasks
@@ -158,6 +159,43 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertEqual(first["created"], 1)
         self.assertEqual(second["created"], 0)
         self.assertEqual([tuple(row) for row in task], [("in_progress", "nazk_check")])
+
+    def test_fop_task_resolves_rnokpp_only_from_identity_proven_edr_context(self):
+        code = "3618109260"
+        manager = "СЕЛЕГЕНЬ АНАСТАСІЯ СЕРГІЇВНА"
+        self.seed_supplier(code=code, manager=manager)
+        self.seed_submission(code=code, manager=manager)
+        with server.db() as con:
+            con.execute("""INSERT INTO supplier_edr_profiles
+              (supplier_code,full_name,short_name,manager_name,source_sheet,synced_at)
+              VALUES (?,?,?,?,?,?)""", (code,
+              "ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ СЕЛЕГЕНЬ АНАСТАСІЯ СЕРГІЇВНА",
+              "ФОП СЕЛЕГЕНЬ А.С.", manager, "ФОП", server.now_iso()))
+            con.execute("""INSERT INTO qualifications
+              (id,framework_id,submission_id,status,documents_json,raw_json,synced_at)
+              VALUES ('qualification-submission-1','framework-1','submission-1','active','[]','{}',?)""",
+              (server.now_iso(),))
+            con.execute("UPDATE submissions SET qualification_id='qualification-submission-1' WHERE id='submission-1'")
+            con.execute("UPDATE frameworks SET raw_json=? WHERE id='framework-1'", (
+                json.dumps({"qualificationPeriod": {"endDate": "2099-12-31T00:00:00"}}),
+            ))
+            con.execute("""INSERT INTO registry_contracts
+              (id,framework_id,qualification_id,supplier_code,status,milestones_json,raw_json,synced_at)
+              VALUES ('contract-1','framework-1','qualification-submission-1',?,'active','[]','{}',?)""",
+              (code, server.now_iso()))
+            created = workflow.reconcile_supplier_nazk(con, code, apply=True)
+            operational_tasks.materialize_nazk_tasks(con, "test", supplier_codes=[code])
+            task_id = con.execute("SELECT id FROM operational_tasks WHERE task_type='nazk_check'").fetchone()[0]
+            detail = operational_tasks.detail(con, task_id)
+            stored = con.execute("""SELECT sm.manager_tax_id,c.person_tax_id
+              FROM supplier_managers sm JOIN supplier_nazk_checks c ON c.manager_id=sm.id
+              WHERE c.id=?""", (created["check_id"],)).fetchone()
+        self.assertEqual(detail["current_manager"]["manager_tax_id"], code)
+        self.assertEqual(detail["nazk_current_state"]["person_rnokpp"], code)
+        self.assertEqual(detail["nazk_evidence"]["person_rnokpp"], code)
+        self.assertEqual(detail["nazk_evidence"]["person_rnokpp_source"],
+                         "supplier_edr_profiles.fop_identifier")
+        self.assertEqual(tuple(stored), (None, ""))
 
     def test_check_evidence_is_shared_by_active_closed_task_and_supplier_profile(self):
         self.seed_supplier(); self.seed_submission()
@@ -614,6 +652,60 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertEqual(present(new_submission), "possible")
         self.assertEqual(present(supplier_level_refuted), "")
 
+    def test_meddata_era_registry_match_without_control_has_no_application_marker(self):
+        self.seed_supplier()
+        self.seed_submission(submission_id="historical-meddata")
+        with server.db() as con:
+            con.execute("""UPDATE submissions SET date_published='2026-08-31T23:59:59Z'
+                           WHERE id='historical-meddata'""")
+            raw_state = workflow.get_submission_nazk_state(con, "historical-meddata")
+        with patch.object(server.historical_applications, "provenance",
+                          side_effect=lambda sid: {"source_system": "MedData"}
+                          if sid == "historical-meddata" else None):
+            payload = server.list_applications({"search": ["10000001"], "size": ["10"]})
+        item = next(row for row in payload["items"] if row["id"] == "historical-meddata")
+        self.assertEqual(raw_state["state"], "needs_check")
+        self.assertIsNone(raw_state["control_id"])
+        self.assertEqual(item["nazk_presentation_state"], "")
+
+    def test_meddata_era_real_application_control_keeps_marker(self):
+        self.seed_supplier()
+        self.seed_submission(submission_id="historical-controlled")
+        with server.db() as con:
+            con.execute("""UPDATE submissions SET date_published='2026-08-31'
+                           WHERE id='historical-controlled'""")
+            workflow.ensure_submission_nazk_control(con, "historical-controlled")
+        with patch.object(server.historical_applications, "provenance",
+                          side_effect=lambda sid: {"source_system": "MedData"}
+                          if sid == "historical-controlled" else None):
+            payload = server.list_applications({"search": ["10000001"], "size": ["10"]})
+        item = next(row for row in payload["items"] if row["id"] == "historical-controlled")
+        self.assertIsNotNone(item["nazk_control_id"])
+        self.assertEqual(item["nazk_presentation_state"], "needs_check")
+
+    def test_rejected_application_is_presented_as_nazk_not_current(self):
+        present = workflow.get_submission_nazk_presentation_state
+        for state in (
+            {"control_id": None, "state": "needs_check", "registry_match": True},
+            {"control_id": 1, "state": "needs_check", "registry_match": True},
+            {"control_id": 2, "state": "refuted", "registry_match": True},
+        ):
+            with self.subTest(state=state):
+                self.assertEqual(present(state, application_rejected=True), "not_current")
+
+    def test_admitted_application_keeps_factual_refuted_result(self):
+        self.assertEqual(workflow.get_submission_nazk_presentation_state(
+            {"control_id": 2, "state": "refuted", "registry_match": True},
+            application_rejected=False,
+        ), "refuted")
+
+    def test_pqm_era_no_control_match_remains_informational(self):
+        state = {"control_id": None, "state": "needs_check", "registry_match": True}
+        self.assertEqual(
+            workflow.get_submission_nazk_presentation_state(state),
+            "possible",
+        )
+
     def test_existing_but_unselected_document_does_not_unlock_approval(self):
         self.seed_supplier(); self.seed_submission()
         with server.db() as con:
@@ -895,7 +987,7 @@ class NazkWorkflowTests(unittest.TestCase):
 
     def test_application_renderer_keeps_completed_nazk_badge_and_editable_trusted_manager_value(self):
         source = Path("app.js").read_text(encoding="utf-8")
-        self.assertIn("row.nazkState==='refuted'", source)
+        self.assertIn("row.nazkPresentationState==='refuted'", source)
         self.assertIn("НАЗК · Спростовано", source)
         self.assertNotIn("Збіг не підтверджено", source)
         self.assertIn('data-result="refuted">Спростовано</button>', source)

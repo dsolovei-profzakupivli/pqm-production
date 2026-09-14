@@ -8,7 +8,7 @@ from protocol_template import NS, TOKEN, paragraph_text, replace_tokens
 from template_conditions import ConditionalError, Condition, field_spec, parse_marker
 
 
-def plan(root, fields, document_type):
+def plan(root, fields, document_type, *, validate_scalars=True):
     """Validate all branches before mutation, including branches later excluded.
 
     Markers are standalone sibling paragraphs in body/header/footer/cell.
@@ -26,7 +26,9 @@ def plan(root, fields, document_type):
             parent = p.getparent()
             if etree.QName(parent).localname not in ('body', 'hdr', 'ftr', 'tc'):
                 raise ConditionalError('Непідтримуваний контейнер marker')
-            if p.xpath('.//w:sectPr | .//w:drawing | .//w:br | .//w:tab', namespaces=NS):
+            # A paragraph style may legitimately define tab stops in w:pPr.
+            # Only actual run-level tab/break content makes a marker non-standalone.
+            if p.xpath('.//w:sectPr | .//w:drawing | .//w:r/w:br | .//w:r/w:tab', namespaces=NS):
                 raise ConditionalError('Marker має бути окремим текстовим абзацом')
             if isinstance(marker, Condition):
                 if pending:
@@ -44,7 +46,7 @@ def plan(root, fields, document_type):
                     raise ConditionalError('If не може видаляти межу секції')
                 blocks.append((condition, nodes))
                 pending = None
-        else:
+        elif validate_scalars:
             residual = TOKEN.sub('', text)
             if '{{' in residual or '}}' in residual:
                 raise ConditionalError('Некоректний placeholder або inline conditional marker: ' + text)
@@ -54,6 +56,58 @@ def plan(root, fields, document_type):
     if pending:
         raise ConditionalError('Незакритий if')
     return blocks, scalars
+
+
+def render_conditionals(source, output, context, fields, document_type):
+    """Apply the canonical conditional grammar while retaining legacy scalars.
+
+    This is the migration bridge for approved DOCX templates whose scalar
+    placeholders still use the legacy renderer.  Conditional markers use the
+    same validated Catalog fields and range semantics as ``render``; retained
+    paragraphs, runs, hyperlinks and relationships are never reconstructed.
+    """
+    source, output = Path(source), Path(output)
+    if source.resolve() == output.resolve():
+        raise ConditionalError('Source template не можна перезаписувати')
+    with ZipFile(source) as archive:
+        parts = [(info, archive.read(info)) for info in archive.infolist()]
+    roots, original_trees, decisions = {}, {}, {}
+    for info, raw in parts:
+        if not (info.filename.startswith('word/') and info.filename.endswith('.xml')):
+            continue
+        root = etree.fromstring(raw)
+        roots[info.filename] = root
+        original_trees[info.filename] = etree.tostring(root)
+        blocks, _ = plan(root, fields, document_type, validate_scalars=False)
+        decisions[info.filename] = [
+            (condition.evaluate(context, fields, document_type), nodes)
+            for condition, nodes in blocks
+        ]
+    for name, root in roots.items():
+        for keep, nodes in decisions[name]:
+            for node in (nodes[0], nodes[-1]) if keep else nodes:
+                node.getparent().remove(node)
+        for cell in root.xpath('.//w:tc', namespaces=NS):
+            if not len(cell) or etree.QName(cell[-1]).localname != 'p':
+                cell.append(etree.Element('{'+NS['w']+'}p'))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(suffix='.docx', dir=output.parent)
+    os.close(fd)
+    try:
+        with ZipFile(temp, 'w') as archive:
+            for info, raw in parts:
+                root = roots.get(info.filename)
+                archive.writestr(
+                    info,
+                    etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
+                    if root is not None and etree.tostring(root) != original_trees[info.filename]
+                    else raw,
+                )
+        os.replace(temp, output)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    return output
 
 
 def condition_keys(source, fields, document_type):

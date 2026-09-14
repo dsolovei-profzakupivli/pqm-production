@@ -41,10 +41,12 @@ class BidsRuntimeTests(unittest.TestCase):
         self.addCleanup(lambda: [p.stop() for p in reversed(self.patches)])
 
     def test_lightweight_check_never_launches_update(self):
-        with patch.object(server, 'bids_runtime_check'), patch.object(server, 'bids_update_worker') as worker:
+        diagnostics = {'preflight_pid': 123}
+        with patch.object(server, 'bids_runtime_check', return_value=diagnostics), patch.object(server, 'bids_update_worker') as worker:
             status, result = self.post({'check_only':True})
             self.assertEqual(status, 200)
             self.assertFalse(result['started'])
+            self.assertEqual(result['preflight'], diagnostics)
             worker.assert_not_called()
 
     def test_start_failure_is_json_and_logged(self):
@@ -52,6 +54,7 @@ class BidsRuntimeTests(unittest.TestCase):
             status, result = self.post({})
             self.assertEqual(status, 503)
             self.assertEqual(result['code'], 'bids_start_failed')
+            self.assertIn('test unavailable', result['error'])
             self.assertFalse(server.BIDS_UPDATE_STATE['running'])
             log.assert_called_once()
 
@@ -65,10 +68,21 @@ class BidsRuntimeTests(unittest.TestCase):
             self.assertEqual(self.post({})[0], 403)
 
     def test_runtime_uses_configured_python(self):
-        with patch.object(server.Path, 'is_file', return_value=True), patch.object(server.subprocess, 'run') as run:
-            server.bids_runtime_check()
-            self.assertEqual(run.call_args.args[0][0], str(server.BIDS_PYTHON))
-            self.assertEqual(run.call_args.kwargs['cwd'], server.BIDS_SCRIPT.parent)
+        with patch.object(server.Path, 'is_file', return_value=True), patch.object(server.subprocess, 'Popen') as popen:
+            process = popen.return_value.__enter__.return_value
+            process.pid = 321
+            process.communicate.return_value = ('', '')
+            process.returncode = 0
+            result = server.bids_runtime_check()
+            self.assertEqual(popen.call_args.args[0][0], str(server.BIDS_PYTHON))
+            self.assertEqual(popen.call_args.kwargs['cwd'], server.BIDS_SCRIPT.parent)
+            self.assertEqual(result['preflight_pid'], 321)
+
+    def test_runtime_permission_error_is_actionable(self):
+        with patch.object(server.Path, 'is_file', return_value=True), \
+             patch.object(server.subprocess, 'Popen', side_effect=PermissionError(5, 'Access is denied')):
+            with self.assertRaisesRegex(RuntimeError, 'PQM_BIDS_PYTHON'):
+                server.bids_runtime_check()
 
     def test_worker_streams_output_and_failure(self):
         with patch.object(server.subprocess, 'Popen') as popen, patch.object(server.SERVER_LOG, 'info') as log:

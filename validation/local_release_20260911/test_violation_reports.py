@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import server
 from declension import DeclensionResult
+from violation_text import normalize_justification_text
 
 
 def organization(code):
@@ -40,6 +41,13 @@ class ViolationReportTests(unittest.TestCase):
     def tearDown(self):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
+
+    def test_justification_plain_text_normalization(self):
+        raw = "\tПерший абзац.\r\n\r\n  Другий абзац.\rТретій абзац.\n\n"
+        self.assertEqual(
+            normalize_justification_text(raw),
+            "Перший абзац.\nДругий абзац.\nТретій абзац.",
+        )
 
     def test_review_saved_only_without_official_decision(self):
         with patch.object(server, "api_get", return_value={"data": report_payload()}):
@@ -223,7 +231,8 @@ class ViolationReportTests(unittest.TestCase):
         payload = report_payload()
         payload["authority"] = organization("42574629")
         server.save_violation_report(payload)
-        detail = server.violation_report_detail("report-internal", refresh=False)
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            detail = server.violation_report_detail("report-internal", refresh=False)
         self.assertTrue(detail["foreign_authority_read_only"])
         self.assertTrue(detail["is_read_only"])
         with patch.object(server, "api_get", return_value={"data": payload}):
@@ -552,12 +561,19 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(context["contract_warning"], "")
         self.assertFalse(context["contract_info_required"])
 
-    def test_manual_justification_is_saved_and_returned_unchanged(self):
-        manual = "Ручний офіційний текст УО"
+    def test_manual_justification_is_saved_as_canonical_plain_text(self):
+        manual = "\tРучний офіційний текст УО\r\n\r\n  Другий абзац"
+        expected = "Ручний офіційний текст УО\nДругий абзац"
         with patch.object(server, "api_get", return_value={"data": report_payload()}):
             result = server.save_violation_review(
                 "report-internal", {"decision_justification": manual, "review_notes": ""})
-        self.assertEqual(result["review"]["decision_justification"], manual)
+        self.assertEqual(result["review"]["decision_justification"], expected)
+        with server.db() as connection:
+            stored = connection.execute(
+                "SELECT decision_justification FROM violation_report_reviews WHERE report_id=?",
+                ("report-internal",),
+            ).fetchone()[0]
+        self.assertEqual(stored, expected)
         self.assertEqual(result["justification_draft"], "")
 
     def test_supplier_refusal_and_customer_decision_are_stored_separately(self):
@@ -633,7 +649,8 @@ class ViolationReportTests(unittest.TestCase):
             connection.execute("""INSERT INTO violation_report_reviews
                 (report_id,review_status,updated_at,updated_by) VALUES (?,?,?,?)""",
                 ("report-internal", "in_review", server.now_iso(), "УО"))
-        detail = server.violation_report_detail("report-internal", refresh=False)
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            detail = server.violation_report_detail("report-internal", refresh=False)
         self.assertTrue(detail["is_read_only"])
         self.assertEqual(detail["review"]["review_status"], "completed")
         with server.db() as connection:
@@ -646,7 +663,8 @@ class ViolationReportTests(unittest.TestCase):
             connection.execute("""INSERT INTO violation_report_reviews
                 (report_id,review_status,updated_at,updated_by) VALUES (?,?,?,?)""",
                 ("report-internal", "completed", server.now_iso(), "УО"))
-        detail = server.violation_report_detail("report-internal", refresh=False)
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            detail = server.violation_report_detail("report-internal", refresh=False)
         self.assertTrue(detail["is_read_only"])
         self.assertEqual(detail["review"]["review_status"], "reviewed")
 
@@ -1117,21 +1135,184 @@ class ViolationReportTests(unittest.TestCase):
                 VALUES (?,?,?,?,?,?)""", (
                 "report-internal", "decision_context_snapshotted", "decision_context_snapshot",
                 json.dumps(snapshot, ensure_ascii=False), now, "УО"))
-        detail = server.violation_report_detail("report-internal", refresh=False)
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            detail = server.violation_report_detail("report-internal", refresh=False)
         self.assertEqual(detail["read_only_reason"], "local_completion")
         self.assertEqual(detail["procurement_context"]["dk_code"], "OLD-CPV")
         self.assertEqual(detail["recommendation"]["recommendation_reason"], "Збережено")
         refreshed = report_payload()
         refreshed["dateModified"] = "2026-09-01T18:00:00+03:00"
         server.save_violation_report(refreshed)
-        after = server.violation_report_detail("report-internal", refresh=False)
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            after = server.violation_report_detail("report-internal", refresh=False)
         self.assertEqual(after["procurement_context"]["dk_code"], "OLD-CPV")
         refreshed["decisions"] = [{"id":"official","status":"satisfied","date":"2026-09-02"}]
         server.save_violation_report(refreshed)
-        official = server.violation_report_detail("report-internal", refresh=False)
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            official = server.violation_report_detail("report-internal", refresh=False)
         self.assertEqual(official["read_only_reason"], "official_decision")
         self.assertEqual(official["procurement_context"]["dk_code"], "OLD-CPV")
         self.assertEqual(official["recommendation"]["recommendation_reason"], "Збережено")
+
+    def test_single_report_sheets_json_is_sparse_kyiv_dated_and_snapshot_only(self):
+        snapshot = {"version": 1, "procurement_context": {
+            "available": True,
+            "dk_code": "15610000-7 — Продукція борошномельно-круп’яної промисловості",
+            "winner_selected_at": "2026-08-23T22:30:00Z",
+            "rejection_date": "2026-08-31T15:16:00+03:00",
+            "rejection_title": "Підстава з finalized context",
+        }, "recommendation": {}}
+        now = server.now_iso()
+        with server.db() as connection:
+            connection.execute("""UPDATE violation_reports SET report_id=?,tender_pretty_id=?,
+              author_name=?,author_code=?,defendant_name=?,defendant_code=?,description=?,reason=?
+              WHERE id='report-internal'""", (
+                "UA-D-2026-08-31-000001", "UA-2026-08-19-008079-a",
+                "Замовник із Prozorro", "00112233", "Постачальник із Prozorro", "22222222",
+                "Фактичний опис без перефразування", "contractBreach"))
+            connection.execute("""INSERT INTO supplier_edr_profiles
+              (supplier_code,full_name,short_name,synced_at) VALUES (?,?,?,?)""", (
+                "22222222", "КАНОНІЧНА ПОВНА НАЗВА", "ТОВ «КОРОТКО»", now))
+            connection.execute("""INSERT INTO violation_report_reviews
+              (report_id,review_status,assigned_officer,internal_decision,protocol_number,
+               protocol_date,customer_verified_full_name,customer_verified_short_name,
+               updated_at,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)""", (
+                "report-internal", "reviewed", "СВІТЛАНА НАМЯСЕНКО", "decline", "679-1",
+                "2026-09-08", "КАНОНІЧНИЙ ЗАМОВНИК", "ЗАМОВНИК КОРОТКО", now, "УО"))
+            connection.execute("""INSERT INTO violation_report_review_events
+              (report_id,event_type,field_name,new_value,changed_at,changed_by)
+              VALUES (?,?,?,?,?,?)""", (
+                "report-internal", "decision_context_snapshotted", "decision_context_snapshot",
+                json.dumps(snapshot, ensure_ascii=False), now, "УО"))
+        with patch.object(server, "build_procurement_context") as live_lookup:
+            payload = server.violation_report_sheets_json("UA-D-2026-08-31-000001")
+        live_lookup.assert_not_called()
+        self.assertEqual(payload["received_at"], "18.08.2026")
+        self.assertEqual(payload["winner_selected_at"], "24.08.2026")
+        self.assertEqual(payload["rejection_at"], "31.08.2026")
+        self.assertEqual(payload["supplier_name"], "КАНОНІЧНА ПОВНА НАЗВА")
+        self.assertEqual(payload["uo_decision"], "Відмова в задоволенні звернення")
+        self.assertEqual(payload["output_name"], "UA-D-2026-08-31-000001_679-1_В")
+        self.assertEqual(payload["legal_basis_short"], "пп. 1 п. 49")
+        self.assertNotIn("contract_date", payload)
+        self.assertNotIn("contract_number", payload)
+        self.assertEqual(len(payload), 21)
+
+    def test_sheets_json_eligibility_starts_at_reviewed_not_completed_at(self):
+        now = server.now_iso()
+        with server.db() as connection:
+            connection.execute("""INSERT INTO violation_report_reviews
+              (report_id,review_status,internal_decision,completed_at,updated_at,updated_by)
+              VALUES (?,?,?,?,?,?)""", (
+                "report-internal", "reviewed", "warning", "", now, "УО"))
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            detail = server.violation_report_detail("report-internal", refresh=False)
+            payload = server.violation_report_sheets_json("report-internal")
+        self.assertTrue(detail["sheets_json_available"])
+        self.assertNotIn("protocol_number", payload)
+        self.assertNotIn("protocol_date", payload)
+        self.assertNotIn("output_name", payload)
+        with server.db() as connection:
+            connection.execute("UPDATE violation_report_reviews SET review_status='completed' "
+                               "WHERE report_id='report-internal'")
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            completed = server.violation_report_detail("report-internal", refresh=False)
+        self.assertTrue(completed["sheets_json_available"])
+
+    def test_sheets_json_accepts_official_completed_projection_with_saved_decision(self):
+        official = report_payload([{"id": "decision", "status": "declined", "date": "2026-09-08"}])
+        server.save_violation_report(official)
+        now = server.now_iso()
+        with server.db() as connection:
+            connection.execute("""INSERT INTO violation_report_reviews
+              (report_id,review_status,internal_decision,protocol_number,protocol_date,
+               updated_at,updated_by) VALUES (?,?,?,?,?,?,?)""", (
+                "report-internal", "in_review", "decline", "P-1", "2026-09-08", now, "УО"))
+        detail = server.violation_report_detail("report-internal", refresh=False)
+        self.assertEqual(detail["review"]["review_status"], "completed")
+        self.assertFalse(detail["local_review_completed"])
+        self.assertTrue(detail["sheets_json_available"])
+        with patch.object(server, "build_procurement_context", return_value={"available": False}):
+            payload = server.violation_report_sheets_json("report-internal")
+        self.assertEqual(payload["report_id"], "UA-D-TEST")
+        self.assertEqual(payload["uo_decision"], "Відмова в задоволенні звернення")
+
+    def test_sheets_json_rejects_in_review_without_completed_projection(self):
+        now = server.now_iso()
+        with server.db() as connection:
+            connection.execute("""INSERT INTO violation_report_reviews
+              (report_id,review_status,internal_decision,protocol_number,protocol_date,
+               updated_at,updated_by) VALUES (?,?,?,?,?,?,?)""", (
+                "report-internal", "in_review", "decline", "P-1", "2026-09-08", now, "УО"))
+        detail = server.violation_report_detail("report-internal", refresh=False)
+        self.assertEqual(detail["review"]["review_status"], "in_review")
+        self.assertFalse(detail["sheets_json_available"])
+        with self.assertRaisesRegex(PermissionError, "Розглянуто"):
+            server.violation_report_sheets_json("report-internal")
+
+    def test_sheets_json_legacy_procurement_fallback_is_one_case_only(self):
+        now = server.now_iso()
+        with server.db() as connection:
+            connection.execute("""INSERT INTO violation_report_reviews
+              (report_id,review_status,internal_decision,protocol_number,protocol_date,
+               updated_at,updated_by) VALUES (?,?,?,?,?,?,?)""", (
+                "report-internal", "reviewed", "decline", "P-2", "2026-09-08", now, "УО"))
+        legacy = {"available": True, "dk_code": "99999999-9", "winner_selected_at": "2026-08-20"}
+        with patch.object(server, "build_procurement_context", return_value=legacy) as lookup:
+            payload = server.violation_report_sheets_json("report-internal")
+        self.assertEqual(lookup.call_count, 1)
+        self.assertEqual(lookup.call_args.args[0]["id"], "report-internal")
+        self.assertEqual(payload["cpv"], "99999999-9")
+
+    def test_read_only_card_and_sheets_json_share_case_scoped_resolved_context(self):
+        official = report_payload([{"id": "decision", "status": "declined", "date": "2026-09-01"}])
+        server.save_violation_report(official)
+        now = server.now_iso()
+        with server.db() as connection:
+            connection.execute("""INSERT INTO violation_report_reviews
+              (report_id,review_status,internal_decision,protocol_number,protocol_date,
+               updated_at,updated_by) VALUES (?,?,?,?,?,?,?)""", (
+                "report-internal", "in_review", "warning", "679-4", "2026-09-08", now, "УО"))
+        resolved = {
+            "available": True,
+            "dk_code": "44110000-4 — Конструкційні матеріали",
+            "winner_selected_at": "2026-08-21T10:00:00+03:00",
+            "rejection_date": "2026-09-01T12:00:00+03:00",
+            "rejection_title": "Канонічна підстава відхилення",
+        }
+        with patch.object(server, "build_procurement_context", return_value=resolved) as card_lookup:
+            detail = server.violation_report_detail("report-internal", refresh=False)
+        card_lookup.assert_called_once()
+        self.assertTrue(detail["is_read_only"])
+        self.assertEqual(detail["decision_context_source"], "case_scoped_resolver")
+        self.assertEqual(detail["procurement_context"]["cpv"], resolved["dk_code"])
+        self.assertEqual(detail["procurement_context"]["rejection_at"], resolved["rejection_date"])
+        self.assertEqual(detail["procurement_context"]["rejection_reason"], resolved["rejection_title"])
+        with patch.object(server, "build_procurement_context", return_value=resolved) as export_lookup:
+            payload = server.violation_report_sheets_json("report-internal")
+        export_lookup.assert_called_once()
+        self.assertEqual(payload["cpv"], detail["procurement_context"]["cpv"])
+        self.assertEqual(payload["winner_selected_at"], "21.08.2026")
+        self.assertEqual(payload["rejection_at"], "01.09.2026")
+        self.assertEqual(payload["rejection_reason"], detail["procurement_context"]["rejection_reason"])
+
+    def test_unreviewed_read_only_card_resolves_factual_cpv_without_json_eligibility(self):
+        official = report_payload([{"id": "decision", "status": "declined", "date": "2026-07-06"}])
+        server.save_violation_report(official)
+        resolved = {
+            "available": True,
+            "dk_code": "44110000-4 — Конструкційні матеріали",
+            "contract_pretty_id": "UA-2026-06-22-011297-a-a2",
+        }
+        with patch.object(server, "build_procurement_context", return_value=resolved) as lookup:
+            detail = server.violation_report_detail("report-internal", refresh=False)
+        lookup.assert_called_once()
+        self.assertTrue(detail["is_read_only"])
+        self.assertFalse(detail["sheets_json_available"])
+        self.assertIsNone(detail["procurement_context"])
+        self.assertEqual(detail["factual_procurement_context_source"], "case_scoped_resolver")
+        self.assertEqual(detail["factual_procurement_context"]["cpv"], resolved["dk_code"])
+        self.assertEqual(detail["review"].get("internal_decision") or "", "")
 
     def test_justification_generation_is_blocked_before_supplier_deadline(self):
         payload = report_payload()
@@ -1223,6 +1404,8 @@ class ViolationReportTests(unittest.TestCase):
         }
         review = {"internal_decision": "warning", "guarantee_documents_visible": False}
         text = server.build_violation_decision_justification(report, context, review)
+        self.assertNotIn("\r", text)
+        self.assertNotIn("\n\n", text)
         self.assertIn("пп. 1 п. 49 Порядку № 822", text)
         self.assertIn("відсутні документи/відомості", text)
         self.assertNotIn("recommended_scenario", text)
@@ -1257,6 +1440,8 @@ class ViolationReportTests(unittest.TestCase):
         }
         review = {"internal_decision": "decline", "written_refusal_date": "2026-08-24"}
         shifted = server.build_violation_decision_justification(report, context, review)
+        self.assertNotIn("\r", shifted)
+        self.assertNotIn("\n\n", shifted)
         self.assertIn("ч. 5 ст. 254 ЦК України", shifted)
         self.assertIn("пп. 2 п. 49 Порядку № 822", shifted)
         ordinary = server.build_violation_decision_justification(
@@ -1279,6 +1464,13 @@ class ViolationReportTests(unittest.TestCase):
         self.assertIn("Обґрунтування рішення буде доступне після завершення строку", source)
         self.assertIn("hide_saved_automatic_justification", source)
         self.assertIn("До завершення строку постачальника", source)
+        self.assertIn("data-copy-violation-json", source)
+        self.assertIn("/sheets-json", source)
+        self.assertIn("JSON скопійовано", source)
+        self.assertIn("['Код ДК / CPV',c.cpv]", source)
+        self.assertIn("['Дата визначення переможцем',displayDateOnly(c.winner_selected_at)]", source)
+        self.assertIn("['Дата відхилення',displayDateOnly(c.rejection_at)]", source)
+        self.assertIn("['Підстава відхилення',c.rejection_reason]", source)
 
         reason_fields = source[source.rfind("function violationReasonFields(item)"):
                                source.rfind("requestContextBlock=function(item)")]

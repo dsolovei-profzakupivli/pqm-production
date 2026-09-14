@@ -23,7 +23,7 @@ def binding_errors(binding):
     elif kind=='derived' and not binding.get('transformation_type'):
         path=binding.get('context_path') or config['semantic_sources'].get(binding.get('resolver'))
         if not path:return ['MISSING_RUNTIME_BINDING']
-        if (not isinstance(path,str) or path.split('.')[0] not in {'supplier','manager','officer','task','system','code_semantics','contacts','report','customer'}
+        if (not isinstance(path,str) or path.split('.')[0] not in {'supplier','manager','officer','task','system','code_semantics','contacts','report','customer','decision'}
                 or any(not p.isidentifier() or p.startswith('_') for p in path.split('.'))):return ['INVALID_CONTEXT_PATH']
         if binding.get('aggregate') not in (None,'count'):return ['INVALID_AGGREGATE']
     return []

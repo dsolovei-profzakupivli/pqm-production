@@ -215,6 +215,55 @@ class RegistryUxCleanupTests(unittest.TestCase):
         self.assertIn("overflow-y:visible", styles)
         self.assertIn("overflow-x:auto", styles)
 
+    def test_nested_framework_and_dk_popovers_keep_advanced_filter_open(self):
+        advanced_start = self.html.index('<details class="advanced-filters">')
+        advanced_end = self.html.index('id="profileSelect"', advanced_start)
+        self.assertLess(
+            advanced_start,
+            self.html.index('id="frameworkFilter" class="multi-filter', advanced_start, advanced_end),
+        )
+        self.assertLess(
+            advanced_start,
+            self.html.index('id="dkFilter" class="multi-filter', advanced_start, advanced_end),
+        )
+        coordinator = self.app.split("document.addEventListener('toggle'", 1)[1].split(
+            "document.addEventListener('pointerdown'", 1)[0]
+        self.assertIn("!item.contains(opened)", coordinator)
+        self.assertNotIn(
+            "item!==opened&&item instanceof HTMLDetailsElement)item.open=false",
+            coordinator,
+        )
+
+    def test_application_nazk_marker_uses_submission_presentation_only(self):
+        row_renderer = self.app.split("function render(){", 1)[1].split(
+            "function bindStaticMulti", 1
+        )[0]
+        self.assertIn("row.nazkPresentationState==='needs_check'", self.app)
+        self.assertIn("applicationNazk=r.nazkPresentationState", row_renderer)
+        self.assertNotIn("pending&&r.nazkReviewResult", row_renderer)
+        self.assertNotIn("pending&&r.nazkMatch", row_renderer)
+
+    def test_registry_reset_clears_hidden_submission_deep_link(self):
+        self.assertIn("function clearApplicationDeepLinkFilter()", self.app)
+        helper = self.app.split("function clearApplicationDeepLinkFilter()", 1)[1].split(
+            "function syncPrimaryFilters", 1
+        )[0]
+        self.assertIn("deepLinkSubmissionId=''", helper)
+        self.assertIn("url.searchParams.delete('submission_id')", helper)
+        self.assertIn("url.searchParams.delete('nazk_control')", helper)
+        reset = self.app.split("$('#clearFiltersBtn').onclick=", 1)[1].split("$('#columnsBtn')", 1)[0]
+        self.assertIn("clearApplicationDeepLinkFilter()", reset)
+        self.assertIn("event.target.closest('#applicationsNav')", self.app)
+
+    def test_officer_names_share_one_presentation_formatter(self):
+        history = (ROOT / "history_columns.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "displayValue=['protocolOfficer','reviewOfficer'].includes(col.key)?formatOfficerName",
+            self.app,
+        )
+        self.assertIn("esc(formatOfficerName(value))", self.app)
+        self.assertIn("officer:esc(formatOfficerName(x.protocol_officer)||'—')", history)
+
 
 if __name__ == "__main__":
     unittest.main()

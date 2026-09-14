@@ -562,17 +562,29 @@ def get_submission_nazk_states(con: sqlite3.Connection, submission_ids: list[str
     return result
 
 
-def get_submission_nazk_presentation_state(state: dict | None) -> str:
+def get_submission_nazk_presentation_state(
+    state: dict | None, *, historical_read_only: bool = False,
+    application_rejected: bool = False,
+) -> str:
     """Map one application's authoritative state to its marker in a framework.
 
-    Supplier-level checks/results are deliberately not accepted here. A registry
-    match without a control is informational (``possible``), not an actionable
-    submission check.
+    Supplier-level checks/results are deliberately not accepted here.  For a
+    MedData-era application a current registry match without an application
+    control is not presented at all: it is current supplier context, not an
+    historical result of that application.  For newer applications the same
+    no-control match remains informational (``possible``).
     """
     state = state or {}
     value = state.get("state") or "not_required"
+    # A rejected application cannot require further application-level NAZK
+    # evidence.  This is presentation-only: the original control and every
+    # supplier-level workflow/result remain unchanged for audit and history.
+    if application_rejected:
+        return "not_current"
     if state.get("control_id"):
         return value if value in {"needs_check", "refuted", "confirmed"} else ""
+    if historical_read_only:
+        return ""
     if state.get("registry_match"):
         return "possible"
     return ""

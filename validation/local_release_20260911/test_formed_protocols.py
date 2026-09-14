@@ -51,6 +51,35 @@ class FormedProtocolTests(unittest.TestCase):
         with server.db() as con:
             self.assertEqual(0,con.execute('SELECT COUNT(*) FROM formed_protocols').fetchone()[0])
             self.assertEqual(0,con.execute("SELECT COUNT(*) FROM application_fields WHERE COALESCE(protocol_generated_at,'')<>''").fetchone()[0])
+    def test_membership_positions_follow_protocol_sort_order(self):
+        with server.db() as con:
+            con.execute("INSERT INTO frameworks(id,pretty_id,title,dk_code,status,raw_json,synced_at) VALUES ('f034','UA-F-034','03410000-7 - Лісоматеріали','03410000-7','active','{}','now')")
+            con.execute("INSERT INTO frameworks(id,pretty_id,title,dk_code,status,raw_json,synced_at) VALUES ('f314','UA-F-314','31430000-9 — Акумулятори','31430000-9','active','{}','now')")
+            assignments = (
+                ('s0', 'f314', '2026-09-05T08:00:00'),
+                ('s1', 'f034', '2026-09-05T10:00:00'),
+                ('s2', 'f034', '2026-09-05T09:00:00'),
+                ('s3', 'f034', '2026-09-05T10:00:00'),
+                ('s4', 'f314', '2026-09-04T08:00:00'),
+            )
+            for submission_id, framework_id, submitted_at in assignments:
+                con.execute(
+                    "UPDATE submissions SET framework_id=?, date_published=? WHERE id=?",
+                    (framework_id, submitted_at, submission_id),
+                )
+                con.execute("UPDATE qualifications SET framework_id=? WHERE submission_id=?", (framework_id, submission_id))
+        result = self.generate()
+        with server.db() as con:
+            detail = fp.detail(con, result['protocol_id'])
+            stored_positions = [tuple(row) for row in con.execute(
+                'SELECT submission_id, position FROM formed_protocol_members WHERE protocol_id=? ORDER BY position',
+                (result['protocol_id'],),
+            )]
+        self.assertEqual(['s2', 's1', 's3', 's4', 's0'], [item['id'] for item in detail['items']])
+        self.assertEqual(
+            [('s2', 0), ('s1', 1), ('s3', 2), ('s4', 3), ('s0', 4)],
+            stored_positions,
+        )
     def test_duplicate_and_edit_are_blocked(self):
         a=self.generate()
         with self.assertRaises(ValueError):self.generate()

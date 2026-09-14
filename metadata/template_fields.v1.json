@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "revision": 25,
+  "revision": 26,
   "namespaces": [
     "supplier",
     "customer",
@@ -167,6 +167,28 @@
       "active": true,
       "deprecated": false,
       "replacement_key": null
+    },
+    {
+      "key": "decision.civil_code_basis",
+      "label": "Застосування норм ЦКУ щодо обчислення строків",
+      "group": "Рішення",
+      "value_type": "enum",
+      "source_binding": {
+        "source_type": "derived",
+        "context_path": "decision.civil_code_basis",
+        "dependencies": [],
+        "description": "Document-only projection of the existing structured deadline-shift fact; applicable when the relevant three-day or five-day deadline is shifted under the Civil Code, otherwise not_applicable."
+      },
+      "description": "Керує declarative нормативним блоком ЦКУ у протоколі; не є business status.",
+      "available_for": ["warning_notice", "decline_p49_1_2", "decline_p49_3"],
+      "required_for": ["warning_notice", "decline_p49_1_2", "decline_p49_3"],
+      "default_format": null,
+      "example": "applicable",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null,
+      "enum_values": ["applicable", "not_applicable"]
     },
     {
       "key": "tender_id",

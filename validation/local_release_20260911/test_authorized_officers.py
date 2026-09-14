@@ -44,6 +44,25 @@ class AuthorizedOfficerTests(unittest.TestCase):
         self.assertIn("x.can_delete", app_js)
         self.assertIn("УО вже використана у предметних даних — доступна лише деактивація", app_js)
 
+    def test_login_resolves_to_canonical_officer_business_identity(self):
+        with server.db() as con:
+            officer = con.execute(
+                "SELECT id,full_name FROM authorized_officers WHERE active=1 ORDER BY id LIMIT 1"
+            ).fetchone()
+            con.execute("""INSERT INTO auth_users
+                (username,password_hash,role,officer_id,active,created_at,updated_at,created_by)
+                VALUES (?,?,?,?,?,?,?,?)""", (
+                    "d.savva", "test", "officer", officer["id"], 1,
+                    server.now_iso(), server.now_iso(), "test",
+                ))
+            resolved = server.canonical_officer_identity(con, "d.savva")
+        self.assertEqual(resolved, server.formatted_officer_name(officer["full_name"]))
+        self.assertNotEqual(resolved, "d.savva")
+
+    def test_unknown_login_is_not_persistable_as_officer_identity(self):
+        with server.db() as con:
+            self.assertEqual(server.canonical_officer_identity(con, "unknown.login"), "")
+
     def test_newer_manual_manager_is_not_overwritten_by_older_edr_snapshot(self):
         with server.db() as con:
             server.sync_current_supplier_manager(

@@ -43,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from protocol_docx import build_protocol_docx
+from protocol_template import sorted_protocol_items
 from document_semantics import supplier_code_label, supplier_entity_type
 from supplier_contacts import supplier_contacts
 from declension import decline_name, infer_entity_type, normalize_document_name
@@ -58,6 +59,8 @@ import template_runtime
 import template_catalog
 import scheduler_runtime
 import protocol_pdf
+import historical_applications
+from violation_text import normalize_justification_text
 from violation_protocol_docx import (TEMPLATES, build_violation_protocol_docx,
                                      ensure_runtime_templates, replace_runtime_template,
                                      template_metadata, ProtocolContextValidationError)
@@ -158,6 +161,11 @@ BIDS_PYTHON = Path(os.environ.get(
     "PQM_BIDS_PYTHON",
     str(_bids_local.get("python") or BIDS_PROJECT_PATH / ".venv" / "Scripts" / "python.exe"),
 ))
+BIDS_PYTHON_SOURCE = (
+    "environment" if os.environ.get("PQM_BIDS_PYTHON")
+    else "local_config" if _bids_local.get("python")
+    else "project_venv_default"
+)
 BIDS_START_LOCK = threading.Lock()
 BIDS_UPDATE_STATE = {"running": False, "message": "Ручне оновлення ще не запускали", "started_at": None,
                      "updated_at": None, "date_from": None, "date_to": None, "error": None,
@@ -256,18 +264,34 @@ class DeclensionValidationError(ValueError):
                 "unresolved": self.items}
 
 
-def unresolved_declension_items(missing_tokens, declined_names) -> list[dict[str, str]]:
+def unresolved_declension_items(missing_tokens, declined_names, report: dict | None = None) -> list[dict[str, str]]:
     case_by_token = {
         "customer_name_genitive": "genitive", "customer_name_accusative": "accusative",
         "supplier_name_genitive": "genitive", "supplier_name_dative": "dative",
         "supplier_name_accusative": "accusative",
     }
-    return [{"token": token, "entity_type": declined_names[token].entity_type,
-             "original": declined_names[token].original,
-             "grammatical_case": case_by_token[token], "source": declined_names[token].source,
-             "status": declined_names[token].status}
-            for token in missing_tokens if token in case_by_token and token in declined_names
-            and declined_names[token].status == "unresolved"]
+    context = report or {}
+    result = []
+    for token in missing_tokens:
+        if token not in case_by_token or token not in declined_names or declined_names[token].status != "unresolved":
+            continue
+        subject_type = "customer" if token.startswith("customer_") else "supplier"
+        identifier = (context.get("author_code") or context.get("customer_code") or ""
+                      if subject_type == "customer" else
+                      context.get("defendant_code") or context.get("supplier_code") or "")
+        result.append({
+            "token": token,
+            "entity_type": declined_names[token].entity_type,
+            "original": declined_names[token].original,
+            "grammatical_case": case_by_token[token],
+            "source": declined_names[token].source,
+            "status": declined_names[token].status,
+            "subject_type": subject_type,
+            "subject_label": "Замовник" if subject_type == "customer" else "Постачальник",
+            "entity_identifier": str(identifier or ""),
+            "report_id": str(context.get("report_id") or context.get("id") or ""),
+        })
+    return result
 
 
 AUTH_ROLES = {"admin", "officer", "viewer"}
@@ -489,6 +513,25 @@ def valid_active_officer(value: str) -> bool:
         return bool(con.execute(
             "SELECT 1 FROM authorized_officers WHERE UPPER(full_name)=? AND active=1", (normalized,)
         ).fetchone())
+
+
+def canonical_officer_identity(con, username: str, officer_id=None) -> str:
+    """Resolve the accountable officer name; never persist a login as business data."""
+    row = None
+    if officer_id:
+        row = con.execute(
+            "SELECT full_name FROM authorized_officers WHERE id=? AND active=1", (officer_id,)
+        ).fetchone()
+    if not row:
+        row = con.execute("""SELECT o.full_name FROM auth_users u
+          JOIN authorized_officers o ON o.id=u.officer_id
+          WHERE u.username=? AND u.active=1 AND o.active=1""", (username,)).fetchone()
+    if not row:
+        row = con.execute(
+            "SELECT full_name FROM authorized_officers WHERE active=1 AND NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?)",
+            (username,),
+        ).fetchone()
+    return formatted_officer_name(row[0]) if row else ""
 SYNC_STATE = {"running": False, "message": "Синхронізацію ще не запускали", "updated_at": None,
               "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None,
               "last_completed_at": None, "last_result": None, "last_message": None, "last_mode": None}
@@ -2569,6 +2612,9 @@ def list_applications(params: dict) -> dict:
     items = []
     for row in records:
         item = dict(row); item["decision"] = decision_label(item.pop("decision_status"))
+        meddata = historical_applications.provenance(item["id"])
+        item["historical_read_only"] = bool(meddata)
+        item["historical_source"] = meddata or {}
         try:
             stored_check = json.loads(item.pop("document_check_result_json") or "{}")
         except (TypeError, ValueError):
@@ -2583,6 +2629,13 @@ def list_applications(params: dict) -> dict:
         item["nazk_review_result"] = (review or {}).get("result", "")
         submission_nazk = submission_nazk_states.get(item["id"], {})
         item["nazk_state"] = submission_nazk.get("state", "not_required")
+        item["nazk_presentation_state"] = get_submission_nazk_presentation_state(
+            submission_nazk,
+            historical_read_only=bool(meddata),
+            application_rejected=(
+                item.get("protocol_decision") == "reject" or item.get("decision") == "Відхилено"
+            ),
+        )
         item["nazk_can_approve"] = bool(submission_nazk.get("can_approve", True))
         item["nazk_state_reason"] = submission_nazk.get("reason", "")
         item["manager_name_display"] = item.get("manager_name") or submission_nazk.get("manager_name", "")
@@ -2685,6 +2738,10 @@ def application_history(params: dict) -> dict:
           """+source+' ORDER BY '+order+' LIMIT ? OFFSET ?',
           [*args,size,(page-1)*size])]
     for item in items:
+        meddata = historical_applications.provenance(item["id"])
+        item["historical_read_only"] = bool(meddata)
+        item["historical_source"] = meddata or {}
+    for item in items:
         groups = grouped_application_documents(item.pop('documents_json'), item.pop('decision_documents'),
                                                item.pop('registry_milestones'), item['qualification_status'],
                                                item['registry_status'])
@@ -2741,6 +2798,8 @@ def protocol_readiness(payload: dict) -> dict:
     items, admitted, rejected, unresolved = [], 0, 0, 0
     for raw in rows:
         row, errors, warnings = dict(raw), [], []
+        if historical_applications.is_read_only(row["id"]):
+            errors.append("Історична заявка MedData доступна лише для перегляду")
         try: formed_protocols.available(con,row['id'])
         except ValueError as exc: errors.append(str(exc))
         if not row["manager_name"]:
@@ -2805,7 +2864,9 @@ def generate_protocol(payload: dict, user='LOCAL', role='admin', officer_id=None
     result = protocol_readiness(payload)
     if not result["ready"]:
         raise ValueError(f"Протокол не готовий: {result['error_count']} помилок")
-    items = result["items"]
+    # The immutable membership snapshot and both DOCX renderer paths share the
+    # same deterministic business-facing order.
+    items = sorted_protocol_items(result["items"])
     numbers = {str(item.get("protocol_number") or "").strip() for item in items}
     dates = {str(item.get("protocol_date") or "").strip() for item in items}
     officers = {str(item.get("protocol_officer") or "").strip() for item in items}
@@ -3263,12 +3324,44 @@ def _refresh_bids_status_cache() -> None:
           FROM agreements""").fetchone())
             completed = con.execute("""SELECT * FROM sync_log WHERE status='completed'
           ORDER BY COALESCE(finished_at,started_at) DESC LIMIT 1""").fetchone()
+            sync_columns = {row[1] for row in con.execute("PRAGMA table_info(sync_log)")}
+            has_run_observability = {"run_id", "last_activity_at", "stage", "process_id"}.issubset(sync_columns)
             open_logs = [dict(row) for row in con.execute("""SELECT * FROM sync_log WHERE status='running'
           ORDER BY started_at DESC""").fetchall()]
+            runtime_run_id = str(BIDS_UPDATE_STATE.get("run_id") or "") if BIDS_UPDATE_STATE.get("running") else ""
+            active_worker_runs = [row for row in open_logs
+                                  if has_run_observability and runtime_run_id and row.get("run_id") == runtime_run_id]
+            stale_open_logs = [row for row in open_logs if row not in active_worker_runs]
+            history_counts = {str(row["status"]): int(row["total"])
+                              for row in con.execute("SELECT status,COUNT(*) total FROM sync_log GROUP BY status")}
+            abandoned_runs = [dict(row) for row in con.execute("""SELECT * FROM sync_log
+          WHERE status='abandoned' ORDER BY COALESCE(finished_at,started_at) DESC LIMIT 20""").fetchall()]
+            diagnostics = {
+                "count": 0,
+                "response_items": 0,
+                "missing_start_dates": 0,
+                "malformed_start_dates": 0,
+                "last_recorded_at": None,
+            }
+            diagnostic_table = con.execute("""SELECT 1 FROM sqlite_master
+              WHERE type='table' AND name='search_validation_diagnostics'""").fetchone()
+            if diagnostic_table:
+                row = con.execute("""SELECT COUNT(*) count,
+                  COALESCE(SUM(response_item_count),0) response_items,
+                  COALESCE(SUM(missing_start_date_count),0) missing_start_dates,
+                  COALESCE(SUM(malformed_start_date_count),0) malformed_start_dates,
+                  MAX(recorded_at) last_recorded_at
+                  FROM search_validation_diagnostics""").fetchone()
+                diagnostics = dict(row)
         complete = counts["pending_tenders"] == 0 and counts["tenders"] == counts["detailed_tenders"]
         result = {**counts, **coverage, **agreement_state, "history_complete": complete,
-                  "last_completed": dict(completed) if completed else None,
-                  "stale_open_logs": open_logs, "database": str(BIDS_DB_PATH), "checked_at": now_iso(),
+                   "last_completed": dict(completed) if completed else None,
+                  "active_worker_runs": active_worker_runs,
+                  "stale_open_logs": stale_open_logs,
+                  "abandoned_runs": abandoned_runs,
+                  "run_history_counts": history_counts,
+                  "current_validation_errors": diagnostics,
+                  "database": str(BIDS_DB_PATH), "checked_at": now_iso(),
                   "update": dict(BIDS_UPDATE_STATE)}
         BIDS_STATUS_CACHE.update(at=time.time(), value=result)
     except Exception as exc:
@@ -3303,14 +3396,48 @@ def bids_sync_status(force: bool = False) -> dict:
     }
 
 
-def bids_runtime_check() -> None:
+def bids_runtime_check() -> dict:
     if not manual_bids_update_state()["enabled"]:
         raise RuntimeError("Оновлення ProzorroBids вимкнене в цьому середовищі")
     for path in (BIDS_PYTHON, BIDS_SCRIPT):
         if not path.is_file():
             raise FileNotFoundError(f"Не знайдено файл ProzorroBids: {path}")
-    subprocess.run([str(BIDS_PYTHON), "-c", "import requests"], cwd=BIDS_SCRIPT.parent,
-                   capture_output=True, check=True, timeout=20)
+    command = [str(BIDS_PYTHON), "-c", "import requests,openpyxl,main"]
+    cwd = BIDS_SCRIPT.parent
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
+    SERVER_LOG.info("Bids preflight interpreter=%s source=%s script=%s cwd=%s",
+                    BIDS_PYTHON, BIDS_PYTHON_SOURCE, BIDS_SCRIPT, cwd)
+    try:
+        with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                              errors="replace") as process:
+            pid = process.pid
+            stdout, stderr = process.communicate(timeout=20)
+            return_code = process.returncode
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"Python interpreter ProzorroBids недоступний для запуску: {BIDS_PYTHON}. "
+            "Налаштуйте PQM_BIDS_PYTHON або LOCAL bids.local.json на executable "
+            "із правом Read & Execute для користувача PQM."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.communicate()
+        raise RuntimeError("Preflight ProzorroBids перевищив ліміт 20 секунд") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Не вдалося запустити Python interpreter ProzorroBids: {BIDS_PYTHON}: {exc}") from exc
+    if return_code:
+        detail = (stderr or stdout or "невідома помилка").strip()
+        detail = re.sub(r"(?i)(token|password|authorization|api[_-]?key)(\s*[:=]\s*)\S+",
+                        r"\1\2[redacted]", detail)[:500]
+        raise RuntimeError(f"Preflight ProzorroBids завершився з кодом {return_code}: {detail}")
+    return {
+        "interpreter": str(BIDS_PYTHON),
+        "interpreter_source": BIDS_PYTHON_SOURCE,
+        "script": str(BIDS_SCRIPT),
+        "cwd": str(cwd),
+        "preflight_pid": pid,
+    }
 
 
 def bids_progress_line(line: str) -> None:
@@ -3332,10 +3459,12 @@ def bids_progress_line(line: str) -> None:
 def run_bids_command(arguments) -> None:
     BIDS_UPDATE_STATE.update(stage=arguments[0], processed=None, total=None, last_activity_at=now_iso())
     # Stream into the rotating server logger; do not keep the whole output in RAM.
+    worker_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
+                  "PQM_BIDS_RUN_ID": str(BIDS_UPDATE_STATE.get("run_id") or "")}
     with subprocess.Popen([str(BIDS_PYTHON), str(BIDS_SCRIPT), *arguments],
                           cwd=BIDS_SCRIPT.parent, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-                          env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}) as process:
+                          env=worker_env) as process:
         BIDS_UPDATE_STATE["pid"] = process.pid
         SERVER_LOG.info("Bids worker pid=%s interpreter=%s", process.pid, BIDS_PYTHON)
         for line in process.stdout:
@@ -4617,6 +4746,10 @@ def supplier_profile(supplier_code: str) -> dict:
         application_history_groups = []
         for framework_id, grouped_rows in itertools.groupby(application_rows, key=lambda row: row["framework_id"]):
             attempts = list(grouped_rows)
+            for attempt in attempts:
+                meddata = historical_applications.provenance(attempt["id"])
+                attempt["historical_read_only"] = bool(meddata)
+                attempt["historical_source"] = meddata or {}
             admitted = sum(1 for row in attempts if row["qualification_status"] == "active")
             rejected = sum(1 for row in attempts if row["qualification_status"] == "unsuccessful")
             latest = attempts[0]
@@ -5417,7 +5550,7 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
             "задоволенні звернення Замовника, оскільки наведені факти не підтверджують наявність порушення, "
             "передбаченого пп. 1 п. 49 Порядку № 822."
         )
-        return "\n\n".join(paragraphs)
+        return normalize_justification_text("\n".join(paragraphs))
     if template_key in {"p49_1_warning", "p49_1_warning_guarantee_no_documents_no_explanation"}:
         paragraphs = [
             "За результатами розгляду звернення Замовника та аналізу матеріалів закупівлі Адміністратором встановлено наступне.",
@@ -5433,7 +5566,7 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
             "З боку Постачальника не надано жодних доказів або пояснень, які б спростували інформацію Замовника про вказане порушення.",
             "З огляду на відсутність підстав для відмови в задоволенні звернення, Адміністратор, керуючись п. 51 Порядку № 822, приймає рішення про наявність порушення постачальника, що передбачене пп. 1 п. 49 Порядку № 822.",
         ))
-        return "\n\n".join(paragraphs)
+        return normalize_justification_text("\n".join(paragraphs))
     if template_key in {"p49_2_decline_timely_refusal", "p49_2_decline_timely_refusal_civil_shift"}:
         paragraphs = [
             "За результатами розгляду звернення Замовника та аналізу матеріалів закупівлі Адміністратором встановлено наступне.",
@@ -5449,7 +5582,7 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
             f"Згідно з інформацією, наявною в електронній системі закупівель, письмову відмову надано Постачальником {_display_legal_date(review.get('written_refusal_date'))}, тобто у межах встановленого законодавством строку.",
             "Оскільки наведені факти не підтверджують наявність порушення, передбаченого пп. 2 п. 49 Порядку № 822, Адміністратор, керуючись п. 51 Порядку № 822, приймає рішення про відмову в задоволенні звернення Замовника.",
         ))
-        return "\n\n".join(paragraphs)
+        return normalize_justification_text("\n".join(paragraphs))
     return ""
 
 
@@ -5552,6 +5685,8 @@ def _review_dict(row: sqlite3.Row | None) -> dict | None:
     if not row:
         return None
     result = dict(row)
+    result["decision_justification"] = normalize_justification_text(
+        result.get("decision_justification"))
     try:
         result["generated_protocol_metadata"] = json.loads(
             result.pop("generated_protocol_metadata_json", "{}") or "{}")
@@ -5788,6 +5923,47 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     return context
 
 
+def _normalized_violation_procurement_context(context: dict | None) -> dict:
+    """Expose stable presentation/export aliases without mutating a frozen snapshot."""
+    resolved = dict(context or {})
+    resolved["cpv"] = str(resolved.get("cpv") or resolved.get("dk_code") or "").strip()
+    resolved["rejection_at"] = resolved.get("rejection_at") or resolved.get("rejection_date")
+    resolved["rejection_reason"] = str(
+        resolved.get("rejection_reason") or resolved.get("rejection_title")
+        or resolved.get("rejection_description") or ""
+    ).strip()
+    return resolved
+
+
+def resolve_violation_procurement_context(
+    item: dict, review: dict | None = None, *, prefer_snapshot: bool = True,
+) -> tuple[dict, str]:
+    """Resolve one report's frozen decision or current factual procurement context."""
+    if prefer_snapshot:
+        snapshot = item.get("decision_context_snapshot") or {}
+        frozen = snapshot.get("procurement_context") if isinstance(snapshot, dict) else None
+        if frozen:
+            return _normalized_violation_procurement_context(frozen), "completion_snapshot"
+    try:
+        resolved = build_procurement_context(item, review or {})
+        return _normalized_violation_procurement_context(resolved), "case_scoped_resolver"
+    except Exception as exc:
+        SERVER_LOG.warning(
+            "violation_context_unavailable report=%s error=%s",
+            item.get("report_id") or item.get("id"), type(exc).__name__,
+        )
+        return {"available": False, "error": str(exc), "cpv": "",
+                "rejection_at": None, "rejection_reason": ""}, "unavailable"
+
+
+def _violation_sheets_json_eligible(review: dict | None) -> bool:
+    review = review or {}
+    return bool(
+        review.get("review_status") in {"reviewed", "completed"}
+        and str(review.get("internal_decision") or "").strip()
+    )
+
+
 def _fresh_violation_report(report_id: str) -> dict:
     payload = api_get(f"{API_ROOT}/violation_reports/{report_id}").get("data") or {}
     if not payload:
@@ -5882,14 +6058,10 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     # the officer's saved CPV/DK, recommendation or justification inputs.
     if item["is_read_only"] and item["decision_context_snapshot"]:
         snapshot = item["decision_context_snapshot"] or {}
-        item["procurement_context"] = snapshot.get("procurement_context")
+        item["procurement_context"], item["decision_context_source"] = (
+            resolve_violation_procurement_context(item, item["review"])
+        )
         item["recommendation"] = snapshot.get("recommendation")
-        item["decision_context_source"] = "completion_snapshot" if snapshot else "recalculated_fallback"
-        if not item["procurement_context"]:
-            try:
-                item["procurement_context"] = build_procurement_context(item, item["review"])
-            except Exception as exc:
-                item["procurement_context"] = {"available": False, "error": str(exc)}
         if not item["recommendation"]:
             recommendation_context = dict(item["procurement_context"] or {})
             recommendation_context["supplier_deadline_ready"] = bool(item["deadline_control"].get("supplier_ready"))
@@ -5900,11 +6072,27 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
         item["justification_generation_ready"] = False
         item["justification_stale"] = False
         item["protocol_readiness"] = {"ready": False, "reasons": ["Розгляд доступний лише для перегляду"]}
+    elif item["is_read_only"] and _violation_sheets_json_eligible(item["review"]):
+        # Legacy reviewed cases may predate decision-context snapshots. Resolve
+        # only this report, read-only, through the same backend path used by
+        # its case-scoped JSON export.
+        item["procurement_context"], item["decision_context_source"] = (
+            resolve_violation_procurement_context(item, item["review"])
+        )
+        recommendation_context = dict(item["procurement_context"] or {})
+        recommendation_context["supplier_deadline_ready"] = bool(item["deadline_control"].get("supplier_ready"))
+        recommendation_context["defendant_statements_present"] = bool(item["defendant_statements"])
+        item["recommendation"] = violation_rules_engine(
+            item["reason"], recommendation_context, item["review"])
+        item["justification_draft"] = ""
+        item["justification_template_key"] = str(item["review"].get("decision_template_key") or "")
+        item["justification_generation_ready"] = False
+        item["justification_stale"] = False
+        item["protocol_readiness"] = {"ready": False, "reasons": ["Розгляд доступний лише для перегляду"]}
     elif not item["is_read_only"]:
-        try:
-            item["procurement_context"] = build_procurement_context(item, item["review"])
-        except Exception as exc:
-            item["procurement_context"] = {"available": False, "error": str(exc)}
+        item["procurement_context"], item["decision_context_source"] = (
+            resolve_violation_procurement_context(item, item["review"])
+        )
         supplier_ready = bool(item["deadline_control"].get("supplier_ready"))
         recommendation_context = dict(item["procurement_context"] or {})
         recommendation_context["supplier_deadline_ready"] = supplier_ready
@@ -5937,9 +6125,115 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
         item["recommendation"] = None
         item["justification_draft"] = ""
         item["justification_template_key"] = ""
+    # The upper procurement card is factual, not a decision/review artefact.
+    # It therefore resolves for every report, including official historical
+    # reports which have never been reviewed in PQM and are not JSON-eligible.
+    # Keep this separate from the immutable decision context used below.
+    if item.get("procurement_context"):
+        item["factual_procurement_context"] = item["procurement_context"]
+        item["factual_procurement_context_source"] = item.get("decision_context_source") or "resolved_context"
+    else:
+        (item["factual_procurement_context"],
+         item["factual_procurement_context_source"]) = resolve_violation_procurement_context(
+            item, item["review"], prefer_snapshot=False)
     item["scenario_summary"] = violation_scenario_summary(
         item, item.get("procurement_context") or {})
+    # JSON export follows the canonical status presented by the case card, not
+    # only the historical LOCAL completion marker.  An official Prozorro
+    # decision projects the review as ``completed`` even when the older local
+    # row still says ``in_review``; rewriting that historical row is neither
+    # required nor desirable.
+    item["sheets_json_available"] = _violation_sheets_json_eligible(item["review"])
     return item
+
+
+VIOLATION_SHEETS_DECISION_LABELS = {
+    "warning": "Попередження",
+    "decline": "Відмова в задоволенні звернення",
+    "individual_review": "Індивідуальний розгляд",
+}
+
+
+def _violation_sheets_date(value) -> str:
+    """Format one factual case date for the manual Google Sheets JSON contract."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", raw):
+        return raw
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return datetime.strptime(raw, "%Y-%m-%d").strftime("%d.%m.%Y")
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=scheduler_runtime.KYIV)
+    else:
+        moment = moment.astimezone(scheduler_runtime.KYIV)
+    return moment.strftime("%d.%m.%Y")
+
+
+def violation_protocol_output_name(report_id: str, protocol_number: str,
+                                   internal_decision: str) -> str:
+    """Return the existing business filename stem shared by PDF and sheet export."""
+    suffix = "П" if str(internal_decision or "") == "warning" else "В"
+    pretty_report = safe_archive_name(str(report_id or ""), "report")
+    number = safe_archive_name(str(protocol_number or "без номера"), "без номера")
+    return f"{pretty_report}_{number}_{suffix}"
+
+
+def violation_report_sheets_json(report_id: str) -> dict:
+    """Build one sparse, case-scoped JSON object for manual Sheets transfer."""
+    item = violation_report_detail(report_id, refresh=False)
+    review = item.get("review") or {}
+    if not item.get("sheets_json_available"):
+        raise PermissionError(
+            "JSON доступний зі стадії «Розглянуто», коли збережено рішення УО"
+        )
+
+    # ``violation_report_detail`` resolves this once through the shared
+    # snapshot/case-scoped resolver. Export never has a second projection path.
+    context = item.get("procurement_context") or {}
+
+    supplier = item.get("supplier_verified") or {}
+    reason_metadata = VIOLATION_REASON_PROTOCOL_METADATA.get(item.get("reason"), {})
+    protocol_number = str(review.get("protocol_number") or "").strip()
+    factual = {
+        "report_id": str(item.get("report_id") or "").strip(),
+        "received_at": _violation_sheets_date(item.get("date_published")),
+        "cpv": str(context.get("cpv") or "").strip(),
+        "tender_id": str(item.get("tender_pretty_id") or context.get("tender_pretty_id") or "").strip(),
+        "customer_name": str(review.get("customer_verified_full_name") or item.get("author_name") or "").strip(),
+        "customer_code": str(item.get("author_code") or "").strip(),
+        "supplier_name": str(supplier.get("full_name") or item.get("defendant_name") or "").strip(),
+        "supplier_code": str(item.get("defendant_code") or "").strip(),
+        "description": str(item.get("description") or "").strip(),
+        "winner_selected_at": _violation_sheets_date(context.get("winner_selected_at")),
+        "rejection_at": _violation_sheets_date(context.get("rejection_at")),
+        "contract_date": (_violation_sheets_date(review.get("actual_contract_date"))
+                          if review.get("actual_contract_signed") else ""),
+        "contract_number": (str(review.get("actual_contract_number") or "").strip()
+                            if review.get("actual_contract_signed") else ""),
+        "rejection_reason": str(context.get("rejection_reason") or "").strip(),
+        "uo_decision": VIOLATION_SHEETS_DECISION_LABELS.get(
+            str(review.get("internal_decision") or ""), ""),
+        "written_refusal_at": _violation_sheets_date(review.get("written_refusal_date")),
+        "protocol_number": protocol_number,
+        "protocol_date": _violation_sheets_date(review.get("protocol_date")),
+        "output_name": (violation_protocol_output_name(
+            item.get("report_id") or item.get("id"), protocol_number,
+            review.get("internal_decision")) if protocol_number else ""),
+        "customer_short_name": str(review.get("customer_verified_short_name") or "").strip(),
+        "supplier_short_name": str(supplier.get("short_name") or "").strip(),
+        "violation_type": str(item.get("reason") or "").strip(),
+        "legal_basis_short": (f"пп. {reason_metadata['number']} п. 49"
+                              if reason_metadata.get("number") else ""),
+        "responsible_officer": str(review.get("assigned_officer_display")
+                                   or review.get("assigned_officer") or "").strip(),
+    }
+    return {key: value for key, value in factual.items()
+            if value is not None and (not isinstance(value, str) or value.strip())}
 
 
 def save_violation_document_review(report_id: str, source: str, document_id: str,
@@ -6003,6 +6297,9 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
         if existing.get("completed_at"):
             raise PermissionError("Локальний розгляд уже завершено. Повторне відкриття або зміна завершеного review заборонені.")
         values = {key: payload[key] for key in VIOLATION_REVIEW_FIELDS if key in payload}
+        if "decision_justification" in values:
+            values["decision_justification"] = normalize_justification_text(
+                values["decision_justification"])
         if values.get("review_status", "") not in {"", "not_reviewed", "in_review", "reviewed"}:
             raise ValueError("Невідомий статус розгляду")
         if values.get("internal_decision", "") not in VIOLATION_INTERNAL_DECISIONS:
@@ -6058,7 +6355,9 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
             values["justification_source_hash"] = _justification_hash(report_dict, context, {**merged, **values})
             values["justification_generated_at"] = now
             values["justification_manually_edited"] = 0
-        elif "decision_justification" in values and values["decision_justification"] != existing.get("decision_justification", ""):
+        elif ("decision_justification" in values and
+              values["decision_justification"] != normalize_justification_text(
+                  existing.get("decision_justification", ""))):
             values["justification_manually_edited"] = 1
         if values:
             assignments = ",".join(f"{key}=?" for key in values)
@@ -6242,6 +6541,9 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
                     "completed_by": current["completed_by"], "already_completed": True}
         baseline = dict(current)
         values = {key: payload[key] for key in VIOLATION_REVIEW_FIELDS if payload and key in payload}
+        if "decision_justification" in values:
+            values["decision_justification"] = normalize_justification_text(
+                values["decision_justification"])
         if values.get("review_status", "") not in {"", "not_reviewed", "in_review"}:
             raise ValueError("Статус «Розглянуто» встановлюється лише дією «Завершити розгляд»")
         if values.get("internal_decision", "") not in VIOLATION_INTERNAL_DECISIONS:
@@ -6264,7 +6566,9 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
                 raise ValueError("Оберіть активну уповноважену особу")
             values["assigned_officer_id"] = officer["id"] if officer else None
             values["assigned_officer"] = officer["full_name"] if officer else baseline.get("assigned_officer", "")
-        if "decision_justification" in values and values["decision_justification"] != baseline.get("decision_justification", ""):
+        if ("decision_justification" in values and
+                values["decision_justification"] != normalize_justification_text(
+                    baseline.get("decision_justification", ""))):
             values["justification_manually_edited"] = 1
         merged = {**baseline, **values, "review_status": "reviewed"}
     if not merged.get("internal_decision"):
@@ -6385,7 +6689,8 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "supplier_response": supplier_text,
         "contract_date": "" if rejected else _protocol_date(review.get("actual_contract_date")),
         "contract_number": "" if rejected else str(review.get("actual_contract_number") or ""),
-        "decision_justification": str(review.get("decision_justification") or ""),
+        "decision_justification": normalize_justification_text(
+            review.get("decision_justification")),
     }
     protocol_metadata = _resolve_violation_protocol_metadata(item, values)
     flags = {
@@ -6426,14 +6731,15 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     )
     try:
         build_violation_protocol_docx(gate["protocol_type"], temporary, values,
-            str(review.get("decision_justification") or ""), item.get("evidence_documents") or [], supplier_documents,
+            normalize_justification_text(review.get("decision_justification")),
+            item.get("evidence_documents") or [], supplier_documents,
             flags)
         if not temporary.is_file():
             raise RuntimeError("Генератор не створив DOCX")
         os.replace(temporary, output)
     except ProtocolContextValidationError as exc:
         temporary.unlink(missing_ok=True)
-        unresolved = unresolved_declension_items(exc.missing, declined_names)
+        unresolved = unresolved_declension_items(exc.missing, declined_names, item)
         if unresolved:
             try:
                 ensure_pending_overrides(unresolved)
@@ -6505,10 +6811,9 @@ def violation_protocol_pdf(report_id: str) -> tuple[Path, str]:
     source = (protocols_root / Path(row["generated_protocol_filename"]).name).resolve()
     if protocols_root not in source.parents or not source.is_file():
         raise FileNotFoundError("DOCX протоколу не знайдено")
-    suffix = "П" if str(row["internal_decision"] or "") == "warning" else "В"
-    pretty_report = safe_archive_name(str(row["report_id"] or row["id"]), "report")
-    protocol_number = safe_archive_name(str(row["protocol_number"] or "без номера"), "без номера")
-    filename = f"{pretty_report}_{protocol_number}_{suffix}.pdf"
+    filename = violation_protocol_output_name(
+        row["report_id"] or row["id"], row["protocol_number"], row["internal_decision"]
+    ) + ".pdf"
     output = protocols_root / "_pdf" / filename
     return protocol_pdf.ensure_pdf(source, output), filename
 
@@ -8470,7 +8775,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with db() as con:
                     control = get_submission_nazk_control(con, submission_id)
-                    if not control:
+                    historical_read_only = historical_applications.is_read_only(submission_id)
+                    if not control and not historical_read_only:
                         control = ensure_submission_nazk_control(con, submission_id)
                     state = get_submission_nazk_state(con, submission_id)
                     context = submission_nazk_context(con, submission_id)
@@ -8481,7 +8787,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"control": control, "state": state,
                     "documents": json.loads((documents or ["[]"])[0] or "[]"),
                     "context": context,
-                    "coverage_status": "legal_date_field_unresolved"})
+                    "coverage_status": "legal_date_field_unresolved",
+                    "historical_read_only": historical_read_only})
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 404)
         if parsed.path == "/api/nazk/reconciliation/dry-run":
@@ -8495,6 +8802,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/verify-documents/start"):
             parts = parsed.path.split("/")
             submission_id = urllib.parse.unquote(parts[3])
+            try:
+                historical_applications.assert_editable(submission_id)
+            except historical_applications.HistoricalApplicationReadOnlyError as exc:
+                return self.send_json({"error": str(exc), "historical_read_only": True}, 409)
             raw_selection = urllib.parse.parse_qs(parsed.query).get("selection", [""])[0]
             try:
                 selection = json.loads(raw_selection) if raw_selection else {}
@@ -8585,6 +8896,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Disposition',"attachment; filename=request.docx; filename*=UTF-8''"+urllib.parse.quote(filename))
                 self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
             except KeyError:return self.send_json({'error':'Документ не знайдено'},404)
+        violation_sheets_json = re.fullmatch(
+            r"/api/violation-reports/([^/]+)/sheets-json", parsed.path)
+        if violation_sheets_json:
+            report_id = urllib.parse.unquote(violation_sheets_json.group(1))
+            try:
+                return self.send_json(violation_report_sheets_json(report_id))
+            except KeyError:
+                return self.send_json({"error": "Звернення не знайдено"}, 404)
+            except PermissionError as exc:
+                return self.send_json({"error": str(exc), "code": "review_not_reviewed"}, 409)
         violation_detail = re.fullmatch(r"/api/violation-reports/([^/]+)", parsed.path)
         if violation_detail:
             report_id = urllib.parse.unquote(violation_detail.group(1))
@@ -9112,6 +9433,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": str(exc)}, 409)
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/verify-documents"):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
+            try:
+                historical_applications.assert_editable(submission_id)
+            except historical_applications.HistoricalApplicationReadOnlyError as exc:
+                return self.send_json({"error": str(exc), "historical_read_only": True}, 409)
             job_id = uuid.uuid4().hex
             with DOCUMENT_CHECK_LOCK:
                 DOCUMENT_CHECK_JOBS[job_id] = {"job_id": job_id, "submission_id": submission_id, "status": "running"}
@@ -9136,10 +9461,16 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as con:
                     con.execute('BEGIN IMMEDIATE')
                     ids=([x['id'] for x in formed_protocols.detail(con,identifier)['items']] if kind=='formed' else [identifier])
+                    if any(historical_applications.is_read_only(submission_id) for submission_id in ids):
+                        raise historical_applications.HistoricalApplicationReadOnlyError(
+                            "Історична заявка MedData доступна лише для перегляду"
+                        )
                     assert_protocol_scope(con,ids,self.auth_role,self.auth_officer_id)
                     fn=formed_protocols.cancel if kind=='formed' else formed_protocols.release_legacy
                     result=fn(con,identifier,self.auth_user,payload.get('confirmed'),payload.get('reason',''))
                 return self.send_json(result)
+            except historical_applications.HistoricalApplicationReadOnlyError as exc:
+                return self.send_json({'error':str(exc),'historical_read_only':True},409)
             except PermissionError as exc: return self.send_json({'error':str(exc)},403)
             except ValueError as exc: return self.send_json({'error':str(exc)},409)
         if parsed.path == "/api/admin/frameworks":
@@ -9184,9 +9515,10 @@ class Handler(BaseHTTPRequestHandler):
                     SERVER_LOG.info('Bids duplicate launch rejected run_id=%s pid=%s', BIDS_UPDATE_STATE.get('run_id'), BIDS_UPDATE_STATE.get('pid'))
                     return self.send_json({**bids_run_snapshot(), 'code':'already_running'}, 409)
                 try:
-                    bids_runtime_check()
+                    preflight = bids_runtime_check()
                     if payload.get("check_only") is True:
-                        return self.send_json({"started": False, "runtime_ready": True}, 200)
+                        return self.send_json({"started": False, "runtime_ready": True,
+                                               "preflight": preflight}, 200)
                     BIDS_UPDATE_STATE.update(running=True, status='running', run_id=uuid.uuid4().hex,
                         message="Підготовка оновлення Bids…", started_at=now_iso(), error=None,
                         finished_at=None, updated_at=None, stage='preparing', processed=None, total=None,
@@ -9199,8 +9531,9 @@ class Handler(BaseHTTPRequestHandler):
                         BIDS_UPDATE_STATE.update(run_id=uuid.uuid4().hex,started_at=now_iso(),
                                                 stage='preflight',current_run_errors=1,pid=None,
                                                 processed=None,total=None,last_activity_at=now_iso())
+                    message = f"Не вдалося запустити ProzorroBids: {exc}"
                     BIDS_UPDATE_STATE.update(running=False, status='failed', finished_at=now_iso(),
-                        last_error=str(exc), error=str(exc), message="Не вдалося запустити ProzorroBids; див. logs/server.log")
+                        last_error=str(exc), error=str(exc), message=message)
                     return self.send_json({"started": False, "code": "bids_start_failed", "error": BIDS_UPDATE_STATE["message"]}, 503)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync":
@@ -9503,6 +9836,10 @@ class Handler(BaseHTTPRequestHandler):
         remark_selection_match = re.fullmatch(r"/api/applications/([^/]+)/remark-selections", parsed.path)
         if remark_selection_match:
             submission_id = urllib.parse.unquote(remark_selection_match.group(1)); payload = self.read_json()
+            try:
+                historical_applications.assert_editable(submission_id)
+            except historical_applications.HistoricalApplicationReadOnlyError as exc:
+                return self.send_json({"error": str(exc), "historical_read_only": True}, 409)
             try: ids = save_application_remark_selections(submission_id, payload.get("remark_ids"), self.auth_user)
             except KeyError: return self.send_json({"error": "Заявку не знайдено"}, 404)
             except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
@@ -9629,6 +9966,7 @@ class Handler(BaseHTTPRequestHandler):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
             payload = self.read_json()
             try:
+                historical_applications.assert_editable(submission_id)
                 with db() as con:
                     if payload.get('action') == 'save_manager_tax_id':
                         result={'manager_tax_id':save_submission_manager_tax_id(con,submission_id,
@@ -9648,6 +9986,8 @@ class Handler(BaseHTTPRequestHandler):
                             con, submission_id, str(payload.get("manager_name"))
                             if "manager_name" in payload else None)}
                 return self.send_json(result)
+            except historical_applications.HistoricalApplicationReadOnlyError as exc:
+                return self.send_json({"error": str(exc), "historical_read_only": True}, 409)
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
         if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/review"):
@@ -9681,6 +10021,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"saved": True})
         if not parsed.path.startswith("/api/applications/"): return self.send_error(404)
         submission_id = parsed.path.rsplit("/", 1)[-1]; payload = self.read_json()
+        try:
+            historical_applications.assert_editable(submission_id)
+        except historical_applications.HistoricalApplicationReadOnlyError as exc:
+            return self.send_json({"error": str(exc), "historical_read_only": True}, 409)
         # Browser payload is never an authorization source. In LOCAL mode the
         # effective role is resolved by ``_authorize`` from the loopback-only
         # impersonation header; in authenticated mode it comes from the account.
@@ -9776,18 +10120,24 @@ class Handler(BaseHTTPRequestHandler):
                 if old != new:
                     con.execute(f"UPDATE application_fields SET {field}=?,updated_at=?,updated_by=? WHERE submission_id=?", (new, now_iso(), user, submission_id))
                     if field == "protocol_decision":
+                        review_officer = canonical_officer_identity(con, user, self.auth_officer_id)
+                        if not review_officer:
+                            con.rollback()
+                            return self.send_json({
+                                "error": "Обліковий запис не прив’язаний до активної уповноваженої особи"
+                            }, 409)
                         review_old = con.execute(
                             "SELECT COALESCE(review_officer,'') FROM application_fields WHERE submission_id=?",
                             (submission_id,),
                         ).fetchone()[0]
                         con.execute(
                             "UPDATE application_fields SET review_officer=? WHERE submission_id=?",
-                            (user, submission_id),
+                            (review_officer, submission_id),
                         )
-                        if review_old != user:
+                        if review_old != review_officer:
                             con.execute(
                                 "INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value) VALUES (?,?,?,?,?,?)",
-                                (submission_id, now_iso(), user, "review_officer", review_old, user),
+                                (submission_id, now_iso(), user, "review_officer", review_old, review_officer),
                             )
                     if field == "manager_name":
                         con.execute("""UPDATE application_fields SET manager_name_source='manual',

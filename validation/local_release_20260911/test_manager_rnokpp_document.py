@@ -39,6 +39,31 @@ class ManagerRnokppDocumentTests(unittest.TestCase):
         self.item['current_manager'].update(manager_name='БАБІЙ СЕРГІЙ ПЕТРОВИЧ',manager_tax_id=None)
         self.con.execute("UPDATE supplier_managers SET manager_name=?,manager_tax_id=NULL WHERE id=1",
                          ('БАБІЙ СЕРГІЙ ПЕТРОВИЧ',))
+        self.con.execute("""INSERT INTO supplier_edr_profiles
+          (supplier_code,full_name,short_name,manager_name,source_sheet) VALUES(?,?,?,?,?)""",
+          ('2452014059','ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ БАБІЙ СЕРГІЙ ПЕТРОВИЧ',
+           'ФОП БАБІЙ С.П.','БАБІЙ СЕРГІЙ ПЕТРОВИЧ','ФОП'))
         self.assertEqual(self.resolve()['manager.rnokpp'],'2452014059')
+    def test_ten_digit_code_without_fop_identity_proof_is_not_rnokpp(self):
+        self.con.close()
+        self.con,self.item=fixture('2452014059')
+        self.addCleanup(self.con.close)
+        self.item['current_manager'].update(manager_name='БАБІЙ СЕРГІЙ ПЕТРОВИЧ',manager_tax_id=None)
+        self.con.execute("UPDATE supplier_managers SET manager_name=?,manager_tax_id=NULL WHERE id=1",
+                         ('БАБІЙ СЕРГІЙ ПЕТРОВИЧ',))
+        with self.assertRaisesRegex(ValueError,'manager.rnokpp'):
+            self.resolve()
+    def test_fop_identity_mismatch_does_not_expose_supplier_code(self):
+        self.con.close()
+        self.con,self.item=fixture('2452014059')
+        self.addCleanup(self.con.close)
+        self.item['current_manager'].update(manager_name='ІНША ОСОБА',manager_tax_id=None)
+        self.con.execute("UPDATE supplier_managers SET manager_name=?,manager_tax_id=NULL WHERE id=1",('ІНША ОСОБА',))
+        self.con.execute("""INSERT INTO supplier_edr_profiles
+          (supplier_code,full_name,short_name,manager_name,source_sheet) VALUES(?,?,?,?,?)""",
+          ('2452014059','ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ БАБІЙ СЕРГІЙ ПЕТРОВИЧ',
+           'ФОП БАБІЙ С.П.','БАБІЙ СЕРГІЙ ПЕТРОВИЧ','ФОП'))
+        with self.assertRaisesRegex(ValueError,'manager.rnokpp'):
+            self.resolve()
 
 if __name__=='__main__':unittest.main()

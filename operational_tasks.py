@@ -8,6 +8,7 @@ import calendar
 from urllib.parse import urlsplit
 import supplier_activity
 import nazk_evidence
+from supplier_identity import current_manager_rnokpp
 from datetime import date, datetime, timedelta, timezone
 
 TASK_TYPES = {"amcu_exclusion", "nazk_check", "warning_block", "manual",
@@ -618,6 +619,16 @@ def _task(con,row,detail=False):
             check_manager_id=con.execute("SELECT manager_id FROM supplier_nazk_checks WHERE id=?",(check_id,)).fetchone()
             item["task_person_is_current"]=bool(current and ((check_manager_id and check_manager_id[0] is not None and check_manager_id[0]==current["id"])
                 or (check_manager_id and check_manager_id[0] is None and con.execute("SELECT NORMALIZE_NAME(?)=NORMALIZE_NAME(?)",(check_manager,current["manager_name"])).fetchone()[0])))
+            resolved_rnokpp=(current_manager_rnokpp(con,item["supplier_code"],item["current_manager"])
+              if item["task_person_is_current"] else {"value":"","source":"","identity_confirmed":False})
+            if resolved_rnokpp["value"]:
+                item["current_manager"]["manager_tax_id"]=resolved_rnokpp["value"]
+                item["current_manager"]["manager_tax_id_resolved_source"]=resolved_rnokpp["source"]
+                person_rnokpp=evidence.get("person_rnokpp") or resolved_rnokpp["value"]
+                evidence["person_rnokpp"]=person_rnokpp
+                evidence["person_rnokpp_source"]=("supplier_nazk_checks.person_tax_id"
+                  if evidence.get("person_tax_id") else resolved_rnokpp["source"])
+                item["nazk_current_state"]["person_rnokpp"]=person_rnokpp
         elif item["task_type"]=="warning_block":
             decision=con.execute("SELECT * FROM operational_task_blocking_decisions WHERE task_id=?",(item["id"],)).fetchone()
             item["blocking_decision"]=dict(decision) if decision else {}

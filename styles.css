@@ -173,6 +173,11 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 .applications-toolbar+.table-card #applicationsTable{table-layout:fixed}.applications-toolbar+.table-card #applicationsTable th,.applications-toolbar+.table-card #applicationsTable td{box-sizing:border-box;overflow-wrap:anywhere}.applications-toolbar+.table-card #applicationsTable th.sticky,.applications-toolbar+.table-card #applicationsTable td.sticky{position:sticky}.applications-toolbar+.table-card #applicationsTable td.sticky{z-index:8;background:#fff}.applications-toolbar+.table-card #applicationsTable th.sticky{z-index:15;background:#edf2f5}.applications-toolbar+.table-card #applicationsTable tbody tr:hover td.sticky,.applications-toolbar+.table-card #applicationsTable tbody tr.active td.sticky{background:#eff6ff}
 .cards-list{display:grid;grid-template-columns:1fr}.card-profile-item{display:grid;grid-template-columns:1fr 34px 34px;gap:7px;align-items:center}.card-profile-item label{min-width:0}.card-profile-item .icon-btn{padding:5px}
 .supplier-history-remarks{min-width:420px;white-space:pre-wrap;user-select:text}
+.historical-application-marker{display:inline-grid;place-items:center;width:17px;height:17px;margin-left:6px;border:1px solid #b68a30;border-radius:50%;background:#fff7dc;color:#7a5712;font-size:11px;font-weight:800;line-height:1;vertical-align:text-bottom;cursor:help}
+#applicationsTable td[data-column-key="select"] .historical-application-marker{margin-left:3px;vertical-align:middle}
+.historical-application-badge{display:inline-flex;align-items:center;width:max-content;max-width:100%;margin:5px 0 0;padding:3px 8px;border:1px solid #ddbd72;border-radius:999px;background:#fff7dc;color:#6d4c0d;font-size:11px;font-weight:700;line-height:1.25;white-space:normal}
+#docsSubtitle .historical-application-badge{margin-left:7px;vertical-align:middle}
+#submissionNazkBody>.historical-application-badge{margin:0 0 10px}
 /* History only: remarks receives all remaining table width. */
 #historyView .history-table table{table-layout:fixed}
 #historyView .history-table th,#historyView .history-table td{box-sizing:border-box;overflow-wrap:anywhere}
