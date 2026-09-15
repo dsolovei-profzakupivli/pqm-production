@@ -857,7 +857,7 @@ function pollReferenceRefresh(kind,{silent=false}={}){
         if(!silent)toast(state.status==='ok'?'Довідник оновлено':state.message||'Оновлення завершено з помилкою');
         return;
       }
-    }catch{ /* transient request failure: retry without overlapping requests */ }
+    }catch{ /* transient poll failure: retry without overlapping requests */ }
     if(referencePollTimers[kind]===poll)poll.timer=setTimeout(tick,1500);
   };
   poll.timer=setTimeout(tick,1500);
