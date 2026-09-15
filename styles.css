@@ -150,7 +150,6 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 @media(max-width:1050px){.violation-top-row{grid-template-columns:1fr 1fr}.violation-top-row>div:last-child{grid-column:1/-1}}
 @media(max-width:760px){.violation-top-row,.violation-supplier-row{grid-template-columns:1fr}.violation-top-row>div:last-child{grid-column:auto}}
 #workQueueBody td:nth-child(2) small{white-space:pre-line}
-#refAmcuRefresh{display:none}
 /* Consolidated acceptance: large registries keep controls and headers visible. */
 #applicationsView,#suppliersView,#requestsView{height:calc(100vh - 100px);min-height:520px;overflow:hidden;display:flex;flex-direction:column}
 #applicationsView[hidden],#suppliersView[hidden],#requestsView[hidden]{display:none!important}

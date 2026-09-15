@@ -1,6 +1,9 @@
 // Execute the real polling functions with a synthetic DOM/clock, no HTTP.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../app.js'),'utf8');
+const styles=fs.readFileSync(require('node:path').join(__dirname,'../styles.css'),'utf8');
+assert.doesNotMatch(styles,/#refAmcuRefresh\s*\{[^}]*display\s*:\s*none/i,
+ 'AMCU retry must remain visible; access is controlled by role/runtime permissions');
 const statusFn=source.slice(source.indexOf('async function loadReferenceStatus()'),source.indexOf('async function loadReferenceRegistry('));
 const pollFn=source.slice(source.indexOf('function pollReferenceRefresh('),source.indexOf('async function refreshReference('));
 const viewStart=source.indexOf('async function loadReferencesView()');
