@@ -1,15 +1,28 @@
 import json
+import logging
 import re
 import sqlite3
+import subprocess
+import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 NAZK_URL = "https://corruptinfo.nazk.gov.ua/ep/1.0/corrupt/getAllData"
 AMCU_PAGE = "https://amcu.gov.ua/napryami/oskarzhennya-publichnih-zakupivel/zvedeni-vidomosti-shchodo-spotvorennya-rezultativ-torgiv/zvedeni-vidomosti-shchodo-spotvorennia-rezultativ-torhiv-za-2026-rik"
 LOCK = threading.Lock()
 START_LOCK = threading.Lock()
+# The WEB server has one process. A persisted 'running' label is not a live
+# worker: daemon threads disappear on restart. Never use that label as a lock.
+AMCU_ACTIVE = set()
+AMCU_ERRORS = {}
+AMCU_LOCK = threading.Lock()
+AMCU_WORKER_TIMEOUT = 300
+AMCU_MAX_BYTES = 25 * 1024 * 1024
+LOG = logging.getLogger("pqm.server")
 
 
 def _now():
@@ -64,10 +77,17 @@ def _state(db_path, source, status, message="", count=None, source_updated_at=No
 def reference_status(db_path):
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
-        return {r["source"]: dict(r) for r in con.execute("SELECT * FROM reference_sync_state")}
+        result = {r["source"]: dict(r) for r in con.execute("SELECT * FROM reference_sync_state")}
+    key = str(Path(db_path).resolve())
+    state = result.get("amcu", {})
+    if state.get("status") == "running" and key not in AMCU_ACTIVE:
+        # Read-only projection: no registry/init/reconciliation side effects.
+        state.update(status="error", interrupted=True, message=AMCU_ERRORS.get(key) or
+                     "Попереднє оновлення перерване (процес завершився або сервер перезапущено). Повторіть оновлення. Збережений реєстр доступний.")
+    return result
 
 
-def _fetch(url, timeout=900):
+def _fetch(url, timeout=900, max_bytes=None):
     # The AMCU portal rejects non-browser user agents even for public files.
     # Keep the request read-only, but identify it like a normal browser and
     # provide the public portal as referer for its static-object downloads.
@@ -78,7 +98,10 @@ def _fetch(url, timeout=900):
         "Referer": "https://amcu.gov.ua/",
     })
     with urllib.request.urlopen(req, timeout=timeout) as response:
-        return response.read()
+        raw = response.read() if max_bytes is None else response.read(max_bytes + 1)
+        if max_bytes is not None and len(raw) > max_bytes:
+            raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
+        return raw
 
 
 def refresh_nazk(db_path, on_complete=None):
@@ -118,6 +141,8 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")
+    if source == "amcu":
+        return _start_amcu_refresh(db_path, raw, filename)
     with START_LOCK:
         state = reference_status(db_path).get(source, {})
         if state.get("status") == "running" or LOCK.locked():
@@ -128,6 +153,40 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
         timer = threading.Timer(0.2, target, args=args)
         timer.daemon = True
         timer.start()
+    return True
+
+
+def _amcu_error(db_path, exc):
+    message = str(exc) or type(exc).__name__
+    AMCU_ERRORS[str(Path(db_path).resolve())] = message
+    LOG.error("AMCU refresh failed: %s", message)
+    try:
+        _state(db_path, "amcu", "error", message)
+    except sqlite3.Error:
+        # Even a failed status write must not leave the UI polling forever.
+        LOG.exception("AMCU terminal status could not be persisted")
+
+
+def _start_amcu_refresh(db_path, raw, filename):
+    key = str(Path(db_path).resolve())
+    with START_LOCK:
+        # Reserve before scheduling, including the 202 response delay. AMCU
+        # must not acquire/release the unrelated NAZK workflow's lock.
+        if key in AMCU_ACTIVE or not AMCU_LOCK.acquire(blocking=False):
+            return False
+        AMCU_ACTIVE.add(key)
+        AMCU_ERRORS.pop(key, None)
+        try:
+            _state(db_path, "amcu", "running", "Підготовка фонового оновлення")
+            timer = threading.Timer(0.2, refresh_amcu, args=(db_path, raw, filename),
+                                    kwargs={"_claimed": True})
+            timer.daemon = True
+            timer.start()
+        except Exception as exc:
+            _amcu_error(db_path, exc)
+            AMCU_ACTIVE.discard(key)
+            AMCU_LOCK.release()
+            raise
     return True
 
 
@@ -221,20 +280,59 @@ def discover_amcu_xlsx():
     return urllib.parse.urljoin(AMCU_PAGE, links[0])
 
 
-def refresh_amcu(db_path, raw=None, filename=""):
-    if not LOCK.acquire(blocking=False): return
+def _amcu_rows_bounded(raw=None, filename=""):
+    """Fetch/parse in a killable child; socket timeouts alone are not a deadline.
+
+    The child never opens a database or imports the application. A hung network
+    response or workbook parser cannot retain the refresh lock indefinitely.
+    """
+    if raw is not None and len(raw) > AMCU_MAX_BYTES:
+        raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
+    try:
+        result = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()),
+                                 "--amcu-worker", "upload" if raw is not None else "download", filename],
+                                input=raw or b"", capture_output=True, timeout=AMCU_WORKER_TIMEOUT,
+                                check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("Оновлення АМКУ перевищило 5 хвилин. Спробуйте пізніше; попередній реєстр збережено.") from exc
+    if result.returncode:
+        raise RuntimeError("Не вдалося завантажити/прочитати АМКУ: " + result.stderr.decode("utf-8", "replace")[-500:])
+    payload = json.loads(result.stdout)
+    if not payload.get("rows"):
+        raise ValueError("АМКУ повернув порожній реєстр; попередні дані збережено")
+    return payload["source"], payload["rows"]
+
+
+def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False):
+    if not _claimed and not AMCU_LOCK.acquire(blocking=False): return
+    key = str(Path(db_path).resolve())
+    AMCU_ACTIVE.add(key)
+    AMCU_ERRORS.pop(key, None)
+    started = time.monotonic()
+    finished = False
     try:
         _state(db_path, "amcu", "running", "Завантаження реєстру АМКУ")
-        source = filename or discover_amcu_xlsx()
-        rows = parse_amcu_xlsx(raw if raw is not None else _fetch(source, 180))
-        with sqlite3.connect(db_path) as con:
+        LOG.info("AMCU refresh started")
+        source, rows = _amcu_rows_bounded(raw, filename)
+        fetched = time.monotonic()
+        with sqlite3.connect(db_path, timeout=30) as con:
             con.execute("BEGIN"); con.execute("DELETE FROM amcu_registry")
             con.executemany("INSERT OR REPLACE INTO amcu_registry VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
-        _state(db_path, "amcu", "ok", f"Оновлено з {source}", len(rows), _now())
+            count = con.execute("SELECT COUNT(*) FROM amcu_registry").fetchone()[0]
+            con.execute("""UPDATE reference_sync_state SET status='ok',message=?,row_count=?,
+                        updated_at=?,source_updated_at=? WHERE source='amcu'""",
+                        (f"Оновлено з {source}", count, _now(), _now()))
+        finished = True
+        LOG.info("AMCU refresh completed rows=%d fetch_parse_seconds=%.3f db_seconds=%.3f total_seconds=%.3f",
+                 count, fetched-started, time.monotonic()-fetched, time.monotonic()-started)
     except Exception as exc:
-        _state(db_path, "amcu", "error", str(exc))
+        _amcu_error(db_path, exc)
+        finished = True
     finally:
-        LOCK.release()
+        if not finished:
+            _amcu_error(db_path, "Фоновий процес АМКУ перервано; повторіть оновлення")
+        AMCU_ACTIVE.discard(key)
+        AMCU_LOCK.release()
 
 
 def list_registry(db_path, source, query):
@@ -287,3 +385,19 @@ def list_registry(db_path, source, query):
         authorities = [r[0] for r in con.execute("SELECT DISTINCT authority FROM amcu_registry WHERE authority<>'' ORDER BY authority")] if source == "amcu" else []
         courts = [r[0] for r in con.execute("SELECT DISTINCT court_name FROM nazk_registry WHERE court_name<>'' ORDER BY court_name")] if source == "nazk" else []
     return {"items": rows, "total": total, "page": page, "pages": max(1, (total+size-1)//size), "size": size, "authorities": authorities, "courts": courts}
+
+
+if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--amcu-worker":
+    try:
+        uploaded = sys.argv[2] == "upload"
+        source = (sys.argv[3] or "АМКУ.xlsx") if uploaded else discover_amcu_xlsx()
+        raw = sys.stdin.buffer.read(AMCU_MAX_BYTES + 1) if uploaded else _fetch(source, 60, AMCU_MAX_BYTES)
+        if len(raw) > AMCU_MAX_BYTES:
+            raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
+        print(json.dumps({"source": source, "rows": parse_amcu_xlsx(raw)}, ensure_ascii=False))
+    except Exception as exc:
+        detail = str(exc)
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
+            detail = "Сайт АМКУ відмовив у доступі (HTTP 403). Спробуйте пізніше або завантажте офіційний Excel через кнопку «Завантажити Excel». Попередній реєстр збережено."
+        print(detail, file=sys.stderr)
+        sys.exit(1)

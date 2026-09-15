@@ -811,12 +811,13 @@ openFrameworkDetails=async function(agreementId){
     body.querySelectorAll('.framework-detail-table:first-of-type tbody tr').forEach((row,index)=>{const supplier=(data.suppliers||[])[index];if(!supplier?.supplier_id)return;row.classList.add('supplier-card-open');row.title='Відкрити картку постачальника';row.onclick=()=>openSupplierProfile(supplier.supplier_id)});
   }catch(error){body.innerHTML=`<p class="error">${esc(error.message)}</p>`}
 };
-let referenceTab=(()=>{try{const value=localStorage.getItem('pqm.referenceTab');return ['nazk','amcu','declension'].includes(value)?value:'nazk'}catch{return 'nazk'}})(),referenceLoaded=false,referencePollTimer=null;
+let referenceTab=(()=>{try{const value=localStorage.getItem('pqm.referenceTab');return ['nazk','amcu','declension'].includes(value)?value:'nazk'}catch{return 'nazk'}})(),referenceLoaded=false;
+const referencePollTimers={};
 const referencePages={nazk:1,amcu:1},referencePageCounts={nazk:1,amcu:1};
 function referenceDate(value){if(!value)return '—';const d=new Date(value);return Number.isNaN(d.getTime())?esc(String(value)):d.toLocaleString('uk-UA')}
 function setReferenceTab(name){if(!['nazk','amcu','declension'].includes(name))name='nazk';referenceTab=name;try{localStorage.setItem('pqm.referenceTab',name)}catch{}$$('[data-ref-tab]').forEach(button=>button.classList.toggle('active',button.dataset.refTab===name));['nazk','amcu','declension'].forEach(tab=>{const panel=$(`#reference${tab[0].toUpperCase()}${tab.slice(1)}`);if(panel)panel.hidden=tab!==name});if(name==='nazk')loadReferenceRegistry('nazk');else if(name==='amcu')loadReferenceRegistry('amcu');else loadDeclensionOverrides()}
 function referenceStatusText(state){if(!state)return 'Ще не оновлювався';const count=Number(state.row_count||0).toLocaleString('uk-UA');if(state.status==='running')return 'Оновлення триває…';if(state.status==='error')return `Помилка: ${state.message||'невідома помилка'}`;return `${count} записів${state.updated_at?` · ${referenceDate(state.updated_at)}`:''}`}
-async function loadReferenceStatus(){try{const data=await request(`${API}/reference-status?t=${Date.now()}`);$('#refNazkStatus').textContent=referenceStatusText(data.nazk);$('#refAmcuStatus').textContent=referenceStatusText(data.amcu);return data}catch(error){$('#refNazkStatus').textContent=$('#refAmcuStatus').textContent=error.message;return {}}}
+async function loadReferenceStatus(){try{const data=await request(`${API}/reference-status?t=${Date.now()}`);$('#refNazkStatus').textContent=referenceStatusText(data.nazk);$('#refAmcuStatus').textContent=referenceStatusText(data.amcu);for(const kind of ['nazk','amcu'])$(kind==='nazk'?'#refNazkRefresh':'#refAmcuRefresh').disabled=data[kind]?.status==='running';$('#refAmcuUploadBtn').disabled=data.amcu?.status==='running';return data}catch(error){$('#refNazkStatus').textContent=$('#refAmcuStatus').textContent=error.message;return {}}}
 async function loadReferenceRegistry(kind){
   const body=$(kind==='nazk'?'#refNazkBody':'#refAmcuBody'),search=$(kind==='nazk'?'#refNazkSearch':'#refAmcuSearch').value.trim();
   body.innerHTML='<tr><td colspan="6">Завантаження…</td></tr>';
@@ -844,7 +845,23 @@ async function loadReferenceRegistry(kind){
     $(`#${prefix}Prev`).disabled=referencePages[kind]<=1;$(`#${prefix}Next`).disabled=referencePages[kind]>=referencePageCounts[kind];
   }catch(error){body.innerHTML=`<tr><td colspan="6">${esc(error.message)}</td></tr>`}
 }
-async function pollReferenceRefresh(kind){clearInterval(referencePollTimer);referencePollTimer=setInterval(async()=>{try{const status=await loadReferenceStatus(),state=status[kind];if(state&&state.status!=='running'){clearInterval(referencePollTimer);referencePollTimer=null;$(kind==='nazk'?'#refNazkRefresh':'#refAmcuRefresh').disabled=false;await loadReferenceRegistry(kind);toast(state.status==='ok'?'Довідник оновлено':state.message||'Оновлення завершено з помилкою')}}catch{ /* transient poll failure: the background job keeps running */ }},1500)}
+function pollReferenceRefresh(kind,{silent=false}={}){
+  if(referencePollTimers[kind])return;
+  const poll={};referencePollTimers[kind]=poll;
+  const tick=async()=>{
+    try{
+      const status=await loadReferenceStatus(),state=status[kind];
+      if(state&&state.status!=='running'){
+        delete referencePollTimers[kind];
+        await loadReferenceRegistry(kind);
+        if(!silent)toast(state.status==='ok'?'Довідник оновлено':state.message||'Оновлення завершено з помилкою');
+        return;
+      }
+    }catch{ /* transient request failure: retry without overlapping requests */ }
+    if(referencePollTimers[kind]===poll)poll.timer=setTimeout(tick,1500);
+  };
+  poll.timer=setTimeout(tick,1500);
+}
 async function refreshReference(kind){const button=$(kind==='nazk'?'#refNazkRefresh':'#refAmcuRefresh');button.disabled=true;try{await request(`${API}/${kind}-registry/refresh`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});toast('Оновлення запущено у фоні');pollReferenceRefresh(kind)}catch{try{const status=await loadReferenceStatus(),state=status[kind];if(state?.status==='running'){toast('Оновлення виконується у фоні');pollReferenceRefresh(kind);return}}catch{}button.disabled=false;toast('Не вдалося підтвердити запуск. Перевірте поточний стан оновлення.')}}
 async function uploadAmcu(){const file=$('#refAmcuFile').files[0];if(!file)return;$('#refAmcuUploadBtn').disabled=true;try{const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));await request(`${API}/amcu-registry/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:file.name,content:btoa(binary)})});toast('Excel-файл АМКУ передано на обробку');pollReferenceRefresh('amcu')}catch(error){toast(error.message)}finally{$('#refAmcuUploadBtn').disabled=false;$('#refAmcuFile').value=''}}
 async function loadReferenceRemarks(){const list=$('#refRemarksList');list.innerHTML='<p class="muted">Завантаження…</p>';try{const data=await request(`${API}/remarks-catalog`);remarksItems=data.items||[];list.innerHTML=remarksItems.length?remarksItems.map(item=>`<article class="reference-remark"><div><strong>${esc(item.point||'Без пункту')}</strong><p>${esc(item.text||'')}</p></div><div><button type="button" onclick="editReferenceRemark('${esc(item.id)}')">Редагувати</button><button type="button" onclick="removeReferenceRemark('${esc(item.id)}')">Прибрати</button></div></article>`).join(''):'<p class="muted">Довідник порожній</p>'}catch(error){list.innerHTML=`<p class="error">${esc(error.message)}</p>`}}
@@ -865,7 +882,7 @@ async function returnToDeclensionReport(){if(!declensionReturnContext)return;con
 async function saveDeclensionEditor(){const payload={entity_type:$('#declensionType').value,original:$('#declensionOriginal').value,genitive:$('#declensionGenitive').value,dative:$('#declensionDative').value,accusative:$('#declensionAccusative').value,comment:$('#declensionComment').value},url=editingDeclensionId?`${API}/admin/declension-overrides/${encodeURIComponent(editingDeclensionId)}`:`${API}/admin/declension-overrides`,method=editingDeclensionId?'PATCH':'POST';try{await request(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});$('#declensionDialog').close();await loadDeclensionOverrides();toast(editingDeclensionId?'Відмінювання оновлено':'Відмінювання додано','success');if(declensionReturnContext)await returnToDeclensionReport()}catch(error){toast(error.message,'error')}}
 async function deleteDeclension(id){const item=declensionItems.find(row=>row.id===id);if(!item||!confirm(`Видалити перевірені форми для «${item.original}»?`))return;try{await request(`${API}/admin/declension-overrides/${encodeURIComponent(id)}`,{method:'DELETE'});await loadDeclensionOverrides();toast('Запис відмінювання видалено','success')}catch(error){toast(error.message,'error')}}
 async function openDeclensionFromValidation(item,report){const unresolved=unresolvedDeclensionsByReport.get(String(report.id))||[item];declensionReturnContext={reportId:report.id,label:report.report_id||report.id,unresolved,entry:item};$('#requestDetailsDialog').close();showModule('references');setReferenceTab('declension');$('#declensionSearch').value=item?.original||'Потребує заповнення';$('#declensionBackToRequest').hidden=false;$('#declensionBackToRequest').textContent=`← Назад до ${declensionReturnContext.label}`;await loadDeclensionOverrides();const existing=declensionItems.find(candidate=>candidate.entity_type===item?.entity_type&&declensionLookup(candidate.original)===declensionLookup(item?.original));openDeclensionEditor(existing||{entity_type:item?.entity_type||'legal_entity',original:item?.original||''},item?.grammatical_case||'',item)}
-async function loadReferencesView(){if(!referenceLoaded){referenceLoaded=true;setReferenceTab(referenceTab)}await loadReferenceStatus()}
+async function loadReferencesView(){if(!referenceLoaded){referenceLoaded=true;setReferenceTab(referenceTab)}const status=await loadReferenceStatus();for(const kind of ['nazk','amcu'])if(status[kind]?.status==='running')pollReferenceRefresh(kind,{silent:true})}
 $$('[data-ref-tab]').forEach(button=>button.onclick=()=>setReferenceTab(button.dataset.refTab));
 const loadReferenceRegistryBase=loadReferenceRegistry;
 loadReferenceRegistry=async function(kind){
