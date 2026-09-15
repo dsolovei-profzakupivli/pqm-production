@@ -8,7 +8,7 @@ const viewFn=source.slice(viewStart,source.indexOf("$$('[data-ref-tab]')",viewSt
 const elements={},timers=[],loads=[],toasts=[];
 let status={amcu:{status:'running'},nazk:{status:'ok'}},requests=0;
 const ctx={API:'/api',Date,referencePollTimers:{},referenceLoaded:false,referenceTab:'amcu',
- $:key=>elements[key]??=( {textContent:'',disabled:false}),
+ $:key=>elements[key]??=( {textContent:'',disabled:false,dataset:{}}),
  referenceStatusText:s=>s?.status??'',request:async()=>{requests++;return status},
  setTimeout:fn=>{timers.push(fn);return timers.length},
  loadReferenceRegistry:async kind=>loads.push(kind),setReferenceTab:()=>{},toast:s=>toasts.push(s)};
@@ -31,5 +31,10 @@ vm.createContext(ctx);vm.runInContext(statusFn+pollFn+viewFn,ctx);
  while(timers.length)await timers.shift()();
  assert.equal(Object.keys(ctx.referencePollTimers).length,0);
  assert.equal(elements['#refAmcuRefresh'].disabled,false);
+ elements['#refAmcuRefresh'].dataset.roleDisabled='1';
+ elements['#refAmcuUploadBtn'].dataset.runtimeDisabled='1';
+ await ctx.loadReferenceStatus();
+ assert.equal(elements['#refAmcuRefresh'].disabled,true,'poll preserves role denial');
+ assert.equal(elements['#refAmcuUploadBtn'].disabled,true,'poll preserves runtime denial');
  console.log('AMCU polling smoke: PASS (reload, independent polls, dedup, terminal state, buttons)');
 })().catch(error=>{console.error(error);process.exitCode=1});

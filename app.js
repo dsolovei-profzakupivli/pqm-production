@@ -86,7 +86,7 @@ function applyRoleCapabilities(me){
   const metadataAdd=$('#adminMetadataAdd');if(metadataAdd)metadataAdd.hidden=!(me.permissions?.['admin.manage']??admin);
   if(!admin){const navigationPanel=$('#adminNavigationPanel');if(navigationPanel)navigationPanel.replaceChildren()}
   ['#resetBtn','#supplierRegistryRefresh','#supplierEdrSync','#supplierNazkReviewSync','#frameworksRefresh',
-   '#refNazkRefresh','#refAmcuUploadBtn','#bidsDataRefresh'].forEach(selector=>{
+   '#refNazkRefresh','#refAmcuRefresh','#refAmcuUploadBtn','#bidsDataRefresh'].forEach(selector=>{
     const element=$(selector);if(!element)return;
     element.dataset.roleDisabled=admin?'0':'1';
     element.disabled=!admin||element.dataset.runtimeDisabled==='1'||(selector==='#bidsDataRefresh'&&(element.dataset.bidsReady!=='1'||element.dataset.bidsRunning==='1'));
@@ -817,7 +817,7 @@ const referencePages={nazk:1,amcu:1},referencePageCounts={nazk:1,amcu:1};
 function referenceDate(value){if(!value)return '—';const d=new Date(value);return Number.isNaN(d.getTime())?esc(String(value)):d.toLocaleString('uk-UA')}
 function setReferenceTab(name){if(!['nazk','amcu','declension'].includes(name))name='nazk';referenceTab=name;try{localStorage.setItem('pqm.referenceTab',name)}catch{}$$('[data-ref-tab]').forEach(button=>button.classList.toggle('active',button.dataset.refTab===name));['nazk','amcu','declension'].forEach(tab=>{const panel=$(`#reference${tab[0].toUpperCase()}${tab.slice(1)}`);if(panel)panel.hidden=tab!==name});if(name==='nazk')loadReferenceRegistry('nazk');else if(name==='amcu')loadReferenceRegistry('amcu');else loadDeclensionOverrides()}
 function referenceStatusText(state){if(!state)return 'Ще не оновлювався';const count=Number(state.row_count||0).toLocaleString('uk-UA');if(state.status==='running')return 'Оновлення триває…';if(state.status==='error')return `Помилка: ${state.message||'невідома помилка'}`;return `${count} записів${state.updated_at?` · ${referenceDate(state.updated_at)}`:''}`}
-async function loadReferenceStatus(){try{const data=await request(`${API}/reference-status?t=${Date.now()}`);$('#refNazkStatus').textContent=referenceStatusText(data.nazk);$('#refAmcuStatus').textContent=referenceStatusText(data.amcu);for(const kind of ['nazk','amcu'])$(kind==='nazk'?'#refNazkRefresh':'#refAmcuRefresh').disabled=data[kind]?.status==='running';$('#refAmcuUploadBtn').disabled=data.amcu?.status==='running';return data}catch(error){$('#refNazkStatus').textContent=$('#refAmcuStatus').textContent=error.message;return {}}}
+async function loadReferenceStatus(){try{const data=await request(`${API}/reference-status?t=${Date.now()}`);$('#refNazkStatus').textContent=referenceStatusText(data.nazk);$('#refAmcuStatus').textContent=referenceStatusText(data.amcu);for(const [selector,kind] of [['#refNazkRefresh','nazk'],['#refAmcuRefresh','amcu'],['#refAmcuUploadBtn','amcu']]){const button=$(selector);button.disabled=data[kind]?.status==='running'||button.dataset.roleDisabled==='1'||button.dataset.runtimeDisabled==='1'}return data}catch(error){$('#refNazkStatus').textContent=$('#refAmcuStatus').textContent=error.message;return {}}}
 async function loadReferenceRegistry(kind){
   const body=$(kind==='nazk'?'#refNazkBody':'#refAmcuBody'),search=$(kind==='nazk'?'#refNazkSearch':'#refAmcuSearch').value.trim();
   body.innerHTML='<tr><td colspan="6">Завантаження…</td></tr>';
