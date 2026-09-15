@@ -7,12 +7,16 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 
 NAZK_URL = "https://corruptinfo.nazk.gov.ua/ep/1.0/corrupt/getAllData"
 AMCU_PAGE = "https://amcu.gov.ua/napryami/oskarzhennya-publichnih-zakupivel/zvedeni-vidomosti-shchodo-spotvorennya-rezultativ-torgiv/zvedeni-vidomosti-shchodo-spotvorennia-rezultativ-torhiv-za-2026-rik"
+AMCU_OPEN_DATA_ID = "1b98d102-0b52-44ba-882f-5f6a559ff81c"
+AMCU_OPEN_DATA_ORG = "1f58f2d7-21b8-4d25-a4bf-9e7c31681b7e"
+AMCU_OPEN_DATA_API = "https://data.gov.ua/api/3/action/package_show?id=2d328664-7603-4a6e-acf2-15afb4e47c15"
 LOCK = threading.Lock()
 START_LOCK = threading.Lock()
 # The WEB server has one process. A persisted 'running' label is not a live
@@ -234,17 +238,33 @@ def _find_col(headers, *needles):
 def parse_amcu_xlsx(raw):
     from openpyxl import load_workbook
     import io
+    import zipfile
+    if len(raw) > AMCU_MAX_BYTES:
+        raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        members = archive.infolist()
+        if len(members) > 5000 or sum(item.file_size for item in members) > 128 * 1024 * 1024:
+            raise ValueError("Завеликий розпакований файл АМКУ")
     wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
     best = None
-    for ws in wb.worksheets:
-        values = list(ws.iter_rows(values_only=True))
-        for pos, row in enumerate(values[:20]):
-            headers = list(row)
-            code_col = _find_col(headers, "ідентифікаційн")
-            name_col = _find_col(headers, "суб'єкт", "поруш")
-            if code_col is not None and name_col is not None:
-                best = (values, pos, headers, code_col, name_col); break
-        if best: break
+    try:
+        for ws in wb.worksheets:
+            values = list(ws.iter_rows(values_only=True))
+            for pos, row in enumerate(values[:20]):
+                headers = list(row)
+                code_col = _find_col(headers, "ідентифікаційн")
+                if code_col is None:
+                    # data.gov.ua uses a machine header followed by Ukrainian
+                    # labels. Accept only the tested, unambiguous exact alias.
+                    aliases = [i for i, h in enumerate(headers) if _cell(h).casefold() == "єдрпоу"]
+                    if len(aliases) == 1:
+                        code_col = aliases[0]
+                name_col = _find_col(headers, "суб'єкт", "поруш")
+                if code_col is not None and name_col is not None:
+                    best = (values, pos, headers, code_col, name_col); break
+            if best: break
+    finally:
+        wb.close()
     if not best: raise ValueError("У файлі АМКУ не знайдено очікувані заголовки")
     values, pos, headers, code_col, name_col = best
     date_col = _find_col(headers, "дата", "рішення")
@@ -278,6 +298,106 @@ def discover_amcu_xlsx():
     links = re.findall(r'href=["\']([^"\']+\.(?:xlsx|xls)(?:\?[^"\']*)?)["\']', html, re.I)
     if not links: raise ValueError("На сторінці АМКУ не знайдено Excel-файл")
     return urllib.parse.urljoin(AMCU_PAGE, links[0])
+
+
+def _amcu_public_get(url, max_bytes):
+    """Bounded public GET, no credentials or automatic cross-host redirects."""
+    parsed = urllib.parse.urlsplit(url)
+    allowed = (url == AMCU_OPEN_DATA_API or
+               (parsed.hostname == "data.gov.ua" and
+                parsed.path.startswith(f"/dataset/{AMCU_OPEN_DATA_ID}/resource/") and
+                "/download/" in parsed.path))
+    if not allowed or parsed.scheme != "https" or parsed.username or parsed.password or parsed.port or parsed.fragment:
+        raise ValueError("Непідтверджене джерело файлу АМКУ")
+    if url != AMCU_OPEN_DATA_API and parsed.query:
+        raise ValueError("Неочікувані параметри URL файлу АМКУ")
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "PQM-WEB-TEST/1.0 (+https://pqm-production-1.onrender.com/)",
+        "Accept": "application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*;q=0.5",
+    })
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+        raw = response.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError("Відповідь джерела АМКУ перевищує дозволений розмір")
+    return raw
+
+
+def discover_amcu_open_data():
+    """Discover the newest dated public XLSX in the verified AMCU dataset."""
+    payload = json.loads(_amcu_public_get(AMCU_OPEN_DATA_API, 4 * 1024 * 1024))
+    data = payload.get("result") or {}
+    if (payload.get("success") is not True or data.get("id") != AMCU_OPEN_DATA_ID or
+            data.get("private") is not False or data.get("state") != "active" or
+            (data.get("organization") or {}).get("id") != AMCU_OPEN_DATA_ORG):
+        raise ValueError("data.gov.ua не підтвердив публічний набір АМКУ")
+    candidates = []
+    for item in data.get("resources", []):
+        if item.get("format", "").upper() != "XLSX" or item.get("state") != "active":
+            continue
+        resource_id = item.get("id", "")
+        url = item.get("url", "")
+        prefix = f"https://data.gov.ua/dataset/{AMCU_OPEN_DATA_ID}/resource/{resource_id}/download/"
+        if (not re.fullmatch(r"[a-f0-9-]{36}", resource_id) or not url.startswith(prefix) or
+                item.get("package_id") != AMCU_OPEN_DATA_ID or not url.lower().endswith(".xlsx")):
+            continue
+        text = " ".join(str(item.get(k) or "") for k in ("name", "description"))
+        dates = set()
+        for day, month, year in re.findall(r"\b(\d{2})[.\-](\d{2})[.\-](20\d{2})\b", text):
+            try:
+                dates.add(datetime(int(year), int(month), int(day)).date())
+            except ValueError:
+                pass
+        if len(dates) == 1:
+            published = dates.pop()
+            if published <= datetime.now().date():
+                candidates.append((published, str(item.get("last_modified") or item.get("created") or ""), url))
+    if not candidates:
+        raise ValueError("У публічному наборі АМКУ немає однозначно датованого XLSX")
+    return max(candidates)[2]
+
+
+def _download_amcu_rows():
+    try:
+        source = discover_amcu_xlsx()
+        return source, parse_amcu_xlsx(_fetch(source, 60, AMCU_MAX_BYTES))
+    except (urllib.error.URLError, TimeoutError, ValueError) as primary_error:
+        # This is a separate publication by AMCU, not a proxy around its portal.
+        LOG.warning("AMCU primary source unavailable: %s; checking official open data", primary_error)
+        try:
+            source = discover_amcu_open_data()
+            return source, parse_amcu_xlsx(_amcu_public_get(source, AMCU_MAX_BYTES))
+        except (urllib.error.URLError, TimeoutError, ValueError) as fallback_error:
+            raise ValueError(f"Основне джерело АМКУ: {str(primary_error)[:180]}. "
+                             f"Резервне data.gov.ua: {str(fallback_error)[:180]}. "
+                             "Попередній реєстр збережено.") from fallback_error
+
+
+def _validate_amcu_replacement(con, rows):
+    """Validate inside the write transaction before deleting any current row."""
+    if not rows:
+        raise ValueError("АМКУ повернув порожній реєстр; попередні дані збережено")
+    dates = []
+    for row in rows:
+        if len(row) != 11 or not all(str(row[i] or "").strip() for i in (0, 4, 5, 7, 8)):
+            raise ValueError("Файл АМКУ містить неповні записи; попередній реєстр збережено")
+        try:
+            date = datetime.strptime(row[5], "%Y-%m-%d").date()
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Некоректна дата рішення АМКУ; попередній реєстр збережено") from exc
+        if date > datetime.now().date():
+            raise ValueError("Майбутня дата рішення АМКУ; попередній реєстр збережено")
+        dates.append(date.isoformat())
+    new_max = max(dates)
+    count, current_max = con.execute("SELECT COUNT(*),MAX(decision_date) FROM amcu_registry").fetchone()
+    if current_max and new_max < current_max:
+        raise ValueError(f"Джерело АМКУ застаріле: останнє рішення {_date_display(new_max)}, "
+                         f"у PQM вже є {_date_display(current_max)}. Попередній реєстр збережено.")
+    # A normal rolling three-year register can shrink; a large drop needs review.
+    if count >= 100 and len({r[0] for r in rows}) < count * 0.9:
+        raise ValueError("Новий реєстр АМКУ менший більш ніж на 10%; потрібна перевірка повноти. Попередній реєстр збережено.")
 
 
 def _amcu_rows_bounded(raw=None, filename=""):
@@ -316,7 +436,9 @@ def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False):
         source, rows = _amcu_rows_bounded(raw, filename)
         fetched = time.monotonic()
         with sqlite3.connect(db_path, timeout=30) as con:
-            con.execute("BEGIN"); con.execute("DELETE FROM amcu_registry")
+            con.execute("BEGIN IMMEDIATE")
+            _validate_amcu_replacement(con, rows)
+            con.execute("DELETE FROM amcu_registry")
             con.executemany("INSERT OR REPLACE INTO amcu_registry VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
             count = con.execute("SELECT COUNT(*) FROM amcu_registry").fetchone()[0]
             con.execute("""UPDATE reference_sync_state SET status='ok',message=?,row_count=?,
@@ -390,11 +512,15 @@ def list_registry(db_path, source, query):
 if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--amcu-worker":
     try:
         uploaded = sys.argv[2] == "upload"
-        source = (sys.argv[3] or "АМКУ.xlsx") if uploaded else discover_amcu_xlsx()
-        raw = sys.stdin.buffer.read(AMCU_MAX_BYTES + 1) if uploaded else _fetch(source, 60, AMCU_MAX_BYTES)
-        if len(raw) > AMCU_MAX_BYTES:
-            raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
-        print(json.dumps({"source": source, "rows": parse_amcu_xlsx(raw)}, ensure_ascii=False))
+        if uploaded:
+            source = sys.argv[3] or "АМКУ.xlsx"
+            raw = sys.stdin.buffer.read(AMCU_MAX_BYTES + 1)
+            if len(raw) > AMCU_MAX_BYTES:
+                raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
+            rows = parse_amcu_xlsx(raw)
+        else:
+            source, rows = _download_amcu_rows()
+        print(json.dumps({"source": source, "rows": rows}, ensure_ascii=False))
     except Exception as exc:
         detail = str(exc)
         if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
