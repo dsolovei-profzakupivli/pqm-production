@@ -23,6 +23,7 @@
     {id:'procurementsNav',module:'procurements',route:'procurements',label:'Закупівлі за відборами',tooltip:'Закупівлі за відборами',iconKey:'procurements',displayMode:'icon',order:9,permission:'suppliers.read',visible:true},
     {id:'auditBtn',module:'audit',route:'audit',label:'Журнал змін',tooltip:'Журнал змін',iconKey:'audit',displayMode:'icon',order:10,permission:'admin.read',visible:true},
     {id:'administrationNav',module:'administration',route:'administration',label:'Адміністрування',tooltip:'Адміністрування',iconKey:'administration',displayMode:'icon',order:11,permission:'role:admin',visible:true},
+    {id:'edrMonitoringNav',module:'edrMonitoring',route:'edrMonitoring',label:'Перевірка ЄДР',tooltip:'Перевірка ЄДР',iconKey:null,displayMode:'text',order:12,permission:'suppliers.read',visible:true},
   ];
   const nav=document.getElementById('mainNav');let currentOverrides={};let currentAccess=null;
   const resolvedItems=overrides=>ITEMS.map(base=>({...base,...(overrides[base.id]||{})})).sort((a,b)=>a.order-b.order);

@@ -158,8 +158,8 @@ def update_field(schema,key,patch,actor,role,revision,path=CATALOG):
         tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n',encoding='utf-8');os.replace(tmp,path)
         return data
 
-def scan_docx(path,fields,document_type,runtime_key=''):
-    from docx_conditionals import plan
+def scan_docx(path,fields,document_type,runtime_key='',aliases=None):
+    from docx_conditionals import plan, repeat_plan
     from template_conditions import ConditionalError
     from lxml import etree
     conditional_errors=[]
@@ -169,18 +169,29 @@ def scan_docx(path,fields,document_type,runtime_key=''):
             if not(name.startswith('word/') and name.endswith('.xml')):continue
             raw=z.read(name)
             root=ET.fromstring(raw)
+            lxml_root=etree.fromstring(raw)
+            repeats=[]
+            try:
+                repeats=repeat_plan(lxml_root,fields,document_type)
+                for repeat in repeats:
+                    tokens.add(repeat.key)
+                    tokens.update(repeat.key+'.'+key for key in repeat.scoped_keys)
+            except ConditionalError as exc:conditional_errors.append(str(exc))
             texts=[''.join(x.text or '' for x in p.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'))
                    for p in root.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p')]
             if any('{{#if' in t or '{{/if' in t for t in texts):
                 try:
-                    blocks,_=plan(etree.fromstring(raw),fields,document_type,
+                    blocks,_=plan(lxml_root,fields,document_type,
                                   validate_scalars=not bool(runtime_key))
                     tokens.update(condition.key for condition,_ in blocks)
                 except ConditionalError as exc:conditional_errors.append(str(exc))
             for paragraph in root.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p'):
                 text=''.join(x.text or '' for x in paragraph.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'))
-                tokens.update(x.strip().lstrip('#/') for x in re.findall(r'\{\{\s*(.*?)\s*\}\}',text)
-                              if not x.strip().startswith(('#if','/if')))
+                for token in re.findall(r'\{\{\s*(.*?)\s*\}\}',text):
+                    token=token.strip()
+                    if token.startswith(('#if','/if','#repeat','/repeat')):continue
+                    if '.' not in token and any(token in repeat.scoped_keys for repeat in repeats):continue
+                    tokens.add((aliases or {}).get(token,token))
     legacy=set(load(LEGACY).get(runtime_key,[]));lookup={f['key']:f for f in fields}
     report={k:[] for k in ('recognized','legacy','unknown','unavailable','broken_bindings')}
     for token in sorted(tokens):

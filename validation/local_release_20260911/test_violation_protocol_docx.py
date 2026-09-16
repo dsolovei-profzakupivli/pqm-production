@@ -17,7 +17,8 @@ import violation_protocol_docx as generator
 
 EXPECTED_HASHES = {
     "warning": "33d1a471142377ea01ac11b403708d77718e506e814103215d66a8954d58e32e",
-    "decline_p49_1_2": "262d9ccbebdbe7b82e9fb260e90649be3fef8c2c542c354c77f4f62a27bd3be4",
+    # Reviewed NEXT packaged asset only; the operator's runtime copy is preserved.
+    "decline_p49_1_2": "525cb13508d5db3c994fde50b342b79fdc1e5b3673f4fa1e09155efb87e81016",
     "decline_p49_3": "5bf29f6a84f7136a60a48f16b9b0f8722451071bdf1654446b79e61805234622",
 }
 

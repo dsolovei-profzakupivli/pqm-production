@@ -90,9 +90,9 @@ class FinalLocalStabilizationTests(unittest.TestCase):
               ('rc-export','f-export','q-export','1234567890','active','[]','{}',?)""", (server.now_iso(),))
         rows = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20))
         self.assertEqual(list(rows[0]), server.EDR_EXPORT_HEADERS)
-        self.assertEqual(rows[0]["Маркер актуальності"], "до 30 календарних днів")
-        self.assertEqual(rows[0]["Дата запису"], "02.03.2020")
-        self.assertEqual(rows[0]["Номер запису"], "123")
+        self.assertEqual(rows[0]["Код ЄДРПОУ"], "1234567890")
+        self.assertEqual(rows[0]["Стара Назва"], "ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ ТЕСТ")
+        self.assertEqual(rows[0]["Фактична дата перевірки ЄДР"], "2026-08-01 00:00:00")
         self.assertTrue(server.supplier_edr_export_csv("ФОП").startswith(b"\xef\xbb\xbf"))
 
     def test_edr_export_population_requires_historical_admission_not_current_active(self):
@@ -110,10 +110,12 @@ class FinalLocalStabilizationTests(unittest.TestCase):
             con.execute("""INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status,
               milestones_json,raw_json,synced_at) VALUES
               ('rc-old','f-pop','q-old','1111111111','terminated','[]','{}',?)""", (server.now_iso(),))
-        rows = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20))
-        codes = {row["Код ЄДРПОУ"] for row in rows}
-        self.assertIn("1111111111", codes)
-        self.assertNotIn("2222222222", codes)
+        default_rows = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20))
+        self.assertNotIn("1111111111", {row["Код ЄДРПОУ"] for row in default_rows})
+        selected = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20), filters={
+            "supplier_codes": {"1111111111"}, "selected_mode": True,
+        })
+        self.assertEqual([row["Код ЄДРПОУ"] for row in selected], ["1111111111"])
 
     def test_edr_export_uses_registry_qualification_when_submission_pointer_is_stale(self):
         with server.db() as con:
@@ -132,7 +134,7 @@ class FinalLocalStabilizationTests(unittest.TestCase):
               ('rc-multi','f-multi','q-active','3069605914','active','[]','{}',?)""", (server.now_iso(),))
         rows = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20))
         row = next(item for item in rows if item["Код ЄДРПОУ"] == "3069605914")
-        self.assertEqual(row["Дата останнього допуску"], "10.12.2023")
+        self.assertEqual(row["Стара Назва"], "ФОП МЕЛЬНИЧЕНКО ІВАН РОМАНОВИЧ")
 
     def test_supplier_note_tables_are_additive_and_auditable(self):
         with server.db() as con:

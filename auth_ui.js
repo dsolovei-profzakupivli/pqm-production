@@ -20,7 +20,7 @@
     previousCapabilities(me);
     q('accessTab').hidden=!me?.permissions||me.role!=='admin';
     if(!me?.permissions)return;
-    const controls={applicationsNav:'applications.read',historyNav:'applications.read',suppliersNav:'suppliers.read',requestsNav:'appeals.read',workQueueNav:'work.read',frameworksNav:'frameworks.read'};
+    const controls={applicationsNav:'applications.read',historyNav:'applications.read',suppliersNav:'suppliers.read',edrMonitoringNav:'suppliers.read',requestsNav:'appeals.read',workQueueNav:'work.read',frameworksNav:'frameworks.read'};
     Object.entries(controls).forEach(([id,key])=>{const el=q(id);if(el)el.disabled=me.permissions[key]===false});
     const actions={resetBtn:'prozorro.update',frameworksRefresh:'prozorro.update',requestsRefresh:'appeals.update',refNazkRefresh:'references.update',refAmcuRefresh:'references.update',refAmcuUploadBtn:'references.update'};
     Object.entries(actions).forEach(([id,key])=>{const el=q(id);if(!el)return;const allowed=me.permissions[key]===true;el.dataset.roleDisabled=allowed?'0':'1';el.disabled=!allowed||el.dataset.runtimeDisabled==='1';if(!allowed)el.title='Дія недоступна для вашої ролі';else if(el.dataset.runtimeDisabled!=='1')el.title=''});

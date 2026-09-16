@@ -4,15 +4,20 @@ from pathlib import Path
 from zipfile import ZipFile
 from docx import Document
 from docx.shared import Pt
+from lxml import etree
 import schema_catalog
 import template_catalog
 from docx_conditionals import render
+from protocol_template import NS, paragraph_text
 from template_conditions import ConditionalError
 
 TYPE='nazk_supplier_request'
+AMCU_TYPE='amcu_exclusion_protocol'
 FOP='{{#if supplier.entity_type == "individual_entrepreneur"}}'
 LEGAL='{{#if supplier.entity_type == "legal_entity"}}'
 END='{{/if}}'
+AMCU_SINGLE='{{#if amcu.is_single_decision == "true"}}'
+AMCU_MULTIPLE='{{#if amcu.has_multiple_decisions == "true"}}'
 
 
 class ConditionalTests(unittest.TestCase):
@@ -142,3 +147,116 @@ class ConditionalTests(unittest.TestCase):
             self.assertFalse(report['conditional_errors'])
             self.assertFalse(report['unknown'])
             self.assertEqual(before,path.read_bytes())
+
+    def test_amcu_repeat_paragraph_group_and_date_format(self):
+        self.fixture(['Протокол № {{decision.number}} від {{decision.date}}','До блоку','{{#repeat amcu.decisions[]}}',
+                      'Рішення № {{number}} від {{date}} · {{authority}}',
+                      'Витяг: {{extract_url}}','{{/repeat}}','Після блоку'])
+        context={'decision.number':'701','decision.date':'2026-09-14','amcu.decisions[]':[
+          {'number':'72/130-р/к','date':'2026-09-11','authority':'АМКУ','extract_url':'https://one'},
+          {'number':'73/130-р/к','date':'2026-09-12','authority':'Комісія','extract_url':'https://two'}]}
+        render(self.source,self.output,context,self.fields,AMCU_TYPE)
+        self.assertEqual([p.text for p in Document(self.output).paragraphs],[
+          'Протокол № 701 від 14.09.2026','До блоку','Рішення № 72/130-р/к від 11.09.2026 · АМКУ','Витяг: https://one',
+          'Рішення № 73/130-р/к від 12.09.2026 · Комісія','Витяг: https://two','Після блоку'])
+        report=template_catalog.scan_docx(self.source,self.fields,AMCU_TYPE)
+        self.assertTrue(report['can_activate_canonical'],report)
+
+    def test_amcu_repeat_url_becomes_external_clickable_hyperlink(self):
+        self.fixture(['{{#repeat amcu.decisions[]}}','Посилання на витяг: {{extract_url}}','{{/repeat}}'])
+        render(self.source,self.output,{'amcu.decisions[]':[
+          {'number':'1','date':'2026-09-11','authority':'АМКУ','extract_url':'https://example.test/one'},
+          {'number':'2','date':'2026-09-12','authority':'АМКУ','extract_url':'https://example.test/two'}]},
+          self.fields,AMCU_TYPE)
+        with ZipFile(self.output) as package:
+            root=etree.fromstring(package.read('word/document.xml'))
+            links=root.xpath('.//w:hyperlink',namespaces=NS)
+            self.assertEqual(['https://example.test/one','https://example.test/two'],[
+                paragraph_text(link) for link in links])
+            relationships=etree.fromstring(package.read('word/_rels/document.xml.rels'))
+            by_id={item.get('Id'):item for item in relationships}
+            self.assertEqual(['https://example.test/one','https://example.test/two'],[
+                by_id[link.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')].get('Target')
+                for link in links])
+            self.assertTrue(all(by_id[link.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')].get('TargetMode')=='External'
+                                for link in links))
+        self.assertEqual([p.text for p in Document(self.output).paragraphs],[
+            'Посилання на витяг: https://example.test/one','Посилання на витяг: https://example.test/two'])
+
+    def test_amcu_repeat_linked_reference_hides_raw_url_and_links_each_item(self):
+        self.fixture(['{{#repeat amcu.decisions[]}}','{{linked_reference}}','{{/repeat}}'])
+        render(self.source,self.output,{'amcu.decisions[]':[
+          {'number':'1','date':'2026-09-11','authority':'','extract_url':'https://example.test/one','linked_reference':'від 11.09.2026 № 1'},
+          {'number':'2','date':'2026-09-12','authority':'','extract_url':'https://example.test/two','linked_reference':'від 12.09.2026 № 2'}]},
+          self.fields,AMCU_TYPE)
+        with ZipFile(self.output) as package:
+            root=etree.fromstring(package.read('word/document.xml'))
+            self.assertEqual([paragraph_text(link) for link in root.xpath('.//w:hyperlink',namespaces=NS)],
+                             ['від 11.09.2026 № 1','від 12.09.2026 № 2'])
+            text='\n'.join(paragraph_text(p) for p in root.xpath('.//w:p',namespaces=NS))
+            self.assertNotIn('https://',text);self.assertNotIn('посилання на витяг',text.casefold())
+            rels=etree.fromstring(package.read('word/_rels/document.xml.rels'))
+            by_id={row.get('Id'):row.get('Target') for row in rels}
+            self.assertEqual([by_id[link.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')]
+                              for link in root.xpath('.//w:hyperlink',namespaces=NS)],
+                             ['https://example.test/one','https://example.test/two'])
+            for link in root.xpath('.//w:hyperlink',namespaces=NS):
+                properties=link.xpath('./w:r/w:rPr',namespaces=NS)[0]
+                self.assertEqual(properties.xpath('./w:color/@w:val',namespaces=NS),['0563C1'])
+                self.assertEqual(properties.xpath('./w:u/@w:val',namespaces=NS),['single'])
+
+    def test_amcu_singular_plural_conditions_keep_repeat_hyperlinks_and_no_markers(self):
+        self.fixture([
+          AMCU_SINGLE,'встановлено наявність такого рішення:',END,
+          AMCU_MULTIPLE,'встановлено наявність таких рішень:',END,
+          '{{#repeat amcu.decisions[]}}','{{linked_reference}}','{{/repeat}}',
+          AMCU_SINGLE,'На підставі зазначеного рішення постачальника.',END,
+          AMCU_MULTIPLE,'На підставі зазначених рішень постачальника.',END,
+          AMCU_SINGLE,'Штраф накладено на підставі такого рішення:',END,
+          AMCU_MULTIPLE,'Штраф накладено на підставі таких рішень:',END])
+        for count in (1,2,3):
+            with self.subTest(count=count):
+                items=[{'number':str(index),'date':f'2026-09-{10+index:02d}','authority':'',
+                        'extract_url':f'https://example.test/{index}',
+                        'linked_reference':f'від {10+index:02d}.09.2026 № {index}'}
+                       for index in range(1,count+1)]
+                context={'amcu.is_single_decision':'true' if count==1 else 'false',
+                         'amcu.has_multiple_decisions':'true' if count>1 else 'false',
+                         'amcu.decisions[]':items}
+                render(self.source,self.output,context,self.fields,AMCU_TYPE)
+                with ZipFile(self.output) as package:
+                    root=etree.fromstring(package.read('word/document.xml'))
+                    text='\n'.join(paragraph_text(p) for p in root.xpath('.//w:p',namespaces=NS))
+                    self.assertNotIn('{{',text);self.assertNotIn('}}',text)
+                    if count==1:
+                        self.assertEqual(text.count('такого рішення'),2)
+                        self.assertIn('зазначеного рішення',text)
+                        self.assertNotIn('таких рішень',text);self.assertNotIn('зазначених рішень',text)
+                    else:
+                        self.assertEqual(text.count('таких рішень'),2)
+                        self.assertIn('зазначених рішень',text)
+                        self.assertNotIn('такого рішення',text);self.assertNotIn('зазначеного рішення',text)
+                    links=root.xpath('.//w:hyperlink',namespaces=NS)
+                    self.assertEqual(len(links),count)
+                    relationships=etree.fromstring(package.read('word/_rels/document.xml.rels'))
+                    by_id={row.get('Id'):row for row in relationships}
+                    self.assertEqual(
+                      [by_id[link.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')].get('Target')
+                       for link in links],
+                      [item['extract_url'] for item in items])
+                    self.assertTrue(all(by_id[link.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')].get('TargetMode')=='External'
+                                        for link in links))
+
+    def test_empty_amcu_repeat_removes_complete_group(self):
+        self.fixture(['До','{{#repeat amcu.decisions[]}}','№ {{number}}','{{/repeat}}','Після'])
+        render(self.source,self.output,{'amcu.decisions[]':[]},self.fields,AMCU_TYPE)
+        self.assertEqual([p.text for p in Document(self.output).paragraphs],['До','Після'])
+
+    def test_repeat_scope_is_strict_and_atomic(self):
+        for paragraphs in (["{{#repeat amcu.decisions[]}}",'{{unknown}}','{{/repeat}}'],
+                           ['{{number}}'],['{{#repeat amcu.decisions[]}}','{{number}}']):
+            with self.subTest(paragraphs=paragraphs):
+                self.fixture(paragraphs)
+                with self.assertRaises(ConditionalError):
+                    render(self.source,self.output,{'amcu.decisions[]':[]},self.fields,AMCU_TYPE)
+                self.assertFalse(self.output.exists())

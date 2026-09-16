@@ -7,6 +7,7 @@ import table_widths
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
+import edr_sync_v2
 import base64
 import csv
 import hashlib
@@ -36,6 +37,7 @@ import urllib.request
 import uuid
 import webbrowser
 import zipfile
+from xml.etree import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -115,6 +117,7 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 PQM_ENV = os.environ.get("PQM_ENV", "local").strip().casefold() or "local"
 IS_WEB_ENV = PQM_ENV in {"test", "test_web", "web", "production"}
+SAFE_MODE = env_flag("PQM_SAFE_MODE", False)
 DATA_DIR = Path(os.environ.get("PQM_DATA_DIR", str(ROOT / "data"))).resolve()
 DB_PATH = Path(os.environ.get("PQM_DB_PATH", str(DATA_DIR / "pqm.sqlite3"))).resolve()
 PROTOCOLS_DIR = Path(os.environ.get("PQM_PROTOCOLS_DIR", str(DATA_DIR / "protocols"))).resolve()
@@ -375,6 +378,9 @@ def mutation_allowed(role: str, method: str, path: str) -> bool:
     # Account-owned presentation preferences only; never a business-data mutation.
     if method == 'POST' and path == '/api/history-columns' and role in AUTH_ROLES:
         return True
+    # Read-only preview still requires tasks.read in the central permission gate.
+    if method == 'POST' and path == '/api/edr-monitoring/termination-exclusions/preview':
+        return role in AUTH_ROLES
     if method not in {"POST", "PATCH", "PUT", "DELETE"}:
         return True
     if role == "admin":
@@ -532,6 +538,29 @@ def canonical_officer_identity(con, username: str, officer_id=None) -> str:
             (username,),
         ).fetchone()
     return formatted_officer_name(row[0]) if row else ""
+
+
+def projected_officer_name(con, value: str) -> str:
+    """Presentation-only officer resolver backed by the authorized directory.
+
+    Raw audit values are never rewritten.  A value is formatted only when it can
+    be resolved to a known officer name or login; otherwise it is returned as-is
+    so an unmapped identity stays visible for audit instead of being guessed.
+    """
+    raw = " ".join(str(value or "").split())
+    if not raw:
+        return ""
+    if normalized_officer_name(raw) in {"НЕ ВИЗНАЧЕНО", "НЕ ПРИЗНАЧЕНО"}:
+        return "Не визначено"
+    row = con.execute(
+        "SELECT full_name FROM authorized_officers WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?)",
+        (raw,),
+    ).fetchone()
+    if not row:
+        row = con.execute("""SELECT o.full_name FROM auth_users u
+          JOIN authorized_officers o ON o.id=u.officer_id
+          WHERE LOWER(u.username)=LOWER(?)""", (raw,)).fetchone()
+    return formatted_officer_name(row[0]) if row else raw
 SYNC_STATE = {"running": False, "message": "Синхронізацію ще не запускали", "updated_at": None,
               "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None,
               "last_completed_at": None, "last_result": None, "last_message": None, "last_mode": None}
@@ -941,6 +970,9 @@ def db() -> sqlite3.Connection:
         lambda value: " ".join(re.sub(r"[’'`\-]+", " ", str(value or "").casefold()).split()),
         deterministic=True,
     )
+    con.create_function("NORMALIZED_DATE", 1, lambda value: edr_sync_v2.normalized_date(value), deterministic=True)
+    con.create_function("EDR_FRESHNESS", 2, lambda status, checked: edr_sync_v2.freshness_state(
+        str(status or ""), str(checked or ""))["bucket"], deterministic=True)
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=60000")
@@ -984,9 +1016,9 @@ def runtime_feature_state(feature_key: str, environment_default: bool,
         enabled = bool(row[0]) if row else bool(environment_default)
         return {
             "feature_key": feature_key,
-            "enabled": enabled,
+            "enabled": enabled and not SAFE_MODE,
             "configured_enabled": enabled,
-            "configuration_source": "runtime" if row else "environment",
+            "configuration_source": "safe_mode" if SAFE_MODE else "runtime" if row else "environment",
             "updated_at": row[1] if row else None,
             "updated_by": row[2] if row else None,
         }
@@ -997,6 +1029,8 @@ def runtime_feature_state(feature_key: str, environment_default: bool,
 
 def set_runtime_feature_enabled(feature_key: str, enabled: bool, actor: str,
                                 environment_default: bool) -> dict:
+    if SAFE_MODE:
+        raise ValueError("Зміна інтеграцій недоступна в safe mode")
     with db() as con:
         ensure_runtime_feature_settings(con)
         before = runtime_feature_state(feature_key, environment_default, con)
@@ -1094,6 +1128,8 @@ def bids_db() -> sqlite3.Connection:
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
+        import nazk_registry_evidence
+        nazk_registry_evidence.ensure_schema(con)
         con.executescript("""
         CREATE TABLE IF NOT EXISTS frameworks (
           id TEXT PRIMARY KEY, pretty_id TEXT UNIQUE NOT NULL, title TEXT, dk_code TEXT,
@@ -1217,7 +1253,7 @@ def init_db() -> None:
           ON supplier_nazk_checks(legacy_key) WHERE legacy_key IS NOT NULL;
         CREATE TABLE IF NOT EXISTS supplier_nazk_check_matches (
           check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,
-          nazk_source_id TEXT NOT NULL REFERENCES nazk_registry(source_id),
+          nazk_source_id TEXT NOT NULL REFERENCES nazk_registry_evidence_sources(source_id),
           match_status TEXT NOT NULL DEFAULT 'candidate',
           created_at TEXT NOT NULL,
           PRIMARY KEY(check_id,nazk_source_id)
@@ -1408,6 +1444,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS ix_application_view_profiles_owner
           ON application_view_profiles(owner_key,is_system,name);
         """)
+        nazk_registry_evidence.install_capture_trigger(con)
         violation_review_columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
         if "decision_justification" not in violation_review_columns:
             con.execute("ALTER TABLE violation_report_reviews ADD COLUMN decision_justification TEXT DEFAULT ''")
@@ -1415,6 +1452,7 @@ def init_db() -> None:
         for column in ("termination_decision_details", "edr_officer", "edr_notes"):
             if column not in edr_columns:
                 con.execute(f"ALTER TABLE supplier_edr_profiles ADD COLUMN {column} TEXT DEFAULT ''")
+        edr_sync_v2.migrate(con)
         if con.execute("SELECT COUNT(*) FROM remarks_catalog").fetchone()[0] == 0:
             con.executemany("INSERT INTO remarks_catalog(point,text,tag,category,active,updated_at) VALUES (?,?,?,?,1,?)",
                             [(point, text, tag, "", now_iso()) for point, text, tag in DEFAULT_REMARKS])
@@ -1539,12 +1577,16 @@ def init_db() -> None:
 
 def rebuild_operational_tasks(actor: str = "PQM task builder") -> dict:
     """Generic rebuild: unrelated startup/sync paths must never mutate NAZK."""
+    if SAFE_MODE:
+        return {"skipped": "safe_mode"}
     with db() as con:
         return operational_tasks.build(con, actor, include_nazk=False)
 
 
 def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
     """Explicit NAZK-only workflow; no external fetch and no unrelated tasks."""
+    if SAFE_MODE:
+        return {"skipped": "safe_mode", "created": 0}
     if workflow not in {"nazk_job", "maintenance"}:
         raise ValueError("Explicit NAZK workflow or maintenance action required")
     if workflow == "nazk_job" and not env_flag("PQM_ENABLE_NAZK_WORKFLOW", False):
@@ -1556,6 +1598,13 @@ def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
         counts["supplier_nazk_checks_created"] = sum(bool(item.get("created"))
                                                    for item in supplier_nazk.get("items", []))
         return counts
+
+
+def reconcile_prozorro_task_lifecycles(actor: str = "PQM Prozorro qualification sync") -> dict:
+    """Run post-sync task transitions from already persisted Prozorro facts."""
+    with db() as con:
+        return {"amcu": operational_tasks.reconcile_amcu_after_qualification_sync(con, actor),
+                "termination": operational_tasks.reconcile_termination_after_qualification_sync(con, actor)}
 
 
 def api_get(url: str) -> dict:
@@ -1942,6 +1991,8 @@ def sync_worker(framework_id: str) -> None:
     try:
         result = sync_one_framework(framework_id)
         sync_framework_officers()
+        result["supplier_registry"] = refresh_supplier_registry_summary()
+        result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
         rebuild_operational_tasks()
         SYNC_STATE["message"] = f"{result['framework']}: {result['submissions']} заявок, {result['qualifications']} рішень, {result['contracts']} записів реєстру"
         SYNC_STATE.update(last_completed_at=now_iso(), last_result=result,
@@ -1960,6 +2011,7 @@ def sync_all_worker() -> None:
     SYNC_STATE.update(running=True, mode="full", started_at=started.isoformat(), message="Пошук активних і закритих відборів…")
     try:
         result = sync_all_tracked_frameworks()
+        result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
         rebuild_operational_tasks()
         SYNC_STATE["message"] = (
             f"Оновлено {result['completed']}/{result['frameworks']} відборів "
@@ -1985,6 +2037,7 @@ def sync_incremental_worker() -> None:
     SYNC_STATE.update(running=True, mode="incremental", started_at=started.isoformat(), message="Підготовка щогодинного оновлення…")
     try:
         result = sync_incremental_active_frameworks()
+        result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
         rebuild_operational_tasks()
         SYNC_STATE["message"] = (
             f"Щогодинне оновлення: {result['completed']}/{result['frameworks']} відборів; "
@@ -2268,6 +2321,9 @@ def scheduler_environment_defaults() -> dict[str, bool]:
 
 
 def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
+    if SAFE_MODE:
+        return ({key: False for key in SCHEDULER_TARGETS},
+                {key: "safe_mode" for key in SCHEDULER_TARGETS})
     with db() as con:
         return (scheduler_runtime.effective_enabled(con, scheduler_environment_defaults()),
                 scheduler_runtime.setting_sources(con))
@@ -2284,6 +2340,8 @@ def apply_scheduler_settings(*, catch_up: bool) -> dict[str, bool]:
 
 
 def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
+    if SAFE_MODE:
+        raise ValueError("Планувальники заблоковано в safe mode")
     if job_key not in SCHEDULER_TARGETS:
         raise ValueError("Невідома scheduler job")
     before, _ = effective_scheduler_settings()
@@ -2611,7 +2669,10 @@ def list_applications(params: dict) -> dict:
         )
     items = []
     for row in records:
-        item = dict(row); item["decision"] = decision_label(item.pop("decision_status"))
+        item = dict(row)
+        decision_status = item.pop("decision_status")
+        item["decision"] = decision_label(decision_status)
+        item["review_completed"] = decision_status in {"active", "unsuccessful"} or item.get("protocol_decision") in {"admit", "reject"}
         meddata = historical_applications.provenance(item["id"])
         item["historical_read_only"] = bool(meddata)
         item["historical_source"] = meddata or {}
@@ -2638,10 +2699,13 @@ def list_applications(params: dict) -> dict:
         )
         item["nazk_can_approve"] = bool(submission_nazk.get("can_approve", True))
         item["nazk_state_reason"] = submission_nazk.get("reason", "")
-        item["manager_name_display"] = item.get("manager_name") or submission_nazk.get("manager_name", "")
+        # Historical MedData rows are application snapshots.  Never fill a
+        # missing historical manager from a current supplier/control context.
+        item["manager_name_display"] = (item.get("manager_name", "") if meddata else
+                                        item.get("manager_name") or submission_nazk.get("manager_name", ""))
         item["manager_name_display_source"] = ""
         item["manager_name_display_source_date"] = ""
-        if not item.get("manager_name") and item["manager_name_display"]:
+        if not meddata and not item.get("manager_name") and item["manager_name_display"]:
             control_manager = normalize_manager_name(item.get("nazk_control_manager", ""))
             edr_manager = normalize_manager_name(item.get("edr_fallback_manager", ""))
             if control_manager and control_manager == edr_manager:
@@ -3922,6 +3986,9 @@ def sync_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, m
         return {"changed": False, "manager_id": None, "reason": "missing_supplier_code"}
     incoming_is_edr = source.startswith("Google Sheets") or source == "ЄДР"
     current_is_manual = bool(current and str(current["source"] or "").startswith("Підтверджено УО"))
+    if incoming_is_edr and not normalized:
+        return {"changed": False, "manager_id": current["id"] if current else None,
+                "reason": "no_edr_manager_observation"}
     if current and incoming_is_edr and current_is_manual:
         current_at = _parse_prozorro_date(current["updated_at"])
         incoming_at = _parse_prozorro_date(observed)
@@ -3942,6 +4009,70 @@ def sync_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, m
       VALUES (?,?,?,?,NULL,1,?,?,?)""", (code, name, normalized, observed, source, observed, observed))
     return {"changed": True, "manager_id": cursor.lastrowid,
             "previous_manager_id": current["id"] if current else None, "reason": "manager_changed" if current else "manager_created"}
+
+
+def enrich_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, manager_name: str,
+                                    source: str = "ЄДР", observed_at: str | None = None) -> dict:
+    """Improve the current manager display without opening a new identity cycle."""
+    code = re.sub(r"\D", "", supplier_code or "")
+    name = " ".join((manager_name or "").split())
+    current = con.execute("""SELECT id,manager_name,source,updated_at FROM supplier_managers
+      WHERE supplier_code=? AND is_current=1 ORDER BY id DESC LIMIT 1""", (code,)).fetchone()
+    if not current or not name:
+        return {"enriched": False, "manager_id": current["id"] if current else None,
+                "reason": "current_manager_missing"}
+    observed = observed_at or now_iso()
+    incoming_is_edr = source.startswith("Google Sheets") or source == "ЄДР"
+    current_is_manual = str(current["source"] or "").startswith("Підтверджено УО")
+    if incoming_is_edr and current_is_manual:
+        current_at = _parse_prozorro_date(current["updated_at"])
+        incoming_at = _parse_prozorro_date(observed)
+        if current_at and incoming_at and current_at >= incoming_at:
+            return {"enriched": False, "manager_id": current["id"],
+                    "reason": "newer_manual_value_preserved"}
+    con.execute("""UPDATE supplier_managers
+      SET manager_name=?,normalized_name=?,source=?,updated_at=? WHERE id=?""",
+      (name, normalize_manager_name(name), source, observed, current["id"]))
+    return {"enriched": True, "changed": False, "manager_id": current["id"],
+            "reason": "representation_enriched"}
+
+
+def establish_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, manager_name: str,
+                                       source: str = "ЄДР", observed_at: str | None = None) -> dict:
+    """Create the first known manager without manufacturing a previous cycle."""
+    code = re.sub(r"\D", "", supplier_code or "")
+    name = " ".join((manager_name or "").split())
+    normalized = normalize_manager_name(name)
+    observed = observed_at or now_iso()
+    current = con.execute("""SELECT id,manager_name,normalized_name FROM supplier_managers
+      WHERE supplier_code=? AND is_current=1 ORDER BY id DESC LIMIT 1""", (code,)).fetchone()
+    if not code or not normalized:
+        return {"established": False, "manager_id": None, "reason": "missing_identity"}
+    if current and normalize_manager_name(current["manager_name"]):
+        return {"established": False, "manager_id": current["id"],
+                "reason": "current_manager_already_exists"}
+    if current:
+        con.execute("""UPDATE supplier_managers SET manager_name=?,normalized_name=?,valid_from=?,
+          valid_to=NULL,is_current=1,source=?,updated_at=? WHERE id=?""",
+          (name, normalized, observed, source, observed, current["id"]))
+        manager_id = current["id"]
+    else:
+        cursor = con.execute("""INSERT INTO supplier_managers
+          (supplier_code,manager_name,normalized_name,valid_from,valid_to,is_current,source,created_at,updated_at)
+          VALUES (?,?,?,?,NULL,1,?,?,?)""",
+          (code, name, normalized, observed, source, observed, observed))
+        manager_id = cursor.lastrowid
+    return {"established": True, "changed": False, "manager_id": manager_id,
+            "reason": "first_manager_established"}
+
+
+def reestablish_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, manager_name: str,
+                                         source: str = "ЄДР", observed_at: str | None = None) -> dict:
+    """Restore a known identity as current without rewriting its closed historical row."""
+    result = establish_current_supplier_manager(con, supplier_code, manager_name, source, observed_at)
+    if result.get("established"):
+        return {**result, "reestablished": True, "reason": "known_manager_reestablished"}
+    return {**result, "reestablished": False}
 
 
 def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_code: str) -> int:
@@ -3969,7 +4100,7 @@ def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_c
 
 def sync_supplier_managers_from_edr() -> dict:
     """Idempotently seed/update manager history from the current EDR directory."""
-    created = changed = unchanged = removed = missing = 0
+    created = changed = unchanged = removed = missing = skipped_blank = 0
     with db() as con:
         profiles = con.execute("""SELECT supplier_code,manager_name,source_sheet,synced_at
           FROM supplier_edr_profiles ORDER BY supplier_code""").fetchall()
@@ -3983,8 +4114,10 @@ def sync_supplier_managers_from_edr() -> dict:
             elif reason == "manager_removed": removed += 1
             elif reason == "missing_manager": missing += 1
             elif reason == "unchanged": unchanged += 1
+            elif reason == "no_edr_manager_observation": skipped_blank += 1
     return {"profiles": len(profiles), "created": created, "changed": changed,
-            "removed": removed, "missing": missing, "unchanged": unchanged}
+            "removed": removed, "missing": missing, "unchanged": unchanged,
+            "skipped_blank": skipped_blank}
 
 
 def supplier_edr_sync_status() -> dict:
@@ -3998,10 +4131,8 @@ def supplier_edr_sync_status() -> dict:
 
 
 EDR_EXPORT_HEADERS = [
-    "Маркер актуальності", "Код ЄДРПОУ", "Найменування", "ПІБ для перевірки",
-    "Статус в реєстрі (ЄДР)", "Статус (Prozorro)", "Реквізити рішення про припинення",
-    "Дата останнього допуску", "Дата перевірки ЄДР", "Дата запису", "Номер запису",
-    "УО", "Примітки", "Повна назва з ЄДР", "Скорочена назва з ЄДР",
+    "Код ЄДРПОУ", "Стара Назва", "Старий Статус", "Старий ПІБ Керівника",
+    "Фактична дата перевірки ЄДР",
 ]
 
 
@@ -4018,13 +4149,14 @@ def _export_date(value):
         return None
 
 
-def build_supplier_edr_export_rows(sheet_type: str, today=None) -> list[dict]:
-    """Build the backward-compatible 15-column EDR input without changing source data."""
+def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | None = None) -> list[dict]:
+    """Build the exact five-column ClarityChecker input without changing source data."""
     sheet_type = str(sheet_type or "").strip().upper()
-    if sheet_type not in {"ФОП", "ЮО"}:
-        raise ValueError("Оберіть тип експорту: ФОП або ЮО")
+    if sheet_type not in {"ФОП", "ЮО", "ALL"}:
+        raise ValueError("Оберіть тип експорту: ФОП, ЮО або ALL")
     today = today or datetime.now().astimezone().date()
     profiles, latest, managers, admitted_dates, active, supplier_codes = {}, {}, {}, {}, {}, set()
+    canonical_states = {}
     registry_member_codes = set()
     with db() as con:
         for raw in con.execute("SELECT * FROM supplier_edr_profiles"):
@@ -4036,8 +4168,8 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None) -> list[dict]:
             item = dict(raw); code = _digits(item.get("supplier_code"))
             if code:
                 supplier_codes.add(code); latest.setdefault(code, item)
-        for raw in con.execute("SELECT supplier_code,manager_name FROM supplier_managers WHERE is_current=1 ORDER BY updated_at DESC,id DESC"):
-            code = _digits(raw["supplier_code"]); managers.setdefault(code, str(raw["manager_name"] or ""))
+        managers = {code: item.get("manager_name", "")
+                    for code, item in edr_sync_v2.known_manager_map(con).items()}
         for raw in con.execute("""SELECT s.supplier_code,q.status,
           COALESCE(NULLIF(q.decision_date,''),s.date_published) event_date
           FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id"""):
@@ -4058,12 +4190,16 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None) -> list[dict]:
             registry_member_codes.add(code)
             if raw["status"] == "active" and str(raw["event_date"] or "") > admitted_dates.get(code, ""):
                 admitted_dates[code] = str(raw["event_date"] or "")
+        has_code_filter = "supplier_codes" in (filters or {})
+        requested_codes = {_digits(code) for code in (filters or {}).get("supplier_codes", set()) if _digits(code)}
+        export_codes = requested_codes if has_code_filter else registry_member_codes
+        canonical_states = edr_sync_v2.canonical_supplier_edr_states(con, export_codes, today=today)
     rows = []
     # The export contract is authoritative historical register membership, not
     # the current active count and not the potentially stale
     # submissions.qualification_id pointer.  This is the same population source
     # as the supplier KPI: registry_contracts -> qualifications.
-    for code in sorted(registry_member_codes):
+    for code in sorted(requested_codes if has_code_filter else registry_member_codes):
         profile, last = profiles.get(code, {}), latest.get(code, {})
         rows.append({"code": code, "full_name": profile.get("full_name", ""),
           "short_name": profile.get("short_name", ""), "edr_manager": profile.get("manager_name", ""),
@@ -4079,38 +4215,59 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None) -> list[dict]:
         source_type = str(row["source_sheet"] or "").strip().upper()
         name = str(row["full_name"] or row["latest_name"] or "")
         inferred_fop = bool(re.search(r"\bФОП\b|ФІЗИЧНА\s+ОСОБА[\s-]*ПІДПРИЄМЕЦЬ", name, re.I))
-        actual_type = source_type if source_type in {"ФОП", "ЮО"} else ("ФОП" if inferred_fop else "ЮО")
-        if actual_type != sheet_type:
+        canonical_type = supplier_entity_type(row["code"])
+        actual_type = source_type if source_type in {"ФОП", "ЮО"} else (
+            "ФОП" if canonical_type == "individual_entrepreneur" or inferred_fop else "ЮО")
+        if sheet_type != "ALL" and actual_type != sheet_type:
             continue
-        checked = _export_date(row["edr_checked_at"])
-        admitted_date = _export_date(row["last_admit"])
-        effective_checked = max(value for value in (checked, admitted_date) if value) if checked or admitted_date else None
-        age = (today - effective_checked).days if effective_checked else None
-        marker = ("до 30 календарних днів" if age is not None and age <= 30 else
-                  "більше 90 календарних днів" if age is not None and age > 90 else
-                  "більше 30 календарних днів" if age is not None else "")
-        details = str(row["termination_decision_details"] or "")
-        date_match = re.search(r"(?:Дата запису:\s*|від\s*)([\d\.\-]+)", details, re.I)
-        number_match = re.search(r"(?:Номер запису:\s*|Запис\s*№\s*)(\d+)", details, re.I)
-        status = str(row["edr_status"] or "")
-        if admitted_date and (not checked or admitted_date > checked):
-            status = "Зареєстровано"
+        state = canonical_states.get(row["code"], {})
+        verification = state.get("verification_event") or {}
+        checked = _export_date(verification.get("occurred_at") or row["edr_checked_at"])
+        effective_checked = checked
+        prozorro_status = state.get("prozorro_status", "Неактивний")
+        requested = filters or {}
+        allowed_statuses = requested.get("prozorro_statuses") or (
+            {"Активний", "Призупинений", "Неактивний", "Ще не в реєстрі"}
+            if requested.get("selected_mode") else {"Активний", "Призупинений"})
+        if prozorro_status not in allowed_statuses:
+            continue
+        if requested.get("freshness_bucket") and state.get("bucket") != requested["freshness_bucket"]:
+            continue
+        checked_iso = effective_checked.isoformat() if effective_checked else ""
+        if requested.get("verification_from") and (not checked_iso or checked_iso < requested["verification_from"]):
+            continue
+        if requested.get("verification_to") and (not checked_iso or checked_iso > requested["verification_to"]):
+            continue
         result.append(dict(zip(EDR_EXPORT_HEADERS, [
-            marker, row["code"], name, row["current_manager"] or row["edr_manager"] or row["latest_manager"],
-            status, "Активний" if int(row["active_count"] or 0) else "Неактивний", details,
-            admitted_date.strftime("%d.%m.%Y") if admitted_date else "",
-            effective_checked.strftime("%d.%m.%Y") if effective_checked else "",
-            date_match.group(1) if date_match else "", number_match.group(1) if number_match else "",
-            row["edr_officer"], row["edr_notes"], row["full_name"], row["short_name"],
+            row["code"], name, str(row["edr_status"] or ""),
+            row["current_manager"] or row["edr_manager"] or row["latest_manager"],
+            effective_checked.strftime("%Y-%m-%d 00:00:00") if effective_checked else "",
         ])))
     return result
 
 
-def supplier_edr_export_csv(sheet_type: str) -> bytes:
+def supplier_edr_export_csv(sheet_type: str, filters: dict | None = None) -> bytes:
     stream = io.StringIO(newline="")
-    writer = csv.DictWriter(stream, fieldnames=EDR_EXPORT_HEADERS, delimiter=";", lineterminator="\r\n")
+    writer = csv.DictWriter(stream, fieldnames=EDR_EXPORT_HEADERS, delimiter=",", lineterminator="\r\n")
     writer.writeheader()
-    writer.writerows(build_supplier_edr_export_rows(sheet_type))
+    writer.writerows(build_supplier_edr_export_rows(sheet_type, filters=filters))
+    return ("\ufeff" + stream.getvalue()).encode("utf-8")
+
+
+def edr_monitoring_export_csv(supplier_codes) -> bytes:
+    """Serialize the exact monitoring population with the established ClarityChecker contract."""
+    requested = {str(code or "") for code in supplier_codes if str(code or "")}
+    source = {row["supplier_code"]: row for row in _edr_monitoring_rows()}
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=EDR_EXPORT_HEADERS, delimiter=",", lineterminator="\r\n")
+    writer.writeheader()
+    for code in sorted(requested):
+        row = source.get(code)
+        if not row: continue
+        writer.writerow(dict(zip(EDR_EXPORT_HEADERS, [
+            code, row["supplier_name"], row["edr_status"], row["manager_name"],
+            f"{row['verification_date']} 00:00:00" if row["verification_date"] else "",
+        ])))
     return ("\ufeff" + stream.getvalue()).encode("utf-8")
 
 
@@ -4143,7 +4300,38 @@ def _supplier_edr_rows(sheet_name: str, gid: str) -> list[dict]:
     return rows
 
 
-def supplier_edr_sync_worker() -> None:
+def supplier_edr_source_snapshot() -> dict:
+    """Read both canonical tabs and fingerprint their exact values as one revision."""
+    return edr_sync_v2.source_snapshot({
+        sheet_name: _google_sheet_values(sheet_name)
+        for sheet_name in SUPPLIER_EDR_SHEETS
+    })
+
+
+def supplier_edr_sync_preview() -> dict:
+    """Return a compact, mutation-free preview for explicit user confirmation."""
+    snapshot = supplier_edr_source_snapshot()
+    with db() as con:
+        preview = edr_sync_v2.build_preview(con, snapshot)
+    return {
+        "source_fingerprint": preview["source_fingerprint"],
+        "previewed_at": preview["previewed_at"],
+        "summary": preview["summary"],
+        "conflicts": preview["conflicts"][:200],
+        "conflicts_total": len(preview["conflicts"]),
+        "changes": [
+            {key: item[key] for key in ("supplier_code", "source_sheet", "source_row",
+              "population", "apply_allowed", "changed_fields", "verification_event_change",
+              "termination_explicit_clear", "manager_change_kind", "manager_previous_name",
+              "manager_change_reason", "manager_resolution_source",
+              "manager_conflicting_evidence", "conflicts")}
+            for item in preview["items"]
+            if item["changed_fields"] or item["verification_event_change"] or item["conflicts"]
+        ][:500],
+    }
+
+
+def supplier_edr_sync_worker(expected_fingerprint: str, actor: str) -> None:
     started_at = now_iso()
     log_id = None
     try:
@@ -4153,51 +4341,33 @@ def supplier_edr_sync_worker() -> None:
         with db() as con:
             log_id = con.execute("INSERT INTO supplier_edr_sync_log(started_at,status) VALUES (?,?)",
                                  (started_at, "running")).lastrowid
-        source_rows = []
-        for sheet_name, gid in SUPPLIER_EDR_SHEETS.items():
-            SUPPLIER_EDR_SYNC_STATE["message"] = f"Завантаження вкладки {sheet_name}…"
-            source_rows.extend(_supplier_edr_rows(sheet_name, gid))
+        snapshot = supplier_edr_source_snapshot()
+        if snapshot["source_fingerprint"] != expected_fingerprint:
+            raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
         synced_at = now_iso()
-        inserted = updated = 0
         with db() as con:
-            existing = {row[0] for row in con.execute("SELECT supplier_code FROM supplier_edr_profiles")}
-            for item in source_rows:
-                if item["supplier_code"] in existing:
-                    updated += 1
-                else:
-                    inserted += 1
-                    existing.add(item["supplier_code"])
-                con.execute("""INSERT INTO supplier_edr_profiles
-                  (supplier_code,full_name,short_name,manager_name,edr_status,edr_checked_at,
-                   termination_decision_details,edr_officer,edr_notes,
-                   source_sheet,source_row,synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-                  ON CONFLICT(supplier_code) DO UPDATE SET
-                    full_name=CASE WHEN excluded.full_name<>'' THEN excluded.full_name ELSE supplier_edr_profiles.full_name END,
-                    short_name=CASE WHEN excluded.short_name<>'' THEN excluded.short_name ELSE supplier_edr_profiles.short_name END,
-                    manager_name=CASE WHEN excluded.manager_name<>'' THEN excluded.manager_name ELSE supplier_edr_profiles.manager_name END,
-                    edr_status=CASE WHEN excluded.edr_status<>'' THEN excluded.edr_status ELSE supplier_edr_profiles.edr_status END,
-                    edr_checked_at=CASE WHEN excluded.edr_checked_at<>'' THEN excluded.edr_checked_at ELSE supplier_edr_profiles.edr_checked_at END,
-                    termination_decision_details=CASE WHEN excluded.termination_decision_details<>'' THEN excluded.termination_decision_details ELSE supplier_edr_profiles.termination_decision_details END,
-                    edr_officer=CASE WHEN excluded.edr_officer<>'' THEN excluded.edr_officer ELSE supplier_edr_profiles.edr_officer END,
-                    edr_notes=CASE WHEN excluded.edr_notes<>'' THEN excluded.edr_notes ELSE supplier_edr_profiles.edr_notes END,
-                    source_sheet=excluded.source_sheet,source_row=excluded.source_row,synced_at=excluded.synced_at""",
-                  (item["supplier_code"], item["full_name"], item["short_name"], item["manager_name"],
-                   item["edr_status"], item["edr_checked_at"], item["termination_decision_details"],
-                   item["edr_officer"], item["edr_notes"], item["source_sheet"], item["source_row"], synced_at))
-                effective_manager = con.execute("SELECT manager_name FROM supplier_edr_profiles WHERE supplier_code=?",
-                                                (item["supplier_code"],)).fetchone()[0]
-                manager_result = sync_current_supplier_manager(
-                    con, item["supplier_code"], effective_manager,
-                    f"Google Sheets: {item['source_sheet']}", synced_at)
-                if manager_result.get("changed"):
-                    refresh_current_submission_nazk_controls(con, item["supplier_code"])
-            con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,inserted=?,updated=?
-              WHERE id=?""", (synced_at, len(source_rows), inserted, updated, log_id))
+            edr_sync_v2.migrate(con)
+            con.commit()
+            con.execute("BEGIN IMMEDIATE")
+            result = edr_sync_v2.apply(
+                con, snapshot, expected_fingerprint, confirmed=True, actor=actor,
+                synced_at=synced_at, sync_manager=sync_current_supplier_manager,
+                enrich_manager=enrich_current_supplier_manager,
+                establish_manager=establish_current_supplier_manager,
+                reestablish_manager=reestablish_current_supplier_manager,
+                refresh_manager_controls=refresh_current_submission_nazk_controls,
+            )
+            con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,
+              inserted=?,updated=?,source_fingerprint=?,unchanged=?,details_json=? WHERE id=?""",
+              (synced_at, result["processed"], result["inserted"], result["updated_profiles"],
+               result["source_fingerprint"], result["unchanged"],
+               json.dumps(result, ensure_ascii=False), log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False,
-            message=f"Синхронізовано {len(source_rows):,} записів ЄДР".replace(",", " "),
-            updated_at=synced_at, processed=len(source_rows), inserted=inserted, updated=updated, error=None,
+            message=f"Застосовано: {result['inserted']} нових, {result['updated_profiles']} змінених профілів",
+            updated_at=synced_at, processed=result["processed"], inserted=result["inserted"],
+            updated=result["updated_profiles"], changed_fields=result["changed_fields"], error=None,
             last_completed_at=synced_at, last_result="completed",
-            last_message=f"Синхронізовано {len(source_rows):,} записів ЄДР".replace(",", " "))
+            last_message=f"Застосовано: {result['inserted']} нових, {result['updated_profiles']} змінених профілів")
     except Exception as exc:
         SERVER_LOG.exception("Supplier EDR synchronization failed")
         finished_at = now_iso()
@@ -4286,6 +4456,395 @@ def supplier_nazk_review_sync_worker() -> None:
                                                last_result="failed",last_message=f"Помилка синхронізації перевірок НАЗК: {exc}")
 
 
+_SUPPLIER_RISK_CACHE = {"fingerprint": None, "amcu_codes": set(), "nazk_codes": set()}
+_SUPPLIER_RISK_CACHE_LOCK = threading.Lock()
+
+
+def supplier_risk_projection(con=None) -> dict:
+    """Independent aggregate for supplier KPI/risk filters, cached by source revisions."""
+    owns_connection = con is None
+    con = con or db()
+    try:
+        fingerprint = tuple(con.execute("""SELECT
+          (SELECT COUNT(*)||':'||COALESCE(MAX(synced_at),'') FROM supplier_edr_profiles),
+          (SELECT COUNT(*)||':'||COALESCE(MAX(updated_at),'') FROM application_fields
+             WHERE COALESCE(manager_name,'')<>''),
+          (SELECT COUNT(*)||':'||COALESCE(MAX(source_id),'') FROM nazk_registry),
+          (SELECT COUNT(*)||':'||COALESCE(MAX(synced_at),'') FROM supplier_nazk_reviews),
+          (SELECT COUNT(*)||':'||COALESCE(MAX(row_key),'') FROM amcu_registry)""").fetchone())
+        with _SUPPLIER_RISK_CACHE_LOCK:
+            if _SUPPLIER_RISK_CACHE["fingerprint"] == fingerprint:
+                return {"amcu_codes": set(_SUPPLIER_RISK_CACHE["amcu_codes"]),
+                        "nazk_codes": set(_SUPPLIER_RISK_CACHE["nazk_codes"])}
+        amcu_codes = {_digits(row[0]) for row in con.execute(
+            "SELECT DISTINCT offender_code FROM amcu_registry WHERE offender_code<>''") if _digits(row[0])}
+        nazk_names = {" ".join(re.sub(r"[’'`\-]+", " ", (row[0] or "").casefold()).split())
+                      for row in con.execute("SELECT DISTINCT full_name FROM nazk_registry WHERE full_name<>''")}
+        nazk_codes = {row[0] for row in con.execute(
+            "SELECT supplier_code,manager_name FROM supplier_edr_profiles WHERE COALESCE(manager_name,'')<>''")
+            if " ".join(re.sub(r"[’'`\-]+", " ", (row[1] or "").casefold()).split()) in nazk_names}
+        nazk_codes.update(row[0] for row in con.execute("""SELECT DISTINCT s.supplier_code,af.manager_name
+            FROM submissions s JOIN application_fields af ON af.submission_id=s.id
+            LEFT JOIN supplier_edr_profiles ep ON ep.supplier_code=s.supplier_code
+            WHERE COALESCE(af.manager_name,'')<>'' AND COALESCE(ep.manager_name,'')=''""")
+            if " ".join(re.sub(r"[’'`\-]+", " ", (row[1] or "").casefold()).split()) in nazk_names)
+        reviews = {row[0]: dict(row) for row in con.execute("SELECT * FROM supplier_nazk_reviews")}
+        current_managers = {row[0]: " ".join(re.sub(r"[’'`\-]+", " ", (row[1] or "").casefold()).split())
+                            for row in con.execute("SELECT supplier_code,manager_name FROM supplier_edr_profiles")}
+        nazk_codes.difference_update(reviews)
+        nazk_codes.update(code for code, review in reviews.items()
+            if review.get("result") in {"підтверджено", "на запит", "можливо"}
+            and current_managers.get(code)
+            and current_managers.get(code) == " ".join(re.sub(r"[’'`\-]+", " ",
+                (review.get("manager_name") or "").casefold()).split()))
+        with _SUPPLIER_RISK_CACHE_LOCK:
+            _SUPPLIER_RISK_CACHE.update(fingerprint=fingerprint,
+                amcu_codes=set(amcu_codes), nazk_codes=set(nazk_codes))
+        return {"amcu_codes": amcu_codes, "nazk_codes": nazk_codes}
+    finally:
+        if owns_connection:
+            con.close()
+
+
+def supplier_risk_counts() -> dict:
+    projection = supplier_risk_projection()
+    with db() as con:
+        population = {row[0] for row in con.execute("SELECT supplier_code FROM supplier_registry_summary")}
+        population.update(row[0] for row in con.execute(
+            "SELECT DISTINCT supplier_code FROM submissions WHERE COALESCE(supplier_code,'')<>''"))
+    normalized_population = {_digits(code) for code in population if _digits(code)}
+    return {"amcu_total": len(normalized_population & projection["amcu_codes"]),
+            "nazk_total": len(population & projection["nazk_codes"])}
+
+
+def _edr_monitoring_source_sql() -> str:
+    """One-row-per-supplier operational projection; deliberately excludes dossier analytics."""
+    return """
+      WITH population AS MATERIALIZED (
+      """ + edr_sync_v2.MONITORING_POPULATION_SQL + """
+      ), registry AS MATERIALIZED (
+        SELECT supplier_code,
+          MAX(COALESCE(active_count,0)) active_count,
+          MAX(COALESCE(suspended_count,0)) suspended_count,
+          MAX(COALESCE(NULLIF(supplier_name,''),'')) registry_name
+        FROM supplier_registry_summary GROUP BY supplier_code
+      ), latest_application AS MATERIALIZED (
+        SELECT supplier_code,supplier_name,manager_name,latest_application_date FROM (
+          SELECT s.supplier_code,s.supplier_name,
+            COALESCE(af.manager_name,'') manager_name,
+            NORMALIZED_DATE(COALESCE(NULLIF(s.date_published,''),s.synced_at)) latest_application_date,
+            ROW_NUMBER() OVER (PARTITION BY s.supplier_code
+              ORDER BY COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC) rank
+          FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
+          JOIN population p ON p.supplier_code=s.supplier_code
+        ) WHERE rank=1
+      ), latest_admission AS MATERIALIZED (
+        SELECT supplier_code,occurred_at,officer,submission_id FROM (
+          SELECT s.supplier_code,
+            NORMALIZED_DATE(COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),
+              NULLIF(s.date_published,''))) occurred_at,
+            COALESCE(af.protocol_officer,'') officer,s.id submission_id,
+            ROW_NUMBER() OVER (PARTITION BY s.supplier_code ORDER BY
+              NORMALIZED_DATE(COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),
+                NULLIF(s.date_published,''))) DESC,s.id DESC) rank
+          FROM submissions s JOIN application_fields af ON af.submission_id=s.id
+          LEFT JOIN qualifications q ON q.id=s.qualification_id
+          JOIN population p ON p.supplier_code=s.supplier_code
+          WHERE af.protocol_decision='admit'
+        ) WHERE rank=1 AND occurred_at<>''
+      ), current_manager AS MATERIALIZED (
+        SELECT supplier_code,manager_name FROM (
+          SELECT sm.supplier_code,sm.manager_name,
+            ROW_NUMBER() OVER (PARTITION BY sm.supplier_code
+              ORDER BY COALESCE(sm.updated_at,sm.created_at,'') DESC,sm.id DESC) rank
+          FROM supplier_managers sm JOIN population p ON p.supplier_code=sm.supplier_code
+          WHERE sm.is_current=1 AND TRIM(COALESCE(sm.manager_name,''))<>''
+        ) WHERE rank=1
+      ), verification_candidates AS MATERIALIZED (
+        SELECT e.supplier_code,NORMALIZED_DATE(e.occurred_at) occurred_at,
+          COALESCE(e.officer,'') officer,e.event_type,COALESCE(e.source,'') source,
+          CASE e.event_type WHEN 'manual_edr' THEN 4 WHEN 'google_clarity' THEN 3 ELSE 2 END priority,
+          COALESCE(e.created_at,'') created_at
+        FROM supplier_edr_verification_events e JOIN population p ON p.supplier_code=e.supplier_code
+        WHERE NORMALIZED_DATE(e.occurred_at)<>''
+        UNION ALL
+        SELECT ep.supplier_code,NORMALIZED_DATE(ep.edr_checked_at),COALESCE(ep.edr_officer,''),
+          'google_clarity_profile','Google/Clarity profile snapshot',2,COALESCE(ep.synced_at,'')
+        FROM supplier_edr_profiles ep JOIN population p ON p.supplier_code=ep.supplier_code
+        WHERE NORMALIZED_DATE(ep.edr_checked_at)<>''
+        UNION ALL
+        SELECT supplier_code,occurred_at,officer,'admission','PQM application',1,submission_id
+        FROM latest_admission
+      ), latest_verification AS MATERIALIZED (
+        SELECT supplier_code,occurred_at,officer,event_type,source FROM (
+          SELECT *,ROW_NUMBER() OVER (PARTITION BY supplier_code
+            ORDER BY occurred_at DESC,priority DESC,created_at DESC) rank
+          FROM verification_candidates
+        ) WHERE rank=1
+      ), projection AS (
+        SELECT p.supplier_code,
+          COALESCE(NULLIF(ep.full_name,''),NULLIF(la.supplier_name,''),NULLIF(r.registry_name,''),'') supplier_name,
+          COALESCE(NULLIF(cm.manager_name,''),NULLIF(ep.manager_name,''),NULLIF(la.manager_name,''),'') manager_name,
+          COALESCE(ep.edr_status,'') edr_status,
+          CASE WHEN COALESCE(r.active_count,0)>0 THEN 'Активний'
+            WHEN COALESCE(r.suspended_count,0)>0 THEN 'Призупинений'
+            WHEN r.supplier_code IS NOT NULL THEN 'Неактивний' ELSE 'Ще не в реєстрі' END prozorro_status,
+          TRIM(COALESCE(ep.termination_decision_details,'')) termination_details,
+          TRIM(COALESCE(ep.termination_record_date,'')) termination_record_date,
+          TRIM(COALESCE(ep.termination_record_number,'')) termination_record_number,
+          TRIM(COALESCE(ep.edr_notes,'')) google_note,
+          COALESCE(ad.occurred_at,'') last_admission_date,
+          COALESCE(la.latest_application_date,'') latest_application_date,
+          COALESCE(v.occurred_at,'') verification_date,COALESCE(v.officer,'') verification_officer,
+          COALESCE(v.event_type,'') verification_event_type,COALESCE(v.source,'') verification_source,
+          EDR_FRESHNESS(CASE WHEN COALESCE(r.active_count,0)>0 THEN 'Активний'
+            WHEN COALESCE(r.suspended_count,0)>0 THEN 'Призупинений'
+            WHEN r.supplier_code IS NOT NULL THEN 'Неактивний' ELSE 'Ще не в реєстрі' END,
+            COALESCE(v.occurred_at,'')) freshness
+        FROM population p LEFT JOIN registry r ON r.supplier_code=p.supplier_code
+        LEFT JOIN supplier_edr_profiles ep ON ep.supplier_code=p.supplier_code
+        LEFT JOIN latest_application la ON la.supplier_code=p.supplier_code
+        LEFT JOIN latest_admission ad ON ad.supplier_code=p.supplier_code
+        LEFT JOIN current_manager cm ON cm.supplier_code=p.supplier_code
+        LEFT JOIN latest_verification v ON v.supplier_code=p.supplier_code
+      )
+    """
+
+
+EDR_MONITORING_CACHE = {"fingerprint": None, "rows": []}
+EDR_MONITORING_DK_CACHE = {"fingerprint": None, "codes": {}}
+EDR_MONITORING_CACHE_LOCK = threading.Lock()
+
+
+def _edr_monitoring_revision() -> tuple:
+    paths = [DB_PATH, Path(str(DB_PATH) + "-wal")]
+    return tuple((path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else (0, 0)
+                 for path in paths)
+
+
+def _edr_monitoring_rows() -> list[dict]:
+    """Cache the set-based projection; every request still filters and paginates on the server."""
+    fingerprint = _edr_monitoring_revision()
+    with EDR_MONITORING_CACHE_LOCK:
+        if EDR_MONITORING_CACHE["fingerprint"] == fingerprint:
+            return EDR_MONITORING_CACHE["rows"]
+        with db() as con:
+            profiles = {row["supplier_code"]: dict(row) for row in con.execute(
+                "SELECT * FROM supplier_edr_profiles WHERE supplier_code<>''")}
+            registry = {row["supplier_code"]: dict(row) for row in con.execute(
+                "SELECT * FROM supplier_registry_summary WHERE supplier_code<>''")}
+            latest_app = {row["supplier_code"]: dict(row) for row in con.execute("""SELECT * FROM (
+              SELECT s.supplier_code,s.supplier_name,COALESCE(af.manager_name,'') manager_name,
+                COALESCE(NULLIF(s.date_published,''),s.synced_at) latest_application_date,
+                ROW_NUMBER() OVER(PARTITION BY s.supplier_code ORDER BY
+                  COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC) rank
+              FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
+              WHERE s.supplier_code<>'') WHERE rank=1""")}
+            admissions = {}
+            for raw in con.execute("""SELECT s.supplier_code,s.id submission_id,
+              COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),NULLIF(s.date_published,'')) raw_date,
+              COALESCE(af.protocol_officer,'') officer
+              FROM submissions s JOIN application_fields af ON af.submission_id=s.id
+              LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE af.protocol_decision='admit'"""):
+                item = dict(raw); item["occurred_at"] = edr_sync_v2.normalized_date(item["raw_date"])
+                previous = admissions.get(item["supplier_code"])
+                if item["occurred_at"] and (not previous or
+                    (item["occurred_at"], item["submission_id"]) >
+                    (previous["occurred_at"], previous["submission_id"])):
+                    admissions[item["supplier_code"]] = item
+            managers = {row["supplier_code"]: row["manager_name"] for row in con.execute("""SELECT supplier_code,manager_name FROM (
+              SELECT supplier_code,manager_name,ROW_NUMBER() OVER(PARTITION BY supplier_code ORDER BY
+                COALESCE(updated_at,created_at,'') DESC,id DESC) rank FROM supplier_managers
+               WHERE is_current=1 AND TRIM(COALESCE(manager_name,''))<>'') WHERE rank=1""")}
+            ledger = {}
+            for raw in con.execute("SELECT * FROM supplier_edr_verification_events"):
+                item = dict(raw); code = item["supplier_code"]
+                if edr_sync_v2.normalized_date(item.get("occurred_at")):
+                    ledger.setdefault(code, []).append(item)
+            eligible = {row[0] for row in con.execute("""SELECT DISTINCT s.supplier_code FROM submissions s
+              JOIN application_fields af ON af.submission_id=s.id
+              WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')""")}
+            population = edr_sync_v2.monitoring_population_codes(con)
+            rows = []
+            for code in population:
+                profile, reg, application = profiles.get(code, {}), registry.get(code, {}), latest_app.get(code, {})
+                admission = admissions.get(code)
+                candidates = list(ledger.get(code, []))
+                profile_date = edr_sync_v2.normalized_date(profile.get("edr_checked_at"))
+                if profile_date:
+                    candidates.append({"event_type": "google_clarity_profile", "occurred_at": profile_date,
+                      "officer": profile.get("edr_officer", ""), "source": "Google/Clarity profile snapshot",
+                      "created_at": profile.get("synced_at", "")})
+                if admission:
+                    candidates.append({"event_type": "admission", "occurred_at": admission["occurred_at"],
+                      "officer": admission["officer"], "source": "PQM application",
+                      "created_at": admission["submission_id"]})
+                verification = max(candidates, key=edr_sync_v2._verification_event_sort_key) if candidates else {}
+                status = ("Активний" if int(reg.get("active_count") or 0)>0 else
+                          "Призупинений" if int(reg.get("suspended_count") or 0)>0 else
+                          "Неактивний" if reg else "Ще не в реєстрі")
+                checked = edr_sync_v2.normalized_date(verification.get("occurred_at"))
+                officer_raw = str(verification.get("officer") or "").strip()
+                rows.append({"supplier_code": code,
+                  "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
+                  "edr_full_name": str(profile.get("full_name") or "").strip(),
+                  "edr_short_name": str(profile.get("short_name") or "").strip(),
+                  "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
+                  "edr_status": profile.get("edr_status", ""), "prozorro_status": status,
+                  "termination_details": str(profile.get("termination_decision_details") or "").strip(),
+                  "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
+                  "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
+                  "last_admission_date": admission["occurred_at"] if admission else "",
+                  "latest_application_date": edr_sync_v2.normalized_date(application.get("latest_application_date")),
+                  "verification_date": checked,
+                  "verification_officer": projected_officer_name(con, officer_raw),
+                  "verification_officer_raw": officer_raw,
+                 "verification_event_type": verification.get("event_type", ""),
+                 "verification_source": verification.get("source", ""),
+                  "google_note": str(profile.get("edr_notes") or "").strip(),
+                  "freshness": edr_sync_v2.freshness_state(status, checked)["bucket"]})
+        # Re-read after building: a concurrent mutation invalidates rather than blessing stale rows.
+        final_fingerprint = _edr_monitoring_revision()
+        if final_fingerprint == fingerprint:
+            EDR_MONITORING_CACHE.update(fingerprint=fingerprint, rows=rows)
+        return rows
+
+
+def _edr_monitoring_dk_map() -> dict[str, set[str]]:
+    fingerprint = _edr_monitoring_revision()
+    if EDR_MONITORING_DK_CACHE["fingerprint"] == fingerprint:
+        return EDR_MONITORING_DK_CACHE["codes"]
+    result: dict[str, set[str]] = {}
+    with db() as con:
+        for row in con.execute("""SELECT supplier_code,dk_code FROM (
+          SELECT rc.supplier_code,f.dk_code FROM registry_contracts rc
+            JOIN frameworks f ON f.id=rc.framework_id WHERE COALESCE(f.dk_code,'')<>''
+          UNION SELECT s.supplier_code,f.dk_code FROM submissions s
+            JOIN frameworks f ON f.id=s.framework_id WHERE COALESCE(f.dk_code,'')<>'')"""):
+            result.setdefault(str(row[0] or ""), set()).add(str(row[1] or ""))
+    if _edr_monitoring_revision() == fingerprint:
+        EDR_MONITORING_DK_CACHE.update(fingerprint=fingerprint, codes=result)
+    return result
+
+
+def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_freshness=True) -> list[dict]:
+    value = lambda key: str((params.get(key) or [""])[0] or "").strip()
+    values = lambda key: {part.strip() for raw in (params.get(key) or []) for part in str(raw or "").split(",") if part.strip()}
+    search, dk_code = value("search").casefold(), value("dk_code")
+    entity_type = value("entity_type")
+    prozorro_statuses, edr_statuses = values("prozorro_status"), values("edr_status")
+    freshness = value("freshness") if include_freshness else ""
+    verified_from, verified_to = value("verification_from"), value("verification_to")
+    application_from, application_to = value("application_from"), value("application_to")
+    names_completeness = value("edr_names")
+    if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
+        raise ValueError("Невідомий тип постачальника")
+    result = []
+    dk_map = _edr_monitoring_dk_map() if dk_code else {}
+    for row in rows:
+        if search and search not in " ".join((row["supplier_code"], row["supplier_name"], row["manager_name"], str(row.get("google_note") or ""))).casefold(): continue
+        if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
+        if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
+        if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
+        if edr_statuses and row["edr_status"] not in edr_statuses: continue
+        full_name, short_name = bool(row.get("edr_full_name")), bool(row.get("edr_short_name"))
+        if names_completeness == "complete" and not (full_name and short_name): continue
+        if names_completeness == "missing_any" and full_name and short_name: continue
+        if names_completeness == "missing_full" and full_name: continue
+        if names_completeness == "missing_short" and short_name: continue
+        if names_completeness and names_completeness not in {"complete", "missing_any", "missing_full", "missing_short"}:
+            raise ValueError("Невідомий фільтр повноти назв ЄДР")
+        if freshness and row["freshness"] != freshness: continue
+        if verified_from and row["verification_date"] < verified_from: continue
+        if verified_to and row["verification_date"] > verified_to: continue
+        if application_from and row["latest_application_date"] < application_from: continue
+        if application_to and row["latest_application_date"] > application_to: continue
+        result.append(row)
+    return result
+
+
+def _edr_monitoring_filters(params: dict, *, include_freshness: bool = True) -> tuple[str, list]:
+    search = params.get("search", [""])[0].strip().casefold()
+    dk_code = params.get("dk_code", [""])[0].strip()
+    entity_type = params.get("entity_type", [""])[0].strip()
+    multi_values = lambda key: [part.strip() for raw in (params.get(key) or []) for part in str(raw or "").split(",") if part.strip()]
+    prozorro_statuses = multi_values("prozorro_status")
+    edr_statuses = multi_values("edr_status")
+    freshness = params.get("freshness", [""])[0].strip() if include_freshness else ""
+    verified_from = params.get("verification_from", [""])[0].strip()
+    verified_to = params.get("verification_to", [""])[0].strip()
+    application_from = params.get("application_from", [""])[0].strip()
+    application_to = params.get("application_to", [""])[0].strip()
+    where, args = ["1=1"], []
+    if search:
+        where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR INSTR(CASEFOLD(manager_name),?)>0 OR INSTR(CASEFOLD(COALESCE(google_note,'')),?)>0)")
+        args.extend([search] * 4)
+    if entity_type:
+        if entity_type not in {"individual_entrepreneur", "legal_entity"}:
+            raise ValueError("Невідомий тип постачальника")
+        where.append("SUPPLIER_ENTITY_TYPE(supplier_code)=?"); args.append(entity_type)
+    if prozorro_statuses:
+        where.append(f"prozorro_status IN ({','.join('?' for _ in prozorro_statuses)})"); args.extend(prozorro_statuses)
+    if edr_statuses:
+        where.append(f"edr_status IN ({','.join('?' for _ in edr_statuses)})"); args.extend(edr_statuses)
+    if verified_from:
+        where.append("verification_date>=?"); args.append(verified_from)
+    if verified_to:
+        where.append("verification_date<=?"); args.append(verified_to)
+    if application_from:
+        where.append("latest_application_date>=?"); args.append(application_from)
+    if application_to:
+        where.append("latest_application_date<=?"); args.append(application_to)
+    if dk_code:
+        where.append("""(EXISTS (SELECT 1 FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
+          WHERE rc.supplier_code=projection.supplier_code AND f.dk_code=?) OR EXISTS
+          (SELECT 1 FROM submissions s JOIN frameworks f ON f.id=s.framework_id
+           WHERE s.supplier_code=projection.supplier_code AND f.dk_code=?))""")
+        args.extend([dk_code, dk_code])
+    if freshness:
+        where.append("freshness=?"); args.append(freshness)
+    return " AND ".join(where), args
+
+
+def edr_monitoring_filtered_codes(params: dict) -> list[str]:
+    return sorted(row["supplier_code"] for row in _filter_edr_monitoring_rows(_edr_monitoring_rows(), params))
+
+
+def list_edr_monitoring(params: dict) -> dict:
+    """Fast operational EDR register with independent server-side pagination and KPI."""
+    page = max(1, int(params.get("page", ["1"])[0] or 1))
+    size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
+    started = time.perf_counter()
+    projection = _edr_monitoring_rows()
+    filtered = _filter_edr_monitoring_rows(projection, params)
+    kpi_population = _filter_edr_monitoring_rows(projection, params, include_freshness=False)
+    kpis = {}
+    for row in kpi_population: kpis[row["freshness"]] = kpis.get(row["freshness"], 0) + 1
+    sort_key = str((params.get("sort") or ["freshness"])[0] or "freshness").strip()
+    sort_direction = str((params.get("direction") or ["asc"])[0] or "asc").strip().lower()
+    allowed_sorts = {
+        "freshness", "supplier_code", "supplier_name", "manager_name", "edr_status",
+        "prozorro_status", "termination_details", "latest_application_date",
+        "verification_date", "verification_officer", "google_note",
+    }
+    if sort_key not in allowed_sorts or sort_direction not in {"asc", "desc"}:
+        raise ValueError("Невідоме сортування")
+    freshness_order = {"not_checked": 0, "gt90": 1, "gt60": 2, "gt30": 3, "lt30": 4, "not_current": 5}
+    def sortable(row):
+        value = freshness_order.get(row.get("freshness"), 6) if sort_key == "freshness" else row.get(sort_key, "")
+        if isinstance(value, str): value = value.casefold()
+        return (value, row["supplier_code"])
+    filtered.sort(key=sortable, reverse=sort_direction == "desc")
+    total = len(filtered); offset = (page - 1) * size
+    page_rows = filtered[offset:offset + size]
+    statuses = sorted({row["edr_status"] for row in projection if row["edr_status"]})
+    return {"items": [{key: value for key, value in row.items() if not key.startswith("_")}
+                      for row in page_rows],
+            "total": total, "page": page, "size": size,
+            "pages": max(1, (total + size - 1) // size), "kpis": kpis,
+            "edr_statuses": statuses, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1)}
+
+
 def list_qualified_suppliers(params: dict) -> dict:
     """Return registered suppliers and applicants that have not entered a register yet."""
     search = params.get("search", [""])[0].strip().casefold()
@@ -4294,44 +4853,52 @@ def list_qualified_suppliers(params: dict) -> dict:
     dk_code = params.get("dk_code", [""])[0].strip()
     edr_status = params.get("edr_status", [""])[0].strip()
     entity_type = params.get("entity_type", [""])[0].strip()
+    freshness = params.get("freshness", [""])[0].strip()
+    verification_from = params.get("verification_from", [""])[0].strip()
+    verification_to = params.get("verification_to", [""])[0].strip()
+    admission_from = params.get("admission_from", [""])[0].strip()
+    admission_to = params.get("admission_to", [""])[0].strip()
+    include_codes = params.get("_include_codes", [""])[0] == "1"
     if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
         raise ValueError("Невідомий тип постачальника")
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
-    with db() as match_con:
-        amcu_match_codes = {re.sub(r"\D", "", row[0] or "") for row in match_con.execute(
-            "SELECT DISTINCT offender_code FROM amcu_registry WHERE offender_code<>''")}
-        nazk_names_all = {" ".join(re.sub(r"[’'`\-]+", " ", (row[0] or "").casefold()).split()) for row in match_con.execute(
-            "SELECT DISTINCT full_name FROM nazk_registry WHERE full_name<>''")}
-        nazk_match_codes = {row[0] for row in match_con.execute(
-            "SELECT supplier_code,manager_name FROM supplier_edr_profiles WHERE COALESCE(manager_name,'')<>''")
-            if " ".join(re.sub(r"[’'`\-]+", " ", (row[1] or "").casefold()).split()) in nazk_names_all}
-        nazk_match_codes.update(row[0] for row in match_con.execute("""SELECT DISTINCT s.supplier_code,af.manager_name
-            FROM submissions s JOIN application_fields af ON af.submission_id=s.id
-            WHERE COALESCE(af.manager_name,'')<>''""")
-            if " ".join(re.sub(r"[’'`\-]+", " ", (row[1] or "").casefold()).split()) in nazk_names_all)
-        nazk_reviews = {row[0]: dict(row) for row in match_con.execute(
-            "SELECT * FROM supplier_nazk_reviews")}
-        current_managers = {row[0]: " ".join(re.sub(r"[’'`\-]+", " ", (row[1] or "").casefold()).split())
-                            for row in match_con.execute("SELECT supplier_code,manager_name FROM supplier_edr_profiles")}
-        nazk_match_codes.difference_update(nazk_reviews)
-        nazk_match_codes.update(code for code, review in nazk_reviews.items()
-            if review.get("result") in {"підтверджено", "на запит", "можливо"}
-            and current_managers.get(code)
-            and current_managers.get(code) == " ".join(re.sub(r"[’'`\-]+", " ", (review.get("manager_name") or "").casefold()).split()))
+    if risk in {"amcu", "nazk"}:
+        with db() as risk_con:
+            risk_projection = supplier_risk_projection(risk_con)
+    else:
+        risk_projection = {"amcu_codes": set(), "nazk_codes": set()}
+    amcu_match_codes = risk_projection["amcu_codes"]
+    nazk_match_codes = risk_projection["nazk_codes"]
     where, args = ["1=1"], []
     if search:
-        where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0)")
-        args.extend([search, search])
-    if status in {"active", "terminated", "suspended"}:
-        if status == "active":
-            where.append("active_count>0")
-        elif status == "terminated":
-            where.append("active_count=0 AND inactive_count>0")
-        else:
-            where.append("active_count=0 AND suspended_count>0")
+        where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR EXISTS "
+          "(SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=combined.supplier_code "
+          "AND INSTR(CASEFOLD(ep.full_name),?)>0))")
+        args.extend([search, search, search])
+    if status == "active":
+        where.append("active_count>0")
+    elif status == "suspended":
+        where.append("active_count=0 AND suspended_count>0")
+    elif status == "terminated":
+        where.append("registry_state='registered' AND active_count=0 AND suspended_count=0")
     elif status == "not_registered":
         where.append("registry_state='not_registered'")
+    if freshness:
+        where.append("CANONICAL_FRESHNESS(DIGITS(combined.supplier_code))=?")
+        args.append(freshness)
+    if verification_from:
+        where.append("CANONICAL_VERIFICATION_DATE(DIGITS(combined.supplier_code))>=?")
+        args.append(verification_from)
+    if verification_to:
+        where.append("CANONICAL_VERIFICATION_DATE(DIGITS(combined.supplier_code))<=?")
+        args.append(verification_to)
+    if admission_from:
+        where.append("CANONICAL_LAST_ADMISSION(DIGITS(combined.supplier_code))>=?")
+        args.append(admission_from)
+    if admission_to:
+        where.append("CANONICAL_LAST_ADMISSION(DIGITS(combined.supplier_code))<=?")
+        args.append(admission_to)
     if risk == "amcu":
         codes = sorted(code for code in amcu_match_codes if code)
         where.append("DIGITS(combined.supplier_code) IN (" + ",".join("?" for _ in codes) + ")" if codes else "0=1")
@@ -4391,27 +4958,39 @@ def list_qualified_suppliers(params: dict) -> dict:
     query_args = source_args + args
     with db() as con:
         con.create_function("SUPPLIER_ENTITY_TYPE", 1, lambda code: supplier_entity_type(str(code or "")), deterministic=True)
+        canonical_states = (edr_sync_v2.canonical_supplier_edr_states(con)
+                            if freshness or verification_from or verification_to
+                            or admission_from or admission_to else {})
+        if canonical_states:
+            con.create_function("CANONICAL_FRESHNESS", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("bucket", "not_checked"), deterministic=True)
+            con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("verification_date", ""), deterministic=True)
+            con.create_function("CANONICAL_LAST_ADMISSION", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("last_admission_date", ""), deterministic=True)
         edr_statuses = [r[0] for r in con.execute("SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>'' ORDER BY edr_status")]
         if not con.execute("SELECT 1 FROM supplier_registry_summary LIMIT 1").fetchone():
             return {"items": [], "total": 0, "registered_total": 0, "not_registered": 0,
                     "active": 0, "page": 1, "size": size, "pages": 0, "building": True, "edr_statuses": edr_statuses}
-        total, active_total, registered_total, not_registered = con.execute(source + f"""
-            SELECT COUNT(*),COALESCE(SUM(active_count),0),
-              COALESCE(SUM(registry_state='registered'),0),
-              COALESCE(SUM(registry_state='not_registered'),0)
-            FROM combined WHERE {clause}""", query_args).fetchone()
-        all_supplier_codes = {row[0] for row in con.execute("SELECT supplier_code FROM supplier_registry_summary")}
-        all_supplier_codes.update(row[0] for row in con.execute("SELECT DISTINCT supplier_code FROM submissions WHERE COALESCE(supplier_code,'')<>''"))
-        all_supplier_digits = {re.sub(r"\D", "", code or "") for code in all_supplier_codes}
-        amcu_total = len(all_supplier_digits & amcu_match_codes)
-        nazk_total = len(all_supplier_codes & nazk_match_codes)
+        filtered_codes = []
+        if include_codes:
+            filtered_codes = [row[0] for row in con.execute(
+                source + f" SELECT supplier_code FROM combined WHERE {clause} ORDER BY supplier_code",
+                query_args)]
         rows = con.execute(source + f""" SELECT supplier_code code,supplier_name name,qualifications_count,
           active_count,inactive_count,suspended_count,frameworks_count,dk_codes,last_qualification,
-          applications_count,last_application,registry_state
+          applications_count,last_application,registry_state,
+          COUNT(*) OVER() __total,COALESCE(SUM(active_count) OVER(),0) __active_total,
+          COALESCE(SUM(registry_state='registered') OVER(),0) __registered_total,
+          COALESCE(SUM(registry_state='not_registered') OVER(),0) __not_registered
           FROM combined WHERE {clause}
           ORDER BY CASE registry_state WHEN 'registered' THEN 0 ELSE 1 END,
             CASE WHEN active_count>0 THEN 0 ELSE 1 END,supplier_code LIMIT ? OFFSET ?""",
           (*query_args, size, (page - 1) * size)).fetchall()
+        if rows:
+            total = int(rows[0]["__total"] or 0)
+            active_total = int(rows[0]["__active_total"] or 0)
+            registered_total = int(rows[0]["__registered_total"] or 0)
+            not_registered = int(rows[0]["__not_registered"] or 0)
+        else:
+            total = active_total = registered_total = not_registered = 0
         amcu_codes = {re.sub(r"\D", "", row[0] or "") for row in con.execute(
             "SELECT DISTINCT offender_code FROM amcu_registry WHERE offender_code<>''"
         )}
@@ -4419,7 +4998,21 @@ def list_qualified_suppliers(params: dict) -> dict:
             "SELECT DISTINCT full_name FROM nazk_registry WHERE full_name<>''"
         )}
         supplier_codes = [row["code"] for row in rows]
+        page_application_stats = {}
+        if supplier_codes:
+            placeholders = ",".join("?" for _ in supplier_codes)
+            dk_clause = " AND f.dk_code=?" if dk_code else ""
+            stats_args = [*supplier_codes, *([dk_code] if dk_code else [])]
+            page_application_stats = {row["supplier_code"]: dict(row) for row in con.execute(f"""
+              SELECT s.supplier_code,COUNT(*) applications_count,MAX(s.date_published) last_application,
+                GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
+              FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
+              WHERE s.supplier_code IN ({placeholders}){dk_clause}
+              GROUP BY s.supplier_code""", stats_args)}
+        if not canonical_states:
+            canonical_states = edr_sync_v2.canonical_supplier_edr_states(con, supplier_codes)
         manager_matches = {}
+        known_managers = edr_sync_v2.known_manager_map(con, supplier_codes)
         edr_profiles = {}
         latest_registry_events = {}
         if supplier_codes:
@@ -4453,14 +5046,19 @@ def list_qualified_suppliers(params: dict) -> dict:
         }
         open_supplier_nazk_workflows = {}
         latest_supplier_nazk_checks = {}
+        nazk_reviews = {}
         current_manager_registry_matches = set()
         missing_registry_cancelled = set()
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
-            current_manager_registry_matches = {row[0] for row in con.execute(f"""SELECT DISTINCT sm.supplier_code
-              FROM supplier_managers sm JOIN nazk_registry nr
-                ON NORMALIZE_NAME(nr.full_name)=sm.normalized_name
-              WHERE sm.is_current=1 AND sm.supplier_code IN ({placeholders})""", supplier_codes)}
+            nazk_reviews = {row["supplier_code"]: dict(row) for row in con.execute(
+                f"SELECT * FROM supplier_nazk_reviews WHERE supplier_code IN ({placeholders})", supplier_codes)}
+            # Avoid a page-managers × full-NАЗК-registry function join.  The
+            # normalized registry-name set is already loaded once above.
+            current_manager_registry_matches = {row[0] for row in con.execute(f"""SELECT supplier_code,normalized_name
+              FROM supplier_managers WHERE is_current=1
+                AND supplier_code IN ({placeholders})""", supplier_codes)
+                if str(row[1] or "") in nazk_names}
             missing_registry_cancelled = {row[0] for row in con.execute(f"""SELECT DISTINCT supplier_code
               FROM operational_tasks WHERE task_type='nazk_check'
                 AND status='cancelled' AND resolution_code='nazk_record_no_longer_present'
@@ -4516,16 +5114,43 @@ def list_qualified_suppliers(params: dict) -> dict:
                 if code in relevant_by_supplier:
                     continue
                 relevant_by_supplier[code] = submission
+            relevant_states = get_submission_nazk_states(
+                con, [submission["id"] for submission in relevant_by_supplier.values()], nazk_names)
             for code, submission in relevant_by_supplier.items():
-                state = get_submission_nazk_state(con, submission["id"], nazk_names)
+                state = relevant_states.get(submission["id"], {
+                    "state": "not_required", "can_approve": True, "required": False,
+                    "submission_id": submission["id"], "supplier_code": code,
+                })
                 application_nazk_states[code] = {
                     **state, "date_published": submission["date_published"] or ""
                 }
     items = [dict(row) for row in rows]
     for item in items:
+        for key in ("__total", "__active_total", "__registered_total", "__not_registered"):
+            item.pop(key, None)
+        application_stats = page_application_stats.get(item.get("code"), {})
+        item["applications_count"] = int(application_stats.get("applications_count") or 0)
+        item["last_application"] = application_stats.get("last_application") or ""
+        if item.get("registry_state") == "not_registered":
+            item["dk_codes"] = application_stats.get("application_dk_codes") or item.get("dk_codes") or ""
+    for item in items:
         code = re.sub(r"\D", "", item.get("code") or "")
         profile = edr_profiles.get(code) or edr_profiles.get(item.get("code")) or {}
+        canonical_state = canonical_states.get(code, {})
+        verification = canonical_state.get("verification_event")
+        if verification:
+            profile = {**profile, "edr_checked_at": verification.get("occurred_at") or "",
+                       "edr_officer": verification.get("officer") or "",
+                       "verification_event_type": verification.get("event_type") or ""}
+        item["name"] = edr_sync_v2.current_supplier_name(profile.get("full_name"), item.get("name"))
         item["edr_profile"] = profile
+        item["current_manager"] = (known_managers.get(code) or {}).get("manager_name", "")
+        item["current_manager_source"] = (known_managers.get(code) or {}).get("resolution_source", "")
+        item["prozorro_status"] = canonical_state.get("prozorro_status", "Ще не в реєстрі")
+        item["edr_freshness_marker"] = canonical_state.get("marker", "⚪ Не перевірено")
+        item["edr_freshness_bucket"] = canonical_state.get("bucket", "not_checked")
+        item["edr_verification_date"] = canonical_state.get("verification_date", "")
+        item["edr_verification_officer"] = canonical_state.get("verification_officer", "")
         item["last_registry_event"] = latest_registry_events.get(item.get("code"), {})
         item["amcu_match"] = bool(code and code in amcu_codes)
         item["nazk_match"] = item.get("code") in manager_matches
@@ -4560,10 +5185,9 @@ def list_qualified_suppliers(params: dict) -> dict:
               else ((review or {}).get("result") if item.get("nazk_review_is_current", not review) else "")),
             registry_record_no_longer_present=record_no_longer_present,
         )
-    return {"items": items, "total": total,
+    return {"items": items, "total": total, "filtered_codes": filtered_codes,
             "edr_statuses": edr_statuses,
             "registered_total": registered_total, "not_registered": not_registered, "active": active_total,
-            "amcu_total": amcu_total, "nazk_total": nazk_total,
             "page": page, "size": size, "pages": (total + size - 1) // size}
 
 
@@ -4582,9 +5206,7 @@ def supplier_profile(supplier_code: str) -> dict:
         summary = con.execute("SELECT * FROM supplier_registry_summary WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         profile = con.execute("SELECT * FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         supplier_note = con.execute("SELECT * FROM supplier_notes WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
-        current_manager_row = con.execute("""SELECT manager_name,source,valid_from,updated_at
-          FROM supplier_managers WHERE DIGITS(supplier_code)=? AND is_current=1
-          ORDER BY updated_at DESC,id DESC LIMIT 1""", (code,)).fetchone()
+        current_manager_row = edr_sync_v2.resolve_known_manager(con, code)
         nazk_review = con.execute("SELECT * FROM supplier_nazk_reviews WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         nazk_check_history = [dict(row) for row in con.execute("""SELECT
           ctrl.submission_id,ctrl.manager_name,ctrl.checked_at,ctrl.checked_by,ctrl.comment,
@@ -4800,7 +5422,16 @@ def supplier_profile(supplier_code: str) -> dict:
           or (nazk_review_data.get("result") if nazk_review_data.get("is_current_manager") else "")),
         registry_record_no_longer_present=record_no_longer_present,
     )
-    return {"code": code, "latest_submission_name": latest_submission_name, "summary": dict(summary) if summary else {}, "edr_profile": dict(profile) if profile else {},
+    profile_data = dict(profile) if profile else {}
+    with db() as event_con:
+        canonical_edr = edr_sync_v2.canonical_supplier_edr_states(event_con, [code]).get(code, {})
+        verification = canonical_edr.get("verification_event")
+    if verification:
+        profile_data.update(edr_checked_at=verification.get("occurred_at") or "",
+                            edr_officer=verification.get("officer") or "",
+                            verification_event_type=verification.get("event_type") or "")
+    return {"code": code, "latest_submission_name": latest_submission_name, "summary": dict(summary) if summary else {}, "edr_profile": profile_data,
+            "edr_canonical": canonical_edr,
             "supplier_note": dict(supplier_note) if supplier_note else {"supplier_code": code, "note": "", "updated_at": None, "updated_by": ""},
             "current_manager": dict(current_manager_row) if current_manager_row else {},
             "qualifications": qualifications, "bids_summary": bids_summary,
@@ -6472,8 +7103,44 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
             missing_contract.append("Дата договору")
         if missing_contract:
             reasons.append("Не заповнено обов’язкові поля: " + ", ".join(missing_contract))
+    declensions=violation_protocol_declensions(item)
+    unresolved=[entry for entry in declensions if entry['status']!='resolved']
+    if unresolved:reasons.append('Потрібні перевірені відмінкові форми')
     return {"ready": not reasons, "reasons": reasons, "protocol_type": violation_protocol_type(item, review),
-            "protocol_number": number, "protocol_date": date}
+            "protocol_number": number, "protocol_date": date,
+            "declensions":declensions,"unresolved":unresolved}
+
+
+def violation_protocol_declensions(item: dict) -> list[dict]:
+    """Expose the same template-dependent forms for review before generation."""
+    protocol_type=violation_protocol_type(item,item.get('review') or {})
+    path=TEMPLATES.get(protocol_type)
+    if not path or not Path(path).is_file():return []
+    tokens=set()
+    with zipfile.ZipFile(path) as package:
+        for name in package.namelist():
+            if name.startswith('word/') and name.endswith('.xml'):
+                root=ET.fromstring(package.read(name))
+                word='{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+                for paragraph in root.iter(word+'p'):
+                    text=''.join(node.text or '' for node in paragraph.iter(word+'t'))
+                    tokens.update(re.findall(r'\{\{\s*([a-z_]+)\s*\}\}',text))
+    customer=normalize_document_name((item.get('review') or {}).get('customer_verified_full_name') or item.get('author_name') or '')
+    supplier=normalize_document_name((item.get('supplier_verified') or {}).get('full_name') or item.get('defendant_name') or '')
+    specs={'customer_name_genitive':(customer,infer_entity_type(customer,item.get('author_code')),'genitive','Замовник'),
+           'customer_name_accusative':(customer,infer_entity_type(customer,item.get('author_code')),'accusative','Замовник'),
+           'supplier_name_genitive':(supplier,infer_entity_type(supplier,item.get('defendant_code')),'genitive','Постачальник'),
+           'supplier_name_dative':(supplier,infer_entity_type(supplier,item.get('defendant_code')),'dative','Постачальник'),
+           'supplier_name_accusative':(supplier,infer_entity_type(supplier,item.get('defendant_code')),'accusative','Постачальник')}
+    result=[]
+    for token,(original,entity_type,grammatical_case,label) in specs.items():
+        if token not in tokens:continue
+        resolved=decline_name(original,entity_type,grammatical_case)
+        result.append({'subject_label':label,'original':original,'entity_type':entity_type,
+          'grammatical_case':grammatical_case,'entity_identifier':item.get('author_code') if label=='Замовник' else item.get('defendant_code'),
+          'report_id':item.get('id'),'context_type':'violation_report','status':resolved.status,
+          'source':resolved.source,'resolved_value':resolved.value})
+    return result
 
 
 def _protocol_date(value) -> str:
@@ -8511,6 +9178,15 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/login", "/api/logout"}:
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if SAFE_MODE and (self.command in {"POST", "PATCH", "PUT", "DELETE"}
+                          or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
+                                 for key in ("refresh", "force"))
+                          or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
+            length = int(self.headers.get("Content-Length", "0"))
+            if 0 < length <= 1024 * 1024:
+                self.rfile.read(length)
+            return self.send_json({"error": "WEB працює в safe mode: зміни й оновлення вимкнено",
+                                   "code": "safe_mode", "status": 503}, 503)
         with db() as con:
             self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
         permission = auth_access.permission_key(self.command, path)
@@ -8776,7 +9452,7 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as con:
                     control = get_submission_nazk_control(con, submission_id)
                     historical_read_only = historical_applications.is_read_only(submission_id)
-                    if not control and not historical_read_only:
+                    if not control and not historical_read_only and not SAFE_MODE:
                         control = ensure_submission_nazk_control(con, submission_id)
                     state = get_submission_nazk_state(con, submission_id)
                     context = submission_nazk_context(con, submission_id)
@@ -8822,6 +9498,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(list_applications(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/suppliers-registry":
             return self.send_json(list_qualified_suppliers(urllib.parse.parse_qs(parsed.query)))
+        if parsed.path == "/api/suppliers-registry-risk-counts":
+            return self.send_json(supplier_risk_counts())
+        if parsed.path == "/api/edr-monitoring":
+            try:
+                return self.send_json(list_edr_monitoring(urllib.parse.parse_qs(parsed.query)))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path.startswith("/api/supplier-profile/"):
             code = parsed.path.removeprefix("/api/supplier-profile/")
             try:
@@ -8884,6 +9567,12 @@ class Handler(BaseHTTPRequestHandler):
                     if item['task_type']=='nazk_check':
                         item['document_generation']=task_documents.readiness(con,item,pqm_schema_metadata())
                         item['document_generation']['can_manage']=bool(self.auth_access['permissions'].get('tasks.manage'))
+                    elif item['task_type']=='amcu_exclusion':
+                        item['document_generation']=task_documents.amcu_readiness(con,item,pqm_schema_metadata())
+                        item['document_generation']['can_manage']=bool(self.auth_access['permissions'].get('tasks.manage'))
+                    elif item['task_type']=='termination_exclusion':
+                        item['document_generation']=task_documents.termination_readiness(con,item,pqm_schema_metadata())
+                        item['document_generation']['can_manage']=bool(self.auth_access['permissions'].get('tasks.manage'))
                     return self.send_json(item)
             except KeyError: return self.send_json({"error":"Задачу не знайдено"},404)
         generated_download=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/([a-f0-9]{32})/download",parsed.path)
@@ -8896,6 +9585,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Disposition',"attachment; filename=request.docx; filename*=UTF-8''"+urllib.parse.quote(filename))
                 self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
             except KeyError:return self.send_json({'error':'Документ не знайдено'},404)
+        generated_pdf=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/([a-f0-9]{32})/pdf",parsed.path)
+        if generated_pdf:
+            try:
+                with db() as con:
+                    source,filename=task_documents.amcu_pdf_source(con,*generated_pdf.groups(),GENERATED_DOCUMENTS_DIR)
+                target=protocol_pdf.ensure_pdf(source,source.with_suffix('.pdf'))
+                raw=target.read_bytes();self.send_response(200)
+                self.send_header('Content-Type','application/pdf')
+                self.send_header('Content-Disposition',"attachment; filename=protocol.pdf; filename*=UTF-8''"+urllib.parse.quote(filename))
+                self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
+            except KeyError:return self.send_json({'error':'Документ не знайдено'},404)
+            except RuntimeError as exc:
+                SERVER_LOG.exception('AMCU protocol PDF generation failed task=%s document=%s error=%s',*generated_pdf.groups(),exc)
+                return self.send_json({'error':'Не вдалося сформувати PDF. Повторіть спробу або зверніться до адміністратора.',
+                  'code':'protocol_pdf_generation_failed'},503)
         violation_sheets_json = re.fullmatch(
             r"/api/violation-reports/([^/]+)/sheets-json", parsed.path)
         if violation_sheets_json:
@@ -9018,12 +9722,59 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/supplier-edr-sync-status":
             return self.send_json(supplier_edr_sync_status())
         if parsed.path == "/api/supplier-edr-export":
-            sheet_type = (urllib.parse.parse_qs(parsed.query).get("type") or [""])[0].upper()
+            query = urllib.parse.parse_qs(parsed.query)
+            sheet_type = (query.get("type") or ["ALL"])[0].upper()
+            mode = (query.get("mode") or ["filtered"])[0]
+            selected_codes = {_digits(value) for raw in query.get("codes", [])
+                              for value in raw.split(",") if _digits(value)}
+            if mode == "selected" and not selected_codes:
+                return self.send_json({"error": "Оберіть щонайменше одного постачальника"}, 400)
+            status_map = {"active": "Активний", "suspended": "Призупинений",
+                          "terminated": "Неактивний", "not_registered": "Ще не в реєстрі"}
+            requested_status = (query.get("status") or [""])[0]
+            status_values = {status_map[requested_status]} if requested_status in status_map else set()
+            monitoring_status = (query.get("prozorro_status") or [""])[0]
+            if monitoring_status in set(status_map.values()):
+                status_values = {monitoring_status}
+            if not status_values and (mode == "selected" or (query.get("freshness") or [""])[0] in {"not_current", "not_checked"}):
+                status_values = set(status_map.values())
+            if not status_values and query.get("view") == ["edr_monitoring"]:
+                status_values = set(status_map.values())
+            filtered_codes = selected_codes
+            if mode != "selected":
+                listing_params = {key: list(values) for key, values in query.items()
+                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "freshness",
+                                             "verification_from", "verification_to", "application_from",
+                                             "application_to", "admission_from", "admission_to", "dk_code", "risk"}}
+                if query.get("view") == ["edr_monitoring"]:
+                    if "status" in listing_params:
+                        listing_params["prozorro_status"] = listing_params.pop("status")
+                    filtered_codes = set(edr_monitoring_filtered_codes(listing_params))
+                else:
+                    if sheet_type == "ФОП":
+                        listing_params["entity_type"] = ["individual_entrepreneur"]
+                    elif sheet_type == "ЮО":
+                        listing_params["entity_type"] = ["legal_entity"]
+                    listing_params["_include_codes"] = ["1"]
+                    listing_params["page"] = ["1"]
+                    listing_params["size"] = ["10"]
+                    filtered_codes = set(list_qualified_suppliers(listing_params).get("filtered_codes") or [])
+            filters = {
+                "prozorro_statuses": status_values or {"Активний", "Призупинений"},
+                "freshness_bucket": (query.get("freshness") or [""])[0],
+                "verification_from": (query.get("verification_from") or [""])[0],
+                "verification_to": (query.get("verification_to") or [""])[0],
+                "supplier_codes": filtered_codes,
+                "selected_mode": mode == "selected",
+            }
             try:
-                raw = supplier_edr_export_csv(sheet_type)
+                raw = (edr_monitoring_export_csv(filtered_codes)
+                       if mode != "selected" and query.get("view") == ["edr_monitoring"]
+                       else supplier_edr_export_csv(sheet_type, filters))
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
-            filename = f"{sheet_type}_ЄДР.csv"
+            filename = (f"{sheet_type}_ЄДР.csv" if sheet_type in {"ФОП", "ЮО"}
+                        else "ClarityChecker_відфільтровані.csv")
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(filename))
@@ -9184,6 +9935,22 @@ class Handler(BaseHTTPRequestHandler):
                   content=excluded.content,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
                   (username, content_type, raw, now_iso(), self.auth_user))
             return self.send_json({"saved": True, "username": username})
+        if parsed.path in {"/api/edr-monitoring/termination-exclusions/preview",
+                           "/api/edr-monitoring/termination-exclusions/create"}:
+            try:
+                payload=self.read_json(); codes=payload.get("supplier_codes")
+                if not isinstance(codes,list) or not codes:
+                    raise ValueError("Оберіть щонайменше одного постачальника")
+                if len(codes)>1000: raise ValueError("За одну дію можна опрацювати не більше 1000 постачальників")
+                with db() as con:
+                    if parsed.path.endswith("/preview"):
+                        return self.send_json(operational_tasks.preview_termination_exclusions(con,codes))
+                    if not payload.get("confirmed"):
+                        raise ValueError("Потрібне явне підтвердження створення задач")
+                    con.execute("BEGIN IMMEDIATE")
+                    result=operational_tasks.create_termination_exclusions(con,codes,self.auth_user)
+                return self.send_json(result,201)
+            except ValueError as exc:return self.send_json({"error":str(exc)},400)
         if parsed.path == "/api/admin/runtime-features/google":
             payload = self.read_json()
             if type(payload.get("enabled")) is not bool:
@@ -9227,6 +9994,27 @@ class Handler(BaseHTTPRequestHandler):
                     event['metadata']=json.loads(event['metadata'])
                 return self.send_json({'document':document,'documents':docs,'event':event},201)
             except KeyError:return self.send_json({'error':'Задачу не знайдено'},404)
+            except (ValueError,OSError) as exc:return self.send_json({'error':str(exc)},422)
+        generate_amcu=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/(amcu-exclusion-protocol|termination-exclusion-protocol)",parsed.path)
+        if generate_amcu:
+            try:
+                payload=self.read_json()
+                if payload:raise ValueError('Дія не приймає template key, path або document context від клієнта')
+                schema=pqm_schema_metadata()
+                with db() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    item=operational_tasks.detail(con,generate_amcu.group(1))
+                    termination=generate_amcu.group(2)=='termination-exclusion-protocol'
+                    generator=task_documents.generate_termination if termination else task_documents.generate_amcu
+                    document=generator(con,item,schema,GENERATED_DOCUMENTS_DIR,self.auth_user)
+                    docs=[doc for doc in task_documents.documents(con,item['id'])
+                          if doc['document_type']==(task_documents.TERMINATION_PROTOCOL_KEY if termination else task_documents.AMCU_PROTOCOL_KEY)]
+                    event=dict(con.execute('SELECT * FROM operational_task_events WHERE task_id=? ORDER BY id DESC LIMIT 1',(item['id'],)).fetchone())
+                    event['metadata']=json.loads(event['metadata'])
+                return self.send_json({'document':document,'documents':docs,'event':event},201)
+            except KeyError:return self.send_json({'error':'Задачу не знайдено'},404)
+            except task_documents.DeclensionRequired as exc:
+                return self.send_json({'error':str(exc),'code':'declension_unresolved','unresolved':exc.unresolved},422)
             except (ValueError,OSError) as exc:return self.send_json({'error':str(exc)},422)
         operational_channel = re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/channels/(supplier|nazk)/sent", parsed.path)
         if operational_channel:
@@ -9311,7 +10099,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == '/api/admin/table-widths':
             payload=self.read_json()
             try:
-                with db() as con: widths=table_widths.save(con,payload.get('table_key'),payload.get('widths'),self.auth_user)
+                with db() as con: widths=table_widths.save(con,payload.get('table_key'),payload.get('widths'),self.auth_user,payload.get('visible'))
             except (TypeError,ValueError) as exc: return self.send_json({'error':str(exc)},400)
             return self.send_json({'saved':True,'widths':widths})
         if parsed.path == "/api/chats":
@@ -9537,15 +10325,44 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"started": False, "code": "bids_start_failed", "error": BIDS_UPDATE_STATE["message"]}, 503)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync":
+            payload = self.read_json()
+            if not google_effective_enabled():
+                return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
+            if SUPPLIER_EDR_SYNC_STATE["running"]:
+                return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
+            fingerprint = str(payload.get("source_fingerprint") or "").strip().lower()
+            if payload.get("confirmed") is not True or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+                return self.send_json({"error": "Спочатку виконайте preview і явно підтвердьте той самий source fingerprint"}, 409)
+            SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
+                                           started_at=now_iso(), updated_at=None, error=None)
+            threading.Thread(target=supplier_edr_sync_worker,
+                             args=(fingerprint, self.auth_user), daemon=True).start()
+            return self.send_json({"started": True}, 202)
+        if parsed.path == "/api/supplier-edr-export":
+            payload = self.read_json()
+            selected_codes = {_digits(value) for value in (payload.get("supplier_codes") or []) if _digits(value)}
+            if not selected_codes:
+                return self.send_json({"error": "Оберіть щонайменше одного постачальника"}, 400)
+            if len(selected_codes) > 5000:
+                return self.send_json({"error": "За один раз можна експортувати до 5000 вибраних постачальників"}, 400)
+            raw = supplier_edr_export_csv("ALL", {"supplier_codes": selected_codes, "selected_mode": True,
+                                                   "prozorro_statuses": {"Активний", "Призупинений", "Неактивний", "Ще не в реєстрі"}})
+            filename = "ClarityChecker_вибрані.csv"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(filename))
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers(); self.wfile.write(raw); return
+        if parsed.path == "/api/supplier-edr-sync/preview":
             self.read_json()
             if not google_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
             if SUPPLIER_EDR_SYNC_STATE["running"]:
                 return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
-            SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
-                                           started_at=now_iso(), updated_at=None, error=None)
-            threading.Thread(target=supplier_edr_sync_worker, daemon=True).start()
-            return self.send_json({"started": True}, 202)
+            try:
+                return self.send_json(supplier_edr_sync_preview())
+            except (ValueError, RuntimeError, OSError) as exc:
+                return self.send_json({"error": str(exc)}, 409)
         if parsed.path == "/api/supplier-nazk-review-sync":
             self.read_json()
             if not google_effective_enabled():
@@ -10156,6 +10973,8 @@ class Handler(BaseHTTPRequestHandler):
                           generated_protocol_decision='',protocol_generated_at='' WHERE submission_id=?""", (submission_id,))
             if "manager_name" in payload:
                 ensure_submission_nazk_control(con, submission_id)
+            if effective_protocol_decision == "admit":
+                edr_sync_v2.record_admission_event(con, submission_id, now_iso())
         return self.send_json({"saved": True})
 
     def _do_DELETE(self):

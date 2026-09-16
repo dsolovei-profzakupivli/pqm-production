@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+from pathlib import Path
 
 import operational_tasks
 import supplier_activity
@@ -43,6 +44,138 @@ class EffectiveSupplierActivityTests(unittest.TestCase):
         self.assertIn("rc.status='active'", predicate)
         self.assertIn("f.status", predicate)
         self.assertIn("qualificationPeriod.endDate", predicate)
+
+    def test_amcu_effective_qualification_projection_reuses_registry_and_marketplace_data(self):
+        con=sqlite3.connect(":memory:");con.row_factory=sqlite3.Row
+        con.create_function("DIGITS",1,lambda value:"".join(ch for ch in str(value or "") if ch.isdigit()))
+        con.executescript("""CREATE TABLE registry_contracts(id TEXT,status TEXT,supplier_code TEXT,
+          qualification_id TEXT,framework_id TEXT,raw_json TEXT);
+          CREATE TABLE qualifications(id TEXT,submission_id TEXT,status TEXT,decision_date TEXT);
+          CREATE TABLE submissions(id TEXT,framework_id TEXT,date_published TEXT);
+          CREATE TABLE frameworks(id TEXT,pretty_id TEXT,dk_code TEXT,title TEXT,status TEXT,raw_json TEXT);
+          CREATE TABLE framework_officers(framework_id TEXT,marketplace_url TEXT);
+          INSERT INTO frameworks VALUES('f','UA-F-2020-12-15-000044-a','31430000-9',
+            'Електричні акумулятори','active','{"qualificationPeriod":{"endDate":"2099-01-01"}}');
+          INSERT INTO submissions VALUES('s','f','2025-09-25T16:00:00+03:00');
+          INSERT INTO qualifications VALUES('q','s','active','2025-09-25T16:37:08+03:00');
+          INSERT INTO registry_contracts VALUES('rc','active','2884318089','q','f',
+            '{"date":"2025-09-25T16:37:08+03:00"}');
+          INSERT INTO framework_officers VALUES('f',
+            'https://market.test/qualification/5fd7ec0d0be3b38799cdd43f/offersList');""")
+        rows=operational_tasks._effective_active_applications(con,'2884318089')
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['framework_pretty_id'],'UA-F-2020-12-15-000044-a')
+        self.assertEqual(rows[0]['qualification_status'],'active')
+        self.assertEqual(rows[0]['qualification_event_date'],'2025-09-25T16:37:08+03:00')
+        self.assertIn('5fd7ec0d0be3b38799cdd43f',rows[0]['marketplace_url'])
+
+
+class AmcuPostSyncLifecycleTests(unittest.TestCase):
+    def connection(self):
+        con=sqlite3.connect(':memory:');con.row_factory=sqlite3.Row
+        con.create_function('DIGITS',1,lambda value:''.join(ch for ch in str(value or '') if ch.isdigit()))
+        con.executescript("""CREATE TABLE operational_tasks(
+          id TEXT PRIMARY KEY,task_key TEXT,task_type TEXT,supplier_code TEXT,supplier_name_snapshot TEXT DEFAULT '',
+          status TEXT,priority TEXT DEFAULT 'high',assigned_officer_id INTEGER,created_at TEXT DEFAULT '2026-09-15',
+          updated_at TEXT DEFAULT '',due_at TEXT,ready_for_document_at TEXT,protocol_number TEXT DEFAULT '',
+          protocol_date TEXT DEFAULT '',protocol_reference TEXT DEFAULT '',published_at TEXT,published_reference TEXT DEFAULT '',
+          resolved_at TEXT,resolved_by TEXT,resolution_code TEXT DEFAULT '',resolution_text TEXT DEFAULT '',
+          source_context TEXT DEFAULT '{}',document_context TEXT DEFAULT '{}',metadata TEXT DEFAULT '{}',version INTEGER DEFAULT 1);
+          CREATE TABLE operational_task_qualifications(task_id TEXT,qualification_id TEXT,registry_contract_id TEXT,
+            relation_type TEXT,linked_at TEXT,PRIMARY KEY(task_id,qualification_id,registry_contract_id,relation_type));
+          CREATE TABLE operational_task_applications(task_id TEXT,application_id TEXT,relation_type TEXT,
+            PRIMARY KEY(task_id,application_id,relation_type));
+          CREATE TABLE operational_task_events(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,event_type TEXT,
+            created_at TEXT,actor TEXT,old_value TEXT,new_value TEXT,metadata TEXT);
+          CREATE TABLE generated_documents(task_id TEXT,document_type TEXT,status TEXT);
+          CREATE TABLE authorized_officers(id INTEGER PRIMARY KEY,active INTEGER);
+          CREATE TABLE submissions(id TEXT PRIMARY KEY,framework_id TEXT,date_published TEXT);
+          CREATE TABLE qualifications(id TEXT PRIMARY KEY,submission_id TEXT,status TEXT,decision_date TEXT);
+          CREATE TABLE registry_contracts(id TEXT PRIMARY KEY,framework_id TEXT,qualification_id TEXT,
+            supplier_code TEXT,status TEXT,milestones_json TEXT DEFAULT '[]',raw_json TEXT DEFAULT '{}');
+          CREATE TABLE frameworks(id TEXT PRIMARY KEY,pretty_id TEXT,dk_code TEXT,title TEXT,status TEXT,raw_json TEXT);
+          CREATE TABLE framework_officers(framework_id TEXT,marketplace_url TEXT);
+          INSERT INTO operational_tasks(id,task_key,task_type,supplier_code,status) VALUES
+            ('t','amcu_exclusion:1','amcu_exclusion','1','awaiting_sync');
+          INSERT INTO frameworks VALUES('f','F','1','Framework','active','{"qualificationPeriod":{"endDate":"2099-01-01"}}');
+          INSERT INTO submissions VALUES('s','f','2026-09-01');
+          INSERT INTO operational_task_applications VALUES('t','s','active_application');
+          INSERT INTO qualifications VALUES('q','s','active','2026-09-01');
+          INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status) VALUES('rc','f','q','1','active');
+          INSERT INTO operational_task_qualifications VALUES('t','q','rc','targeted_exclusion','2026-09-15');""")
+        return con
+
+    def reconcile(self,con):
+        with patch.object(operational_tasks,'migrate',lambda _con:None):
+            return operational_tasks.reconcile_amcu_after_qualification_sync(con,'sync-test')
+
+    def test_reviewed_with_linked_qualification_active_stays_reviewed(self):
+        con=self.connection();result=self.reconcile(con)
+        self.assertEqual(result['completed'],0)
+        self.assertEqual(con.execute("SELECT status FROM operational_tasks").fetchone()[0],'awaiting_sync')
+
+    def test_reviewed_with_linked_qualification_inactive_completes_idempotently(self):
+        con=self.connection();con.execute("UPDATE registry_contracts SET status='terminated' WHERE id='rc'")
+        first=self.reconcile(con);second=self.reconcile(con)
+        self.assertEqual((first['completed'],second['completed']),(1,0))
+        self.assertEqual(tuple(con.execute("SELECT status,resolution_code FROM operational_tasks").fetchone()),
+                         ('completed','amcu_excluded'))
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_task_events").fetchone()[0],1)
+
+    def test_multiple_links_one_active_stays_reviewed_then_all_inactive_completes(self):
+        con=self.connection()
+        con.executescript("""INSERT INTO submissions VALUES('s2','f','2026-09-02');
+          INSERT INTO qualifications VALUES('q2','s2','active','2026-09-02');
+          INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status) VALUES('rc2','f','q2','1','terminated');
+          INSERT INTO operational_task_qualifications VALUES('t','q2','rc2','targeted_exclusion','2026-09-15');""")
+        self.assertEqual(self.reconcile(con)['completed'],0)
+        con.execute("UPDATE registry_contracts SET status='terminated' WHERE id='rc'")
+        self.assertEqual(self.reconcile(con)['completed'],1)
+
+    def test_other_active_qualification_keeps_supplier_active_but_task_completes(self):
+        con=self.connection();con.execute("UPDATE registry_contracts SET status='terminated' WHERE id='rc'")
+        con.executescript("""INSERT INTO submissions VALUES('other-s','f','2026-09-03');
+          INSERT INTO qualifications VALUES('other-q','other-s','active','2026-09-03');
+          INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status) VALUES('other-rc','f','other-q','1','active');""")
+        self.assertEqual(self.reconcile(con)['completed'],1)
+        metadata=json.loads(con.execute("SELECT metadata FROM operational_task_events").fetchone()[0])
+        self.assertEqual((metadata['supplier_effective_active_count'],metadata['supplier_activity']),(1,'active'))
+
+    def test_last_inactive_marks_supplier_inactive_in_audit(self):
+        con=self.connection();con.execute("UPDATE registry_contracts SET status='terminated' WHERE id='rc'")
+        self.assertEqual(self.reconcile(con)['completed'],1)
+        metadata=json.loads(con.execute("SELECT metadata FROM operational_task_events").fetchone()[0])
+        self.assertEqual((metadata['supplier_effective_active_count'],metadata['supplier_activity']),(0,'inactive'))
+
+    def test_missing_target_snapshot_never_auto_completes(self):
+        con=self.connection();con.execute("DELETE FROM operational_task_qualifications")
+        con.execute("UPDATE registry_contracts SET status='terminated'")
+        self.assertEqual(self.reconcile(con)['completed'],0)
+        self.assertEqual(con.execute("SELECT status FROM operational_tasks").fetchone()[0],'awaiting_sync')
+
+    def test_completed_decision_cycle_blocks_duplicate_but_new_fact_does_not(self):
+        con=self.connection()
+        con.executescript("""CREATE TABLE operational_task_amcu_decisions(
+          task_id TEXT,amcu_decision_id TEXT,extract_url TEXT DEFAULT '',created_at TEXT,updated_at TEXT,updated_by TEXT,
+          PRIMARY KEY(task_id,amcu_decision_id));
+          UPDATE operational_tasks SET status='completed',resolution_code='amcu_excluded';
+          INSERT INTO operational_task_amcu_decisions(task_id,amcu_decision_id) VALUES('t','d1');""")
+        self.assertTrue(operational_tasks.amcu_decision_cycle_covered(con,'1',['d1']))
+        self.assertFalse(operational_tasks.amcu_decision_cycle_covered(con,'1',['d1','d2']))
+
+    def test_manual_review_transition_snapshots_targets_but_does_not_complete(self):
+        con=self.connection()
+        con.executescript("""UPDATE operational_tasks SET status='ready_for_document',assigned_officer_id=1,
+          protocol_number='701',protocol_date='2026-09-15' WHERE id='t';
+          INSERT INTO authorized_officers VALUES(1,1);
+          INSERT INTO generated_documents VALUES('t','amcu_exclusion_protocol','generated');""")
+        current=dict(con.execute("SELECT * FROM operational_tasks WHERE id='t'").fetchone())
+        current['amcu_decisions']=[]
+        with patch.object(operational_tasks,'detail',return_value=current):
+            operational_tasks.update(con,'t',{'status':'awaiting_sync'},'uo')
+        self.assertEqual(con.execute("SELECT status FROM operational_tasks WHERE id='t'").fetchone()[0],
+                         'awaiting_sync')
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_task_qualifications WHERE task_id='t'").fetchone()[0],1)
 
 
 class OperationalStatusGroupTests(unittest.TestCase):
@@ -182,6 +315,86 @@ class OperationalTaskCardTests(unittest.TestCase):
           'warnings':[{'report_id':'UA-D-1'}]})
         self.assertEqual(warning_context['protocol_date'],'2026-09-01')
         self.assertEqual(warning_context['warning_references'][0]['report_id'],'UA-D-1')
+
+    def test_amcu_extract_urls_persist_per_decision_and_are_idempotent(self):
+        con=sqlite3.connect(":memory:"); con.row_factory=sqlite3.Row
+        con.executescript("""CREATE TABLE operational_task_amcu_decisions(
+          task_id TEXT,amcu_decision_id TEXT,extract_url TEXT,created_at TEXT,updated_at TEXT,updated_by TEXT,
+          PRIMARY KEY(task_id,amcu_decision_id));
+          CREATE TABLE operational_task_events(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,event_type TEXT,
+          created_at TEXT,actor TEXT,old_value TEXT,new_value TEXT,metadata TEXT);
+          INSERT INTO operational_task_amcu_decisions VALUES('t','d1','','','','');
+          INSERT INTO operational_task_amcu_decisions VALUES('t','d2','','','','');""")
+        payload=[{'decision_id':'d1','extract_url':' https://example.test/one '},
+                 {'decision_id':'d2','extract_url':'https://example.test/two'}]
+        self.assertEqual(operational_tasks.update_amcu_extracts(con,'t',payload,'uo'),2)
+        self.assertEqual([tuple(r) for r in con.execute(
+          "SELECT amcu_decision_id,extract_url FROM operational_task_amcu_decisions ORDER BY amcu_decision_id")],
+          [('d1','https://example.test/one'),('d2','https://example.test/two')])
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_task_events").fetchone()[0],2)
+        self.assertEqual(operational_tasks.update_amcu_extracts(con,'t',payload,'uo'),0)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_task_events").fetchone()[0],2)
+
+    def test_amcu_extract_batch_rejects_unlinked_decision(self):
+        con=sqlite3.connect(":memory:"); con.row_factory=sqlite3.Row
+        con.executescript("""CREATE TABLE operational_task_amcu_decisions(
+          task_id TEXT,amcu_decision_id TEXT,extract_url TEXT,created_at TEXT,updated_at TEXT,updated_by TEXT,
+          PRIMARY KEY(task_id,amcu_decision_id));
+          CREATE TABLE operational_task_events(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,event_type TEXT,
+          created_at TEXT,actor TEXT,old_value TEXT,new_value TEXT,metadata TEXT);
+          INSERT INTO operational_task_amcu_decisions VALUES('t','d1','','','','');""")
+        with self.assertRaisesRegex(ValueError,'не пов’язане'):
+            operational_tasks.update_amcu_extracts(
+              con,'t',[{'decision_id':'another','extract_url':'https://example.test'}],'uo')
+        self.assertEqual(con.execute("SELECT extract_url FROM operational_task_amcu_decisions").fetchone()[0],'')
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_task_events").fetchone()[0],0)
+
+    def test_main_task_save_persists_amcu_url_before_document_gate(self):
+        con=sqlite3.connect(":memory:"); con.row_factory=sqlite3.Row
+        con.executescript("""CREATE TABLE operational_tasks(id TEXT PRIMARY KEY,task_type TEXT,status TEXT,
+          assigned_officer_id INTEGER,resolution_code TEXT,resolution_text TEXT,protocol_number TEXT,
+          protocol_date TEXT,protocol_reference TEXT,published_reference TEXT,resolved_at TEXT,resolved_by TEXT,
+          updated_at TEXT,version INTEGER);
+          CREATE TABLE authorized_officers(id INTEGER PRIMARY KEY,active INTEGER);
+          CREATE TABLE operational_task_amcu_decisions(task_id TEXT,amcu_decision_id TEXT,extract_url TEXT,
+          created_at TEXT,updated_at TEXT,updated_by TEXT,PRIMARY KEY(task_id,amcu_decision_id));
+          CREATE TABLE operational_task_events(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,event_type TEXT,
+          created_at TEXT,actor TEXT,old_value TEXT,new_value TEXT,metadata TEXT);
+          INSERT INTO operational_tasks VALUES('t','amcu_exclusion','in_progress',1,'','','','','','',NULL,NULL,'',1);
+          INSERT INTO authorized_officers VALUES(1,1);
+          INSERT INTO operational_task_amcu_decisions VALUES('t','d1','','','','');""")
+        def current(_con,task_id):
+            task=dict(_con.execute("SELECT * FROM operational_tasks WHERE id=?",(task_id,)).fetchone())
+            task['amcu_decisions']=[dict(r) for r in _con.execute(
+              "SELECT amcu_decision_id row_key,extract_url FROM operational_task_amcu_decisions WHERE task_id=?",(task_id,))]
+            return task
+        with patch.object(operational_tasks,'detail',side_effect=current):
+            result=operational_tasks.update(con,'t',{'status':'ready_for_document','assigned_officer_id':1,
+              'protocol_number':'701','protocol_date':'2026-09-14',
+              'amcu_decisions':[{'decision_id':'d1','extract_url':'https://example.test/extract'}]},'uo')
+        self.assertEqual(result['status'],'ready_for_document')
+        self.assertEqual((result['protocol_number'],result['protocol_date']),('701','2026-09-14'))
+        self.assertEqual(result['amcu_decisions'][0]['extract_url'],'https://example.test/extract')
+        self.assertEqual([r[0] for r in con.execute(
+          "SELECT event_type FROM operational_task_events ORDER BY id")],['amcu_extract_url_added','status_changed'])
+
+    def test_active_task_renderer_installs_amcu_row_save_handler(self):
+        source = Path(__file__).with_name("app.js").read_text(encoding="utf-8")
+        before_polish_wrapper = source[:source.index("const openOperationalTaskPolished=")]
+        active_renderer = before_polish_wrapper[before_polish_wrapper.rfind("openOperationalTask=async function(taskId){"):]
+        self.assertIn("installOperationalAmcuActions(item,body)", active_renderer)
+        self.assertIn("button.closest('tr')", source)
+        self.assertIn("/amcu-decisions/${encodeURIComponent(button.dataset.decision)}", source)
+        self.assertIn('data-amcu-protocol-number', source)
+        self.assertIn('data-amcu-protocol-date', source)
+        self.assertIn('/documents/amcu-exclusion-protocol', source)
+        self.assertIn('openDeclensionFromAmcuValidation', source)
+        self.assertIn("originType:'operational_task'", source)
+        self.assertIn('title="Зберегти посилання на витяг"', source)
+        self.assertIn('aria-label="Завантажити DOCX"', source)
+        self.assertIn('aria-label="Завантажити PDF"', source)
+        self.assertIn('resolvedDocumentMetadataHtml(latest.resolved_metadata)', source)
+        self.assertIn("marketplaceApplicationsUrl(x.marketplace_url,supplierCode)", source)
 
 
 if __name__ == "__main__":

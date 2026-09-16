@@ -9,7 +9,7 @@
           "name": "row_key",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -17,7 +17,7 @@
           "name": "ordinal",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -25,7 +25,7 @@
           "name": "division_no",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -33,7 +33,7 @@
           "name": "sequence_no",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -41,7 +41,7 @@
           "name": "decision_no",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -49,7 +49,7 @@
           "name": "decision_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -57,7 +57,7 @@
           "name": "authority",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -65,7 +65,7 @@
           "name": "offender_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -73,7 +73,7 @@
           "name": "offender_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -81,7 +81,7 @@
           "name": "court_case_no",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -89,7 +89,7 @@
           "name": "raw_json",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -103,7 +103,7 @@
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -111,7 +111,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -119,7 +119,7 @@
           "name": "contract_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -127,7 +127,7 @@
           "name": "contract_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -135,7 +135,7 @@
           "name": "amount",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -143,7 +143,7 @@
           "name": "buyer_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -151,7 +151,7 @@
           "name": "fingerprint",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -159,21 +159,21 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "application_fields",
-      "sql": "CREATE TABLE application_fields (\n          submission_id TEXT PRIMARY KEY REFERENCES submissions(id),\n          protocol_number TEXT DEFAULT '', protocol_date TEXT DEFAULT '',\n          publication_date TEXT DEFAULT '', protocol_officer TEXT DEFAULT '',\n          manager_name TEXT DEFAULT '', document_package TEXT DEFAULT '',\n          notes TEXT DEFAULT '', updated_at TEXT, updated_by TEXT\n        , protocol_remarks TEXT DEFAULT '', protocol_decision TEXT DEFAULT '', compliance_status TEXT DEFAULT '', compliance_comments TEXT DEFAULT '', marketplace_decision TEXT DEFAULT '', authority_review TEXT DEFAULT '', mvs_seal_review TEXT DEFAULT '', generated_protocol_number TEXT DEFAULT '', generated_protocol_date TEXT DEFAULT '', generated_protocol_decision TEXT DEFAULT '', protocol_generated_at TEXT DEFAULT '', contract_details TEXT DEFAULT '', document_check_status TEXT DEFAULT '', document_check_summary TEXT DEFAULT '', document_checked_at TEXT DEFAULT '', document_check_result_json TEXT DEFAULT '', manager_name_source TEXT DEFAULT '', manager_name_source_submission_id TEXT DEFAULT '', review_officer TEXT DEFAULT '')",
+      "sql": "CREATE TABLE application_fields (\n          submission_id TEXT PRIMARY KEY REFERENCES submissions(id),\n          protocol_number TEXT DEFAULT '', protocol_date TEXT DEFAULT '',\n          publication_date TEXT DEFAULT '', protocol_officer TEXT DEFAULT '',\n          protocol_remarks TEXT DEFAULT '', protocol_decision TEXT DEFAULT '', marketplace_decision TEXT DEFAULT '',\n          compliance_status TEXT DEFAULT '', compliance_comments TEXT DEFAULT '',\n          manager_name TEXT DEFAULT '', manager_name_source TEXT DEFAULT '', manager_name_source_submission_id TEXT DEFAULT '',\n          document_package TEXT DEFAULT '', contract_details TEXT DEFAULT '', authority_review TEXT DEFAULT '', mvs_seal_review TEXT DEFAULT '',\n          document_check_status TEXT DEFAULT '', document_check_summary TEXT DEFAULT '',\n          document_checked_at TEXT DEFAULT '', document_check_result_json TEXT DEFAULT '',\n          generated_protocol_number TEXT DEFAULT '', generated_protocol_date TEXT DEFAULT '',\n          generated_protocol_decision TEXT DEFAULT '', protocol_generated_at TEXT DEFAULT '',\n          notes TEXT DEFAULT '', review_officer TEXT DEFAULT '', updated_at TEXT, updated_by TEXT\n        )",
       "columns": [
         {
           "cid": 0,
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -181,7 +181,7 @@
           "name": "protocol_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -189,7 +189,7 @@
           "name": "protocol_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -197,7 +197,7 @@
           "name": "publication_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -205,87 +205,87 @@
           "name": "protocol_officer",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 5,
-          "name": "manager_name",
+          "name": "protocol_remarks",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 6,
-          "name": "document_package",
+          "name": "protocol_decision",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 7,
-          "name": "notes",
+          "name": "marketplace_decision",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 8,
-          "name": "updated_at",
+          "name": "compliance_status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 9,
-          "name": "updated_by",
+          "name": "compliance_comments",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 10,
-          "name": "protocol_remarks",
+          "name": "manager_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 11,
-          "name": "protocol_decision",
+          "name": "manager_name_source",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 12,
-          "name": "compliance_status",
+          "name": "manager_name_source_submission_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 13,
-          "name": "compliance_comments",
+          "name": "document_package",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 14,
-          "name": "marketplace_decision",
+          "name": "contract_details",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -293,7 +293,7 @@
           "name": "authority_review",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -301,103 +301,103 @@
           "name": "mvs_seal_review",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 17,
-          "name": "generated_protocol_number",
+          "name": "document_check_status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 18,
-          "name": "generated_protocol_date",
+          "name": "document_check_summary",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 19,
-          "name": "generated_protocol_decision",
+          "name": "document_checked_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 20,
-          "name": "protocol_generated_at",
+          "name": "document_check_result_json",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 21,
-          "name": "contract_details",
+          "name": "generated_protocol_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 22,
-          "name": "document_check_status",
+          "name": "generated_protocol_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 23,
-          "name": "document_check_summary",
+          "name": "generated_protocol_decision",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 24,
-          "name": "document_checked_at",
+          "name": "protocol_generated_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 25,
-          "name": "document_check_result_json",
+          "name": "notes",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 26,
-          "name": "manager_name_source",
+          "name": "review_officer",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 27,
-          "name": "manager_name_source_submission_id",
+          "name": "updated_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": null,
           "pk": 0
         },
         {
           "cid": 28,
-          "name": "review_officer",
+          "name": "updated_by",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": null,
           "pk": 0
         }
       ]
@@ -411,7 +411,7 @@
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -419,7 +419,7 @@
           "name": "remark_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 2
         },
         {
@@ -427,7 +427,7 @@
           "name": "selected_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -435,7 +435,7 @@
           "name": "selected_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         }
       ]
@@ -449,7 +449,7 @@
           "name": "id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -457,7 +457,7 @@
           "name": "owner_key",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -465,7 +465,7 @@
           "name": "name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -473,7 +473,7 @@
           "name": "is_system",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -481,7 +481,7 @@
           "name": "source_system_profile_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -489,7 +489,7 @@
           "name": "columns_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'[]'",
+          "default": "'[]'",
           "pk": 0
         },
         {
@@ -497,7 +497,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -505,7 +505,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -513,7 +513,7 @@
           "name": "created_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -521,7 +521,7 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         }
       ]
@@ -535,7 +535,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -543,7 +543,7 @@
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -551,7 +551,7 @@
           "name": "changed_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -559,7 +559,7 @@
           "name": "changed_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -567,7 +567,7 @@
           "name": "field_name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -575,7 +575,7 @@
           "name": "old_value",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -583,7 +583,7 @@
           "name": "new_value",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -597,7 +597,7 @@
           "name": "role_code",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -605,7 +605,7 @@
           "name": "permission_key",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 2
         },
         {
@@ -613,7 +613,7 @@
           "name": "allowed",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -621,7 +621,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -629,7 +629,7 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -643,7 +643,7 @@
           "name": "code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -651,7 +651,7 @@
           "name": "label",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -659,7 +659,7 @@
           "name": "base_role",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -667,7 +667,7 @@
           "name": "active",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "1",
+          "default": "1",
           "pk": 0
         },
         {
@@ -675,7 +675,7 @@
           "name": "protected",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -683,7 +683,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -691,7 +691,7 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -705,7 +705,7 @@
           "name": "username",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -713,7 +713,7 @@
           "name": "role_code",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -721,7 +721,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -729,7 +729,7 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -743,7 +743,7 @@
           "name": "username",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -751,7 +751,7 @@
           "name": "password_hash",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -759,7 +759,7 @@
           "name": "role",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -767,7 +767,7 @@
           "name": "officer_id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -775,7 +775,7 @@
           "name": "active",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "1",
+          "default": "1",
           "pk": 0
         },
         {
@@ -783,7 +783,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -791,7 +791,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -799,7 +799,7 @@
           "name": "created_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -807,7 +807,7 @@
           "name": "last_seen_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -821,7 +821,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -829,7 +829,7 @@
           "name": "full_name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -837,7 +837,7 @@
           "name": "role",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'УО'",
+          "default": "'УО'",
           "pk": 0
         },
         {
@@ -845,7 +845,7 @@
           "name": "active",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "1",
+          "default": "1",
           "pk": 0
         },
         {
@@ -853,7 +853,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -861,7 +861,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -875,7 +875,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -883,7 +883,7 @@
           "name": "message_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -891,7 +891,7 @@
           "name": "filename",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -899,7 +899,7 @@
           "name": "content_type",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -907,7 +907,7 @@
           "name": "content",
           "type": "BLOB",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -915,7 +915,7 @@
           "name": "size",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -923,7 +923,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -937,7 +937,7 @@
           "name": "chat_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -945,7 +945,7 @@
           "name": "username",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 2
         },
         {
@@ -953,7 +953,7 @@
           "name": "joined_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -961,7 +961,7 @@
           "name": "last_read_message_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         }
       ]
@@ -975,7 +975,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -983,7 +983,7 @@
           "name": "chat_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -991,7 +991,7 @@
           "name": "sender_username",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -999,7 +999,7 @@
           "name": "body",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1007,7 +1007,7 @@
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1015,7 +1015,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -1029,7 +1029,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1037,7 +1037,7 @@
           "name": "title",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1045,7 +1045,7 @@
           "name": "is_group",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -1053,7 +1053,7 @@
           "name": "created_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1061,7 +1061,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1069,7 +1069,187 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "document_metadata_template_events",
+      "sql": "CREATE TABLE document_metadata_template_events (\n      id INTEGER PRIMARY KEY AUTOINCREMENT, document_type TEXT NOT NULL,\n      metadata_key TEXT NOT NULL, old_template_text TEXT, new_template_text TEXT NOT NULL,\n      changed_at TEXT NOT NULL, changed_by TEXT NOT NULL,\n      action TEXT NOT NULL DEFAULT 'updated', old_config_json TEXT, new_config_json TEXT)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "document_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "metadata_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "old_template_text",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "new_template_text",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "changed_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "changed_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "action",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'updated'",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "old_config_json",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "new_config_json",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "document_metadata_templates",
+      "sql": "CREATE TABLE document_metadata_templates (\n      document_type TEXT NOT NULL, metadata_key TEXT NOT NULL, label TEXT NOT NULL,\n      template_text TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,\n      updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,\n      description TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,\n      created_at TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',\n      PRIMARY KEY(document_type,metadata_key))",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "document_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "metadata_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "label",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "template_text",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "version",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "1",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "description",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "active",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "1",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
           "pk": 0
         }
       ]
@@ -1083,7 +1263,7 @@
           "name": "protocol_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1091,7 +1271,7 @@
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 2
         },
         {
@@ -1099,7 +1279,7 @@
           "name": "position",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1107,7 +1287,7 @@
           "name": "snapshot_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1115,7 +1295,7 @@
           "name": "active",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -1129,7 +1309,7 @@
           "name": "id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1137,7 +1317,7 @@
           "name": "protocol_number",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1145,7 +1325,7 @@
           "name": "protocol_date",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1153,7 +1333,7 @@
           "name": "officer",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1161,7 +1341,7 @@
           "name": "series_key",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1169,7 +1349,7 @@
           "name": "version",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1177,7 +1357,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1185,7 +1365,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1193,7 +1373,7 @@
           "name": "created_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1201,7 +1381,7 @@
           "name": "cancelled_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1209,7 +1389,7 @@
           "name": "cancelled_by",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1217,7 +1397,7 @@
           "name": "reason",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1225,7 +1405,7 @@
           "name": "document_path",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1233,7 +1413,7 @@
           "name": "document_sha256",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1241,7 +1421,7 @@
           "name": "count_all",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1249,7 +1429,7 @@
           "name": "count_admitted",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1257,21 +1437,21 @@
           "name": "count_rejected",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "framework_officers",
-      "sql": "CREATE TABLE framework_officers (\n          framework_id TEXT PRIMARY KEY REFERENCES frameworks(id),\n          officer TEXT NOT NULL, source TEXT DEFAULT 'Оголошення', synced_at TEXT NOT NULL\n        , marketplace_url TEXT DEFAULT '', category TEXT DEFAULT '')",
+      "sql": "CREATE TABLE framework_officers (\n          framework_id TEXT PRIMARY KEY REFERENCES frameworks(id),\n          officer TEXT NOT NULL, marketplace_url TEXT DEFAULT '', category TEXT DEFAULT '',\n          source TEXT DEFAULT 'Оголошення', synced_at TEXT NOT NULL\n        )",
       "columns": [
         {
           "cid": 0,
           "name": "framework_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1279,53 +1459,53 @@
           "name": "officer",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 2,
-          "name": "source",
+          "name": "marketplace_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "'Оголошення'",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 3,
-          "name": "synced_at",
+          "name": "category",
           "type": "TEXT",
-          "notnull": 1,
-          "dflt_value": null,
+          "notnull": 0,
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 4,
-          "name": "marketplace_url",
+          "name": "source",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "'Оголошення'",
           "pk": 0
         },
         {
           "cid": 5,
-          "name": "category",
+          "name": "synced_at",
           "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": "''",
+          "notnull": 1,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "framework_service_directory",
-      "sql": "CREATE TABLE framework_service_directory (\n          pretty_id TEXT PRIMARY KEY,\n          framework_id TEXT REFERENCES frameworks(id),\n          dk_code TEXT DEFAULT '', category TEXT DEFAULT '', marketplace_url TEXT DEFAULT '',\n          responsible_officer TEXT DEFAULT '', directory_status TEXT DEFAULT '', source_title TEXT DEFAULT '',\n          source TEXT DEFAULT 'Google Sheets: Оголошення', synced_at TEXT NOT NULL\n        )",
+      "sql": "CREATE TABLE framework_service_directory (\n          pretty_id TEXT PRIMARY KEY,\n          framework_id TEXT REFERENCES frameworks(id),\n          dk_code TEXT DEFAULT '', category TEXT DEFAULT '', marketplace_url TEXT DEFAULT '',\n          responsible_officer TEXT DEFAULT '', source_title TEXT DEFAULT '',\n          source TEXT DEFAULT 'Google Sheets: Оголошення', synced_at TEXT NOT NULL\n        )",
       "columns": [
         {
           "cid": 0,
           "name": "pretty_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1333,7 +1513,7 @@
           "name": "framework_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1341,7 +1521,7 @@
           "name": "dk_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1349,7 +1529,7 @@
           "name": "category",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1357,7 +1537,7 @@
           "name": "marketplace_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1365,39 +1545,31 @@
           "name": "responsible_officer",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 6,
-          "name": "directory_status",
+          "name": "source_title",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 7,
-          "name": "source_title",
+          "name": "source",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "'Google Sheets: Оголошення'",
           "pk": 0
         },
         {
           "cid": 8,
-          "name": "source",
-          "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": "'Google Sheets: Оголошення'",
-          "pk": 0
-        },
-        {
-          "cid": 9,
           "name": "synced_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -1411,7 +1583,7 @@
           "name": "id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1419,7 +1591,7 @@
           "name": "pretty_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1427,7 +1599,7 @@
           "name": "title",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1435,7 +1607,7 @@
           "name": "dk_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1443,7 +1615,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1451,7 +1623,7 @@
           "name": "organizer_edrpou",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1459,7 +1631,7 @@
           "name": "agreement_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1467,7 +1639,7 @@
           "name": "date_modified",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1475,7 +1647,7 @@
           "name": "raw_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1483,7 +1655,287 @@
           "name": "synced_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "generated_documents",
+      "sql": "CREATE TABLE generated_documents (\n      id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES operational_tasks(id),\n      supplier_code TEXT NOT NULL, document_type TEXT NOT NULL, template_key TEXT NOT NULL,\n      template_reference TEXT NOT NULL, filename TEXT NOT NULL, storage_name TEXT NOT NULL UNIQUE,\n      created_at TEXT NOT NULL, created_by TEXT NOT NULL, generation_provider TEXT NOT NULL,\n      status TEXT NOT NULL, document_date TEXT NOT NULL, version INTEGER NOT NULL,\n      sha256 TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', UNIQUE(task_id,document_type,document_date,version))",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "document_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "template_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "template_reference",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "filename",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "storage_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "generation_provider",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "document_date",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "version",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "sha256",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "metadata_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'{}'",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "google_oauth_transactions",
+      "sql": "CREATE TABLE google_oauth_transactions (\n      state_hash TEXT PRIMARY KEY,\n      code_verifier TEXT NOT NULL,\n      redirect_uri TEXT NOT NULL,\n      expected_origin TEXT NOT NULL,\n      created_at REAL NOT NULL,\n      expires_at REAL NOT NULL,\n      created_by TEXT NOT NULL DEFAULT ''\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "state_hash",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "code_verifier",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "redirect_uri",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "expected_origin",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "created_at",
+          "type": "REAL",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "expires_at",
+          "type": "REAL",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "created_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "navigation_icons",
+      "sql": "CREATE TABLE navigation_icons(\n      icon_key TEXT PRIMARY KEY,name TEXT NOT NULL,svg TEXT NOT NULL,\n      updated_at TEXT NOT NULL,updated_by TEXT NOT NULL DEFAULT '')",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "icon_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "name",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "svg",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "navigation_settings",
+      "sql": "CREATE TABLE navigation_settings(\n      id INTEGER PRIMARY KEY CHECK(id=1),overrides_json TEXT NOT NULL DEFAULT '{}',\n      updated_at TEXT NOT NULL,updated_by TEXT NOT NULL DEFAULT '')",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "overrides_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'{}'",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
           "pk": 0
         }
       ]
@@ -1497,7 +1949,7 @@
           "name": "source_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1505,7 +1957,7 @@
           "name": "punishment_type_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1513,7 +1965,7 @@
           "name": "punishment_type_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1521,7 +1973,7 @@
           "name": "entity_type_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1529,7 +1981,7 @@
           "name": "entity_type_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1537,7 +1989,7 @@
           "name": "last_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1545,7 +1997,7 @@
           "name": "first_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1553,7 +2005,7 @@
           "name": "patronymic",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1561,7 +2013,7 @@
           "name": "full_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1569,7 +2021,7 @@
           "name": "offense_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1577,7 +2029,7 @@
           "name": "offense_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1585,7 +2037,7 @@
           "name": "punishment",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1593,7 +2045,7 @@
           "name": "court_case_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1601,7 +2053,7 @@
           "name": "sentence_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1609,7 +2061,7 @@
           "name": "sentence_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1617,7 +2069,7 @@
           "name": "punishment_start",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1625,7 +2077,7 @@
           "name": "court_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1633,7 +2085,7 @@
           "name": "court_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1641,7 +2093,7 @@
           "name": "codex_articles",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1649,7 +2101,7 @@
           "name": "decision_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1657,7 +2109,839 @@
           "name": "raw_json",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "nazk_registry_evidence_migrations",
+      "sql": "CREATE TABLE nazk_registry_evidence_migrations (\n      manifest_sha256 TEXT PRIMARY KEY, applied_at TEXT NOT NULL,\n      details_json TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "manifest_sha256",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "applied_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "details_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "nazk_registry_evidence_sources",
+      "sql": "CREATE TABLE nazk_registry_evidence_sources (\n      source_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL,\n      observed_at TEXT NOT NULL, provenance_json TEXT NOT NULL)",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "source_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "payload_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "observed_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "provenance_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_amcu_decisions",
+      "sql": "CREATE TABLE operational_task_amcu_decisions (\n      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      amcu_decision_id TEXT NOT NULL REFERENCES amcu_registry(row_key), extract_url TEXT NOT NULL DEFAULT '',\n      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,\n      PRIMARY KEY(task_id,amcu_decision_id)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "amcu_decision_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "extract_url",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_applications",
+      "sql": "CREATE TABLE operational_task_applications (\n      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      application_id TEXT NOT NULL REFERENCES submissions(id), relation_type TEXT NOT NULL,\n      PRIMARY KEY(task_id,application_id,relation_type)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "application_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "relation_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 3
+        }
+      ]
+    },
+    {
+      "name": "operational_task_blocking_decisions",
+      "sql": "CREATE TABLE operational_task_blocking_decisions (\n      task_id TEXT PRIMARY KEY REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      decision_date TEXT NOT NULL DEFAULT '', protocol_number TEXT NOT NULL DEFAULT '',\n      prozorro_url TEXT NOT NULL DEFAULT '', document_url TEXT NOT NULL DEFAULT '', officer_note TEXT NOT NULL DEFAULT '',\n      attached_at TEXT, attached_by TEXT DEFAULT '', used_for_blocking INTEGER NOT NULL DEFAULT 0\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "decision_date",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "protocol_number",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "prozorro_url",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "document_url",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "officer_note",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "attached_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "attached_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "used_for_blocking",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "0",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_channels",
+      "sql": "CREATE TABLE operational_task_channels (\n      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      channel TEXT NOT NULL CHECK(channel IN ('supplier','nazk')),\n      status TEXT NOT NULL DEFAULT 'not_sent', sent_at TEXT, outgoing_number TEXT DEFAULT '',\n      reference_url TEXT DEFAULT '', comment TEXT DEFAULT '', recorded_at TEXT,\n      recorded_by TEXT DEFAULT '', PRIMARY KEY(task_id,channel)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "channel",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'not_sent'",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "sent_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "outgoing_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "reference_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "comment",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "recorded_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "recorded_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_events",
+      "sql": "CREATE TABLE operational_task_events (\n      id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      event_type TEXT NOT NULL, created_at TEXT NOT NULL, actor TEXT NOT NULL,\n      old_value TEXT, new_value TEXT, metadata TEXT NOT NULL DEFAULT '{}'\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "event_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "actor",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "old_value",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "new_value",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "metadata",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'{}'",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_qualification_decisions",
+      "sql": "CREATE TABLE operational_task_qualification_decisions (\n      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      qualification_id TEXT NOT NULL,\n      registry_contract_id TEXT NOT NULL,\n      decision TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',\n      updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,\n      PRIMARY KEY(task_id,qualification_id,registry_contract_id)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "qualification_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "registry_contract_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 3
+        },
+        {
+          "cid": 3,
+          "name": "decision",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "note",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_qualifications",
+      "sql": "CREATE TABLE operational_task_qualifications (\n      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      qualification_id TEXT NOT NULL REFERENCES qualifications(id),\n      registry_contract_id TEXT NOT NULL REFERENCES registry_contracts(id),\n      relation_type TEXT NOT NULL DEFAULT 'targeted_exclusion',\n      linked_at TEXT NOT NULL,\n      PRIMARY KEY(task_id,qualification_id,registry_contract_id,relation_type)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "qualification_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "registry_contract_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 3
+        },
+        {
+          "cid": 3,
+          "name": "relation_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'targeted_exclusion'",
+          "pk": 4
+        },
+        {
+          "cid": 4,
+          "name": "linked_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_responses",
+      "sql": "CREATE TABLE operational_task_responses (\n      id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      source TEXT NOT NULL CHECK(source IN ('supplier','nazk','other')), response_date TEXT,\n      incoming_number TEXT DEFAULT '', reference_url TEXT DEFAULT '', document_reference TEXT DEFAULT '',\n      summary TEXT DEFAULT '', information_result TEXT NOT NULL DEFAULT 'neutral',\n      post_close INTEGER NOT NULL DEFAULT 0, recorded_at TEXT NOT NULL, recorded_by TEXT NOT NULL\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "response_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "incoming_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "reference_url",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "document_reference",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "summary",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "information_result",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'neutral'",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "post_close",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "recorded_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "recorded_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_task_warnings",
+      "sql": "CREATE TABLE operational_task_warnings (\n      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,\n      violation_report_id TEXT NOT NULL REFERENCES violation_reports(id), warning_date TEXT NOT NULL,\n      sequence_no INTEGER NOT NULL, PRIMARY KEY(task_id,violation_report_id)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "task_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "violation_report_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "warning_date",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "sequence_no",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "operational_tasks",
+      "sql": "CREATE TABLE operational_tasks (\n      id TEXT PRIMARY KEY, task_key TEXT NOT NULL UNIQUE,\n      task_type TEXT NOT NULL, supplier_code TEXT NOT NULL,\n      supplier_name_snapshot TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new',\n      priority TEXT NOT NULL DEFAULT 'normal', assigned_officer_id INTEGER REFERENCES authorized_officers(id),\n      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, due_at TEXT,\n      ready_for_document_at TEXT, protocol_number TEXT DEFAULT '', protocol_date TEXT DEFAULT '',\n      protocol_reference TEXT DEFAULT '', published_at TEXT, published_reference TEXT DEFAULT '',\n      resolved_at TEXT, resolved_by TEXT, resolution_code TEXT DEFAULT '', resolution_text TEXT DEFAULT '',\n      source_context TEXT NOT NULL DEFAULT '{}', document_context TEXT NOT NULL DEFAULT '{}',\n      metadata TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 1\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "task_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "task_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "supplier_name_snapshot",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'new'",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "priority",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'normal'",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "assigned_officer_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "due_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "ready_for_document_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "protocol_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "protocol_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "protocol_reference",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "published_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "published_reference",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "resolved_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "resolved_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "resolution_code",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "resolution_text",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 21,
+          "name": "source_context",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'{}'",
+          "pk": 0
+        },
+        {
+          "cid": 22,
+          "name": "document_context",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'{}'",
+          "pk": 0
+        },
+        {
+          "cid": 23,
+          "name": "metadata",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'{}'",
+          "pk": 0
+        },
+        {
+          "cid": 24,
+          "name": "version",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "1",
           "pk": 0
         }
       ]
@@ -1671,7 +2955,7 @@
           "name": "id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1679,7 +2963,7 @@
           "name": "framework_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1687,7 +2971,7 @@
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1695,7 +2979,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1703,7 +2987,7 @@
           "name": "decision_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1711,7 +2995,7 @@
           "name": "documents_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'[]'",
+          "default": "'[]'",
           "pk": 0
         },
         {
@@ -1719,7 +3003,7 @@
           "name": "raw_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1727,7 +3011,7 @@
           "name": "synced_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -1741,7 +3025,7 @@
           "name": "source",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1749,7 +3033,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'idle'",
+          "default": "'idle'",
           "pk": 0
         },
         {
@@ -1757,7 +3041,7 @@
           "name": "message",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1765,7 +3049,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1773,7 +3057,7 @@
           "name": "source_updated_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1781,7 +3065,7 @@
           "name": "row_count",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         }
       ]
@@ -1795,7 +3079,7 @@
           "name": "id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1803,7 +3087,7 @@
           "name": "framework_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1811,7 +3095,7 @@
           "name": "qualification_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1819,7 +3103,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1827,7 +3111,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1835,7 +3119,7 @@
           "name": "milestones_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'[]'",
+          "default": "'[]'",
           "pk": 0
         },
         {
@@ -1843,7 +3127,7 @@
           "name": "raw_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1851,7 +3135,7 @@
           "name": "synced_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -1865,7 +3149,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1873,7 +3157,7 @@
           "name": "point",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1881,7 +3165,7 @@
           "name": "text",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1889,7 +3173,7 @@
           "name": "tag",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1897,7 +3181,7 @@
           "name": "category",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1905,7 +3189,7 @@
           "name": "active",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "1",
+          "default": "1",
           "pk": 0
         },
         {
@@ -1913,7 +3197,191 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "runtime_feature_settings",
+      "sql": "CREATE TABLE runtime_feature_settings (\n      feature_key TEXT PRIMARY KEY,\n      enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),\n      updated_at TEXT NOT NULL,\n      updated_by TEXT NOT NULL\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "feature_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "enabled",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "scheduler_job_leases",
+      "sql": "CREATE TABLE scheduler_job_leases (\n      job_key TEXT PRIMARY KEY,\n      owner_id TEXT NOT NULL,\n      acquired_at TEXT NOT NULL,\n      lease_until TEXT NOT NULL\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "job_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "owner_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "acquired_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "lease_until",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "scheduler_job_settings",
+      "sql": "CREATE TABLE scheduler_job_settings (\n      job_key TEXT PRIMARY KEY,\n      enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),\n      updated_at TEXT NOT NULL,\n      updated_by TEXT NOT NULL\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "job_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "enabled",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "scheduler_job_state",
+      "sql": "CREATE TABLE scheduler_job_state (\n      job_key TEXT PRIMARY KEY,\n      last_started_at TEXT,\n      last_finished_at TEXT,\n      last_status TEXT NOT NULL DEFAULT 'never',\n      last_error TEXT NOT NULL DEFAULT '',\n      last_trigger TEXT NOT NULL DEFAULT '',\n      last_owner TEXT NOT NULL DEFAULT '',\n      updated_at TEXT NOT NULL DEFAULT ''\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "job_key",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "last_started_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "last_finished_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "last_status",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'never'",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "last_error",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "last_trigger",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "last_owner",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
           "pk": 0
         }
       ]
@@ -1927,7 +3395,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -1935,7 +3403,7 @@
           "name": "submission_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1943,7 +3411,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1951,7 +3419,7 @@
           "name": "manager_id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1959,7 +3427,7 @@
           "name": "manager_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -1967,7 +3435,7 @@
           "name": "nazk_certificate_required",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -1975,7 +3443,7 @@
           "name": "nazk_certificate_checked",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -1983,7 +3451,7 @@
           "name": "selected_document_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1991,7 +3459,7 @@
           "name": "selected_document_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -1999,7 +3467,7 @@
           "name": "supplier_nazk_check_id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2007,7 +3475,7 @@
           "name": "checked_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2015,7 +3483,7 @@
           "name": "checked_by",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2023,7 +3491,7 @@
           "name": "comment",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2031,7 +3499,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2039,7 +3507,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -2053,7 +3521,7 @@
           "name": "id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2061,7 +3529,7 @@
           "name": "framework_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2069,7 +3537,7 @@
           "name": "supplier_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2077,7 +3545,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2085,7 +3553,7 @@
           "name": "date_published",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2093,7 +3561,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2101,7 +3569,7 @@
           "name": "qualification_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2109,7 +3577,7 @@
           "name": "documents_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'[]'",
+          "default": "'[]'",
           "pk": 0
         },
         {
@@ -2117,7 +3585,7 @@
           "name": "raw_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2125,21 +3593,21 @@
           "name": "synced_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "supplier_edr_profiles",
-      "sql": "CREATE TABLE supplier_edr_profiles (\n          supplier_code TEXT PRIMARY KEY, full_name TEXT DEFAULT '', short_name TEXT DEFAULT '',\n          manager_name TEXT DEFAULT '', edr_status TEXT DEFAULT '', edr_checked_at TEXT DEFAULT '',\n          source_sheet TEXT DEFAULT '', source_row INTEGER DEFAULT 0, synced_at TEXT NOT NULL\n        , termination_decision_details TEXT DEFAULT '', edr_officer TEXT DEFAULT '', edr_notes TEXT DEFAULT '')",
+      "sql": "CREATE TABLE supplier_edr_profiles (\n          supplier_code TEXT PRIMARY KEY, full_name TEXT DEFAULT '', short_name TEXT DEFAULT '',\n          manager_name TEXT DEFAULT '', edr_status TEXT DEFAULT '', edr_checked_at TEXT DEFAULT '',\n          source_sheet TEXT DEFAULT '', source_row INTEGER DEFAULT 0, synced_at TEXT NOT NULL\n        , termination_decision_details TEXT DEFAULT '', edr_officer TEXT DEFAULT '', edr_notes TEXT DEFAULT '', termination_record_date TEXT DEFAULT '', termination_record_number TEXT DEFAULT '')",
       "columns": [
         {
           "cid": 0,
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2147,7 +3615,7 @@
           "name": "full_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2155,7 +3623,7 @@
           "name": "short_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2163,7 +3631,7 @@
           "name": "manager_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2171,7 +3639,7 @@
           "name": "edr_status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2179,7 +3647,7 @@
           "name": "edr_checked_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2187,7 +3655,7 @@
           "name": "source_sheet",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2195,7 +3663,7 @@
           "name": "source_row",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2203,7 +3671,7 @@
           "name": "synced_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2211,7 +3679,7 @@
           "name": "termination_decision_details",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2219,7 +3687,7 @@
           "name": "edr_officer",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2227,21 +3695,37 @@
           "name": "edr_notes",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "termination_record_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "termination_record_number",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
           "pk": 0
         }
       ]
     },
     {
       "name": "supplier_edr_sync_log",
-      "sql": "CREATE TABLE supplier_edr_sync_log (\n          id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,\n          status TEXT NOT NULL, processed INTEGER DEFAULT 0, inserted INTEGER DEFAULT 0,\n          updated INTEGER DEFAULT 0, error TEXT DEFAULT ''\n        )",
+      "sql": "CREATE TABLE supplier_edr_sync_log (\n          id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,\n          status TEXT NOT NULL, processed INTEGER DEFAULT 0, inserted INTEGER DEFAULT 0,\n          updated INTEGER DEFAULT 0, error TEXT DEFAULT ''\n        , source_fingerprint TEXT DEFAULT '', unchanged INTEGER DEFAULT 0, details_json TEXT DEFAULT '{}')",
       "columns": [
         {
           "cid": 0,
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2249,7 +3733,7 @@
           "name": "started_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2257,7 +3741,7 @@
           "name": "finished_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2265,7 +3749,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2273,7 +3757,7 @@
           "name": "processed",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2281,7 +3765,7 @@
           "name": "inserted",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2289,7 +3773,7 @@
           "name": "updated",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2297,7 +3781,141 @@
           "name": "error",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "source_fingerprint",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "unchanged",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "details_json",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "'{}'",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_edr_verification_events",
+      "sql": "CREATE TABLE supplier_edr_verification_events (\n      id INTEGER PRIMARY KEY AUTOINCREMENT,\n      supplier_code TEXT NOT NULL,\n      event_type TEXT NOT NULL,\n      occurred_at TEXT NOT NULL,\n      officer TEXT NOT NULL DEFAULT '',\n      source TEXT NOT NULL,\n      source_submission_id TEXT NOT NULL DEFAULT '',\n      source_sheet TEXT NOT NULL DEFAULT '',\n      source_row INTEGER NOT NULL DEFAULT 0,\n      changed_fields TEXT NOT NULL DEFAULT '[]',\n      snapshot_hash TEXT NOT NULL,\n      snapshot_json TEXT NOT NULL DEFAULT '{}',\n      created_at TEXT NOT NULL,\n      UNIQUE(supplier_code,event_type,occurred_at,source,snapshot_hash)\n    )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "supplier_code",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "event_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "occurred_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "officer",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "source_submission_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "source_sheet",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "source_row",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "changed_fields",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "snapshot_hash",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "snapshot_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'{}'",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
           "pk": 0
         }
       ]
@@ -2311,7 +3929,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2319,7 +3937,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2327,7 +3945,7 @@
           "name": "manager_name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2335,7 +3953,7 @@
           "name": "normalized_name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2343,7 +3961,7 @@
           "name": "manager_tax_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2351,7 +3969,7 @@
           "name": "manager_tax_id_source",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2359,7 +3977,7 @@
           "name": "manager_tax_id_verified_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2367,7 +3985,7 @@
           "name": "manager_tax_id_verified_by",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2375,7 +3993,7 @@
           "name": "valid_from",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2383,7 +4001,7 @@
           "name": "valid_to",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2391,7 +4009,7 @@
           "name": "is_current",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2399,7 +4017,7 @@
           "name": "source",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2407,7 +4025,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2415,21 +4033,107 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_check_channels",
+      "sql": "CREATE TABLE supplier_nazk_check_channels (\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          channel TEXT NOT NULL CHECK(channel IN ('supplier','nazk')),\n          status TEXT NOT NULL DEFAULT 'not_sent',\n          sent_at TEXT,\n          document_number TEXT NOT NULL DEFAULT '',\n          evidence_url TEXT NOT NULL DEFAULT '',\n          comment TEXT NOT NULL DEFAULT '',\n          recorded_at TEXT,\n          recorded_by TEXT NOT NULL DEFAULT '',\n          source_task_id TEXT,\n          PRIMARY KEY(check_id,channel)\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "check_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "channel",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "status",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'not_sent'",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "sent_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "document_number",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "evidence_url",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "comment",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "recorded_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "recorded_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "source_task_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "supplier_nazk_check_documents",
-      "sql": "CREATE TABLE supplier_nazk_check_documents (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          document_type TEXT NOT NULL,\n          document_date TEXT,\n          document_number TEXT,\n          title TEXT DEFAULT '',\n          url TEXT DEFAULT '',\n          source TEXT DEFAULT '',\n          created_at TEXT NOT NULL,\n          created_by TEXT NOT NULL\n        , submission_id TEXT REFERENCES submissions(id), prozorro_document_id TEXT)",
+      "sql": "CREATE TABLE supplier_nazk_check_documents (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          document_type TEXT NOT NULL,\n          document_date TEXT,\n          document_number TEXT,\n          title TEXT DEFAULT '',\n          url TEXT DEFAULT '',\n          source TEXT DEFAULT '',\n          submission_id TEXT REFERENCES submissions(id),\n          prozorro_document_id TEXT,\n          created_at TEXT NOT NULL,\n          created_by TEXT NOT NULL\n        )",
       "columns": [
         {
           "cid": 0,
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2437,7 +4141,7 @@
           "name": "check_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2445,7 +4149,7 @@
           "name": "document_type",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2453,7 +4157,7 @@
           "name": "document_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2461,7 +4165,7 @@
           "name": "document_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2469,7 +4173,7 @@
           "name": "title",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2477,7 +4181,7 @@
           "name": "url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2485,39 +4189,39 @@
           "name": "source",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 8,
-          "name": "created_at",
+          "name": "submission_id",
           "type": "TEXT",
-          "notnull": 1,
-          "dflt_value": null,
+          "notnull": 0,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 9,
-          "name": "created_by",
+          "name": "prozorro_document_id",
           "type": "TEXT",
-          "notnull": 1,
-          "dflt_value": null,
+          "notnull": 0,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 10,
-          "name": "submission_id",
+          "name": "created_at",
           "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": null,
+          "notnull": 1,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 11,
-          "name": "prozorro_document_id",
+          "name": "created_by",
           "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": null,
+          "notnull": 1,
+          "default": null,
           "pk": 0
         }
       ]
@@ -2531,7 +4235,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2539,7 +4243,7 @@
           "name": "check_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2547,7 +4251,7 @@
           "name": "event_type",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2555,7 +4259,7 @@
           "name": "event_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2563,7 +4267,7 @@
           "name": "event_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2571,7 +4275,7 @@
           "name": "old_workflow_status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2579,7 +4283,7 @@
           "name": "new_workflow_status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2587,7 +4291,7 @@
           "name": "old_result",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2595,7 +4299,7 @@
           "name": "new_result",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2603,21 +4307,179 @@
           "name": "details_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'{}'",
+          "default": "'{}'",
+          "pk": 0
+        }
+      ]
+    },
+    {
+      "name": "supplier_nazk_check_evidence",
+      "sql": "CREATE TABLE supplier_nazk_check_evidence (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          evidence_type TEXT NOT NULL DEFAULT 'response',\n          source TEXT NOT NULL DEFAULT 'other',\n          evidence_date TEXT,\n          document_number TEXT NOT NULL DEFAULT '',\n          short_summary TEXT NOT NULL DEFAULT '',\n          uploaded_document_name TEXT NOT NULL DEFAULT '',\n          uploaded_document_url TEXT NOT NULL DEFAULT '',\n          evidence_url TEXT NOT NULL DEFAULT '',\n          comment TEXT NOT NULL DEFAULT '',\n          information_result TEXT NOT NULL DEFAULT 'neutral',\n          post_close INTEGER NOT NULL DEFAULT 0,\n          recorded_at TEXT NOT NULL,\n          recorded_by TEXT NOT NULL,\n          updated_at TEXT,\n          updated_by TEXT NOT NULL DEFAULT '',\n          source_task_id TEXT,\n          legacy_task_response_id INTEGER UNIQUE\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "check_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "evidence_type",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'response'",
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "source",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'other'",
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "evidence_date",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "document_number",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "short_summary",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "uploaded_document_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "uploaded_document_url",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "evidence_url",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "comment",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "information_result",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "'neutral'",
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "post_close",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "recorded_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "recorded_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "updated_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "source_task_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "legacy_task_response_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "supplier_nazk_check_matches",
-      "sql": "CREATE TABLE supplier_nazk_check_matches (\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          nazk_source_id TEXT NOT NULL REFERENCES nazk_registry(source_id),\n          match_status TEXT NOT NULL DEFAULT 'candidate',\n          created_at TEXT NOT NULL,\n          PRIMARY KEY(check_id,nazk_source_id)\n        )",
+      "sql": "CREATE TABLE supplier_nazk_check_matches (\n          check_id INTEGER NOT NULL REFERENCES supplier_nazk_checks(id) ON DELETE CASCADE,\n          nazk_source_id TEXT NOT NULL REFERENCES nazk_registry_evidence_sources(source_id),\n          match_status TEXT NOT NULL DEFAULT 'candidate',\n          created_at TEXT NOT NULL,\n          PRIMARY KEY(check_id,nazk_source_id)\n        )",
       "columns": [
         {
           "cid": 0,
           "name": "check_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2625,7 +4487,7 @@
           "name": "nazk_source_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 2
         },
         {
@@ -2633,7 +4495,7 @@
           "name": "match_status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'candidate'",
+          "default": "'candidate'",
           "pk": 0
         },
         {
@@ -2641,7 +4503,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -2655,7 +4517,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2663,7 +4525,7 @@
           "name": "check_id",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2671,7 +4533,7 @@
           "name": "request_type",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2679,7 +4541,7 @@
           "name": "request_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2687,7 +4549,7 @@
           "name": "request_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2695,7 +4557,7 @@
           "name": "request_document_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2703,7 +4565,7 @@
           "name": "request_status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'prepared'",
+          "default": "'prepared'",
           "pk": 0
         },
         {
@@ -2711,7 +4573,7 @@
           "name": "response_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2719,7 +4581,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2727,7 +4589,7 @@
           "name": "created_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2735,7 +4597,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2743,21 +4605,21 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "supplier_nazk_checks",
-      "sql": "CREATE TABLE supplier_nazk_checks (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          supplier_code TEXT NOT NULL,\n          manager_id INTEGER REFERENCES supplier_managers(id),\n          manager_name TEXT NOT NULL,\n          workflow_status TEXT NOT NULL,\n          result TEXT,\n          started_at TEXT NOT NULL,\n          completed_at TEXT,\n          evidence_date TEXT,\n          covered_nazk_date TEXT,\n          comment TEXT DEFAULT '',\n          is_legacy INTEGER NOT NULL DEFAULT 0,\n          legacy_source_row INTEGER,\n          legacy_key TEXT,\n          created_at TEXT NOT NULL,\n          created_by TEXT NOT NULL,\n          updated_at TEXT NOT NULL,\n          updated_by TEXT NOT NULL\n        )",
+      "sql": "CREATE TABLE supplier_nazk_checks (\n          id INTEGER PRIMARY KEY AUTOINCREMENT,\n          supplier_code TEXT NOT NULL,\n          manager_id INTEGER REFERENCES supplier_managers(id),\n          manager_name TEXT NOT NULL,\n          workflow_status TEXT NOT NULL,\n          result TEXT,\n          started_at TEXT NOT NULL,\n          completed_at TEXT,\n          evidence_date TEXT,\n          covered_nazk_date TEXT,\n          comment TEXT DEFAULT '',\n          is_legacy INTEGER NOT NULL DEFAULT 0,\n          legacy_source_row INTEGER,\n          legacy_key TEXT,\n          created_at TEXT NOT NULL,\n          created_by TEXT NOT NULL,\n          updated_at TEXT NOT NULL,\n          updated_by TEXT NOT NULL\n        , person_tax_id TEXT NOT NULL DEFAULT '', responsible_officer_id INTEGER REFERENCES authorized_officers(id), responsible_officer_name TEXT NOT NULL DEFAULT '', result_at TEXT, result_by TEXT NOT NULL DEFAULT '')",
       "columns": [
         {
           "cid": 0,
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2765,7 +4627,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2773,7 +4635,7 @@
           "name": "manager_id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2781,7 +4643,7 @@
           "name": "manager_name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2789,7 +4651,7 @@
           "name": "workflow_status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2797,7 +4659,7 @@
           "name": "result",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2805,7 +4667,7 @@
           "name": "started_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2813,7 +4675,7 @@
           "name": "completed_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2821,7 +4683,7 @@
           "name": "evidence_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2829,7 +4691,7 @@
           "name": "covered_nazk_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2837,7 +4699,7 @@
           "name": "comment",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2845,7 +4707,7 @@
           "name": "is_legacy",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2853,7 +4715,7 @@
           "name": "legacy_source_row",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2861,7 +4723,7 @@
           "name": "legacy_key",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2869,7 +4731,7 @@
           "name": "created_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2877,7 +4739,7 @@
           "name": "created_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2885,7 +4747,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2893,7 +4755,47 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "person_tax_id",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "responsible_officer_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "responsible_officer_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 21,
+          "name": "result_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 22,
+          "name": "result_by",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": "''",
           "pk": 0
         }
       ]
@@ -2907,7 +4809,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2915,7 +4817,7 @@
           "name": "started_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2923,7 +4825,7 @@
           "name": "finished_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2931,7 +4833,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -2939,7 +4841,7 @@
           "name": "processed",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2947,7 +4849,7 @@
           "name": "inserted",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2955,7 +4857,7 @@
           "name": "updated",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -2963,7 +4865,7 @@
           "name": "error",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         }
       ]
@@ -2977,7 +4879,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -2985,7 +4887,7 @@
           "name": "supplier_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -2993,7 +4895,7 @@
           "name": "manager_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3001,7 +4903,7 @@
           "name": "decision_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3009,7 +4911,7 @@
           "name": "case_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3017,7 +4919,7 @@
           "name": "result",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3025,7 +4927,7 @@
           "name": "evidence_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3033,7 +4935,7 @@
           "name": "comment",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3041,7 +4943,7 @@
           "name": "checked_at",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3049,7 +4951,7 @@
           "name": "officer",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3057,7 +4959,7 @@
           "name": "source_row",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -3065,7 +4967,7 @@
           "name": "synced_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -3079,7 +4981,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3087,7 +4989,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3095,7 +4997,7 @@
           "name": "old_note",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3103,7 +5005,7 @@
           "name": "new_note",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3111,7 +5013,7 @@
           "name": "changed_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3119,7 +5021,7 @@
           "name": "changed_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -3133,7 +5035,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3141,7 +5043,7 @@
           "name": "note",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3149,7 +5051,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3157,7 +5059,7 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -3171,7 +5073,7 @@
           "name": "supplier_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3179,7 +5081,7 @@
           "name": "supplier_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3187,7 +5089,7 @@
           "name": "qualifications_count",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -3195,7 +5097,7 @@
           "name": "active_count",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -3203,7 +5105,7 @@
           "name": "inactive_count",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -3211,7 +5113,7 @@
           "name": "suspended_count",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -3219,7 +5121,7 @@
           "name": "frameworks_count",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -3227,7 +5129,7 @@
           "name": "dk_codes",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3235,7 +5137,7 @@
           "name": "last_qualification",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3243,7 +5145,7 @@
           "name": "refreshed_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -3257,7 +5159,7 @@
           "name": "table_key",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3265,7 +5167,7 @@
           "name": "widths_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'{}'",
+          "default": "'{}'",
           "pk": 0
         },
         {
@@ -3273,7 +5175,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3281,7 +5183,7 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -3295,7 +5197,7 @@
           "name": "username",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3303,7 +5205,7 @@
           "name": "content_type",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3311,7 +5213,7 @@
           "name": "content",
           "type": "BLOB",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3319,7 +5221,7 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3327,7 +5229,7 @@
           "name": "updated_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
@@ -3341,7 +5243,7 @@
           "name": "username",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3349,7 +5251,7 @@
           "name": "display_name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3357,7 +5259,7 @@
           "name": "start_view",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'applications'",
+          "default": "'applications'",
           "pk": 0
         },
         {
@@ -3365,7 +5267,7 @@
           "name": "color_scheme",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'system'",
+          "default": "'system'",
           "pk": 0
         },
         {
@@ -3373,7 +5275,7 @@
           "name": "density",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'comfortable'",
+          "default": "'comfortable'",
           "pk": 0
         },
         {
@@ -3381,7 +5283,7 @@
           "name": "presence_status",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'working'",
+          "default": "'working'",
           "pk": 0
         },
         {
@@ -3389,21 +5291,21 @@
           "name": "updated_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         }
       ]
     },
     {
       "name": "violation_report_document_reviews",
-      "sql": "CREATE TABLE violation_report_document_reviews (\n      report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,\n      document_source TEXT NOT NULL CHECK(document_source IN ('customer','supplier')),\n      document_id TEXT NOT NULL,\n      original_title TEXT NOT NULL DEFAULT '',\n      original_url TEXT NOT NULL DEFAULT '',\n      file_unavailable INTEGER NOT NULL DEFAULT 0 CHECK(file_unavailable IN (0,1)),\n      checked_at TEXT NOT NULL,\n      checked_by TEXT NOT NULL DEFAULT '',\n      PRIMARY KEY(report_id,document_source,document_id)\n    )",
+      "sql": "CREATE TABLE violation_report_document_reviews (\n          report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,\n          document_source TEXT NOT NULL CHECK(document_source IN ('customer','supplier')),\n          document_id TEXT NOT NULL,\n          original_title TEXT NOT NULL DEFAULT '',\n          original_url TEXT NOT NULL DEFAULT '',\n          file_unavailable INTEGER NOT NULL DEFAULT 0 CHECK(file_unavailable IN (0,1)),\n          checked_at TEXT NOT NULL,\n          checked_by TEXT NOT NULL DEFAULT '',\n          PRIMARY KEY(report_id,document_source,document_id)\n        )",
       "columns": [
         {
           "cid": 0,
           "name": "report_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3411,7 +5313,7 @@
           "name": "document_source",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 2
         },
         {
@@ -3419,7 +5321,7 @@
           "name": "document_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 3
         },
         {
@@ -3427,7 +5329,7 @@
           "name": "original_title",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3435,7 +5337,7 @@
           "name": "original_url",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3443,7 +5345,7 @@
           "name": "file_unavailable",
           "type": "INTEGER",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "0",
           "pk": 0
         },
         {
@@ -3451,7 +5353,7 @@
           "name": "checked_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3459,7 +5361,7 @@
           "name": "checked_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         }
       ]
@@ -3473,7 +5375,7 @@
           "name": "id",
           "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3481,7 +5383,7 @@
           "name": "report_id",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3489,7 +5391,7 @@
           "name": "event_type",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3497,7 +5399,7 @@
           "name": "field_name",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3505,7 +5407,7 @@
           "name": "old_value",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3513,7 +5415,7 @@
           "name": "new_value",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3521,7 +5423,7 @@
           "name": "changed_at",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
@@ -3529,21 +5431,21 @@
           "name": "changed_by",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         }
       ]
     },
     {
       "name": "violation_report_reviews",
-      "sql": "CREATE TABLE violation_report_reviews (\n          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,\n          review_status TEXT DEFAULT 'not_reviewed', assigned_officer TEXT DEFAULT '',\n          internal_decision TEXT DEFAULT '', review_notes TEXT DEFAULT '', protocol_number TEXT DEFAULT '',\n          protocol_date TEXT DEFAULT '', reviewed_at TEXT DEFAULT '', updated_at TEXT NOT NULL, updated_by TEXT DEFAULT 'УО'\n        , contract_deadline_extended INTEGER NOT NULL DEFAULT 0, written_refusal_date TEXT DEFAULT '', written_refusal_number TEXT DEFAULT '', written_refusal_url TEXT DEFAULT '', court_decision_final_present INTEGER, customer_verified_full_name TEXT DEFAULT '', customer_verified_short_name TEXT DEFAULT '', actual_contract_date TEXT DEFAULT '', actual_contract_number TEXT DEFAULT '', actual_contract_url TEXT DEFAULT '', decision_justification TEXT DEFAULT '', assigned_officer_id INTEGER REFERENCES authorized_officers(id), additional_check_required INTEGER NOT NULL DEFAULT 0, guarantee_documents_visible INTEGER, supplier_explanation_assessment TEXT NOT NULL DEFAULT '', established_discrepancy TEXT NOT NULL DEFAULT '', decision_template_key TEXT NOT NULL DEFAULT '', justification_source_hash TEXT NOT NULL DEFAULT '', justification_generated_at TEXT NOT NULL DEFAULT '', justification_manually_edited INTEGER NOT NULL DEFAULT 0, customer_protocol_decision_date TEXT DEFAULT '', customer_protocol_decision_number TEXT DEFAULT '', customer_protocol_decision_url TEXT DEFAULT '', generated_protocol_filename TEXT DEFAULT '', protocol_generated_at TEXT DEFAULT '', completed_at TEXT DEFAULT '', completed_by TEXT DEFAULT '')",
+      "sql": "CREATE TABLE violation_report_reviews (\n          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,\n          review_status TEXT DEFAULT 'not_reviewed', assigned_officer TEXT DEFAULT '',\n          internal_decision TEXT DEFAULT '', decision_justification TEXT DEFAULT '', review_notes TEXT DEFAULT '', protocol_number TEXT DEFAULT '',\n          protocol_date TEXT DEFAULT '', reviewed_at TEXT DEFAULT '', updated_at TEXT NOT NULL, updated_by TEXT DEFAULT 'УО'\n        , contract_deadline_extended INTEGER NOT NULL DEFAULT 0, written_refusal_date TEXT DEFAULT '', written_refusal_number TEXT DEFAULT '', written_refusal_url TEXT DEFAULT '', court_decision_final_present INTEGER, customer_verified_full_name TEXT DEFAULT '', customer_verified_short_name TEXT DEFAULT '', actual_contract_date TEXT DEFAULT '', actual_contract_number TEXT DEFAULT '', actual_contract_url TEXT DEFAULT '', actual_contract_signed INTEGER NOT NULL DEFAULT 0, assigned_officer_id INTEGER REFERENCES authorized_officers(id), additional_check_required INTEGER NOT NULL DEFAULT 0, guarantee_documents_visible INTEGER, supplier_explanation_assessment TEXT NOT NULL DEFAULT '', established_discrepancy TEXT NOT NULL DEFAULT '', decision_template_key TEXT NOT NULL DEFAULT '', justification_source_hash TEXT NOT NULL DEFAULT '', justification_generated_at TEXT NOT NULL DEFAULT '', justification_manually_edited INTEGER NOT NULL DEFAULT 0, customer_protocol_decision_date TEXT DEFAULT '', customer_protocol_decision_number TEXT DEFAULT '', customer_protocol_decision_url TEXT DEFAULT '', generated_protocol_filename TEXT DEFAULT '', generated_protocol_metadata_json TEXT NOT NULL DEFAULT '{}', protocol_generated_at TEXT DEFAULT '', completed_at TEXT DEFAULT '', completed_by TEXT DEFAULT '')",
       "columns": [
         {
           "cid": 0,
           "name": "report_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3551,7 +5453,7 @@
           "name": "review_status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "'not_reviewed'",
+          "default": "'not_reviewed'",
           "pk": 0
         },
         {
@@ -3559,7 +5461,7 @@
           "name": "assigned_officer",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3567,285 +5469,301 @@
           "name": "internal_decision",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 4,
-          "name": "review_notes",
+          "name": "decision_justification",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 5,
-          "name": "protocol_number",
+          "name": "review_notes",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 6,
-          "name": "protocol_date",
+          "name": "protocol_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 7,
-          "name": "reviewed_at",
+          "name": "protocol_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 8,
-          "name": "updated_at",
+          "name": "reviewed_at",
           "type": "TEXT",
-          "notnull": 1,
-          "dflt_value": null,
+          "notnull": 0,
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 9,
-          "name": "updated_by",
+          "name": "updated_at",
           "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": "'УО'",
+          "notnull": 1,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 10,
-          "name": "contract_deadline_extended",
-          "type": "INTEGER",
-          "notnull": 1,
-          "dflt_value": "0",
+          "name": "updated_by",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "'УО'",
           "pk": 0
         },
         {
           "cid": 11,
-          "name": "written_refusal_date",
-          "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": "''",
+          "name": "contract_deadline_extended",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "0",
           "pk": 0
         },
         {
           "cid": 12,
-          "name": "written_refusal_number",
+          "name": "written_refusal_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 13,
-          "name": "written_refusal_url",
+          "name": "written_refusal_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 14,
-          "name": "court_decision_final_present",
-          "type": "INTEGER",
+          "name": "written_refusal_url",
+          "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 15,
-          "name": "customer_verified_full_name",
-          "type": "TEXT",
+          "name": "court_decision_final_present",
+          "type": "INTEGER",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": null,
           "pk": 0
         },
         {
           "cid": 16,
-          "name": "customer_verified_short_name",
+          "name": "customer_verified_full_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 17,
-          "name": "actual_contract_date",
+          "name": "customer_verified_short_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 18,
-          "name": "actual_contract_number",
+          "name": "actual_contract_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 19,
-          "name": "actual_contract_url",
+          "name": "actual_contract_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 20,
-          "name": "decision_justification",
+          "name": "actual_contract_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 21,
-          "name": "assigned_officer_id",
+          "name": "actual_contract_signed",
           "type": "INTEGER",
-          "notnull": 0,
-          "dflt_value": null,
+          "notnull": 1,
+          "default": "0",
           "pk": 0
         },
         {
           "cid": 22,
-          "name": "additional_check_required",
+          "name": "assigned_officer_id",
           "type": "INTEGER",
-          "notnull": 1,
-          "dflt_value": "0",
+          "notnull": 0,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 23,
-          "name": "guarantee_documents_visible",
+          "name": "additional_check_required",
           "type": "INTEGER",
-          "notnull": 0,
-          "dflt_value": null,
+          "notnull": 1,
+          "default": "0",
           "pk": 0
         },
         {
           "cid": 24,
-          "name": "supplier_explanation_assessment",
-          "type": "TEXT",
-          "notnull": 1,
-          "dflt_value": "''",
+          "name": "guarantee_documents_visible",
+          "type": "INTEGER",
+          "notnull": 0,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 25,
-          "name": "established_discrepancy",
+          "name": "supplier_explanation_assessment",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 26,
-          "name": "decision_template_key",
+          "name": "established_discrepancy",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 27,
-          "name": "justification_source_hash",
+          "name": "decision_template_key",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 28,
-          "name": "justification_generated_at",
+          "name": "justification_source_hash",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 29,
-          "name": "justification_manually_edited",
-          "type": "INTEGER",
+          "name": "justification_generated_at",
+          "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "0",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 30,
-          "name": "customer_protocol_decision_date",
-          "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": "''",
+          "name": "justification_manually_edited",
+          "type": "INTEGER",
+          "notnull": 1,
+          "default": "0",
           "pk": 0
         },
         {
           "cid": 31,
-          "name": "customer_protocol_decision_number",
+          "name": "customer_protocol_decision_date",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 32,
-          "name": "customer_protocol_decision_url",
+          "name": "customer_protocol_decision_number",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 33,
-          "name": "generated_protocol_filename",
+          "name": "customer_protocol_decision_url",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 34,
-          "name": "protocol_generated_at",
+          "name": "generated_protocol_filename",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 35,
-          "name": "completed_at",
+          "name": "generated_protocol_metadata_json",
           "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": "''",
+          "notnull": 1,
+          "default": "'{}'",
           "pk": 0
         },
         {
           "cid": 36,
+          "name": "protocol_generated_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 37,
+          "name": "completed_at",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "cid": 38,
           "name": "completed_by",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         }
       ]
     },
     {
       "name": "violation_reports",
-      "sql": "CREATE TABLE violation_reports (\n          id TEXT PRIMARY KEY, report_id TEXT DEFAULT '', status TEXT DEFAULT '',\n          date_created TEXT DEFAULT '', date_published TEXT DEFAULT '', date_modified TEXT DEFAULT '',\n          tender_id TEXT DEFAULT '', tender_pretty_id TEXT DEFAULT '', contract_id TEXT DEFAULT '', contract_pretty_id TEXT DEFAULT '',\n          author_name TEXT DEFAULT '', author_code TEXT DEFAULT '', defendant_name TEXT DEFAULT '', defendant_code TEXT DEFAULT '',\n          authority_name TEXT DEFAULT '', reason TEXT DEFAULT '', description TEXT DEFAULT '',\n          defendant_period_start TEXT DEFAULT '', defendant_period_end TEXT DEFAULT '',\n          decision_resolution TEXT DEFAULT '', decision_description TEXT DEFAULT '', decision_date TEXT DEFAULT '',\n          evidence_documents_json TEXT NOT NULL DEFAULT '[]', decision_documents_json TEXT NOT NULL DEFAULT '[]',\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        , authority_code TEXT DEFAULT '')",
+      "sql": "CREATE TABLE violation_reports (\n          id TEXT PRIMARY KEY, report_id TEXT DEFAULT '', status TEXT DEFAULT '',\n          date_created TEXT DEFAULT '', date_published TEXT DEFAULT '', date_modified TEXT DEFAULT '',\n          tender_id TEXT DEFAULT '', tender_pretty_id TEXT DEFAULT '', contract_id TEXT DEFAULT '', contract_pretty_id TEXT DEFAULT '',\n          author_name TEXT DEFAULT '', author_code TEXT DEFAULT '', defendant_name TEXT DEFAULT '', defendant_code TEXT DEFAULT '',\n          authority_name TEXT DEFAULT '', authority_code TEXT DEFAULT '', reason TEXT DEFAULT '', description TEXT DEFAULT '',\n          defendant_period_start TEXT DEFAULT '', defendant_period_end TEXT DEFAULT '',\n          decision_resolution TEXT DEFAULT '', decision_description TEXT DEFAULT '', decision_date TEXT DEFAULT '',\n          evidence_documents_json TEXT NOT NULL DEFAULT '[]', decision_documents_json TEXT NOT NULL DEFAULT '[]',\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        )",
       "columns": [
         {
           "cid": 0,
           "name": "id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": null,
+          "default": null,
           "pk": 1
         },
         {
@@ -3853,7 +5771,7 @@
           "name": "report_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3861,7 +5779,7 @@
           "name": "status",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3869,7 +5787,7 @@
           "name": "date_created",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3877,7 +5795,7 @@
           "name": "date_published",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3885,7 +5803,7 @@
           "name": "date_modified",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3893,7 +5811,7 @@
           "name": "tender_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3901,7 +5819,7 @@
           "name": "tender_pretty_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3909,7 +5827,7 @@
           "name": "contract_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3917,7 +5835,7 @@
           "name": "contract_pretty_id",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3925,7 +5843,7 @@
           "name": "author_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3933,7 +5851,7 @@
           "name": "author_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3941,7 +5859,7 @@
           "name": "defendant_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3949,7 +5867,7 @@
           "name": "defendant_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
@@ -3957,103 +5875,103 @@
           "name": "authority_name",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 15,
-          "name": "reason",
+          "name": "authority_code",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 16,
-          "name": "description",
+          "name": "reason",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 17,
-          "name": "defendant_period_start",
+          "name": "description",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 18,
-          "name": "defendant_period_end",
+          "name": "defendant_period_start",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 19,
-          "name": "decision_resolution",
+          "name": "defendant_period_end",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 20,
-          "name": "decision_description",
+          "name": "decision_resolution",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 21,
-          "name": "decision_date",
+          "name": "decision_description",
           "type": "TEXT",
           "notnull": 0,
-          "dflt_value": "''",
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 22,
-          "name": "evidence_documents_json",
+          "name": "decision_date",
           "type": "TEXT",
-          "notnull": 1,
-          "dflt_value": "'[]'",
+          "notnull": 0,
+          "default": "''",
           "pk": 0
         },
         {
           "cid": 23,
-          "name": "decision_documents_json",
+          "name": "evidence_documents_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": "'[]'",
+          "default": "'[]'",
           "pk": 0
         },
         {
           "cid": 24,
-          "name": "raw_json",
+          "name": "decision_documents_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": "'[]'",
           "pk": 0
         },
         {
           "cid": 25,
-          "name": "synced_at",
+          "name": "raw_json",
           "type": "TEXT",
           "notnull": 1,
-          "dflt_value": null,
+          "default": null,
           "pk": 0
         },
         {
           "cid": 26,
-          "name": "authority_code",
+          "name": "synced_at",
           "type": "TEXT",
-          "notnull": 0,
-          "dflt_value": "''",
+          "notnull": 1,
+          "default": null,
           "pk": 0
         }
       ]
@@ -4062,212 +5980,226 @@
   "indexes": [
     {
       "name": "formed_protocol_active_series",
-      "tbl_name": "formed_protocols",
       "sql": "CREATE UNIQUE INDEX formed_protocol_active_series\n      ON formed_protocols(series_key) WHERE status='active'"
     },
     {
       "name": "formed_protocol_active_submission",
-      "tbl_name": "formed_protocol_members",
       "sql": "CREATE UNIQUE INDEX formed_protocol_active_submission\n      ON formed_protocol_members(submission_id) WHERE active=1"
     },
     {
       "name": "idx_amcu_code",
-      "tbl_name": "amcu_registry",
       "sql": "CREATE INDEX idx_amcu_code ON amcu_registry(offender_code)"
     },
     {
       "name": "idx_nazk_full_name",
-      "tbl_name": "nazk_registry",
       "sql": "CREATE INDEX idx_nazk_full_name ON nazk_registry(full_name)"
     },
     {
       "name": "ix_application_contracts_lookup",
-      "tbl_name": "application_contracts",
       "sql": "CREATE INDEX ix_application_contracts_lookup\n          ON application_contracts(supplier_code,contract_number)"
     },
     {
       "name": "ix_application_remark_selections_submission",
-      "tbl_name": "application_protocol_remark_selections",
       "sql": "CREATE INDEX ix_application_remark_selections_submission\n          ON application_protocol_remark_selections(submission_id)"
     },
     {
       "name": "ix_application_view_profiles_owner",
-      "tbl_name": "application_view_profiles",
       "sql": "CREATE INDEX ix_application_view_profiles_owner\n          ON application_view_profiles(owner_key,is_system,name)"
     },
     {
       "name": "ix_auth_users_officer",
-      "tbl_name": "auth_users",
       "sql": "CREATE UNIQUE INDEX ix_auth_users_officer ON auth_users(officer_id)\n      WHERE officer_id IS NOT NULL AND active=1"
     },
     {
       "name": "ix_authorized_officers_active",
-      "tbl_name": "authorized_officers",
       "sql": "CREATE INDEX ix_authorized_officers_active\n          ON authorized_officers(active,full_name)"
     },
     {
       "name": "ix_chat_members_username",
-      "tbl_name": "chat_members",
       "sql": "CREATE INDEX ix_chat_members_username ON chat_members(username,chat_id)"
     },
     {
       "name": "ix_chat_messages_chat",
-      "tbl_name": "chat_messages",
       "sql": "CREATE INDEX ix_chat_messages_chat ON chat_messages(chat_id,id)"
     },
     {
       "name": "ix_framework_service_directory_framework",
-      "tbl_name": "framework_service_directory",
       "sql": "CREATE INDEX ix_framework_service_directory_framework\n          ON framework_service_directory(framework_id)"
     },
     {
+      "name": "ix_generated_documents_task",
+      "sql": "CREATE INDEX ix_generated_documents_task ON generated_documents(task_id,created_at)"
+    },
+    {
+      "name": "ix_google_oauth_transactions_expiry",
+      "sql": "CREATE INDEX ix_google_oauth_transactions_expiry ON google_oauth_transactions(expires_at)"
+    },
+    {
+      "name": "ix_nazk_check_evidence_check",
+      "sql": "CREATE INDEX ix_nazk_check_evidence_check\n          ON supplier_nazk_check_evidence(check_id,recorded_at,id)"
+    },
+    {
+      "name": "ix_operational_task_events",
+      "sql": "CREATE INDEX ix_operational_task_events ON operational_task_events(task_id,created_at,id)"
+    },
+    {
+      "name": "ix_operational_task_qualifications_task",
+      "sql": "CREATE INDEX ix_operational_task_qualifications_task\n      ON operational_task_qualifications(task_id,relation_type)"
+    },
+    {
+      "name": "ix_operational_task_responses_task",
+      "sql": "CREATE INDEX ix_operational_task_responses_task ON operational_task_responses(task_id,recorded_at,id)"
+    },
+    {
+      "name": "ix_operational_task_warnings_report",
+      "sql": "CREATE INDEX ix_operational_task_warnings_report ON operational_task_warnings(violation_report_id)"
+    },
+    {
+      "name": "ix_operational_tasks_officer",
+      "sql": "CREATE INDEX ix_operational_tasks_officer ON operational_tasks(assigned_officer_id,status)"
+    },
+    {
+      "name": "ix_operational_tasks_state",
+      "sql": "CREATE INDEX ix_operational_tasks_state ON operational_tasks(status,task_type)"
+    },
+    {
+      "name": "ix_operational_tasks_supplier",
+      "sql": "CREATE INDEX ix_operational_tasks_supplier ON operational_tasks(supplier_code,created_at)"
+    },
+    {
+      "name": "ix_qualifications_status_submission",
+      "sql": "CREATE INDEX ix_qualifications_status_submission ON qualifications(status,submission_id)"
+    },
+    {
       "name": "ix_qualifications_submission",
-      "tbl_name": "qualifications",
       "sql": "CREATE INDEX ix_qualifications_submission ON qualifications(submission_id)"
     },
     {
+      "name": "ix_registry_contracts_integration_activity",
+      "sql": "CREATE INDEX ix_registry_contracts_integration_activity ON registry_contracts(supplier_code,status,framework_id)"
+    },
+    {
       "name": "ix_registry_contracts_qualification",
-      "tbl_name": "registry_contracts",
       "sql": "CREATE INDEX ix_registry_contracts_qualification ON registry_contracts(qualification_id)"
     },
     {
       "name": "ix_registry_contracts_supplier",
-      "tbl_name": "registry_contracts",
       "sql": "CREATE INDEX ix_registry_contracts_supplier ON registry_contracts(supplier_code)"
     },
     {
       "name": "ix_submission_nazk_controls_checked",
-      "tbl_name": "submission_nazk_controls",
       "sql": "CREATE INDEX ix_submission_nazk_controls_checked\n          ON submission_nazk_controls(nazk_certificate_checked)"
     },
     {
       "name": "ix_submission_nazk_controls_manager",
-      "tbl_name": "submission_nazk_controls",
       "sql": "CREATE INDEX ix_submission_nazk_controls_manager\n          ON submission_nazk_controls(manager_id)"
     },
     {
       "name": "ix_submission_nazk_controls_required",
-      "tbl_name": "submission_nazk_controls",
       "sql": "CREATE INDEX ix_submission_nazk_controls_required\n          ON submission_nazk_controls(nazk_certificate_required)"
     },
     {
       "name": "ix_submission_nazk_controls_supplier",
-      "tbl_name": "submission_nazk_controls",
       "sql": "CREATE INDEX ix_submission_nazk_controls_supplier\n          ON submission_nazk_controls(supplier_code)"
     },
     {
       "name": "ix_submissions_framework",
-      "tbl_name": "submissions",
       "sql": "CREATE INDEX ix_submissions_framework ON submissions(framework_id)"
     },
     {
+      "name": "ix_submissions_integration_latest",
+      "sql": "CREATE INDEX ix_submissions_integration_latest ON submissions(supplier_code,date_published DESC,id DESC)"
+    },
+    {
       "name": "ix_submissions_supplier",
-      "tbl_name": "submissions",
       "sql": "CREATE INDEX ix_submissions_supplier ON submissions(supplier_code)"
     },
     {
       "name": "ix_supplier_edr_manager",
-      "tbl_name": "supplier_edr_profiles",
       "sql": "CREATE INDEX ix_supplier_edr_manager ON supplier_edr_profiles(manager_name)"
     },
     {
+      "name": "ix_supplier_edr_verification_events_current",
+      "sql": "CREATE INDEX ix_supplier_edr_verification_events_current\n      ON supplier_edr_verification_events(supplier_code,occurred_at DESC,id DESC)"
+    },
+    {
       "name": "ix_supplier_managers_name",
-      "tbl_name": "supplier_managers",
       "sql": "CREATE INDEX ix_supplier_managers_name\n          ON supplier_managers(normalized_name)"
     },
     {
       "name": "ix_supplier_managers_supplier",
-      "tbl_name": "supplier_managers",
       "sql": "CREATE INDEX ix_supplier_managers_supplier\n          ON supplier_managers(supplier_code)"
     },
     {
       "name": "ix_supplier_nazk_checks_manager",
-      "tbl_name": "supplier_nazk_checks",
       "sql": "CREATE INDEX ix_supplier_nazk_checks_manager\n          ON supplier_nazk_checks(manager_id,started_at DESC)"
     },
     {
       "name": "ix_supplier_nazk_checks_state",
-      "tbl_name": "supplier_nazk_checks",
       "sql": "CREATE INDEX ix_supplier_nazk_checks_state\n          ON supplier_nazk_checks(workflow_status,result)"
     },
     {
       "name": "ix_supplier_nazk_checks_supplier",
-      "tbl_name": "supplier_nazk_checks",
       "sql": "CREATE INDEX ix_supplier_nazk_checks_supplier\n          ON supplier_nazk_checks(supplier_code,started_at DESC)"
     },
     {
       "name": "ix_supplier_nazk_documents_check",
-      "tbl_name": "supplier_nazk_check_documents",
       "sql": "CREATE INDEX ix_supplier_nazk_documents_check\n          ON supplier_nazk_check_documents(check_id,created_at)"
     },
     {
       "name": "ix_supplier_nazk_documents_submission",
-      "tbl_name": "supplier_nazk_check_documents",
       "sql": "CREATE INDEX ix_supplier_nazk_documents_submission ON supplier_nazk_check_documents(submission_id)"
     },
     {
       "name": "ix_supplier_nazk_events_check",
-      "tbl_name": "supplier_nazk_check_events",
       "sql": "CREATE INDEX ix_supplier_nazk_events_check\n          ON supplier_nazk_check_events(check_id,event_at,id)"
     },
     {
       "name": "ix_supplier_nazk_matches_source",
-      "tbl_name": "supplier_nazk_check_matches",
       "sql": "CREATE INDEX ix_supplier_nazk_matches_source\n          ON supplier_nazk_check_matches(nazk_source_id)"
     },
     {
       "name": "ix_supplier_nazk_requests_check",
-      "tbl_name": "supplier_nazk_check_requests",
       "sql": "CREATE INDEX ix_supplier_nazk_requests_check\n          ON supplier_nazk_check_requests(check_id,created_at)"
     },
     {
       "name": "ix_supplier_nazk_review_result",
-      "tbl_name": "supplier_nazk_reviews",
       "sql": "CREATE INDEX ix_supplier_nazk_review_result ON supplier_nazk_reviews(result)"
     },
     {
       "name": "ix_supplier_note_events_supplier",
-      "tbl_name": "supplier_note_events",
       "sql": "CREATE INDEX ix_supplier_note_events_supplier\n          ON supplier_note_events(supplier_code,changed_at)"
     },
     {
       "name": "ix_violation_document_reviews_report",
-      "tbl_name": "violation_report_document_reviews",
-      "sql": "CREATE INDEX ix_violation_document_reviews_report\n      ON violation_report_document_reviews(report_id,document_source)"
+      "sql": "CREATE INDEX ix_violation_document_reviews_report\n          ON violation_report_document_reviews(report_id,document_source)"
     },
     {
       "name": "ix_violation_reports_date",
-      "tbl_name": "violation_reports",
       "sql": "CREATE INDEX ix_violation_reports_date ON violation_reports(date_published)"
     },
     {
       "name": "ix_violation_reports_defendant",
-      "tbl_name": "violation_reports",
       "sql": "CREATE INDEX ix_violation_reports_defendant ON violation_reports(defendant_code)"
     },
     {
       "name": "ix_violation_reports_report_id",
-      "tbl_name": "violation_reports",
       "sql": "CREATE INDEX ix_violation_reports_report_id ON violation_reports(report_id)"
     },
     {
       "name": "ix_violation_reports_status",
-      "tbl_name": "violation_reports",
       "sql": "CREATE INDEX ix_violation_reports_status ON violation_reports(status)"
     },
     {
       "name": "ix_violation_review_events_report",
-      "tbl_name": "violation_report_review_events",
       "sql": "CREATE INDEX ix_violation_review_events_report\n          ON violation_report_review_events(report_id,changed_at)"
     },
     {
       "name": "ux_supplier_managers_current",
-      "tbl_name": "supplier_managers",
       "sql": "CREATE UNIQUE INDEX ux_supplier_managers_current\n          ON supplier_managers(supplier_code) WHERE is_current=1"
     },
     {
       "name": "ux_supplier_nazk_checks_legacy",
-      "tbl_name": "supplier_nazk_checks",
       "sql": "CREATE UNIQUE INDEX ux_supplier_nazk_checks_legacy\n          ON supplier_nazk_checks(legacy_key) WHERE legacy_key IS NOT NULL"
     }
   ]

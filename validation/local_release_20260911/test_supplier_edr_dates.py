@@ -3,12 +3,17 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 import server
+import edr_sync_v2
 
 
 class SupplierEdrDateTests(unittest.TestCase):
     def sheet(self,header='Дата перевірки',date='03.09.2026'):
-        return [['Код ЄДРПОУ','ПІБ для перевірки',header],
-                ['30067771','ТКАЧ ОЛЕКСАНДР ВАСИЛЬОВИЧ',date]]
+        headers=list(edr_sync_v2.HEADERS)
+        values=['']*len(headers)
+        for key,value in {'Код ЄДРПОУ':'30067771','ПІБ для перевірки':'ТКАЧ ОЛЕКСАНДР ВАСИЛЬОВИЧ',
+                          'Дата перевірки':date,'УО':'Тестова УО'}.items(): values[headers.index(key)]=value
+        if header!='Дата перевірки': headers[headers.index('Дата перевірки')]=header
+        return [headers,values]
 
     def test_current_and_legacy_source_headers(self):
         for header in ('Дата перевірки','Дата перевірки ЄДР'):
@@ -35,13 +40,19 @@ class SupplierEdrDateTests(unittest.TestCase):
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,synced_at) VALUES('30067771','17.08.2026','2026-08-21T00:00:00+00:00')")
         server.sync_current_supplier_manager(con,'30067771','ТКАЧ ОЛЕКСАНДР ВАСИЛЬОВИЧ','Google Sheets: ЮО','2026-08-21T00:00:00+00:00')
         con.commit()
-        for date,stamp in [('03.09.2026','2026-09-09T19:58:11+00:00'),('03.09.2026','2026-09-10T10:00:00+00:00'),('05.09.2026','2026-09-11T10:00:00+00:00')]:
-            with patch.object(server,'db',return_value=con),patch.object(server,'_google_sheet_values',return_value=self.sheet(date=date)),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ЮО':'unused'}),patch.object(server,'now_iso',return_value=stamp),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'refresh_current_submission_nazk_controls') as refresh:
-                server.supplier_edr_sync_worker()
+        cases=[('03.09.2026','2026-09-09T19:58:11+00:00','2026-09-09T19:58:11+00:00'),
+               ('03.09.2026','2026-09-10T10:00:00+00:00','2026-09-09T19:58:11+00:00'),
+               ('05.09.2026','2026-09-11T10:00:00+00:00','2026-09-11T10:00:00+00:00')]
+        for date,stamp,expected_synced_at in cases:
+            source_sheet=self.sheet(date=date)
+            sheet_read=lambda name: source_sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
+            with patch.object(server,'db',return_value=con),patch.object(server,'_google_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'unused','ЮО':'unused'}),patch.object(server,'now_iso',return_value=stamp),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'refresh_current_submission_nazk_controls') as refresh:
+                fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
+                server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')
                 row=con.execute('SELECT edr_checked_at,synced_at FROM supplier_edr_profiles').fetchone()
-                self.assertEqual(tuple(row),(date,stamp))
-                self.assertEqual(con.execute('SELECT updated_at FROM supplier_managers').fetchone()[0],stamp)
+                self.assertEqual(tuple(row),(edr_sync_v2.normalized_date(date),expected_synced_at))
+                self.assertEqual(con.execute('SELECT updated_at FROM supplier_managers').fetchone()[0],'2026-08-21T00:00:00+00:00')
                 refresh.assert_not_called()
 
 

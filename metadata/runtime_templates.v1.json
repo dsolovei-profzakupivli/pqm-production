@@ -11,8 +11,79 @@
       "file": "nazk_supplier_request.docx",
       "source_reference": "https://docs.google.com/document/d/16fmgZ54NtnYGFZGIvn6ZnjKfif9sep40T3ARpiA6xlQ/edit",
       "output_name_pattern": "НАЗК_запит_{supplier_code}_{date}_v{version}.docx",
-      "required_fields": ["supplier.name", "supplier.code", "supplier.code_label", "supplier.email", "supplier.entity_type", "manager.full_name", "manager.full_name_genitive"],
-      "conditional_variants": {"supplier.entity_type": ["individual_entrepreneur", "legal_entity"]}
+      "required_fields": [
+        "supplier.name",
+        "supplier.code",
+        "supplier.code_label",
+        "supplier.email",
+        "supplier.entity_type",
+        "manager.full_name",
+        "manager.full_name_genitive"
+      ],
+      "conditional_variants": {
+        "supplier.entity_type": [
+          "individual_entrepreneur",
+          "legal_entity"
+        ]
+      }
+    },
+    "amcu_exclusion_protocol": {
+      "document_type": "amcu_exclusion_protocol",
+      "template_key": "amcu_exclusion_protocol",
+      "name": "АМКУ — протокол виключення постачальника",
+      "format": "docx",
+      "generation_provider": "docx_local",
+      "active": true,
+      "file": "amcu_exclusion_protocol.docx",
+      "source_reference": "sha256:8818a88821c98c443b317fef8789ffcdfbc2474aefb367e819a522377f395e5d",
+      "output_name_pattern": "АМКУ_{supplier_code}_{protocol_number}_v{version}.docx",
+      "required_fields": [
+        "decision.number",
+        "decision.date",
+        "supplier.name_genitive",
+        "supplier.name_accusative",
+        "supplier.short_name_genitive",
+        "supplier.short_name_accusative",
+        "supplier.code",
+        "supplier.code_label",
+        "uo.full_name",
+        "amcu.decision_basis_phrase",
+        "amcu.decisions[]"
+      ],
+      "conditional_variants": {}
+    },
+    "termination_exclusion_protocol": {
+      "document_type": "termination_exclusion_protocol",
+      "template_key": "termination_exclusion_protocol",
+      "name": "Припинення ФОП — протокол виключення",
+      "format": "docx",
+      "generation_provider": "docx_local",
+      "active": true,
+      "file": "termination_exclusion_protocol.docx",
+      "source_reference": "sha256:00cb3869715e4f40ec1d10c246844e86149bb6b831b3dd54dfc7d6c6c35b046d",
+      "output_name_pattern": "Припинення_{supplier_code}_{protocol_number}_v{version}.docx",
+      "required_fields": [
+        "decision.number",
+        "decision.date",
+        "supplier.name_genitive",
+        "supplier.short_name",
+        "supplier.name_accusative",
+        "supplier.code_label",
+        "supplier.code",
+        "termination.reference",
+        "uo.full_name"
+      ],
+      "placeholder_aliases": {
+        "№ Протоколу": "decision.number",
+        "Дата протоколу": "decision.date",
+        "Постачальник родовий": "supplier.name_genitive",
+        "Постачальник скорочено": "supplier.short_name",
+        "Постачальник знахідний": "supplier.name_accusative",
+        "код ЄДРПОУ/ІПН": "supplier.code_label",
+        "Код ЄДРПОУ": "supplier.code",
+        "Реквізити рішення (постанови)": "termination.reference",
+        "УО": "uo.full_name"
+      }
     }
   }
 }

@@ -16,7 +16,8 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
           CREATE TABLE submissions(id TEXT PRIMARY KEY,framework_id TEXT,supplier_name TEXT,supplier_code TEXT,date_published TEXT,status TEXT);
           CREATE TABLE qualifications(id TEXT PRIMARY KEY,submission_id TEXT,status TEXT,decision_date TEXT);
           CREATE TABLE frameworks(id TEXT PRIMARY KEY,pretty_id TEXT,dk_code TEXT,title TEXT,status TEXT,raw_json TEXT);
-          CREATE TABLE registry_contracts(id TEXT PRIMARY KEY,qualification_id TEXT,framework_id TEXT,supplier_code TEXT,status TEXT);
+          CREATE TABLE framework_officers(framework_id TEXT,marketplace_url TEXT);
+          CREATE TABLE registry_contracts(id TEXT PRIMARY KEY,qualification_id TEXT,framework_id TEXT,supplier_code TEXT,status TEXT,raw_json TEXT DEFAULT '{}');
           CREATE TABLE supplier_edr_profiles(supplier_code TEXT,full_name TEXT,short_name TEXT);
           CREATE TABLE amcu_registry(row_key TEXT,offender_code TEXT,decision_date TEXT);
           CREATE TABLE supplier_managers(id INTEGER PRIMARY KEY,supplier_code TEXT,manager_name TEXT,normalized_name TEXT,manager_tax_id TEXT,is_current INTEGER);
@@ -28,7 +29,7 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
         self.con.execute("INSERT INTO frameworks VALUES('F','UA-F-X','00000000-0','Fixture','active',?)",(json.dumps({'qualificationPeriod':{'endDate':'2099-01-01'}}),))
         self.con.execute("INSERT INTO submissions VALUES('S','F','Supplier X',?,'2026-01-01','complete')",(self.CODE,))
         self.con.execute("INSERT INTO qualifications VALUES('Q','S','active','2026-01-02')")
-        self.con.execute("INSERT INTO registry_contracts VALUES('RC','Q','F',?,'active')",(self.CODE,))
+        self.con.execute("INSERT INTO registry_contracts(id,qualification_id,framework_id,supplier_code,status) VALUES('RC','Q','F',?,'active')",(self.CODE,))
         self.con.executemany("INSERT INTO supplier_managers VALUES(?,?,?,?,?,?)",[(1,self.CODE,'PERSON_A','person_a','111',0),(2,self.CODE,'PERSON_B','person_b','222',1)])
         self.con.execute("""INSERT INTO supplier_nazk_checks
           (id,supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,updated_at)

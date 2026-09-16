@@ -8,12 +8,13 @@ import calendar
 from urllib.parse import urlsplit
 import supplier_activity
 import nazk_evidence
+from document_semantics import supplier_code_semantics
 from supplier_identity import current_manager_rnokpp
 from datetime import date, datetime, timedelta, timezone
 
 TASK_TYPES = {"amcu_exclusion", "nazk_check", "warning_block", "manual",
-              "fop_termination_exclusion", "legal_entity_bankruptcy_exclusion"}
-IMPLEMENTED_TYPES = {"amcu_exclusion", "nazk_check", "warning_block"}
+              "termination_exclusion", "fop_termination_exclusion", "legal_entity_bankruptcy_exclusion"}
+IMPLEMENTED_TYPES = {"amcu_exclusion", "termination_exclusion", "nazk_check", "warning_block"}
 STATUSES = {"new", "in_progress", "awaiting_response", "waiting_external", "ready_for_document",
             "awaiting_publication", "awaiting_sync", "active_blocking", "completed", "cancelled"}
 TERMINAL = {"completed", "cancelled"}
@@ -32,7 +33,7 @@ TRANSITIONS = {
     "in_progress": {"awaiting_response", "waiting_external", "ready_for_document", "cancelled"},
     "awaiting_response": {"in_progress", "ready_for_document", "completed", "cancelled"},
     "waiting_external": {"in_progress", "ready_for_document", "completed", "cancelled"},
-    "ready_for_document": {"in_progress", "awaiting_publication", "cancelled"},
+    "ready_for_document": {"in_progress", "awaiting_publication", "awaiting_sync", "cancelled"},
     "awaiting_publication": {"awaiting_sync", "cancelled"},
     "awaiting_sync": {"completed", "in_progress", "cancelled"},
     "active_blocking": {"completed"}, "completed": set(), "cancelled": set(),
@@ -40,7 +41,7 @@ TRANSITIONS = {
 RESOLUTIONS = {"completed", "not_applicable", "cancelled", "nazk_refuted",
                "nazk_confirmed", "nazk_not_relevant", "nazk_not_current", "amcu_excluded",
                "supplier_blocked", "blocking_completed", "legacy_blocking_confirmed", "no_active_qualifications", "manager_changed", "nazk_record_no_longer_present",
-               "duplicate_cycle_existing_factual", "covered_by_later_qualification", ""}
+               "duplicate_cycle_existing_factual", "covered_by_later_qualification", "termination_excluded", ""}
 
 
 def now_iso():
@@ -80,6 +81,24 @@ def migrate(con):
       amcu_decision_id TEXT NOT NULL REFERENCES amcu_registry(row_key), extract_url TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
       PRIMARY KEY(task_id,amcu_decision_id)
+    );
+    CREATE TABLE IF NOT EXISTS operational_task_qualifications (
+      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,
+      qualification_id TEXT NOT NULL REFERENCES qualifications(id),
+      registry_contract_id TEXT NOT NULL REFERENCES registry_contracts(id),
+      relation_type TEXT NOT NULL DEFAULT 'targeted_exclusion',
+      linked_at TEXT NOT NULL,
+      PRIMARY KEY(task_id,qualification_id,registry_contract_id,relation_type)
+    );
+    CREATE INDEX IF NOT EXISTS ix_operational_task_qualifications_task
+      ON operational_task_qualifications(task_id,relation_type);
+    CREATE TABLE IF NOT EXISTS operational_task_qualification_decisions (
+      task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,
+      qualification_id TEXT NOT NULL,
+      registry_contract_id TEXT NOT NULL,
+      decision TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
+      PRIMARY KEY(task_id,qualification_id,registry_contract_id)
     );
     CREATE TABLE IF NOT EXISTS operational_task_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES operational_tasks(id) ON DELETE CASCADE,
@@ -199,14 +218,30 @@ def _active_application_map(con):
 
 def _effective_active_applications(con, code):
     """Current effective qualifications for one supplier, using the shared predicate."""
-    sql=f"""SELECT DISTINCT s.id,s.framework_id,s.date_published,
-      COALESCE(NULLIF(f.pretty_id,''),f.id) framework_pretty_id,f.dk_code,f.title framework_title
+    sql=f"""SELECT DISTINCT s.id,s.framework_id,s.date_published,q.id qualification_id,
+      q.status qualification_status,COALESCE(NULLIF(f.pretty_id,''),f.id) framework_pretty_id,
+      f.dk_code,f.title framework_title,COALESCE(fo.marketplace_url,'') marketplace_url,
+      COALESCE(
+        (SELECT COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
+                         NULLIF(json_extract(doc.value,'$.dateModified'),''))
+           FROM json_each(COALESCE(rc.raw_json,'{{{{}}}}'),'$.milestones') milestone
+           JOIN json_each(milestone.value,'$.documents') doc
+          WHERE COALESCE(json_extract(doc.value,'$.documentType'),'')='qualificationDocuments'
+          ORDER BY COALESCE(json_extract(doc.value,'$.datePublished'),
+                            json_extract(doc.value,'$.dateModified')) DESC LIMIT 1),
+        (SELECT NULLIF(json_extract(milestone.value,'$.dateModified'),'')
+           FROM json_each(COALESCE(rc.raw_json,'{{{{}}}}'),'$.milestones') milestone
+          WHERE NULLIF(json_extract(milestone.value,'$.dateModified'),'') IS NOT NULL
+          ORDER BY json_extract(milestone.value,'$.dateModified') DESC LIMIT 1),
+        NULLIF(json_extract(rc.raw_json,'$.date'),''),NULLIF(q.decision_date,'')
+      ) qualification_event_date
       FROM registry_contracts rc
       JOIN qualifications q ON q.id=rc.qualification_id
       JOIN submissions s ON s.id=q.submission_id
       JOIN frameworks f ON f.id=rc.framework_id
+      LEFT JOIN framework_officers fo ON fo.framework_id=rc.framework_id
       WHERE {{supplier_condition}} AND {supplier_activity.effective_active_sql('rc','f')}
-      ORDER BY s.date_published DESC,s.id"""
+      ORDER BY COALESCE(f.dk_code,''),COALESCE(f.title,''),s.id"""
     normalized=_digits(code)
     rows=con.execute(sql.format(supplier_condition="rc.supplier_code=?"),(normalized,)).fetchall()
     exact_code_exists=bool(rows) or bool(con.execute(
@@ -406,6 +441,239 @@ def _link_apps(con, task_id, applications, relation="active_application"):
                     [(task_id,item["id"],relation) for item in applications])
 
 
+def _snapshot_amcu_target_qualifications(con, task_id, actor="PQM task builder"):
+    """Append the exact effective qualifications targeted by an AMKU task."""
+    task=con.execute("SELECT supplier_code,status FROM operational_tasks WHERE id=? AND task_type='amcu_exclusion'",
+                     (task_id,)).fetchone()
+    if not task: raise ValueError("Задачу АМКУ не знайдено")
+    rows=con.execute(f"""SELECT DISTINCT q.id qualification_id,rc.id registry_contract_id
+      FROM operational_task_applications a
+      JOIN qualifications q ON q.submission_id=a.application_id
+      JOIN registry_contracts rc ON rc.qualification_id=q.id
+      JOIN frameworks f ON f.id=rc.framework_id
+      WHERE a.task_id=? AND DIGITS(rc.supplier_code)=DIGITS(?)
+        AND {supplier_activity.effective_active_sql('rc','f')}
+      ORDER BY q.id,rc.id""",(task_id,task["supplier_code"])).fetchall()
+    stamp=now_iso(); inserted=[]
+    for row in rows:
+        cursor=con.execute("""INSERT OR IGNORE INTO operational_task_qualifications
+          (task_id,qualification_id,registry_contract_id,relation_type,linked_at)
+          VALUES (?,?,?,'targeted_exclusion',?)""",
+          (task_id,row["qualification_id"],row["registry_contract_id"],stamp))
+        if cursor.rowcount:
+            inserted.append({"qualification_id":row["qualification_id"],
+                             "registry_contract_id":row["registry_contract_id"]})
+    if inserted:
+        _event(con,task_id,"amcu_qualifications_linked",actor,metadata={"links":inserted})
+    linked=con.execute("""SELECT COUNT(*) FROM operational_task_qualifications
+      WHERE task_id=? AND relation_type='targeted_exclusion'""",(task_id,)).fetchone()[0]
+    return {"linked":linked,"inserted":len(inserted),"items":inserted}
+
+
+def _termination_event_key(profile):
+    """Stable identity of one observed termination fact; blanks never invent a new cycle."""
+    parts=[str(profile.get(key) or '').strip() for key in
+           ('termination_record_date','termination_record_number','termination_decision_details')]
+    basis='|'.join(parts) or str(profile.get('edr_status') or '').strip().casefold()
+    import hashlib
+    return hashlib.sha256(basis.encode('utf-8')).hexdigest()[:20]
+
+
+def _termination_profile(con, code):
+    row=con.execute("SELECT * FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?",(_digits(code),)).fetchone()
+    return dict(row) if row else {}
+
+
+def termination_candidate(con, code):
+    """Read-only canonical eligibility and duplicate explanation for one supplier."""
+    code=_digits(code); profile=_termination_profile(con,code); qualifications=_effective_active_applications(con,code)
+    status=str(profile.get('edr_status') or '').strip()
+    terminated=status.casefold() in {'припинено','terminated'}
+    event_key=_termination_event_key(profile) if terminated else ''
+    active=con.execute("""SELECT id,status FROM operational_tasks
+      WHERE task_type='termination_exclusion' AND DIGITS(supplier_code)=?
+        AND json_extract(source_context,'$.termination_event_key')=?
+        AND status NOT IN ('completed','cancelled') LIMIT 1""",(code,event_key)).fetchone() if event_key else None
+    completed=con.execute("""SELECT id,status FROM operational_tasks
+      WHERE task_type='termination_exclusion' AND DIGITS(supplier_code)=?
+        AND json_extract(source_context,'$.termination_event_key')=?
+        AND status='completed' LIMIT 1""",(code,event_key)).fetchone() if event_key else None
+    if not terminated: reason='no_longer_eligible'
+    elif not qualifications: reason='no_active_qualifications'
+    elif active: reason='active_duplicate'
+    elif completed: reason='completed_cycle'
+    else: reason='eligible'
+    return {'supplier_code':code,'eligible':reason=='eligible','reason':reason,
+      'edr_status':status,'termination_event_key':event_key,'profile':profile,
+      'qualifications':qualifications,'duplicate_task_id':(active or completed)['id'] if active or completed else ''}
+
+
+def preview_termination_exclusions(con, supplier_codes):
+    migrate(con)
+    ordered=[]; seen=set()
+    for raw in supplier_codes or []:
+        code=_digits(raw)
+        if code and code not in seen: seen.add(code); ordered.append(code)
+    items=[termination_candidate(con,code) for code in ordered]
+    reason_labels={'eligible':'Відповідає умовам','no_active_qualifications':'Немає активних кваліфікацій',
+      'active_duplicate':'Задача на виключення вже існує','completed_cycle':'Цей факт припинення вже опрацьовано',
+      'no_longer_eligible':'Статус ЄДР: не Припинено'}
+    public=[]
+    for item in items:
+        reasons=[]
+        if item['eligible']:
+            reasons.append(reason_labels['eligible'])
+        else:
+            if str(item['edr_status'] or '').strip().casefold() not in {'припинено','terminated'}:
+                reasons.append(reason_labels['no_longer_eligible'])
+            if not item['qualifications']:
+                reasons.append(reason_labels['no_active_qualifications'])
+            if item['reason'] in {'active_duplicate','completed_cycle'}:
+                reasons.append(reason_labels[item['reason']])
+        public.append({'supplier_code':item['supplier_code'],'supplier_name':_supplier_name(con,item['supplier_code']),
+          'eligible':item['eligible'],'reason':item['reason'],'reason_label':reason_labels[item['reason']],
+          'reasons':reasons,'active_qualifications':len(item['qualifications']),
+          'duplicate_task_id':item['duplicate_task_id']})
+    eligible=sum(item['eligible'] for item in items)
+    return {'selected':len(items),'eligible':eligible,'to_create':eligible,'skipped':len(items)-eligible,'items':public}
+
+
+def create_termination_exclusions(con, supplier_codes, actor):
+    """Explicit confirmed materialization; no refresh/sync caller invokes this function."""
+    migrate(con); result={'created':0,'skipped':0,'task_ids':[],'items':[]}
+    for raw in dict.fromkeys(_digits(value) for value in supplier_codes or []):
+        if not raw: continue
+        candidate=termination_candidate(con,raw)
+        if not candidate['eligible']:
+            result['skipped']+=1; result['items'].append({'supplier_code':raw,'created':False,'reason':candidate['reason']}); continue
+        profile=candidate['profile']; semantics=supplier_code_semantics(raw); stamp=now_iso()
+        supplier={'internal_id':raw,'code':raw,'type':semantics['entity_type'],
+          'code_label':semantics['code_label'],'name':_supplier_name(con,raw),
+          'full_name':str(profile.get('full_name') or ''),'short_name':str(profile.get('short_name') or '')}
+        termination={'status':str(profile.get('edr_status') or ''),
+          'details':str(profile.get('termination_decision_details') or ''),
+          'record_date':str(profile.get('termination_record_date') or ''),
+          'record_number':str(profile.get('termination_record_number') or '')}
+        source={'source_type':'edr_termination','trigger_reason':'supplier_terminated_with_active_qualifications',
+          'termination_event_key':candidate['termination_event_key'],'supplier':supplier,
+          'termination':termination,'snapshot_created_at':stamp,
+          'active_qualification_count':len(candidate['qualifications']),
+          'affected_qualifications':[{key:item.get(key) for key in ('qualification_id','framework_id',
+            'framework_pretty_id','dk_code','framework_title','qualification_status','qualification_event_date')}
+            for item in candidate['qualifications']]}
+        document={'document_type':'termination_exclusion_protocol','supplier':supplier,
+          'termination':termination,'protocol':{'number':'','date':''},'officer':{}}
+        key=f"termination_exclusion:{raw}:{candidate['termination_event_key']}"
+        task_id,created=_create(con,key,'termination_exclusion',raw,'high',source,document,
+          supplier_name=supplier['name'])
+        if not created:
+            result['skipped']+=1; result['items'].append({'supplier_code':raw,'created':False,'reason':'active_duplicate'}); continue
+        officer=con.execute("SELECT id,full_name FROM authorized_officers WHERE active=1 AND CASEFOLD(full_name)=CASEFOLD(?) LIMIT 1",(actor,)).fetchone()
+        if officer:
+            con.execute("UPDATE operational_tasks SET assigned_officer_id=? WHERE id=?",(officer['id'],task_id))
+            source['responsible_officer']={'id':officer['id'],'full_name':officer['full_name']}
+            con.execute("UPDATE operational_tasks SET source_context=? WHERE id=?",(_json(source),task_id))
+        for qualification in candidate['qualifications']:
+            registry=con.execute(f"""SELECT rc.id FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
+              WHERE rc.qualification_id=? AND DIGITS(rc.supplier_code)=? AND {supplier_activity.effective_active_sql('rc','f')}
+              ORDER BY rc.id LIMIT 1""",(qualification['qualification_id'],raw)).fetchone()
+            if not registry: continue
+            con.execute("""INSERT OR IGNORE INTO operational_task_qualifications
+              (task_id,qualification_id,registry_contract_id,relation_type,linked_at)
+              VALUES (?,?,?,'targeted_exclusion',?)""",(task_id,qualification['qualification_id'],registry[0],stamp))
+            con.execute("""INSERT OR IGNORE INTO operational_task_qualification_decisions
+              (task_id,qualification_id,registry_contract_id,updated_at,updated_by) VALUES (?,?,?,?,?)""",
+              (task_id,qualification['qualification_id'],registry[0],stamp,actor))
+        _event(con,task_id,'termination_evidence_snapshotted',actor,metadata={
+          'termination_event_key':candidate['termination_event_key'],
+          'qualification_ids':[item['qualification_id'] for item in candidate['qualifications']]})
+        result['created']+=1; result['task_ids'].append(task_id)
+        result['items'].append({'supplier_code':raw,'created':True,'task_id':task_id})
+    return result
+
+
+def amcu_decision_cycle_covered(con, supplier_code, decision_ids):
+    """True when every current AMKU fact belongs to an executed prior cycle."""
+    expected={str(value) for value in decision_ids if str(value)}
+    if not expected: return False
+    covered={str(row[0]) for row in con.execute("""SELECT DISTINCT d.amcu_decision_id
+      FROM operational_task_amcu_decisions d JOIN operational_tasks t ON t.id=d.task_id
+      WHERE t.task_type='amcu_exclusion' AND DIGITS(t.supplier_code)=DIGITS(?)
+        AND t.status='completed' AND t.resolution_code='amcu_excluded'""",(supplier_code,))}
+    return expected.issubset(covered)
+
+
+def reconcile_amcu_after_qualification_sync(con, actor="PQM Prozorro qualification sync"):
+    """Confirm reviewed AMKU tasks from their immutable qualification links."""
+    migrate(con)
+    result={"checked":0,"completed":0,"unchanged":0,"task_ids":[]}
+    tasks=con.execute("""SELECT id,supplier_code,status FROM operational_tasks
+      WHERE task_type='amcu_exclusion' AND status='awaiting_sync' ORDER BY created_at,id""").fetchall()
+    for task in tasks:
+        result["checked"]+=1
+        links=[dict(row) for row in con.execute(f"""SELECT l.qualification_id,l.registry_contract_id,
+          CASE WHEN {supplier_activity.effective_active_sql('rc','f')} THEN 1 ELSE 0 END effective_active
+          FROM operational_task_qualifications l
+          LEFT JOIN registry_contracts rc ON rc.id=l.registry_contract_id
+          LEFT JOIN frameworks f ON f.id=rc.framework_id
+          WHERE l.task_id=? AND l.relation_type='targeted_exclusion'
+          ORDER BY l.qualification_id,l.registry_contract_id""",(task["id"],)).fetchall()]
+        if not links or any(link["effective_active"] for link in links):
+            result["unchanged"]+=1
+            continue
+        supplier_active=len(_effective_active_applications(con,task["supplier_code"]))
+        stamp=now_iso()
+        cursor=con.execute("""UPDATE operational_tasks SET status='completed',resolution_code='amcu_excluded',
+          resolution_text='Виключення всіх пов’язаних кваліфікацій підтверджено даними Prozorro',
+          resolved_at=?,resolved_by=?,updated_at=?,version=version+1
+          WHERE id=? AND status='awaiting_sync'""",(stamp,actor,stamp,task["id"]))
+        if not cursor.rowcount:
+            result["unchanged"]+=1
+            continue
+        _event(con,task["id"],"amcu_exclusion_confirmed_by_sync",actor,"awaiting_sync","completed",{
+          "qualification_ids":[link["qualification_id"] for link in links],
+          "registry_contract_ids":[link["registry_contract_id"] for link in links],
+          "supplier_effective_active_count":supplier_active,
+          "supplier_activity":"active" if supplier_active else "inactive",
+          "canonical_predicate":"supplier_activity.effective_active_sql"})
+        result["completed"]+=1;result["task_ids"].append(task["id"])
+    return result
+
+
+def reconcile_termination_after_qualification_sync(con, actor="PQM Prozorro qualification sync"):
+    """Complete reviewed termination tasks only after every snapshotted exclusion is inactive."""
+    migrate(con); result={"checked":0,"completed":0,"unchanged":0,"task_ids":[]}
+    tasks=con.execute("""SELECT id,supplier_code FROM operational_tasks
+      WHERE task_type='termination_exclusion' AND status='awaiting_sync' ORDER BY created_at,id""").fetchall()
+    for task in tasks:
+        result["checked"]+=1
+        links=[dict(row) for row in con.execute(f"""SELECT l.qualification_id,l.registry_contract_id,
+          COALESCE(d.decision,'') decision,
+          CASE WHEN {supplier_activity.effective_active_sql('rc','f')} THEN 1 ELSE 0 END effective_active
+          FROM operational_task_qualifications l
+          LEFT JOIN operational_task_qualification_decisions d ON d.task_id=l.task_id
+            AND d.qualification_id=l.qualification_id AND d.registry_contract_id=l.registry_contract_id
+          LEFT JOIN registry_contracts rc ON rc.id=l.registry_contract_id
+          LEFT JOIN frameworks f ON f.id=rc.framework_id WHERE l.task_id=?
+          ORDER BY l.qualification_id,l.registry_contract_id""",(task["id"],))]
+        excluded=[link for link in links if link["decision"]=="exclude"]
+        if not excluded or any(link["effective_active"] for link in excluded):
+            result["unchanged"]+=1; continue
+        stamp=now_iso(); supplier_active=len(_effective_active_applications(con,task["supplier_code"]))
+        cursor=con.execute("""UPDATE operational_tasks SET status='completed',resolution_code='termination_excluded',
+          resolution_text='Виключення визначених кваліфікацій підтверджено даними Prozorro',
+          resolved_at=?,resolved_by=?,updated_at=?,version=version+1 WHERE id=? AND status='awaiting_sync'""",
+          (stamp,actor,stamp,task["id"]))
+        if not cursor.rowcount:result["unchanged"]+=1;continue
+        _event(con,task["id"],"termination_exclusion_confirmed_by_sync",actor,"awaiting_sync","completed",{
+          "qualification_ids":[link["qualification_id"] for link in excluded],
+          "supplier_effective_active_count":supplier_active,
+          "supplier_activity":"active" if supplier_active else "inactive",
+          "canonical_predicate":"supplier_activity.effective_active_sql"})
+        result["completed"]+=1;result["task_ids"].append(task["id"])
+    return result
+
+
 def _warning_date(value):
     text = str(value or "")[:10]
     try: return datetime.strptime(text, "%Y-%m-%d").date()
@@ -462,6 +730,9 @@ def build(con, actor="PQM task builder", *, include_nazk=False):
     stamp = now_iso()
     for stale in con.execute("""SELECT id,supplier_code FROM operational_tasks
       WHERE task_type='amcu_exclusion' AND status NOT IN ('completed','cancelled')""").fetchall():
+        current_status=con.execute("SELECT status FROM operational_tasks WHERE id=?",(stale["id"],)).fetchone()[0]
+        if current_status=='awaiting_sync':
+            continue
         if _digits(stale["supplier_code"]) in codes:
             continue
         con.execute("""UPDATE operational_tasks SET status='cancelled',resolution_code='no_active_qualifications',
@@ -474,11 +745,11 @@ def build(con, actor="PQM task builder", *, include_nazk=False):
     for code in filter(None,codes):
         apps=active_applications.get(code, [])
         active=con.execute("SELECT id,status FROM operational_tasks WHERE task_type='amcu_exclusion' AND supplier_code=? AND status NOT IN ('completed','cancelled')",(code,)).fetchone()
-        if not apps:
-            if active and active["status"]=="awaiting_sync":
-                con.execute("UPDATE operational_tasks SET status='completed',resolution_code='amcu_excluded',resolved_at=?,updated_at=?,version=version+1 WHERE id=?",(now_iso(),now_iso(),active["id"])); _event(con,active["id"],"completed",actor); counts["completed"]+=1
-            continue
+        if not apps: continue
         decisions=amcu_decisions.get(code, [])
+        decision_ids={x["row_key"] for x in decisions}
+        if amcu_decision_cycle_covered(con,code,decision_ids) and not active:
+            continue
         base_key=f"amcu_exclusion:{code}"
         prior=con.execute("SELECT status FROM operational_tasks WHERE task_key=?",(base_key,)).fetchone()
         key=(f"{base_key}:{apps[0]['id']}" if prior and prior["status"] in TERMINAL else base_key)
@@ -486,6 +757,8 @@ def build(con, actor="PQM task builder", *, include_nazk=False):
         document={"document_type":"supplier_exclusion","legal_basis":"пп. 7 п. 40","supplier":{"code":code,"name":supplier_names.get(code,"")},"officer":{},"protocol":{"number":"","date":""},"amcu_decisions":[]}
         task_id,created=_create(con,key,"amcu_exclusion",code,"high",source,document,supplier_name=supplier_names.get(code,""))
         counts["created" if created else "existing"]+=1; counts["amcu"]+=1; _link_apps(con,task_id,apps)
+        if con.execute("SELECT status FROM operational_tasks WHERE id=?",(task_id,)).fetchone()[0] not in {'awaiting_sync','completed','cancelled'}:
+            _snapshot_amcu_target_qualifications(con,task_id,actor)
         stamp=now_iso(); con.executemany("INSERT OR IGNORE INTO operational_task_amcu_decisions VALUES (?,?, '',?,?,?)",[(task_id,x["row_key"],stamp,stamp,actor) for x in decisions])
     if include_nazk:
         nazk_counts=materialize_nazk_tasks(con,actor,active_applications=active_applications,
@@ -590,6 +863,23 @@ def _task(con,row,detail=False):
         item["amcu_decisions"]=([dict(r) for r in con.execute("""SELECT a.row_key,a.decision_no,a.decision_date,a.authority,a.court_case_no,l.extract_url
           FROM operational_task_amcu_decisions l JOIN amcu_registry a ON a.row_key=l.amcu_decision_id WHERE l.task_id=? ORDER BY a.decision_date,a.row_key""",(item["id"],))]
           if item["task_type"]=="amcu_exclusion" else [])
+        if item["task_type"]=="termination_exclusion":
+            snapshot=item.get("source_context",{}).get("affected_qualifications") or []
+            current={(row["qualification_id"],row["registry_contract_id"]):dict(row) for row in con.execute(f"""SELECT l.qualification_id,l.registry_contract_id,
+              rc.status registry_status,q.status qualification_status,
+              CASE WHEN {supplier_activity.effective_active_sql('rc','f')} THEN 1 ELSE 0 END effective_active,
+              d.decision,d.note,d.updated_at,d.updated_by
+              FROM operational_task_qualifications l
+              LEFT JOIN registry_contracts rc ON rc.id=l.registry_contract_id
+              LEFT JOIN qualifications q ON q.id=l.qualification_id
+              LEFT JOIN frameworks f ON f.id=rc.framework_id
+              LEFT JOIN operational_task_qualification_decisions d ON d.task_id=l.task_id
+                AND d.qualification_id=l.qualification_id AND d.registry_contract_id=l.registry_contract_id
+              WHERE l.task_id=? ORDER BY l.qualification_id,l.registry_contract_id""",(item["id"],))}
+            by_qualification={key[0]:value for key,value in current.items()}
+            item["target_qualifications"]=[{**snap,**by_qualification.get(snap.get("qualification_id"),{})} for snap in snapshot]
+            item["termination_evidence"]=item.get("source_context",{}).get("termination") or {}
+            item["supplier_snapshot"]=item.get("source_context",{}).get("supplier") or {}
         item["events"]=[{**dict(r),"metadata":_loads(r["metadata"])} for r in con.execute("SELECT * FROM operational_task_events WHERE task_id=? ORDER BY id",(item["id"],))]
         item["channels"]={r["channel"]:dict(r) for r in con.execute(
             "SELECT * FROM operational_task_channels WHERE task_id=? ORDER BY channel",(item["id"],))}
@@ -653,6 +943,13 @@ def build_document_context(item):
         context["amcu_decisions"]=[{**decision,
           "displayed_text":f"від {decision.get('decision_date') or ''} № {decision.get('decision_no') or ''}",
           "hyperlink":decision.get("extract_url") or ""} for decision in item.get("amcu_decisions") or []]
+    elif item.get("task_type")=="termination_exclusion":
+        source=item.get("source_context") or {}
+        context.update({"supplier":source.get("supplier") or context["supplier"],
+          "termination":source.get("termination") or {},
+          "affected_qualifications":source.get("affected_qualifications") or [],
+          "qualification_decisions":item.get("target_qualifications") or [],
+          "protocol":{"number":item.get("protocol_number") or "","date":item.get("protocol_date") or ""}})
     elif item.get("task_type")=="warning_block":
         source=item.get("source_context") or {}
         context.update({"threshold_type":source.get("threshold_type"),"warning_count":source.get("warning_count"),
@@ -726,10 +1023,43 @@ def update(con,task_id,payload,actor):
     if current['status'] in TERMINAL and str(officer or '') != str(current.get('assigned_officer_id') or ''):
         raise ValueError('У завершеній задачі відповідальна УО доступна лише для перегляду')
     if officer and not con.execute("SELECT 1 FROM authorized_officers WHERE id=? AND active=1",(officer,)).fetchone(): raise ValueError("Оберіть активну УО")
+    if current["task_type"]=="amcu_exclusion" and "amcu_decisions" in payload:
+        update_amcu_extracts(con,task_id,payload["amcu_decisions"],actor)
+        # The document gate must inspect values persisted by this same atomic save.
+        current=detail(con,task_id)
+    if current["task_type"]=="termination_exclusion" and "qualification_decisions" in payload:
+        update_termination_decisions(con,task_id,payload["qualification_decisions"],actor)
+        current=detail(con,task_id)
     if status=="ready_for_document" and not officer: raise ValueError("Призначте відповідальну УО")
     if status=="ready_for_document" and current["task_type"]=="amcu_exclusion" and any(
             not str(x.get("extract_url") or "").strip() for x in current.get("amcu_decisions") or []):
         raise ValueError("Додайте посилання на витяг для всіх рішень АМКУ")
+    if status=="ready_for_document" and current["task_type"]=="termination_exclusion":
+        targets=current.get("target_qualifications") or []
+        if not targets: raise ValueError("У задачі немає зафіксованих кваліфікацій")
+        if any(str(item.get("decision") or "") not in {"exclude","keep"} for item in targets):
+            raise ValueError("Оберіть рішення для кожної кваліфікації")
+        if not str(payload.get("protocol_number",current.get("protocol_number") or "")).strip() or not str(payload.get("protocol_date",current.get("protocol_date") or "")).strip():
+            raise ValueError("Збережіть № і дату протоколу")
+    if status=='awaiting_sync' and current['task_type']=='amcu_exclusion' and status!=current['status']:
+        protocol_number=str(payload.get('protocol_number',current.get('protocol_number') or '')).strip()
+        protocol_date=str(payload.get('protocol_date',current.get('protocol_date') or '')).strip()
+        if not protocol_number or not protocol_date:
+            raise ValueError('Збережіть № і дату протоколу перед переведенням у «Розглянуто»')
+        docs=con.execute("""SELECT COUNT(*) FROM generated_documents
+          WHERE task_id=? AND document_type='amcu_exclusion_protocol' AND status='generated'""",(task_id,)).fetchone()[0]
+        if not docs: raise ValueError('Спочатку сформуйте протокол про виключення')
+        snapshot=_snapshot_amcu_target_qualifications(con,task_id,actor)
+        if not snapshot['linked']:
+            raise ValueError('Не знайдено активних кваліфікацій, які підлягають підтвердженню')
+    if status=='awaiting_sync' and current['task_type']=='termination_exclusion' and status!=current['status']:
+        if not str(payload.get('protocol_number',current.get('protocol_number') or '')).strip() or not str(payload.get('protocol_date',current.get('protocol_date') or '')).strip():
+            raise ValueError('Збережіть № і дату протоколу перед переведенням у «Розглянуто»')
+        if not any(item.get('decision')=='exclude' for item in current.get('target_qualifications') or []):
+            raise ValueError('Немає жодної кваліфікації з рішенням про виключення')
+        docs=con.execute("""SELECT COUNT(*) FROM generated_documents WHERE task_id=?
+          AND document_type='termination_exclusion_protocol' AND status='generated'""",(task_id,)).fetchone()[0]
+        if not docs:raise ValueError('Спочатку сформуйте протокол про виключення')
     stamp=now_iso(); resolved=stamp if status=="completed" else current.get("resolved_at")
     task_officer=officer
     if current["task_type"]=="nazk_check":
@@ -745,10 +1075,47 @@ def update(con,task_id,payload,actor):
     return detail(con,task_id)
 
 
+def update_termination_decisions(con,task_id,decisions,actor):
+    if not isinstance(decisions,list): raise ValueError("Некоректний перелік рішень")
+    linked={(row["qualification_id"],row["registry_contract_id"]) for row in con.execute(
+      "SELECT qualification_id,registry_contract_id FROM operational_task_qualifications WHERE task_id=?",(task_id,))}
+    seen=set(); stamp=now_iso()
+    for raw in decisions:
+        if not isinstance(raw,dict): raise ValueError("Некоректні дані рішення")
+        key=(str(raw.get("qualification_id") or ""),str(raw.get("registry_contract_id") or ""))
+        if key not in linked or key in seen: raise ValueError("Кваліфікація не пов’язана з цією задачею")
+        seen.add(key); decision=str(raw.get("decision") or "")
+        if decision not in {"","exclude","keep"}: raise ValueError("Невідоме рішення щодо кваліфікації")
+        con.execute("""UPDATE operational_task_qualification_decisions SET decision=?,note=?,updated_at=?,updated_by=?
+          WHERE task_id=? AND qualification_id=? AND registry_contract_id=?""",
+          (decision,str(raw.get("note") or "").strip(),stamp,actor,task_id,*key))
+    if seen:_event(con,task_id,"termination_qualification_decisions_updated",actor,metadata={"count":len(seen)})
+
+
+def update_amcu_extracts(con,task_id,decisions,actor):
+    if not isinstance(decisions,list): raise ValueError("Некоректний перелік рішень АМКУ")
+    linked={row["amcu_decision_id"]:row["extract_url"] for row in con.execute(
+        "SELECT amcu_decision_id,extract_url FROM operational_task_amcu_decisions WHERE task_id=?",(task_id,))}
+    seen=set(); changed=0
+    for item in decisions:
+        if not isinstance(item,dict): raise ValueError("Некоректні дані рішення АМКУ")
+        decision_id=str(item.get("decision_id") or item.get("row_key") or "")
+        if not decision_id or decision_id in seen: raise ValueError("Некоректний ідентифікатор рішення АМКУ")
+        seen.add(decision_id)
+        if decision_id not in linked: raise ValueError("Рішення АМКУ не пов’язане з цією задачею")
+        value=str(item.get("extract_url") or "").strip()
+        old=linked[decision_id]
+        if old==value: continue
+        stamp=now_iso()
+        con.execute("UPDATE operational_task_amcu_decisions SET extract_url=?,updated_at=?,updated_by=? WHERE task_id=? AND amcu_decision_id=?",
+                    (value,stamp,actor,task_id,decision_id))
+        _event(con,task_id,"amcu_extract_url_added",actor,old,value,{"decision_id":decision_id})
+        linked[decision_id]=value; changed+=1
+    return changed
+
+
 def set_amcu_extract(con,task_id,decision_id,url,actor):
-    if not con.execute("SELECT 1 FROM operational_task_amcu_decisions WHERE task_id=? AND amcu_decision_id=?",(task_id,decision_id)).fetchone(): raise KeyError(decision_id)
-    old=con.execute("SELECT extract_url FROM operational_task_amcu_decisions WHERE task_id=? AND amcu_decision_id=?",(task_id,decision_id)).fetchone()[0]
-    con.execute("UPDATE operational_task_amcu_decisions SET extract_url=?,updated_at=?,updated_by=? WHERE task_id=? AND amcu_decision_id=?",(str(url or "").strip(),now_iso(),actor,task_id,decision_id)); _event(con,task_id,"amcu_extract_url_added",actor,old,str(url or "").strip(),{"decision_id":decision_id})
+    update_amcu_extracts(con,task_id,[{"decision_id":decision_id,"extract_url":url}],actor)
     return detail(con,task_id)
 
 

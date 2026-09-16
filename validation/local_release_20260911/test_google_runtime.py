@@ -182,7 +182,8 @@ class GoogleRuntimeTests(unittest.TestCase):
     def test_ui_starts_in_loading_state_and_validates_callback_origin(self):
         html = Path("index.html").read_text(encoding="utf-8")
         js = Path("app.js").read_text(encoding="utf-8")
-        self.assertIn('id="supplierEdrSync" class="primary" disabled aria-busy="true"', html)
+        # NEXT hides the legacy EDR action; it must remain disabled at boot.
+        self.assertIn('id="supplierEdrSync" disabled', html)
         self.assertIn("event.origin!==location.origin", js)
         self.assertNotIn("postMessage('pqm-google-oauth','*')", Path("server.py").read_text(encoding="utf-8"))
         self.assertNotIn("Google OAuth не налаштовано для TEST WEB", js)

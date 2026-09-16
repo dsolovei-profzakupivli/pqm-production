@@ -14,10 +14,12 @@ def list_all(con):
         except (TypeError,ValueError): result[row['table_key']]={}
     return result
 
-def save(con,table_key,widths,user):
+def save(con,table_key,widths,user,visible=None):
     key=str(table_key or '').strip()
     if not key or len(key)>120: raise ValueError('Некоректний ключ таблиці')
     clean={str(k):max(40,min(1200,int(v))) for k,v in dict(widths or {}).items() if str(k).strip()}
+    if visible is not None:
+        clean['__visible__']=[str(value) for value in visible if str(value).strip()]
     con.execute('''INSERT INTO system_table_widths VALUES (?,?,?,?) ON CONFLICT(table_key) DO UPDATE SET
       widths_json=excluded.widths_json,updated_at=excluded.updated_at,updated_by=excluded.updated_by''',
       (key,json.dumps(clean,ensure_ascii=False,sort_keys=True),datetime.now(timezone.utc).isoformat(),user))

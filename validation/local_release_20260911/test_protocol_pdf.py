@@ -178,6 +178,53 @@ class ProtocolPdfTests(unittest.TestCase):
         self.assertNotIn("Content-Disposition", headers)
         self.assertIn(b'"code": "protocol_pdf_generation_failed"', handler.wfile.getvalue())
 
+    def test_amcu_http_pdf_uses_exact_generated_source_and_business_filename(self):
+        source = self.root / "АМКУ_2884318089_701_v2.docx"
+        pdf = self.root / "АМКУ_2884318089_701_v2.pdf"
+        source.write_bytes(b"docx");pdf.write_bytes(b"%PDF-1.7\namcu")
+        handler = object.__new__(server.Handler)
+        handler.path = "/api/operational-tasks/" + "a"*32 + "/documents/" + "b"*32 + "/pdf"
+        handler.command = "GET";handler.headers = {};handler.auth_user = "fixture"
+        handler.auth_role = "admin";handler.auth_officer_id = None;handler.wfile = io.BytesIO()
+        status, headers = [], {}
+        handler.send_response = status.append
+        handler.send_header = lambda key, value: headers.update({key: value})
+        handler.end_headers = lambda: None
+        with patch.object(handler, "_authorize", return_value=True), \
+                patch.object(server.auth_access, "effective", return_value={
+                    "active": True, "permissions": {"tasks.read": True}}), \
+                patch.object(server, "db", side_effect=lambda: contextlib.nullcontext(None)), \
+                patch.object(server.task_documents, "amcu_pdf_source", return_value=(
+                    source, "Протокол № 701 від 15.09.2026 (пп. 7 п. 40).pdf")) as resolve, \
+                patch.object(server.protocol_pdf, "ensure_pdf", return_value=pdf) as convert:
+            handler.do_GET()
+        self.assertEqual(status, [200]);self.assertEqual(headers["Content-Type"], "application/pdf")
+        self.assertIn("%D0%9F%D1%80%D0%BE%D1%82%D0%BE%D0%BA%D0%BE%D0%BB", headers["Content-Disposition"])
+        self.assertTrue(handler.wfile.getvalue().startswith(b"%PDF-"))
+        resolve.assert_called_once();convert.assert_called_once_with(source, source.with_suffix(".pdf"))
+
+    def test_amcu_http_pdf_failure_is_json_without_content_disposition(self):
+        source = self.root / "source.docx";source.write_bytes(b"docx")
+        handler = object.__new__(server.Handler)
+        handler.path = "/api/operational-tasks/" + "a"*32 + "/documents/" + "b"*32 + "/pdf"
+        handler.command = "GET";handler.headers = {};handler.auth_user = "fixture"
+        handler.auth_role = "admin";handler.auth_officer_id = None;handler.wfile = io.BytesIO()
+        status, headers = [], {}
+        handler.send_response = status.append
+        handler.send_header = lambda key, value: headers.update({key: value})
+        handler.end_headers = lambda: None
+        with patch.object(handler, "_authorize", return_value=True), \
+                patch.object(server.auth_access, "effective", return_value={
+                    "active": True, "permissions": {"tasks.read": True}}), \
+                patch.object(server, "db", side_effect=lambda: contextlib.nullcontext(None)), \
+                patch.object(server.task_documents, "amcu_pdf_source", return_value=(source, "protocol.pdf")), \
+                patch.object(server.protocol_pdf, "ensure_pdf", side_effect=RuntimeError("converter unavailable")), \
+                patch.object(server.SERVER_LOG, "exception"):
+            handler.do_GET()
+        self.assertEqual(status, [503]);self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+        self.assertNotIn("Content-Disposition", headers)
+        self.assertIn(b'"code": "protocol_pdf_generation_failed"', handler.wfile.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

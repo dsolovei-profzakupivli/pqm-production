@@ -17,6 +17,10 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
+# Deterministic, offline HTTP startup for both fixture and child process.
+os.environ['PQM_TEST_NETWORK_ISOLATION']='1'
+os.environ['PYTHONPATH']=str(ROOT/'validation/test_runtime')
+socket.getfqdn=lambda name='':name or 'localhost'
 TEMP=tempfile.TemporaryDirectory(prefix='pqm-web-acceptance-')
 os.environ.update(PQM_ENV='test_web',PQM_DATA_DIR=TEMP.name,PQM_DB_PATH=TEMP.name+'/test.sqlite3',PQM_AUTH_ENABLED='1',PQM_USERS_JSON='',PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_PROZORRO_SCHEDULER='0',PQM_ENABLE_VIOLATION_SCHEDULER='0',PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_BIDS_UPDATE='0',PQM_ENABLE_POWERBI='0',PQM_ENABLE_BROWSER='0',PQM_BIDS_MODE='disabled')
 import server
@@ -73,7 +77,8 @@ class WebAcceptance(unittest.TestCase):
         for path in ['/api/health','/api/auth/me','/api/account','/api/applications','/api/application-history','/api/application-profiles','/api/admin/access-roles','/api/admin/users','/api/admin/schema','/api/admin/frameworks','/api/admin/templates','/api/uo-work-queue','/api/violation-reports','/api/chats','/api/table-widths','/api/runtime-features','/api/supplier-profile/00000000']:
             self.assertEqual(200,self.request(path)[0],path)
         templates=self.request('/api/admin/templates')[1]
-        self.assertEqual(5,len(templates['items']))
+        self.assertEqual(7,len(templates['items']))
+        self.assertTrue({'amcu_exclusion_protocol','termination_exclusion_protocol','nazk_supplier_request'} <= {x['key'] for x in templates['items']})
         for item in templates['items']:
             self.assertEqual(200,self.request('/api/admin/templates/'+item['key']+'/download')[0])
         self.assertEqual(404,self.request('/api/nonexistent')[0])

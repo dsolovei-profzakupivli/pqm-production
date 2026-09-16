@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "revision": 26,
+  "revision": 33,
   "namespaces": [
     "supplier",
     "customer",
@@ -15,7 +15,8 @@
     "blocking",
     "decision",
     "task",
-    "system"
+    "system",
+    "termination"
   ],
   "document_types": [
     "nazk_supplier_request",
@@ -27,7 +28,8 @@
     "warning_notice",
     "decline_p49_1_2",
     "decline_p49_3",
-    "violation_review_protocol"
+    "violation_review_protocol",
+    "termination_exclusion_protocol"
   ],
   "fields": [
     {
@@ -45,7 +47,9 @@
       },
       "description": "Підпис перед ідентифікатором постачальника: код ЄДРПОУ або РНОКПП. Не значення самого коду.",
       "available_for": [
-        "nazk_supplier_request"
+        "nazk_supplier_request",
+        "amcu_exclusion_protocol",
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
@@ -79,7 +83,8 @@
         "application_review_protocol",
         "warning_notice",
         "decline_p49_1_2",
-        "decline_p49_3"
+        "decline_p49_3",
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
@@ -107,7 +112,9 @@
       "description": "Скорочена назва з current snapshot ЄДР; fallback — canonical назва документа.",
       "available_for": [
         "nazk_supplier_request",
-        "violation_review_protocol"
+        "violation_review_protocol",
+        "amcu_exclusion_protocol",
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
@@ -137,11 +144,96 @@
         "warning_notice",
         "decline_p49_1_2",
         "decline_p49_3",
-        "violation_review_protocol"
+        "violation_review_protocol",
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
       "example": null,
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "supplier.short_name_genitive",
+      "label": "Скорочена назва постачальника у родовому відмінку",
+      "group": "Постачальник",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "source_field": "supplier.short_name",
+        "transformation_type": "declension",
+        "grammatical_case": "genitive",
+        "entity_type_field": "supplier.entity_type",
+        "preserve_fop_abbreviation": true,
+        "unresolved_policy": "error",
+        "dependencies": [],
+        "description": "supplier.short_name → established declension / genitive; exact manual override wins and ФОП abbreviation is preserved for automatic short-name rendering"
+      },
+      "description": "Скорочена назва постачальника у родовому відмінку через спільний механізм відмінювання.",
+      "available_for": [
+        "amcu_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "ФОП ПРЕСЛІЦЬКОЇ К.К.",
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "supplier.short_name_dative",
+      "label": "Скорочена назва постачальника у давальному відмінку",
+      "group": "Постачальник",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "source_field": "supplier.short_name",
+        "transformation_type": "declension",
+        "grammatical_case": "dative",
+        "entity_type_field": "supplier.entity_type",
+        "preserve_fop_abbreviation": true,
+        "unresolved_policy": "error",
+        "dependencies": [],
+        "description": "supplier.short_name → established declension / dative; exact manual override wins and ФОП abbreviation is preserved"
+      },
+      "description": "Скорочена назва постачальника у давальному відмінку через спільний механізм відмінювання.",
+      "available_for": [
+        "amcu_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "ФОП ПРЕСЛІЦЬКІЙ К.К.",
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "supplier.short_name_accusative",
+      "label": "Скорочена назва постачальника у знахідному відмінку",
+      "group": "Постачальник",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "source_field": "supplier.short_name",
+        "transformation_type": "declension",
+        "grammatical_case": "accusative",
+        "entity_type_field": "supplier.entity_type",
+        "preserve_fop_abbreviation": true,
+        "unresolved_policy": "error",
+        "dependencies": [],
+        "description": "supplier.short_name → established declension / accusative; exact manual override wins and ФОП abbreviation is preserved"
+      },
+      "description": "Скорочена назва постачальника у знахідному відмінку через спільний механізм відмінювання.",
+      "available_for": [
+        "amcu_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "ФОП ПРЕСЛІЦЬКУ К.К.",
       "nullable": true,
       "active": true,
       "deprecated": false,
@@ -155,11 +247,15 @@
       "source_binding": {
         "source_type": "derived",
         "context_path": "report.report_id",
-        "dependencies": ["pqm.violation_reports.report_id"],
+        "dependencies": [
+          "pqm.violation_reports.report_id"
+        ],
         "description": "Canonical report_id поточного звернення."
       },
       "description": "Номер поточного звернення UA-D.",
-      "available_for": ["violation_review_protocol"],
+      "available_for": [
+        "violation_review_protocol"
+      ],
       "required_for": [],
       "default_format": null,
       "example": "UA-D-2026-09-07-000001",
@@ -180,15 +276,26 @@
         "description": "Document-only projection of the existing structured deadline-shift fact; applicable when the relevant three-day or five-day deadline is shifted under the Civil Code, otherwise not_applicable."
       },
       "description": "Керує declarative нормативним блоком ЦКУ у протоколі; не є business status.",
-      "available_for": ["warning_notice", "decline_p49_1_2", "decline_p49_3"],
-      "required_for": ["warning_notice", "decline_p49_1_2", "decline_p49_3"],
+      "available_for": [
+        "warning_notice",
+        "decline_p49_1_2",
+        "decline_p49_3"
+      ],
+      "required_for": [
+        "warning_notice",
+        "decline_p49_1_2",
+        "decline_p49_3"
+      ],
       "default_format": null,
       "example": "applicable",
       "nullable": false,
       "active": true,
       "deprecated": false,
       "replacement_key": null,
-      "enum_values": ["applicable", "not_applicable"]
+      "enum_values": [
+        "applicable",
+        "not_applicable"
+      ]
     },
     {
       "key": "tender_id",
@@ -198,11 +305,15 @@
       "source_binding": {
         "source_type": "derived",
         "context_path": "report.tender_id",
-        "dependencies": ["pqm.violation_reports.tender_pretty_id"],
+        "dependencies": [
+          "pqm.violation_reports.tender_pretty_id"
+        ],
         "description": "Canonical tender_pretty_id поточного звернення."
       },
       "description": "Номер закупівлі, якої стосується звернення.",
-      "available_for": ["violation_review_protocol"],
+      "available_for": [
+        "violation_review_protocol"
+      ],
       "required_for": [],
       "default_format": null,
       "example": "UA-2026-09-01-000001-a",
@@ -219,11 +330,15 @@
       "source_binding": {
         "source_type": "derived",
         "context_path": "customer.short_name",
-        "dependencies": ["pqm.violation_report_reviews.customer_verified_short_name"],
+        "dependencies": [
+          "pqm.violation_report_reviews.customer_verified_short_name"
+        ],
         "description": "Manual canonical назва поточного review; fallback — останнє збережене значення за тим самим customer code."
       },
       "description": "Перевірена скорочена назва замовника з canonical/manual reuse за кодом.",
-      "available_for": ["violation_review_protocol"],
+      "available_for": [
+        "violation_review_protocol"
+      ],
       "required_for": [],
       "default_format": null,
       "example": "ГЕНЕРАЛЬНА ДИРЕКЦІЯ ДКВС УКРАЇНИ",
@@ -326,7 +441,8 @@
         "application_review_protocol",
         "warning_notice",
         "decline_p49_1_2",
-        "decline_p49_3"
+        "decline_p49_3",
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
@@ -604,6 +720,89 @@
       "replacement_key": null
     },
     {
+      "key": "amcu.is_single_decision",
+      "label": "Одне рішення АМКУ",
+      "group": "АМКУ",
+      "value_type": "enum",
+      "enum_values": [
+        "true",
+        "false"
+      ],
+      "source_binding": {
+        "source_type": "derived",
+        "description": "Declarative singular branch derived from the linked decisions set of this task.",
+        "dependencies": [
+          "pqm.operational_task_amcu_decisions.amcu_decision_id"
+        ],
+        "context_path": "task.amcu_is_single_decision"
+      },
+      "description": "Взаємовиключний discriminator для тексту про одне linked рішення АМКУ.",
+      "available_for": [
+        "amcu_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "true",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "amcu.decision_basis_phrase",
+      "label": "Фраза про підставу рішення АМКУ",
+      "group": "АМКУ",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "description": "Граматична форма за кількістю linked рішень: на підставі рішення / на підставі рішень.",
+        "dependencies": [
+          "pqm.operational_task_amcu_decisions.amcu_decision_id"
+        ],
+        "context_path": "task.amcu_decision_basis_phrase"
+      },
+      "description": "Canonical scalar для двох незалежних grammar contexts без повторення conditional variants.",
+      "available_for": [
+        "amcu_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "на підставі рішення",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "amcu.has_multiple_decisions",
+      "label": "Кілька рішень АМКУ",
+      "group": "АМКУ",
+      "value_type": "enum",
+      "enum_values": [
+        "true",
+        "false"
+      ],
+      "source_binding": {
+        "source_type": "derived",
+        "description": "Declarative plural branch derived from the linked decisions set of this task.",
+        "dependencies": [
+          "pqm.operational_task_amcu_decisions.amcu_decision_id"
+        ],
+        "context_path": "task.amcu_has_multiple_decisions"
+      },
+      "description": "Взаємовиключний discriminator для тексту про кілька linked рішень АМКУ.",
+      "available_for": [
+        "amcu_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "false",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
       "key": "amcu.decisions[]",
       "label": "Рішення АМКУ",
       "group": "АМКУ",
@@ -647,6 +846,10 @@
         {
           "key": "amcu.decisions[].extract_url",
           "value_type": "url"
+        },
+        {
+          "key": "amcu.decisions[].linked_reference",
+          "value_type": "string"
         }
       ]
     },
@@ -1024,20 +1227,13 @@
       "group": "Рішення",
       "value_type": "string",
       "source_binding": {
-        "source_type": "unbound",
-        "description": "Потребує погодження єдиного resolver між blocking_decision, application protocol і violation protocol; джерела різні."
+        "source_type": "schema_field",
+        "schema_field": "pqm.operational_tasks.protocol_number"
       },
       "description": "Номер рішення / протоколу",
       "available_for": [
-        "nazk_supplier_request",
-        "nazk_authority_request",
-        "nazk_exclusion_protocol",
         "amcu_exclusion_protocol",
-        "warning_block_protocol",
-        "application_review_protocol",
-        "warning_notice",
-        "decline_p49_1_2",
-        "decline_p49_3"
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
@@ -1053,20 +1249,13 @@
       "group": "Рішення",
       "value_type": "date",
       "source_binding": {
-        "source_type": "unbound",
-        "description": "Потребує погодження єдиного resolver між blocking_decision, application protocol і violation protocol; джерела різні."
+        "source_type": "schema_field",
+        "schema_field": "pqm.operational_tasks.protocol_date"
       },
       "description": "Дата рішення / протоколу",
       "available_for": [
-        "nazk_supplier_request",
-        "nazk_authority_request",
-        "nazk_exclusion_protocol",
         "amcu_exclusion_protocol",
-        "warning_block_protocol",
-        "application_review_protocol",
-        "warning_notice",
-        "decline_p49_1_2",
-        "decline_p49_3"
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": "dd.MM.yyyy",
@@ -1186,7 +1375,9 @@
       },
       "description": "Тип адресата для conditional paragraph: 10 цифр normalized code → individual_entrepreneur (ФОП), інакше legal_entity (юридична особа). Похідне від спільного результату з supplier.code_label.",
       "available_for": [
-        "nazk_supplier_request"
+        "nazk_supplier_request",
+        "amcu_exclusion_protocol",
+        "termination_exclusion_protocol"
       ],
       "required_for": [
         "nazk_supplier_request"
@@ -1242,14 +1433,72 @@
         "source_field": "supplier.name",
         "transformation_type": "declension",
         "grammatical_case": "genitive",
-        "entity_type": "legal_entity",
+        "entity_type_field": "supplier.entity_type",
         "unresolved_policy": "error",
         "dependencies": [],
-        "description": "supplier.name → declension / genitive"
+        "description": "supplier.name → established declension / genitive using canonical supplier.entity_type"
       },
-      "description": "supplier.name → declension / genitive",
+      "description": "Назва постачальника у родовому відмінку через спільний механізм відмінювання.",
       "available_for": [
-        "nazk_supplier_request"
+        "nazk_supplier_request",
+        "amcu_exclusion_protocol",
+        "termination_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": null,
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "amcu.decisions[].linked_reference",
+      "label": "Клікабельні реквізити рішення АМКУ",
+      "group": "АМКУ",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "dependencies": [
+          "pqm.amcu_registry.decision_no",
+          "pqm.amcu_registry.decision_date",
+          "pqm.operational_task_amcu_decisions.extract_url"
+        ],
+        "context_path": "task.amcu_decisions",
+        "description": "User-facing «від dd.MM.yyyy № number»; external hyperlink target is the same repeat item's persisted extract_url"
+      },
+      "hyperlink_target_field": "amcu.decisions[].extract_url",
+      "description": "Клікабельний фрагмент реквізитів рішення без показу raw URL.",
+      "available_for": [
+        "amcu_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "від 11.09.2026 № 72/130-р/к",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "supplier.name_accusative",
+      "label": "Назва постачальника у знахідному відмінку",
+      "group": "Постачальник",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "source_field": "supplier.name",
+        "transformation_type": "declension",
+        "grammatical_case": "accusative",
+        "entity_type_field": "supplier.entity_type",
+        "unresolved_policy": "error",
+        "dependencies": [],
+        "description": "supplier.name → established declension / accusative using canonical supplier.entity_type"
+      },
+      "description": "Назва постачальника у знахідному відмінку через спільний механізм відмінювання.",
+      "available_for": [
+        "amcu_exclusion_protocol",
+        "termination_exclusion_protocol"
       ],
       "required_for": [],
       "default_format": null,
@@ -1283,6 +1532,31 @@
       "default_format": null,
       "example": null,
       "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null
+    },
+    {
+      "key": "termination.reference",
+      "label": "Реквізити припинення",
+      "group": "Припинення",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "derived",
+        "description": "Реквізити з immutable source_context задачі.",
+        "dependencies": [
+          "pqm.operational_tasks.source_context"
+        ],
+        "context_path": "task.termination_reference"
+      },
+      "description": "Immutable termination snapshot reference.",
+      "available_for": [
+        "termination_exclusion_protocol"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "№ 10 від 01.09.2026",
+      "nullable": false,
       "active": true,
       "deprecated": false,
       "replacement_key": null
@@ -2517,6 +2791,92 @@
         "active": true,
         "deprecated": false,
         "replacement_key": null
+      }
+    },
+    {
+      "at": "2026-09-14T14:30:00+00:00",
+      "by": "NEXT LOCAL — user-approved AMKU canonical binding extension",
+      "key": "amcu_exclusion_protocol.binding_contract",
+      "old": "AMKU array fields existed as proposed model; repeat syntax inactive; decision.number/date unbound",
+      "new": {
+        "decision.number": "pqm.operational_tasks.protocol_number",
+        "decision.date": "pqm.operational_tasks.protocol_date · dd.MM.yyyy",
+        "supplier_fields": [
+          "supplier.name_genitive",
+          "supplier.name_accusative",
+          "supplier.short_name",
+          "supplier.code_label"
+        ],
+        "officer_field": "uo.full_name",
+        "repeat_collection": "amcu.decisions[]",
+        "repeat_scope": [
+          "number",
+          "date",
+          "authority",
+          "extract_url"
+        ]
+      }
+    },
+    {
+      "at": "2026-09-15T00:00:00+03:00",
+      "by": "NEXT LOCAL — AMKU short-name declension and linked decision reference",
+      "key": "amcu_exclusion_protocol.short_name_and_hyperlink",
+      "old": {
+        "short_name": "nominative in two genitive contexts",
+        "decision_display": "date/number with raw extract_url"
+      },
+      "new": {
+        "short_name": "supplier.short_name_genitive via established declension and manual overrides",
+        "decision_display": "amcu.decisions[].linked_reference with per-item extract_url hyperlink target"
+      }
+    },
+    {
+      "at": "2026-09-15T12:00:00+03:00",
+      "by": "NEXT LOCAL — complete AMKU short-name declensions and visible decision hyperlinks",
+      "key": "amcu_exclusion_protocol.short_name_cases_and_hyperlink_style",
+      "old": {
+        "short_name_cases": [
+          "nominative",
+          "genitive"
+        ],
+        "first_sentence": "supplier.short_name_genitive",
+        "hyperlink_style": "template run formatting only"
+      },
+      "new": {
+        "short_name_cases": [
+          "nominative",
+          "genitive",
+          "dative",
+          "accusative"
+        ],
+        "first_sentence": "supplier.short_name_accusative",
+        "hyperlink_style": "external relationship with explicit blue underline; template font, size and emphasis preserved"
+      }
+    },
+    {
+      "at": "2026-09-15T14:20:00+03:00",
+      "by": "NEXT LOCAL — AMKU singular/plural conditional rendering",
+      "key": "amcu_exclusion_protocol.decision_count_grammar",
+      "old": {
+        "grammar": "plural text for every linked decision count"
+      },
+      "new": {
+        "source": "amcu.count / linked task decisions",
+        "single_discriminator": "amcu.is_single_decision",
+        "multiple_discriminator": "amcu.has_multiple_decisions",
+        "zero": "blocked by existing AMKU document gate"
+      }
+    },
+    {
+      "at": "2026-09-15T15:05:00+03:00",
+      "by": "NEXT LOCAL — complete AMKU decision-count grammar",
+      "key": "amcu_exclusion_protocol.decision_count_grammar_followup",
+      "old": {
+        "later_basis_sentence": "на підставі таких рішень for every count"
+      },
+      "new": {
+        "single": "на підставі такого рішення",
+        "multiple": "на підставі таких рішень"
       }
     }
   ]

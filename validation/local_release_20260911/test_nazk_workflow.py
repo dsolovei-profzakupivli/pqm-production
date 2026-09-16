@@ -996,7 +996,9 @@ class NazkWorkflowTests(unittest.TestCase):
 
     def test_applications_api_exposes_manager_fallback_without_overwriting_subject_field(self):
         source = Path("server.py").read_text(encoding="utf-8")
-        self.assertIn('item["manager_name_display"] = item.get("manager_name") or submission_nazk.get("manager_name", "")', source)
+        # Preserve WEB historical MedData projection: never enrich historical managers.
+        self.assertIn('item["manager_name_display"] = (item.get("manager_name", "") if meddata else', source)
+        self.assertIn('if not meddata and not item.get("manager_name") and item["manager_name_display"]:', source)
         self.assertIn('item["manager_name_display_source"] = "edr_fallback"', source)
 
     def test_supplier_card_icon_and_code_copy_are_independent_actions(self):

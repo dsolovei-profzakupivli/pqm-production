@@ -22,11 +22,19 @@ class ChatAndWidthsTests(unittest.TestCase):
         permissions=auth_access.effective(self.db,'viewer','viewer')['permissions']
         self.assertTrue(permissions['messages.write'])
         self.assertFalse(permissions['applications.edit'])
+    def test_shared_settings_persist_visibility_and_clamp_widths(self):
+        saved=table_widths.save(self.db,'edr-monitoring',{'supplier_name':5000,'edr_status':20},'admin',['supplier_name'])
+        self.assertEqual(saved['supplier_name'],1200)
+        self.assertEqual(saved['edr_status'],40)
+        self.assertEqual(saved['__visible__'],['supplier_name'])
+        self.assertEqual(table_widths.list_all(self.db)['edr-monitoring']['__visible__'],['supplier_name'])
     def test_width_control_is_scoped_to_visible_table_toolbar(self):
         source=(Path(__file__).with_name('table_widths_ui.js')).read_text(encoding='utf-8')
         self.assertIn("if(table.closest('#applicationsView,#historyView'))return",source)
         self.assertIn("if(document.body.dataset.authRole!=='admin'||!isVisible(table))return",source)
         self.assertIn("occupied.has(toolbar)",source)
+        self.assertIn("data-visible",source)
+        self.assertIn("visibilityControl",source)
         self.assertNotIn(".module-heading')||",source)
 
 if __name__=='__main__': unittest.main()

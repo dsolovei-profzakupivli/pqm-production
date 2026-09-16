@@ -110,12 +110,12 @@ def paragraph_text(paragraph):
     return ''.join(paragraph.xpath('.//w:t/text()', namespaces=NS))
 
 
-def replace_tokens(root, values):
+def replace_tokens(root, values, token_pattern=TOKEN):
     """Replace even run-split markers, preserving runs, properties and surrounding text."""
     for paragraph in root.xpath('.//w:p', namespaces=NS):
         nodes = paragraph.xpath('.//w:t', namespaces=NS)
         full = ''.join(n.text or '' for n in nodes)
-        for match in reversed(list(TOKEN.finditer(full))):
+        for match in reversed(list(token_pattern.finditer(full))):
             if match.group(1) not in values:
                 continue
             offset = 0

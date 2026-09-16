@@ -105,6 +105,12 @@ def effective(con, username, base):
     return {'code':code,'base_role':base,'active':True,'permissions':rights}
 
 def permission_key(method,path):
+    if method=='GET' and path in {'/api/edr-monitoring','/api/suppliers-registry-risk-counts'}:
+        return 'suppliers.read'
+    if method=='POST' and path=='/api/edr-monitoring/termination-exclusions/preview':
+        return 'tasks.read'
+    if method=='POST' and path=='/api/edr-monitoring/termination-exclusions/create':
+        return 'tasks.manage'
     if method=='GET' and re.fullmatch(r'/api/applications/[^/]+/verify-documents/start',path):
         return 'applications.check'
     mutation=method in {'POST','PATCH','PUT','DELETE'}

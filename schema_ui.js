@@ -5,7 +5,7 @@
   const editing={manual:'Ручне редагування',system:'Системне / обчислюване',unknown:'Потребує уточнення'};
   const kinds={physical:'Колонка SQLite',json:'Поле JSON',derived:'Похідне поле'};
   const modes={automatic:'Автоматичний процес',officer:'Дія УО',manual:'Ручне перенесення',unconfirmed:'Потребує підтвердження',planned:'Заплановано'};
-  const navigation=new Set(['applicationsNav','historyNav','suppliersNav','frameworksNav','requestsNav','referencesNav','procurementsNav']);
+  const navigation=new Set(['applicationsNav','historyNav','suppliersNav','edrMonitoringNav','frameworksNav','requestsNav','referencesNav','procurementsNav']);
   let data=null, mode='fields', requestId=0;
   document.querySelector('#administrationView .reference-tabs').insertAdjacentHTML('beforeend','<button type="button" id="schemaTab" data-admin-tab="schema">Схема даних PQM</button>');
   q('administrationView').insertAdjacentHTML('beforeend',`<section id="adminSchemaPanel" class="admin-panel" hidden>

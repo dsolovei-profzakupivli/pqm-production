@@ -126,6 +126,63 @@ class RegistryUxCleanupTests(unittest.TestCase):
         self.assertNotIn("Promise.all", loader)
         self.assertIn("render();if(refreshStats)void loadStats()", loader)
 
+    def test_edr_preview_dialog_exists_before_application_script_runs(self):
+        self.assertLess(
+            self.html.index('id="supplierEdrPreviewApply"'),
+            self.html.index('<script src="app.js"></script>'),
+        )
+
+    def test_prozorro_terminal_states_restore_all_registry_sections(self):
+        recovery = self.app.split("async function reloadApplicationsRegistry", 1)[1].split(
+            "function setProzorroSyncButtonIdle", 1
+        )[0]
+        self.assertIn("Promise.allSettled([loadProfiles(),loadAuthorizedOfficers(),loadSearchFields()])", recovery)
+        self.assertIn("Promise.allSettled([loadPrimaryFilterOptions(),loadFrameworks(),loadSupplierOptions()])", recovery)
+        self.assertIn("Promise.all([loadRows(),loadStats()])", recovery)
+        sync_flow = self.app.split("async function pollProzorroSync", 1)[1].split(
+            "async function refreshSyncStatus", 1
+        )[0]
+        self.assertIn("if(!state.running)", sync_flow)
+        self.assertIn("restoreRegistryAfterSync", sync_flow)
+        self.assertNotIn("setInterval(async", sync_flow)
+        self.assertIn("await restoreRegistryAfterSync(error.message,'error')", sync_flow)
+
+    def test_registry_startup_is_fault_tolerant(self):
+        startup = self.app.split("const initializeApplicationsRegistry", 1)[1].split(
+            "refreshSyncStatus();", 1
+        )[0]
+        self.assertIn("reloadApplicationsRegistry({reloadMetadata:true})", startup)
+        self.assertIn("authReady.then(()=>{if(activeModule==='applications')return initializeApplicationsRegistry()}", startup)
+        self.assertIn("$('#applicationsNav').onclick=()=>{showModule('applications');initializeApplicationsRegistry()}", startup)
+
+    def test_failed_registry_reload_preserves_last_readable_rows(self):
+        loader = self.app.split("async function loadRows(){", 1)[1].split("function bindStaticMulti", 1)[0]
+        failure = loader.split("}catch(e){", 1)[1].split("}finally{", 1)[0]
+        self.assertIn("Показано останні доступні дані", failure)
+        self.assertNotIn("rows=[]", failure)
+
+    def test_supplier_clarity_export_uses_current_filters_and_cross_page_selection(self):
+        for element_id in (
+            "supplierRegistryAdmittedFrom", "supplierRegistryAdmittedTo",
+            "supplierRegistrySelectionInfo", "supplierRegistrySelectPage",
+            "supplierEdrExportFiltered", "supplierEdrExportSelected",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn("supplierRegistrySelectedCodes=new Set()", self.app)
+        self.assertIn("Розширені фільтри", self.html)
+        self.assertNotIn("supplierEdrExportFop", self.html)
+        self.assertNotIn("supplierEdrExportYuo", self.html)
+        export_links = self.app.split("function updateSupplierEdrExportLinks", 1)[1].split(
+            "function updateSupplierFilterAppearance", 1
+        )[0]
+        for parameter in ("search", "status", "edr_status", "freshness", "verification_from",
+                          "verification_to", "admission_from", "admission_to", "dk_code", "risk"):
+            self.assertIn(parameter, export_links)
+        selected_export = self.app.split("$('#supplierEdrExportSelected').onclick", 1)[1].split(
+            "$$('.supplier-filter-kpi')", 1
+        )[0]
+        self.assertIn("method:'POST'", selected_export)
+
     def test_reload_does_not_restore_last_supplier_modal(self):
         self.assertNotIn("supplierProfile=", self.app)
         self.assertNotIn("openSupplierProfile(new URLSearchParams", self.app)
@@ -203,6 +260,12 @@ class RegistryUxCleanupTests(unittest.TestCase):
     def test_registry_active_filters_and_single_page_scroll_are_preserved(self):
         styles = (ROOT / "styles.css").read_text(encoding="utf-8")
         self.assertIn(".filter-active", styles)
+        self.assertIn(".multi-filter.filter-active>summary", styles)
+        self.assertIn("function syncSharedFilterPresentation(scope=document)", self.app)
+        self.assertIn("'.history-filters'", self.app)
+        self.assertIn("'.reference-toolbar'", self.app)
+        self.assertIn("'.requests-toolbar'", self.app)
+        self.assertIn("'.operational-task-toolbar'", self.app)
         self.assertIn("toggle('#dateFromFilter',$('#dateFromFilter').value)", self.app)
         self.assertIn("toggle('#dateToFilter',$('#dateToFilter').value)", self.app)
         self.assertIn("toggle('#protocolDecisionFilter',$('#protocolDecisionFilter').value)", self.app)

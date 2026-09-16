@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
+import nazk_registry_evidence
 
 
 def now_iso() -> str:
@@ -189,13 +190,7 @@ def get(con: sqlite3.Connection, check_id: int) -> dict:
         "id": result.get("responsible_officer_id"),
         "name": result.get("responsible_uo_name") or "",
     }
-    result["registry_records"] = [dict(item) for item in con.execute(
-        """SELECT n.source_id,n.full_name,n.offense_name,n.punishment,n.court_case_number,
-                  n.sentence_date,n.sentence_number,n.punishment_start,n.court_name,n.decision_url,
-                  m.match_status
-           FROM supplier_nazk_check_matches m JOIN nazk_registry n ON n.source_id=m.nazk_source_id
-           WHERE m.check_id=? ORDER BY n.sentence_date,n.source_id""", (check_id,)
-    )]
+    result["registry_records"] = nazk_registry_evidence.registry_records(con, check_id)
     result["registry_facts"] = result["registry_records"]
     result["registry_source_ids"] = [item["source_id"] for item in result["registry_records"]]
     result["channels"] = {item["channel"]: dict(item) for item in con.execute(

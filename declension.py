@@ -149,11 +149,16 @@ def _person(original: str, grammatical_case: str, is_fop: bool) -> str | None:
         return None
     last, first = parts[0], parts[1]
     middle = parts[2] if len(parts) > 2 else ""
-    female = any(middle.endswith(suffix) for suffix in ("НА", "НУ", "НІ", "ЇВНА"))
+    # Initial-only short names have no patronymic ending.  A clearly feminine
+    # surname is sufficient for the narrow automatic short-name case.
+    female = (any(middle.endswith(suffix) for suffix in ("НА", "НУ", "НІ", "ЇВНА"))
+              or last.endswith(("СЬКА", "ЬКА", "ОВА", "ИНА", "ІНА")))
     if female:
         if grammatical_case == "genitive":
             if last.endswith("СЬКА"):
                 last = re.sub(r"СЬКА$", "СЬКОЇ", last)
+            elif last.endswith("ЬКА"):
+                last = re.sub(r"ЬКА$", "ЬКОЇ", last)
             elif last.endswith("ОВА"):
                 last = re.sub(r"ОВА$", "ОВОЇ", last)
             elif last.endswith(("ИНА", "ІНА")):
@@ -167,6 +172,8 @@ def _person(original: str, grammatical_case: str, is_fop: bool) -> str | None:
         else:
             if last.endswith("СЬКА"):
                 last = re.sub(r"СЬКА$", "СЬКУ", last)
+            elif last.endswith("ЬКА"):
+                last = re.sub(r"ЬКА$", "ЬКУ", last)
             elif last.endswith("ОВА"):
                 last = re.sub(r"ОВА$", "ОВУ", last)
             elif last.endswith(("ИНА", "ІНА")):
@@ -236,3 +243,25 @@ def decline_name(original: str, entity_type: str, grammatical_case: str,
         value = None
     return DeclensionResult(value or "", "resolved" if value else "unresolved",
                             "automatic" if value else "unresolved", original, entity_type)
+
+
+def decline_short_name(original: str, entity_type: str, grammatical_case: str,
+                       override_store: OverrideStore | None = None) -> DeclensionResult:
+    """Decline a canonical short name while preserving the literal FOP prefix."""
+    original=str(original or '').strip()
+    result=decline_name(original,entity_type,grammatical_case,override_store)
+    if result.source=='override' or entity_type!='fop' or not original.upper().startswith('ФОП '):
+        return result
+    short_original=re.sub(r'^ФОП\s+','',original,flags=re.I)
+    if grammatical_case=='dative':
+        parts=re.split(r'\s+',short_original.strip().upper())
+        surname=parts[0] if parts else ''
+        replacements=(('СЬКА','СЬКІЙ'),('ЬКА','ЬКІЙ'),('ОВА','ОВІЙ'),('ИНА','ИНІЙ'),('ІНА','ІНІЙ'))
+        transformed=next((surname[:-len(source)]+target for source,target in replacements
+                          if surname.endswith(source)),None)
+        value='ФОП '+' '.join([transformed,*parts[1:]]) if transformed else ''
+        return DeclensionResult(value,result.status if not value else 'resolved',
+                                result.source if not value else 'automatic',original,entity_type)
+    short=decline_name(short_original,'person',grammatical_case,override_store)
+    value=('ФОП '+short.value) if short.status=='resolved' else ''
+    return DeclensionResult(value,short.status,short.source,original,entity_type)

@@ -111,13 +111,22 @@ def _fetch(url, timeout=900, max_bytes=None):
 def refresh_nazk(db_path, on_complete=None):
     if not LOCK.acquire(blocking=False):
         return
+    succeeded = False
     try:
         _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
         payload = json.loads(_fetch(NAZK_URL).decode("utf-8-sig"))
         items = payload if isinstance(payload, list) else payload.get("data", payload.get("items", []))
+        if not isinstance(items, list) or not items:
+            raise ValueError("Порожній або некоректний реєстр НАЗК; збережені дані не змінено")
         rows = []
+        source_ids = set()
         for i, item in enumerate(items):
-            if not isinstance(item, dict): continue
+            if not isinstance(item, dict) or item.get("id") is None or not str(item["id"]).strip():
+                raise ValueError("НАЗК: запис без explicit source ID; оновлення скасовано")
+            source_id = str(item["id"]).strip()
+            if source_id in source_ids:
+                raise ValueError("НАЗК: duplicate source ID; оновлення скасовано")
+            source_ids.add(source_id)
             pt = item.get("punishmentType") or {}; et = item.get("entityType") or {}
             names = [item.get("indLastNameOnOffenseMoment"), item.get("indFirstNameOnOffenseMoment"), item.get("indPatronymicOnOffenseMoment")]
             full_name = " ".join(str(x).strip() for x in names if x and str(x).strip()).upper()
@@ -125,19 +134,28 @@ def refresh_nazk(db_path, on_complete=None):
             decision_url = f"https://reyestr.court.gov.ua/Review/{sentence}" if sentence.isdigit() else ""
             articles = item.get("codexArticles")
             if not isinstance(articles, str): articles = json.dumps(articles, ensure_ascii=False) if articles is not None else ""
-            rows.append((str(item.get("id") or i), str(pt.get("code") or ""), str(pt.get("name") or ""), str(et.get("code") or ""), str(et.get("name") or ""),
+            rows.append((source_id, str(pt.get("code") or ""), str(pt.get("name") or ""), str(et.get("code") or ""), str(et.get("name") or ""),
                 *(str(x or "").strip() for x in names), full_name, str(item.get("offenseId") or ""), str(item.get("offenseName") or ""), str(item.get("punishment") or ""),
                 str(item.get("courtCaseNumber") or ""), _date_iso(item.get("sentenceDate")), sentence, _date_iso(item.get("punishmentStart")), str(item.get("courtId") or ""),
                 str(item.get("courtName") or ""), articles, decision_url, json.dumps(item, ensure_ascii=False)))
         with sqlite3.connect(db_path) as con:
-            con.execute("BEGIN"); con.execute("DELETE FROM nazk_registry")
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("PRAGMA defer_foreign_keys=ON")
+            # Legacy schemas fail closed if a linked source vanishes. The
+            # explicit evidence-FK migration allows disappearance without
+            # deleting historical links or presenting old rows as current.
+            con.execute("DELETE FROM nazk_registry")
             con.executemany("INSERT INTO nazk_registry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            if con.execute("PRAGMA foreign_key_check").fetchone():
+                raise ValueError("НАЗК: FK-перевірка не пройдена; збережені дані не змінено")
         _state(db_path, "nazk", "ok", "Оновлено", len(rows), _now())
+        succeeded = True
     except Exception as exc:
         _state(db_path, "nazk", "error", str(exc))
     finally:
         LOCK.release()
-        if on_complete:
+        if succeeded and on_complete:
             on_complete()
 
 

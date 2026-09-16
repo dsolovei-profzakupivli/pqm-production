@@ -29,6 +29,8 @@ def main():
                           PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_BROWSER='0',
                           PQM_ENABLE_BIDS_UPDATE='0',PQM_ENABLE_POWERBI='0',PQM_BIDS_MODE='disabled')
         original_connect=socket.socket.connect
+        original_getfqdn=socket.getfqdn
+        socket.getfqdn=lambda name='':name or 'localhost'
         def isolated_connect(sock,address):
             if isinstance(address,tuple) and address[0] not in {'127.0.0.1','localhost','::1'}:
                 raise RuntimeError('Outbound network forbidden in release tests')
@@ -48,6 +50,7 @@ def main():
             return 0 if result.wasSuccessful() else 1
         finally:
             socket.socket.connect=original_connect
+            socket.getfqdn=original_getfqdn
             os.chdir(old_cwd)
 
 if __name__=='__main__':raise SystemExit(main())

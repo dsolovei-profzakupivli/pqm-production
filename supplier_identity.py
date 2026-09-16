@@ -60,7 +60,7 @@ def current_manager_rnokpp(con, supplier_code, manager):
     }
 
 
-def document_name(con, supplier_code):
+def current_name(con, supplier_code):
     """Current EDR full name, otherwise the latest submission name.
 
     The materialized supplier registry summary is deliberately not a source:
@@ -68,16 +68,23 @@ def document_name(con, supplier_code):
     document identity data.
     """
     code = re.sub(r"\D", "", str(supplier_code or ""))
-    row = con.execute("""SELECT NULLIF(TRIM(full_name),'')
-      FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?""", (code,)).fetchone()
-    if row and row[0]:
-        return row[0]
+    profile_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_edr_profiles)")}
+    if "full_name" in profile_columns:
+        row = con.execute("""SELECT NULLIF(TRIM(full_name),'')
+          FROM supplier_edr_profiles WHERE supplier_code=?""", (code,)).fetchone()
+        if row and row[0]:
+            return row[0]
     row = con.execute("""SELECT NULLIF(TRIM(supplier_name),'')
       FROM submissions
-      WHERE DIGITS(supplier_code)=? AND TRIM(COALESCE(supplier_name,''))<>''
+      WHERE supplier_code=? AND TRIM(COALESCE(supplier_name,''))<>''
            ORDER BY CASE WHEN julianday(NULLIF(date_published,'')) IS NULL THEN 1 ELSE 0 END,
                julianday(NULLIF(date_published,'')) DESC,id DESC LIMIT 1""", (code,)).fetchone()
     return row[0] if row and row[0] else None
+
+
+def document_name(con, supplier_code):
+    """Backward-compatible document entry point for the shared current identity."""
+    return current_name(con, supplier_code)
 
 
 def document_short_name(con, supplier_code):

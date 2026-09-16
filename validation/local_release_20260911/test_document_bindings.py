@@ -50,4 +50,25 @@ class DocumentBindingTests(unittest.TestCase):
         result=task_documents.resolve_context(con,item,template_catalog.validate(self.data,self.schema),{'required_fields':[alias['key']]})
         self.assertEqual(result[alias['key']],'operational_manual')
 
+    def test_amcu_protocol_context_uses_task_decision_and_structured_repeat(self):
+        con,item=fixture('1234567890');self.addCleanup(con.close)
+        con.execute("UPDATE submissions SET supplier_name='ФОП ПРЕСЛІЦЬКА КАТЕРИНА КОСТЯНТИНІВНА'")
+        item.update(task_type='amcu_exclusion',protocol_number='701',protocol_date='2026-09-14',
+                    assigned_officer_id=1,assigned_officer_name='Світлана НАМЯСЕНКО',
+                    amcu_decisions=[{'decision_no':'72/130-р/к','decision_date':'2026-09-11',
+                      'authority':'АМКУ','extract_url':'https://example.test/extract'}])
+        fields=template_catalog.validate(self.data,self.schema)
+        keys=['decision.number','decision.date','supplier.name_genitive','supplier.name_accusative',
+              'supplier.short_name','supplier.code_label','uo.full_name','amcu.decisions[]']
+        values=task_documents.resolve_amcu_protocol_context(con,item,fields,keys)
+        self.assertEqual(values['decision.number'],'701')
+        self.assertEqual(values['decision.date'],'2026-09-14')
+        self.assertEqual(values['supplier.code_label'],'РНОКПП')
+        self.assertTrue(values['supplier.name_genitive'].startswith('ФІЗИЧНОЇ ОСОБИ-ПІДПРИЄМЦЯ'))
+        self.assertTrue(values['supplier.name_accusative'].startswith('ФІЗИЧНУ ОСОБУ-ПІДПРИЄМЦЯ'))
+        self.assertEqual(values['uo.full_name'],'Світлана НАМЯСЕНКО')
+        self.assertEqual(values['amcu.decisions[]'],[{'number':'72/130-р/к','date':'2026-09-11',
+          'authority':'АМКУ','extract_url':'https://example.test/extract',
+          'linked_reference':'від 11.09.2026 № 72/130-р/к'}])
+
 if __name__=='__main__':unittest.main()

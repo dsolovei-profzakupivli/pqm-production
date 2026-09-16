@@ -1,5 +1,6 @@
 """Small canonical registry adapter; legacy four templates keep their own behavior."""
 import hashlib
+import re
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ from lxml import etree
 import violation_protocol_docx as legacy
 import template_catalog
 from docx_conditionals import plan
+from protocol_template import replace_tokens
 
 ROOT=Path(__file__).parent
 REPLACE_LOCK=threading.RLock()
@@ -64,7 +66,7 @@ def validate_template(key, fields, path=None):
     config=registered(key);path=path or template_path(key)
     if not path.is_file():raise ValueError('Файл шаблону відсутній')
     try:
-        report=template_catalog.scan_docx(path,fields,config['document_type'])
+        report=template_catalog.scan_docx(path,fields,config['document_type'],aliases=config.get('placeholder_aliases'))
         if not report['can_activate_canonical']:
             raise ValueError('Шаблон не пройшов validation: '+json.dumps(report,ensure_ascii=False))
         missing=set(config['required_fields'])-set(report['recognized'])
@@ -74,7 +76,11 @@ def validate_template(key, fields, path=None):
             if archive.testzip():raise ValueError('Пошкоджений DOCX')
             for name in archive.namelist():
                 if name.startswith('word/') and name.endswith('.xml'):
-                    conditions.extend(c for c,_ in plan(etree.fromstring(archive.read(name)),fields,config['document_type'])[0])
+                    root=etree.fromstring(archive.read(name))
+                    if config.get('placeholder_aliases'):
+                        replace_tokens(root,{k:'{{'+v+'}}' for k,v in config['placeholder_aliases'].items()},
+                                       re.compile(r'\{\{\s*(.*?)\s*\}\}'))
+                    conditions.extend(c for c,_ in plan(root,fields,config['document_type'])[0])
         for field,variants in config.get('conditional_variants',{}).items():
             actual=[c.literal for c in conditions if c.key==field]
             if sorted(actual)!=sorted(variants):raise ValueError('Потрібно рівно по одному conditional variant: '+field)

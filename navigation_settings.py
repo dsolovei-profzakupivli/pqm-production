@@ -11,6 +11,7 @@ ITEM_DEFAULTS={
  'operationalTasksNav':(None,'text',7,True),'frameworksNav':('frameworks','icon',8,True),
  'procurementsNav':('procurements','icon',9,True),'auditBtn':('audit','icon',10,True),
  'administrationNav':('administration','icon',11,True),
+ 'edrMonitoringNav':(None,'text',12,True),
 }
 ICON_KEYS={'history','requests','references','frameworks','procurements','audit','administration'}
 DISPLAY_MODES={'text','icon','icon-text'}

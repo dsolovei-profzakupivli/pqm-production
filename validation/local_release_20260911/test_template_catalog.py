@@ -17,7 +17,7 @@ class TemplateCatalogTests(unittest.TestCase):
         data=t.load();fields=t.validate(data,self.schema)
         self.assertEqual(len(fields),len({f['key'] for f in fields}))
         self.assertFalse([f for f in fields if f['validation_errors']])
-        self.assertEqual({f['key'] for f in fields if f['binding_status']=='PROPOSED_UNBOUND'},{'decision.number','decision.date','decision.url'})
+        self.assertEqual({f['key'] for f in fields if f['binding_status']=='PROPOSED_UNBOUND'},{'decision.url'})
         self.assertTrue(all('warning_block_protocol' in f['available_for'] for f in t.catalog(self.schema,'warning_block_protocol')['items']))
         self.assertFalse(any(f['key'].startswith('nazk.') for f in t.catalog(self.schema,'warning_block_protocol')['items']))
     def test_partial_ukrainian_search_all_four_attributes(self):
@@ -116,7 +116,8 @@ class TemplateCatalogTests(unittest.TestCase):
                 z.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>{{supplier.</w:t></w:r><w:r><w:t>name}} {{manager.full_name}} {{decision.date}} {{missing}}</w:t></w:r></w:p></w:body></w:document>')
             fields=t.validate(t.load(),self.schema);r=t.scan_docx(path,fields,'warning_block_protocol')
             self.assertIn('supplier.name',r['recognized']);self.assertIn('manager.full_name',r['unavailable'])
-            self.assertEqual(r['unknown'],['missing']);self.assertIn('decision.date',r['broken_bindings'])
+            self.assertEqual(r['unknown'],['missing']);self.assertIn('decision.date',r['unavailable'])
+            self.assertNotIn('decision.date',r['broken_bindings'])
             self.assertFalse(r['can_activate_canonical'])
 
 if __name__=='__main__':unittest.main()

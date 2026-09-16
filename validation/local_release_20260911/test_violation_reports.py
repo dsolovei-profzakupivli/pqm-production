@@ -396,6 +396,8 @@ class ViolationReportTests(unittest.TestCase):
         self.assertIn("context.rejection_date&&String(context.rejection_reason||context.rejection_title||context.rejection_description||'').trim()", source)
         self.assertIn("const contractState=violationHasCompleteRejection(c)?'':", source)
 
+    # These four tests isolate review/persistence, not the separately tested name gate.
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
     def test_rejected_offer_ignores_but_does_not_clear_saved_contract_value(self):
         item = {
             "reason": "goodsNonCompliance",
@@ -668,6 +670,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertTrue(detail["is_read_only"])
         self.assertEqual(detail["review"]["review_status"], "reviewed")
 
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
     def test_protocol_generation_does_not_complete_review(self):
         now = server.now_iso()
         with server.db() as connection:
@@ -732,6 +735,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(review["updated_by"], server.CURRENT_USER)
         self.assertGreaterEqual(events, 1)
 
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
     def test_protocol_uses_manual_contract_requisites_not_prozorro_mapping(self):
         now = server.now_iso()
         with server.db() as connection:
@@ -961,6 +965,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertIn("строк, визначений п. 66 Порядку № 822, ще не сплив", summary)
         self.assertTrue(summary.startswith("Сценарій:"))
 
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
     def test_protocol_passes_last_saved_justification_verbatim(self):
         detail = {
             "id": "report-internal", "report_id": "UA-D-TEST", "reason": "contractBreach",

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
+from docx import Document
 from lxml import etree
 import schema_catalog
 import template_catalog
@@ -29,10 +30,12 @@ def fixture(code='43897155'):
       is_current INTEGER,manager_tax_id_source TEXT,manager_tax_id_verified_at TEXT,
       manager_tax_id_verified_by TEXT,updated_at TEXT);
     CREATE TABLE submissions(id TEXT,supplier_code TEXT,supplier_name TEXT,date_published TEXT,synced_at TEXT,raw_json TEXT,framework_id TEXT);
-    CREATE TABLE frameworks(id TEXT,pretty_id TEXT);''')
+    CREATE TABLE frameworks(id TEXT,pretty_id TEXT);
+    CREATE TABLE authorized_officers(id INTEGER PRIMARY KEY,full_name TEXT);''')
     td.migrate(con)
     tid='a'*32
     con.execute("INSERT INTO operational_tasks VALUES(?,'in_progress')",(tid,))
+    con.execute("INSERT INTO authorized_officers VALUES(1,'СВІТЛАНА НАМЯСЕНКО')")
     supplier_name=('БАБІЙ СЕРГІЙ ПЕТРОВИЧ' if len(re.sub(r'\D','',code))==10 else
                    'ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "КОНТРОЛЬ"')
     con.execute('INSERT INTO supplier_registry_summary VALUES(?,?)',(code,supplier_name))
@@ -221,8 +224,17 @@ class TaskDocumentTests(unittest.TestCase):
 
     def test_registry_and_source_preservation(self):
         metadata=template_runtime.metadata(self.schema)
-        self.assertEqual(len(metadata),5)
-        self.assertTrue(metadata[-1]['validation']['can_activate_canonical'])
+        self.assertEqual(len(metadata),7)
+        by_key={item['key']:item for item in metadata}
+        self.assertTrue(by_key[td.KEY]['validation']['can_activate_canonical'])
+        amcu_runtime=by_key[td.AMCU_PROTOCOL_KEY]['validation']
+        if not amcu_runtime['can_activate_canonical']:
+            # A previous runtime copy may remain registered until the user
+            # explicitly uploads the newly validated canonical source.
+            self.assertIn('amcu.decision_basis_phrase',amcu_runtime['error'])
+        amcu_source=template_runtime.SOURCE_TEMPLATE_ROOT/'amcu_exclusion_protocol.docx'
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        self.assertTrue(template_runtime.validate_template(td.AMCU_PROTOCOL_KEY,fields,amcu_source)['can_activate_canonical'])
         runtime=template_runtime.template_path(td.KEY)
         self.assertTrue(runtime.is_file())
         with ZipFile(runtime) as package:
@@ -235,3 +247,149 @@ class TaskDocumentTests(unittest.TestCase):
         with self.assertRaises(KeyError):td.download(self.con,'b'*32,doc['id'],self.out)
         self.con.execute("UPDATE generated_documents SET storage_name='../outside.docx'")
         with self.assertRaises(KeyError):td.download(self.con,self.item['id'],doc['id'],self.out)
+
+    def test_amcu_activation_ready_context_generation_and_real_hyperlink(self):
+        source=Path(self.temp.name)/'amcu.docx';document=Document()
+        for text in ('Протокол № {{decision.number}} від {{decision.date}}','{{supplier.name_genitive}}',
+                      '{{#repeat amcu.decisions[]}}','{{linked_reference}}','{{/repeat}}',
+                       'Виключити {{supplier.name_accusative}}','{{uo.full_name}}'):
+            document.add_paragraph(text)
+        document.save(source)
+        item={**self.item,'task_type':'amcu_exclusion','status':'ready_for_document','assigned_officer_id':1,
+              'assigned_officer_name':'СВІТЛАНА НАМЯСЕНКО','protocol_number':'701','protocol_date':'2026-09-14',
+              'amcu_decisions':[{'decision_no':'72/130-р/к','decision_date':'2026-09-11','authority':'АМКУ',
+                                 'extract_url':'https://example.test/extract'}]}
+        config={'active':True,'required_fields':['decision.number','decision.date','supplier.name_genitive',
+          'supplier.name_accusative','uo.full_name','amcu.decisions[]'],'generation_provider':'docx_local',
+          'output_name_pattern':'АМКУ_{supplier_code}_{protocol_number}_v{version}.docx','document_type':td.AMCU_PROTOCOL_KEY}
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        report=template_catalog.scan_docx(source,fields,td.AMCU_PROTOCOL_KEY)
+        with patch.object(template_runtime,'registered',return_value=config), \
+             patch.object(template_runtime,'template_path',return_value=source), \
+             patch.object(template_runtime,'validate_template',return_value=report):
+            with self.con:
+                self.con.execute('BEGIN IMMEDIATE')
+                generated=td.generate_amcu(self.con,item,self.schema,self.out,'Admin')
+        path,download_name=td.download(self.con,item['id'],generated['id'],self.out)
+        pdf_source,pdf_name=td.amcu_pdf_source(self.con,item['id'],generated['id'],self.out)
+        self.assertEqual(pdf_source,path)
+        self.assertEqual(generated['display_filename'],'Протокол № 701 від 14.09.2026 (пп. 7 п. 40).docx')
+        self.assertEqual(download_name,'Протокол № 701 від 14.09.2026 (пп. 7 п. 40).docx')
+        self.assertEqual(pdf_name,'Протокол № 701 від 14.09.2026 (пп. 7 п. 40).pdf')
+        self.assertEqual(self.con.execute('SELECT filename FROM generated_documents WHERE id=?',
+                                         (generated['id'],)).fetchone()[0],
+                         'АМКУ_43897155_701_v1.docx')
+        with ZipFile(path) as package:
+            root=etree.fromstring(package.read('word/document.xml'))
+            text='\n'.join(paragraph_text(p) for p in root.xpath('.//w:p',namespaces=NS))
+            self.assertIn('14.09.2026',text);self.assertIn('11.09.2026',text)
+            self.assertIn('Світлана НАМЯСЕНКО',text);self.assertNotIn('{{',text)
+            self.assertIn('від 11.09.2026 № 72/130-р/к',text)
+            self.assertNotIn('https://example.test/extract',text)
+            link=root.xpath('.//w:hyperlink',namespaces=NS)[0]
+            relationships=etree.fromstring(package.read('word/_rels/document.xml.rels'))
+            rid=link.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+            relationship=next(row for row in relationships if row.get('Id')==rid)
+            self.assertEqual(relationship.get('Target'),'https://example.test/extract')
+            self.assertEqual(relationship.get('TargetMode'),'External')
+        self.assertEqual(self.con.execute('SELECT status FROM operational_tasks').fetchone()[0],'in_progress')
+        self.assertEqual(self.con.execute('SELECT event_type FROM operational_task_events').fetchone()[0],
+                          'amcu_exclusion_protocol_generated')
+
+    def test_amcu_fop_short_name_genitive_uses_canonical_short_identity(self):
+        code='2884318089';con,item=fixture(code);self.addCleanup(con.close)
+        con.execute('INSERT INTO supplier_edr_profiles VALUES(?,?,?,?,?)',(
+          code,'ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ ПРЕСЛІЦЬКА КАТЕРИНА КАЗИМИРІВНА',
+          'ФОП ПРЕСЛІЦЬКА К.К.','ПРЕСЛІЦЬКА КАТЕРИНА КАЗИМИРІВНА','ФОП'))
+        con.commit()
+        item.update(task_type='amcu_exclusion',status='ready_for_document',assigned_officer_id=1,
+          assigned_officer_name='СВІТЛАНА НАМЯСЕНКО',protocol_number='701',protocol_date='2026-09-15',
+          amcu_decisions=[{'decision_no':'72/130-р/к','decision_date':'2026-09-11','authority':'',
+                           'extract_url':'https://example.test/extract'}])
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        values=td.resolve_amcu_protocol_context(con,item,fields,
+          ['supplier.short_name','supplier.short_name_genitive','supplier.short_name_dative',
+           'supplier.short_name_accusative','amcu.decisions[]'])
+        self.assertEqual(values['supplier.short_name'],'ФОП ПРЕСЛІЦЬКА К.К.')
+        self.assertEqual(values['supplier.short_name_genitive'],'ФОП ПРЕСЛІЦЬКОЇ К.К.')
+        self.assertEqual(values['supplier.short_name_dative'],'ФОП ПРЕСЛІЦЬКІЙ К.К.')
+        self.assertEqual(values['supplier.short_name_accusative'],'ФОП ПРЕСЛІЦЬКУ К.К.')
+        self.assertEqual(values['amcu.decisions[]'][0]['linked_reference'],'від 11.09.2026 № 72/130-р/к')
+        self.assertEqual(values['amcu.decisions[]'][0]['extract_url'],'https://example.test/extract')
+
+        review=td.amcu_declension_review(con,item)
+        short_cases={entry['grammatical_case']:entry['resolved_value'] for entry in review
+                     if entry['subject_label']=='Скорочена назва постачальника'}
+        self.assertEqual(short_cases,{
+          'genitive':'ФОП ПРЕСЛІЦЬКОЇ К.К.',
+          'dative':'ФОП ПРЕСЛІЦЬКІЙ К.К.',
+          'accusative':'ФОП ПРЕСЛІЦЬКУ К.К.'})
+
+    def test_amcu_decision_count_context_is_mutually_exclusive_and_zero_is_blocked(self):
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        base={**self.item,'task_type':'amcu_exclusion','status':'ready_for_document',
+              'assigned_officer_id':1,'assigned_officer_name':'СВІТЛАНА НАМЯСЕНКО',
+              'protocol_number':'701','protocol_date':'2026-09-15'}
+        with self.assertRaisesRegex(ValueError,'жодного рішення АМКУ'):
+            td.resolve_amcu_protocol_context(self.con,{**base,'amcu_decisions':[]},fields,
+              ['amcu.count','amcu.decision_basis_phrase','amcu.is_single_decision','amcu.has_multiple_decisions','amcu.decisions[]'])
+        for count in (1,2,3,5):
+            with self.subTest(count=count):
+                decisions=[{'decision_no':str(index),'decision_date':'2026-09-11','authority':'',
+                            'extract_url':f'https://example.test/{index}'} for index in range(count)]
+                values=td.resolve_amcu_protocol_context(self.con,{**base,'amcu_decisions':decisions},fields,
+                  ['amcu.count','amcu.decision_basis_phrase','amcu.is_single_decision','amcu.has_multiple_decisions','amcu.decisions[]'])
+                self.assertEqual(values['amcu.count'],count)
+                self.assertEqual(values['amcu.decision_basis_phrase'],
+                                 'на підставі рішення' if count==1 else 'на підставі рішень')
+                self.assertEqual(values['amcu.is_single_decision'],'true' if count==1 else 'false')
+                self.assertEqual(values['amcu.has_multiple_decisions'],'true' if count>1 else 'false')
+                self.assertNotEqual(values['amcu.is_single_decision'],values['amcu.has_multiple_decisions'])
+
+    def test_source_amcu_template_uses_basis_phrase_without_duplicate_conditionals(self):
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        source=template_runtime.SOURCE_TEMPLATE_ROOT/'amcu_exclusion_protocol.docx'
+        report=template_runtime.validate_template(td.AMCU_PROTOCOL_KEY,fields,source)
+        self.assertTrue(report['can_activate_canonical'],report)
+        self.assertEqual(report['unknown'],[]);self.assertEqual(report['unavailable'],[])
+        self.assertIn('amcu.decision_basis_phrase',report['recognized'])
+        self.assertNotIn('amcu.is_single_decision',report['recognized'])
+        self.assertNotIn('amcu.has_multiple_decisions',report['recognized'])
+
+    def test_amcu_declension_gate_is_structured_and_never_nominative_fallback(self):
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        item={**self.item,'task_type':'amcu_exclusion','status':'ready_for_document','assigned_officer_id':1,
+              'assigned_officer_name':'СВІТЛАНА НАМЯСЕНКО','protocol_number':'701','protocol_date':'2026-09-14',
+              'amcu_decisions':[{'decision_no':'1','decision_date':'2026-09-11','authority':'АМКУ',
+                                 'extract_url':'https://example.test/extract'}]}
+        unresolved=type('Result',(),{'status':'unresolved'})()
+        with patch.object(td,'decline_name',return_value=unresolved),self.assertRaises(td.DeclensionRequired) as raised:
+            td.resolve_amcu_protocol_context(self.con,item,fields,['supplier.name_accusative'])
+        self.assertEqual(raised.exception.unresolved[0]['grammatical_case'],'accusative')
+        self.assertEqual(raised.exception.unresolved[0]['context_type'],'amcu_exclusion')
+
+    def test_amcu_protocol_number_and_date_are_generation_invariants(self):
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        base={**self.item,'task_type':'amcu_exclusion','status':'ready_for_document','assigned_officer_id':1,
+              'assigned_officer_name':'СВІТЛАНА НАМЯСЕНКО','protocol_number':'701','protocol_date':'2026-09-14',
+              'amcu_decisions':[{'decision_no':'1','decision_date':'2026-09-11','authority':'АМКУ',
+                                 'extract_url':'https://example.test/extract'}]}
+        for key in ('protocol_number','protocol_date'):
+            item={**base,key:''}
+            with self.subTest(key=key),self.assertRaisesRegex(ValueError,'Не заповнено'):
+                td.resolve_amcu_protocol_context(self.con,item,fields,['decision.number','decision.date'])
+
+    def test_amcu_officer_presentation_hydrates_from_canonical_identity(self):
+        fields=template_catalog.validate(template_catalog.load(),self.schema)
+        item={**self.item,'task_type':'amcu_exclusion','status':'ready_for_document','assigned_officer_id':1,
+              'assigned_officer_name':'','protocol_number':'701','protocol_date':'2026-09-14',
+              'amcu_decisions':[{'decision_no':'1','decision_date':'2026-09-11','authority':'АМКУ',
+                                 'extract_url':'https://example.test/extract'}]}
+        values=td.resolve_amcu_protocol_context(self.con,item,fields,['uo.full_name'])
+        self.assertEqual(values['uo.full_name'],'Світлана НАМЯСЕНКО')
+
+    def test_registered_amcu_template_is_resolvable_before_business_invariants(self):
+        item={**self.item,'task_type':'amcu_exclusion','status':'ready_for_document'}
+        result=td.amcu_readiness(self.con,item,self.schema)
+        self.assertFalse(result['ready'])
+        self.assertNotIn('ще не зареєстрований',result['errors'][0])

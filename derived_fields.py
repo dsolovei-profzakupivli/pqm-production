@@ -1,6 +1,6 @@
 """Provider-neutral, declarative transformations. No eval, SQL or imports from metadata."""
 import re
-from declension import decline_name, ENTITY_TYPES, normalize_document_name
+from declension import decline_name, decline_short_name, ENTITY_TYPES, normalize_document_name
 
 CASES = ('nominative', 'genitive', 'dative', 'accusative', 'instrumental', 'locative', 'vocative')
 TRANSFORMATIONS = {'declension': {'label': 'Відмінювання', 'cases': list(CASES)},
@@ -17,7 +17,13 @@ def configuration_errors(field, lookup):
     if b.get('transformation_type') not in TRANSFORMATIONS: errors.append('UNSUPPORTED_TRANSFORMATION')
     if b.get('transformation_type')=='declension':
         if b.get('grammatical_case') not in CASES: errors.append('INVALID_GRAMMATICAL_CASE')
-        if b.get('entity_type') not in ENTITY_TYPES: errors.append('INVALID_ENTITY_TYPE')
+        entity_type_field=b.get('entity_type_field')
+        if entity_type_field:
+            entity_field=lookup.get(entity_type_field)
+            if (not entity_field or entity_field.get('value_type')!='enum' or not entity_field['active']
+                    or entity_field['deprecated'] or not set(field['available_for']).issubset(entity_field['available_for'])):
+                errors.append('INVALID_ENTITY_TYPE_FIELD')
+        elif b.get('entity_type') not in ENTITY_TYPES: errors.append('INVALID_ENTITY_TYPE')
     elif b.get('transformation_type')=='conditional_prefix':
         condition=lookup.get(b.get('condition_field'))
         if (not condition or condition.get('value_type')!='enum' or not condition['active'] or condition['deprecated']
@@ -40,7 +46,7 @@ def configuration_errors(field, lookup):
 
 def dependencies(field):
     b=field['source_binding']
-    return [b[k] for k in ('source_field','condition_field') if b.get(k)]
+    return [b[k] for k in ('source_field','condition_field','entity_type_field') if b.get(k)]
 
 
 def resolve(keys, fields, document_type, base_resolver):
@@ -56,14 +62,20 @@ def resolve(keys, fields, document_type, base_resolver):
         visiting.add(key)
         if configured(f):
             b = f['source_binding']; original = get(b['source_field'])
+            entity_type=None
             if b['transformation_type']=='conditional_prefix':
                 value=(b['prefix'] if get(b['condition_field'])==b['equals'] else '')+original
             elif b['grammatical_case'] == 'nominative': value = original
             else:
-                if b['entity_type']=='legal_entity':original=normalize_document_name(original)
-                result = decline_name(original, b['entity_type'], b['grammatical_case'])
+                entity_type=get(b['entity_type_field']) if b.get('entity_type_field') else b['entity_type']
+                if entity_type=='individual_entrepreneur':entity_type='fop'
+                if entity_type=='legal_entity':original=normalize_document_name(original)
+                resolver=decline_short_name if b.get('preserve_fop_abbreviation') else decline_name
+                result = resolver(original, entity_type, b['grammatical_case'])
                 value = result.value if result.status == 'resolved' else None
-            if value is not None and b.get('entity_type')=='legal_entity':value=normalize_document_name(value)
+            if value is not None and (b.get('entity_type')=='legal_entity' or
+                                      (b.get('entity_type_field') and entity_type=='legal_entity')):
+                value=normalize_document_name(value)
             if value is None or not str(value).strip():
                 raise ValueError('Не визначено «' + f['label'] + '» для «' + str(original or '')
                                  + '» (' + b.get('grammatical_case',b['transformation_type']) + '). Перевірте довідник «Відмінювання». '
