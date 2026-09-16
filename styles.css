@@ -302,6 +302,7 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 .operational-responses>.operational-response{flex-basis:100%}
 .operational-assignment{display:flex;flex-wrap:wrap;gap:5px;align-items:center}.operational-assignment select{max-width:100%}
 .operational-registry-list:has(table){display:block;background:#fff8db;border:1px solid #e4d49b;border-radius:7px;padding:7px}.operational-registry-list h4{margin:0 0 5px}.operational-registry-list table{background:transparent}
+.nazk-registry-source-notice{display:block;margin-top:4px;white-space:normal;line-height:1.4}
 .operational-sticky-context{position:relative;z-index:1;width:100%;min-width:0;grid-column:1;grid-row:1;background:#f3f6f9;border-bottom:1px solid #bdcad6;box-shadow:0 3px 10px rgba(15,40,65,.08)}
 .operational-sticky-context>section{margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
 .operational-summary{padding:10px 18px!important;background:#f8fafc!important;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
