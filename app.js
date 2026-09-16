@@ -1571,7 +1571,7 @@ async function loadRuntimeFeatures(){
     }
     const schedulerRoot=$('#schedulerJobs');
     if(schedulerRoot){
-      const canManage=role()==='admin';
+      const canManage=role()==='admin'&&!features.sandbox_mode;
       schedulerRoot.innerHTML=(features.scheduler_jobs||[]).map(job=>`<article class="scheduler-job ${job.enabled?'enabled':'disabled'}"><header><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong><span>${job.enabled?'Увімкнено':'Вимкнено'}</span></header><dl><div><dt>Розклад</dt><dd>${esc(job.schedule)}</dd></div><div><dt>Timezone</dt><dd>${esc(job.timezone)}</dd></div><div><dt>Останній запуск</dt><dd>${esc(job.last_finished_at?displayDate(job.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(job.enabled&&job.next_run?displayDate(job.next_run):'—')}</dd></div><div><dt>Джерело налаштування</dt><dd>${job.configuration_source==='runtime'?'Адміністратор':'Середовище'}</dd></div></dl>${canManage?`<footer><button type="button" class="ghost scheduler-toggle" data-scheduler-job="${esc(job.job)}" data-enabled="${job.enabled?'false':'true'}">${job.enabled?'Вимкнути':'Увімкнути'}</button></footer>`:''}</article>`).join('');
       schedulerRoot.onclick=event=>{const button=event.target.closest('.scheduler-toggle');if(button)toggleSchedulerJob(button)};
     }
@@ -1590,9 +1590,22 @@ async function loadRuntimeFeatures(){
       disable('#supplierEdrSync','Google integration вимкнено');
       disable('#supplierNazkReviewSync','Google integration вимкнено');
     }
+    if(features.sandbox_mode){
+      const message='Sandbox: зовнішні оновлення, імпорти й jobs заблоковані';
+      ['#resetBtn','#supplierRegistryRefresh','#frameworksRefresh','#requestsRefresh',
+       '#refNazkRefresh','#refAmcuRefresh','#refAmcuUploadBtn','#adminFrameworkImportNew',
+       '#edrMonitoringSync','#googleRuntimeToggle','#googleDisconnect','#bidsManualUpdateToggle',
+       '#bidsDataRefresh','#powerbiExportBtn'].forEach(selector=>{
+        disable(selector,message);const element=$(selector);if(element)element.dataset.sandboxBlocked='1';
+      });
+    }
     return features;
   }catch(error){return null}
 }
+document.addEventListener('click',event=>{
+  const blocked=event.target.closest('[data-sandbox-blocked="1"]');
+  if(blocked){event.preventDefault();event.stopImmediatePropagation();toast(blocked.title,'error')}
+},true);
 const persistedLocalRole=localStorage.getItem(localRoleKey);
 if(persistedLocalRole&&$('#roleSelect').querySelector(`option[value="${persistedLocalRole}"]`))$('#roleSelect').value=persistedLocalRole;
 // Login submits then reloads. Private module bootstrap waits for a real identity.

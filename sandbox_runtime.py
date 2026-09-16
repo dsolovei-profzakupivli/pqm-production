@@ -1,14 +1,15 @@
 """Isolated, fail-closed first sandbox release. Never bootstrap a working WEB DB.
 
 Render Docker command: python sandbox_runtime.py
-Only the new pqm-sandbox service is accepted. The first release is read-only
-safe mode; changing that policy requires a reviewed code change, not a UI toggle.
+Only the owned pqm-sandbox service is accepted. Safe mode remains enabled;
+an explicit flag can allow a reviewed set of local edits, never external jobs.
 """
 from __future__ import annotations
 
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -37,6 +38,8 @@ def validate_environment(env=None):
     for key, expected in POLICY.items():
         if env.get(key) != expected:
             raise RuntimeError(f'STOP: sandbox policy requires {key}={expected}')
+    if env.get('PQM_SANDBOX_EDITS', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: PQM_SANDBOX_EDITS must be 0 or 1')
     data = Path(env.get('PQM_DATA_DIR', '')).resolve()
     db = Path(env.get('PQM_DB_PATH', '')).resolve()
     if db != data / 'pqm_sandbox.sqlite3' or Path(env['PQM_DB_PATH']).is_symlink():
@@ -61,6 +64,38 @@ def validate_environment(env=None):
     if (data / 'google_oauth').exists() and any((data / 'google_oauth').iterdir()):
         raise RuntimeError('STOP: sandbox must not contain OAuth files')
     return data, db, service or 'local-synthetic-fixture'
+
+
+def local_edits_enabled():
+    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_EDITS', '0') == '1'
+
+
+def local_edit_allowed(method, path):
+    """Allowlist, not a role grant. Normal RBAC/final/history guards still run.
+
+    No imports, document generation, verification, NAZK results, builders,
+    refresh or integration controls. Unknown/future routes stay blocked.
+    """
+    if not local_edits_enabled():
+        return False
+    routes = {
+        'PATCH': (
+            r'/api/applications/[A-Za-z0-9_-]+(?:/remark-selections)?',
+            r'/api/account', r'/api/admin/users/[A-Za-z0-9._-]+',
+            r'/api/admin/officers/\d+', r'/api/application-profiles/[A-Za-z0-9_-]+',
+        ),
+        'POST': (
+            r'/api/account/avatar', r'/api/admin/users',
+            r'/api/admin/users/[A-Za-z0-9._-]+/avatar', r'/api/admin/officers',
+            r'/api/chats', r'/api/chats/\d+/(?:messages|read)',
+            r'/api/application-profiles', r'/api/history-columns',
+        ),
+        'DELETE': (
+            r'/api/account/avatar', r'/api/admin/users/[A-Za-z0-9._-]+(?:/avatar)?',
+            r'/api/admin/officers/\d+', r'/api/application-profiles/[A-Za-z0-9_-]+',
+        ),
+    }
+    return any(re.fullmatch(pattern, path) for pattern in routes.get(method, ()))
 
 
 def outbound_audit(event, args):
@@ -178,7 +213,9 @@ def bootstrap(server):
 def decorate_html(raw):
     text = raw.decode('utf-8')
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
-    text = text.replace('<body>', '<body><aside id="sandboxWarning" role="note" style="position:fixed;bottom:0;left:0;right:0;z-index:100000;background:#fff3cd;color:#583d00;padding:8px 16px;text-align:center;font:600 14px system-ui;border-top:2px solid #d29b00">SANDBOX · ТЕСТОВІ ДАНІ · SAFE MODE — зміни та зовнішні оновлення вимкнено</aside>', 1)
+    mode = ('ЛОКАЛЬНІ ТЕСТОВІ ЗМІНИ — інтеграції, імпорти та jobs вимкнено'
+            if local_edits_enabled() else 'SAFE MODE — зміни та зовнішні оновлення вимкнено')
+    text = text.replace('<body>', '<body><aside id="sandboxWarning" role="note" style="position:fixed;bottom:0;left:0;right:0;z-index:100000;background:#fff3cd;color:#583d00;padding:8px 16px;text-align:center;font:600 14px system-ui;border-top:2px solid #d29b00">SANDBOX · ТЕСТОВІ ДАНІ · ' + mode + '</aside>', 1)
     text = text.replace('PQM · WEB TEST</em>', 'PQM · SANDBOX</em>', 1)
     return text.encode('utf-8')
 

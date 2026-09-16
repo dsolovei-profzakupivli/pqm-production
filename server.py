@@ -9195,14 +9195,18 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/login", "/api/logout"}:
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if SAFE_MODE and (self.command in {"POST", "PATCH", "PUT", "DELETE"}
+        sandbox_local_edit = SANDBOX_MODE and sandbox_runtime.local_edit_allowed(self.command, path)
+        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not sandbox_local_edit)
                           or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
                                  for key in ("refresh", "force"))
                           or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
             length = int(self.headers.get("Content-Length", "0"))
             if 0 < length <= 1024 * 1024:
                 self.rfile.read(length)
-            return self.send_json({"error": "WEB працює в safe mode: зміни й оновлення вимкнено",
+            message = ("Sandbox: ця дія заблокована. Дозволені лише локальні тестові зміни; інтеграції та jobs вимкнено"
+                       if SANDBOX_MODE and sandbox_runtime.local_edits_enabled()
+                       else "WEB працює в safe mode: зміни й оновлення вимкнено")
+            return self.send_json({"error": message,
                                    "code": "safe_mode", "status": 503}, 503)
         with db() as con:
             self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
@@ -9429,6 +9433,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({
                 "environment": PQM_ENV,
                 "sandbox_mode": SANDBOX_MODE,
+                "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
                 "safe_mode": SAFE_MODE,
                 "bids_mode": BIDS_MODE,
                 "bids_update": manual_bids["enabled"],

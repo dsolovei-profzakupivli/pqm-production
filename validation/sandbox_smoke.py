@@ -74,6 +74,7 @@ class SandboxHTTP(unittest.TestCase):
         cls.env.update(sandbox.POLICY, PQM_SANDBOX_LOCAL_FIXTURE='1', PQM_DATA_DIR=str(cls.data),
                        PQM_DB_PATH=str(cls.data / 'pqm_sandbox.sqlite3'), HOST='127.0.0.1', PORT=str(cls.port),
                        PYTHONDONTWRITEBYTECODE='1')
+        cls.env['PQM_SANDBOX_EDITS'] = getattr(cls, 'EDIT_MODE', '0')
         cls.log = open(Path(cls.temp.name) / 'child.log', 'w+')
         cls.start()
         cls.accounts = json.loads((cls.data / sandbox.ACCESS_FILE).read_text())['accounts']

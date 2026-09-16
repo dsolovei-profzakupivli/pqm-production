@@ -25,6 +25,7 @@ def main():
     }
     commands = [
         [sys.executable, str(root / "validation/sandbox_smoke.py")],
+        [sys.executable, str(root / "validation/sandbox_editable_smoke.py")],
         [sys.executable, str(root / "validation/release_0916_smoke.py")],
         [sys.executable, str(root / "validation/nazk_scheduler_failure_smoke.py")],
         [sys.executable, str(root / "validation/nazk_evidence_migration_smoke.py")],
