@@ -1,5 +1,6 @@
 """Sandbox bootstrap/HTTP isolation on a fresh disposable synthetic DB only."""
 import base64
+from contextlib import closing
 import hashlib
 import http.client
 import json
@@ -60,6 +61,25 @@ class PolicyTests(unittest.TestCase):
         raw = sandbox.decorate_html((ROOT / 'index.html').read_bytes())
         self.assertIn(b'id="sandboxWarning"', raw)
         self.assertIn(b'noindex,nofollow,noarchive', raw)
+
+    def test_07_bootstrap_snapshot_with_retained_wal_connections(self):
+        with tempfile.TemporaryDirectory(prefix='pqm-bootstrap-wal-') as tmp:
+            source, target = Path(tmp) / 'source.sqlite3', Path(tmp) / 'snapshot.sqlite3'
+            with closing(sqlite3.connect(source)) as retained:
+                retained.execute('PRAGMA journal_mode=WAL')
+                retained.execute('CREATE TABLE fixture (id INTEGER PRIMARY KEY, value TEXT)')
+                retained.execute("INSERT INTO fixture VALUES (1,'committed WAL data')")
+                retained.commit()
+                with closing(sqlite3.connect(source)) as another:
+                    with self.assertRaises(sqlite3.OperationalError):
+                        another.execute('PRAGMA journal_mode=DELETE')
+                sandbox._bootstrap_snapshot(source, target)
+                with closing(sqlite3.connect(target)) as copied:
+                    self.assertEqual('delete', copied.execute('PRAGMA journal_mode').fetchone()[0])
+                    self.assertEqual([(1, 'committed WAL data')], copied.execute('SELECT * FROM fixture').fetchall())
+                    self.assertEqual('ok', copied.execute('PRAGMA integrity_check').fetchone()[0])
+                self.assertFalse(Path(str(target) + '-wal').exists())
+                with self.assertRaises(RuntimeError): sandbox._bootstrap_snapshot(source, target)
 
 
 class SandboxHTTP(unittest.TestCase):

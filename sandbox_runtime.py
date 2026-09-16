@@ -8,6 +8,7 @@ never automatic jobs or production credentials/destinations.
 from __future__ import annotations
 
 import datetime
+from contextlib import closing
 import ipaddress
 import json
 import os
@@ -219,6 +220,25 @@ def _verify_existing(db, service):
             raise RuntimeError('STOP: sandbox has no active administrator; do not reset accounts')
 
 
+def _bootstrap_snapshot(source, target):
+    """Publish a standalone bootstrap DB without switching a shared WAL file.
+
+    Legacy init helpers can retain committed connections until GC. SQLite
+    refuses WAL -> DELETE on that file while those connections remain open.
+    Backup includes committed WAL data and the unique destination has no other
+    connections. This is used only for a new, disposable bootstrap DB.
+    """
+    if target.exists():
+        raise RuntimeError('STOP: bootstrap snapshot destination already exists')
+    with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as src:
+        with closing(sqlite3.connect(target)) as dst:
+            src.backup(dst)
+            if dst.execute('PRAGMA journal_mode=DELETE').fetchone()[0] != 'delete':
+                raise RuntimeError('STOP: bootstrap snapshot is not standalone')
+            if dst.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise RuntimeError('STOP: invalid bootstrap snapshot')
+
+
 def bootstrap(server):
     """Create only an absent sandbox DB; repeat startup is a read-only ownership check."""
     data, db, service = validate_environment()
@@ -271,12 +291,11 @@ def bootstrap(server):
                     con.execute('INSERT INTO application_fields(submission_id,protocol_officer) VALUES (?,?)', (sid, 'Тестова УО SANDBOX'))
                 verify(con)
             con.close()
-            # Consolidate only our disposable new DB before publishing it.
-            with sqlite3.connect(stage_db) as con:
-                con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-                con.execute('PRAGMA journal_mode=DELETE')
-            con.close()
-            _verify_existing(stage_db, service)
+            # Snapshot only our disposable new DB; never change journal mode
+            # on the shared source or rely on init-helper connection GC.
+            published_db = stage / 'published.sqlite3'
+            _bootstrap_snapshot(stage_db, published_db)
+            _verify_existing(published_db, service)
             secret = stage / ACCESS_FILE
             fd = os.open(secret, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, 'w') as stream:
@@ -286,8 +305,8 @@ def bootstrap(server):
             # Link is exclusive (unlike rename/replace), so an existing target cannot be overwritten.
             shutil.copytree(ROOT / 'templates', data / 'templates')
             os.link(secret, data / ACCESS_FILE)
-            os.chmod(stage_db, 0o600)
-            os.link(stage_db, db)
+            os.chmod(published_db, 0o600)
+            os.link(published_db, db)
         finally:
             server.DB_PATH = previous_db
     return {'created': True, 'fixture_applications': 3, 'credentials_written': True}
