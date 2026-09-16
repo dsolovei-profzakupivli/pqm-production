@@ -1566,7 +1566,7 @@ async function loadRuntimeFeatures(){
     const banner=$('#environmentBanner');
     if(banner){
       const environment=String(features.environment||'local').toLowerCase();
-      banner.textContent=environment==='local'?'PQM (LOCAL)':(['test','test_web','web'].includes(environment)?'PQM (WEB TEST)':'PQM (PROD)');
+      banner.textContent=features.sandbox_mode?'PQM · SANDBOX':(environment==='local'?'PQM (LOCAL)':(['test','test_web','web'].includes(environment)?'PQM (WEB TEST)':'PQM (PROD)'));
       banner.title='Profzakupivli Qualification Manager';
     }
     const schedulerRoot=$('#schedulerJobs');

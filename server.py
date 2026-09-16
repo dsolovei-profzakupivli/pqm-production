@@ -117,7 +117,12 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 PQM_ENV = os.environ.get("PQM_ENV", "local").strip().casefold() or "local"
 IS_WEB_ENV = PQM_ENV in {"test", "test_web", "web", "production"}
+SANDBOX_MODE = env_flag("PQM_SANDBOX", False)
 SAFE_MODE = env_flag("PQM_SAFE_MODE", False)
+if SANDBOX_MODE:
+    import sandbox_runtime
+    sandbox_runtime.validate_environment()
+    sandbox_runtime.install_outbound_guard()
 DATA_DIR = Path(os.environ.get("PQM_DATA_DIR", str(ROOT / "data"))).resolve()
 DB_PATH = Path(os.environ.get("PQM_DB_PATH", str(DATA_DIR / "pqm.sqlite3"))).resolve()
 PROTOCOLS_DIR = Path(os.environ.get("PQM_PROTOCOLS_DIR", str(DATA_DIR / "protocols"))).resolve()
@@ -9030,6 +9035,11 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
 class Handler(BaseHTTPRequestHandler):
     server_version = "PQM/0.1"
 
+    def end_headers(self):
+        if SANDBOX_MODE:
+            self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+        super().end_headers()
+
     def send_json(self, data, status=200):
         raw = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -9418,6 +9428,8 @@ class Handler(BaseHTTPRequestHandler):
             google = google_integration_status()
             return self.send_json({
                 "environment": PQM_ENV,
+                "sandbox_mode": SANDBOX_MODE,
+                "safe_mode": SAFE_MODE,
                 "bids_mode": BIDS_MODE,
                 "bids_update": manual_bids["enabled"],
                 "manual_bids_update": manual_bids,
@@ -9841,7 +9853,10 @@ class Handler(BaseHTTPRequestHandler):
                 or not (path in {"index.html"} or (target.parent == ROOT and target.suffix in {".js", ".css"})
                         or (ROOT / "assets") in target.parents)):
             return self.send_error(404)
-        raw = target.read_bytes(); self.send_response(200)
+        raw = target.read_bytes()
+        if SANDBOX_MODE and path == "index.html":
+            raw = sandbox_runtime.decorate_html(raw)
+        self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
