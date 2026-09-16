@@ -126,6 +126,8 @@ def migrate(con: sqlite3.Connection) -> None:
         )
 
     if {"operational_tasks", "operational_task_responses"} <= tables:
+        # Filter already imported responses before INSERT: OR IGNORE alone still
+        # consumes AUTOINCREMENT IDs on conflicts during every shared task build.
         con.execute(
             """INSERT OR IGNORE INTO supplier_nazk_check_evidence
                (check_id,evidence_type,source,evidence_date,document_number,short_summary,
@@ -137,7 +139,11 @@ def migrate(con: sqlite3.Connection) -> None:
                       r.information_result,r.post_close,r.recorded_at,r.recorded_by,t.id,r.id
                FROM operational_task_responses r JOIN operational_tasks t ON t.id=r.task_id
                WHERE t.task_type='nazk_check'
-                 AND json_extract(t.source_context,'$.nazk_check_id') IS NOT NULL"""
+                 AND json_extract(t.source_context,'$.nazk_check_id') IS NOT NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM supplier_nazk_check_evidence e
+                   WHERE e.legacy_task_response_id=r.id
+                 )"""
         )
 
     if "operational_tasks" in tables and "authorized_officers" in tables:

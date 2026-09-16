@@ -26,6 +26,7 @@ def main():
     commands = [
         [sys.executable, str(root / "validation/release_0916_smoke.py")],
         [sys.executable, str(root / "validation/nazk_scheduler_failure_smoke.py")],
+        [sys.executable, str(root / "validation/nazk_evidence_migration_smoke.py")],
         [sys.executable, "-m", "unittest", "discover", "-s",
          "validation/local_release_20260911", "-p", "test_nazk_registry_evidence.py", "-v"],
         ["node", "validation/nazk_evidence_ui.cjs"],
