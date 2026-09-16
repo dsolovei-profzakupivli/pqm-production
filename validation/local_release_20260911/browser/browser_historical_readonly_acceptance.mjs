@@ -90,8 +90,8 @@ try{
   const narrow=await inspect('4ddbe43aa4754028a30c486af9885407','officer');
   const result={rejectedOfficer,rejectedAdmin,admitted,pqm,history,narrow,exceptions,consoleErrors,mutations};
   const historicalPresentation=item=>item.sourceMarkerCount===1&&item.sourceTooltip==='Історичні дані з MedData'&&item.perFieldMarkers===0&&item.cardBadgeCount===1&&item.cardBadge==='Історичні дані з MedData'&&item.selectionAllowed&&item.bulkBlocked;
-  const bad=!rejectedOfficer.historical||rejectedOfficer.editor||rejectedOfficer.marker!=='НАЗК · Не актуально'||!historicalPresentation(rejectedOfficer)
-    ||!rejectedAdmin.historical||rejectedAdmin.editor||rejectedAdmin.marker!=='НАЗК · Не актуально'||!historicalPresentation(rejectedAdmin)
+  const bad=!rejectedOfficer.historical||rejectedOfficer.editor||rejectedOfficer.marker==='НАЗК · Не актуально'||!historicalPresentation(rejectedOfficer)
+    ||!rejectedAdmin.historical||rejectedAdmin.editor||rejectedAdmin.marker!==rejectedOfficer.marker||!historicalPresentation(rejectedAdmin)
     ||!admitted.historical||admitted.editor||admitted.marker!=='НАЗК · Спростовано'||!historicalPresentation(admitted)
     ||history.markers!==history.expected||history.maxPerRow>1||!history.exact||history.perFieldMarkers||history.cardBadgeCount!==1||history.cardBadge!=='Історичні дані з MedData'
     ||pqm.historical||!pqm.editor||pqm.sourceMarkerCount||pqm.cardBadgeCount||!narrow.historical||narrow.editor||!historicalPresentation(narrow)

@@ -683,15 +683,94 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(item["nazk_control_id"])
         self.assertEqual(item["nazk_presentation_state"], "needs_check")
 
-    def test_rejected_application_is_presented_as_nazk_not_current(self):
+    def test_rejected_application_without_evidence_has_no_nazk_marker(self):
         present = workflow.get_submission_nazk_presentation_state
-        for state in (
-            {"control_id": None, "state": "needs_check", "registry_match": True},
-            {"control_id": 1, "state": "needs_check", "registry_match": True},
-            {"control_id": 2, "state": "refuted", "registry_match": True},
-        ):
-            with self.subTest(state=state):
-                self.assertEqual(present(state, application_rejected=True), "not_current")
+        for historical in (False, True):
+            for state in (None, {}, {"control_id": None, "state": "not_required",
+                                    "registry_match": False},
+                          {"control_id": 42, "check_id": None, "state": "not_required",
+                           "registry_match": False, "required": False, "checked": False}):
+                with self.subTest(state=state, historical=historical):
+                    self.assertEqual(present(state, application_rejected=True,
+                                             historical_read_only=historical), "")
+
+    def test_rejection_does_not_override_established_application_evidence(self):
+        present = workflow.get_submission_nazk_presentation_state
+        for value in ("needs_check", "refuted", "confirmed"):
+            for historical in (False, True):
+                for registry_match in (False, True):
+                    state = {"control_id": 1, "state": value,
+                             "registry_match": registry_match}
+                    with self.subTest(value=value, historical=historical, match=registry_match):
+                        before = dict(state)
+                        self.assertEqual(present(state, application_rejected=True,
+                                                 historical_read_only=historical), value)
+                        self.assertEqual(present(state, application_rejected=False,
+                                                 historical_read_only=historical), value)
+                        self.assertEqual(state, before)
+
+    def test_rejection_does_not_invent_current_historical_or_stale_match(self):
+        present = workflow.get_submission_nazk_presentation_state
+        state = {"control_id": None, "state": "needs_check", "registry_match": True}
+        self.assertEqual(present(state, application_rejected=True), "possible")
+        self.assertEqual(present(state, application_rejected=True, historical_read_only=True), "")
+        # Supplier-only evidence must not be relabelled as this application's result.
+        self.assertEqual(present({"workflow_status": "completed", "result": "refuted"},
+                                 application_rejected=True), "")
+
+    def test_rejected_control_2464907793_projection_is_read_only_and_badge_free(self):
+        code = "2464907793"
+        self.seed_supplier(code=code, registry=False)
+        for sid in ("rejected-no-evidence", "decision-no-evidence", "active-no-evidence"):
+            self.seed_submission(code=code, submission_id=sid)
+        with server.db() as con:
+            # The legacy seed's minimal INSERT OR IGNORE may be skipped on WEB's
+            # stricter NOT NULL columns. Install complete synthetic qualifications.
+            for sid, status in (("rejected-no-evidence", "unsuccessful"),
+                                ("decision-no-evidence", "pending"),
+                                ("active-no-evidence", "pending")):
+                con.execute("""INSERT OR REPLACE INTO qualifications
+                    (id,framework_id,submission_id,status,raw_json,synced_at)
+                    VALUES (?,'framework-1',?,?,'{}','fixture')""",
+                            ("qualification-" + sid, sid, status))
+            con.execute("UPDATE application_fields SET protocol_decision='reject' WHERE submission_id=?",
+                        ("decision-no-evidence",))
+            before = tuple(con.iterdump())
+        for historical in (False, True):
+            with patch.object(server.historical_applications, "provenance",
+                              return_value={"source_system": "MedData"} if historical else None):
+                items = server.list_applications({"search": [code], "size": ["10"]})["items"]
+            self.assertEqual(len(items), 3)
+            self.assertEqual(next(row for row in items if row['id'] == 'rejected-no-evidence')['decision'],
+                             'Відхилено')
+            for item in items:
+                self.assertEqual(item["nazk_presentation_state"], "")
+                self.assertEqual(item["nazk_state"], "not_required")
+                self.assertFalse(item["nazk_match"])
+                self.assertFalse(item["nazk_review"])
+                self.assertIsNone(item["nazk_control_id"])
+        with server.db() as con:
+            self.assertEqual(tuple(con.iterdump()), before)
+
+    def test_rejected_completed_check_projection_preserves_factual_state_without_writes(self):
+        self.seed_supplier()
+        document = self.seed_submission()
+        with server.db() as con:
+            workflow.ensure_submission_nazk_control(con, "submission-1")
+            workflow.complete_submission_nazk_check(
+                con, "submission-1", document_id=document["id"], document_url=document["url"],
+                evidence_date="2026-08-21", checked_by="Synthetic officer")
+            con.execute("""INSERT OR REPLACE INTO qualifications
+                (id,framework_id,submission_id,status,raw_json,synced_at)
+                VALUES ('qualification-submission-1','framework-1','submission-1',
+                        'unsuccessful','{}','fixture')""")
+            before = tuple(con.iterdump())
+        item = server.list_applications({"search": ["10000001"], "size": ["10"]})["items"][0]
+        self.assertEqual(item["decision"], "Відхилено")
+        self.assertEqual(item["nazk_state"], "refuted")
+        self.assertEqual(item["nazk_presentation_state"], "refuted")
+        with server.db() as con:
+            self.assertEqual(tuple(con.iterdump()), before)
 
     def test_admitted_application_keeps_factual_refuted_result(self):
         self.assertEqual(workflow.get_submission_nazk_presentation_state(
@@ -987,7 +1066,8 @@ class NazkWorkflowTests(unittest.TestCase):
 
     def test_application_renderer_keeps_completed_nazk_badge_and_editable_trusted_manager_value(self):
         source = Path("app.js").read_text(encoding="utf-8")
-        self.assertIn("row.nazkPresentationState==='refuted'", source)
+        self.assertIn("const state=row.nazkPresentationState", source)
+        self.assertIn("if(state==='refuted')", source)
         self.assertIn("НАЗК · Спростовано", source)
         self.assertNotIn("Збіг не підтверджено", source)
         self.assertIn('data-result="refuted">Спростовано</button>', source)

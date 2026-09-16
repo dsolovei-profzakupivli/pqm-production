@@ -576,11 +576,10 @@ def get_submission_nazk_presentation_state(
     """
     state = state or {}
     value = state.get("state") or "not_required"
-    # A rejected application cannot require further application-level NAZK
-    # evidence.  This is presentation-only: the original control and every
-    # supplier-level workflow/result remain unchanged for audit and history.
-    if application_rejected:
-        return "not_current"
+    # Rejection is an application decision, not NAZK evidence. Keep the
+    # application_rejected keyword for callers, but never let it manufacture
+    # a NAZK marker or replace an established application-scoped result.
+    # Supplier/current context still belongs in the supplier presentation.
     if state.get("control_id"):
         return value if value in {"needs_check", "refuted", "confirmed"} else ""
     if historical_read_only:

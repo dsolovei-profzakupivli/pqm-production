@@ -301,7 +301,11 @@ class RegistryUxCleanupTests(unittest.TestCase):
         row_renderer = self.app.split("function render(){", 1)[1].split(
             "function bindStaticMulti", 1
         )[0]
-        self.assertIn("row.nazkPresentationState==='needs_check'", self.app)
+        marker = self.app.split("function applicationNazkMarker(row){", 1)[1].split("\nfunction cell(", 1)[0]
+        self.assertIn("const state=row.nazkPresentationState", marker)
+        self.assertIn("if(state==='needs_check')", marker)
+        self.assertNotIn("row.nazkReviewResult", marker)
+        self.assertNotIn("row.nazkMatch", marker)
         self.assertIn("applicationNazk=r.nazkPresentationState", row_renderer)
         self.assertNotIn("pending&&r.nazkReviewResult", row_renderer)
         self.assertNotIn("pending&&r.nazkMatch", row_renderer)

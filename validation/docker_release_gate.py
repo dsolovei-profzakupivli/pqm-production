@@ -28,6 +28,9 @@ def main():
         [sys.executable, "-m", "unittest", "discover", "-s",
          "validation/local_release_20260911", "-p", "test_nazk_registry_evidence.py", "-v"],
         ["node", "validation/nazk_evidence_ui.cjs"],
+        ["node", "validation/nazk_application_presentation.cjs"],
+        [sys.executable, "validation/run_local_release.py", "test_nazk_workflow.py"],
+        [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
     ]
     for command in commands:
         print("DOCKER GATE: synthetic check", command[-1], flush=True)

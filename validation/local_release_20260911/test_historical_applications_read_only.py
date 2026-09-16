@@ -69,8 +69,10 @@ class HistoricalApplicationGuardContractTests(unittest.TestCase):
         self.assertIn("r.historicalReadOnly?'historical-read-only'", self.app)
         self.assertIn("historicalReadOnly||Boolean(c.nazk_certificate_checked)", self.app)
         self.assertIn("Історичну заявку можна вибрати для перегляду або Chat", self.app)
-        self.assertIn("row.nazkPresentationState==='not_current'", self.app)
-        self.assertIn("НАЗК · Не актуально", self.app)
+        self.assertIn("applicationNazkMarker(row)", self.app)
+        marker = self.app.split("function applicationNazkMarker(row){", 1)[1].split("\nfunction cell(", 1)[0]
+        self.assertNotIn("НАЗК · Не актуально", marker)
+        self.assertIn("row.historicalReadOnly||rejected", marker)
 
 
 if __name__ == "__main__":
