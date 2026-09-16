@@ -2,11 +2,13 @@
 
 Render Docker command: python sandbox_runtime.py
 Only the owned pqm-sandbox service is accepted. Safe mode remains enabled;
-an explicit flag can allow a reviewed set of local edits, never external jobs.
+explicit flags allow reviewed local edits and GET-only manual Prozorro import,
+never automatic jobs or production credentials/destinations.
 """
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import json
 import os
 import re
@@ -17,6 +19,9 @@ import socket
 import sqlite3
 import sys
 import tempfile
+import threading
+import urllib.parse
+import urllib.request
 
 ROOT = Path(__file__).resolve().parent
 POLICY = {
@@ -31,6 +36,9 @@ POLICY = {
 }
 ACCESS_FILE = '.sandbox-initial-access.json'
 _guard_installed = False
+_egress = threading.local()
+PROZORRO_HOST = 'public-api.prozorro.gov.ua'
+_original_getaddrinfo = socket.getaddrinfo
 
 
 def validate_environment(env=None):
@@ -40,6 +48,8 @@ def validate_environment(env=None):
             raise RuntimeError(f'STOP: sandbox policy requires {key}={expected}')
     if env.get('PQM_SANDBOX_EDITS', '0') not in {'0', '1'}:
         raise RuntimeError('STOP: PQM_SANDBOX_EDITS must be 0 or 1')
+    if env.get('PQM_SANDBOX_PROZORRO_READ', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: PQM_SANDBOX_PROZORRO_READ must be 0 or 1')
     data = Path(env.get('PQM_DATA_DIR', '')).resolve()
     db = Path(env.get('PQM_DB_PATH', '')).resolve()
     if db != data / 'pqm_sandbox.sqlite3' or Path(env['PQM_DB_PATH']).is_symlink():
@@ -49,6 +59,8 @@ def validate_environment(env=None):
         if (env.get('RENDER_SERVICE_NAME') != 'pqm-sandbox'
                 or service == 'srv-da7vmitg1s2s73fim0p0' or data != Path('/var/data').resolve()):
             raise RuntimeError('STOP: wrong Render service or disk path')
+        if env.get('PQM_SANDBOX_PROZORRO_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
+            raise RuntimeError('STOP: Prozorro testing requires the approved sandbox service')
     elif not (env.get('PQM_SANDBOX_LOCAL_FIXTURE') == '1'
               and data.is_relative_to(Path(tempfile.gettempdir()).resolve())
               and data != Path(tempfile.gettempdir()).resolve()):
@@ -68,6 +80,67 @@ def validate_environment(env=None):
 
 def local_edits_enabled():
     return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_EDITS', '0') == '1'
+
+
+def prozorro_read_enabled():
+    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_PROZORRO_READ', '0') == '1'
+
+
+def manual_sync_allowed(method, path):
+    # This does not grant a role permission; normal auth/RBAC still applies.
+    return prozorro_read_enabled() and method == 'POST' and path == '/api/sync'
+
+
+def validate_prozorro_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != 'https' or parsed.netloc != PROZORRO_HOST
+            or parsed.username or parsed.password or parsed.fragment
+            or not re.fullmatch(r'/api/2\.5/(?:frameworks(?:/[a-zA-Z0-9_-]+(?:/(?:submissions|qualifications))?)?|agreements/[a-zA-Z0-9_-]+/contracts)', parsed.path)
+            or any(key != 'offset' for key in urllib.parse.parse_qs(parsed.query, keep_blank_values=True))):
+        raise RuntimeError('Sandbox permits only public read-only Prozorro framework endpoints')
+
+
+def _restricted_getaddrinfo(host, port, *args, **kwargs):
+    if getattr(_egress, 'active', False):
+        if host != PROZORRO_HOST or port not in (443, '443'):
+            raise RuntimeError('Sandbox DNS destination is not approved')
+        rows = _original_getaddrinfo(host, port, *args, **kwargs)
+        if not rows or any(not ipaddress.ip_address(row[4][0]).is_global for row in rows):
+            raise RuntimeError('Sandbox rejects non-public Prozorro addresses')
+        _egress.addresses = {row[4][0] for row in rows}
+        return rows
+    return _original_getaddrinfo(host, port, *args, **kwargs)
+
+
+class _ProzorroRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_prozorro_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch_prozorro_json(url):
+    """One bounded credential-free HTTPS GET, never a generic egress exception."""
+    if not prozorro_read_enabled():
+        raise RuntimeError('Sandbox Prozorro read is disabled')
+    validate_prozorro_url(url)
+    if getattr(_egress, 'active', False):
+        raise RuntimeError('Nested sandbox network scope is not supported')
+    _egress.active = True
+    _egress.addresses = set()
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _ProzorroRedirect())
+        request = urllib.request.Request(url, headers={'User-Agent': 'PQM-Sandbox/0.1', 'Accept': 'application/json'}, method='GET')
+        with opener.open(request, timeout=60) as response:
+            raw = response.read(32 * 1024 * 1024 + 1)
+            if len(raw) > 32 * 1024 * 1024:
+                raise RuntimeError('Sandbox Prozorro response exceeds limit')
+            result = json.loads(raw)
+            if not isinstance(result, dict) or 'data' not in result:
+                raise RuntimeError('Sandbox Prozorro response is not an API payload')
+            return result
+    finally:
+        _egress.active = False
+        _egress.addresses = set()
 
 
 def local_edit_allowed(method, path):
@@ -103,10 +176,19 @@ def outbound_audit(event, args):
     loopback = {'localhost', '127.0.0.1', '::1'}
     if event in {'socket.connect', 'socket.sendto'}:
         address = args[1] if event == 'socket.connect' else args[-1]
-        if not isinstance(address, tuple) or address[0] not in loopback:
+        scoped = (event == 'socket.connect' and prozorro_read_enabled()
+                  and getattr(_egress, 'active', False) and isinstance(address, tuple)
+                  and address[0] in getattr(_egress, 'addresses', set()) and address[1] == 443)
+        if not scoped and (not isinstance(address, tuple) or address[0] not in loopback):
             raise RuntimeError('Sandbox outbound network is disabled')
     if event in {'socket.getaddrinfo', 'socket.gethostbyname', 'socket.gethostbyaddr'} and args[0] not in loopback:
-        raise RuntimeError('Sandbox external DNS is disabled')
+        if not (event == 'socket.getaddrinfo' and prozorro_read_enabled()
+                and getattr(_egress, 'active', False) and args[0] == PROZORRO_HOST):
+            raise RuntimeError('Sandbox external DNS is disabled')
+    if event == 'urllib.Request' and getattr(_egress, 'active', False):
+        validate_prozorro_url(args[0])
+        if args[1] is not None or args[3] != 'GET':
+            raise RuntimeError('Sandbox external mutations are disabled')
     if event in {'subprocess.Popen', 'os.system', 'os.exec', 'os.posix_spawn'}:
         raise RuntimeError('Sandbox safe smoke does not launch child processes')
 
@@ -115,6 +197,7 @@ def install_outbound_guard():
     global _guard_installed
     if not _guard_installed:
         socket.getfqdn = lambda name='': name or 'localhost'
+        socket.getaddrinfo = _restricted_getaddrinfo
         sys.addaudithook(outbound_audit)
         _guard_installed = True
 
@@ -215,6 +298,8 @@ def decorate_html(raw):
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
     mode = ('ЛОКАЛЬНІ ТЕСТОВІ ЗМІНИ — інтеграції, імпорти та jobs вимкнено'
             if local_edits_enabled() else 'SAFE MODE — зміни та зовнішні оновлення вимкнено')
+    if prozorro_read_enabled():
+        mode = 'РУЧНИЙ PROZORRO → лише БД SANDBOX · автоматичні jobs та інші інтеграції вимкнено'
     text = text.replace('<body>', '<body><aside id="sandboxWarning" role="note" style="position:fixed;bottom:0;left:0;right:0;z-index:100000;background:#fff3cd;color:#583d00;padding:8px 16px;text-align:center;font:600 14px system-ui;border-top:2px solid #d29b00">SANDBOX · ТЕСТОВІ ДАНІ · ' + mode + '</aside>', 1)
     text = text.replace('PQM · WEB TEST</em>', 'PQM · SANDBOX</em>', 1)
     return text.encode('utf-8')
@@ -230,4 +315,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # server imports this policy too. Keep one audit hook/thread-local scope
+    # when the entrypoint itself was loaded as __main__.
+    sys.modules['sandbox_runtime'] = sys.modules[__name__]
     main()

@@ -894,6 +894,8 @@ def announcement_officer_name(value: str) -> str:
 
 
 def sync_framework_officers() -> dict:
+    if SANDBOX_MODE:
+        return {"matched": 0, "skipped": "sandbox_preserves_copied_directory"}
     rows = load_announcement_rows()
     assignments = {}
     for row in rows:
@@ -1616,6 +1618,8 @@ def api_get(url: str) -> dict:
     last_error = None
     for attempt in range(3):
         try:
+            if SANDBOX_MODE:
+                return sandbox_runtime.fetch_prozorro_json(url)
             req = urllib.request.Request(url, headers={"User-Agent": "PQM/0.1"})
             with urllib.request.urlopen(req, timeout=60, context=ssl.create_default_context()) as res:
                 return json.load(res)
@@ -1870,6 +1874,12 @@ def discover_active_frameworks() -> list[dict]:
 
 def discover_tracked_frameworks() -> list[dict]:
     """Load every active and closed PQM category listed in the announcements directory."""
+    if SANDBOX_MODE:
+        # Google remains isolated. Read the already copied WEB scope; do not
+        # discover unrelated frameworks or pretend that Google was refreshed.
+        with db() as con:
+            ids = [row[0] for row in con.execute("SELECT id FROM frameworks ORDER BY pretty_id")]
+        return [api_get(f"{API_ROOT}/frameworks/{identifier}")["data"] for identifier in ids]
     rows = load_announcement_rows()
     tracked_pretty_ids = sorted({
         (row.get("ID") or "").strip()
@@ -9008,6 +9018,10 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
 
 
 def enqueue_contract_experience_search(submission_ids) -> int:
+    if SANDBOX_MODE:
+        # Separate document/tender integration is not part of the approved
+        # framework API scope; do not queue failing retries or overwrite checks.
+        return 0
     unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
@@ -9196,7 +9210,8 @@ class Handler(BaseHTTPRequestHandler):
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         sandbox_local_edit = SANDBOX_MODE and sandbox_runtime.local_edit_allowed(self.command, path)
-        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not sandbox_local_edit)
+        sandbox_manual_sync = SANDBOX_MODE and sandbox_runtime.manual_sync_allowed(self.command, path)
+        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not (sandbox_local_edit or sandbox_manual_sync))
                           or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
                                  for key in ("refresh", "force"))
                           or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
@@ -9434,6 +9449,7 @@ class Handler(BaseHTTPRequestHandler):
                 "environment": PQM_ENV,
                 "sandbox_mode": SANDBOX_MODE,
                 "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
+                "sandbox_prozorro_read": SANDBOX_MODE and sandbox_runtime.prozorro_read_enabled(),
                 "safe_mode": SAFE_MODE,
                 "bids_mode": BIDS_MODE,
                 "bids_update": manual_bids["enabled"],

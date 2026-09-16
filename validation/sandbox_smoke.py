@@ -75,13 +75,14 @@ class SandboxHTTP(unittest.TestCase):
                        PQM_DB_PATH=str(cls.data / 'pqm_sandbox.sqlite3'), HOST='127.0.0.1', PORT=str(cls.port),
                        PYTHONDONTWRITEBYTECODE='1')
         cls.env['PQM_SANDBOX_EDITS'] = getattr(cls, 'EDIT_MODE', '0')
+        cls.env.update(getattr(cls, 'EXTRA_ENV', {}))
         cls.log = open(Path(cls.temp.name) / 'child.log', 'w+')
         cls.start()
         cls.accounts = json.loads((cls.data / sandbox.ACCESS_FILE).read_text())['accounts']
 
     @classmethod
     def start(cls):
-        cls.proc = subprocess.Popen([sys.executable, '-B', str(ROOT / 'sandbox_runtime.py')],
+        cls.proc = subprocess.Popen([sys.executable, '-B', str(ROOT / getattr(cls, 'RUNNER', 'sandbox_runtime.py'))],
                                     cwd=ROOT, env=cls.env, stdout=cls.log, stderr=cls.log)
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:

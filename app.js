@@ -1596,6 +1596,12 @@ async function loadRuntimeFeatures(){
        '#refNazkRefresh','#refAmcuRefresh','#refAmcuUploadBtn','#adminFrameworkImportNew',
        '#edrMonitoringSync','#googleRuntimeToggle','#googleDisconnect','#bidsManualUpdateToggle',
        '#bidsDataRefresh','#powerbiExportBtn'].forEach(selector=>{
+        if(selector==='#resetBtn'&&features.sandbox_prozorro_read){
+          const element=$(selector);
+          if(element){delete element.dataset.runtimeDisabled;delete element.dataset.sandboxBlocked;
+            element.disabled=element.dataset.roleDisabled!=='0';element.title='Ручне читання Prozorro; зміни лише в БД sandbox. Google та автоматичні jobs вимкнено.'}
+          return;
+        }
         disable(selector,message);const element=$(selector);if(element)element.dataset.sandboxBlocked='1';
       });
     }
