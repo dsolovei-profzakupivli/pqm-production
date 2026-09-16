@@ -108,10 +108,13 @@ def _fetch(url, timeout=900, max_bytes=None):
         return raw
 
 
-def refresh_nazk(db_path, on_complete=None):
+def refresh_nazk(db_path, on_complete=None, on_error=None):
     if not LOCK.acquire(blocking=False):
+        if on_error:
+            on_error("НАЗК: інше оновлення вже виконується")
         return
     succeeded = False
+    failure = ""
     try:
         _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
         payload = json.loads(_fetch(NAZK_URL).decode("utf-8-sig"))
@@ -152,14 +155,17 @@ def refresh_nazk(db_path, on_complete=None):
         _state(db_path, "nazk", "ok", "Оновлено", len(rows), _now())
         succeeded = True
     except Exception as exc:
+        failure = str(exc) or type(exc).__name__
         _state(db_path, "nazk", "error", str(exc))
     finally:
         LOCK.release()
         if succeeded and on_complete:
             on_complete()
+        elif not succeeded and on_error:
+            on_error(failure or "НАЗК: оновлення не завершено")
 
 
-def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=None):
+def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=None, on_error=None):
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")
@@ -171,7 +177,7 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
             return False
         _state(db_path, source, "running", "Підготовка фонового оновлення")
         target = refresh_nazk if source == "nazk" else refresh_amcu
-        args = (db_path, on_complete) if source == "nazk" else (db_path, raw, filename)
+        args = (db_path, on_complete, on_error) if source == "nazk" else (db_path, raw, filename)
         timer = threading.Timer(0.2, target, args=args)
         timer.daemon = True
         timer.start()

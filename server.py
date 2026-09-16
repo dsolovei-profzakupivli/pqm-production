@@ -5831,6 +5831,13 @@ def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
     if not owner:
         return False
     heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner)
+    def failed(error):
+        # A failed fetch must release the lease/heartbeat without reconciling
+        # checks or tasks. Success-only workflow callbacks keep their contract.
+        try:
+            _finish_scheduler_lease("nazk_registry", owner, "error", str(error))
+        finally:
+            heartbeat.__exit__(None, None, None)
     def completed():
         try:
             state = reference_status(DB_PATH).get("nazk", {})
@@ -5845,7 +5852,7 @@ def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
             heartbeat.__exit__(None, None, None)
     try:
         heartbeat.__enter__()
-        if start_reference_refresh(DB_PATH, "nazk", on_complete=completed):
+        if start_reference_refresh(DB_PATH, "nazk", on_complete=completed, on_error=failed):
             return True
     except Exception:
         scheduler_runtime.release(DB_PATH, "nazk_registry", owner)
