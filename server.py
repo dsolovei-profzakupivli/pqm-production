@@ -3698,6 +3698,42 @@ GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = ""
 GOOGLE_OAUTH_TOKEN_ACCESS_ERROR = ""
 
 
+class GooglePhaseError(RuntimeError):
+    """Expose only allowlisted diagnostics, never raw Google response content."""
+
+    def __init__(self, phase: str, exc: urllib.error.HTTPError):
+        error, description = "", ""
+        try:
+            payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+            detail = payload.get("error", {}) if isinstance(payload, dict) else {}
+            if isinstance(detail, str):
+                error, description = detail, payload.get("error_description", "")
+            elif isinstance(detail, dict):
+                error, description = detail.get("status", ""), detail.get("message", "")
+        except (OSError, ValueError):
+            pass
+        allowed_errors = {"invalid_grant", "invalid_client", "invalid_request", "unauthorized_client",
+                          "unsupported_grant_type", "access_denied", "temporarily_unavailable",
+                          "INVALID_ARGUMENT", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND",
+                          "RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE"}
+        allowed_descriptions = {"Token has been revoked", "Token has been expired or revoked.",
+                                "Bad Request", "Unable to parse range", "Invalid Credentials"}
+        self.details = {"phase": phase, "google_http_status": int(exc.code),
+                        "google_error": error if isinstance(error, str) and error in allowed_errors else "http_error",
+                        "google_error_description": description if isinstance(description, str) and description in allowed_descriptions
+                            else "Google API request failed; response details withheld"}
+        super().__init__(f"Google {phase}: HTTP {exc.code} {self.details['google_error']}")
+
+    def diagnostic_payload(self) -> dict:
+        return dict(self.details)
+
+
+def _raise_google_phase_error(phase: str, exc: urllib.error.HTTPError) -> None:
+    error = GooglePhaseError(phase, exc)
+    SERVER_LOG.warning("Google request failed %s", error.diagnostic_payload())
+    raise error from None
+
+
 def _google_oauth_redirect_uri() -> str:
     redirect_uri = os.environ.get(
         "PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback"
@@ -3917,8 +3953,11 @@ def _google_access_token() -> str:
                    "refresh_token": token["refresh_token"], "grant_type": "refresh_token"}
         request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
             data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            refreshed = json.loads(response.read().decode())
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                refreshed = json.loads(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            _raise_google_phase_error("oauth_token_refresh", exc)
         token.update(refreshed); token["obtained_at"] = time.time()
         _atomic_write_google_json(GOOGLE_OAUTH_TOKEN_PATH, token)
         return token["access_token"]
@@ -3931,8 +3970,11 @@ def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHE
     cell_range = urllib.parse.quote(f"'{sheet_name}'!{columns}", safe="")
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{cell_range}?majorDimension=ROWS"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=120) as response:
-        return json.loads(response.read().decode()).get("values", [])
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.loads(response.read().decode()).get("values", [])
+    except urllib.error.HTTPError as exc:
+        _raise_google_phase_error("sheets_values_read", exc)
 
 
 def google_integration_status() -> dict:
@@ -9179,6 +9221,9 @@ class Handler(BaseHTTPRequestHandler):
             self.auth_user = "integration:suppliers-full-registry"
             self.auth_role = "integration"
             return method()
+        # This exact GET uses the existing persisted state/PKCE transaction.
+        if path == "/api/google-oauth/callback" and self.command == "GET":
+            return method()
         if not self._authorize():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -10368,6 +10413,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
             try:
                 return self.send_json(supplier_edr_sync_preview())
+            except GooglePhaseError as exc:
+                return self.send_json({"error": str(exc), **exc.diagnostic_payload()}, 409)
             except (ValueError, RuntimeError, OSError) as exc:
                 return self.send_json({"error": str(exc)}, 409)
         if parsed.path == "/api/supplier-nazk-review-sync":
