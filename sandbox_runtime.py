@@ -25,6 +25,7 @@ import urllib.parse
 import urllib.request
 import sandbox_documents
 import sandbox_amcu
+import sandbox_nazk
 
 ROOT = Path(__file__).resolve().parent
 POLICY = {
@@ -55,6 +56,8 @@ def validate_environment(env=None):
         raise RuntimeError('STOP: PQM_SANDBOX_DOCUMENTS must be 0 or 1')
     if env.get('PQM_SANDBOX_AMCU_READ', '0') not in {'0', '1'}:
         raise RuntimeError('STOP: PQM_SANDBOX_AMCU_READ must be 0 or 1')
+    if env.get('PQM_SANDBOX_NAZK_READ', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: PQM_SANDBOX_NAZK_READ must be 0 or 1')
     if env.get('PQM_SANDBOX_PROZORRO_READ', '0') not in {'0', '1'}:
         raise RuntimeError('STOP: PQM_SANDBOX_PROZORRO_READ must be 0 or 1')
     if env.get('PQM_SANDBOX_PROZORRO_SCHEDULER', '0') not in {'0', '1'}:
@@ -77,6 +80,8 @@ def validate_environment(env=None):
             raise RuntimeError('STOP: document testing requires the approved sandbox service')
         if env.get('PQM_SANDBOX_AMCU_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
             raise RuntimeError('STOP: AMCU testing requires the approved sandbox service')
+        if env.get('PQM_SANDBOX_NAZK_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
+            raise RuntimeError('STOP: NAZK testing requires the approved sandbox service')
     elif not (env.get('PQM_SANDBOX_LOCAL_FIXTURE') == '1'
               and data.is_relative_to(Path(tempfile.gettempdir()).resolve())
               and data != Path(tempfile.gettempdir()).resolve()):
@@ -238,6 +243,8 @@ def outbound_audit(event, args):
         if args[1] is not None or args[3] != 'GET':
             raise RuntimeError('Sandbox external mutations are disabled')
     if event in {'subprocess.Popen', 'os.system', 'os.exec', 'os.posix_spawn'}:
+        if sandbox_nazk.enabled() and sandbox_nazk.permitted_process(event, args):
+            return
         if sandbox_amcu.enabled() and sandbox_amcu.permitted_process(event, args):
             return
         if sandbox_documents.enabled() and sandbox_documents.permitted_process(event, args):
