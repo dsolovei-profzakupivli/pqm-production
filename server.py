@@ -117,7 +117,12 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 PQM_ENV = os.environ.get("PQM_ENV", "local").strip().casefold() or "local"
 IS_WEB_ENV = PQM_ENV in {"test", "test_web", "web", "production"}
+SANDBOX_MODE = env_flag("PQM_SANDBOX", False)
 SAFE_MODE = env_flag("PQM_SAFE_MODE", False)
+if SANDBOX_MODE:
+    import sandbox_runtime
+    sandbox_runtime.validate_environment()
+    sandbox_runtime.install_outbound_guard()
 DATA_DIR = Path(os.environ.get("PQM_DATA_DIR", str(ROOT / "data"))).resolve()
 DB_PATH = Path(os.environ.get("PQM_DB_PATH", str(DATA_DIR / "pqm.sqlite3"))).resolve()
 PROTOCOLS_DIR = Path(os.environ.get("PQM_PROTOCOLS_DIR", str(DATA_DIR / "protocols"))).resolve()
@@ -889,6 +894,8 @@ def announcement_officer_name(value: str) -> str:
 
 
 def sync_framework_officers() -> dict:
+    if SANDBOX_MODE:
+        return {"matched": 0, "skipped": "sandbox_preserves_copied_directory"}
     rows = load_announcement_rows()
     assignments = {}
     for row in rows:
@@ -1611,6 +1618,8 @@ def api_get(url: str) -> dict:
     last_error = None
     for attempt in range(3):
         try:
+            if SANDBOX_MODE:
+                return sandbox_runtime.fetch_prozorro_json(url)
             req = urllib.request.Request(url, headers={"User-Agent": "PQM/0.1"})
             with urllib.request.urlopen(req, timeout=60, context=ssl.create_default_context()) as res:
                 return json.load(res)
@@ -1865,6 +1874,12 @@ def discover_active_frameworks() -> list[dict]:
 
 def discover_tracked_frameworks() -> list[dict]:
     """Load every active and closed PQM category listed in the announcements directory."""
+    if SANDBOX_MODE:
+        # Google remains isolated. Read the already copied WEB scope; do not
+        # discover unrelated frameworks or pretend that Google was refreshed.
+        with db() as con:
+            ids = [row[0] for row in con.execute("SELECT id FROM frameworks ORDER BY pretty_id")]
+        return [api_get(f"{API_ROOT}/frameworks/{identifier}")["data"] for identifier in ids]
     rows = load_announcement_rows()
     tracked_pretty_ids = sorted({
         (row.get("ID") or "").strip()
@@ -2188,7 +2203,17 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
     except ValueError:
         last_sync = None
     SYNC_STATE['last_data_sync_at'] = last_value
-    if catch_up and scheduler_runtime.hourly_catchup_due(
+    if catch_up and SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled():
+        while not stop_event.is_set() and _scheduler_is_configured('prozorro'):
+            SCHEDULER_HEARTBEATS['prozorro'] = now_iso()
+            delay = sandbox_runtime.prozorro_catchup_delay(DB_PATH, datetime.now(timezone.utc))
+            if delay is None:
+                break
+            if delay == 0 and _trigger_scheduler_job('prozorro', 'startup_catchup'):
+                break
+            if stop_event.wait(delay or 30):
+                break
+    elif catch_up and scheduler_runtime.hourly_catchup_due(
             datetime.now(timezone.utc), last_sync.isoformat() if last_sync else None):
         _trigger_scheduler_job('prozorro', 'startup_catchup')
     while not stop_event.is_set():
@@ -2321,6 +2346,10 @@ def scheduler_environment_defaults() -> dict[str, bool]:
 
 
 def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
+    if SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled():
+        return ({key: key == 'prozorro' for key in SCHEDULER_TARGETS},
+                {key: 'sandbox_environment' if key == 'prozorro' else 'safe_mode'
+                 for key in SCHEDULER_TARGETS})
     if SAFE_MODE:
         return ({key: False for key in SCHEDULER_TARGETS},
                 {key: "safe_mode" for key in SCHEDULER_TARGETS})
@@ -9045,6 +9074,10 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
 
 
 def enqueue_contract_experience_search(submission_ids) -> int:
+    if SANDBOX_MODE:
+        # Separate document/tender integration is not part of the approved
+        # framework API scope; do not queue failing retries or overwrite checks.
+        return 0
     unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
@@ -9071,6 +9104,11 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "PQM/0.1"
+
+    def end_headers(self):
+        if SANDBOX_MODE:
+            self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+        super().end_headers()
 
     def send_json(self, data, status=200):
         raw = json.dumps(data, ensure_ascii=False).encode()
@@ -9230,14 +9268,19 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/login", "/api/logout"}:
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if SAFE_MODE and (self.command in {"POST", "PATCH", "PUT", "DELETE"}
+        sandbox_local_edit = SANDBOX_MODE and sandbox_runtime.local_edit_allowed(self.command, path)
+        sandbox_manual_sync = SANDBOX_MODE and sandbox_runtime.manual_sync_allowed(self.command, path)
+        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not (sandbox_local_edit or sandbox_manual_sync))
                           or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
                                  for key in ("refresh", "force"))
                           or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
             length = int(self.headers.get("Content-Length", "0"))
             if 0 < length <= 1024 * 1024:
                 self.rfile.read(length)
-            return self.send_json({"error": "WEB працює в safe mode: зміни й оновлення вимкнено",
+            message = ("Sandbox: ця дія заблокована. Дозволені лише локальні тестові зміни; інтеграції та jobs вимкнено"
+                       if SANDBOX_MODE and sandbox_runtime.local_edits_enabled()
+                       else "WEB працює в safe mode: зміни й оновлення вимкнено")
+            return self.send_json({"error": message,
                                    "code": "safe_mode", "status": 503}, 503)
         with db() as con:
             self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
@@ -9463,6 +9506,11 @@ class Handler(BaseHTTPRequestHandler):
             google = google_integration_status()
             return self.send_json({
                 "environment": PQM_ENV,
+                "sandbox_mode": SANDBOX_MODE,
+                "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
+                "sandbox_prozorro_read": SANDBOX_MODE and sandbox_runtime.prozorro_read_enabled(),
+                "sandbox_prozorro_scheduler": SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled(),
+                "safe_mode": SAFE_MODE,
                 "bids_mode": BIDS_MODE,
                 "bids_update": manual_bids["enabled"],
                 "manual_bids_update": manual_bids,
@@ -9886,7 +9934,10 @@ class Handler(BaseHTTPRequestHandler):
                 or not (path in {"index.html"} or (target.parent == ROOT and target.suffix in {".js", ".css"})
                         or (ROOT / "assets") in target.parents)):
             return self.send_error(404)
-        raw = target.read_bytes(); self.send_response(200)
+        raw = target.read_bytes()
+        if SANDBOX_MODE and path == "index.html":
+            raw = sandbox_runtime.decorate_html(raw)
+        self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
