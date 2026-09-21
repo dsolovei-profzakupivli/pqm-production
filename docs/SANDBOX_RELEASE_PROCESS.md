@@ -1,5 +1,43 @@
 # PQM: sandbox → production
 
+## Як користуємося замість ZIP
+
+1. Редагуємо код у feature-гілці через Codex/Codespace. Render sandbox — місце
+   виконання й перевірки, не редактор файлів: зміни всередині контейнера не є релізом.
+2. Через PR і CI додаємо погоджені зміни в sandbox-гілку та вручну розгортаємо
+   конкретний commit на `pqm-sandbox`. Виправлення повторюють цей цикл.
+3. Коли версію прийнято, фіксуємо її SHA й перевіряємо повний diff до поточного
+   production baseline. Не переносимо sandbox-гілку наосліп і не втрачаємо нові prod fixes.
+4. Для майбутнього prod-релізу створюємо окремий запис командою нижче. Вказуємо
+   перевірені повні SHA; не використовуємо рухомі назви гілок як підтвердження версії.
+5. Окреме погодження користувача дозволяє production deployment після перевірки
+   backup, міграцій на копії актуальної prod-БД і збереження її бізнес-даних.
+
+```sh
+python tools/release_candidate.py prepare --production-baseline FULL_PROD_SHA --candidate FULL_TESTED_SHA --out /private/tmp/pqm-release-review
+python tools/release_candidate.py check --plan /private/tmp/pqm-release-review/plan.json --evidence /private/tmp/pqm-release-review/evidence.json
+```
+
+`prepare` лише читає Git і створює локальні plan/evidence JSON. Він не робить
+мережевих запитів, не відкриває БД, не копіює runtime-файлів і не деплоїть.
+`check` повертає STOP (exit 2), поки немає всіх посилань на докази та окремого
+погодження точного SHA. Це перевірка повноти запису, **не автоматична перевірка
+правдивості доказів і не технічне блокування ручного deployment у Render**.
+Секрети та реальні БД не додавати до цих JSON або Git/CI.
+
+### Що зберігається в production
+
+Production зберігає свою БД, заявки, рішення, користувачів, сесії, чати, аватари,
+документи, persistent storage, OAuth та environment. Sandbox-БД ніколи не замінює
+production-БД. Переносимо код; структуру production-БД змінюємо лише перевіреними
+міграціями на її власних даних. Templates/config/metadata не перезаписуємо автоматично.
+Імпорт тестових даних, backfill, reconciliation та startup builders не є неявною
+частиною релізу. Навіть additive migration потребує перевірки першого й повторного
+запусків та fingerprints старих колонок. Code rollback не означає відновлення БД.
+
+Ці інструменти не створюють кнопку deployment в PQM і не вмикають автоматичне
+перенесення в prod. Вони підтримують керований процес через GitHub/Codex/Render.
+
 ## CI scope
 
 `PQM release checks` builds the repository Dockerfile and runs the existing

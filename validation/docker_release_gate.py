@@ -24,6 +24,7 @@ def main():
         "PQM_ENABLE_NAZK_WORKFLOW": "0",
     }
     commands = [
+        [sys.executable, str(root / "validation/test_release_candidate.py")],
         [sys.executable, str(root / "validation/sandbox_smoke.py")],
         [sys.executable, str(root / "validation/sandbox_editable_smoke.py")],
         [sys.executable, str(root / "validation/sandbox_documents_smoke.py")],
