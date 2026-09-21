@@ -27,6 +27,7 @@ def main():
         [sys.executable, str(root / "validation/sandbox_smoke.py")],
         [sys.executable, str(root / "validation/sandbox_editable_smoke.py")],
         [sys.executable, str(root / "validation/sandbox_prozorro_smoke.py")],
+        [sys.executable, str(root / "validation/sandbox_scheduler_smoke.py")],
         ["node", "validation/sandbox_prozorro_ui.cjs"],
         [sys.executable, str(root / "validation/release_0916_smoke.py")],
         [sys.executable, str(root / "validation/nazk_scheduler_failure_smoke.py")],

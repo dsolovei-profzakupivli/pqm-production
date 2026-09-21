@@ -2203,7 +2203,17 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
     except ValueError:
         last_sync = None
     SYNC_STATE['last_data_sync_at'] = last_value
-    if catch_up and scheduler_runtime.hourly_catchup_due(
+    if catch_up and SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled():
+        while not stop_event.is_set() and _scheduler_is_configured('prozorro'):
+            SCHEDULER_HEARTBEATS['prozorro'] = now_iso()
+            delay = sandbox_runtime.prozorro_catchup_delay(DB_PATH, datetime.now(timezone.utc))
+            if delay is None:
+                break
+            if delay == 0 and _trigger_scheduler_job('prozorro', 'startup_catchup'):
+                break
+            if stop_event.wait(delay or 30):
+                break
+    elif catch_up and scheduler_runtime.hourly_catchup_due(
             datetime.now(timezone.utc), last_sync.isoformat() if last_sync else None):
         _trigger_scheduler_job('prozorro', 'startup_catchup')
     while not stop_event.is_set():
@@ -2336,6 +2346,10 @@ def scheduler_environment_defaults() -> dict[str, bool]:
 
 
 def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
+    if SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled():
+        return ({key: key == 'prozorro' for key in SCHEDULER_TARGETS},
+                {key: 'sandbox_environment' if key == 'prozorro' else 'safe_mode'
+                 for key in SCHEDULER_TARGETS})
     if SAFE_MODE:
         return ({key: False for key in SCHEDULER_TARGETS},
                 {key: "safe_mode" for key in SCHEDULER_TARGETS})
@@ -9450,6 +9464,7 @@ class Handler(BaseHTTPRequestHandler):
                 "sandbox_mode": SANDBOX_MODE,
                 "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
                 "sandbox_prozorro_read": SANDBOX_MODE and sandbox_runtime.prozorro_read_enabled(),
+                "sandbox_prozorro_scheduler": SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled(),
                 "safe_mode": SAFE_MODE,
                 "bids_mode": BIDS_MODE,
                 "bids_update": manual_bids["enabled"],

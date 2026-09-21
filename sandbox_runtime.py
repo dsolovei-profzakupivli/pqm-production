@@ -2,8 +2,8 @@
 
 Render Docker command: python sandbox_runtime.py
 Only the owned pqm-sandbox service is accepted. Safe mode remains enabled;
-explicit flags allow reviewed local edits and GET-only manual Prozorro import,
-never automatic jobs or production credentials/destinations.
+explicit flags allow reviewed local edits and GET-only Prozorro import,
+including an independently opted-in scheduler, never production destinations.
 """
 from __future__ import annotations
 
@@ -51,6 +51,11 @@ def validate_environment(env=None):
         raise RuntimeError('STOP: PQM_SANDBOX_EDITS must be 0 or 1')
     if env.get('PQM_SANDBOX_PROZORRO_READ', '0') not in {'0', '1'}:
         raise RuntimeError('STOP: PQM_SANDBOX_PROZORRO_READ must be 0 or 1')
+    if env.get('PQM_SANDBOX_PROZORRO_SCHEDULER', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: PQM_SANDBOX_PROZORRO_SCHEDULER must be 0 or 1')
+    if (env.get('PQM_SANDBOX_PROZORRO_SCHEDULER') == '1'
+            and env.get('PQM_SANDBOX_PROZORRO_READ') != '1'):
+        raise RuntimeError('STOP: sandbox scheduler requires the restricted Prozorro transport')
     data = Path(env.get('PQM_DATA_DIR', '')).resolve()
     db = Path(env.get('PQM_DB_PATH', '')).resolve()
     if db != data / 'pqm_sandbox.sqlite3' or Path(env['PQM_DB_PATH']).is_symlink():
@@ -85,6 +90,38 @@ def local_edits_enabled():
 
 def prozorro_read_enabled():
     return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_PROZORRO_READ', '0') == '1'
+
+
+def prozorro_scheduler_enabled():
+    return prozorro_read_enabled() and os.environ.get('PQM_SANDBOX_PROZORRO_SCHEDULER', '0') == '1'
+
+
+def prozorro_catchup_delay(db_path, moment):
+    """Read-only restart decision: None=skip, 0=due, positive=retry delay.
+
+    Never steal a live lease. An orphan expires after the existing 180s TTL;
+    retrying here avoids waiting an extra hour after an interrupted deploy.
+    A single manual framework import is not a successful automatic full run.
+    """
+    def parse(value):
+        if not value:
+            return None
+        parsed = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return parsed.replace(tzinfo=datetime.timezone.utc) if parsed.tzinfo is None else parsed
+    with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + '?mode=ro', uri=True)) as con:
+        con.execute('PRAGMA query_only=ON')
+        con.execute('BEGIN')
+        lease = con.execute("SELECT lease_until FROM scheduler_job_leases WHERE job_key='prozorro'").fetchone()
+        state = con.execute("SELECT last_status,last_trigger,last_finished_at FROM scheduler_job_state WHERE job_key='prozorro'").fetchone()
+    if lease:
+        remaining = (parse(lease[0]) - moment).total_seconds()
+        if remaining > 0:
+            return min(30, remaining)
+    if state and state[0] != 'running' and state[1] in {'scheduled', 'startup_catchup'}:
+        finished = parse(state[2])
+        if finished and (moment - finished).total_seconds() < 3600:
+            return None
+    return 0
 
 
 def manual_sync_allowed(method, path):
@@ -319,6 +356,8 @@ def decorate_html(raw):
             if local_edits_enabled() else 'SAFE MODE — зміни та зовнішні оновлення вимкнено')
     if prozorro_read_enabled():
         mode = 'РУЧНИЙ PROZORRO → лише БД SANDBOX · автоматичні jobs та інші інтеграції вимкнено'
+    if prozorro_scheduler_enabled():
+        mode = 'PROZORRO → лише БД SANDBOX · автоматично щогодини о :05 (Київ) · інші інтеграції вимкнено'
     text = text.replace('<body>', '<body><aside id="sandboxWarning" role="note" style="position:fixed;bottom:0;left:0;right:0;z-index:100000;background:#fff3cd;color:#583d00;padding:8px 16px;text-align:center;font:600 14px system-ui;border-top:2px solid #d29b00">SANDBOX · ТЕСТОВІ ДАНІ · ' + mode + '</aside>', 1)
     text = text.replace('PQM · WEB TEST</em>', 'PQM · SANDBOX</em>', 1)
     return text.encode('utf-8')

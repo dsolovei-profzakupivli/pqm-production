@@ -1,5 +1,6 @@
 """Synthetic transport fixture. No production DB or external API access."""
-import os,sys,time
+import os,sys,time,sqlite3
+from datetime import datetime,timedelta,timezone
 from urllib.parse import urlsplit
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
@@ -23,4 +24,9 @@ def transport(url):
         return {'data':[{'id':'sandbox-q-pending','submissionID':'sandbox-pending','status':'active'}]}
     raise RuntimeError('Unexpected synthetic API URL: '+url)
 sandbox.fetch_prozorro_json=transport
+if sandbox.prozorro_scheduler_enabled():
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE frameworks SET status='active' WHERE id='sandbox-framework'")
+    # Accelerated clock is confined to this synthetic fixture, never runtime.
+    server.next_hourly_run=lambda moment=None: datetime.now(timezone.utc)+timedelta(seconds=25)
 server.main()

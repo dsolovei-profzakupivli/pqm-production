@@ -21,10 +21,22 @@ may update from imported facts, but no NAZK check/review materialization or regi
 Existing qualification-driven lifecycle reconciliation remains part of the shared sync worker;
 the generic task builder remains suppressed by safe mode. Preview/diff the chosen framework first.
 
-This is **not full staging workflow parity yet**: no automatic schedulers, AMCU/NAZK refresh,
+Optional automatic stage: set `PQM_SANDBOX_PROZORRO_SCHEDULER=1` with READ=1 only after a fresh
+backup and full incremental startup run on a disposable sandbox DB copy. Native POLICY flags
+and persisted scheduler settings remain 0; only the effective Prozorro job is enabled.
+The production scheduler implementation/configuration remains unchanged. Sandbox uses the same
+active-framework incremental worker, hourly at :05 Europe/Kyiv, with a startup catch-up.
+Recent completed automatic runs suppress duplicate catch-up. A manual single-framework run
+does not stand in for an automatic run. A surviving lease is honored; restart retries every
+30 seconds until it completes or expires (existing 180s TTL/30s heartbeat), without stealing it.
+Check `/api/runtime-features`: Prozorro configured/registered/running, heartbeat, last result,
+next run/timezone; all other jobs/integrations must remain off. No DB schema migration is needed.
+Disable this stage by setting `PQM_SANDBOX_PROZORRO_SCHEDULER=0` and restarting sandbox only.
+
+This is **not full staging workflow parity yet**: AMCU/NAZK refresh,
 Google/Bids/PowerBI, document-generation subprocesses, or general task mutations are enabled.
 Promote only reviewed code, never sandbox business rows, back to production.
 
-Disable: set `PQM_SANDBOX_PROZORRO_READ=0` and restart sandbox only. Code rollback baseline
+Disable all Prozorro: set both sandbox Prozorro flags to 0 and restart sandbox only. Code rollback baseline
 `cafb3f13f168c8364fb253d3f72bd9af6ad4d35b`; retain the fresh backup if data rollback is required.
 Do not overwrite a sandbox DB after subsequent user edits without checking the delta first.
