@@ -1596,6 +1596,13 @@ async function loadRuntimeFeatures(){
        '#refNazkRefresh','#refAmcuRefresh','#refAmcuUploadBtn','#adminFrameworkImportNew',
        '#edrMonitoringSync','#googleRuntimeToggle','#googleDisconnect','#bidsManualUpdateToggle',
        '#bidsDataRefresh','#powerbiExportBtn'].forEach(selector=>{
+        if(selector==='#refAmcuRefresh'&&features.sandbox_amcu_read){
+          const element=$(selector);
+          if(element){delete element.dataset.runtimeDisabled;delete element.dataset.sandboxBlocked;
+            element.disabled=element.dataset.roleDisabled!=='0';
+            element.title='Ручне читання офіційного реєстру АМКУ лише для sandbox; без створення задач та автоматичних jobs.'}
+          return;
+        }
         if(selector==='#resetBtn'&&features.sandbox_prozorro_read){
           const element=$(selector);
           if(element){delete element.dataset.runtimeDisabled;delete element.dataset.sandboxBlocked;

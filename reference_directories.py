@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -430,6 +431,11 @@ def _amcu_rows_bounded(raw=None, filename=""):
     The child never opens a database or imports the application. A hung network
     response or workbook parser cannot retain the refresh lock indefinitely.
     """
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_amcu
+        if raw is not None:
+            raise RuntimeError('Sandbox AMCU upload is disabled')
+        return sandbox_amcu.download_rows()
     if raw is not None and len(raw) > AMCU_MAX_BYTES:
         raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
     try:
