@@ -1,0 +1,57 @@
+/* Loaded only by the sandbox HTML decorator. Never included by index.html. */
+@media screen {
+html[data-pqm-environment="sandbox"] {
+  color-scheme: dark;
+  --ink:#edf3fc; --muted:#b2c3db; --line:#38516e; --soft:#152b46;
+  --blue:#86bdff; --blue2:#203e62; --green:#8be0b6; --green2:#173e38;
+  --red:#ffb1b8; --red2:#492936; --amber:#ffdc8a; --amber2:#443b26;
+  --shadow:0 8px 30px rgb(0 0 0 / 22%);
+  background:#0b172a;
+}
+html[data-pqm-environment="sandbox"] body {
+  background:#0b172a!important; color:var(--ink)!important;
+}
+html[data-pqm-environment="sandbox"] :is(header,nav,main,section,article,aside,footer,dialog,table,thead,tbody,th,td,form,
+  [class*="card"],[class*="panel"],[class*="toolbar"],[class*="modal"],[class*="popover"],[class*="dropdown"],
+  .topbar,.filters,.table-wrap,.table-scroll,.auth-card,.login-card,.search-wrap) {
+  color:var(--ink); border-color:var(--line)!important;
+}
+html[data-pqm-environment="sandbox"] :is(.topbar,dialog,th,
+  [class*="card"],[class*="panel"],[class*="toolbar"],[class*="modal-content"],
+  [class*="popover"],[class*="dropdown-menu"],.filters,.table-wrap,.search-wrap) {
+  background-color:#132840!important;
+}
+html[data-pqm-environment="sandbox"] :is(td,tbody,table) {background-color:#102238!important}
+html[data-pqm-environment="sandbox"] tr:hover td,
+html[data-pqm-environment="sandbox"] tr.active td {background-color:#203e62!important}
+html[data-pqm-environment="sandbox"] :is(h1,h2,h3,h4,h5,strong,b,label,summary) {color:var(--ink)}
+html[data-pqm-environment="sandbox"] :is(p,span,div) {color:inherit}
+html[data-pqm-environment="sandbox"] :is(.login-view,.login-screen,.chat-message,.chat-list,.chat-main,.chat-compose) {
+  background-color:#132840!important;color:var(--ink)!important;
+}
+html[data-pqm-environment="sandbox"] :is(small,.muted,[class*="subtitle"],[class*="hint"],td small) {color:var(--muted)!important}
+html[data-pqm-environment="sandbox"] a {color:var(--blue)}
+html[data-pqm-environment="sandbox"] :is(input,select,textarea,button) {
+  color:var(--ink)!important; background-color:#193451!important; border-color:#4a6788!important;
+  color-scheme:dark;
+}
+html[data-pqm-environment="sandbox"] :is(input,textarea)::placeholder {color:#b2c3db;opacity:1}
+html[data-pqm-environment="sandbox"] :is(input[type="checkbox"],input[type="radio"]) {accent-color:#86bdff}
+html[data-pqm-environment="sandbox"] button:hover:not(:disabled) {background-color:#28517b!important}
+html[data-pqm-environment="sandbox"] :is(button.active,button[aria-selected="true"],.primary,.btn-primary) {
+  background-color:#215487!important; color:#fff!important; border-color:#86bdff!important;
+}
+html[data-pqm-environment="sandbox"] :is(button,input,select,textarea):disabled {color:#a7b6c9!important;opacity:.7}
+html[data-pqm-environment="sandbox"] :focus-visible {outline:3px solid #ffdc8a!important;outline-offset:3px}
+html[data-pqm-environment="sandbox"] :is(.registry-flag.amcu,.check-result-card.reject) {background:#492936!important;color:#ffb1b8!important}
+html[data-pqm-environment="sandbox"] :is(.registry-flag.nazk,.check-result-card.wait) {background:#443b26!important;color:#ffdc8a!important}
+html[data-pqm-environment="sandbox"] .check-result-card.admit {background:#173e38!important;color:#8be0b6!important}
+html[data-pqm-environment="sandbox"] td.auto-filled {background:#20334c!important;color:var(--ink)!important}
+html[data-pqm-environment="sandbox"] :is(.registry-risk-amcu,.supplier-amcu) td {background:#392635!important}
+html[data-pqm-environment="sandbox"] :is(.registry-risk-nazk,.supplier-nazk) td {background:#343327!important}
+html[data-pqm-environment="sandbox"] .brand-logo {background:#fff;border-radius:8px;padding:4px}
+html[data-pqm-environment="sandbox"] #sandboxWarning {
+  background:#17365c!important;color:#edf3fc!important;border-top:2px solid #86bdff!important;
+}
+/* Documents/images retain their own colours; never use an inversion filter. */
+}

@@ -365,6 +365,10 @@ def bootstrap(server):
 
 def decorate_html(raw):
     text = raw.decode('utf-8')
+    if os.environ.get('PQM_SANDBOX') == '1':
+        text = text.replace('<html', '<html data-pqm-environment="sandbox"', 1)
+        theme = (ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
+        text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
     mode = ('ЛОКАЛЬНІ ТЕСТОВІ ЗМІНИ — інтеграції, імпорти та jobs вимкнено'
             if local_edits_enabled() else 'SAFE MODE — зміни та зовнішні оновлення вимкнено')
