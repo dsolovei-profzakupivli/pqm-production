@@ -56,4 +56,19 @@ html[data-pqm-environment="sandbox"] #sandboxWarning {
   background:#17365c!important;color:#edf3fc!important;border-top:2px solid #86bdff!important;
 }
 /* Documents/images retain their own colours; never use an inversion filter. */
+/* Intentionally light controls need their own ink, not inherited navy-theme ink. */
+html[data-pqm-environment="sandbox"] :is(.multi-filter,.advanced-filters,.supplier-advanced-filters,.toolbar-settings)>summary {
+  background:#f2f5fa!important;color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] :is(.multi-filter,.advanced-filters,.supplier-advanced-filters,.toolbar-settings)>summary :is(span,strong) {
+  color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] .table-card>footer {
+  background:#f2f5fa!important;color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] .table-card>footer>span,
+html[data-pqm-environment="sandbox"] .paperclip>span {
+  color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] .paperclip>span {background:#e8eff7!important}
 }
