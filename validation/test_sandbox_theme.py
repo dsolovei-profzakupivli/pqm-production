@@ -28,6 +28,12 @@ class Theme(unittest.TestCase):
             for background in ('#0b172a', '#132840', '#193451'):
                 ratio = (luminance(foreground)+.05)/(luminance(background)+.05)
                 self.assertGreaterEqual(ratio, 4.5, (foreground, background, ratio))
+    def test_light_surfaces_contrast(self):
+        css = (sandbox.ROOT / 'sandbox_theme.css').read_text()
+        for selector in ('.multi-filter', '.advanced-filters', '.toolbar-settings', '.table-card>footer', '.paperclip>span'):
+            self.assertIn(selector, css)
+        for background in ('#f2f5fa', '#e8eff7'):
+            self.assertGreaterEqual((luminance(background)+.05)/(luminance('#172b43')+.05), 4.5)
 
 
 if __name__ == '__main__':
