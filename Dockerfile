@@ -21,7 +21,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl libreoffice nodejs npm poppler-utils \
+       ca-certificates curl libreoffice libseccomp2 nodejs npm poppler-utils \
        tesseract-ocr tesseract-ocr-ukr \
     && npm install --global pnpm@9 \
     && rm -rf /var/lib/apt/lists/*
