@@ -44,6 +44,16 @@ jobs:
           set -euo pipefail
           docker run --rm --network none --entrypoint node pqm-ci:tested \
             validation/amcu_poll_smoke.cjs 2>&1 | tee ci-evidence/amcu-ui.log
+      - name: Run OAuth callback regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python \
+            -e PYTHONPATH=/app/validation/test_runtime:/app \
+            -e PQM_TEST_NETWORK_ISOLATION=1 \
+            -e PQM_ENV=local -e HOST=127.0.0.1 -e PORT=8080 \
+            -e PQM_AUTH_ENABLED=0 -e PQM_ENABLE_SCHEDULER=0 pqm-ci:tested \
+            -B -m unittest test_google_oauth_hotfix -v 2>&1 | tee ci-evidence/oauth.log
       - name: Run delivered regression suite
         shell: bash
         run: |
