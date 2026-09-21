@@ -11,6 +11,8 @@ html[data-pqm-environment="sandbox"] {
 html[data-pqm-environment="sandbox"] body {
   background:#0b172a!important; color:var(--ink)!important;
 }
+html[data-pqm-environment="sandbox"] #loginGate {background:#0b172a!important}
+html[data-pqm-environment="sandbox"] .login-card>img {background:#fff;padding:8px;border-radius:8px}
 html[data-pqm-environment="sandbox"] :is(header,nav,main,section,article,aside,footer,dialog,table,thead,tbody,th,td,form,
   [class*="card"],[class*="panel"],[class*="toolbar"],[class*="modal"],[class*="popover"],[class*="dropdown"],
   .topbar,.filters,.table-wrap,.table-scroll,.auth-card,.login-card,.search-wrap) {
