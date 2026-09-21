@@ -9271,7 +9271,8 @@ class Handler(BaseHTTPRequestHandler):
         sandbox_local_edit = SANDBOX_MODE and sandbox_runtime.local_edit_allowed(self.command, path)
         sandbox_manual_sync = SANDBOX_MODE and sandbox_runtime.manual_sync_allowed(self.command, path)
         sandbox_document = SANDBOX_MODE and sandbox_runtime.sandbox_documents.route_allowed(self.command, path)
-        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not (sandbox_local_edit or sandbox_manual_sync or sandbox_document))
+        sandbox_amcu = SANDBOX_MODE and sandbox_runtime.sandbox_amcu.route_allowed(self.command, path)
+        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not (sandbox_local_edit or sandbox_manual_sync or sandbox_document or sandbox_amcu))
                           or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
                                  for key in ("refresh", "force"))
                           or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
@@ -9510,6 +9511,7 @@ class Handler(BaseHTTPRequestHandler):
                 "sandbox_mode": SANDBOX_MODE,
                 "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
                 "sandbox_documents": SANDBOX_MODE and sandbox_runtime.sandbox_documents.enabled(),
+                "sandbox_amcu_read": SANDBOX_MODE and sandbox_runtime.sandbox_amcu.enabled(),
                 "sandbox_prozorro_read": SANDBOX_MODE and sandbox_runtime.prozorro_read_enabled(),
                 "sandbox_prozorro_scheduler": SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled(),
                 "safe_mode": SAFE_MODE,
