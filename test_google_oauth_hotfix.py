@@ -9,8 +9,11 @@ from unittest.mock import Mock, patch
 
 import server
 
-spec = importlib.util.spec_from_file_location("existing_google_tests",
-    Path(__file__).parent / "validation/local_release_20260911/test_google_runtime.py")
+# The delivered-suite runner places tests side-by-side in a disposable directory.
+base_tests = Path(__file__).parent / "validation/local_release_20260911/test_google_runtime.py"
+if not base_tests.is_file():
+    base_tests = Path(__file__).with_name("test_google_runtime.py")
+spec = importlib.util.spec_from_file_location("existing_google_tests", base_tests)
 existing = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(existing)
 
