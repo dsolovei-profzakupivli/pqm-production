@@ -134,6 +134,36 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(got['9462717843']['entity_type'],'foreign_legal_entity')
         self.assertEqual(got['9876543210']['entity_type'],'unknown')
 
+    def test_unique_digits_profile_fallback_preserves_submission_literal_and_fop_type(self):
+        self.add('AB-123456789','FOP LITERAL','2026-01-01',source='')
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('123456789','M','ФОП')")
+        got=self.items()
+        self.assertIn('AB-123456789',got)
+        self.assertEqual(got['AB-123456789']['supplier_code'],'AB-123456789')
+        self.assertEqual(got['AB-123456789']['entity_type'],'individual_entrepreneur')
+
+    def test_digits_fallback_rejects_profile_and_submission_collisions_and_empty_digits(self):
+        self.add('X-123456789','ONE','2026-01-01')
+        self.add('Y-123456789','TWO','2026-01-02')
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('123456789','M','ФОП')")
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('123-456789','M','ФОП')")
+        self.add('NO-DIGITS','EMPTY','2026-01-03')
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('---','M','ФОП')")
+        got=self.items()
+        self.assertEqual(got['X-123456789']['entity_type'],'unknown')
+        self.assertEqual(got['Y-123456789']['entity_type'],'unknown')
+        self.assertEqual(got['NO-DIGITS']['entity_type'],'unknown')
+
+    def test_foreign_scheme_never_uses_digits_profile_fallback(self):
+        self.add('39-3448689','FOREIGN','2026-01-01',scheme='PL-NIP')
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('393448689','M','ФОП')")
+        self.assertEqual(self.items()['39-3448689']['entity_type'],'foreign_legal_entity')
+
+    def test_unique_digits_profile_fallback_honors_yuo(self):
+        self.add('AA-123456788','LEGAL','2026-01-01')
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('123456788','M','ЮО')")
+        self.assertEqual(self.items()['AA-123456788']['entity_type'],'legal_entity')
+
     def test_unknown_officer_and_one_row_per_supplier(self):
         self.add('11111111','OLD','2026-01-01',qualification='active',source='ЮО')
         self.add('11111111','NEW','2026-02-01',qualification='active',source='ЮО')

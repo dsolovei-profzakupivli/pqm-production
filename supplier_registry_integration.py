@@ -165,6 +165,30 @@ def _build_full_registry(con):
     full_name_expr = "full_name" if "full_name" in profile_columns else "'' full_name"
     profiles = {str(row["supplier_code"] or "").strip(): dict(row) for row in con.execute(
         f"SELECT supplier_code,manager_name,source_sheet,{full_name_expr} FROM supplier_edr_profiles")}
+    # Profile codes may have lost passport characters while submissions retain
+    # their literal representation.  Link only an unambiguous domestic pair;
+    # literal identity always wins and foreign schemes can never use this path.
+    profile_by_digits = {}
+    for profile_code in profiles:
+        digits = _identity_code(profile_code)
+        if digits:
+            profile_by_digits.setdefault(digits, []).append(profile_code)
+    submission_by_digits = {}
+    for submission_code, application in latest.items():
+        digits = _identity_code(submission_code)
+        scheme = str(application.get("identifier_scheme") or "").strip().upper()
+        if digits and (not scheme or scheme in {"UA-EDR", "UA-IPN"}):
+            submission_by_digits.setdefault(digits, []).append(submission_code)
+    linked_profiles = {}
+    for submission_code in latest:
+        if submission_code in profiles:
+            linked_profiles[submission_code] = profiles[submission_code]
+            continue
+        digits = _identity_code(submission_code)
+        candidates = profile_by_digits.get(digits, []) if digits else []
+        submission_candidates = submission_by_digits.get(digits, []) if digits else []
+        if len(candidates) == 1 and len(submission_candidates) == 1:
+            linked_profiles[submission_code] = profiles[candidates[0]]
     managers = {}
     for row in con.execute("""SELECT supplier_code,manager_name FROM supplier_managers
       WHERE is_current=1 ORDER BY COALESCE(NULLIF(updated_at,''),created_at) DESC,id DESC"""):
@@ -180,7 +204,7 @@ def _build_full_registry(con):
     verifications = _current_verification_events(con, latest)
     items = []
     for code in sorted(latest):
-        application = latest[code]; acceptance = approved.get(code); profile = profiles.get(code, {})
+        application = latest[code]; acceptance = approved.get(code); profile = linked_profiles.get(code, {})
         canonical_status = statuses.get(code)
         if not canonical_status:
             canonical_status = "Активний" if activity.get(code) else "Неактивний"
