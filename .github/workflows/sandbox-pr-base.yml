@@ -1,0 +1,30 @@
+name: Sandbox PR routing
+
+# Runs trusted base-branch code, never checks out or executes PR contents.
+# `edited` is essential: changing the target must invalidate a previous pass.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox-pr-base:
+    name: Sandbox PR base guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Enforce sandbox destination
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          SANDBOX_BRANCH: codex/sandbox-bootstrap-20260916
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_BRANCH" == codex/sandbox-* && "$BASE_BRANCH" != "$SANDBOX_BRANCH" ]]; then
+            echo '::error::Sandbox branches may target only codex/sandbox-bootstrap-20260916. Retarget this PR; do not merge it into main.'
+            exit 1
+          fi
+          echo 'PR target is permitted.'
