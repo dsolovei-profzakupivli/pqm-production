@@ -62,13 +62,14 @@ class SupplierRegistryCacheTests(unittest.TestCase):
                          (submission_id, "", officer, decision, ""))
         self.con.execute("INSERT OR REPLACE INTO supplier_registry_summary VALUES(?,?)", (code, name))
 
-    def test_batch_helpers_match_current_per_supplier_rules(self):
+    def test_batch_name_helper_returns_only_verified_edr_names(self):
         codes = ["11111111", "22222222"]
         columns = {row[1] for row in self.con.execute("PRAGMA table_info(supplier_edr_profiles)")}
         names = integration._current_names(self.con, codes, columns)
         events = integration._current_verification_events(self.con, codes)
+        self.assertIsNone(names["11111111"])
+        self.assertEqual(names["22222222"], "ЕДР CURRENT NAME")
         for code in codes:
-            self.assertEqual(names[code], supplier_identity.current_name(self.con, code))
             self.assertEqual(events[code], edr_sync_v2.current_verification_event(self.con, code))
 
     def test_response_contract_and_cache_hit(self):
@@ -93,8 +94,7 @@ class SupplierRegistryCacheTests(unittest.TestCase):
             self.assertNotEqual(before, integration.database_revision(self.con))
             refreshed = integration.full_registry(self.con)
         self.assertEqual(build.call_count, 2)
-        self.assertEqual(next(item for item in refreshed["items"] if item["supplier_code"] == "11111111")["supplier_name"],
-                         "CHANGED NAME")
+        self.assertEqual(next(item for item in refreshed["items"] if item["supplier_code"] == "11111111")["supplier_name"], "")
 
 
 if __name__ == "__main__":

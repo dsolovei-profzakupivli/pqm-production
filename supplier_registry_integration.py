@@ -33,7 +33,7 @@ def _identity_code(value):
 
 
 def _current_names(con, supplier_codes, profile_columns):
-    """Set-based equivalent of supplier_identity.current_name for each code."""
+    """Verified EDR full names only; never promote an application-name fallback."""
     normalized = {_identity_code(code) for code in supplier_codes if _identity_code(code)}
     names = {}
     if "full_name" in profile_columns:
@@ -43,18 +43,6 @@ def _current_names(con, supplier_codes, profile_columns):
               FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch):
                 if row["full_name"]:
                     names[_identity_code(row["supplier_code"])] = row["full_name"]
-    missing = normalized - set(names)
-    for batch in _chunks(missing):
-        placeholders = ",".join("?" for _ in batch)
-        for row in con.execute(f"""SELECT supplier_code,supplier_name FROM (
-          SELECT supplier_code,NULLIF(TRIM(supplier_name),'') supplier_name,
-            ROW_NUMBER() OVER (PARTITION BY supplier_code ORDER BY
-              CASE WHEN julianday(NULLIF(date_published,'')) IS NULL THEN 1 ELSE 0 END,
-              julianday(NULLIF(date_published,'')) DESC,id DESC) row_number
-          FROM submissions WHERE supplier_code IN ({placeholders})
-            AND TRIM(COALESCE(supplier_name,''))<>'') WHERE row_number=1""", batch):
-            if row["supplier_name"]:
-                names[_identity_code(row["supplier_code"])] = row["supplier_name"]
     return {str(code).strip(): names.get(_identity_code(code)) for code in supplier_codes}
 
 
