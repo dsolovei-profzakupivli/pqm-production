@@ -86,6 +86,7 @@ from uo_work_queue import get_uo_work_queue
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
 SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
+SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN"
 
 
 def configure_file_logging() -> logging.Logger:
@@ -9237,7 +9238,9 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _authorize_supplier_registry_integration(self) -> bool:
-        configured = str(os.environ.get(SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV) or "")
+        token_env = (SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV
+                     if SANDBOX_MODE else SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV)
+        configured = str(os.environ.get(token_env) or "")
         if not configured:
             self.send_json({"error": "Integration token не налаштовано", "status": 503}, 503)
             return False

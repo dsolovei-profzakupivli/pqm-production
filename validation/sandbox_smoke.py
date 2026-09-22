@@ -46,6 +46,13 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(RuntimeError):
                 sandbox.validate_environment({**self.env(), key: 'forbidden-fixture'})
 
+    def test_04a_sandbox_registry_token_is_the_only_allowed_integration_credential(self):
+        sandbox.validate_environment({**self.env(), 'PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN': 'sandbox-only'})
+        for key in ['PQM_SUPPLIER_REGISTRY_TOKEN', 'PQM_USERS_JSON',
+                    'PQM_GOOGLE_OAUTH_CLIENT_JSON', 'PQM_GOOGLE_OAUTH_REDIRECT_URI']:
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                sandbox.validate_environment({**self.env(), key: 'forbidden-fixture'})
+
     def test_05_outbound_and_child_process_guard(self):
         for event, args in [('socket.connect', (None, ('10.0.0.1', 80))),
                             ('socket.connect', (None, ('1.1.1.1', 443))),
