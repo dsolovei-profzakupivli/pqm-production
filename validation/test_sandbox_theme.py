@@ -14,6 +14,20 @@ def luminance(value):
 
 
 class Theme(unittest.TestCase):
+    def test_detail_surface_contract(self):
+        css = (sandbox.ROOT / 'sandbox_theme.css').read_text()
+        for selector in ('dialog>form', 'dialog form>header', 'dialog form>footer',
+                         '.request-details-body section', '.supplier-profile-section',
+                         '.supplier-profile-stats>div', '.module-kpis>article',
+                         '.operational-summary', '.operational-workspace>details',
+                         '.operational-workspace>section', '.operational-facts>div',
+                         '.operational-registry-list:has(table)', '.status-chip',
+                         '.supplier-status-count:not(.inactive)', '.supplier-registry-state.registered'):
+            self.assertIn(selector, css)
+        for fg, bg in (('#edf3fc', '#132840'), ('#b2c3db', '#132840'),
+                       ('#8be0b6', '#173e38'), ('#ffdc8a', '#443b26'),
+                       ('#ffb1b8', '#492936'), ('#edf3fc', '#203e62')):
+            self.assertGreaterEqual((luminance(fg)+.05)/(luminance(bg)+.05), 4.5)
     def test_sandbox_favicon_isolated(self):
         import base64
         import xml.etree.ElementTree as ET

@@ -71,4 +71,53 @@ html[data-pqm-environment="sandbox"] .paperclip>span {
   color:#172b43!important;
 }
 html[data-pqm-environment="sandbox"] .paperclip>span {background:#e8eff7!important}
+/* Detail windows have explicit light backgrounds in styles.css. Pair each
+   surface with its ink; do not change geometry or invert documents/images. */
+html[data-pqm-environment="sandbox"] :is(
+  dialog>form,dialog form>header,dialog form>footer,
+  .request-details-body,.supplier-profile-body,.operational-workspace,
+  .operational-sticky-context,.operational-summary,.operational-context-card,
+  .request-details-body section,.supplier-profile-section,.supplier-profile-grid,
+  .supplier-profile-overview,.supplier-profile-identity,.supplier-nazk-context,
+  .supplier-application-history details,.supplier-application-history summary,
+  .supplier-nazk-completed-history,.supplier-nazk-completed-history>summary,
+  .submission-nazk-registry,.operational-document-metadata,.operational-amcu-generated,
+  .operational-workspace>section,.operational-workspace>details,
+  .operational-facts>div,.operational-channels>div,.operational-registry-list article,
+  .operational-inline-form,.request-context-grid>div,.request-recommendation,
+  .request-result.neutral,.supplier-profile-stats>div,.module-kpis>article) {
+  background-color:#132840!important;color:#edf3fc!important;
+}
+html[data-pqm-environment="sandbox"] :is(
+  .operational-compact-facts dt,.operational-facts dt,.supplier-profile-grid dt,
+  .operational-empty,.operational-work-instruction p,.operational-summary-actions>strong,
+  .supplier-profile-stats span,.module-kpis span) {color:#b2c3db!important}
+html[data-pqm-environment="sandbox"] :is(.status-chip,.registry-profile-block) {
+  background-color:#203e62!important;color:#edf3fc!important;
+}
+html[data-pqm-environment="sandbox"] :is(.operational-ready,.registry-profile-block.safe,
+  .supplier-nazk-current.safe,
+  .supplier-registry-state.registered,.supplier-status-count:not(.inactive)) {
+  background-color:#173e38!important;color:#8be0b6!important;
+}
+html[data-pqm-environment="sandbox"] :is(.operational-registry-list:has(table),
+  .request-warning,.request-readonly,.registry-profile-block.warning) {
+  background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.registry-profile-block.danger,.supplier-status-count.inactive) {
+  background-color:#492936!important;color:#ffb1b8!important;
+}
+html[data-pqm-environment="sandbox"] .operational-registry-list>h4 {color:#ffdc8a!important}
+html[data-pqm-environment="sandbox"] .supplier-registry-state.candidate {
+  background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.supplier-nazk-current.warning,.submission-nazk-supplier-context) {
+  background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.supplier-nazk-current.danger,.supplier-request-stat.threshold-reached) {
+  background-color:#492936!important;color:#ffb1b8!important;
+}
+html[data-pqm-environment="sandbox"] .supplier-nazk-current.inactive {
+  background-color:#203e62!important;color:#b2c3db!important;
+}
 }
