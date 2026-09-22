@@ -89,6 +89,14 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(item['prozorro_status_google'],'✅ Активний')
         self.assertEqual(item['supplier_code'],'00000001')
 
+    def test_google_supplier_name_requires_verified_edr_full_name(self):
+        self.con.execute("ALTER TABLE supplier_edr_profiles ADD COLUMN full_name TEXT DEFAULT ''")
+        self.add('00000001', 'LATEST APPLICATION NAME', '2026-01-01', source='ЮО')
+        self.assertEqual(self.items()['00000001']['supplier_name'], '')
+        self.con.execute("UPDATE supplier_edr_profiles SET full_name='VERIFIED EDR FULL NAME' WHERE supplier_code='00000001'")
+        integration.reset_full_registry_cache()
+        self.assertEqual(self.items()['00000001']['supplier_name'], 'VERIFIED EDR FULL NAME')
+
     def test_real_verification_projection_parity_and_newer_observation(self):
         code='00000001'
         self.add(code,'ACTIVE','2026-01-01',source='ЮО',contract='active')
