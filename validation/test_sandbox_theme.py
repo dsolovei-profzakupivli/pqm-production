@@ -14,6 +14,22 @@ def luminance(value):
 
 
 class Theme(unittest.TestCase):
+    def test_sandbox_favicon_isolated(self):
+        import base64
+        import xml.etree.ElementTree as ET
+        raw = (sandbox.ROOT / 'index.html').read_bytes()
+        for flag in ('0', '1'):
+            with patch.dict(os.environ, PQM_SANDBOX=flag):
+                html = sandbox.decorate_html(raw).decode()
+                self.assertEqual('pqm-sandbox-tab-inverted.svg' in html, flag == '1')
+                self.assertEqual('sizes="32x32"' in html, flag == '0')
+        root = ET.parse(sandbox.ROOT / 'assets/pqm-sandbox-tab-inverted.svg').getroot()
+        ns = {'s': 'http://www.w3.org/2000/svg'}
+        for channel in ('R', 'G', 'B'):
+            self.assertEqual(root.find('.//s:feFunc'+channel, ns).get('tableValues'), '1 0')
+        self.assertEqual(root.find('.//s:feFuncA', ns).get('type'), 'identity')
+        embedded = root.find('s:image', ns).get('href').split(',', 1)[1]
+        self.assertEqual(base64.b64decode(embedded), (sandbox.ROOT / 'assets/pqm-tab-icon.png').read_bytes())
     def test_sandbox_only(self):
         raw = (sandbox.ROOT / 'index.html').read_bytes()
         for flag in ('0', '1'):
