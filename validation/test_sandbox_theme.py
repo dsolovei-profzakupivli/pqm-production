@@ -51,6 +51,7 @@ class Theme(unittest.TestCase):
                 html = sandbox.decorate_html(raw).decode()
                 self.assertEqual('id="pqmSandboxTheme"' in html, flag == '1')
                 self.assertEqual('data-pqm-environment="sandbox"' in html, flag == '1')
+                self.assertEqual('/sandbox_contrast.js?v=1' in html, flag == '1')
         self.assertNotIn(b'sandbox_theme.css', raw)
         self.assertNotIn(b'id="pqmSandboxTheme"', raw)
     def test_text_contrast(self):
