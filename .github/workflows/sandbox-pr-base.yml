@@ -11,7 +11,8 @@ permissions:
 
 jobs:
   sandbox-pr-base:
-    name: Sandbox PR base guard
+    # A sandbox pass must not satisfy main's required check for the same SHA.
+    name: "Sandbox PR base guard (${{ github.event.pull_request.base.ref }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
