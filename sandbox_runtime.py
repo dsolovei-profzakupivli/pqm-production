@@ -367,6 +367,9 @@ def decorate_html(raw):
     text = raw.decode('utf-8')
     if os.environ.get('PQM_SANDBOX') == '1':
         text = text.replace('<html', '<html data-pqm-environment="sandbox"', 1)
+        text = text.replace('<link rel="icon" href="/assets/pqm-search-icon.png" type="image/png" sizes="192x192">', '')
+        text = text.replace('<link rel="icon" href="/assets/pqm-tab-icon.png" type="image/png" sizes="32x32">',
+                            '<link rel="icon" href="/assets/pqm-sandbox-tab-inverted.svg?v=1" type="image/svg+xml" sizes="any">')
         theme = (ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
         text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
