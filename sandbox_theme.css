@@ -120,4 +120,13 @@ html[data-pqm-environment="sandbox"] :is(.supplier-nazk-current.danger,.supplier
 html[data-pqm-environment="sandbox"] .supplier-nazk-current.inactive {
   background-color:#203e62!important;color:#b2c3db!important;
 }
+/* Applied per element from its actual composited solid background. Dark
+   descendants receive no marker, even inside a light parent surface. */
+html[data-pqm-environment="sandbox"] [data-pqm-light-ink][data-pqm-light-ink][data-pqm-light-ink],
+html[data-pqm-environment="sandbox"] [data-pqm-light-ink][data-pqm-light-ink][data-pqm-light-ink]::placeholder {
+  color:#000!important;
+}
+html[data-pqm-environment="sandbox"] [data-pqm-dark-ink][data-pqm-dark-ink][data-pqm-dark-ink] {
+  color:#edf3fc!important;
+}
 }

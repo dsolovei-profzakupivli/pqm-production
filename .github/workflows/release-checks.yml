@@ -44,6 +44,12 @@ jobs:
           set -euo pipefail
           docker run --rm --network none --entrypoint node pqm-ci:tested \
             validation/amcu_poll_smoke.cjs 2>&1 | tee ci-evidence/amcu-ui.log
+      - name: Run sandbox contrast regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node pqm-ci:tested \
+            validation/sandbox_contrast_smoke.cjs 2>&1 | tee ci-evidence/sandbox-contrast.log
       - name: Run OAuth callback regression
         shell: bash
         run: |
