@@ -78,6 +78,10 @@ html[data-pqm-environment="sandbox"] :is(
   .request-details-body,.supplier-profile-body,.operational-workspace,
   .operational-sticky-context,.operational-summary,.operational-context-card,
   .request-details-body section,.supplier-profile-section,.supplier-profile-grid,
+  .supplier-profile-overview,.supplier-profile-identity,.supplier-nazk-context,
+  .supplier-application-history details,.supplier-application-history summary,
+  .supplier-nazk-completed-history,.supplier-nazk-completed-history>summary,
+  .submission-nazk-registry,.operational-document-metadata,.operational-amcu-generated,
   .operational-workspace>section,.operational-workspace>details,
   .operational-facts>div,.operational-channels>div,.operational-registry-list article,
   .operational-inline-form,.request-context-grid>div,.request-recommendation,
@@ -92,6 +96,7 @@ html[data-pqm-environment="sandbox"] :is(.status-chip,.registry-profile-block) {
   background-color:#203e62!important;color:#edf3fc!important;
 }
 html[data-pqm-environment="sandbox"] :is(.operational-ready,.registry-profile-block.safe,
+  .supplier-nazk-current.safe,
   .supplier-registry-state.registered,.supplier-status-count:not(.inactive)) {
   background-color:#173e38!important;color:#8be0b6!important;
 }
@@ -105,5 +110,14 @@ html[data-pqm-environment="sandbox"] :is(.registry-profile-block.danger,.supplie
 html[data-pqm-environment="sandbox"] .operational-registry-list>h4 {color:#ffdc8a!important}
 html[data-pqm-environment="sandbox"] .supplier-registry-state.candidate {
   background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.supplier-nazk-current.warning,.submission-nazk-supplier-context) {
+  background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.supplier-nazk-current.danger,.supplier-request-stat.threshold-reached) {
+  background-color:#492936!important;color:#ffb1b8!important;
+}
+html[data-pqm-environment="sandbox"] .supplier-nazk-current.inactive {
+  background-color:#203e62!important;color:#b2c3db!important;
 }
 }
