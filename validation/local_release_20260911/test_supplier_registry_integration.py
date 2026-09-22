@@ -72,12 +72,12 @@ class FullSupplierRegistryTests(unittest.TestCase):
         for status,age,expected in cases:
             checked = (date.today()-timedelta(days=age)).isoformat()
             with patch.object(integration.edr_sync_v2,'prozorro_statuses',return_value={'0013500191':status}), \
-                 patch.object(integration.edr_sync_v2,'current_verification_event',return_value={'occurred_at':checked,'officer':'УО','event_type':'google_clarity'}):
+                 patch.object(integration,'_current_verification_events',return_value={'0013500191':{'occurred_at':checked,'officer':'УО','event_type':'google_clarity'}}):
                 item=self.items()['0013500191']
                 self.assertEqual(item['freshness_marker'],expected)
                 self.assertEqual(item['freshness_marker'],integration.edr_sync_v2.freshness_state(status,checked)['marker'])
                 self.assertEqual(item['prozorro_status_google'],integration.edr_sync_v2.google_prozorro_presentation(status))
-        with patch.object(integration.edr_sync_v2,'current_verification_event',return_value=None):
+        with patch.object(integration,'_current_verification_events',return_value={'0013500191':None}):
             item=self.items()['0013500191']
             self.assertIsNone(item['verification_date'])
             self.assertEqual(item['verification_officer'],'')
