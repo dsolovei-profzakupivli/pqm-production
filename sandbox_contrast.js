@@ -56,7 +56,12 @@
     frame = requestAnimationFrame(() => {
       frame = 0;
       const roots = [...pending]; pending.clear();
-      for (const root of roots) if (!roots.some(other => other !== root && other.contains(root))) scan(root);
+      const rootSet = new Set(roots);
+      for (const root of roots) {
+        let parent = root.parentElement;
+        while (parent && !rootSet.has(parent)) parent = parent.parentElement;
+        if (!parent) scan(root);
+      }
     });
   }
   function start() {
