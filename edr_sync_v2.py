@@ -671,6 +671,36 @@ def _verification_event_sort_key(item: dict) -> tuple:
     return (normalized_date(item.get("occurred_at")), priority, int(item.get("id") or 0))
 
 
+def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
+    """Status-only read model for a currently active qualification.
+
+    Qualification activity supplies the default. Only a recorded EDR check
+    proven later than the active qualification can supersede it. Neither the
+    profile snapshot nor admission metadata is used to manufacture a check.
+    """
+    qualified_day = normalized_date(qualification_date)
+    checks = []
+    if qualified_day:
+        for item in ledger:
+            kind = str(item.get("event_type") or "")
+            if kind not in {"manual_edr", "google_clarity"}:
+                continue
+            checked_day = normalized_date(item.get("occurred_at"))
+            if not checked_day or checked_day <= qualified_day:
+                continue
+            try:
+                snapshot = json.loads(item.get("snapshot_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(snapshot, dict):
+                continue
+            status = clean(snapshot.get("edr_status"))
+            if status:
+                checks.append((checked_day, 2 if kind == "manual_edr" else 1,
+                               int(item.get("id") or 0), status))
+    return max(checks)[3] if checks else "Зареєстровано"
+
+
 def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
     """One shared four-state resolver for every supplier code in PQM."""
     requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}

@@ -5,9 +5,36 @@ from pathlib import Path
 from unittest.mock import patch
 
 import server
+import edr_sync_v2
 
 
 class EdrMonitoringTests(unittest.TestCase):
+    def test_active_qualification_defaults_to_registered_without_newer_check(self):
+        for old in ('', 'Неактуально', 'Немає інформації'):
+            with self.subTest(old=old):
+                self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', []), 'Зареєстровано')
+        self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Зареєстровано')
+
+    def test_sandbox_active_blank_metadata_regression_cases(self):
+        # These are synthetic reproductions of the reported SANDBOX rows, not live DB assertions.
+        for supplier_code, active_qualifications, last_application in (
+            ('3467208370', 23, ''),
+            ('46244393', 4, '2026-09-22'),
+        ):
+            with self.subTest(supplier_code=supplier_code):
+                self.assertGreater(active_qualifications, 0)
+                self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Зареєстровано')
+                source = Path('server.py').read_text(encoding='utf-8')
+                projection = source.split('def _edr_monitoring_rows()', 1)[1].split('def _edr_monitoring_dk_map()', 1)[0]
+                self.assertIn('"verification_date": checked', projection)
+                self.assertNotIn('verification_date": latest_application_date', projection)
+
+    def test_later_authoritative_edr_overrides_admission(self):
+        event = {'event_type': 'manual_edr', 'occurred_at': '2026-09-02',
+            'officer': 'EDR Officer', 'snapshot_json': '{"edr_status":"Припинено"}'}
+        self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', [event]), 'Припинено')
+        self.assertEqual(edr_sync_v2.active_edr_status('2026-09-03', [event]), 'Зареєстровано')
+
     def test_google_note_search_sort_and_filtered_export_population(self):
         rows = [dict(self.rows()[0], google_note='Zulu unique note'),
                 dict(self.rows()[1], google_note='Alpha unique note')]
