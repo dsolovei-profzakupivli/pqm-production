@@ -784,8 +784,9 @@ def _insert_event(con, *, item: dict, event_type: str, occurred_at: str, officer
     cursor = con.execute("""INSERT OR IGNORE INTO supplier_edr_verification_events
       (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
        source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
-      VALUES (?,?,?,?,?,'',?,?,?,?,?,?)""",
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
       (item["supplier_code"], event_type, occurred_at, officer, source,
+       item.get("source_submission_id", ""),
        item.get("source_sheet", ""), int(item.get("source_row") or 0),
        json.dumps(changed_fields, ensure_ascii=False), digest, payload, created_at))
     return bool(cursor.rowcount)
@@ -804,12 +805,94 @@ def record_admission_event(con, submission_id: str, created_at: str) -> bool:
     occurred = normalized_date(row[1])
     if not occurred:
         return False
-    item = {"supplier_code": normalize_code(row[0]), "source_sheet": "", "source_row": 0}
+    item = {"supplier_code": normalize_code(row[0]), "source_submission_id": submission_id,
+            "source_sheet": "", "source_row": 0}
     snapshot = {"submission_id": submission_id, "decision": "admit",
                 "protocol_date": occurred, "officer": row[2] or ""}
     return _insert_event(con, item=item, event_type="admission", occurred_at=occurred,
       officer=row[2] or "", source="PQM application", changed_fields=["application_admission"],
       snapshot=snapshot, created_at=created_at)
+
+
+def materialize_effective_admission(con, contract_id: str, created_at: str) -> bool:
+    """Materialize a newly effective, protocol-proven admission in caller's transaction.
+
+    Existing active contracts are deliberately not replayed as a historical backfill.
+    The caller must invoke this only on an inactive/absent -> effective-active
+    contract transition after persisting the contract and qualification.
+    """
+    row = con.execute("""SELECT s.id submission_id,s.supplier_code,
+      af.protocol_number,af.protocol_date,af.protocol_officer,
+      af.protocol_decision,af.marketplace_decision,af.generated_protocol_number,
+      af.generated_protocol_date,af.generated_protocol_decision,af.protocol_generated_at,
+      p.protocol_number confirmed_number,p.protocol_date confirmed_date,
+      p.officer confirmed_officer
+      FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
+      JOIN qualifications q ON q.id=rc.qualification_id
+      JOIN submissions s ON s.id=q.submission_id AND s.framework_id=rc.framework_id
+      JOIN application_fields af ON af.submission_id=s.id
+      JOIN formed_protocol_members m ON m.submission_id=s.id AND m.active=1
+      JOIN formed_protocols p ON p.id=m.protocol_id AND p.status='active'
+      WHERE rc.id=? AND rc.status='active' AND LOWER(COALESCE(f.status,''))='active'
+        AND q.status='active' AND rc.supplier_code=s.supplier_code
+        AND (COALESCE(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),'')=''
+          OR date(substr(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),1,10))>=date('now'))""",
+      (contract_id,)).fetchone()
+    if not row or not row["supplier_code"] or not row["protocol_number"]:
+        return False
+    submission_id = row["submission_id"]
+    # Historical MedData is not part of the future-admission workflow.
+    import historical_applications
+    if historical_applications.provenance(submission_id):
+        return False
+    protocol_day = normalized_date(row["protocol_date"])
+    officer = clean(row["confirmed_officer"])
+    if not (protocol_day and officer and officer == clean(row["protocol_officer"])
+            and row["protocol_decision"] == "admit"
+            and row["marketplace_decision"] == "admit"
+            and row["protocol_generated_at"]
+            and row["generated_protocol_decision"] == "admit"
+            and row["generated_protocol_number"] == row["protocol_number"]
+            and row["confirmed_number"] == row["protocol_number"]
+            and normalized_date(row["confirmed_date"]) == protocol_day
+            and normalized_date(row["generated_protocol_date"]) == protocol_day):
+        return False
+    code = row["supplier_code"]
+    profile = con.execute("""SELECT edr_status,edr_checked_at FROM supplier_edr_profiles
+      WHERE supplier_code=?""", (code,)).fetchone()
+    # The profile date is authoritative for its status. Unknown date + a
+    # contradictory nonblank status is ambiguous and must not be overwritten.
+    if profile:
+        prior_status = clean(profile["edr_status"])
+        prior_day = normalized_date(profile["edr_checked_at"])
+        if (prior_status not in ("", "Немає інформації", "Зареєстровано")
+                and (not prior_day or prior_day >= protocol_day)):
+            return False
+        if prior_day > protocol_day:
+            return False
+    newer = con.execute("""SELECT 1 FROM supplier_edr_verification_events
+      WHERE supplier_code=? AND event_type IN ('manual_edr','google_clarity','google_clarity_profile')
+        AND substr(occurred_at,1,10)>=? LIMIT 1""", (code, protocol_day)).fetchone()
+    if newer:
+        return False
+    if profile and clean(profile["edr_status"]) == "Зареєстровано" and normalized_date(profile["edr_checked_at"]) == protocol_day:
+        return False
+    item = {"supplier_code": code, "source_submission_id": submission_id,
+            "source_sheet": "", "source_row": 0}
+    snapshot = {"submission_id": submission_id, "decision": "admit",
+                "protocol_date": protocol_day, "officer": officer,
+                "edr_status": "Зареєстровано"}
+    _insert_event(con, item=item, event_type="admission", occurred_at=protocol_day,
+                  officer=officer, source="PQM effective admission",
+                  changed_fields=["edr_status", "verification_date", "verification_officer"],
+                  snapshot=snapshot, created_at=created_at)
+    con.execute("""INSERT INTO supplier_edr_profiles
+      (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
+      VALUES (?,?,?,?,?) ON CONFLICT(supplier_code) DO UPDATE SET
+      edr_status=excluded.edr_status,edr_checked_at=excluded.edr_checked_at,
+      edr_officer=excluded.edr_officer,synced_at=excluded.synced_at""",
+      (code, "Зареєстровано", protocol_day, officer, created_at))
+    return True
 
 
 def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, actor: str,
