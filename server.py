@@ -547,26 +547,8 @@ def canonical_officer_identity(con, username: str, officer_id=None) -> str:
 
 
 def projected_officer_name(con, value: str) -> str:
-    """Presentation-only officer resolver backed by the authorized directory.
-
-    Raw audit values are never rewritten.  A value is formatted only when it can
-    be resolved to a known officer name or login; otherwise it is returned as-is
-    so an unmapped identity stays visible for audit instead of being guessed.
-    """
-    raw = " ".join(str(value or "").split())
-    if not raw:
-        return ""
-    if normalized_officer_name(raw) in {"НЕ ВИЗНАЧЕНО", "НЕ ПРИЗНАЧЕНО"}:
-        return "Не визначено"
-    row = con.execute(
-        "SELECT full_name FROM authorized_officers WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?)",
-        (raw,),
-    ).fetchone()
-    if not row:
-        row = con.execute("""SELECT o.full_name FROM auth_users u
-          JOIN authorized_officers o ON o.id=u.officer_id
-          WHERE LOWER(u.username)=LOWER(?)""", (raw,)).fetchone()
-    return formatted_officer_name(row[0]) if row else raw
+    """Compatibility wrapper for the shared EDR verification presentation."""
+    return edr_sync_v2.projected_verification_officer(con, value)
 SYNC_STATE = {"running": False, "message": "Синхронізацію ще не запускали", "updated_at": None,
               "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None,
               "last_completed_at": None, "last_result": None, "last_message": None, "last_mode": None}
@@ -4730,27 +4712,7 @@ def _edr_monitoring_rows() -> list[dict]:
                   COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC) rank
               FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
               WHERE s.supplier_code<>'') WHERE rank=1""")}
-            admissions = {}
-            for raw in con.execute("""SELECT s.supplier_code,s.id submission_id,
-              COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),NULLIF(s.date_published,'')) raw_date,
-              COALESCE(af.protocol_officer,'') officer
-              FROM submissions s JOIN application_fields af ON af.submission_id=s.id
-              LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE af.protocol_decision='admit'"""):
-                item = dict(raw); item["occurred_at"] = edr_sync_v2.normalized_date(item["raw_date"])
-                previous = admissions.get(item["supplier_code"])
-                if item["occurred_at"] and (not previous or
-                    (item["occurred_at"], item["submission_id"]) >
-                    (previous["occurred_at"], previous["submission_id"])):
-                    admissions[item["supplier_code"]] = item
-            active_qualification_dates = {}
-            for raw in con.execute("""SELECT rc.supplier_code,q.decision_date
-              FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
-              LEFT JOIN qualifications q ON q.id=rc.qualification_id
-              WHERE """ + supplier_activity.effective_active_sql('rc', 'f')):
-                qualified_day = edr_sync_v2.normalized_date(raw["decision_date"])
-                code = raw["supplier_code"]
-                if qualified_day > active_qualification_dates.get(code, ""):
-                    active_qualification_dates[code] = qualified_day
+            active_qualification_dates = edr_sync_v2.active_qualification_dates(con)
             managers = {row["supplier_code"]: row["manager_name"] for row in con.execute("""SELECT supplier_code,manager_name FROM (
               SELECT supplier_code,manager_name,ROW_NUMBER() OVER(PARTITION BY supplier_code ORDER BY
                 COALESCE(updated_at,created_at,'') DESC,id DESC) rank FROM supplier_managers
@@ -4764,29 +4726,18 @@ def _edr_monitoring_rows() -> list[dict]:
               JOIN application_fields af ON af.submission_id=s.id
               WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')""")}
             population = edr_sync_v2.monitoring_population_codes(con)
+            verifications = edr_sync_v2.current_verification_projections(con, population)
+            canonical_statuses = edr_sync_v2.canonical_prozorro_statuses(con, population)
             rows = []
             for code in population:
                 profile, reg, application = profiles.get(code, {}), registry.get(code, {}), latest_app.get(code, {})
-                admission = admissions.get(code)
-                candidates = list(ledger.get(code, []))
-                profile_date = edr_sync_v2.normalized_date(profile.get("edr_checked_at"))
-                if profile_date:
-                    candidates.append({"event_type": "google_clarity_profile", "occurred_at": profile_date,
-                      "officer": profile.get("edr_officer", ""), "source": "Google/Clarity profile snapshot",
-                      "created_at": profile.get("synced_at", "")})
-                if admission:
-                    candidates.append({"event_type": "admission", "occurred_at": admission["occurred_at"],
-                      "officer": admission["officer"], "source": "PQM application",
-                      "created_at": admission["submission_id"]})
-                verification = max(candidates, key=edr_sync_v2._verification_event_sort_key) if candidates else {}
-                status = ("Активний" if int(reg.get("active_count") or 0)>0 else
-                          "Призупинений" if int(reg.get("suspended_count") or 0)>0 else
-                          "Неактивний" if reg else "Ще не в реєстрі")
-                checked = edr_sync_v2.normalized_date(verification.get("occurred_at"))
-                officer_raw = str(verification.get("officer") or "").strip()
-                displayed_edr_status = (edr_sync_v2.active_edr_status(
-                    active_qualification_dates.get(code, ""), ledger.get(code, []))
-                    if status == "Активний" else profile.get("edr_status", ""))
+                verification = verifications[code]
+                status = canonical_statuses[code]
+                checked = verification["verification_date"]
+                officer_raw = verification["verification_officer_raw"]
+                displayed_edr_status = edr_sync_v2.operational_edr_status(
+                    status, active_qualification_dates.get(code, ""), ledger.get(code, []),
+                    profile.get("edr_status", ""))
                 rows.append({"supplier_code": code,
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
                   "edr_full_name": str(profile.get("full_name") or "").strip(),
@@ -4796,13 +4747,13 @@ def _edr_monitoring_rows() -> list[dict]:
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
                   "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
                   "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
-                  "last_admission_date": admission["occurred_at"] if admission else "",
+                  "last_admission_date": verification["last_admission_date"],
                   "latest_application_date": edr_sync_v2.normalized_date(application.get("latest_application_date")),
                   "verification_date": checked,
-                  "verification_officer": projected_officer_name(con, officer_raw),
+                  "verification_officer": verification["verification_officer"],
                   "verification_officer_raw": officer_raw,
-                  "verification_event_type": verification.get("event_type", ""),
-                  "verification_source": verification.get("source", ""),
+                  "verification_event_type": verification["verification_event_type"],
+                  "verification_source": verification["verification_source"],
                   "google_note": str(profile.get("edr_notes") or "").strip(),
                   "freshness": edr_sync_v2.freshness_state(status, checked)["bucket"]})
         # Re-read after building: a concurrent mutation invalidates rather than blessing stale rows.

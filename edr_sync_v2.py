@@ -12,6 +12,8 @@ import json
 import re
 from datetime import date, datetime
 
+import supplier_activity
+
 
 SHEETS = ("ФОП", "ЮО")
 HEADERS = (
@@ -208,7 +210,7 @@ def freshness_state(prozorro_status: str, verification_date: str,
         return {"bucket": "not_current", "marker": "🟣 Неактуально",
                 "age_days": None, "monitored": False}
     if status == "Ще не в реєстрі":
-        return {"bucket": "not_checked", "marker": "⚪ Не перевірено",
+        return {"bucket": "not_current", "marker": "🟣 Неактуально",
                 "age_days": None, "monitored": False}
     if not checked:
         return {"bucket": "not_checked", "marker": "⚪ Не перевірено",
@@ -671,6 +673,85 @@ def _verification_event_sort_key(item: dict) -> tuple:
     return (normalized_date(item.get("occurred_at")), priority, int(item.get("id") or 0))
 
 
+def projected_verification_officer(con, value: str) -> str:
+    """The UI's existing officer presentation rule, shared with integrations."""
+    raw = " ".join(str(value or "").split())
+    if not raw:
+        return ""
+    if raw.upper() in {"НЕ ВИЗНАЧЕНО", "НЕ ПРИЗНАЧЕНО"}:
+        return "Не визначено"
+    if not _table_exists(con, "authorized_officers"):
+        return raw
+    row = con.execute(
+        "SELECT full_name FROM authorized_officers WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?)",
+        (raw,)).fetchone()
+    if not row and _table_exists(con, "auth_users"):
+        row = con.execute("""SELECT o.full_name FROM auth_users u
+          JOIN authorized_officers o ON o.id=u.officer_id
+          WHERE LOWER(u.username)=LOWER(?)""", (raw,)).fetchone()
+    if not row:
+        return raw
+    parts = " ".join(str(row[0]).split()).split()
+    return " ".join([*(part.lower().capitalize() for part in parts[:-1]), parts[-1].upper()])
+
+
+def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
+    """UI-compatible current verification selection by literal supplier identity."""
+    codes = {str(code or "").strip() for code in supplier_codes if str(code or "").strip()}
+    candidates = {code: [] for code in codes}
+    admissions = {}
+    qualification_link = ("qualification_id" in _columns(con, "submissions")
+                          and _table_exists(con, "qualifications"))
+    qualification_join = "LEFT JOIN qualifications q ON q.id=s.qualification_id" if qualification_link else ""
+    qualification_date = ("NULLIF(q.decision_date,'')" if qualification_link
+                          and "decision_date" in _columns(con, "qualifications") else "NULL")
+    for batch in (list(sorted(codes))[i:i + 500] for i in range(0, len(codes), 500)):
+        placeholders = ",".join("?" for _ in batch)
+        for row in con.execute(f"""SELECT * FROM supplier_edr_verification_events
+          WHERE supplier_code IN ({placeholders})""", batch):
+            item = dict(row)
+            if normalized_date(item.get("occurred_at")):
+                candidates[item["supplier_code"]].append(item)
+        for row in con.execute(f"""SELECT supplier_code,edr_checked_at,edr_officer,synced_at
+          FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch):
+            checked = normalized_date(row["edr_checked_at"])
+            if checked:
+                candidates[row["supplier_code"]].append({
+                    "event_type": "google_clarity_profile", "occurred_at": checked,
+                    "officer": row["edr_officer"] or "", "source": "Google/Clarity profile snapshot",
+                    "created_at": row["synced_at"] or ""})
+        for row in con.execute(f"""SELECT s.supplier_code,s.id submission_id,
+          COALESCE(NULLIF(af.protocol_date,''),{qualification_date},
+                   NULLIF(s.date_published,'')) raw_date,
+          COALESCE(af.protocol_officer,'') officer
+          FROM submissions s JOIN application_fields af ON af.submission_id=s.id
+          {qualification_join}
+          WHERE af.protocol_decision='admit' AND s.supplier_code IN ({placeholders})""", batch):
+            code, checked = row["supplier_code"], normalized_date(row["raw_date"])
+            previous = admissions.get(code)
+            if checked and (not previous or (checked, row["submission_id"]) >
+                            (previous["occurred_at"], previous["submission_id"])):
+                admissions[code] = {"occurred_at": checked, "submission_id": row["submission_id"],
+                                    "officer": row["officer"] or ""}
+    result = {}
+    for code in codes:
+        admission = admissions.get(code)
+        if admission:
+            candidates[code].append({"event_type": "admission", "occurred_at": admission["occurred_at"],
+              "officer": admission["officer"], "source": "PQM application",
+              "created_at": admission["submission_id"]})
+        selected = max(candidates[code], key=_verification_event_sort_key) if candidates[code] else {}
+        raw_officer = str(selected.get("officer") or "").strip()
+        result[code] = {"verification_date": normalized_date(selected.get("occurred_at")),
+          "verification_officer": projected_verification_officer(con, raw_officer),
+          "verification_officer_raw": raw_officer,
+          "verification_event_type": selected.get("event_type", ""),
+          "verification_source": selected.get("source", ""),
+          "last_admission_date": admission["occurred_at"] if admission else "",
+          "selected_event": selected}
+    return result
+
+
 def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
     """Status-only read model for a currently active qualification.
 
@@ -701,6 +782,31 @@ def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
     return max(checks)[3] if checks else "Зареєстровано"
 
 
+def operational_edr_status(prozorro_status: str, qualification_date: str,
+                           ledger: list[dict], profile_status: str = "") -> str:
+    """Current operational status; persisted factual evidence stays untouched."""
+    if prozorro_status == "Активний":
+        return active_edr_status(qualification_date, ledger)
+    if prozorro_status in {"Неактивний", "Ще не в реєстрі"}:
+        return "Неактуально"
+    # The suspended-state rule is unchanged by the current business decision.
+    return str(profile_status or "")
+
+
+def active_qualification_dates(con) -> dict[str, str]:
+    """Latest dated effective qualification, using the shared activity predicate."""
+    dates = {}
+    for row in con.execute(f"""SELECT rc.supplier_code,q.decision_date
+      FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
+      LEFT JOIN qualifications q ON q.id=rc.qualification_id
+      WHERE {supplier_activity.effective_active_sql('rc', 'f')}"""):
+        qualified_day = normalized_date(row[1])
+        code = str(row[0] or "")
+        if qualified_day > dates.get(code, ""):
+            dates[code] = qualified_day
+    return dates
+
+
 def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
     """One shared four-state resolver for every supplier code in PQM."""
     requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}
@@ -728,6 +834,20 @@ def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
         result[code] = ("Активний" if code in active else "Призупинений" if code in suspended
                         else "Неактивний" if code in ever else "Ще не в реєстрі")
     return result
+
+
+def canonical_prozorro_statuses(con, supplier_codes) -> dict[str, str]:
+    """The same literal-code resolver for EDR monitoring and full-registry."""
+    codes = {str(code or "").strip() for code in supplier_codes if str(code or "").strip()}
+    statuses = prozorro_statuses(con)
+    active = supplier_activity.effective_active_sql("rc", "f")
+    activity = {str(row["supplier_code"] or "").strip(): bool(row["is_active"])
+      for row in con.execute(f"""SELECT rc.supplier_code,
+        MAX(CASE WHEN {active} THEN 1 ELSE 0 END) is_active
+        FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
+        WHERE TRIM(COALESCE(rc.supplier_code,''))<>'' GROUP BY rc.supplier_code""")}
+    return {code: statuses.get(code) or ("Активний" if activity.get(code) else "Неактивний")
+            for code in codes}
 
 
 def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None = None) -> dict[str, dict]:
