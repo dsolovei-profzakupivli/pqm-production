@@ -7,6 +7,7 @@ import table_widths
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
+import legacy_google_verification_preview
 import edr_sync_v2
 import base64
 import csv
@@ -85,6 +86,7 @@ from uo_work_queue import get_uo_work_queue
 
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
+GOOGLE_VERIFICATION_PREVIEW_PATH = legacy_google_verification_preview.PATH
 SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
 SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN"
 
@@ -9235,6 +9237,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method) -> None:
         path = urllib.parse.urlparse(self.path).path
+        if path == GOOGLE_VERIFICATION_PREVIEW_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only", "status": 404}, 404)
+            if self.command != "POST":
+                return self.send_json({"error": "Endpoint підтримує тільки POST", "status": 405}, 405)
+            if not self._authorize_supplier_registry_integration():
+                return
+            self.auth_user = "integration:google-verification-preview"
+            self.auth_role = "integration"
+            return method()
         if path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
             if self.command != "GET":
                 return self.send_json({"error": "Endpoint підтримує тільки GET", "status": 405}, 405)
@@ -9932,6 +9944,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == GOOGLE_VERIFICATION_PREVIEW_PATH:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 32768:
+                    return self.send_json({"error": "Preview payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = legacy_google_verification_preview.open_read_only(DB_PATH)
+                try:
+                    result = legacy_google_verification_preview.preview(con, payload)
+                    result["query_only"] = con.execute("PRAGMA query_only").fetchone()[0]
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/login":
             payload = self.read_json(); username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
