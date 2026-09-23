@@ -4742,6 +4742,15 @@ def _edr_monitoring_rows() -> list[dict]:
                     (item["occurred_at"], item["submission_id"]) >
                     (previous["occurred_at"], previous["submission_id"])):
                     admissions[item["supplier_code"]] = item
+            active_qualification_dates = {}
+            for raw in con.execute("""SELECT rc.supplier_code,q.decision_date
+              FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
+              LEFT JOIN qualifications q ON q.id=rc.qualification_id
+              WHERE """ + supplier_activity.effective_active_sql('rc', 'f')):
+                qualified_day = edr_sync_v2.normalized_date(raw["decision_date"])
+                code = raw["supplier_code"]
+                if qualified_day > active_qualification_dates.get(code, ""):
+                    active_qualification_dates[code] = qualified_day
             managers = {row["supplier_code"]: row["manager_name"] for row in con.execute("""SELECT supplier_code,manager_name FROM (
               SELECT supplier_code,manager_name,ROW_NUMBER() OVER(PARTITION BY supplier_code ORDER BY
                 COALESCE(updated_at,created_at,'') DESC,id DESC) rank FROM supplier_managers
@@ -4775,12 +4784,15 @@ def _edr_monitoring_rows() -> list[dict]:
                           "Неактивний" if reg else "Ще не в реєстрі")
                 checked = edr_sync_v2.normalized_date(verification.get("occurred_at"))
                 officer_raw = str(verification.get("officer") or "").strip()
+                displayed_edr_status = (edr_sync_v2.active_edr_status(
+                    active_qualification_dates.get(code, ""), ledger.get(code, []))
+                    if status == "Активний" else profile.get("edr_status", ""))
                 rows.append({"supplier_code": code,
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
                   "edr_full_name": str(profile.get("full_name") or "").strip(),
                   "edr_short_name": str(profile.get("short_name") or "").strip(),
                   "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
-                  "edr_status": profile.get("edr_status", ""), "prozorro_status": status,
+                  "edr_status": displayed_edr_status, "prozorro_status": status,
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
                   "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
                   "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
@@ -4789,8 +4801,8 @@ def _edr_monitoring_rows() -> list[dict]:
                   "verification_date": checked,
                   "verification_officer": projected_officer_name(con, officer_raw),
                   "verification_officer_raw": officer_raw,
-                 "verification_event_type": verification.get("event_type", ""),
-                 "verification_source": verification.get("source", ""),
+                  "verification_event_type": verification.get("event_type", ""),
+                  "verification_source": verification.get("source", ""),
                   "google_note": str(profile.get("edr_notes") or "").strip(),
                   "freshness": edr_sync_v2.freshness_state(status, checked)["bucket"]})
         # Re-read after building: a concurrent mutation invalidates rather than blessing stale rows.
