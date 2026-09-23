@@ -27,16 +27,17 @@ class SupplierRegistryCacheTests(unittest.TestCase):
             status TEXT,raw_json TEXT,synced_at TEXT);
           CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,manager_name TEXT,protocol_officer TEXT,
             protocol_decision TEXT DEFAULT '',protocol_date TEXT DEFAULT '');
-          CREATE TABLE qualifications(id TEXT PRIMARY KEY,submission_id TEXT,status TEXT);
+          CREATE TABLE qualifications(id TEXT PRIMARY KEY,submission_id TEXT,status TEXT,decision_date TEXT);
           CREATE TABLE frameworks(id TEXT PRIMARY KEY,status TEXT,raw_json TEXT);
-          CREATE TABLE registry_contracts(id TEXT PRIMARY KEY,supplier_code TEXT,status TEXT,framework_id TEXT);
+          CREATE TABLE registry_contracts(id TEXT PRIMARY KEY,supplier_code TEXT,status TEXT,framework_id TEXT,
+            qualification_id TEXT);
           CREATE TABLE supplier_registry_summary(supplier_code TEXT PRIMARY KEY,supplier_name TEXT);
           CREATE TABLE supplier_edr_profiles(supplier_code TEXT PRIMARY KEY,full_name TEXT,manager_name TEXT,
             source_sheet TEXT,edr_checked_at TEXT DEFAULT '',edr_officer TEXT DEFAULT '',source_row INTEGER DEFAULT 0,
             synced_at TEXT DEFAULT '');
           CREATE TABLE supplier_edr_verification_events(id INTEGER PRIMARY KEY,supplier_code TEXT,event_type TEXT,
             occurred_at TEXT,officer TEXT,source TEXT,source_submission_id TEXT,source_sheet TEXT,source_row INTEGER,
-            created_at TEXT);
+            created_at TEXT,snapshot_json TEXT DEFAULT '{}');
           CREATE TABLE supplier_managers(id INTEGER PRIMARY KEY,supplier_code TEXT,manager_name TEXT,is_current INTEGER,
             updated_at TEXT,created_at TEXT);
         """)
@@ -70,7 +71,10 @@ class SupplierRegistryCacheTests(unittest.TestCase):
         self.assertIsNone(names["11111111"])
         self.assertEqual(names["22222222"], "ЕДР CURRENT NAME")
         for code in codes:
-            self.assertEqual(events[code], edr_sync_v2.current_verification_event(self.con, code))
+            old = edr_sync_v2.current_verification_event(self.con, code)
+            self.assertEqual(edr_sync_v2.normalized_date((events[code] or {}).get("occurred_at")),
+                             edr_sync_v2.normalized_date((old or {}).get("occurred_at")))
+            self.assertEqual((events[code] or {}).get("officer", ""), (old or {}).get("officer", ""))
 
     def test_response_contract_and_cache_hit(self):
         with patch.object(integration, "_build_full_registry", wraps=integration._build_full_registry) as build:
@@ -81,7 +85,7 @@ class SupplierRegistryCacheTests(unittest.TestCase):
         self.assertEqual(set(first), {"generated_at", "count", "items"})
         self.assertEqual(set(first["items"][0]), {
             "supplier_code", "entity_type", "supplier_name", "current_manager_name", "prozorro_status",
-            "prozorro_status_canonical", "prozorro_status_google", "monitoring_eligible", "freshness_marker",
+            "prozorro_status_canonical", "prozorro_status_google", "edr_status_current", "monitoring_eligible", "freshness_marker",
             "last_application_date", "last_approved_application_date", "last_approved_application_uo",
             "verification_date", "verification_officer", "verification_event_type"})
 

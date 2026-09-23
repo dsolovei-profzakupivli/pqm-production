@@ -35,6 +35,19 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', [event]), 'Припинено')
         self.assertEqual(edr_sync_v2.active_edr_status('2026-09-03', [event]), 'Зареєстровано')
 
+    def test_current_operational_edr_status_preserves_historical_evidence(self):
+        later = {'event_type': 'manual_edr', 'occurred_at': '2026-09-03',
+                 'snapshot_json': '{"edr_status":"Припинено"}'}
+        self.assertEqual(edr_sync_v2.operational_edr_status(
+            'Активний','2026-09-02',[],'Припинено'),'Зареєстровано')
+        self.assertEqual(edr_sync_v2.operational_edr_status(
+            'Активний','2026-09-02',[later],'Зареєстровано'),'Припинено')
+        for status in ('Неактивний','Ще не в реєстрі'):
+            with self.subTest(status=status):
+                self.assertEqual(edr_sync_v2.operational_edr_status(
+                    status,'2026-09-02',[later],'Припинено'),'Неактуально')
+                self.assertEqual(edr_sync_v2.freshness_state(status,'')['marker'],'🟣 Неактуально')
+
     def test_google_note_search_sort_and_filtered_export_population(self):
         rows = [dict(self.rows()[0], google_note='Zulu unique note'),
                 dict(self.rows()[1], google_note='Alpha unique note')]

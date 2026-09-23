@@ -5,7 +5,6 @@ from pathlib import Path
 import re
 import threading
 
-import supplier_activity
 import edr_sync_v2
 
 
@@ -47,54 +46,24 @@ def _current_names(con, supplier_codes, profile_columns):
 
 
 def _current_verification_events(con, supplier_codes):
-    """Set-based equivalent of edr_sync_v2.current_verification_event."""
-    codes = {edr_sync_v2.normalize_code(code) for code in supplier_codes if edr_sync_v2.normalize_code(code)}
-    candidates = {code: [] for code in codes}
-    if edr_sync_v2._table_exists(con, "supplier_edr_verification_events"):
-        for batch in _chunks(codes):
-            placeholders = ",".join("?" for _ in batch)
-            for row in con.execute(f"SELECT * FROM supplier_edr_verification_events WHERE supplier_code IN ({placeholders})", batch):
-                item = dict(row)
-                code = edr_sync_v2.normalize_code(item.get("supplier_code"))
-                if code in candidates:
-                    candidates[code].append(item)
-    if edr_sync_v2._table_exists(con, "supplier_edr_profiles"):
-        for batch in _chunks(codes):
-            placeholders = ",".join("?" for _ in batch)
-            for row in con.execute(f"""SELECT supplier_code,edr_checked_at,edr_officer,source_sheet,source_row,synced_at
-              FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch):
-                code = edr_sync_v2.normalize_code(row["supplier_code"])
-                occurred = edr_sync_v2.normalized_date(row["edr_checked_at"])
-                if code in candidates and occurred:
-                    candidates[code].append({"supplier_code": code, "event_type": "google_clarity_profile",
-                      "occurred_at": occurred, "officer": row["edr_officer"] or "",
-                      "source": "Google/Clarity profile snapshot", "source_submission_id": "",
-                      "source_sheet": row["source_sheet"] or "", "source_row": int(row["source_row"] or 0),
-                      "created_at": row["synced_at"] or ""})
-    application_columns = edr_sync_v2._columns(con, "application_fields")
-    if edr_sync_v2._table_exists(con, "submissions") and "protocol_decision" in application_columns:
-        submission_columns = edr_sync_v2._columns(con, "submissions")
-        qualification_link = "qualification_id" in submission_columns and edr_sync_v2._table_exists(con, "qualifications")
-        qualification_date = ("NULLIF(q.decision_date,'')" if qualification_link and
-                              "decision_date" in edr_sync_v2._columns(con, "qualifications") else "NULL")
-        qualification_join = "LEFT JOIN qualifications q ON q.id=s.qualification_id" if qualification_link else ""
-        for batch in _chunks(codes):
-            placeholders = ",".join("?" for _ in batch)
-            for row in con.execute(f"""SELECT s.id source_submission_id,
-              COALESCE(NULLIF(af.protocol_date,''),{qualification_date},NULLIF(s.date_published,'')) occurred_at,
-              COALESCE(NULLIF(af.protocol_officer,''),'') officer, s.supplier_code
-              FROM submissions s JOIN application_fields af ON af.submission_id=s.id
-              {qualification_join}
-              WHERE DIGITS(s.supplier_code) IN ({placeholders}) AND af.protocol_decision='admit'""", batch):
-                code = edr_sync_v2.normalize_code(row["supplier_code"])
-                occurred = edr_sync_v2.normalized_date(row["occurred_at"])
-                if code in candidates and occurred:
-                    candidates[code].append({"supplier_code": code, "event_type": "admission",
-                      "occurred_at": occurred, "officer": row["officer"] or "", "source": "PQM application",
-                      "source_submission_id": row["source_submission_id"], "source_sheet": "", "source_row": 0})
-    return {str(code).strip(): (max(candidates.get(edr_sync_v2.normalize_code(code), []),
-      key=edr_sync_v2._verification_event_sort_key) if candidates.get(edr_sync_v2.normalize_code(code)) else None)
-      for code in supplier_codes}
+    """Compatibility wrapper; selection is shared with EDR monitoring."""
+    projected = edr_sync_v2.current_verification_projections(con, supplier_codes)
+    return {code: item["selected_event"] or None for code, item in projected.items()}
+
+
+def _factual_edr_events(con, supplier_codes):
+    """Read the same persisted factual checks used by the EDR monitoring UI."""
+    events = {}
+    if not edr_sync_v2._table_exists(con, "supplier_edr_verification_events"):
+        return events
+    for batch in _chunks(supplier_codes):
+        placeholders = ",".join("?" for _ in batch)
+        for row in con.execute(f"""SELECT id,supplier_code,event_type,occurred_at,snapshot_json
+          FROM supplier_edr_verification_events WHERE supplier_code IN ({placeholders})
+          AND event_type IN ('manual_edr','google_clarity')""", batch):
+            item = dict(row)
+            events.setdefault(item["supplier_code"], []).append(item)
+    return events
 
 
 def _file_revision(path):
@@ -121,7 +90,6 @@ def reset_full_registry_cache():
 
 def _build_full_registry(con):
     """One stable scalar row per non-empty supplier identifier ever submitted."""
-    active = supplier_activity.effective_active_sql("rc", "f")
     latest = {}
     approved = {}
     for raw in con.execute("""SELECT s.id,s.supplier_code,s.supplier_name,s.date_published,s.synced_at,
@@ -151,8 +119,9 @@ def _build_full_registry(con):
         "SELECT supplier_code,supplier_name FROM supplier_registry_summary")}
     profile_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_edr_profiles)")}
     full_name_expr = "full_name" if "full_name" in profile_columns else "'' full_name"
+    edr_status_expr = "edr_status" if "edr_status" in profile_columns else "'' edr_status"
     profiles = {str(row["supplier_code"] or "").strip(): dict(row) for row in con.execute(
-        f"SELECT supplier_code,manager_name,source_sheet,{full_name_expr} FROM supplier_edr_profiles")}
+        f"SELECT supplier_code,manager_name,source_sheet,{edr_status_expr},{full_name_expr} FROM supplier_edr_profiles")}
     # Profile codes may have lost passport characters while submissions retain
     # their literal representation.  Link only an unambiguous domestic pair;
     # literal identity always wins and foreign schemes can never use this path.
@@ -181,21 +150,16 @@ def _build_full_registry(con):
     for row in con.execute("""SELECT supplier_code,manager_name FROM supplier_managers
       WHERE is_current=1 ORDER BY COALESCE(NULLIF(updated_at,''),created_at) DESC,id DESC"""):
         managers.setdefault(str(row["supplier_code"] or "").strip(), str(row["manager_name"] or "").strip())
-    activity = {str(row["supplier_code"] or "").strip(): bool(row["is_active"])
-      for row in con.execute(f"""SELECT rc.supplier_code,
-        MAX(CASE WHEN {active} THEN 1 ELSE 0 END) is_active
-        FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
-        WHERE TRIM(COALESCE(rc.supplier_code,''))<>'' GROUP BY rc.supplier_code""")}
-    statuses = edr_sync_v2.prozorro_statuses(con)
+    statuses = edr_sync_v2.canonical_prozorro_statuses(con, latest)
     monitoring_codes = edr_sync_v2.monitoring_population_codes(con)
     names = _current_names(con, latest, profile_columns)
-    verifications = _current_verification_events(con, latest)
+    verifications = edr_sync_v2.current_verification_projections(con, latest)
+    qualification_dates = edr_sync_v2.active_qualification_dates(con)
+    factual_edr_events = _factual_edr_events(con, latest)
     items = []
     for code in sorted(latest):
         application = latest[code]; acceptance = approved.get(code); profile = linked_profiles.get(code, {})
-        canonical_status = statuses.get(code)
-        if not canonical_status:
-            canonical_status = "Активний" if activity.get(code) else "Неактивний"
+        canonical_status = statuses[code]
         scheme = str(application.get("identifier_scheme") or "").strip().upper()
         source = str(profile.get("source_sheet") or "").strip().upper()
         if scheme and scheme not in {"UA-EDR", "UA-IPN"}:
@@ -211,7 +175,7 @@ def _build_full_registry(con):
         supplier_name = names.get(code) or ""
         current_manager = (managers.get(code) or str(profile.get("manager_name") or "").strip()
           or str(application.get("application_manager_name") or "").strip())
-        verification = verifications.get(code)
+        verification = verifications[code]
         if not current_manager and entity_type == "individual_entrepreneur":
             current_manager = str(application.get("supplier_name") or "").strip()
         items.append({
@@ -224,16 +188,19 @@ def _build_full_registry(con):
               [canonical_status]),
             "prozorro_status_canonical": canonical_status,
             "prozorro_status_google": edr_sync_v2.google_prozorro_presentation(canonical_status),
+            "edr_status_current": edr_sync_v2.operational_edr_status(
+                canonical_status, qualification_dates.get(code, ""),
+                factual_edr_events.get(code, []), str(profile.get("edr_status") or "")),
             "monitoring_eligible": code in monitoring_codes,
             "freshness_marker": edr_sync_v2.marker_for_status(
-                canonical_status, (verification or {}).get("occurred_at", "")),
+                canonical_status, verification["verification_date"]),
             "last_application_date": str(application.get("date_published") or "")[:10] or None,
             "last_approved_application_date": str(acceptance.get("date_published") or "")[:10] if acceptance else None,
             "last_approved_application_uo": (str(acceptance.get("protocol_officer") or "").strip()
               if acceptance else "") or "НЕ ВИЗНАЧЕНО",
-            "verification_date": verification.get("occurred_at") if verification else None,
-            "verification_officer": verification.get("officer") if verification else "",
-            "verification_event_type": verification.get("event_type") if verification else None,
+            "verification_date": verification["verification_date"],
+            "verification_officer": verification["verification_officer"],
+            "verification_event_type": verification["verification_event_type"] or None,
         })
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
