@@ -74,8 +74,8 @@ class FutureAdmissionTests(unittest.TestCase):
                 con.execute(sql)
                 self.assertFalse(self.materialize(con))
 
-    def test_newer_or_ambiguous_edr_evidence_preserved(self):
-        for checked in ('2026-09-02', ''):
+    def test_newer_contradictory_edr_evidence_preserved(self):
+        for checked in ('2026-09-02',):
             con = database()
             con.execute("""INSERT INTO supplier_edr_profiles
               (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
@@ -84,9 +84,43 @@ class FutureAdmissionTests(unittest.TestCase):
             self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles').fetchone()[0], 'Припинено')
         con = database()
         con.execute('''INSERT INTO supplier_edr_verification_events
-          (supplier_code,event_type,occurred_at,officer,source,snapshot_hash,created_at)
-          VALUES ('12345678','manual_edr','2026-09-02','EDR','manual','hash','2026-09-02')''')
+          (supplier_code,event_type,occurred_at,officer,source,snapshot_hash,snapshot_json,created_at)
+          VALUES ('12345678','manual_edr','2026-09-02','EDR','manual','hash',
+          '{"edr_status":"Припинено"}','2026-09-02')''')
         self.assertFalse(self.materialize(con))
+
+    def test_older_profile_status_is_superseded_by_effective_admission(self):
+        for status, checked in (('Неактуально', '2026-08-01'),
+                                ('Немає інформації', '2026-08-01'),
+                                ('', ''), ('Неактуально', '')):
+            with self.subTest(status=status, checked=checked):
+                con = database()
+                con.execute('''INSERT INTO supplier_edr_profiles
+                  (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
+                  VALUES('12345678',?,?,?,?)''', (status, checked, 'Old Officer', 'old'))
+                self.assertTrue(self.materialize(con))
+                row = con.execute('SELECT edr_status,edr_checked_at,edr_officer FROM supplier_edr_profiles').fetchone()
+                self.assertEqual(tuple(row), ('Зареєстровано', '2026-08-31', 'Protocol Officer'))
+
+    def test_older_authoritative_event_is_superseded_and_later_evidence_can_win(self):
+        con = database()
+        con.execute('''INSERT INTO supplier_edr_verification_events
+          (supplier_code,event_type,occurred_at,officer,source,snapshot_hash,snapshot_json,created_at)
+          VALUES ('12345678','manual_edr','2026-08-01','EDR','manual','old-hash',
+          '{"edr_status":"Неактуально"}','2026-08-01')''')
+        self.assertTrue(self.materialize(con))
+        con.execute("UPDATE supplier_edr_profiles SET edr_status='Неактуально',edr_checked_at='2026-09-02'")
+        self.assertFalse(self.materialize(con))
+        self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles').fetchone()[0], 'Неактуально')
+
+    def test_malformed_newer_authoritative_evidence_fails_closed(self):
+        con = database()
+        con.execute('''INSERT INTO supplier_edr_verification_events
+          (supplier_code,event_type,occurred_at,officer,source,snapshot_hash,snapshot_json,created_at)
+          VALUES ('12345678','manual_edr','2026-09-02','EDR','manual','bad-hash',
+          '{invalid-json','2026-09-02')''')
+        self.assertFalse(self.materialize(con))
+        self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_edr_profiles').fetchone()[0], 0)
 
     def test_transaction_rollback_removes_event_and_profile(self):
         con = database()

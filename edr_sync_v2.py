@@ -860,21 +860,29 @@ def materialize_effective_admission(con, contract_id: str, created_at: str) -> b
     code = row["supplier_code"]
     profile = con.execute("""SELECT edr_status,edr_checked_at FROM supplier_edr_profiles
       WHERE supplier_code=?""", (code,)).fetchone()
-    # The profile date is authoritative for its status. Unknown date + a
-    # contradictory nonblank status is ambiguous and must not be overwritten.
+    # Effective admission supersedes earlier EDR status evidence. Only a
+    # contradictory status observed after the protocol date can block it.
     if profile:
         prior_status = clean(profile["edr_status"])
         prior_day = normalized_date(profile["edr_checked_at"])
-        if (prior_status not in ("", "Немає інформації", "Зареєстровано")
-                and (not prior_day or prior_day >= protocol_day)):
+        if (prior_status not in ("", "Зареєстровано")
+                and prior_day > protocol_day):
             return False
-        if prior_day > protocol_day:
+        if prior_status == "Зареєстровано" and prior_day > protocol_day:
             return False
-    newer = con.execute("""SELECT 1 FROM supplier_edr_verification_events
+    newer = con.execute("""SELECT occurred_at,snapshot_json FROM supplier_edr_verification_events
       WHERE supplier_code=? AND event_type IN ('manual_edr','google_clarity','google_clarity_profile')
-        AND substr(occurred_at,1,10)>=? LIMIT 1""", (code, protocol_day)).fetchone()
-    if newer:
-        return False
+        AND substr(occurred_at,1,10)>?""", (code, protocol_day)).fetchall()
+    for evidence in newer:
+        try:
+            snapshot = json.loads(evidence["snapshot_json"] or "{}")
+        except (TypeError, ValueError):
+            return False  # malformed newer authoritative evidence: fail closed
+        if not isinstance(snapshot, dict):
+            return False
+        evidence_status = clean(snapshot.get("edr_status"))
+        if evidence_status and evidence_status != "Зареєстровано":
+            return False
     if profile and clean(profile["edr_status"]) == "Зареєстровано" and normalized_date(profile["edr_checked_at"]) == protocol_day:
         return False
     item = {"supplier_code": code, "source_submission_id": submission_id,
