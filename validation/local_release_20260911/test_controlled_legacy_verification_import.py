@@ -6,7 +6,12 @@ import unittest
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "controlled_legacy_verification_import.py"
+_test_dir = Path(__file__).resolve().parent
+SCRIPT = next((root / "scripts" / "controlled_legacy_verification_import.py"
+               for root in (_test_dir, *_test_dir.parents)
+               if (root / "scripts" / "controlled_legacy_verification_import.py").is_file()), None)
+if SCRIPT is None:
+    raise FileNotFoundError("controlled_legacy_verification_import.py not found beside release tests")
 spec = importlib.util.spec_from_file_location("controlled_legacy_verification_import", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
