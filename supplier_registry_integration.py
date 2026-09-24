@@ -56,11 +56,16 @@ def _factual_edr_events(con, supplier_codes):
     events = {}
     if not edr_sync_v2._table_exists(con, "supplier_edr_verification_events"):
         return events
+    columns = edr_sync_v2._columns(con, "supplier_edr_verification_events")
+    provenance_fields = ",".join(
+        name if name in columns else f"NULL AS {name}"
+        for name in ("officer", "source", "source_sheet", "source_row", "snapshot_json")
+    )
     for batch in _chunks(supplier_codes):
         placeholders = ",".join("?" for _ in batch)
-        for row in con.execute(f"""SELECT id,supplier_code,event_type,occurred_at,snapshot_json
+        for row in con.execute(f"""SELECT id,supplier_code,event_type,occurred_at,{provenance_fields}
           FROM supplier_edr_verification_events WHERE supplier_code IN ({placeholders})
-          AND event_type IN ('manual_edr','google_clarity')""", batch):
+          AND event_type IN ('manual_edr','google_clarity','legacy_google_registry')""", batch):
             item = dict(row)
             events.setdefault(item["supplier_code"], []).append(item)
     return events

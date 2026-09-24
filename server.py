@@ -9,6 +9,7 @@ import supplier_activity
 import supplier_registry_integration
 import legacy_google_verification_preview
 import legacy_google_factual_edr_audit
+import legacy_google_factual_edr_preview
 import edr_sync_v2
 import base64
 import csv
@@ -89,6 +90,7 @@ ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
 GOOGLE_VERIFICATION_PREVIEW_PATH = legacy_google_verification_preview.PATH
 GOOGLE_FACTUAL_EDR_AUDIT_PATH = legacy_google_factual_edr_audit.PATH
+GOOGLE_FACTUAL_EDR_PREVIEW_PATH = legacy_google_factual_edr_preview.PATH
 GOOGLE_VERIFICATION_APPLY_PATH = legacy_google_verification_preview.APPLY_PATH
 SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
 SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN"
@@ -9241,7 +9243,7 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method) -> None:
         path = urllib.parse.urlparse(self.path).path
         if path in {GOOGLE_VERIFICATION_PREVIEW_PATH, GOOGLE_VERIFICATION_APPLY_PATH,
-                    GOOGLE_FACTUAL_EDR_AUDIT_PATH}:
+                    GOOGLE_FACTUAL_EDR_AUDIT_PATH, GOOGLE_FACTUAL_EDR_PREVIEW_PATH}:
             if not SANDBOX_MODE:
                 return self.send_json({"error": "SANDBOX only", "status": 404}, 404)
             if self.command != "POST":
@@ -9948,6 +9950,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == GOOGLE_FACTUAL_EDR_PREVIEW_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 32768:
+                    return self.send_json({"error": "Preview payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = legacy_google_verification_preview.open_read_only(DB_PATH)
+                try:
+                    result = legacy_google_factual_edr_preview.preview(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 400)
         if parsed.path == GOOGLE_FACTUAL_EDR_AUDIT_PATH:
             if not SANDBOX_MODE:
                 return self.send_json({"error": "SANDBOX only"}, 404)
