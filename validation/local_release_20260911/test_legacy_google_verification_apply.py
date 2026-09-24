@@ -77,6 +77,42 @@ class ControlledApplyTests(unittest.TestCase):
                          ("Зареєстровано", "manager"))
         self.assertEqual(self.con.execute("SELECT status FROM qualifications").fetchone()[0], "active")
 
+    def test_max_500_batch_commits_once_and_replay_is_idempotent(self):
+        items = [record(str(1000 + index), row=index + 2) for index in range(500)]
+        self.registry.update({item["supplier_code"]: "individual_entrepreneur" for item in items})
+        self.days.update({item["supplier_code"]: "2026-09-22" for item in items})
+        body = self.bound(items)
+        before = module.preview(self.con, source(items))
+        self.assertEqual((before["received"], before["selected"], before["incoming_newer"]),
+                         (500, 500, 500))
+        self.assertTrue(before["batch_apply_ready"])
+        self.assertEqual(before["ticket_ttl_seconds"], 900)
+        result = module.apply(self.con, body)
+        self.assertEqual((result["inserted"], result["verified"], result["db_writes"]),
+                         (500, 500, 500))
+        self.assertEqual(result["google_writes"], 0)
+        self.assertEqual(self.count(), 500)
+        self.assertEqual(module.apply(self.con, body)["transaction_status"], "ALREADY_APPLIED")
+        self.assertEqual(self.count(), 500)
+        after = module.preview(self.con, source(items))
+        self.assertEqual(after["equivalent_event"], 500)
+        self.assertEqual(after["selected"], 0)
+        self.assertFalse(after["batch_apply_ready"])
+
+    def test_max_500_batch_rolls_back_every_insert_on_readback_failure(self):
+        items = [record(str(2000 + index), row=index + 2) for index in range(500)]
+        self.registry.update({item["supplier_code"]: "individual_entrepreneur" for item in items})
+        self.days.update({item["supplier_code"]: "2026-09-22" for item in items})
+        body = self.bound(items)
+        def corrupt_last(con):
+            con.execute("UPDATE supplier_edr_verification_events SET officer='corrupt' "
+                        "WHERE supplier_code=?", (items[-1]["supplier_code"],))
+        with self.assertRaisesRegex(ValueError, "AFTER_VERIFICATION_FAILED"):
+            module.apply(self.con, body, after_insert_hook=corrupt_last)
+        self.assertEqual(self.count(), 0)
+        self.assertEqual(self.con.execute("SELECT edr_status,manager FROM supplier_edr_profiles").fetchone()[:],
+                         ("Зареєстровано", "manager"))
+
     def test_preview_binding_is_deterministic_and_read_only(self):
         body = source([record()])
         before = self.con.total_changes
@@ -105,6 +141,24 @@ class ControlledApplyTests(unittest.TestCase):
         self.assertEqual(result["incoming_newer"] + result["initial"], 0)
         self.assertEqual(self.count(), 1)
         self.assertEqual(self.con.execute("SELECT snapshot_json FROM supplier_edr_verification_events").fetchone()[0], before)
+
+    def test_mixed_batch_with_factual_equivalent_rolls_back_without_downgrade(self):
+        factual = {"source": module.SOURCE, "verification_date": "2026-09-23",
+                   "verification_officer": "Officer One", "factual_edr_status": "Припинено",
+                   "factual_provenance_version": 1}
+        self.con.execute("""INSERT INTO supplier_edr_verification_events
+          (supplier_code,event_type,occurred_at,officer,source,source_sheet,source_row,
+           snapshot_hash,snapshot_json) VALUES (?,?,?,?,?,?,?,?,?)""",
+          ("001", module.SOURCE, "2026-09-23", "Officer One", module.SOURCE,
+           "ФОП", 2, "factual-evidence", json.dumps(factual, ensure_ascii=False)))
+        self.con.commit()
+        body = self.bound([record(), record("002", "ЮО", 2, officer="Officer Two")])
+        self.assertFalse(module.preview(self.con, source(body["records"]))["batch_apply_ready"])
+        with self.assertRaisesRegex(ValueError, "SELECTION_NOT_FULLY_ELIGIBLE"):
+            module.apply(self.con, body)
+        self.assertEqual(self.count(), 1)
+        self.assertEqual(json.loads(self.con.execute(
+            "SELECT snapshot_json FROM supplier_edr_verification_events").fetchone()[0]), factual)
 
     def test_existing_il_only_legacy_pair_is_equivalent(self):
         self.con.execute("""INSERT INTO supplier_edr_verification_events
@@ -138,10 +192,13 @@ class ControlledApplyTests(unittest.TestCase):
         changed = dict(body); changed["records"] = [dict(record(), verification_officer="Other")]
         with self.assertRaisesRegex(ValueError, "SOURCE_DIGEST_MISMATCH"):
             module.apply(self.con, changed)
-        changed = source([record(str(i), row=i+2) for i in range(11)])
+        changed = source([record(str(i), row=i+2) for i in range(501)])
         changed.update(selection_digest="x", preview_ticket="x", confirmation=module.APPLY_CONFIRMATION)
+        writes_before_limit = self.con.total_changes
         with self.assertRaisesRegex(ValueError, "CONTROLLED_PREVIEW_LIMIT"):
             module.apply(self.con, changed)
+        self.assertEqual(self.con.total_changes, writes_before_limit)
+        self.assertFalse(self.con.in_transaction)
         changed = self.bound([record()]); changed["records"][0]["source"] = "google_registry"
         changed["source_digest"] = module.source_digest(changed["records"])
         with self.assertRaisesRegex(ValueError, "APPLY_SOURCE_INVALID"):
