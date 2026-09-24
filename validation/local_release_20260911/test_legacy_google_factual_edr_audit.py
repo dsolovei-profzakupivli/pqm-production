@@ -159,7 +159,8 @@ class FactualEdrAuditTests(unittest.TestCase):
         with patch.object(server, "SANDBOX_MODE", False):
             server.Handler._dispatch(handler, lambda: replies.append((200, "unexpected")))
             self.assertEqual(replies[-1][0], 404)
-        self.assertFalse(hasattr(server, "GOOGLE_FACTUAL_EDR_APPLY_PATH"))
+        self.assertEqual(server.GOOGLE_FACTUAL_EDR_APPLY_PATH,
+                         "/api/integrations/google/factual-edr/apply")
 
     def test_post_route_opens_ro_query_only_and_returns_zero_writes(self):
         import server
