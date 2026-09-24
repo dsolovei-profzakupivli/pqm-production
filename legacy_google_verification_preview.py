@@ -72,6 +72,27 @@ def _officer(value):
     return text if text and text.casefold() not in INVALID_OFFICER else ""
 
 
+def equivalent_event(events, incoming_day, officer):
+    """Shared Phase-1 exclusion: any recorded date/officer pair is already evidence."""
+    normalized = edr_sync_v2.normalize_person(officer)
+    return any(edr_sync_v2.normalized_date(event["occurred_at"]) == incoming_day and
+               edr_sync_v2.normalize_person(event["officer"]) == normalized
+               for event in events)
+
+
+def classify_evidence(current_raw, incoming_day, officer, events):
+    current_day = edr_sync_v2.normalized_date(current_raw)
+    if equivalent_event(events, incoming_day, officer):
+        return "equivalent_event"
+    if current_raw and not current_day:
+        return "invalid_pqm_date"
+    if not current_day:
+        return "initial"
+    if incoming_day > current_day:
+        return "incoming_newer"
+    return "same_date" if incoming_day == current_day else "older"
+
+
 def validate_request(payload):
     if not isinstance(payload, dict) or set(payload) != REQUEST_KEYS:
         raise ValueError("REQUEST_SCHEMA_INVALID")
@@ -146,21 +167,7 @@ def preview(con, payload):
         else:
             current = projection.get(code, {})
             current_raw = current.get("verification_date") or ""
-            current_day = edr_sync_v2.normalized_date(current_raw)
-            if current_raw and not current_day:
-                category = "invalid_pqm_date"
-            elif any(edr_sync_v2.normalized_date(e["occurred_at"]) == incoming_day and
-                     edr_sync_v2.normalize_person(e["officer"]) ==
-                     edr_sync_v2.normalize_person(officer) for e in events[code]):
-                category = "equivalent_event"
-            elif not current_day:
-                category = "initial"
-            elif incoming_day > current_day:
-                category = "incoming_newer"
-            elif incoming_day == current_day:
-                category = "same_date"
-            else:
-                category = "older"
+            category = classify_evidence(current_raw, incoming_day, officer, events[code])
         counts[category] += 1
         results.append({"source_tab": item["source_tab"], "source_row": item["source_row"],
                         "result": category})

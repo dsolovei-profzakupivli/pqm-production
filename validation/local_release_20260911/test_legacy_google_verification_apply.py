@@ -89,6 +89,35 @@ class ControlledApplyTests(unittest.TestCase):
         expired = module._preview_ticket(first["selection_digest"], int(time.time()) - 1)
         self.assertFalse(module._ticket_valid(expired, first["selection_digest"]))
 
+    def test_existing_factual_legacy_pair_is_equivalent_and_unchanged(self):
+        factual = {"source": module.SOURCE, "verification_date": "2026-09-23",
+                   "verification_officer": "Officer One",
+                   "factual_edr_status": "Припинено", "factual_provenance_version": 1}
+        self.con.execute("""INSERT INTO supplier_edr_verification_events
+          (supplier_code,event_type,occurred_at,officer,source,source_sheet,source_row,
+           snapshot_hash,snapshot_json) VALUES (?,?,?,?,?,?,?,?,?)""",
+          ("001", module.SOURCE, "2026-09-23", "Officer One", module.SOURCE,
+           "ФОП", 2, "factual-evidence", json.dumps(factual, ensure_ascii=False)))
+        self.con.commit()
+        before = self.con.execute("SELECT snapshot_json FROM supplier_edr_verification_events").fetchone()[0]
+        result = module.preview(self.con, source([record()]))
+        self.assertEqual(result["equivalent_event"], 1)
+        self.assertEqual(result["incoming_newer"] + result["initial"], 0)
+        self.assertEqual(self.count(), 1)
+        self.assertEqual(self.con.execute("SELECT snapshot_json FROM supplier_edr_verification_events").fetchone()[0], before)
+
+    def test_existing_il_only_legacy_pair_is_equivalent(self):
+        self.con.execute("""INSERT INTO supplier_edr_verification_events
+          (supplier_code,event_type,occurred_at,officer,source,source_sheet,source_row,
+           snapshot_hash,snapshot_json) VALUES (?,?,?,?,?,?,?,?,?)""",
+          ("001", module.SOURCE, "2026-09-23", "Officer One", module.SOURCE,
+           "ФОП", 2, "il-evidence", "{}"))
+        self.con.commit()
+        result = module.preview(self.con, source([record()]))
+        self.assertEqual(result["equivalent_event"], 1)
+        self.assertEqual(result["incoming_newer"] + result["initial"], 0)
+        self.assertEqual(self.count(), 1)
+
     def test_stale_preview_and_changed_state_zero_writes(self):
         body = self.bound([record()])
         body["selection_digest"] = "bad"
