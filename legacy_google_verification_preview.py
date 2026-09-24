@@ -23,7 +23,8 @@ SOURCE = "legacy_google_registry"
 SOURCES = frozenset({SOURCE, "google_registry"})
 PATH = "/api/integrations/google/verification-events/preview"
 APPLY_PATH = "/api/integrations/google/verification-events/apply"
-APPLY_CONFIRMATION = "APPLY_LEGACY_GOOGLE_VERIFICATION_MAX_10"
+MAX_BATCH = 500
+APPLY_CONFIRMATION = "APPLY_SANDBOX_LEGACY_VERIFICATION_BATCH_MAX_500"
 ITEM_KEYS = frozenset({"supplier_code", "verification_date", "verification_officer",
                        "source_tab", "source_row", "source"})
 REQUEST_KEYS = frozenset({"spreadsheet_id", "source_digest", "records"})
@@ -99,7 +100,7 @@ def validate_request(payload):
     if payload["spreadsheet_id"] != SANDBOX_SPREADSHEET_ID:
         raise ValueError("SANDBOX_SPREADSHEET_MISMATCH")
     items = payload["records"]
-    if not isinstance(items, list) or not 1 <= len(items) <= 10:
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_BATCH:
         raise ValueError("CONTROLLED_PREVIEW_LIMIT")
     if any(not isinstance(x, dict) or set(x) != ITEM_KEYS for x in items):
         raise ValueError("ITEM_SCHEMA_INVALID")
@@ -182,7 +183,11 @@ def preview(con, payload):
                                 "source_digest": payload["source_digest"],
                                 "state_digest": state_digest, "rows": results})
     ticket = _preview_ticket(selection_digest, int(time.time()) + _PREVIEW_TICKET_SECONDS)
-    return {"dry_run": True, "received": len(items), "source_digest": payload["source_digest"],
+    selected = counts["incoming_newer"] + counts["initial"]
+    return {"dry_run": True, "received": len(items), "selected": selected,
+            "batch_apply_ready": selected == len(items),
+            "ticket_ttl_seconds": _PREVIEW_TICKET_SECONDS,
+            "source_digest": payload["source_digest"],
             "current_pqm_state_digest": state_digest, "selection_digest": selection_digest,
             "preview_ticket": ticket,
             "incoming_newer": counts["incoming_newer"], "initial": counts["initial"],
@@ -218,7 +223,7 @@ def _protected_state(con, codes):
 
 
 def apply(con, payload, *, after_insert_hook=None):
-    """Atomic max-10 insert; caller must enforce SANDBOX and Bearer auth."""
+    """Atomic max-500 insert; caller must enforce SANDBOX and Bearer auth."""
     if not isinstance(payload, dict) or set(payload) != {"spreadsheet_id", "source_digest",
                                                     "records", "selection_digest", "preview_ticket",
                                                     "confirmation"}:
@@ -250,7 +255,8 @@ def apply(con, payload, *, after_insert_hook=None):
                 con.rollback()
                 return {"selected": len(items), "eligible_before_write": 0, "inserted": 0,
                         "verified": 0, "duplicates_prevented": len(items), "blocked": 0,
-                        "failures": 0, "db_writes": 0, "transaction_status": "ALREADY_APPLIED"}
+                        "failures": 0, "db_writes": 0, "google_writes": 0,
+                        "transaction_status": "ALREADY_APPLIED"}
             raise ValueError("STALE_PREVIEW_OR_PQM_STATE")
         eligible = current["incoming_newer"] + current["initial"]
         if eligible != len(items):
@@ -302,7 +308,7 @@ def apply(con, payload, *, after_insert_hook=None):
         con.commit()
         return {"selected": len(items), "eligible_before_write": len(items),
                 "inserted": len(items), "verified": len(items), "duplicates_prevented": 0,
-                "blocked": 0, "failures": 0, "db_writes": len(items),
+                "blocked": 0, "failures": 0, "db_writes": len(items), "google_writes": 0,
                 "transaction_status": "COMMITTED"}
     except Exception:
         con.rollback()

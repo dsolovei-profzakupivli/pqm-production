@@ -10024,7 +10024,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "SANDBOX only"}, 404)
             try:
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 32768:
+                if not 0 < size <= 1_000_000:
                     return self.send_json({"error": "Apply payload size invalid"}, 413)
                 payload = json.loads(self.rfile.read(size))
                 con = db()
@@ -10038,7 +10038,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == GOOGLE_VERIFICATION_PREVIEW_PATH:
             try:
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 32768:
+                if not 0 < size <= 1_000_000:
                     return self.send_json({"error": "Preview payload size invalid"}, 413)
                 payload = json.loads(self.rfile.read(size))
                 con = legacy_google_verification_preview.open_read_only(DB_PATH)

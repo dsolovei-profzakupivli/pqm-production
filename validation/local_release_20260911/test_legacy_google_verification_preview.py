@@ -104,7 +104,7 @@ class LegacyGoogleVerificationPreviewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SOURCE_DIGEST_MISMATCH"):
             preview.validate_request(payload)
         with self.assertRaisesRegex(ValueError, "CONTROLLED_PREVIEW_LIMIT"):
-            preview.validate_request(request([item(str(i), "ФОП", i + 2) for i in range(11)]))
+            preview.validate_request(request([item(str(i), "ФОП", i + 2) for i in range(501)]))
         self.assertEqual(preview.preview(self.con, request([item("UA-001")]))["ambiguous"], 1)
 
     def test_pqm_state_recheck_is_current(self):
