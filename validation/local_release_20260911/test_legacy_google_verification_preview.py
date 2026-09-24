@@ -74,6 +74,15 @@ class LegacyGoogleVerificationPreviewTests(unittest.TestCase):
         result = preview.preview(self.con, request([item()]))
         self.assertEqual(result["ambiguous"], 1)
 
+    def test_exact_event_remains_equivalent_with_invalid_projection_date(self):
+        self.con.execute("INSERT INTO supplier_edr_verification_events VALUES (?,?,?)",
+                         ("001", "2026-09-23", "Олена ЄРЬОМІНА"))
+        self.con.commit()
+        self.dates["001"] = "invalid"
+        result = preview.preview(self.con, request([item()]))
+        self.assertEqual(result["equivalent_event"], 1)
+        self.assertEqual(result["incoming_newer"] + result["initial"], 0)
+
     def test_invalid_officer_date_routing_and_extra_fields(self):
         bad = [item("001", "ФОП", 2, "bad", "Officer"),
                item("002", "ЮО", 2, "2026-09-23", "—"),
