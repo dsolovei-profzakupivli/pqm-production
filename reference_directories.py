@@ -24,6 +24,8 @@ START_LOCK = threading.Lock()
 # worker: daemon threads disappear on restart. Never use that label as a lock.
 AMCU_ACTIVE = set()
 AMCU_ERRORS = {}
+SANDBOX_NAZK_ACTIVE = set()
+SANDBOX_NAZK_ERRORS = {}
 AMCU_LOCK = threading.Lock()
 AMCU_WORKER_TIMEOUT = 300
 AMCU_MAX_BYTES = 25 * 1024 * 1024
@@ -84,6 +86,12 @@ def reference_status(db_path):
         con.row_factory = sqlite3.Row
         result = {r["source"]: dict(r) for r in con.execute("SELECT * FROM reference_sync_state")}
     key = str(Path(db_path).resolve())
+    if os.environ.get('PQM_SANDBOX') == '1':
+        state = result.get('nazk', {})
+        if state.get('status') == 'running' and key not in SANDBOX_NAZK_ACTIVE:
+            state.update(status='error', interrupted=True,
+                         message=SANDBOX_NAZK_ERRORS.get(key) or
+                         'Попереднє оновлення НАЗК перервано; збережений реєстр доступний.')
     state = result.get("amcu", {})
     if state.get("status") == "running" and key not in AMCU_ACTIVE:
         # Read-only projection: no registry/init/reconciliation side effects.
@@ -109,7 +117,24 @@ def _fetch(url, timeout=900, max_bytes=None):
         return raw
 
 
-def refresh_nazk(db_path, on_complete=None, on_error=None):
+def refresh_nazk(db_path, on_complete=None, on_error=None, *, _claimed=False):
+    if os.environ.get('PQM_SANDBOX') != '1':
+        return _refresh_nazk(db_path, on_complete, on_error)
+    key = str(Path(db_path).resolve())
+    if not _claimed:
+        with START_LOCK:
+            if key in SANDBOX_NAZK_ACTIVE or LOCK.locked():
+                return
+            SANDBOX_NAZK_ACTIVE.add(key)
+            SANDBOX_NAZK_ERRORS.pop(key, None)
+    try:
+        # Sandbox registry refresh must never trigger business task builders.
+        return _refresh_nazk(db_path, None, on_error)
+    finally:
+        SANDBOX_NAZK_ACTIVE.discard(key)
+
+
+def _refresh_nazk(db_path, on_complete=None, on_error=None):
     if not LOCK.acquire(blocking=False):
         if on_error:
             on_error("НАЗК: інше оновлення вже виконується")
@@ -118,7 +143,12 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
     failure = ""
     try:
         _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
-        payload = json.loads(_fetch(NAZK_URL).decode("utf-8-sig"))
+        if os.environ.get('PQM_SANDBOX') == '1':
+            import sandbox_nazk
+            raw = sandbox_nazk.download()
+        else:
+            raw = _fetch(NAZK_URL)
+        payload = json.loads(raw.decode("utf-8-sig"))
         items = payload if isinstance(payload, list) else payload.get("data", payload.get("items", []))
         if not isinstance(items, list) or not items:
             raise ValueError("Порожній або некоректний реєстр НАЗК; збережені дані не змінено")
@@ -157,6 +187,8 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
         succeeded = True
     except Exception as exc:
         failure = str(exc) or type(exc).__name__
+        if os.environ.get('PQM_SANDBOX') == '1':
+            SANDBOX_NAZK_ERRORS[str(Path(db_path).resolve())] = failure
         _state(db_path, "nazk", "error", str(exc))
     finally:
         LOCK.release()
@@ -177,11 +209,23 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
         if state.get("status") == "running" or LOCK.locked():
             return False
         _state(db_path, source, "running", "Підготовка фонового оновлення")
+        sandbox_key = str(Path(db_path).resolve()) if os.environ.get('PQM_SANDBOX') == '1' else None
+        if sandbox_key:
+            SANDBOX_NAZK_ACTIVE.add(sandbox_key)
+            SANDBOX_NAZK_ERRORS.pop(sandbox_key, None)
         target = refresh_nazk if source == "nazk" else refresh_amcu
         args = (db_path, on_complete, on_error) if source == "nazk" else (db_path, raw, filename)
-        timer = threading.Timer(0.2, target, args=args)
+        timer = threading.Timer(0.2, target, args=args,
+                                kwargs={'_claimed': True} if sandbox_key else {})
         timer.daemon = True
-        timer.start()
+        try:
+            timer.start()
+        except Exception as exc:
+            if sandbox_key:
+                SANDBOX_NAZK_ACTIVE.discard(sandbox_key)
+                SANDBOX_NAZK_ERRORS[sandbox_key] = str(exc) or type(exc).__name__
+                _state(db_path, source, 'error', SANDBOX_NAZK_ERRORS[sandbox_key])
+            raise
     return True
 
 
