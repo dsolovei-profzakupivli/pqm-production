@@ -754,6 +754,7 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
 
 LEGACY_GOOGLE_FACTUAL_STATUSES = frozenset({
     "Припинено", "В стані припинення", "Порушено справу про банкрутство", "Банкрут"})
+LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID = "1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww"
 
 
 def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) -> str:
@@ -774,6 +775,11 @@ def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) 
         not officer or normalize_person(snapshot.get("verification_officer")) != officer or
         tab not in {"ФОП", "ЮО"} or snapshot.get("source_tab") != tab or
         row < 2 or snapshot_row != row or
+        snapshot.get("factual_spreadsheet_id") != LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID or
+        snapshot.get("factual_source_tab") != tab or
+        type(snapshot.get("factual_source_row")) is not int or
+        snapshot["factual_source_row"] < 2 or
+        snapshot.get("factual_provenance_version") != 1 or
         not re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("source_digest") or "")) or
         not re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("factual_source_digest") or ""))):
         return ""

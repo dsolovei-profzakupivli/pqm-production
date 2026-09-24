@@ -1,6 +1,7 @@
 """SANDBOX-only, read-only bounded Preview of factual Google E restoration."""
 from collections import Counter
 from datetime import date
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -13,6 +14,8 @@ import supplier_registry_integration
 
 
 PATH = "/api/integrations/google/factual-edr/preview"
+APPLY_PATH = "/api/integrations/google/factual-edr/apply"
+APPLY_CONFIRMATION = "APPLY_SANDBOX_FACTUAL_EDR_MAX_10"
 SOURCE = "legacy_google_registry"
 ITEM_KEYS = frozenset({"supplier_code", "source_tab", "source_row", "verification_date",
                        "verification_officer", "factual_edr_status", "source", "formulas"})
@@ -95,9 +98,9 @@ def _event_status(item):
     return status
 
 
-def preview(con, payload):
+def preview(con, payload, *, require_query_only=True):
     items = validate(payload)
-    if con.execute("PRAGMA query_only").fetchone()[0] != 1:
+    if require_query_only and con.execute("PRAGMA query_only").fetchone()[0] != 1:
         raise ValueError("QUERY_ONLY_REQUIRED")
     codes = [item["supplier_code"] for item in items]
     registry = supplier_registry_integration._build_full_registry(con)
@@ -222,3 +225,141 @@ def preview(con, payload):
             "by_reason": dict(counts), "by_status_reason": dict(by_status),
             "by_activity_reason": dict(by_activity), "rows": rows,
             "db_writes": 0, "google_writes": 0, "query_only": 1}
+
+
+def _event_key(item):
+    return verification._digest({"identity": item["supplier_code"],
+        "date": item["verification_date"],
+        "officer": edr_sync_v2.normalize_person(item["verification_officer"]),
+        "source": SOURCE})
+
+
+def _factual_snapshot(snapshot, item, payload):
+    updated = dict(snapshot)
+    updated.update({"factual_edr_status": item["factual_edr_status"],
+        "factual_source_digest": payload["source_digest"],
+        "factual_spreadsheet_id": payload["spreadsheet_id"],
+        "factual_source_tab": item["source_tab"],
+        "factual_source_row": item["source_row"],
+        "factual_provenance_version": 1})
+    return updated
+
+
+def _equivalent_after_apply(con, items, payload):
+    for item in items:
+        rows = [dict(row) for row in con.execute(
+            "SELECT * FROM supplier_edr_verification_events WHERE supplier_code=? "
+            "AND event_type=? AND occurred_at=?", (item["supplier_code"], SOURCE,
+                                                 item["verification_date"]))
+            if edr_sync_v2.normalize_person(row["officer"]) ==
+               edr_sync_v2.normalize_person(item["verification_officer"])]
+        if len(rows) != 1:
+            return False
+        row = rows[0]
+        try:
+            snapshot = json.loads(row["snapshot_json"] or "{}")
+        except (ValueError, TypeError):
+            return False
+        if (not isinstance(snapshot, dict) or
+            edr_sync_v2._legacy_google_factual_status(row, snapshot,
+                edr_sync_v2.normalized_date(row["occurred_at"])) != item["factual_edr_status"] or
+            snapshot.get("factual_source_digest") != payload["source_digest"] or
+            snapshot.get("factual_spreadsheet_id") != payload["spreadsheet_id"] or
+            snapshot.get("factual_source_tab") != item["source_tab"] or
+            snapshot.get("factual_source_row") != item["source_row"]):
+            return False
+    return True
+
+
+def apply(con, payload, *, after_write_hook=None):
+    """Atomic, bounded factual evidence insert/enrichment; caller enforces auth."""
+    expected = REQUEST_KEYS | {"selection_digest", "preview_ticket", "confirmation"}
+    if not isinstance(payload, dict) or set(payload) != expected:
+        raise ValueError("FACTUAL_APPLY_SCHEMA_INVALID")
+    if payload["confirmation"] != APPLY_CONFIRMATION:
+        raise ValueError("EXPLICIT_CONFIRMATION_REQUIRED")
+    source = {key: payload[key] for key in REQUEST_KEYS}
+    items = validate(source)  # Includes hard max 10, literal identity, digest and vocabulary.
+    if con.execute("PRAGMA query_only").fetchone()[0]:
+        raise ValueError("READ_ONLY_CONNECTION_CANNOT_APPLY")
+    if not verification._ticket_valid(payload["preview_ticket"],
+            "factual-e:" + payload["selection_digest"]):
+        raise ValueError("PREVIEW_TICKET_INVALID_OR_EXPIRED")
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        current = preview(con, source, require_query_only=False)
+        if current["selection_digest"] != payload["selection_digest"]:
+            if _equivalent_after_apply(con, items, source):
+                con.rollback()
+                return {"selected": len(items), "inserted": 0, "enriched": 0,
+                    "verified": len(items), "duplicates_prevented": len(items),
+                    "db_writes": 0, "google_writes": 0,
+                    "transaction_status": "ALREADY_APPLIED"}
+            raise ValueError("STALE_PREVIEW_OR_PQM_STATE")
+        if current["selected"] != len(items) or any(row["result"] not in
+                {"new_event_needed", "existing_event_enrichment"} for row in current["rows"]):
+            raise ValueError("SELECTION_NOT_FULLY_ELIGIBLE")
+        codes = sorted({item["supplier_code"] for item in items})
+        protected_before = verification._protected_state(con, codes)
+        before = con.total_changes
+        inserted = enriched = 0
+        for item, classified in zip(items, current["rows"]):
+            day, officer = item["verification_date"], verification._officer(
+                item["verification_officer"])
+            if classified["result"] == "existing_event_enrichment":
+                matches = [dict(row) for row in con.execute(
+                    "SELECT * FROM supplier_edr_verification_events WHERE supplier_code=? "
+                    "AND event_type=? AND occurred_at=?", (item["supplier_code"], SOURCE, day))
+                    if edr_sync_v2.normalize_person(row["officer"]) ==
+                       edr_sync_v2.normalize_person(officer)]
+                if len(matches) != 1:
+                    raise ValueError("AMBIGUOUS_ENRICHMENT_TARGET")
+                row = matches[0]
+                snapshot = json.loads(row["snapshot_json"] or "{}")
+                if (not isinstance(snapshot, dict) or snapshot.get("factual_edr_status") or
+                    row["source"] != SOURCE or row["source_sheet"] not in {"ФОП", "ЮО"}):
+                    raise ValueError("ENRICHMENT_PROVENANCE_INVALID")
+                updated = _factual_snapshot(snapshot, item, source)
+                changed = set(json.loads(row["changed_fields"] or "[]"))
+                changed.add("factual_edr_status")
+                result = con.execute("UPDATE supplier_edr_verification_events "
+                    "SET snapshot_json=?,changed_fields=? WHERE id=? AND snapshot_json=?",
+                    (json.dumps(updated, ensure_ascii=False, sort_keys=True),
+                     json.dumps(sorted(changed), ensure_ascii=False), row["id"],
+                     row["snapshot_json"]))
+                if result.rowcount != 1:
+                    raise ValueError("ENRICHMENT_STALE")
+                enriched += 1
+            else:
+                snapshot = {"verification_date": day, "verification_officer": officer,
+                    "source": SOURCE, "spreadsheet_id": source["spreadsheet_id"],
+                    "source_digest": source["source_digest"],
+                    "source_tab": item["source_tab"], "source_row": item["source_row"]}
+                snapshot = _factual_snapshot(snapshot, item, source)
+                result = con.execute("""INSERT INTO supplier_edr_verification_events
+                  (supplier_code,event_type,occurred_at,officer,source,source_submission_id,
+                   source_sheet,source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                    item["supplier_code"], SOURCE, day, officer, SOURCE, "",
+                    item["source_tab"], item["source_row"],
+                    '["verification_date","verification_officer","factual_edr_status"]',
+                    _event_key(item), json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+                    datetime.now(timezone.utc).isoformat()))
+                if result.rowcount != 1:
+                    raise ValueError("FACTUAL_INSERT_FAILED")
+                inserted += 1
+        if after_write_hook:
+            after_write_hook(con)
+        if not _equivalent_after_apply(con, items, source):
+            raise ValueError("AFTER_VERIFICATION_FAILED")
+        if verification._protected_state(con, codes) != protected_before:
+            raise ValueError("PROTECTED_STATE_CHANGED")
+        if con.total_changes - before != inserted + enriched:
+            raise ValueError("UNEXPECTED_DB_MUTATION")
+        con.commit()
+        return {"selected": len(items), "inserted": inserted, "enriched": enriched,
+            "verified": len(items), "duplicates_prevented": 0, "db_writes": inserted+enriched,
+            "google_writes": 0, "transaction_status": "COMMITTED"}
+    except Exception:
+        con.rollback()
+        raise

@@ -32,7 +32,10 @@ def event(code, day="2026-09-20", status=None, kind="legacy_google_registry",
                     "source": kind, "source_tab": "ФОП", "source_row": 2,
                     "source_digest": "a"*64}
         if status is not None:
-            snapshot.update(factual_edr_status=status, factual_source_digest="b"*64)
+            snapshot.update(factual_edr_status=status, factual_source_digest="b"*64,
+                factual_spreadsheet_id=edr_sync_v2.LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID,
+                factual_source_tab="ФОП", factual_source_row=2,
+                factual_provenance_version=1)
     else:
         snapshot = {"edr_status": status} if status is not None else {}
     return (event_id, code, kind, day, officer, kind, "ФОП" if kind == "legacy_google_registry" else "",
