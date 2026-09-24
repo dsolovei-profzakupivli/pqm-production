@@ -87,6 +87,7 @@ from uo_work_queue import get_uo_work_queue
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
 GOOGLE_VERIFICATION_PREVIEW_PATH = legacy_google_verification_preview.PATH
+GOOGLE_VERIFICATION_APPLY_PATH = legacy_google_verification_preview.APPLY_PATH
 SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
 SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN"
 
@@ -9237,14 +9238,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method) -> None:
         path = urllib.parse.urlparse(self.path).path
-        if path == GOOGLE_VERIFICATION_PREVIEW_PATH:
+        if path in {GOOGLE_VERIFICATION_PREVIEW_PATH, GOOGLE_VERIFICATION_APPLY_PATH}:
             if not SANDBOX_MODE:
                 return self.send_json({"error": "SANDBOX only", "status": 404}, 404)
             if self.command != "POST":
                 return self.send_json({"error": "Endpoint підтримує тільки POST", "status": 405}, 405)
             if not self._authorize_supplier_registry_integration():
                 return
-            self.auth_user = "integration:google-verification-preview"
+            self.auth_user = "integration:google-verification-events"
             self.auth_role = "integration"
             return method()
         if path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
@@ -9944,6 +9945,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == GOOGLE_VERIFICATION_APPLY_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 32768:
+                    return self.send_json({"error": "Apply payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = db()
+                try:
+                    result = legacy_google_verification_preview.apply(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 409)
         if parsed.path == GOOGLE_VERIFICATION_PREVIEW_PATH:
             try:
                 size = int(self.headers.get("Content-Length", "0"))
