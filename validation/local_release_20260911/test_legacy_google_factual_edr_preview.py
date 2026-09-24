@@ -103,6 +103,7 @@ class FactualEdrPreviewTests(unittest.TestCase):
         self.assertEqual(result["equivalent_factual_evidence"], 1)
         self.assertEqual(result["by_reason"]["newer_pqm_factual_evidence"], 1)
         self.assertEqual(result["selected"], 2)
+        self.assertFalse(result["batch_apply_ready"])
         self.assertEqual(result["by_status_reason"]["Припинено:existing_event_enrichment"], 1)
         self.assertTrue(result["selection_digest"] and result["preview_ticket"])
         self.assertEqual((result["db_writes"], result["google_writes"],
@@ -122,6 +123,15 @@ class FactualEdrPreviewTests(unittest.TestCase):
         self.assertEqual(result["by_reason"]["newer_or_same_profile_factual_evidence"], 1)
         self.assertEqual(result["by_activity_reason"]["non_active:new_event_needed"], 1)
 
+    def test_fifty_row_preview_is_bounded_and_ready_only_when_all_eligible(self):
+        rows = [item(str(i+1).zfill(10), i+2) for i in range(50)]
+        result = self.preview(rows)
+        self.assertEqual((result["received"], result["selected"],
+                          result["new_event_needed"]), (50, 50, 50))
+        self.assertTrue(result["batch_apply_ready"])
+        self.assertEqual((result["db_writes"], result["google_writes"], result["query_only"]),
+                         (0, 0, 1))
+
     def test_bad_status_tamper_limit_and_query_only_fail_closed(self):
         for status in ("Неактуально", "Зареєстровано", "Невідомо"):
             with self.assertRaisesRegex(ValueError, "FACTUAL_PREVIEW_ITEM_INVALID"):
@@ -131,7 +141,7 @@ class FactualEdrPreviewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "FACTUAL_PREVIEW_DIGEST_MISMATCH"):
             preview.validate(body)
         with self.assertRaisesRegex(ValueError, "FACTUAL_PREVIEW_LIMIT"):
-            preview.validate(request([item(str(i), i+2) for i in range(11)]))
+            preview.validate(request([item(str(i), i+2) for i in range(51)]))
         self.con.execute("PRAGMA query_only=OFF")
         with self.assertRaisesRegex(ValueError, "QUERY_ONLY_REQUIRED"):
             self.preview([item("001", 2)])

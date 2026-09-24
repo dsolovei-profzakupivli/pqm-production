@@ -1,4 +1,4 @@
-"""SANDBOX-only, read-only bounded Preview of factual Google E restoration."""
+"""SANDBOX-only bounded Preview and transactional factual Google E restoration."""
 from collections import Counter
 from datetime import date
 from datetime import datetime, timezone
@@ -15,7 +15,8 @@ import supplier_registry_integration
 
 PATH = "/api/integrations/google/factual-edr/preview"
 APPLY_PATH = "/api/integrations/google/factual-edr/apply"
-APPLY_CONFIRMATION = "APPLY_SANDBOX_FACTUAL_EDR_MAX_10"
+MAX_BATCH = 50
+APPLY_CONFIRMATION = "APPLY_SANDBOX_FACTUAL_EDR_BATCH_MAX_50"
 SOURCE = "legacy_google_registry"
 ITEM_KEYS = frozenset({"supplier_code", "source_tab", "source_row", "verification_date",
                        "verification_officer", "factual_edr_status", "source", "formulas"})
@@ -56,7 +57,7 @@ def validate(payload):
     if payload["spreadsheet_id"] != verification.SANDBOX_SPREADSHEET_ID:
         raise ValueError("SANDBOX_SPREADSHEET_MISMATCH")
     items = payload["records"]
-    if not isinstance(items, list) or not 1 <= len(items) <= 10:
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_BATCH:
         raise ValueError("FACTUAL_PREVIEW_LIMIT")
     if any(not isinstance(item, dict) or set(item) != ITEM_KEYS for item in items):
         raise ValueError("FACTUAL_PREVIEW_ITEM_SCHEMA_INVALID")
@@ -214,6 +215,7 @@ def preview(con, payload, *, require_query_only=True):
                                           int(time.time()) + verification._PREVIEW_TICKET_SECONDS)
     selected = counts["new_event_needed"] + counts["existing_event_enrichment"]
     return {"dry_run": True, "received": len(items), "selected": selected,
+            "batch_apply_ready": selected == len(items),
             "source_digest": payload["source_digest"],
             "current_pqm_state_digest": state_digest, "selection_digest": selection_digest,
             "preview_ticket": ticket, "ticket_ttl_seconds": verification._PREVIEW_TICKET_SECONDS,
@@ -272,14 +274,14 @@ def _equivalent_after_apply(con, items, payload):
 
 
 def apply(con, payload, *, after_write_hook=None):
-    """Atomic, bounded factual evidence insert/enrichment; caller enforces auth."""
+    """Atomic max-50 factual insert/enrichment; caller enforces SANDBOX auth."""
     expected = REQUEST_KEYS | {"selection_digest", "preview_ticket", "confirmation"}
     if not isinstance(payload, dict) or set(payload) != expected:
         raise ValueError("FACTUAL_APPLY_SCHEMA_INVALID")
     if payload["confirmation"] != APPLY_CONFIRMATION:
         raise ValueError("EXPLICIT_CONFIRMATION_REQUIRED")
     source = {key: payload[key] for key in REQUEST_KEYS}
-    items = validate(source)  # Includes hard max 10, literal identity, digest and vocabulary.
+    items = validate(source)  # Includes hard max 50, literal identity, digest and vocabulary.
     if con.execute("PRAGMA query_only").fetchone()[0]:
         raise ValueError("READ_ONLY_CONNECTION_CANNOT_APPLY")
     if not verification._ticket_valid(payload["preview_ticket"],
