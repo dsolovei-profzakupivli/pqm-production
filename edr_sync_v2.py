@@ -752,6 +752,34 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
     return result
 
 
+LEGACY_GOOGLE_FACTUAL_STATUSES = frozenset({
+    "Припинено", "В стані припинення", "Порушено справу про банкрутство", "Банкрут"})
+
+
+def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) -> str:
+    """Accept only a complete, attributable Google date/officer/status evidence pair."""
+    status = clean(snapshot.get("factual_edr_status"))
+    if status not in LEGACY_GOOGLE_FACTUAL_STATUSES:
+        return ""
+    officer = normalize_person(item.get("officer"))
+    tab = str(item.get("source_sheet") or "")
+    try:
+        row = int(item.get("source_row") or 0)
+        snapshot_row = int(snapshot.get("source_row") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if (str(item.get("source") or "") != "legacy_google_registry" or
+        str(snapshot.get("source") or "") != "legacy_google_registry" or
+        normalized_date(snapshot.get("verification_date")) != checked_day or
+        not officer or normalize_person(snapshot.get("verification_officer")) != officer or
+        tab not in {"ФОП", "ЮО"} or snapshot.get("source_tab") != tab or
+        row < 2 or snapshot_row != row or
+        not re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("source_digest") or "")) or
+        not re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("factual_source_digest") or ""))):
+        return ""
+    return status
+
+
 def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
     """Status-only read model for a currently active qualification.
 
@@ -764,7 +792,7 @@ def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
     if qualified_day:
         for item in ledger:
             kind = str(item.get("event_type") or "")
-            if kind not in {"manual_edr", "google_clarity"}:
+            if kind not in {"manual_edr", "google_clarity", "legacy_google_registry"}:
                 continue
             checked_day = normalized_date(item.get("occurred_at"))
             if not checked_day or checked_day <= qualified_day:
@@ -775,10 +803,16 @@ def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
                 continue
             if not isinstance(snapshot, dict):
                 continue
-            status = clean(snapshot.get("edr_status"))
+            if kind == "legacy_google_registry":
+                status = _legacy_google_factual_status(item, snapshot, checked_day)
+                if not status:
+                    continue  # I/L-only or invalid legacy evidence never changes E.
+                priority = 0  # Same-day independent manual/Clarity checks retain priority.
+            else:
+                status = clean(snapshot.get("edr_status"))
+                priority = 2 if kind == "manual_edr" else 1
             if status:
-                checks.append((checked_day, 2 if kind == "manual_edr" else 1,
-                               int(item.get("id") or 0), status))
+                checks.append((checked_day, priority, int(item.get("id") or 0), status))
     return max(checks)[3] if checks else "Зареєстровано"
 
 
