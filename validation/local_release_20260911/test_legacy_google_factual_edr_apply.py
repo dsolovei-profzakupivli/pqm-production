@@ -118,7 +118,7 @@ class FactualEdrApplyTests(unittest.TestCase):
 
     def test_rejects_limit_status_confirmation_ticket_and_stale(self):
         with self.assertRaisesRegex(ValueError, "FACTUAL_PREVIEW_LIMIT"):
-            factual.apply(self.con, self.payload([item(str(i), i+2) for i in range(11)]))
+            factual.apply(self.con, self.payload([item(str(i), i+2) for i in range(51)]))
         for bad in ("Неактуально", "Зареєстровано", "unknown"):
             with self.assertRaisesRegex(ValueError, "FACTUAL_PREVIEW_ITEM_INVALID"):
                 factual.apply(self.con, self.payload([item("001", 2, status=bad)]))
@@ -160,6 +160,24 @@ class FactualEdrApplyTests(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT count(*) FROM supplier_edr_verification_events").fetchone()[0], 0)
         self.assertEqual(self.con.execute("SELECT edr_status FROM supplier_edr_profiles").fetchone()[0],
                          "Зареєстровано")
+
+    def test_fifty_commit_and_fifty_rollback_as_whole_batches(self):
+        statuses = ("Припинено", "В стані припинення",
+                    "Порушено справу про банкрутство", "Банкрут")
+        rows = [item(str(i+1).zfill(10), i+2, status=statuses[i%4]) for i in range(50)]
+        payload = self.payload(rows)
+        with patch.object(factual, "preview", return_value=self.classified(payload)):
+            with self.assertRaisesRegex(ValueError, "AFTER_VERIFICATION_FAILED"):
+                factual.apply(self.con, payload, after_write_hook=lambda con: con.execute(
+                    "UPDATE supplier_edr_verification_events SET snapshot_json='{}' "
+                    "WHERE supplier_code='0000000050'"))
+        self.assertEqual(self.con.execute(
+            "SELECT count(*) FROM supplier_edr_verification_events").fetchone()[0], 0)
+        with patch.object(factual, "preview", return_value=self.classified(payload)):
+            committed = factual.apply(self.con, payload)
+        self.assertEqual((committed["inserted"], committed["verified"]), (50, 50))
+        self.assertEqual(self.con.execute(
+            "SELECT count(*) FROM supplier_edr_verification_events").fetchone()[0], 50)
 
     def test_equivalent_is_no_write_and_apply_route_is_sandbox_authenticated(self):
         payload = self.payload()
