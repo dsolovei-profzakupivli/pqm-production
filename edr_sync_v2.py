@@ -40,6 +40,15 @@ def normalize_person(value) -> str:
     return " ".join(re.sub(r"[.,;:]+", " ", text).split())
 
 
+def register_verification_sql_functions(con) -> None:
+    """Register the UI's deterministic officer lookup function on this connection."""
+    con.create_function(
+        "NORMALIZE_NAME", 1,
+        lambda value: " ".join(re.sub(r"[’'`\-]+", " ", str(value or "").casefold()).split()),
+        deterministic=True,
+    )
+
+
 def _abbreviated_person_signature(value) -> tuple[str, str, str] | None:
     """Return surname + two initials only for an unambiguous abbreviated form."""
     tokens = normalize_person(value).split()

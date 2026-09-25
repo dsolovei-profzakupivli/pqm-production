@@ -959,11 +959,7 @@ def db() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.create_function("CASEFOLD", 1, unicode_casefold, deterministic=True)
     con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
-    con.create_function(
-        "NORMALIZE_NAME", 1,
-        lambda value: " ".join(re.sub(r"[’'`\-]+", " ", str(value or "").casefold()).split()),
-        deterministic=True,
-    )
+    edr_sync_v2.register_verification_sql_functions(con)
     con.create_function("NORMALIZED_DATE", 1, lambda value: edr_sync_v2.normalized_date(value), deterministic=True)
     con.create_function("EDR_FRESHNESS", 2, lambda status, checked: edr_sync_v2.freshness_state(
         str(status or ""), str(checked or ""))["bucket"], deterministic=True)
