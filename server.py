@@ -7,6 +7,7 @@ import table_widths
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
+import prod_google_baseline
 import edr_sync_v2
 import base64
 import csv
@@ -9207,6 +9208,16 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path in GOOGLE_MIGRATION_DISABLED_PATHS:
             return self.send_json({"error": "Migration API disabled", "status": 404}, 404)
+        if path == prod_google_baseline.PATH:
+            if not prod_google_baseline.enabled() or not IS_WEB_ENV:
+                return self.send_json({"error": "Baseline API disabled", "status": 404}, 404)
+            if self.command != "POST":
+                return self.send_json({"error": "Endpoint supports POST only", "status": 405}, 405)
+            if not self._authorize_supplier_registry_integration():
+                return
+            self.auth_user = "integration:prod-google-baseline"
+            self.auth_role = "integration"
+            return method()
         if path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
             if self.command != "GET":
                 return self.send_json({"error": "Endpoint підтримує тільки GET", "status": 405}, 405)
@@ -9887,6 +9898,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == prod_google_baseline.PATH:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length < 1 or length > prod_google_baseline.MAX_BODY_BYTES:
+                return self.send_json({"error": "BASELINE_BODY_LIMIT"}, 413)
+            try:
+                payload = json.loads(self.rfile.read(length))
+                con = prod_google_baseline.open_read_only(DB_PATH)
+                try:
+                    result = prod_google_baseline.audit(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/login":
             payload = self.read_json(); username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
