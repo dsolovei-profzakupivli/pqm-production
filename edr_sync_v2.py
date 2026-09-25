@@ -12,6 +12,8 @@ import json
 import re
 from datetime import date, datetime
 
+import supplier_activity
+
 
 SHEETS = ("ФОП", "ЮО")
 HEADERS = (
@@ -208,7 +210,7 @@ def freshness_state(prozorro_status: str, verification_date: str,
         return {"bucket": "not_current", "marker": "🟣 Неактуально",
                 "age_days": None, "monitored": False}
     if status == "Ще не в реєстрі":
-        return {"bucket": "not_checked", "marker": "⚪ Не перевірено",
+        return {"bucket": "not_current", "marker": "🟣 Неактуально",
                 "age_days": None, "monitored": False}
     if not checked:
         return {"bucket": "not_checked", "marker": "⚪ Не перевірено",
@@ -671,6 +673,180 @@ def _verification_event_sort_key(item: dict) -> tuple:
     return (normalized_date(item.get("occurred_at")), priority, int(item.get("id") or 0))
 
 
+def projected_verification_officer(con, value: str) -> str:
+    """The UI's existing officer presentation rule, shared with integrations."""
+    raw = " ".join(str(value or "").split())
+    if not raw:
+        return ""
+    if raw.upper() in {"НЕ ВИЗНАЧЕНО", "НЕ ПРИЗНАЧЕНО"}:
+        return "Не визначено"
+    if not _table_exists(con, "authorized_officers"):
+        return raw
+    row = con.execute(
+        "SELECT full_name FROM authorized_officers WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?)",
+        (raw,)).fetchone()
+    if not row and _table_exists(con, "auth_users"):
+        row = con.execute("""SELECT o.full_name FROM auth_users u
+          JOIN authorized_officers o ON o.id=u.officer_id
+          WHERE LOWER(u.username)=LOWER(?)""", (raw,)).fetchone()
+    if not row:
+        return raw
+    parts = " ".join(str(row[0]).split()).split()
+    return " ".join([*(part.lower().capitalize() for part in parts[:-1]), parts[-1].upper()])
+
+
+def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
+    """UI-compatible current verification selection by literal supplier identity."""
+    codes = {str(code or "").strip() for code in supplier_codes if str(code or "").strip()}
+    candidates = {code: [] for code in codes}
+    admissions = {}
+    qualification_link = ("qualification_id" in _columns(con, "submissions")
+                          and _table_exists(con, "qualifications"))
+    qualification_join = "LEFT JOIN qualifications q ON q.id=s.qualification_id" if qualification_link else ""
+    qualification_date = ("NULLIF(q.decision_date,'')" if qualification_link
+                          and "decision_date" in _columns(con, "qualifications") else "NULL")
+    for batch in (list(sorted(codes))[i:i + 500] for i in range(0, len(codes), 500)):
+        placeholders = ",".join("?" for _ in batch)
+        for row in con.execute(f"""SELECT * FROM supplier_edr_verification_events
+          WHERE supplier_code IN ({placeholders})""", batch):
+            item = dict(row)
+            if normalized_date(item.get("occurred_at")):
+                candidates[item["supplier_code"]].append(item)
+        for row in con.execute(f"""SELECT supplier_code,edr_checked_at,edr_officer,synced_at
+          FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch):
+            checked = normalized_date(row["edr_checked_at"])
+            if checked:
+                candidates[row["supplier_code"]].append({
+                    "event_type": "google_clarity_profile", "occurred_at": checked,
+                    "officer": row["edr_officer"] or "", "source": "Google/Clarity profile snapshot",
+                    "created_at": row["synced_at"] or ""})
+        for row in con.execute(f"""SELECT s.supplier_code,s.id submission_id,
+          COALESCE(NULLIF(af.protocol_date,''),{qualification_date},
+                   NULLIF(s.date_published,'')) raw_date,
+          COALESCE(af.protocol_officer,'') officer
+          FROM submissions s JOIN application_fields af ON af.submission_id=s.id
+          {qualification_join}
+          WHERE af.protocol_decision='admit' AND s.supplier_code IN ({placeholders})""", batch):
+            code, checked = row["supplier_code"], normalized_date(row["raw_date"])
+            previous = admissions.get(code)
+            if checked and (not previous or (checked, row["submission_id"]) >
+                            (previous["occurred_at"], previous["submission_id"])):
+                admissions[code] = {"occurred_at": checked, "submission_id": row["submission_id"],
+                                    "officer": row["officer"] or ""}
+    result = {}
+    for code in codes:
+        admission = admissions.get(code)
+        if admission:
+            candidates[code].append({"event_type": "admission", "occurred_at": admission["occurred_at"],
+              "officer": admission["officer"], "source": "PQM application",
+              "created_at": admission["submission_id"]})
+        selected = max(candidates[code], key=_verification_event_sort_key) if candidates[code] else {}
+        raw_officer = str(selected.get("officer") or "").strip()
+        result[code] = {"verification_date": normalized_date(selected.get("occurred_at")),
+          "verification_officer": projected_verification_officer(con, raw_officer),
+          "verification_officer_raw": raw_officer,
+          "verification_event_type": selected.get("event_type", ""),
+          "verification_source": selected.get("source", ""),
+          "last_admission_date": admission["occurred_at"] if admission else "",
+          "selected_event": selected}
+    return result
+
+
+LEGACY_GOOGLE_FACTUAL_STATUSES = frozenset({
+    "Припинено", "В стані припинення", "Порушено справу про банкрутство", "Банкрут"})
+LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID = "1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww"
+
+
+def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) -> str:
+    """Accept only a complete, attributable Google date/officer/status evidence pair."""
+    status = clean(snapshot.get("factual_edr_status"))
+    if status not in LEGACY_GOOGLE_FACTUAL_STATUSES:
+        return ""
+    officer = normalize_person(item.get("officer"))
+    tab = str(item.get("source_sheet") or "")
+    try:
+        row = int(item.get("source_row") or 0)
+        snapshot_row = int(snapshot.get("source_row") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if (str(item.get("source") or "") != "legacy_google_registry" or
+        str(snapshot.get("source") or "") != "legacy_google_registry" or
+        normalized_date(snapshot.get("verification_date")) != checked_day or
+        not officer or normalize_person(snapshot.get("verification_officer")) != officer or
+        tab not in {"ФОП", "ЮО"} or snapshot.get("source_tab") != tab or
+        row < 2 or snapshot_row != row or
+        snapshot.get("factual_spreadsheet_id") != LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID or
+        snapshot.get("factual_source_tab") != tab or
+        type(snapshot.get("factual_source_row")) is not int or
+        snapshot["factual_source_row"] < 2 or
+        snapshot.get("factual_provenance_version") != 1 or
+        not re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("source_digest") or "")) or
+        not re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("factual_source_digest") or ""))):
+        return ""
+    return status
+
+
+def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
+    """Status-only read model for a currently active qualification.
+
+    Qualification activity supplies the default. Only a recorded EDR check
+    proven later than the active qualification can supersede it. Neither the
+    profile snapshot nor admission metadata is used to manufacture a check.
+    """
+    qualified_day = normalized_date(qualification_date)
+    checks = []
+    if qualified_day:
+        for item in ledger:
+            kind = str(item.get("event_type") or "")
+            if kind not in {"manual_edr", "google_clarity", "legacy_google_registry"}:
+                continue
+            checked_day = normalized_date(item.get("occurred_at"))
+            if not checked_day or checked_day <= qualified_day:
+                continue
+            try:
+                snapshot = json.loads(item.get("snapshot_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(snapshot, dict):
+                continue
+            if kind == "legacy_google_registry":
+                status = _legacy_google_factual_status(item, snapshot, checked_day)
+                if not status:
+                    continue  # I/L-only or invalid legacy evidence never changes E.
+                priority = 0  # Same-day independent manual/Clarity checks retain priority.
+            else:
+                status = clean(snapshot.get("edr_status"))
+                priority = 2 if kind == "manual_edr" else 1
+            if status:
+                checks.append((checked_day, priority, int(item.get("id") or 0), status))
+    return max(checks)[3] if checks else "Зареєстровано"
+
+
+def operational_edr_status(prozorro_status: str, qualification_date: str,
+                           ledger: list[dict], profile_status: str = "") -> str:
+    """Current operational status; persisted factual evidence stays untouched."""
+    if prozorro_status == "Активний":
+        return active_edr_status(qualification_date, ledger)
+    if prozorro_status in {"Неактивний", "Ще не в реєстрі"}:
+        return "Неактуально"
+    # The suspended-state rule is unchanged by the current business decision.
+    return str(profile_status or "")
+
+
+def active_qualification_dates(con) -> dict[str, str]:
+    """Latest dated effective qualification, using the shared activity predicate."""
+    dates = {}
+    for row in con.execute(f"""SELECT rc.supplier_code,q.decision_date
+      FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
+      LEFT JOIN qualifications q ON q.id=rc.qualification_id
+      WHERE {supplier_activity.effective_active_sql('rc', 'f')}"""):
+        qualified_day = normalized_date(row[1])
+        code = str(row[0] or "")
+        if qualified_day > dates.get(code, ""):
+            dates[code] = qualified_day
+    return dates
+
+
 def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
     """One shared four-state resolver for every supplier code in PQM."""
     requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}
@@ -698,6 +874,20 @@ def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
         result[code] = ("Активний" if code in active else "Призупинений" if code in suspended
                         else "Неактивний" if code in ever else "Ще не в реєстрі")
     return result
+
+
+def canonical_prozorro_statuses(con, supplier_codes) -> dict[str, str]:
+    """The same literal-code resolver for EDR monitoring and full-registry."""
+    codes = {str(code or "").strip() for code in supplier_codes if str(code or "").strip()}
+    statuses = prozorro_statuses(con)
+    active = supplier_activity.effective_active_sql("rc", "f")
+    activity = {str(row["supplier_code"] or "").strip(): bool(row["is_active"])
+      for row in con.execute(f"""SELECT rc.supplier_code,
+        MAX(CASE WHEN {active} THEN 1 ELSE 0 END) is_active
+        FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
+        WHERE TRIM(COALESCE(rc.supplier_code,''))<>'' GROUP BY rc.supplier_code""")}
+    return {code: statuses.get(code) or ("Активний" if activity.get(code) else "Неактивний")
+            for code in codes}
 
 
 def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None = None) -> dict[str, dict]:
@@ -784,8 +974,9 @@ def _insert_event(con, *, item: dict, event_type: str, occurred_at: str, officer
     cursor = con.execute("""INSERT OR IGNORE INTO supplier_edr_verification_events
       (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
        source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
-      VALUES (?,?,?,?,?,'',?,?,?,?,?,?)""",
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
       (item["supplier_code"], event_type, occurred_at, officer, source,
+       item.get("source_submission_id", ""),
        item.get("source_sheet", ""), int(item.get("source_row") or 0),
        json.dumps(changed_fields, ensure_ascii=False), digest, payload, created_at))
     return bool(cursor.rowcount)
@@ -804,12 +995,102 @@ def record_admission_event(con, submission_id: str, created_at: str) -> bool:
     occurred = normalized_date(row[1])
     if not occurred:
         return False
-    item = {"supplier_code": normalize_code(row[0]), "source_sheet": "", "source_row": 0}
+    item = {"supplier_code": normalize_code(row[0]), "source_submission_id": submission_id,
+            "source_sheet": "", "source_row": 0}
     snapshot = {"submission_id": submission_id, "decision": "admit",
                 "protocol_date": occurred, "officer": row[2] or ""}
     return _insert_event(con, item=item, event_type="admission", occurred_at=occurred,
       officer=row[2] or "", source="PQM application", changed_fields=["application_admission"],
       snapshot=snapshot, created_at=created_at)
+
+
+def materialize_effective_admission(con, contract_id: str, created_at: str) -> bool:
+    """Materialize a newly effective, protocol-proven admission in caller's transaction.
+
+    Existing active contracts are deliberately not replayed as a historical backfill.
+    The caller must invoke this only on an inactive/absent -> effective-active
+    contract transition after persisting the contract and qualification.
+    """
+    row = con.execute("""SELECT s.id submission_id,s.supplier_code,
+      af.protocol_number,af.protocol_date,af.protocol_officer,
+      af.protocol_decision,af.marketplace_decision,af.generated_protocol_number,
+      af.generated_protocol_date,af.generated_protocol_decision,af.protocol_generated_at,
+      p.protocol_number confirmed_number,p.protocol_date confirmed_date,
+      p.officer confirmed_officer
+      FROM registry_contracts rc JOIN frameworks f ON f.id=rc.framework_id
+      JOIN qualifications q ON q.id=rc.qualification_id
+      JOIN submissions s ON s.id=q.submission_id AND s.framework_id=rc.framework_id
+      JOIN application_fields af ON af.submission_id=s.id
+      JOIN formed_protocol_members m ON m.submission_id=s.id AND m.active=1
+      JOIN formed_protocols p ON p.id=m.protocol_id AND p.status='active'
+      WHERE rc.id=? AND rc.status='active' AND LOWER(COALESCE(f.status,''))='active'
+        AND q.status='active' AND rc.supplier_code=s.supplier_code
+        AND (COALESCE(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),'')=''
+          OR date(substr(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),1,10))>=date('now'))""",
+      (contract_id,)).fetchone()
+    if not row or not row["supplier_code"] or not row["protocol_number"]:
+        return False
+    submission_id = row["submission_id"]
+    # Historical MedData is not part of the future-admission workflow.
+    import historical_applications
+    if historical_applications.provenance(submission_id):
+        return False
+    protocol_day = normalized_date(row["protocol_date"])
+    officer = clean(row["confirmed_officer"])
+    if not (protocol_day and officer and officer == clean(row["protocol_officer"])
+            and row["protocol_decision"] == "admit"
+            and row["marketplace_decision"] == "admit"
+            and row["protocol_generated_at"]
+            and row["generated_protocol_decision"] == "admit"
+            and row["generated_protocol_number"] == row["protocol_number"]
+            and row["confirmed_number"] == row["protocol_number"]
+            and normalized_date(row["confirmed_date"]) == protocol_day
+            and normalized_date(row["generated_protocol_date"]) == protocol_day):
+        return False
+    code = row["supplier_code"]
+    profile = con.execute("""SELECT edr_status,edr_checked_at FROM supplier_edr_profiles
+      WHERE supplier_code=?""", (code,)).fetchone()
+    # Effective admission supersedes earlier EDR status evidence. Only a
+    # contradictory status observed after the protocol date can block it.
+    if profile:
+        prior_status = clean(profile["edr_status"])
+        prior_day = normalized_date(profile["edr_checked_at"])
+        if (prior_status not in ("", "Зареєстровано")
+                and prior_day > protocol_day):
+            return False
+        if prior_status == "Зареєстровано" and prior_day > protocol_day:
+            return False
+    newer = con.execute("""SELECT occurred_at,snapshot_json FROM supplier_edr_verification_events
+      WHERE supplier_code=? AND event_type IN ('manual_edr','google_clarity','google_clarity_profile')
+        AND substr(occurred_at,1,10)>?""", (code, protocol_day)).fetchall()
+    for evidence in newer:
+        try:
+            snapshot = json.loads(evidence["snapshot_json"] or "{}")
+        except (TypeError, ValueError):
+            return False  # malformed newer authoritative evidence: fail closed
+        if not isinstance(snapshot, dict):
+            return False
+        evidence_status = clean(snapshot.get("edr_status"))
+        if evidence_status and evidence_status != "Зареєстровано":
+            return False
+    if profile and clean(profile["edr_status"]) == "Зареєстровано" and normalized_date(profile["edr_checked_at"]) == protocol_day:
+        return False
+    item = {"supplier_code": code, "source_submission_id": submission_id,
+            "source_sheet": "", "source_row": 0}
+    snapshot = {"submission_id": submission_id, "decision": "admit",
+                "protocol_date": protocol_day, "officer": officer,
+                "edr_status": "Зареєстровано"}
+    _insert_event(con, item=item, event_type="admission", occurred_at=protocol_day,
+                  officer=officer, source="PQM effective admission",
+                  changed_fields=["edr_status", "verification_date", "verification_officer"],
+                  snapshot=snapshot, created_at=created_at)
+    con.execute("""INSERT INTO supplier_edr_profiles
+      (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
+      VALUES (?,?,?,?,?) ON CONFLICT(supplier_code) DO UPDATE SET
+      edr_status=excluded.edr_status,edr_checked_at=excluded.edr_checked_at,
+      edr_officer=excluded.edr_officer,synced_at=excluded.synced_at""",
+      (code, "Зареєстровано", protocol_day, officer, created_at))
+    return True
 
 
 def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, actor: str,
