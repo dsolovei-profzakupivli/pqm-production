@@ -37,6 +37,7 @@ def open_read_only(path):
     uri = Path(path).resolve().as_uri() + "?mode=ro"
     con = sqlite3.connect(uri, uri=True, timeout=30)
     con.row_factory = sqlite3.Row
+    edr_sync_v2.register_verification_sql_functions(con)
     con.execute("PRAGMA query_only=ON")
     return con
 

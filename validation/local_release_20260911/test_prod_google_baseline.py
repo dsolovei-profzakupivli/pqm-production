@@ -10,10 +10,44 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import prod_google_baseline as baseline
+import edr_sync_v2
 import server
 
 
 class ProdGoogleBaselineTests(unittest.TestCase):
+    def test_read_only_connection_runs_real_verification_officer_projection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "projection.sqlite3"
+            with closing(sqlite3.connect(path)) as setup:
+                setup.executescript("""
+                  CREATE TABLE supplier_edr_verification_events(
+                    id INTEGER PRIMARY KEY, supplier_code TEXT, event_type TEXT,
+                    occurred_at TEXT, officer TEXT);
+                  CREATE TABLE supplier_edr_profiles(
+                    supplier_code TEXT, edr_checked_at TEXT, edr_officer TEXT, synced_at TEXT);
+                  CREATE TABLE submissions(
+                    id INTEGER PRIMARY KEY, supplier_code TEXT, date_published TEXT);
+                  CREATE TABLE application_fields(
+                    submission_id INTEGER, protocol_date TEXT, protocol_officer TEXT,
+                    protocol_decision TEXT);
+                  CREATE TABLE authorized_officers(full_name TEXT);
+                  INSERT INTO authorized_officers VALUES ('Sample OFFICER');
+                  INSERT INTO supplier_edr_verification_events
+                    (supplier_code,event_type,occurred_at,officer)
+                    VALUES ('001','legacy_google_registry','2026-09-04','sample officer');
+                """)
+                setup.commit()
+            with closing(baseline.open_read_only(path)) as readonly:
+                self.assertEqual(readonly.execute("PRAGMA query_only").fetchone()[0], 1)
+                self.assertEqual(readonly.total_changes, 0)
+                self.assertEqual(readonly.execute(
+                    "SELECT NORMALIZE_NAME('Sample OFFICER')").fetchone()[0],
+                    "sample officer")
+                projection = edr_sync_v2.current_verification_projections(readonly, ["001"])
+                self.assertEqual(projection["001"]["verification_date"], "2026-09-04")
+                self.assertEqual(projection["001"]["verification_officer"], "Sample OFFICER")
+                self.assertEqual(readonly.total_changes, 0)
+
     def row(self, **changes):
         value = dict(supplier_code="001", source_tab="ФОП", source_row=2,
                      e="Припинено", g="Decision", i="2026-09-04", j="2026-09-02",
