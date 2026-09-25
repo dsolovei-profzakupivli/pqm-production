@@ -54,6 +54,26 @@ class FullSupplierRegistryTests(unittest.TestCase):
 
     def items(self):return {x['supplier_code']:x for x in integration.full_registry(self.con)['items']}
 
+    def test_google_sync_requires_decision_and_pending_followup_does_not_advance_h(self):
+        first = self.add('00000081', 'FIRST', '2026-09-20', source='ЮО')
+        pending = self.items()['00000081']
+        self.assertFalse(pending['google_sync_eligible'])
+        self.assertIsNone(pending['google_sync_last_decided_application_date'])
+        self.con.execute("UPDATE application_fields SET protocol_decision='reject' WHERE submission_id=?", (first,))
+        decided = self.items()['00000081']
+        self.assertTrue(decided['google_sync_eligible'])
+        self.assertEqual(decided['google_sync_last_decided_application_date'], '2026-09-20')
+        self.add('00000081', 'FOLLOWUP', '2026-09-25', source='ЮО')
+        followup = self.items()['00000081']
+        self.assertTrue(followup['google_sync_eligible'])
+        self.assertEqual(followup['last_application_date'], '2026-09-25')
+        self.assertEqual(followup['google_sync_last_decided_application_date'], '2026-09-20')
+        self.assertEqual(followup['prozorro_status_google'], decided['prozorro_status_google'])
+        later = self.add('00000081', 'SECOND DECISION', '2026-09-27', source='ЮО')
+        self.con.execute("UPDATE application_fields SET protocol_decision='admit' WHERE submission_id=?", (later,))
+        self.assertEqual(self.items()['00000081']['google_sync_last_decided_application_date'],
+                         '2026-09-27')
+
     def test_monitoring_population_shared_with_register(self):
         active = self.add('00000001','ACTIVE','2026-01-01',contract='active')
         pending = self.add('00000002','PENDING','2026-01-02')

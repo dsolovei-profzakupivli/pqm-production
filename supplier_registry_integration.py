@@ -97,6 +97,7 @@ def _build_full_registry(con):
     """One stable scalar row per non-empty supplier identifier ever submitted."""
     latest = {}
     approved = {}
+    decided = {}
     for raw in con.execute("""SELECT s.id,s.supplier_code,s.supplier_name,s.date_published,s.synced_at,
       NULLIF(TRIM(json_extract(s.raw_json,'$.tenderers[0].identifier.scheme')),'') identifier_scheme,
       NULLIF(TRIM(af.manager_name),'') application_manager_name,
@@ -120,6 +121,14 @@ def _build_full_registry(con):
       ORDER BY s.date_published DESC,s.id DESC"""):
         row = dict(raw); code = str(row["supplier_code"] or "").strip()
         approved.setdefault(code, row)
+    for raw in con.execute("""SELECT s.id,s.supplier_code,s.date_published
+      FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
+      LEFT JOIN qualifications q ON q.submission_id=s.id
+      WHERE (af.protocol_decision IN ('admit','reject') OR q.status IN ('active','unsuccessful'))
+        AND TRIM(COALESCE(s.supplier_code,''))<>''
+      ORDER BY s.date_published DESC,s.id DESC"""):
+        row = dict(raw); code = str(row["supplier_code"] or "").strip()
+        decided.setdefault(code, row)
     summaries = {str(row["supplier_code"] or "").strip(): dict(row) for row in con.execute(
         "SELECT supplier_code,supplier_name FROM supplier_registry_summary")}
     profile_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_edr_profiles)")}
@@ -197,9 +206,12 @@ def _build_full_registry(con):
                 canonical_status, qualification_dates.get(code, ""),
                 factual_edr_events.get(code, []), str(profile.get("edr_status") or "")),
             "monitoring_eligible": code in monitoring_codes,
+            "google_sync_eligible": code in decided,
             "freshness_marker": edr_sync_v2.marker_for_status(
                 canonical_status, verification["verification_date"]),
             "last_application_date": str(application.get("date_published") or "")[:10] or None,
+            "google_sync_last_decided_application_date": (
+                str(decided.get(code, {}).get("date_published") or "")[:10] or None),
             "last_approved_application_date": str(acceptance.get("date_published") or "")[:10] if acceptance else None,
             "last_approved_application_uo": (str(acceptance.get("protocol_officer") or "").strip()
               if acceptance else "") or "НЕ ВИЗНАЧЕНО",

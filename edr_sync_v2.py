@@ -177,7 +177,9 @@ def source_item(row: dict) -> dict:
         "full_name": str(row.get("Повна назва з ЄДР") or "").strip(),
         "short_name": str(row.get("Скорочена назва з ЄДР") or "").strip(),
         "manager_name": str(row.get("ПІБ для перевірки") or "").strip(),
-        "edr_status": str(row.get("Статус в реєстрі (ЄДР)") or "").strip(),
+        # This Google-owned placeholder is not factual EDR evidence.
+        "edr_status": ("" if clean(row.get("Статус в реєстрі (ЄДР)")) == "Немає інформації"
+                       else clean(row.get("Статус в реєстрі (ЄДР)"))),
         "edr_checked_at": normalized_date(row.get("Дата перевірки")),
         "termination_decision_details": str(row.get("Реквізити рішення про припинення") or "").strip(),
         "termination_record_date": normalized_date(row.get("Дата запису")),
@@ -517,6 +519,28 @@ def _same(field: str, old, new) -> bool:
     return str(old or "").strip() == str(new or "").strip()
 
 
+def _protected_factual_at_or_after(ledger: list[dict], day: str) -> str:
+    """A controlled factual observation cannot be displaced by an older/same-day one."""
+    if not day:
+        return ""
+    protected = []
+    for event in ledger:
+        if event.get("event_type") != "legacy_google_registry":
+            continue
+        event_day = normalized_date(event.get("occurred_at"))
+        if not event_day or event_day < day:
+            continue
+        try:
+            evidence = json.loads(event.get("snapshot_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(evidence, dict):
+            status = _legacy_google_factual_status(event, evidence, event_day)
+            if status:
+                protected.append((event_day, int(event.get("id") or 0), status))
+    return max(protected)[2] if protected else ""
+
+
 def build_preview(con, snapshot: dict) -> dict:
     """Return a factual field-level diff without issuing any SQL write."""
     rows = snapshot["rows"]
@@ -528,6 +552,14 @@ def build_preview(con, snapshot: dict) -> dict:
     manager_evidence = _manager_identity_evidence(con)
     applications = _latest_application_names(con)
     existing = _existing_codes(con)
+    codes = {normalize_code(row.get("supplier_code")) for row in rows}
+    verifications = current_verification_projections(con, codes)
+    ledger = {}
+    for batch in (list(sorted(codes))[i:i + 500] for i in range(0, len(codes), 500)):
+        if batch:
+            placeholders = ",".join("?" for _ in batch)
+            for event in con.execute(f"SELECT * FROM supplier_edr_verification_events WHERE supplier_code IN ({placeholders})", batch):
+                ledger.setdefault(event["supplier_code"], []).append(dict(event))
     occurrences = {}
     for row in rows:
         code = normalize_code(row.get("supplier_code"))
@@ -540,7 +572,11 @@ def build_preview(con, snapshot: dict) -> dict:
         "manager_reestablishments", "newly_established_managers", "manager_removals",
         "edr_status_changes", "full_name_changes", "short_name_changes",
         "current_supplier_name_changes", "verification_event_changes",
-        "termination_changes", "conflicts",
+        "termination_changes", "conflicts", "newer_verification_accepted",
+        "initial_verification_accepted", "same_date_same_officer_equivalent",
+        "same_date_officer_update_accepted", "older_verification_preserved",
+        "blank_verification_preserved", "factual_status_protected",
+        "google_mirror_updates", "google_mirror_clears",
     )}
     summary["total_rows"] = len(rows)
     items, conflicts = [], []
@@ -557,10 +593,30 @@ def build_preview(con, snapshot: dict) -> dict:
         legacy = bool(code and code not in eligible)
         if legacy: summary["legacy_ineligible"] += 1
         old = profiles.get(code, {})
+        current = verifications.get(code, {})
+        incoming_day = incoming["edr_checked_at"]
+        current_day = current.get("verification_date", "")
+        current_officer = current.get("verification_officer_raw", "")
+        if not incoming_day:
+            verification_decision = "blank_verification_preserved"
+        elif current_day and incoming_day < current_day:
+            verification_decision = "older_verification_preserved"
+        elif current_day and incoming_day == current_day:
+            verification_decision = ("same_date_same_officer_equivalent"
+                if normalize_person(incoming["edr_officer"]) == normalize_person(current_officer)
+                else "same_date_officer_update_accepted")
+        else:
+            verification_decision = "newer_verification_accepted" if current_day else "initial_verification_accepted"
+        older = verification_decision == "older_verification_preserved"
+        protected_status = _protected_factual_at_or_after(ledger.get(code, []), incoming_day)
+        status_protected = bool(incoming["edr_status"] and protected_status
+                                and incoming["edr_status"] != protected_status)
+        summary[verification_decision] += 1
+        summary["factual_status_protected"] += int(status_protected)
         current_manager = managers.get(code, {}).get("manager_name") or ""
         changes = []
         manager_classification = {"kind": "same", "conflicting_evidence": []}
-        if incoming["manager_name"]:
+        if incoming["manager_name"] and not older:
             manager_classification = classify_manager_transition(
                 managers.get(code, {}), known_managers.get(code, {}), incoming["manager_name"],
                 manager_evidence.get(code, ()), manager_history.get(code, ()))
@@ -577,43 +633,52 @@ def build_preview(con, snapshot: dict) -> dict:
                 else:
                     summary["manager_identity_changes"] += 1
                     summary["manager_changes"] += 1
-        if incoming["edr_status"] and not _same("edr_status", old.get("edr_status"), incoming["edr_status"]):
+        if incoming["edr_status"] and not older and not status_protected and not _same("edr_status", old.get("edr_status"), incoming["edr_status"]):
             changes.append("edr_status"); summary["edr_status_changes"] += 1
-        if incoming["full_name"] and not _same("full_name", old.get("full_name"), incoming["full_name"]):
+        if incoming["full_name"] and not older and not _same("full_name", old.get("full_name"), incoming["full_name"]):
             changes.append("full_name"); summary["full_name_changes"] += 1
-        if incoming["short_name"] and not _same("short_name", old.get("short_name"), incoming["short_name"]):
+        if incoming["short_name"] and not older and not _same("short_name", old.get("short_name"), incoming["short_name"]):
             changes.append("short_name"); summary["short_name_changes"] += 1
         old_current_name = current_supplier_name(old.get("full_name"), applications.get(code))
-        new_current_name = current_supplier_name(incoming["full_name"] or old.get("full_name"), applications.get(code))
+        new_current_name = current_supplier_name((incoming["full_name"] if not older else "") or old.get("full_name"), applications.get(code))
         if old_current_name != new_current_name:
             summary["current_supplier_name_changes"] += 1
-        explicit_clear = (
-            edr_status_kind(old.get("edr_status")) == "termination"
-            and edr_status_kind(incoming["edr_status"]) == "registered"
-            and not incoming["termination_decision_details"]
-            and not incoming["termination_record_date"]
-            and not incoming["termination_record_number"]
-        )
         termination_fields = ("termination_decision_details", "termination_record_date", "termination_record_number")
+        explicit_clear = any(old.get(field) and not incoming[field] for field in termination_fields)
         termination_field_changes = [field for field in termination_fields
-            if (explicit_clear and bool(str(old.get(field) or "").strip()))
-            or (not explicit_clear and incoming[field] and not _same(field, old.get(field), incoming[field]))]
+            if not _same(field, old.get(field), incoming[field])]
         termination_changed = bool(termination_field_changes)
         if termination_changed:
             changes.extend(field for field in termination_field_changes if field not in changes)
             summary["termination_changes"] += 1
+        if not _same("edr_notes", old.get("edr_notes"), incoming["edr_notes"]):
+            changes.append("edr_notes")
+        mirror_fields = (*termination_fields, "edr_notes")
+        summary["google_mirror_updates"] += sum(1 for field in mirror_fields
+            if not _same(field, old.get(field), incoming[field]) and incoming[field])
+        summary["google_mirror_clears"] += sum(1 for field in mirror_fields
+            if not _same(field, old.get(field), incoming[field]) and not incoming[field])
         snapshot_hash = row_snapshot_hash(incoming)
-        event_changed = bool(incoming["edr_checked_at"] and incoming["edr_officer"]
+        pair_accepted = verification_decision in {"newer_verification_accepted", "initial_verification_accepted",
+                                                  "same_date_officer_update_accepted"}
+        same_day_status_evidence = (verification_decision == "same_date_same_officer_equivalent"
+            and not protected_status and incoming["edr_status"]
+            and (not _same("edr_status", old.get("edr_status"), incoming["edr_status"])
+                 or incoming["edr_status"] in LEGACY_GOOGLE_FACTUAL_STATUSES))
+        event_changed = bool((pair_accepted or same_day_status_evidence)
+                             and incoming["edr_checked_at"] and incoming["edr_officer"]
                              and not _event_exists(con, code, snapshot_hash))
         if event_changed:
             summary["verification_event_changes"] += 1
-        actionable = bool(changes or event_changed)
-        if actionable and not incoming["edr_checked_at"]:
+        evidence_changes = any(field not in (*termination_fields, "edr_notes") for field in changes) or event_changed
+        if evidence_changes and not incoming["edr_checked_at"]:
             row_conflicts.append("changed_values_without_verification_date")
-        if actionable and not incoming["edr_officer"]:
+        if evidence_changes and not incoming["edr_officer"]:
             row_conflicts.append("changed_values_without_officer")
         if str(raw.get("Дата перевірки") or "").strip() and not incoming["edr_checked_at"]:
             row_conflicts.append("malformed_verification_date")
+        if str(raw.get("Дата запису") or "").strip() and not incoming["termination_record_date"]:
+            row_conflicts.append("malformed_termination_record_date")
         if row_conflicts:
             conflicts.append({"supplier_code": code, "source_sheet": incoming["source_sheet"],
                               "source_row": incoming["source_row"], "reasons": sorted(set(row_conflicts))})
@@ -629,6 +694,10 @@ def build_preview(con, snapshot: dict) -> dict:
                       "manager_resolution_source": known_managers.get(code, {}).get("resolution_source", ""),
                       "manager_conflicting_evidence": manager_classification["conflicting_evidence"],
                       "termination_explicit_clear": explicit_clear, "snapshot_hash": snapshot_hash,
+                      "verification_decision": verification_decision,
+                      "current_verification_date": current_day,
+                      "current_verification_officer": current_officer,
+                      "factual_status_protected": status_protected,
                       "conflicts": sorted(set(row_conflicts)), "incoming": incoming})
     summary["conflicts"] = len(conflicts)
     return {"source_fingerprint": snapshot["source_fingerprint"], "summary": summary,
@@ -680,6 +749,14 @@ def _verification_event_sort_key(item: dict) -> tuple:
     event_type = str(item.get("event_type") or "")
     priority = {"admission": 1, "google_clarity_profile": 2, "google_clarity": 3,
                 "manual_edr": 4}.get(event_type, 2)
+    if event_type == "google_clarity":
+        try:
+            evidence = json.loads(item.get("snapshot_json") or "{}")
+        except (TypeError, ValueError):
+            evidence = {}
+        if (isinstance(evidence, dict) and evidence.get("same_day_officer_update") is True
+                and str(item.get("source") or "").startswith("Google Sheets: ")):
+            priority = 5
     return (normalized_date(item.get("occurred_at")), priority, int(item.get("id") or 0))
 
 
@@ -827,11 +904,11 @@ def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
                 status = _legacy_google_factual_status(item, snapshot, checked_day)
                 if not status:
                     continue  # I/L-only or invalid legacy evidence never changes E.
-                priority = 0  # Same-day independent manual/Clarity checks retain priority.
+                priority = 3  # Controlled factual evidence wins an ordinary same-day check.
             else:
                 status = clean(snapshot.get("edr_status"))
                 priority = 2 if kind == "manual_edr" else 1
-            if status:
+            if status and status != "Немає інформації":
                 checks.append((checked_day, priority, int(item.get("id") or 0), status))
     return max(checks)[3] if checks else "Зареєстровано"
 
@@ -1155,8 +1232,16 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                       "termination_decision_details", "termination_record_date",
                       "termination_record_number", "edr_officer", "edr_notes"):
             value = item.get(field, "")
-            if field.startswith("termination_") and plan["termination_explicit_clear"]:
-                effective[field] = ""
+            if field in {"termination_decision_details", "termination_record_date",
+                         "termination_record_number", "edr_notes"}:
+                effective[field] = value  # All four Google-owned fields are a full mirror.
+            elif field in {"edr_checked_at", "edr_officer"} and plan["verification_decision"] == "older_verification_preserved":
+                effective[field] = (plan["current_verification_date"] if field == "edr_checked_at"
+                                    else plan["current_verification_officer"])
+            elif field in {"full_name", "short_name", "manager_name", "edr_status"} and (
+                    plan["verification_decision"] == "older_verification_preserved" or
+                    (field == "edr_status" and plan["factual_status_protected"])):
+                effective[field] = old.get(field, "")
             else:
                 effective[field] = value if str(value or "").strip() else old.get(field, "")
         if not existing:
@@ -1185,6 +1270,10 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
             # Hash/store the same source observation preview checked, not profile
             # fallback values (which may differ when the source cell is blank).
             event_snapshot = dict(item)
+            if plan["verification_decision"] == "same_date_officer_update_accepted":
+                event_snapshot["same_day_officer_update"] = True
+            if plan["factual_status_protected"]:
+                event_snapshot["edr_status"] = ""  # The same-day event carries I/L only.
             counts["verification_events"] += int(_insert_event(
                 con, item=item, event_type="google_clarity", occurred_at=item["edr_checked_at"],
                 officer=item["edr_officer"], source=f"Google Sheets: {item['source_sheet']}",
