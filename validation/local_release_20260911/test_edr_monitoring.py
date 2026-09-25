@@ -1,13 +1,104 @@
 import unittest
 import csv
 import io
+import os
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import server
+import edr_sync_v2
 
 
 class EdrMonitoringTests(unittest.TestCase):
+    def test_active_qualification_defaults_to_registered_without_newer_check(self):
+        for old in ('', 'Неактуально', 'Немає інформації'):
+            with self.subTest(old=old):
+                self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', []), 'Зареєстровано')
+        self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Зареєстровано')
+
+    def test_sandbox_active_blank_metadata_regression_cases(self):
+        # These are synthetic reproductions of the reported SANDBOX rows, not live DB assertions.
+        for supplier_code, active_qualifications, last_application in (
+            ('3467208370', 23, ''),
+            ('46244393', 4, '2026-09-22'),
+        ):
+            with self.subTest(supplier_code=supplier_code):
+                self.assertGreater(active_qualifications, 0)
+                self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Зареєстровано')
+                source = Path('server.py').read_text(encoding='utf-8')
+                projection = source.split('def _edr_monitoring_rows()', 1)[1].split('def _edr_monitoring_dk_map()', 1)[0]
+                self.assertIn('"verification_date": checked', projection)
+                self.assertNotIn('verification_date": latest_application_date', projection)
+
+    def test_later_authoritative_edr_overrides_admission(self):
+        event = {'event_type': 'manual_edr', 'occurred_at': '2026-09-02',
+            'officer': 'EDR Officer', 'snapshot_json': '{"edr_status":"Припинено"}'}
+        self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', [event]), 'Припинено')
+        self.assertEqual(edr_sync_v2.active_edr_status('2026-09-03', [event]), 'Зареєстровано')
+
+    def test_legacy_factual_evidence_requires_configured_spreadsheet_and_provenance(self):
+        digest = 'a' * 64
+        for configured in ('sandbox-registry', 'prod-registry'):
+            with self.subTest(configured=configured):
+                snapshot = {
+                    'source': 'legacy_google_registry', 'verification_date': '2026-09-02',
+                    'verification_officer': 'Actual Officer', 'source_tab': 'ФОП',
+                    'source_row': 12, 'source_digest': digest,
+                    'factual_edr_status': 'Припинено',
+                    'factual_spreadsheet_id': configured,
+                    'factual_source_tab': 'ФОП', 'factual_source_row': 12,
+                    'factual_source_digest': digest, 'factual_provenance_version': 1,
+                }
+                event = {'id': 1, 'event_type': 'legacy_google_registry',
+                         'source': 'legacy_google_registry', 'occurred_at': '2026-09-02',
+                         'officer': 'Actual Officer', 'source_sheet': 'ФОП',
+                         'source_row': 12, 'snapshot_json': json.dumps(snapshot)}
+                def projected():
+                    return edr_sync_v2.active_edr_status('2026-09-01', [event])
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': configured}):
+                    for status in edr_sync_v2.LEGACY_GOOGLE_FACTUAL_STATUSES:
+                        snapshot['factual_edr_status'] = status
+                        event['snapshot_json'] = json.dumps(snapshot)
+                        self.assertEqual(projected(), status)
+                    snapshot['factual_edr_status'] = 'Зареєстровано'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_edr_status'] = 'Неактуально'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_edr_status'] = 'Припинено'
+                    snapshot['factual_source_digest'] = ''
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_source_digest'] = digest
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    event['event_type'] = 'manual_edr'
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    event['event_type'] = 'legacy_google_registry'
+                    snapshot.pop('factual_edr_status')
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_edr_status'] = 'Припинено'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': 'wrong-registry'}):
+                    self.assertEqual(projected(), 'Зареєстровано')
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': ''}):
+                    self.assertEqual(projected(), 'Зареєстровано')
+
+    def test_current_operational_edr_status_preserves_historical_evidence(self):
+        later = {'event_type': 'manual_edr', 'occurred_at': '2026-09-03',
+                 'snapshot_json': '{"edr_status":"Припинено"}'}
+        self.assertEqual(edr_sync_v2.operational_edr_status(
+            'Активний','2026-09-02',[],'Припинено'),'Зареєстровано')
+        self.assertEqual(edr_sync_v2.operational_edr_status(
+            'Активний','2026-09-02',[later],'Зареєстровано'),'Припинено')
+        for status in ('Неактивний','Ще не в реєстрі'):
+            with self.subTest(status=status):
+                self.assertEqual(edr_sync_v2.operational_edr_status(
+                    status,'2026-09-02',[later],'Припинено'),'Неактуально')
+                self.assertEqual(edr_sync_v2.freshness_state(status,'')['marker'],'🟣 Неактуально')
+
     def test_google_note_search_sort_and_filtered_export_population(self):
         rows = [dict(self.rows()[0], google_note='Zulu unique note'),
                 dict(self.rows()[1], google_note='Alpha unique note')]

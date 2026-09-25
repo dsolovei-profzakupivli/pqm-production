@@ -86,6 +86,17 @@ from uo_work_queue import get_uo_work_queue
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
 SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
+GOOGLE_MIGRATION_DISABLED_PATHS = frozenset({
+    "/api/integrations/google/verification-events/preview",
+    "/api/integrations/google/verification-events/apply",
+    "/api/integrations/google/verification-events/overlap-audit",
+    "/api/integrations/google/factual-edr/audit",
+    "/api/integrations/google/factual-edr/preview",
+    "/api/integrations/google/factual-edr/apply",
+    "/api/integrations/google/termination-notes/audit",
+    "/api/integrations/google/termination-notes/preview",
+    "/api/integrations/google/termination-notes/apply",
+})
 
 
 def configure_file_logging() -> logging.Logger:
@@ -541,26 +552,8 @@ def canonical_officer_identity(con, username: str, officer_id=None) -> str:
 
 
 def projected_officer_name(con, value: str) -> str:
-    """Presentation-only officer resolver backed by the authorized directory.
-
-    Raw audit values are never rewritten.  A value is formatted only when it can
-    be resolved to a known officer name or login; otherwise it is returned as-is
-    so an unmapped identity stays visible for audit instead of being guessed.
-    """
-    raw = " ".join(str(value or "").split())
-    if not raw:
-        return ""
-    if normalized_officer_name(raw) in {"НЕ ВИЗНАЧЕНО", "НЕ ПРИЗНАЧЕНО"}:
-        return "Не визначено"
-    row = con.execute(
-        "SELECT full_name FROM authorized_officers WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?)",
-        (raw,),
-    ).fetchone()
-    if not row:
-        row = con.execute("""SELECT o.full_name FROM auth_users u
-          JOIN authorized_officers o ON o.id=u.officer_id
-          WHERE LOWER(u.username)=LOWER(?)""", (raw,)).fetchone()
-    return formatted_officer_name(row[0]) if row else raw
+    """Compatibility wrapper for the shared EDR verification presentation."""
+    return edr_sync_v2.projected_verification_officer(con, value)
 SYNC_STATE = {"running": False, "message": "Синхронізацію ще не запускали", "updated_at": None,
               "started_at": None, "next_run_at": None, "mode": None, "duration_seconds": None,
               "last_completed_at": None, "last_result": None, "last_message": None, "last_mode": None}
@@ -1729,6 +1722,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
         raise ValueError("Відбір не належить організатору 40996564")
     submission_count = qualification_count = contract_count = 0
     experience_submission_ids = []
+    newly_active_qualification_ids = set()
     with db() as con:
         submissions_cursor = resource_cursor(framework_id, "submissions") if incremental else None
         for batch in scoped_pages(framework_id, "submissions", submissions_cursor):
@@ -1811,6 +1805,8 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
         qualifications_cursor = resource_cursor(framework_id, "qualifications") if incremental else None
         for batch in scoped_pages(framework_id, "qualifications", qualifications_cursor):
             for item in batch:
+                previous_qualification = con.execute(
+                    "SELECT status FROM qualifications WHERE id=?", (item["id"],)).fetchone()
                 con.execute("""INSERT INTO qualifications
                   (id,framework_id,submission_id,status,decision_date,documents_json,raw_json,synced_at)
                   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -1820,6 +1816,9 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                   (item["id"], framework_id, item.get("submissionID", ""), item.get("status", ""),
                    item.get("dateModified") or item.get("date", ""),
                    json.dumps(item.get("documents", []), ensure_ascii=False), json.dumps(item, ensure_ascii=False), now_iso()))
+                if (item.get("status") == "active" and
+                        (previous_qualification is None or previous_qualification[0] != "active")):
+                    newly_active_qualification_ids.add(item["id"])
                 qualification_count += 1
         agreement_id = framework.get("agreementID", "")
         if agreement_id:
@@ -1827,6 +1826,9 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
             for batch in paginated_pages(f"{API_ROOT}/agreements/{agreement_id}/contracts", contracts_cursor):
                 for item in batch:
                     supplier = (item.get("suppliers") or [{}])[0]
+                    previous_contract = con.execute(
+                        "SELECT status,qualification_id FROM registry_contracts WHERE id=?",
+                        (item["id"],)).fetchone()
                     con.execute("""INSERT INTO registry_contracts
                       (id,framework_id,qualification_id,supplier_code,status,milestones_json,raw_json,synced_at)
                       VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -1838,7 +1840,16 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                        supplier.get("identifier", {}).get("id", ""), item.get("status", ""),
                        json.dumps(item.get("milestones", []), ensure_ascii=False),
                        json.dumps(item, ensure_ascii=False), now_iso()))
+                    if (item.get("status") == "active" and
+                            (previous_contract is None or previous_contract[0] != "active" or
+                             previous_contract[1] != item.get("qualificationID", ""))):
+                        edr_sync_v2.materialize_effective_admission(con, item["id"], now_iso())
                     contract_count += 1
+        for qualification_id in newly_active_qualification_ids:
+            for contract in con.execute(
+                    "SELECT id FROM registry_contracts WHERE qualification_id=? AND status='active'",
+                    (qualification_id,)).fetchall():
+                edr_sync_v2.materialize_effective_admission(con, contract[0], now_iso())
     enqueue_contract_experience_search(experience_submission_ids)
     return {"framework": framework.get("prettyID"), "submissions": submission_count, "qualifications": qualification_count, "contracts": contract_count}
 
@@ -4682,18 +4693,7 @@ def _edr_monitoring_rows() -> list[dict]:
                   COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC) rank
               FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
               WHERE s.supplier_code<>'') WHERE rank=1""")}
-            admissions = {}
-            for raw in con.execute("""SELECT s.supplier_code,s.id submission_id,
-              COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),NULLIF(s.date_published,'')) raw_date,
-              COALESCE(af.protocol_officer,'') officer
-              FROM submissions s JOIN application_fields af ON af.submission_id=s.id
-              LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE af.protocol_decision='admit'"""):
-                item = dict(raw); item["occurred_at"] = edr_sync_v2.normalized_date(item["raw_date"])
-                previous = admissions.get(item["supplier_code"])
-                if item["occurred_at"] and (not previous or
-                    (item["occurred_at"], item["submission_id"]) >
-                    (previous["occurred_at"], previous["submission_id"])):
-                    admissions[item["supplier_code"]] = item
+            active_qualification_dates = edr_sync_v2.active_qualification_dates(con)
             managers = {row["supplier_code"]: row["manager_name"] for row in con.execute("""SELECT supplier_code,manager_name FROM (
               SELECT supplier_code,manager_name,ROW_NUMBER() OVER(PARTITION BY supplier_code ORDER BY
                 COALESCE(updated_at,created_at,'') DESC,id DESC) rank FROM supplier_managers
@@ -4707,42 +4707,34 @@ def _edr_monitoring_rows() -> list[dict]:
               JOIN application_fields af ON af.submission_id=s.id
               WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')""")}
             population = edr_sync_v2.monitoring_population_codes(con)
+            verifications = edr_sync_v2.current_verification_projections(con, population)
+            canonical_statuses = edr_sync_v2.canonical_prozorro_statuses(con, population)
             rows = []
             for code in population:
                 profile, reg, application = profiles.get(code, {}), registry.get(code, {}), latest_app.get(code, {})
-                admission = admissions.get(code)
-                candidates = list(ledger.get(code, []))
-                profile_date = edr_sync_v2.normalized_date(profile.get("edr_checked_at"))
-                if profile_date:
-                    candidates.append({"event_type": "google_clarity_profile", "occurred_at": profile_date,
-                      "officer": profile.get("edr_officer", ""), "source": "Google/Clarity profile snapshot",
-                      "created_at": profile.get("synced_at", "")})
-                if admission:
-                    candidates.append({"event_type": "admission", "occurred_at": admission["occurred_at"],
-                      "officer": admission["officer"], "source": "PQM application",
-                      "created_at": admission["submission_id"]})
-                verification = max(candidates, key=edr_sync_v2._verification_event_sort_key) if candidates else {}
-                status = ("Активний" if int(reg.get("active_count") or 0)>0 else
-                          "Призупинений" if int(reg.get("suspended_count") or 0)>0 else
-                          "Неактивний" if reg else "Ще не в реєстрі")
-                checked = edr_sync_v2.normalized_date(verification.get("occurred_at"))
-                officer_raw = str(verification.get("officer") or "").strip()
+                verification = verifications[code]
+                status = canonical_statuses[code]
+                checked = verification["verification_date"]
+                officer_raw = verification["verification_officer_raw"]
+                displayed_edr_status = edr_sync_v2.operational_edr_status(
+                    status, active_qualification_dates.get(code, ""), ledger.get(code, []),
+                    profile.get("edr_status", ""))
                 rows.append({"supplier_code": code,
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
                   "edr_full_name": str(profile.get("full_name") or "").strip(),
                   "edr_short_name": str(profile.get("short_name") or "").strip(),
                   "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
-                  "edr_status": profile.get("edr_status", ""), "prozorro_status": status,
+                  "edr_status": displayed_edr_status, "prozorro_status": status,
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
                   "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
                   "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
-                  "last_admission_date": admission["occurred_at"] if admission else "",
+                  "last_admission_date": verification["last_admission_date"],
                   "latest_application_date": edr_sync_v2.normalized_date(application.get("latest_application_date")),
                   "verification_date": checked,
-                  "verification_officer": projected_officer_name(con, officer_raw),
+                  "verification_officer": verification["verification_officer"],
                   "verification_officer_raw": officer_raw,
-                 "verification_event_type": verification.get("event_type", ""),
-                 "verification_source": verification.get("source", ""),
+                  "verification_event_type": verification["verification_event_type"],
+                  "verification_source": verification["verification_source"],
                   "google_note": str(profile.get("edr_notes") or "").strip(),
                   "freshness": edr_sync_v2.freshness_state(status, checked)["bucket"]})
         # Re-read after building: a concurrent mutation invalidates rather than blessing stale rows.
@@ -9213,6 +9205,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method) -> None:
         path = urllib.parse.urlparse(self.path).path
+        if path in GOOGLE_MIGRATION_DISABLED_PATHS:
+            return self.send_json({"error": "Migration API disabled", "status": 404}, 404)
         if path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
             if self.command != "GET":
                 return self.send_json({"error": "Endpoint підтримує тільки GET", "status": 405}, 405)
@@ -11027,8 +11021,6 @@ class Handler(BaseHTTPRequestHandler):
                           generated_protocol_decision='',protocol_generated_at='' WHERE submission_id=?""", (submission_id,))
             if "manager_name" in payload:
                 ensure_submission_nazk_control(con, submission_id)
-            if effective_protocol_decision == "admit":
-                edr_sync_v2.record_admission_event(con, submission_id, now_iso())
         return self.send_json({"saved": True})
 
     def _do_DELETE(self):

@@ -474,7 +474,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(statuses['22222222'], 'Активний')
         self.assertEqual(statuses['33333333'], 'Призупинений')
         self.assertEqual(statuses['44444444'], 'Неактивний')
-        self.assertEqual(sync.marker_for_status('Ще не в реєстрі','2026-09-15'), '⚪ Не перевірено')
+        self.assertEqual(sync.marker_for_status('Ще не в реєстрі','2026-09-15'), '🟣 Неактуально')
 
     def test_canonical_freshness_boundaries_and_non_monitored_states(self):
         today = date(2026, 9, 15)
@@ -489,7 +489,7 @@ class EdrSyncV2Tests(unittest.TestCase):
             self.assertEqual((state['bucket'], state['marker']), pair)
             self.assertTrue(state['monitored'])
         self.assertEqual(sync.freshness_state('Неактивний', '2020-01-01', today)['marker'], '🟣 Неактуально')
-        self.assertEqual(sync.freshness_state('Ще не в реєстрі', '2026-09-15', today)['marker'], '⚪ Не перевірено')
+        self.assertEqual(sync.freshness_state('Ще не в реєстрі', '2026-09-15', today)['marker'], '🟣 Неактуально')
         self.assertEqual(sync.freshness_state('Призупинений', '', today)['marker'], '⚪ Не перевірено')
 
     def test_latest_verification_keeps_date_and_officer_from_same_event(self):
