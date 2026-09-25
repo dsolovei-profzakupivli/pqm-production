@@ -121,6 +121,31 @@ class GoogleRuntimeTests(unittest.TestCase):
             self.assertEqual(self.request("/api/supplier-nazk-review-sync", payload={})[0], 403)
             edr_worker.assert_not_called(); nazk_worker.assert_not_called()
 
+    def test_permanent_edr_preview_and_apply_keep_confirmed_fingerprint(self):
+        fingerprint = "a" * 64
+        patches = self.common_patches()
+        with patches[0], patches[1], patches[2], patches[3], \
+             patch.object(server, "google_effective_enabled", return_value=True), \
+             patch.object(server, "supplier_edr_sync_preview",
+                          return_value={"source_fingerprint": fingerprint, "summary": {}}), \
+             patch.object(server, "supplier_edr_sync_worker") as worker:
+            status, preview = self.request("/api/supplier-edr-sync/preview", payload={})
+            self.assertEqual(status, 200)
+            self.assertEqual(preview["source_fingerprint"], fingerprint)
+            self.assertEqual(self.request("/api/supplier-edr-sync", payload={"confirmed": False,
+                "source_fingerprint": fingerprint})[0], 409)
+            status, result = self.request("/api/supplier-edr-sync", payload={"confirmed": True,
+                "source_fingerprint": fingerprint})
+            self.assertEqual(status, 202)
+            self.assertTrue(result["started"])
+            for _ in range(100):
+                if worker.called:
+                    break
+                threading.Event().wait(0.01)
+            worker.assert_called_once()
+            self.assertEqual(worker.call_args.args[0], fingerprint)
+            server.SUPPLIER_EDR_SYNC_STATE.update(running=False)
+
     def test_pkce_transaction_survives_memory_restart_and_is_one_time(self):
         client = {"client_id": "test-client", "client_secret": "test-secret",
                   "auth_uri": "https://accounts.example/authorize", "token_uri": "https://accounts.example/token"}

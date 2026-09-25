@@ -34,7 +34,8 @@ class SupplierEdrDateTests(unittest.TestCase):
         con=sqlite3.connect(':memory:');con.row_factory=sqlite3.Row;self.addCleanup(con.close)
         source=sqlite3.connect('file:data/pqm.sqlite3?mode=ro',uri=True)
         try:
-            for name in ('supplier_edr_profiles','supplier_managers','supplier_edr_sync_log'):
+            for name in ('supplier_edr_profiles','supplier_managers','supplier_edr_sync_log',
+                         'submissions','application_fields'):
                 con.execute(source.execute('SELECT sql FROM sqlite_master WHERE type=? AND name=?',('table',name)).fetchone()[0])
         finally:source.close()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,synced_at) VALUES('30067771','17.08.2026','2026-08-21T00:00:00+00:00')")

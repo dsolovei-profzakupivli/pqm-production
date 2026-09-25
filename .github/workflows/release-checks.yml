@@ -54,6 +54,19 @@ jobs:
             -e PQM_ENV=local -e HOST=127.0.0.1 -e PORT=8080 \
             -e PQM_AUTH_ENABLED=0 -e PQM_ENABLE_SCHEDULER=0 pqm-ci:tested \
             -B -m unittest test_google_oauth_hotfix -v 2>&1 | tee ci-evidence/oauth.log
+      - name: Run permanent daily-sync regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node \
+            -e PQM_PYTHON=python3 pqm-ci:tested \
+            --test scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs \
+            scripts/pqm-google-writer/sandbox-controlled-apply.test.cjs \
+            scripts/pqm-google-writer/sandbox-guard-profiler.test.cjs \
+            scripts/pqm-google-writer/sandbox-preview-audit.test.cjs \
+            scripts/pqm-google-writer/sandbox-full-apply.test.cjs \
+            scripts/pqm-google-writer/sandbox-expanded-change-audit.test.cjs \
+            2>&1 | tee ci-evidence/daily-sync.log
       - name: Run delivered regression suite
         shell: bash
         run: |
