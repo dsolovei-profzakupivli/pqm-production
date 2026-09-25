@@ -28,6 +28,13 @@ The repository schema declarations for `supplier_edr_profiles` and
 no schema migration is included. Live PROD schema remains a pre-deploy read-only
 check because no PROD DB was accessed during preparation.
 
+Required read-model configuration: set `PQM_GOOGLE_REGISTRY_SPREADSHEET_ID`
+to the authorized registry spreadsheet ID for each environment (its own
+SANDBOX or PROD Google registry). Do not place the ID in code or this manifest.
+If this setting is missing or blank, legacy Google factual evidence is ignored
+rather than trusted. The future controlled factual-restore input must be bound
+to the same authorized ID; this release does not enable that migration route.
+
 ## Apps Script inventory and attestation gate
 
 These files are **not included** in this backend PR. Local files are not proof
