@@ -22,10 +22,10 @@ const fn=src.slice(src.indexOf('function environmentBannerText(features){'),src.
     renderManualBidsUpdateState:()=>{},esc:s=>s,toast:()=>{},schedulerJobLabels:{}};
   vm.createContext(context);await vm.runInContext(fn+'; loadRuntimeFeatures()',context);
   for(const id of ['#resetBtn','#supplierRegistryRefresh','#frameworksRefresh','#requestsRefresh',
-                   '#refNazkRefresh','#refAmcuRefresh','#edrMonitoringSync']){
+                   '#refNazkRefresh','#refAmcuRefresh','#refAmcuUploadBtn','#edrMonitoringSync']){
     assert.equal($(id).disabled,false,id);assert.equal($(id).dataset.sandboxBlocked,undefined,id);
   }
-  for(const id of ['#refAmcuUploadBtn','#googleRuntimeToggle','#googleDisconnect']){
+  for(const id of ['#googleRuntimeToggle','#googleDisconnect']){
     assert.equal($(id).disabled,true,id);assert.equal($(id).dataset.sandboxBlocked,'1',id);
   }
  }

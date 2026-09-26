@@ -99,7 +99,8 @@ function assertNoteIsThirdTopCard(markup){
     if(className.includes('supplier-shared-note'))assert.equal(stack.length,1,'note must be inside the top summary grid, not a full-width sibling');
     stack.push(className);
   }
-  assert.deepEqual(children,['supplier-profile-identity','supplier-profile-section supplier-profile-contacts','supplier-profile-section supplier-shared-note']);
+  assert.deepEqual(children,['supplier-profile-section supplier-profile-contacts','supplier-profile-section supplier-shared-note']);
+  assert.doesNotMatch(markup,/supplier-profile-identity|<span>Постачальник<\/span>/);
   assert.equal(stack.length,0,'top summary sections must close cleanly');
   assert.equal((markup.match(/class="supplier-profile-section supplier-shared-note"/g)||[]).length,1);
 }
@@ -107,7 +108,8 @@ assertNoteIsThirdTopCard(sampleOverview);
 assertNoteIsThirdTopCard(sampleOverviewWithNote);
 assert.match(app,/body\.innerHTML=`\$\{supplierProfileOverviewHtml\(/);
 assert.doesNotMatch(app,/\.supplier-profile-edr'\)\.after\(body\.querySelector\('\.supplier-shared-note'\)\)/);
-assert.match(css,/\.supplier-profile-overview\{grid-template-columns:minmax\(0,\.9fr\)/);
+assert.match(css,/\.supplier-profile-overview\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+assert.ok(app.includes("$('#supplierProfileSubtitle').innerHTML=`ЄДРПОУ / РНОКПП: <strong>"));
 assert.match(app,/supplierAction\.textContent='↗ Картка постачальника'/);
 assert.match(app,/supplier-context-card-action/);
 console.log('SANDBOX supplier UX: date/status/note/navigation/card-shell checks passed');

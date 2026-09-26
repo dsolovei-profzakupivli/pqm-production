@@ -647,7 +647,7 @@ function supplierNazkEvidenceHtml(check){
   return `<details class="supplier-nazk-evidence"><summary>Підстава / документ · ${frameworkNumber(evidence.length+documents.length)}</summary><small>НАЗК-перевірка #${esc(set.nazk_check_id||check.id||'—')}</small>${facts?`<strong>Запис Реєстру НАЗК</strong><ul>${facts}</ul>`:''}${items?`<strong>Отримані відповіді / інформація</strong><ul>${items}</ul>`:''}${docs?`<strong>Документи</strong><ul>${docs}</ul>`:''}</details>`;
 }
 function supplierProfileOverviewHtml(cardSupplierName,code,contact,contacts,supplierNote,viewer){
-  return `<section class="supplier-profile-overview"><div class="supplier-profile-identity"><span>Постачальник</span><h3>${esc(cardSupplierName)}</h3><p>ЄДРПОУ / РНОКПП: <strong>${esc(code)}</strong></p></div>
+  return `<section class="supplier-profile-overview">
     <section class="supplier-profile-section supplier-profile-contacts"><h3>Контакти з останньої заявки</h3>${contact.email||contact.telephone||contact.name?`<div class="supplier-contact-card"><strong>${esc(contact.name)||'Контактна особа не зазначена'}</strong><p>${contact.email?`<a href="mailto:${esc(contact.email)}">${esc(contact.email)}</a>`:'—'}${contact.telephone?` · <a href="tel:${esc(contact.telephone)}">${esc(contact.telephone)}</a>`:''}${contact.fax?` · факс ${esc(contact.fax)}`:''}</p>${contact.url?`<p><a href="${esc(contact.url)}" target="_blank" rel="noopener">Вебсайт</a></p>`:''}<small>${esc(displayDate(contact.submission_date))||'—'} · ${esc(contact.framework_id||'—')} · заявка ${esc(contact.submission_id||'—')}</small></div>`:'<p>Контактів у заявках не знайдено</p>'}${contacts.history?.length?`<details class="supplier-contact-history"><summary>Попередні контакти · ${contacts.history.length}</summary>${contacts.history.map(x=>`<div class="supplier-contact-card"><strong>${esc(x.name)||'—'}</strong><p>${x.email?`<a href="mailto:${esc(x.email)}">${esc(x.email)}</a>`:'—'}${x.telephone?` · <a href="tel:${esc(x.telephone)}">${esc(x.telephone)}</a>`:''}</p><small>${esc(displayDate(x.submission_date))||'—'} · ${esc(x.framework_id||'—')}</small></div>`).join('')}</details>`:''}</section>
     <section class="supplier-profile-section supplier-shared-note"><h3>Спільна примітка постачальника</h3><textarea id="supplierProfileNote" rows="3" ${viewer?'readonly':''}>${esc(supplierNote.note||'')}</textarea><small>${supplierNote.updated_at?`Оновлено ${esc(displayDate(supplierNote.updated_at))} · ${esc(supplierNote.updated_by||'—')}`:'Примітку ще не додано'}</small>${viewer?'':'<button type="button" class="ghost" id="supplierProfileNoteSave">Зберегти примітку</button>'}</section></section>`;
 }
@@ -699,7 +699,7 @@ function formatLegacyCardDates(root,values){
 }
 openSupplierProfile=async function(code,context={}){
   const dialog=$('#supplierProfileDialog'),body=$('#supplierProfileBody');
-  $('#supplierProfileTitle').textContent='Картка постачальника';$('#supplierProfileSubtitle').textContent=`ЄДРПОУ / РНОКПП: ${code}`;body.innerHTML='<p class="muted">Завантаження картки…</p>';if(!dialog.open)dialog.showModal();
+  $('#supplierProfileTitle').textContent='Картка постачальника';$('#supplierProfileSubtitle').innerHTML=`ЄДРПОУ / РНОКПП: <strong>${esc(code)}</strong>`;body.innerHTML='<p class="muted">Завантаження картки…</p>';if(!dialog.open)dialog.showModal();
   try{
     const data=await request(`${API}/supplier-profile/${encodeURIComponent(code)}`),edr=data.edr_profile||{},edrCanonical=data.edr_canonical||{},supplierNote=data.supplier_note||{},currentManager=data.current_manager||{},summary=data.summary||{},stats=data.bids_summary||{},requestStats=data.violation_summary||{},nazkReview=data.nazk_review||{},nazkRegistry=data.nazk||[],nazkHistory=data.nazk_check_history||[],supplierNazkHistory=data.supplier_nazk_checks||[],supplierNazkWorkflow=data.supplier_nazk_workflow||{},contacts=data.contacts||{},contact=contacts.current||{},applicationGroups=data.application_history_groups||[];
     // A completed submission check is returned in both collections for context.
@@ -1749,6 +1749,7 @@ async function loadRuntimeFeatures(){
         '#requestsRefresh':features.sandbox_operational&&features.sandbox_prozorro_read,
         '#refNazkRefresh':features.sandbox_nazk_read,
         '#refAmcuRefresh':features.sandbox_operational&&features.sandbox_amcu_read,
+        '#refAmcuUploadBtn':features.sandbox_operational&&features.sandbox_amcu_read,
         '#edrMonitoringSync':features.google,
       };
       ['#resetBtn','#supplierRegistryRefresh','#frameworksRefresh','#requestsRefresh',

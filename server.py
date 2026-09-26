@@ -10926,12 +10926,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/upload":
+            if SANDBOX_MODE:
+                import reference_directories as _amcu_ref
+                max_body = ((_amcu_ref.AMCU_MAX_BYTES + 2) // 3) * 4 + 8192
+                length = int(self.headers.get('Content-Length', '0'))
+                if length <= 0 or length > max_body:
+                    return self.send_json({'error': 'Excel-файл АМКУ перевищує 25 МБ'}, 413)
             payload = self.read_json()
+            filename = str(payload.get('filename') or '')
+            if SANDBOX_MODE and not filename.lower().endswith('.xlsx'):
+                return self.send_json({'error': 'Потрібен файл .xlsx'}, 400)
             try:
                 raw = base64.b64decode(payload.get("content") or "", validate=True)
             except Exception:
                 return self.send_json({"error": "Не вдалося прочитати Excel-файл"}, 400)
-            if not start_amcu_registry_refresh(raw, str(payload.get("filename") or "АМКУ.xlsx")):
+            if SANDBOX_MODE and (not raw or len(raw) > _amcu_ref.AMCU_MAX_BYTES):
+                return self.send_json({'error': 'Excel-файл АМКУ перевищує 25 МБ'}, 413)
+            if not start_amcu_registry_refresh(raw, filename or 'АМКУ.xlsx'):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         return self.send_error(404)
