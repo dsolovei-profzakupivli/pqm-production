@@ -28,6 +28,10 @@ AMCU_LOCK = threading.Lock()
 AMCU_WORKER_TIMEOUT = 300
 AMCU_MAX_BYTES = 25 * 1024 * 1024
 LOG = logging.getLogger("pqm.server")
+NAZK_SANDBOX_LOG = logging.getLogger("pqm.sandbox.nazk")
+NAZK_SANDBOX_LOG.propagate = False
+if not NAZK_SANDBOX_LOG.handlers:
+    NAZK_SANDBOX_LOG.addHandler(logging.StreamHandler(sys.stderr))
 
 
 def _now():
@@ -117,6 +121,7 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
     succeeded = False
     failure = ""
     target_attested = False
+    phase = "preflight"
     try:
         if os.environ.get('PQM_SANDBOX') == '1':
             import sandbox_runtime
@@ -125,8 +130,10 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
                 raise RuntimeError('STOP: SANDBOX NAZK read is disabled')
         target_attested = True
         _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
+        phase = "fetch"
         raw = (sandbox_runtime.fetch_nazk_bytes(NAZK_URL)
                if os.environ.get('PQM_SANDBOX') == '1' else _fetch(NAZK_URL))
+        phase = "validate"
         payload = json.loads(raw.decode("utf-8-sig"))
         items = payload if isinstance(payload, list) else payload.get("data", payload.get("items", []))
         if not isinstance(items, list) or not items:
@@ -151,6 +158,7 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
                 *(str(x or "").strip() for x in names), full_name, str(item.get("offenseId") or ""), str(item.get("offenseName") or ""), str(item.get("punishment") or ""),
                 str(item.get("courtCaseNumber") or ""), _date_iso(item.get("sentenceDate")), sentence, _date_iso(item.get("punishmentStart")), str(item.get("courtId") or ""),
                 str(item.get("courtName") or ""), articles, decision_url, json.dumps(item, ensure_ascii=False)))
+        phase = "commit"
         with sqlite3.connect(db_path) as con:
             con.execute("PRAGMA foreign_keys=ON")
             con.execute("BEGIN IMMEDIATE")
@@ -162,10 +170,14 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
             con.executemany("INSERT INTO nazk_registry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             if con.execute("PRAGMA foreign_key_check").fetchone():
                 raise ValueError("НАЗК: FK-перевірка не пройдена; збережені дані не змінено")
+        phase = "status"
         _state(db_path, "nazk", "ok", "Оновлено", len(rows), _now())
         succeeded = True
     except Exception as exc:
         failure = str(exc) or type(exc).__name__
+        if os.environ.get('PQM_SANDBOX') == '1':
+            NAZK_SANDBOX_LOG.error("SANDBOX NAZK refresh failed phase=%s exception_type=%s",
+                                   phase, type(exc).__name__)
         if target_attested:
             _state(db_path, "nazk", "error", str(exc))
     finally:
