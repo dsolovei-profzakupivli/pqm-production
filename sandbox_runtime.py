@@ -275,7 +275,7 @@ def fetch_nazk_bytes(url):
     try:
         request = urllib.request.Request(url, headers={'Accept': 'application/json'}, method='GET')
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoGoogleRedirect())
-        with opener.open(request, timeout=120) as response:
+        with opener.open(request, timeout=900) as response:
             raw = response.read(128 * 1024 * 1024 + 1)
             if len(raw) > 128 * 1024 * 1024:
                 raise RuntimeError('Sandbox NAZK source exceeds read limit')
