@@ -86,7 +86,27 @@ assert.equal(typeReloads,8);
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
 assert.match(app,/cell\.classList\.add\('supplier-code-action-cell'\)/);
 assert.match(css,/\.supplier-code-action-cell \.supplier-card-action\{position:absolute;right:8px/);
-assert.match(app,/if\(overview&&sharedNote\)overview\.append\(sharedNote\)/);
+const overviewContext=vm.createContext({esc:value=>String(value||''),displayDate:value=>String(value||'')});
+vm.runInContext(section(app,'function supplierProfileOverviewHtml(','function compactSupplierNote('),overviewContext);
+const sampleOverview=overviewContext.supplierProfileOverviewHtml('Постачальник','12345678',{}, {history:[]},{note:''},false);
+const sampleOverviewWithNote=overviewContext.supplierProfileOverviewHtml('Постачальник','12345678',{}, {history:[]},{note:'Історична примітка'},false);
+function assertNoteIsThirdTopCard(markup){
+  const stack=[],children=[];
+  for(const match of markup.matchAll(/<(?:section|div)\b[^>]*>|<\/(?:section|div)>/g)){
+    if(match[0].startsWith('</')){stack.pop();continue}
+    const className=match[0].match(/class="([^"]+)"/)?.[1]||'';
+    if(stack.length===1&&stack[0].includes('supplier-profile-overview'))children.push(className);
+    if(className.includes('supplier-shared-note'))assert.equal(stack.length,1,'note must be inside the top summary grid, not a full-width sibling');
+    stack.push(className);
+  }
+  assert.deepEqual(children,['supplier-profile-identity','supplier-profile-section supplier-profile-contacts','supplier-profile-section supplier-shared-note']);
+  assert.equal(stack.length,0,'top summary sections must close cleanly');
+  assert.equal((markup.match(/class="supplier-profile-section supplier-shared-note"/g)||[]).length,1);
+}
+assertNoteIsThirdTopCard(sampleOverview);
+assertNoteIsThirdTopCard(sampleOverviewWithNote);
+assert.match(app,/body\.innerHTML=`\$\{supplierProfileOverviewHtml\(/);
+assert.doesNotMatch(app,/\.supplier-profile-edr'\)\.after\(body\.querySelector\('\.supplier-shared-note'\)\)/);
 assert.match(css,/\.supplier-profile-overview\{grid-template-columns:minmax\(0,\.9fr\)/);
 assert.match(app,/supplierAction\.textContent='↗ Картка постачальника'/);
 assert.match(app,/supplier-context-card-action/);
