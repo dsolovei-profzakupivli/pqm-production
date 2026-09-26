@@ -450,7 +450,7 @@ def _amcu_rows_bounded(raw=None, filename=""):
     if os.environ.get('PQM_SANDBOX') == '1':
         import sandbox_amcu
         if raw is not None:
-            raise RuntimeError('Sandbox AMCU upload is disabled')
+            return sandbox_amcu.upload_rows(raw, filename)
         return sandbox_amcu.download_rows()
     if raw is not None and len(raw) > AMCU_MAX_BYTES:
         raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")

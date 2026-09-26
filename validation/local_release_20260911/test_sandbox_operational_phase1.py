@@ -1,6 +1,8 @@
 """Phase-1 SANDBOX destination isolation and local task-chain regressions."""
 import os
 import contextlib
+import gc
+import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,6 +19,55 @@ except ImportError:
 
 
 class SandboxOperationalBoundaryTests(unittest.TestCase):
+    def test_upload_rejects_wrong_db_before_state_or_parser(self):
+        with patch.dict(os.environ, {'PQM_SANDBOX': '1', 'PQM_SANDBOX_OPERATIONAL': '1',
+                                     'PQM_SANDBOX_AMCU_READ': '1'}), \
+             patch.object(sandbox_runtime, 'attest_internal_target', side_effect=RuntimeError('wrong DB')), \
+             patch.object(ref, '_state') as state, patch.object(ref, '_amcu_rows_bounded') as parser:
+            with self.assertRaisesRegex(RuntimeError, 'wrong DB'):
+                ref.start_reference_refresh('wrong.sqlite3', 'amcu', b'xlsx', 'official.xlsx')
+            state.assert_not_called()
+            parser.assert_not_called()
+
+    def test_excel_failure_does_not_replace_registry_or_rebuild_tasks(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'sandbox.sqlite3'
+            with contextlib.closing(sqlite3.connect(path)) as con:
+                con.execute('CREATE TABLE reference_sync_state(source TEXT PRIMARY KEY,status TEXT,message TEXT,row_count INTEGER,updated_at TEXT,source_updated_at TEXT)')
+                con.execute("INSERT INTO reference_sync_state(source,status) VALUES('amcu','idle')")
+                con.execute('CREATE TABLE amcu_registry(row_key TEXT PRIMARY KEY,ordinal TEXT,division_no TEXT,sequence_no TEXT,decision_no TEXT,decision_date TEXT,authority TEXT,offender_name TEXT,offender_code TEXT,court_case_no TEXT,raw_json TEXT)')
+                con.execute("INSERT INTO amcu_registry(row_key,decision_date) VALUES('old','2026-09-18')")
+                con.commit()
+            with patch.object(ref, '_amcu_rows_bounded', side_effect=ValueError('invalid Excel')):
+                rebuilt = []
+                ref.refresh_amcu(path, b'bad', 'official.xlsx', on_complete=lambda: rebuilt.append(True))
+            with contextlib.closing(sqlite3.connect(path)) as con:
+                self.assertEqual(con.execute('SELECT row_key FROM amcu_registry').fetchone()[0], 'old')
+            self.assertEqual(rebuilt, [])
+            gc.collect()
+
+    def test_excel_commit_precedes_task_rebuild_and_repeat_is_stable(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'sandbox.sqlite3'
+            with contextlib.closing(sqlite3.connect(path)) as con:
+                con.execute('CREATE TABLE reference_sync_state(source TEXT PRIMARY KEY,status TEXT,message TEXT,row_count INTEGER,updated_at TEXT,source_updated_at TEXT)')
+                con.execute("INSERT INTO reference_sync_state(source,status) VALUES('amcu','idle')")
+                con.execute('CREATE TABLE amcu_registry(row_key TEXT PRIMARY KEY,ordinal TEXT,division_no TEXT,sequence_no TEXT,decision_no TEXT,decision_date TEXT,authority TEXT,offender_name TEXT,offender_code TEXT,court_case_no TEXT,raw_json TEXT)')
+                con.commit()
+            row = ('new', '1', '', '', '42', '2026-09-24', 'АМКУ', 'Fixture', '12345678', '', '{}')
+            observed = []
+            def rebuild():
+                with contextlib.closing(sqlite3.connect(path)) as con:
+                    observed.append((con.execute('SELECT row_key FROM amcu_registry').fetchone()[0],
+                                     not con.in_transaction))
+            with patch.object(ref, '_amcu_rows_bounded', return_value=('official.xlsx', [row])):
+                ref.refresh_amcu(path, b'xlsx', 'official.xlsx', on_complete=rebuild)
+                ref.refresh_amcu(path, b'xlsx', 'official.xlsx', on_complete=rebuild)
+            self.assertEqual(observed, [('new', True), ('new', True)])
+            with contextlib.closing(sqlite3.connect(path)) as con:
+                self.assertEqual(con.execute('SELECT COUNT(*) FROM amcu_registry').fetchone()[0], 1)
+            gc.collect()
+
     def test_opt_in_requires_approved_sandbox_service_and_owned_target(self):
         env = {**sandbox_runtime.POLICY, 'PQM_DATA_DIR': '/var/data',
                'PQM_DB_PATH': '/var/data/pqm_sandbox.sqlite3',

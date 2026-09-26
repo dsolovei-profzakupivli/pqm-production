@@ -120,7 +120,7 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 .supplier-card-action:hover{background:#edf5ff}
 .supplier-code-action-cell{position:relative;padding-right:42px!important;user-select:text}
 .supplier-code-action-cell .supplier-card-action{position:absolute;right:8px;top:50%;transform:translateY(-50%)}
-.supplier-profile-overview{grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr) minmax(0,.9fr);align-items:start;gap:12px}
+.supplier-profile-overview{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:12px}
 .supplier-profile-overview>.supplier-shared-note{min-width:0;margin:0;padding:8px 10px;box-shadow:none}
 .supplier-profile-overview>.supplier-shared-note h3{margin:0 0 5px}
 @media(max-width:900px){.supplier-profile-overview{grid-template-columns:1fr}}
@@ -329,7 +329,7 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 #supplierProfileBody>.supplier-profile-section>h3{margin:0 0 8px;padding:0}
 /* The outer card supplies the frame; retain inner grid/table cells and factual panels. */
 #supplierProfileBody>.supplier-profile-section>:is(.supplier-profile-grid,.supplier-profile-table){border:0;border-radius:0;box-shadow:none}
-#supplierProfileBody>.supplier-profile-overview>.supplier-profile-identity{border:0;box-shadow:none;background:transparent;padding:0}
+#supplierProfileSubtitle strong{font-weight:700;user-select:text}
 .working-draggable-dialog{max-width:calc(100vw - 16px);max-height:calc(100vh - 16px)}
 .working-draggable-dialog form>header,[data-viewport-drag].is-dragging{cursor:move;touch-action:none}
 .working-draggable-dialog::backdrop{background:rgba(24,39,58,.10)}
