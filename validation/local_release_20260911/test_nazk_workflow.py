@@ -106,7 +106,9 @@ class NazkWorkflowTests(unittest.TestCase):
 
     def test_supplier_badge_priorities_cover_legacy_and_submission_cases(self):
         present = workflow.get_supplier_nazk_presentation_state
-        self.assertEqual(present("not_required", "", registry_match=True), "inactive")
+        self.assertEqual(present("not_required", "", registry_match=True), "needs_supplier_review")
+        self.assertEqual(present("not_required", "", registry_match=True,
+                                 active_qualification=False), "inactive")
         self.assertEqual(present("not_required", "waiting_response", registry_match=True),
                          "waiting_response")
         self.assertEqual(present("needs_check", "", registry_match=True), "needs_check")
@@ -131,6 +133,44 @@ class NazkWorkflowTests(unittest.TestCase):
             "not_required", "waiting_response", registry_match=True,
             registry_record_no_longer_present=False,
         ), "waiting_response")
+
+    def test_38261938_current_nazk_fact_without_checks_requires_review(self):
+        code = "38261938"
+        manager = "ДОВБЕНКО ВОЛОДИМИР ВІТАЛІЙОВИЧ"
+        self.seed_supplier(code=code, manager=manager)
+        self.seed_submission(code=code, manager=manager)
+        with server.db() as con:
+            con.execute("""UPDATE nazk_registry SET court_case_number='991/3494/26',
+              sentence_date='2026-07-28',punishment_start='2026-09-03'
+              WHERE source_id=?""", (f"nazk-{code}",))
+            con.execute("""INSERT INTO qualifications
+              (id,framework_id,submission_id,status,decision_date,documents_json,raw_json,synced_at)
+              VALUES ('qualification-submission-1','framework-1','submission-1','active',
+                      '2026-05-15','[]','{}',?)""", (server.now_iso(),))
+            con.execute("UPDATE submissions SET qualification_id='qualification-submission-1' WHERE id='submission-1'")
+            con.execute("""INSERT INTO registry_contracts
+              (id,framework_id,qualification_id,supplier_code,status,milestones_json,raw_json,synced_at)
+              VALUES ('contract-1','framework-1','qualification-submission-1',?,'active','[]','{}',?)""",
+              (code, server.now_iso()))
+            con.execute("""INSERT INTO supplier_edr_profiles
+              (supplier_code,manager_name,source_sheet,synced_at) VALUES (?,?,?,?)""",
+              (code, manager, "ЮО", server.now_iso()))
+            self.assertEqual(con.execute(
+                "SELECT COUNT(*) FROM supplier_nazk_checks WHERE supplier_code=?", (code,)
+            ).fetchone()[0], 0)
+            self.assertEqual(con.execute(
+                "SELECT COUNT(*) FROM submission_nazk_controls WHERE supplier_code=?", (code,)
+            ).fetchone()[0], 0)
+            state = workflow.get_supplier_nazk_state(con, code)
+            self.assertEqual(state["action"], "create_needs_review")
+        card = server.supplier_profile(code)
+        self.assertEqual(card["nazk_application_state"]["state"], "not_required")
+        self.assertEqual(card["supplier_nazk_checks"], [])
+        self.assertEqual(card["nazk_presentation_state"], "needs_supplier_review")
+        self.assertNotEqual(card["nazk_presentation_state"], "confirmed")
+        listed = server.list_qualified_suppliers({"search": [code]})
+        supplier = next(item for item in listed["items"] if item["code"] == code)
+        self.assertEqual(supplier["nazk_presentation_state"], "needs_supplier_review")
 
     def test_current_match_materializes_supplier_check_and_operational_task(self):
         self.seed_supplier()

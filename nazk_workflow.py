@@ -17,6 +17,7 @@ def get_supplier_nazk_presentation_state(
     application_state: str | None, workflow_status: str | None,
     *, registry_match: bool, legacy_result: str | None = None,
     registry_record_no_longer_present: bool = False,
+    active_qualification: bool = True,
 ) -> str:
     """Combine application work, transitional workflow and registry history for one badge."""
     application_state = str(application_state or "not_required")
@@ -45,7 +46,9 @@ def get_supplier_nazk_presentation_state(
         return "refuted"
     if application_state in {"needs_check", "refuted", "confirmed"}:
         return application_state
-    return "inactive" if registry_match else "not_required"
+    # A current-person registry fact without a completed or open check is
+    # unreviewed risk, not evidence that the fact is no longer relevant.
+    return ("needs_supplier_review" if active_qualification else "inactive") if registry_match else "not_required"
 
 
 def mark_supplier_nazk_request_sent(

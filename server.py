@@ -5365,7 +5365,9 @@ def list_qualified_suppliers(params: dict) -> dict:
             (item["nazk_supplier_workflow"].get("workflow_status")
               or (latest_supplier_check.get("workflow_status")
                   if latest_supplier_check.get("workflow_status") == "not_current" else "")),
-            registry_match=bool(item["nazk_match"]) and not record_no_longer_present,
+            registry_match=(item.get("code") in current_manager_registry_matches
+                            and not record_no_longer_present),
+            active_qualification=bool(item.get("active_count")),
             legacy_result=(latest_supplier_check.get("result")
               if latest_supplier_check.get("workflow_status") == "completed"
               else ((review or {}).get("result") if item.get("nazk_review_is_current", not review) else "")),
@@ -5603,7 +5605,8 @@ def supplier_profile(supplier_code: str) -> dict:
         (supplier_nazk_workflow.get("workflow_status")
           or (latest_current_supplier_cycle.get("workflow_status")
               if latest_current_supplier_cycle.get("workflow_status") == "not_current" else "")),
-        registry_match=bool(nazk) and not record_no_longer_present,
+        registry_match=current_registry_match and not record_no_longer_present,
+        active_qualification=bool(summary.get("active_count")),
         legacy_result=(latest_current_supplier_check.get("result")
           or (nazk_review_data.get("result") if nazk_review_data.get("is_current_manager") else "")),
         registry_record_no_longer_present=record_no_longer_present,
