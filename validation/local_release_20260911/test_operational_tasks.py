@@ -188,7 +188,7 @@ class OperationalStatusGroupTests(unittest.TestCase):
         queries=[]; con.set_trace_callback(lambda sql: queries.append(sql) if sql.lstrip().upper().startswith(('SELECT','WITH')) else None)
         active=operational_tasks.list_tasks(con,{})
         self.assertEqual(active["status_group"],"active"); self.assertEqual(active["total"],2); self.assertEqual(active["kpis"]["active"],2)
-        self.assertEqual(len(queries),2)  # list projection + KPI statuses, independent of row count
+        self.assertEqual(len(queries),3)  # type facet + list projection + status KPIs, independent of row count
         history=operational_tasks.list_tasks(con,{"status_group":["historical"]})
         self.assertEqual(history["total"],2); self.assertEqual({x["status"] for x in history["items"]},{"completed","cancelled"})
 
@@ -379,7 +379,8 @@ class OperationalTaskCardTests(unittest.TestCase):
           "SELECT event_type FROM operational_task_events ORDER BY id")],['amcu_extract_url_added','status_changed'])
 
     def test_active_task_renderer_installs_amcu_row_save_handler(self):
-        source = Path(__file__).with_name("app.js").read_text(encoding="utf-8")
+        local_script = Path(__file__).with_name("app.js")
+        source = (local_script if local_script.exists() else Path(__file__).parents[2] / "app.js").read_text(encoding="utf-8")
         before_polish_wrapper = source[:source.index("const openOperationalTaskPolished=")]
         active_renderer = before_polish_wrapper[before_polish_wrapper.rfind("openOperationalTask=async function(taskId){"):]
         self.assertIn("installOperationalAmcuActions(item,body)", active_renderer)

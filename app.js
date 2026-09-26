@@ -622,6 +622,7 @@ loadQualifiedSuppliersFiltered=async function(){
     const code=row.dataset.supplierCode,item=supplierRegistryItems.find(value=>String(value.code)===code);
     if(!/^[0-9]+$/.test(code)||String(item?.edr_profile?.supplier_code||'')!==code)return;
     const cell=row.children[1];if(!cell||cell.querySelector('.supplier-card-action'))return;
+    cell.classList.add('supplier-code-action-cell');
     const action=document.createElement('button');action.type='button';action.className='supplier-card-action';
     action.textContent='↗';action.title='Відкрити картку постачальника';action.setAttribute('aria-label',action.title);
     action.onclick=event=>{event.stopPropagation();openSupplierProfile(row.dataset.supplierCode)};
@@ -663,7 +664,9 @@ function compactSupplierNote(section,note,viewer){
   if(meta)meta.hidden=!text;
 }
 function decorateSupplierEdrCard(body,code,edr,supplierNote){
-  compactSupplierNote(body.querySelector('.supplier-shared-note'),supplierNote.note,role()==='viewer');
+  const overview=body.querySelector('.supplier-profile-overview'),sharedNote=body.querySelector('.supplier-shared-note');
+  if(overview&&sharedNote)overview.append(sharedNote);
+  compactSupplierNote(sharedNote,supplierNote.note,role()==='viewer');
   const section=body.querySelector('.supplier-profile-edr');
   const fields=[...section.querySelectorAll('.supplier-profile-grid>div')];
   const field=label=>fields.find(row=>row.querySelector('dt')?.textContent===label)?.querySelector('dd');
@@ -971,6 +974,7 @@ function decorateEdrMonitoringRows(){
     if(status)status.textContent=displayEdrStatus(item.edr_status);
     const cell=row.querySelector('[data-edr-column="supplier_code"]');
     if(!cell||!item.supplier_card_available||cell.querySelector('.supplier-card-action'))return;
+    cell.classList.add('supplier-code-action-cell');
     const action=document.createElement('button');action.type='button';action.className='supplier-card-action';
     action.textContent='↗';action.title='Відкрити картку постачальника';action.setAttribute('aria-label',action.title);
     action.onclick=event=>{event.stopPropagation();openSupplierProfile(String(item.supplier_code))};
@@ -1297,6 +1301,12 @@ function operationalListAction(item){
 }
 let operationalTaskTimer=null;
 function operationalTaskParams(){return{search:$('#operationalTaskSearch').value.trim(),type:$('#operationalTaskType').value,status_group:$('#operationalTaskStatus').value||'active',officer:$('#operationalTaskOfficer').value,date_from:$('#operationalTaskDateFrom').value}}
+function operationalTaskTypeMarker(type){return `<span class="operational-type-marker" data-task-type="${esc(type)}">${esc(operationalTaskTypeLabels[type]||type)}</span>`}
+function renderOperationalTaskTypes(counts){
+  const selected=$('#operationalTaskType').value;
+  $('#operationalTaskTypes').innerHTML=['nazk_check','amcu_exclusion','warning_block','termination_exclusion'].filter(type=>Number(counts[type])>0).map(type=>`<button type="button" class="operational-type-marker operational-type-kpi${selected===type?' active':''}" data-task-type="${type}" aria-pressed="${selected===type}"><span>${esc(operationalTaskTypeLabels[type])}</span><strong>${Number(counts[type]).toLocaleString('uk-UA')}</strong></button>`).join('');
+}
+$('#operationalTaskTypes').onclick=event=>{const chip=event.target.closest('button[data-task-type]');if(!chip)return;const filter=$('#operationalTaskType');filter.value=filter.value===chip.dataset.taskType?'':chip.dataset.taskType;loadOperationalTasks()};
 function operationalTaskEmptyMessage(){const group=$('#operationalTaskStatus').value||'active',type=$('#operationalTaskType').value;if(type==='amcu_exclusion'&&group==='active')return 'Активних задач АМКУ немає';if(group==='active')return 'Активних операційних задач немає';if(group==='completed')return 'Виконаних задач за вибраними умовами немає';if(group==='cancelled')return 'Скасованих задач за вибраними умовами немає';return 'Задач за вибраними умовами немає'}
 async function loadOperationalTasks(){
   const body=$('#operationalTasksBody');if(!body)return;
@@ -1305,7 +1315,8 @@ async function loadOperationalTasks(){
     const data=await request(`${API}/operational-tasks?${new URLSearchParams(operationalTaskParams())}`),k=data.kpis||{};
     const kpiKeys=['active','needs_action','awaiting_response','ready_for_document','awaiting_sync','completed'];
     $$('#operationalTaskKpis [data-task-kpi]').forEach(card=>{const value=k[card.dataset.taskKpi]||0,target=card.querySelector('strong');if(target)target.textContent=Number(value).toLocaleString('uk-UA');card.classList.toggle('active',card.dataset.taskKpi===(data.status_group||'active'))});
-    body.innerHTML=(data.items||[]).map(item=>`<tr data-task-id="${esc(item.id)}" tabindex="0" role="button" aria-label="Відкрити задачу для ${esc(item.supplier_name_snapshot)}"><td><strong>${esc(operationalTaskTypeLabels[item.task_type]||item.task_type)}</strong></td><td><strong>${esc(item.supplier_name_snapshot)||'—'}</strong><small>${esc(item.supplier_code)||'—'}</small></td><td>${esc(operationalListTrigger(item))}</td><td>${esc(operationalListAction(item))}</td><td>${esc(item.assigned_officer_name)||'Не призначено'}</td><td>${esc(operationalTaskStatusLabel(item))}</td><td>${esc(displayDate(item.created_at))||'—'}</td></tr>`).join('')||`<tr><td colspan="7">${operationalTaskEmptyMessage()}</td></tr>`;
+    renderOperationalTaskTypes(data.type_counts||{});
+    body.innerHTML=(data.items||[]).map(item=>`<tr data-task-id="${esc(item.id)}" tabindex="0" role="button" aria-label="Відкрити задачу для ${esc(item.supplier_name_snapshot)}"><td>${operationalTaskTypeMarker(item.task_type)}</td><td><strong>${esc(item.supplier_name_snapshot)||'—'}</strong><small>${esc(item.supplier_code)||'—'}</small></td><td>${esc(operationalListTrigger(item))}</td><td>${esc(operationalListAction(item))}</td><td>${esc(item.assigned_officer_name)||'Не призначено'}</td><td>${esc(operationalTaskStatusLabel(item))}</td><td>${esc(displayDate(item.created_at))||'—'}</td></tr>`).join('')||`<tr><td colspan="7">${operationalTaskEmptyMessage()}</td></tr>`;
     $('#operationalTasksCount').textContent=`Знайдено задач: ${Number(data.total||0).toLocaleString('uk-UA')}`;
   }catch(error){body.innerHTML=`<tr><td colspan="7" class="request-warning">${esc(error.message)}</td></tr>`;$('#operationalTasksCount').textContent='Помилка завантаження'}
 }
@@ -1545,6 +1556,13 @@ openOperationalTask=async function(taskId){const dialog=$('#operationalTaskDialo
 const openOperationalTaskPolished=openOperationalTask;
 openOperationalTask=async function(taskId){
   const result=await openOperationalTaskPolished(taskId),body=$('#operationalTaskBody'),item=activeOperationalTask;
+  const supplierAction=body.querySelector('#operationalOpenSupplier'),summary=body.querySelector('.operational-summary');
+  if(supplierAction&&summary&&item?.supplier_code){
+    const context=document.createElement('div');context.className='operational-supplier-action';
+    const code=document.createElement('span');code.textContent=`ЄДРПОУ / РНОКПП: ${item.supplier_code}`;
+    supplierAction.textContent='↗ Картка постачальника';
+    context.append(code,supplierAction);summary.querySelector('.operational-summary-actions')?.before(context);
+  }
   if(item?.task_type==='amcu_exclusion'&&item.status==='awaiting_sync'){
     const statusValue=body.querySelector('.operational-compact-facts div:first-child dd');
     if(statusValue)statusValue.textContent='Розглянуто';
@@ -1951,6 +1969,18 @@ violationDetailHtml=function(item){
   }
   return html;
 };
+const violationDetailWithSupplierAction=violationDetailHtml;
+violationDetailHtml=function(item){
+  const html=violationDetailWithSupplierAction(item),code=String(item.defendant_code||'').trim();
+  if(!code)return html;
+  const clarity=`<a href="https://clarity-project.info/edr/${encodeURIComponent(code)}" target="_blank" rel="noopener">Clarity</a>`;
+  const supplier=html.indexOf('<h3>Постачальник');
+  return supplier<0?html:html.slice(0,supplier)+html.slice(supplier).replace(clarity+'</p>',clarity+` <button type="button" class="ghost supplier-context-card-action" data-supplier-code="${esc(code)}">↗ Картка постачальника</button></p>`);
+};
+$('#requestDetailsBody').addEventListener('click',event=>{
+  const action=event.target.closest('.supplier-context-card-action');
+  if(action)openSupplierProfile(action.dataset.supplierCode);
+});
 async function saveViolationDocumentReview(item,input){
   input.disabled=true;
   try{

@@ -59,4 +59,35 @@ assert.match(css, /#docsDialog,#documentCheckDialog\)>form>footer\{flex:0 0 auto
 assert.match(css, /#docsList,#documentCheckBody\)\{min-height:0;max-height:none;overflow-y:auto/);
 assert.match(app, /\$\('#archiveDownloadBtn'\)\.href=`\$\{API\}\/applications\/\$\{encodeURIComponent\(row\.id\)\}\/archive`/);
 assert.match(css,/\.supplier-shared-note \[hidden\]\{display:none!important\}/);
+assert.match(html,/id="operationalTaskTypes"/);
+for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
+  assert.match(app,new RegExp(`'${type}'`));
+  assert.match(css,new RegExp(`data-task-type="${type}"`));
+}
+assert.match(app,/renderOperationalTaskTypes\(data\.type_counts\|\|\{\}\)/);
+assert.match(app,/aria-pressed="\$\{selected===type\}"/);
+assert.match(css,/\.operational-type-kpi\.active/);
+const renderedTypes={innerHTML:''},renderedTypeFilter={value:'warning_block'};
+const renderTypesContext=vm.createContext({$:selector=>selector==='#operationalTaskTypes'?renderedTypes:renderedTypeFilter,esc:value=>String(value),Number,operationalTaskTypeLabels:{nazk_check:'НАЗК',amcu_exclusion:'АМКУ',warning_block:'Звернення',termination_exclusion:'Припинення'}});
+vm.runInContext(section(app,'function renderOperationalTaskTypes(counts){',"$('#operationalTaskTypes').onclick="),renderTypesContext);
+renderTypesContext.renderOperationalTaskTypes({nazk_check:3,amcu_exclusion:2,warning_block:1,termination_exclusion:4});
+for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_exclusion'])assert.match(renderedTypes.innerHTML,new RegExp(`data-task-type="${type}"`));
+assert.match(renderedTypes.innerHTML,/data-task-type="warning_block" aria-pressed="true"/);
+assert.match(renderedTypes.innerHTML,/data-task-type="nazk_check" aria-pressed="false"/);
+let typeReloads=0;
+const typeSelect={value:''},typeKpiNode={},typeActions=vm.createContext({$:selector=>selector==='#operationalTaskTypes'?typeKpiNode:typeSelect,loadOperationalTasks(){typeReloads++}});
+vm.runInContext(section(app,"$('#operationalTaskTypes').onclick=","function operationalTaskEmptyMessage"),typeActions);
+for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
+  const typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,'');
+}
+assert.equal(typeReloads,8);
+assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
+assert.match(app,/cell\.classList\.add\('supplier-code-action-cell'\)/);
+assert.match(css,/\.supplier-code-action-cell \.supplier-card-action\{position:absolute;right:8px/);
+assert.match(app,/if\(overview&&sharedNote\)overview\.append\(sharedNote\)/);
+assert.match(css,/\.supplier-profile-overview\{grid-template-columns:minmax\(0,\.9fr\)/);
+assert.match(app,/supplierAction\.textContent='↗ Картка постачальника'/);
+assert.match(app,/supplier-context-card-action/);
 console.log('SANDBOX supplier UX: date/status/note/navigation/card-shell checks passed');
