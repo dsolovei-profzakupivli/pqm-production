@@ -32,5 +32,9 @@ for (const historicalReadOnly of [false, true]) {
   }
 }
 // The participant cell must actually call the tested helper.
-assert(app.includes("if(col.key==='participant'){const nazkMarker=applicationNazkMarker(row);"));
+assert(app.includes("if(col.key==='participant'){const nazkMarker=applicationNazkMarker(row),amcuBlocked="));
+assert(app.includes('Постачальник наявний в реєстрі АМКУ · рішення лише «Ні»'));
+assert(app.includes("pending&&r.amcuMatch?'registry-risk-amcu'"));
+assert(app.includes("protocolDecisions.filter(([value])=>!row.amcuMatch||value!=='admit')"));
+assert(app.includes("marketplaceDecisions.filter(([value])=>!row.amcuMatch||value!=='admit')"));
 console.log(`PASS: ${cases} application marker cases; no pseudo-NAZK rejection badge or mutations`);

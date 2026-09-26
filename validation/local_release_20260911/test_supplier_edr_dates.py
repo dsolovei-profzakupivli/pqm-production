@@ -34,7 +34,8 @@ class SupplierEdrDateTests(unittest.TestCase):
         con=sqlite3.connect(':memory:');con.row_factory=sqlite3.Row;self.addCleanup(con.close)
         source=sqlite3.connect('file:data/pqm.sqlite3?mode=ro',uri=True)
         try:
-            for name in ('supplier_edr_profiles','supplier_managers','supplier_edr_sync_log'):
+            for name in ('supplier_edr_profiles','supplier_managers','supplier_edr_sync_log',
+                         'submissions','application_fields'):
                 con.execute(source.execute('SELECT sql FROM sqlite_master WHERE type=? AND name=?',('table',name)).fetchone()[0])
         finally:source.close()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,synced_at) VALUES('30067771','17.08.2026','2026-08-21T00:00:00+00:00')")
@@ -49,7 +50,8 @@ class SupplierEdrDateTests(unittest.TestCase):
             with patch.object(server,'db',return_value=con),patch.object(server,'_google_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'unused','ЮО':'unused'}),patch.object(server,'now_iso',return_value=stamp),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'refresh_current_submission_nazk_controls') as refresh:
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
-                self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')
+                self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed',
+                                 server.SUPPLIER_EDR_SYNC_STATE.get('error'))
                 row=con.execute('SELECT edr_checked_at,synced_at FROM supplier_edr_profiles').fetchone()
                 self.assertEqual(tuple(row),(edr_sync_v2.normalized_date(date),expected_synced_at))
                 self.assertEqual(con.execute('SELECT updated_at FROM supplier_managers').fetchone()[0],'2026-08-21T00:00:00+00:00')

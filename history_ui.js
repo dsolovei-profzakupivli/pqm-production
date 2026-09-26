@@ -1,11 +1,8 @@
 // Read-only history shares submission data and the existing document viewer.
 function historyDateCell(value){
   if(!value)return '';
-  const date=new Date(value);
-  if(Number.isNaN(date.valueOf()))return esc(value);
-  const day=date.toLocaleDateString('uk-UA',{day:'2-digit',month:'2-digit',year:'2-digit'});
-  const time=/^\d{4}-\d{2}-\d{2}$/.test(String(value).trim())?'':date.toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'});
-  return `<span class="history-date-line">${esc(day)}</span>${time?`<span class="history-date-line">${esc(time)}</span>`:''}`;
+  const formatted=displayDate(value),parts=formatted.split(', ');
+  return `<span class="history-date-line">${esc(parts[0])}</span>${parts[1]?`<span class="history-date-line">${esc(parts[1])}</span>`:''}`;
 }
 let historyPage=1,historyPages=1,historyRequest=0,historyTimer,historyItems=[];
 let historySorts=[{key:'date',direction:'desc'}];

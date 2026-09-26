@@ -23,6 +23,7 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 import sandbox_documents
 import sandbox_amcu
 
@@ -41,6 +42,11 @@ ACCESS_FILE = '.sandbox-initial-access.json'
 _guard_installed = False
 _egress = threading.local()
 PROZORRO_HOST = 'public-api.prozorro.gov.ua'
+GOOGLE_TOKEN_HOST = 'oauth2.googleapis.com'
+GOOGLE_SHEETS_HOST = 'sheets.googleapis.com'
+NAZK_HOST = 'corruptinfo.nazk.gov.ua'
+NAZK_PATH = '/ep/1.0/corrupt/getAllData'
+SANDBOX_EDR_SPREADSHEET_ID = '1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww'
 _original_getaddrinfo = socket.getaddrinfo
 
 
@@ -59,6 +65,23 @@ def validate_environment(env=None):
         raise RuntimeError('STOP: PQM_SANDBOX_PROZORRO_READ must be 0 or 1')
     if env.get('PQM_SANDBOX_PROZORRO_SCHEDULER', '0') not in {'0', '1'}:
         raise RuntimeError('STOP: PQM_SANDBOX_PROZORRO_SCHEDULER must be 0 or 1')
+    if env.get('PQM_SANDBOX_EDR_GOOGLE', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: PQM_SANDBOX_EDR_GOOGLE must be 0 or 1')
+    if env.get('PQM_SANDBOX_OPERATIONAL', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: PQM_SANDBOX_OPERATIONAL must be 0 or 1')
+    if env.get('PQM_SANDBOX_NAZK_READ', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: PQM_SANDBOX_NAZK_READ must be 0 or 1')
+    if env.get('PQM_SANDBOX_NAZK_READ') == '1' and env.get('PQM_SANDBOX_OPERATIONAL') != '1':
+        raise RuntimeError('STOP: NAZK read requires sandbox operational destination')
+    if env.get('PQM_SANDBOX_EDR_GOOGLE') == '1':
+        if env.get('PQM_SANDBOX_EDR_SPREADSHEET_ID') != SANDBOX_EDR_SPREADSHEET_ID:
+            raise RuntimeError('STOP: sandbox EDR spreadsheet identity mismatch')
+        redirect = env.get('PQM_SANDBOX_EDR_REDIRECT_URI', '')
+        parsed_redirect = urllib.parse.urlsplit(redirect)
+        if (parsed_redirect.scheme != 'https' or not re.fullmatch(r'pqm-sandbox(?:-[a-z0-9]+)?\.onrender\.com', parsed_redirect.hostname or '')
+                or parsed_redirect.path != '/api/google-oauth/callback' or parsed_redirect.query or parsed_redirect.fragment
+                or parsed_redirect.username or parsed_redirect.password):
+            raise RuntimeError('STOP: sandbox EDR OAuth redirect URI mismatch')
     if (env.get('PQM_SANDBOX_PROZORRO_SCHEDULER') == '1'
             and env.get('PQM_SANDBOX_PROZORRO_READ') != '1'):
         raise RuntimeError('STOP: sandbox scheduler requires the restricted Prozorro transport')
@@ -77,6 +100,10 @@ def validate_environment(env=None):
             raise RuntimeError('STOP: document testing requires the approved sandbox service')
         if env.get('PQM_SANDBOX_AMCU_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
             raise RuntimeError('STOP: AMCU testing requires the approved sandbox service')
+        if env.get('PQM_SANDBOX_OPERATIONAL') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
+            raise RuntimeError('STOP: operational workflows require the approved sandbox service')
+        if env.get('PQM_SANDBOX_NAZK_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
+            raise RuntimeError('STOP: NAZK testing requires the approved sandbox service')
     elif not (env.get('PQM_SANDBOX_LOCAL_FIXTURE') == '1'
               and data.is_relative_to(Path(tempfile.gettempdir()).resolve())
               and data != Path(tempfile.gettempdir()).resolve()):
@@ -91,7 +118,61 @@ def validate_environment(env=None):
         raise RuntimeError('STOP: no inherited accounts, OAuth or integration credentials allowed')
     if (data / 'google_oauth').exists() and any((data / 'google_oauth').iterdir()):
         raise RuntimeError('STOP: sandbox must not contain OAuth files')
+    if env.get('PQM_SANDBOX_EDR_GOOGLE') != '1' and (data / 'sandbox_edr_oauth').exists() and any((data / 'sandbox_edr_oauth').iterdir()):
+        raise RuntimeError('STOP: sandbox EDR OAuth files require the narrow opt-in')
     return data, db, service or 'local-synthetic-fixture'
+
+
+def edr_google_enabled():
+    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_EDR_GOOGLE') == '1'
+
+
+def edr_google_route_allowed(method, path):
+    # This is only a safe-mode exception; normal session auth/RBAC still applies.
+    return edr_google_enabled() and method == 'POST' and path in {
+        '/api/google-oauth/start', '/api/supplier-edr-sync/preview', '/api/supplier-edr-sync'}
+
+
+def operational_enabled():
+    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_OPERATIONAL') == '1'
+
+
+def nazk_read_enabled():
+    return operational_enabled() and os.environ.get('PQM_SANDBOX_NAZK_READ') == '1'
+
+
+def attest_internal_target(db_path, *, require_operational=True):
+    """Check the real owned DB immediately before a sandbox workflow may write."""
+    if require_operational and not operational_enabled():
+        raise RuntimeError('STOP: SANDBOX operational workflow is disabled')
+    data, expected, service = validate_environment()
+    target = Path(db_path)
+    if (target.is_symlink() or target.resolve() != expected or
+            expected != data / 'pqm_sandbox.sqlite3' or not expected.is_file()):
+        raise RuntimeError('STOP: operation targets a non-SANDBOX database')
+    _verify_existing(expected, service)
+    return expected
+
+
+def operational_route_allowed(method, path):
+    """Safe-mode exception only; session auth and RBAC still decide access."""
+    if not operational_enabled():
+        return False
+    if method == 'PATCH':
+        return bool(re.fullmatch(r'/api/operational-tasks/[a-f0-9]{32}(?:/responses/\d+|/amcu-decisions/[^/]+)?', path))
+    if method != 'POST':
+        return False
+    if path in {'/api/operational-tasks/rebuild', '/api/frameworks/refresh',
+                '/api/violation-reports/sync',
+                '/api/edr-monitoring/termination-exclusions/preview',
+                '/api/edr-monitoring/termination-exclusions/create'}:
+        return True
+    if path == '/api/nazk-registry/refresh':
+        return nazk_read_enabled()
+    # Task cards and responses are local SANDBOX records, never documents or sends.
+    return bool(re.fullmatch(
+        r'/api/operational-tasks/[a-f0-9]{32}(?:/channels/(?:supplier|nazk)/sent|'
+        r'/responses|/nazk-result|/manager-tax-id|/blocking-decision|/blocking-complete)?', path))
 
 
 def local_edits_enabled():
@@ -143,14 +224,16 @@ def validate_prozorro_url(url):
     parsed = urllib.parse.urlsplit(url)
     if (parsed.scheme != 'https' or parsed.netloc != PROZORRO_HOST
             or parsed.username or parsed.password or parsed.fragment
-            or not re.fullmatch(r'/api/2\.5/(?:frameworks(?:/[a-zA-Z0-9_-]+(?:/(?:submissions|qualifications))?)?|agreements/[a-zA-Z0-9_-]+/contracts)', parsed.path)
+            or not re.fullmatch(r'/api/2\.5/(?:frameworks(?:/[a-zA-Z0-9_-]+(?:/(?:submissions|qualifications))?)?|agreements/[a-zA-Z0-9_-]+/contracts|violation_reports(?:/[a-zA-Z0-9_-]+)?|tenders/[a-zA-Z0-9_-]+)', parsed.path)
             or any(key != 'offset' for key in urllib.parse.parse_qs(parsed.query, keep_blank_values=True))):
         raise RuntimeError('Sandbox permits only public read-only Prozorro framework endpoints')
 
 
 def _restricted_getaddrinfo(host, port, *args, **kwargs):
     if getattr(_egress, 'active', False):
-        if host != PROZORRO_HOST or port not in (443, '443'):
+        permitted_host = (getattr(_egress, 'google_host', None) or
+                          getattr(_egress, 'reference_host', None) or PROZORRO_HOST)
+        if host != permitted_host or port not in (443, '443'):
             raise RuntimeError('Sandbox DNS destination is not approved')
         rows = _original_getaddrinfo(host, port, *args, **kwargs)
         if not rows or any(not ipaddress.ip_address(row[4][0]).is_global for row in rows):
@@ -164,6 +247,83 @@ class _ProzorroRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         validate_prozorro_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _NoGoogleRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError('Sandbox Google redirect is not approved')
+
+
+def validate_nazk_request(url, method):
+    parsed = urllib.parse.urlsplit(url)
+    if (not nazk_read_enabled() or method != 'GET' or parsed.scheme != 'https'
+            or parsed.hostname != NAZK_HOST or parsed.port not in (None, 443)
+            or parsed.path != NAZK_PATH or parsed.query or parsed.fragment
+            or parsed.username or parsed.password):
+        raise RuntimeError('Sandbox NAZK source is not approved')
+    return NAZK_HOST
+
+
+def fetch_nazk_bytes(url):
+    """One bounded public GET; no generic network exception or destination write."""
+    host = validate_nazk_request(url, 'GET')
+    if getattr(_egress, 'active', False):
+        raise RuntimeError('Nested sandbox network scope is not supported')
+    _egress.active = True
+    _egress.reference_host = host
+    _egress.addresses = set()
+    try:
+        request = urllib.request.Request(url, headers={'Accept': 'application/json'}, method='GET')
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoGoogleRedirect())
+        with opener.open(request, timeout=120) as response:
+            raw = response.read(128 * 1024 * 1024 + 1)
+            if len(raw) > 128 * 1024 * 1024:
+                raise RuntimeError('Sandbox NAZK source exceeds read limit')
+            return raw
+    finally:
+        _egress.active = False
+        _egress.reference_host = None
+        _egress.addresses = set()
+
+
+def validate_google_request(url, method):
+    if not edr_google_enabled():
+        raise RuntimeError('Sandbox Google EDR path is disabled')
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != 'https' or parsed.port not in (None, 443) or parsed.username or parsed.password or parsed.fragment:
+        raise RuntimeError('Sandbox Google destination is not approved')
+    if method == 'POST' and parsed.hostname == GOOGLE_TOKEN_HOST and parsed.path == '/token' and not parsed.query:
+        return GOOGLE_TOKEN_HOST
+    expected_prefix = '/v4/spreadsheets/' + SANDBOX_EDR_SPREADSHEET_ID + '/values/'
+    range_part = urllib.parse.unquote(parsed.path[len(expected_prefix):]) if parsed.path.startswith(expected_prefix) else ''
+    if (method == 'GET' and parsed.hostname == GOOGLE_SHEETS_HOST and
+            range_part in {"'ФОП'!A:O", "'ЮО'!A:O"} and
+            urllib.parse.parse_qs(parsed.query) == {'majorDimension': ['ROWS']}):
+        return GOOGLE_SHEETS_HOST
+    if (method == 'GET' and parsed.hostname == GOOGLE_SHEETS_HOST and
+            parsed.path == '/v4/spreadsheets/' + SANDBOX_EDR_SPREADSHEET_ID and
+            urllib.parse.parse_qs(parsed.query) == {'fields': ['sheets(properties(sheetId,title))']}):
+        return GOOGLE_SHEETS_HOST
+    raise RuntimeError('Sandbox Google destination or method is not approved')
+
+
+@contextmanager
+def google_open(request, timeout=60):
+    """One exact HTTPS request; never expose generic Google or network egress."""
+    host = validate_google_request(request.full_url, request.get_method())
+    if getattr(_egress, 'active', False):
+        raise RuntimeError('Nested sandbox network scope is not supported')
+    _egress.active = True
+    _egress.google_host = host
+    _egress.addresses = set()
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoGoogleRedirect())
+        with opener.open(request, timeout=timeout) as response:
+            yield response
+    finally:
+        _egress.active = False
+        _egress.google_host = None
+        _egress.addresses = set()
 
 
 def fetch_prozorro_json(url):
@@ -224,19 +384,26 @@ def outbound_audit(event, args):
     loopback = {'localhost', '127.0.0.1', '::1'}
     if event in {'socket.connect', 'socket.sendto'}:
         address = args[1] if event == 'socket.connect' else args[-1]
-        scoped = (event == 'socket.connect' and prozorro_read_enabled()
+        scoped = (event == 'socket.connect' and (prozorro_read_enabled() or edr_google_enabled() or nazk_read_enabled())
                   and getattr(_egress, 'active', False) and isinstance(address, tuple)
                   and address[0] in getattr(_egress, 'addresses', set()) and address[1] == 443)
         if not scoped and (not isinstance(address, tuple) or address[0] not in loopback):
             raise RuntimeError('Sandbox outbound network is disabled')
     if event in {'socket.getaddrinfo', 'socket.gethostbyname', 'socket.gethostbyaddr'} and args[0] not in loopback:
-        if not (event == 'socket.getaddrinfo' and prozorro_read_enabled()
-                and getattr(_egress, 'active', False) and args[0] == PROZORRO_HOST):
+        if not (event == 'socket.getaddrinfo' and getattr(_egress, 'active', False)
+                and ((prozorro_read_enabled() and args[0] == PROZORRO_HOST)
+                     or (edr_google_enabled() and args[0] == getattr(_egress, 'google_host', None))
+                     or (nazk_read_enabled() and args[0] == getattr(_egress, 'reference_host', None)))):
             raise RuntimeError('Sandbox external DNS is disabled')
     if event == 'urllib.Request' and getattr(_egress, 'active', False):
-        validate_prozorro_url(args[0])
-        if args[1] is not None or args[3] != 'GET':
-            raise RuntimeError('Sandbox external mutations are disabled')
+        if getattr(_egress, 'google_host', None):
+            validate_google_request(args[0], args[3])
+        elif getattr(_egress, 'reference_host', None):
+            validate_nazk_request(args[0], args[3])
+        else:
+            validate_prozorro_url(args[0])
+            if args[1] is not None or args[3] != 'GET':
+                raise RuntimeError('Sandbox external mutations are disabled')
     if event in {'subprocess.Popen', 'os.system', 'os.exec', 'os.posix_spawn'}:
         if sandbox_amcu.enabled() and sandbox_amcu.permitted_process(event, args):
             return
@@ -380,6 +547,12 @@ def decorate_html(raw):
         mode = 'РУЧНИЙ PROZORRO → лише БД SANDBOX · автоматичні jobs та інші інтеграції вимкнено'
     if prozorro_scheduler_enabled():
         mode = 'PROZORRO → лише БД SANDBOX · автоматично щогодини о :05 (Київ) · інші інтеграції вимкнено'
+    if edr_google_enabled():
+        mode = 'ЛИШЕ SANDBOX Google ЄДР → SANDBOX PQM · Preview перед явним Apply · інші Google інтеграції вимкнено'
+    if operational_enabled():
+        mode = ('ОПЕРАЦІЙНІ ТЕСТИ У БД SANDBOX · дозволені джерела лише для читання · '
+                'зовнішні записи й PROD призначення заблоковані'
+                + (' · Google ЄДР: SANDBOX Sheet → SANDBOX PQM' if edr_google_enabled() else ''))
     text = text.replace('<body>', '<body><aside id="sandboxWarning" role="note" style="position:fixed;bottom:0;left:0;right:0;z-index:100000;background:#fff3cd;color:#583d00;padding:8px 16px;text-align:center;font:600 14px system-ui;border-top:2px solid #d29b00">SANDBOX · ТЕСТОВІ ДАНІ · ' + mode + '</aside>', 1)
     text = text.replace('PQM · WEB TEST</em>', 'PQM · SANDBOX</em>', 1)
     return text.encode('utf-8')

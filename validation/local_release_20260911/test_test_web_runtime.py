@@ -82,7 +82,10 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertIn('rel="icon" href="/assets/pqm-search-icon.png"', html)
         self.assertTrue((root / "assets" / "pqm-tab-icon.png").is_file())
         self.assertTrue((root / "assets" / "pqm-search-icon.png").is_file())
-        self.assertIn("'PQM (WEB TEST)'", javascript)
+        self.assertNotIn("'PQM · WEB TEST'", javascript)
+        self.assertIn("if(features?.sandbox_mode)return 'PQM · SANDBOX'", javascript)
+        self.assertIn("if(environment==='local')return 'PQM · LOCAL'", javascript)
+        self.assertIn('>PQM</em>', html)
         self.assertIn('document.title=`PQM — ${titles[name]', javascript)
 
     def test_local_role_switch_reapplies_admin_capabilities_centrally(self):

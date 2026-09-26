@@ -14,6 +14,7 @@ import legacy_google_factual_edr_preview
 import legacy_google_termination_audit
 import legacy_google_termination_import
 import edr_sync_v2
+import sandbox_edr_review
 import base64
 import csv
 import hashlib
@@ -203,14 +204,19 @@ POWERBI_EXPORT_STATE = {"running": False, "message": "Експорт ще не �
 POWERBI_START_LOCK = threading.Lock()
 POWERBI_OUTPUT_ROOT = BIDS_PROJECT_PATH / "output"
 POWERBI_CURRENT_PATH = POWERBI_OUTPUT_ROOT / "powerbi_current"
-SUPPLIER_EDR_SHEET_ID = "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA"
+SUPPLIER_EDR_SHEET_ID = (sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID if SANDBOX_MODE
+                         else "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA")
 SUPPLIER_EDR_SHEETS = {"ФОП": "1278053622", "ЮО": "511647713"}
 SUPPLIER_NAZK_REVIEW_SHEET_ID = "1hAgy_YQFWf8m6yHQTO4g22Et94Gm46dC9WTBaoyZloA"
 SUPPLIER_NAZK_REVIEW_SHEET = "nazk_data"
 CURRENT_USER = os.environ.get("PQM_CURRENT_USER", "Світлана НАМЯСЕНКО")
-GOOGLE_OAUTH_DIR = Path(os.environ.get("PQM_GOOGLE_OAUTH_DIR", str((Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "PQM") if not IS_WEB_ENV else (DATA_DIR / "google_oauth"))))
-GOOGLE_OAUTH_CLIENT_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json")))
-GOOGLE_OAUTH_TOKEN_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json")))
+GOOGLE_OAUTH_DIR = (DATA_DIR / "sandbox_edr_oauth" if SANDBOX_MODE else Path(os.environ.get(
+    "PQM_GOOGLE_OAUTH_DIR", str((Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "PQM")
+                                       if not IS_WEB_ENV else (DATA_DIR / "google_oauth")))))
+GOOGLE_OAUTH_CLIENT_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_client.json" if SANDBOX_MODE else
+                            Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json"))))
+GOOGLE_OAUTH_TOKEN_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_token.json" if SANDBOX_MODE else
+                           Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json"))))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 GOOGLE_RUNTIME_FEATURE_KEY = "google_integration"
 GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS = 600
@@ -1104,6 +1110,11 @@ def google_effective_enabled() -> bool:
     return bool(google_runtime_state()["enabled"])
 
 
+def google_edr_effective_enabled() -> bool:
+    """The narrow SANDBOX EDR path never enables the global Google integration."""
+    return (sandbox_runtime.edr_google_enabled() if SANDBOX_MODE else google_effective_enabled())
+
+
 def set_google_runtime_enabled(enabled: bool, actor: str) -> dict:
     result = set_runtime_feature_enabled(GOOGLE_RUNTIME_FEATURE_KEY, enabled, actor, ENABLE_GOOGLE)
     if not enabled:
@@ -1582,19 +1593,44 @@ def init_db() -> None:
 
 def rebuild_operational_tasks(actor: str = "PQM task builder") -> dict:
     """Generic rebuild: unrelated startup/sync paths must never mutate NAZK."""
-    if SAFE_MODE:
+    if SAFE_MODE and not (SANDBOX_MODE and sandbox_runtime.operational_enabled()):
         return {"skipped": "safe_mode"}
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     with db() as con:
         return operational_tasks.build(con, actor, include_nazk=False)
 
 
+def start_amcu_registry_refresh(raw=None, filename="") -> bool:
+    """Shared PROD/SANDBOX completion chain; source commit precedes task rebuild.
+
+    A failed task rebuild raises into the AMCU refresh worker, which records an
+    error instead of presenting the source refresh as fully successful.
+    """
+    return start_reference_refresh(
+        DB_PATH, "amcu", raw, filename,
+        on_complete=lambda: rebuild_operational_tasks("PQM AMCU refresh"))
+
+
+def amcu_blocks_submission(con: sqlite3.Connection, submission_id: str) -> bool:
+    """Current AMCU membership blocks an affirmative decision on this application."""
+    row = con.execute("SELECT supplier_code FROM submissions WHERE id=?", (submission_id,)).fetchone()
+    code = re.sub(r"\D", "", str(row[0] or "")) if row else ""
+    if not code:
+        return False
+    return bool(con.execute(
+        "SELECT 1 FROM amcu_registry WHERE DIGITS(offender_code)=? LIMIT 1", (code,)).fetchone())
+
+
 def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
     """Explicit NAZK-only workflow; no external fetch and no unrelated tasks."""
-    if SAFE_MODE:
+    if SAFE_MODE and not (SANDBOX_MODE and sandbox_runtime.nazk_read_enabled()):
         return {"skipped": "safe_mode", "created": 0}
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     if workflow not in {"nazk_job", "maintenance"}:
         raise ValueError("Explicit NAZK workflow or maintenance action required")
-    if workflow == "nazk_job" and not env_flag("PQM_ENABLE_NAZK_WORKFLOW", False):
+    if workflow == "nazk_job" and not (SANDBOX_MODE and sandbox_runtime.nazk_read_enabled()) and not env_flag("PQM_ENABLE_NAZK_WORKFLOW", False):
         SERVER_LOG.info("NAZK materialization skipped: workflow not explicitly enabled")
         return {"skipped": "nazk_workflow_disabled", "created": 0}
     with db() as con:
@@ -1607,6 +1643,8 @@ def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
 
 def reconcile_prozorro_task_lifecycles(actor: str = "PQM Prozorro qualification sync") -> dict:
     """Run post-sync task transitions from already persisted Prozorro facts."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with db() as con:
         return {"amcu": operational_tasks.reconcile_amcu_after_qualification_sync(con, actor),
                 "termination": operational_tasks.reconcile_termination_after_qualification_sync(con, actor)}
@@ -1721,6 +1759,8 @@ def refresh_framework_metadata_worker() -> None:
     SYNC_STATE.update(running=True, mode="framework_metadata", started_at=started.isoformat(),
                       message="Отримання актуальних відборів із Prozorro…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH)
         result = refresh_framework_metadata()
         SYNC_STATE["message"] = f"Відбори оновлено з Prozorro: {result['updated']}/{result['frameworks']}"
     except Exception as exc:
@@ -2020,6 +2060,8 @@ def sync_incremental_active_frameworks() -> dict:
 def sync_worker(framework_id: str) -> None:
     SYNC_STATE.update(running=True, message="Синхронізація триває…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_one_framework(framework_id)
         sync_framework_officers()
         result["supplier_registry"] = refresh_supplier_registry_summary()
@@ -2041,6 +2083,8 @@ def sync_all_worker() -> None:
     started = datetime.now(timezone.utc)
     SYNC_STATE.update(running=True, mode="full", started_at=started.isoformat(), message="Пошук активних і закритих відборів…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_all_tracked_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
         rebuild_operational_tasks()
@@ -2067,6 +2111,8 @@ def sync_incremental_worker() -> None:
     SERVER_LOG.info('Prozorro automatic sync started')
     SYNC_STATE.update(running=True, mode="incremental", started_at=started.isoformat(), message="Підготовка щогодинного оновлення…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_incremental_active_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
         rebuild_operational_tasks()
@@ -3780,9 +3826,8 @@ def _raise_google_phase_error(phase: str, exc: urllib.error.HTTPError) -> None:
 
 
 def _google_oauth_redirect_uri() -> str:
-    redirect_uri = os.environ.get(
-        "PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback"
-    ).strip()
+    redirect_uri = (os.environ.get("PQM_SANDBOX_EDR_REDIRECT_URI", "") if SANDBOX_MODE else
+                    os.environ.get("PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback")).strip()
     parsed = urllib.parse.urlparse(redirect_uri)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Некоректний Google OAuth callback URI")
@@ -3880,7 +3925,14 @@ def _google_oauth_client() -> dict | None:
         SERVER_LOG.warning("Google OAuth client configuration is invalid path=%s type=%s",
                        GOOGLE_OAUTH_CLIENT_PATH, type(exc).__name__)
         return None
-    return data.get("installed") or data.get("web")
+    client = data.get("installed") or data.get("web")
+    if SANDBOX_MODE and client:
+        if (client.get("auth_uri") not in {"https://accounts.google.com/o/oauth2/auth",
+                                             "https://accounts.google.com/o/oauth2/v2/auth"}
+                or client.get("token_uri") != "https://oauth2.googleapis.com/token"):
+            GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = "invalid_configuration"
+            return None
+    return client
 
 
 def _google_oauth_token() -> dict | None:
@@ -3909,6 +3961,9 @@ def _google_oauth_token() -> dict | None:
 
 def google_oauth_status() -> dict:
     feature = google_runtime_state()
+    if SANDBOX_MODE:
+        feature = {**feature, "enabled": google_edr_effective_enabled(),
+                   "configuration_source": "sandbox_edr_scope"}
     client = _google_oauth_client()
     token = _google_oauth_token()
     configuration_error = GOOGLE_OAUTH_CLIENT_ACCESS_ERROR or GOOGLE_OAUTH_TOKEN_ACCESS_ERROR
@@ -3946,7 +4001,7 @@ def google_oauth_status() -> dict:
 
 
 def google_oauth_authorization_url(actor: str = "") -> str:
-    if not google_effective_enabled():
+    if not google_edr_effective_enabled():
         raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
     client = _google_oauth_client()
     if not client:
@@ -3965,7 +4020,7 @@ def google_oauth_authorization_url(actor: str = "") -> str:
 
 
 def google_oauth_exchange(code: str, state: str) -> dict:
-    if not google_effective_enabled():
+    if not google_edr_effective_enabled():
         raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
     pending = _consume_google_oauth_transaction(state)
     client = _google_oauth_client()
@@ -3976,7 +4031,8 @@ def google_oauth_exchange(code: str, state: str) -> dict:
                "code_verifier": pending["code_verifier"]}
     request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
         data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+    with opener(request, timeout=60) as response:
         token = json.loads(response.read().decode())
     token["obtained_at"] = time.time()
     with GOOGLE_TOKEN_WRITE_LOCK:
@@ -3985,7 +4041,7 @@ def google_oauth_exchange(code: str, state: str) -> dict:
 
 
 def _google_access_token() -> str:
-    if not google_effective_enabled():
+    if not google_edr_effective_enabled():
         raise PermissionError("Google integration вимкнено адміністратором")
     with GOOGLE_TOKEN_WRITE_LOCK:
         token = _google_oauth_token()
@@ -3999,7 +4055,8 @@ def _google_access_token() -> str:
         request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
             data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+            with opener(request, timeout=60) as response:
                 refreshed = json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
             _raise_google_phase_error("oauth_token_refresh", exc)
@@ -4010,16 +4067,57 @@ def _google_access_token() -> str:
 
 def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHEET_ID,
                          columns: str = "A:O") -> list[list]:
-    if not google_effective_enabled():
+    if SANDBOX_MODE and (spreadsheet_id != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID
+                         or sheet_name not in {"ФОП", "ЮО"} or columns != "A:O"):
+        raise PermissionError("SANDBOX EDR Google source guard rejected the request")
+    if not google_edr_effective_enabled():
         raise PermissionError("Google integration вимкнено адміністратором")
     cell_range = urllib.parse.quote(f"'{sheet_name}'!{columns}", safe="")
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{cell_range}?majorDimension=ROWS"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+        with opener(request, timeout=120) as response:
             return json.loads(response.read().decode()).get("values", [])
     except urllib.error.HTTPError as exc:
         _raise_google_phase_error("sheets_values_read", exc)
+
+
+def sandbox_supplier_google_row(code: str) -> dict:
+    """Resolve a literal supplier identity against the current SANDBOX sheet.
+
+    Stored source_row is historical provenance, not a safe navigation target.
+    Never derive the destination tab from identifier length or profile routing.
+    """
+    if (not SANDBOX_MODE or not sandbox_runtime.edr_google_enabled() or
+            SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID):
+        raise PermissionError("SANDBOX Google EDR navigation is unavailable")
+    literal = str(code or "").strip()
+    if not literal or len(literal) > 64 or any(char in literal for char in "/?#"):
+        raise ValueError("Invalid literal supplier identity")
+    matches = []
+    for tab in ("ФОП", "ЮО"):
+        for row_number, row in enumerate(_google_sheet_values(tab), 1):
+            if len(row) > 1 and str(row[1]).strip() == literal:
+                matches.append((tab, row_number))
+                if len(matches) > 1:
+                    raise ValueError("Google supplier identity is ambiguous")
+    if not matches:
+        raise KeyError("Google supplier row not found")
+    tab, row_number = matches[0]
+    query = urllib.parse.urlencode({"fields": "sheets(properties(sheetId,title))"})
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{query}"
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
+    opener = sandbox_runtime.google_open
+    with opener(request, timeout=30) as response:
+        metadata = json.loads(response.read().decode())
+    gids = [sheet.get("properties", {}).get("sheetId") for sheet in metadata.get("sheets", [])
+            if sheet.get("properties", {}).get("title") == tab]
+    if len(gids) != 1 or not isinstance(gids[0], int) or gids[0] < 0:
+        raise ValueError("Google tab metadata is ambiguous")
+    return {"source_tab": tab, "url":
+            f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit#gid={gids[0]}&range=B{row_number}"}
 
 
 def google_integration_status() -> dict:
@@ -4028,7 +4126,8 @@ def google_integration_status() -> dict:
         last = con.execute("""SELECT finished_at,status FROM supplier_edr_sync_log
           ORDER BY id DESC LIMIT 1""").fetchone()
     return {
-        **google_runtime_state(),
+        **({"enabled": google_edr_effective_enabled(),
+            "configuration_source": "sandbox_edr_scope"} if SANDBOX_MODE else google_runtime_state()),
         "client_configured": bool(oauth.get("configured")),
         "oauth_connected": bool(oauth.get("authorized")),
         "client_state": oauth.get("client_state", "absent"),
@@ -4392,7 +4491,7 @@ def supplier_edr_source_snapshot() -> dict:
     return edr_sync_v2.source_snapshot({
         sheet_name: _google_sheet_values(sheet_name)
         for sheet_name in SUPPLIER_EDR_SHEETS
-    })
+    }, spreadsheet_id=SUPPLIER_EDR_SHEET_ID)
 
 
 def supplier_edr_sync_preview() -> dict:
@@ -4400,6 +4499,15 @@ def supplier_edr_sync_preview() -> dict:
     snapshot = supplier_edr_source_snapshot()
     with db() as con:
         preview = edr_sync_v2.build_preview(con, snapshot)
+    if SANDBOX_MODE:
+        details = sandbox_edr_review.details(preview)
+        return {"source_fingerprint": preview["source_fingerprint"],
+                "state_digest": edr_sync_v2.preview_state_digest(preview),
+                "previewed_at": preview["previewed_at"],
+                "summary": {**preview["summary"], **sandbox_edr_review.summary_additions(preview, details)},
+                "conflicts": preview["conflicts"], "conflicts_total": len(preview["conflicts"]),
+                "details": details, "details_total": len(details),
+                "details_complete": True, "db_writes": 0, "google_writes": 0}
     return {
         "source_fingerprint": preview["source_fingerprint"],
         "previewed_at": preview["previewed_at"],
@@ -4418,7 +4526,8 @@ def supplier_edr_sync_preview() -> dict:
     }
 
 
-def supplier_edr_sync_worker(expected_fingerprint: str, actor: str) -> None:
+def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
+                             expected_state_digest: str | None = None) -> None:
     started_at = now_iso()
     log_id = None
     try:
@@ -4443,6 +4552,7 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str) -> None:
                 establish_manager=establish_current_supplier_manager,
                 reestablish_manager=reestablish_current_supplier_manager,
                 refresh_manager_controls=refresh_current_submission_nazk_controls,
+                expected_state_digest=expected_state_digest,
             )
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,
               inserted=?,updated=?,source_fingerprint=?,unchanged=?,details_json=? WHERE id=?""",
@@ -4741,6 +4851,12 @@ def _edr_monitoring_rows() -> list[dict]:
               JOIN application_fields af ON af.submission_id=s.id
               WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')""")}
             population = edr_sync_v2.monitoring_population_codes(con)
+            card_identities = set(profiles) | set(registry) | set(latest_app)
+            card_variants = {}
+            for literal in card_identities:
+                normalized = re.sub(r"\D", "", literal)
+                if normalized:
+                    card_variants.setdefault(normalized, set()).add(literal)
             verifications = edr_sync_v2.current_verification_projections(con, population)
             canonical_statuses = edr_sync_v2.canonical_prozorro_statuses(con, population)
             rows = []
@@ -4754,6 +4870,8 @@ def _edr_monitoring_rows() -> list[dict]:
                     status, active_qualification_dates.get(code, ""), ledger.get(code, []),
                     profile.get("edr_status", ""))
                 rows.append({"supplier_code": code,
+                  "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
+                      and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
                   "edr_full_name": str(profile.get("full_name") or "").strip(),
                   "edr_short_name": str(profile.get("short_name") or "").strip(),
@@ -5831,6 +5949,8 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
             VIOLATION_SYNC_STATE.update(running=True, message="Отримання переліку звернень…",
                                         processed=0, total=0, errors=0)
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH)
         feed = []
         for batch in paginated_pages(f"{API_ROOT}/violation_reports"):
             feed.extend(batch)
@@ -9285,7 +9405,16 @@ class Handler(BaseHTTPRequestHandler):
         sandbox_manual_sync = SANDBOX_MODE and sandbox_runtime.manual_sync_allowed(self.command, path)
         sandbox_document = SANDBOX_MODE and sandbox_runtime.sandbox_documents.route_allowed(self.command, path)
         sandbox_amcu = SANDBOX_MODE and sandbox_runtime.sandbox_amcu.route_allowed(self.command, path)
-        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not (sandbox_local_edit or sandbox_manual_sync or sandbox_document or sandbox_amcu))
+        sandbox_edr_google = SANDBOX_MODE and sandbox_runtime.edr_google_route_allowed(self.command, path)
+        sandbox_operational = SANDBOX_MODE and sandbox_runtime.operational_route_allowed(self.command, path)
+        if sandbox_operational or sandbox_amcu or sandbox_manual_sync:
+            try:
+                sandbox_runtime.attest_internal_target(DB_PATH,
+                    require_operational=not sandbox_manual_sync or sandbox_operational or sandbox_amcu)
+            except RuntimeError:
+                return self.send_json({'error': 'SANDBOX destination attestation failed',
+                                       'code': 'sandbox_target_guard'}, 503)
+        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not (sandbox_local_edit or sandbox_manual_sync or sandbox_document or sandbox_amcu or sandbox_edr_google or sandbox_operational))
                           or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
                                  for key in ("refresh", "force"))
                           or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
@@ -9527,6 +9656,8 @@ class Handler(BaseHTTPRequestHandler):
                 "sandbox_amcu_read": SANDBOX_MODE and sandbox_runtime.sandbox_amcu.enabled(),
                 "sandbox_prozorro_read": SANDBOX_MODE and sandbox_runtime.prozorro_read_enabled(),
                 "sandbox_prozorro_scheduler": SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled(),
+                "sandbox_operational": SANDBOX_MODE and sandbox_runtime.operational_enabled(),
+                "sandbox_nazk_read": SANDBOX_MODE and sandbox_runtime.nazk_read_enabled(),
                 "safe_mode": SAFE_MODE,
                 "bids_mode": BIDS_MODE,
                 "bids_update": manual_bids["enabled"],
@@ -9622,6 +9753,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(list_edr_monitoring(urllib.parse.parse_qs(parsed.query)))
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        if parsed.path.startswith("/api/sandbox/supplier-google-row/"):
+            if not SANDBOX_MODE or not sandbox_runtime.edr_google_enabled():
+                return self.send_json({"error": "Not found"}, 404)
+            code = urllib.parse.unquote(parsed.path.removeprefix("/api/sandbox/supplier-google-row/"))
+            try:
+                result = sandbox_supplier_google_row(code)
+                if parsed.query == "open=1":
+                    self.send_response(302)
+                    self.send_header("Location", result["url"])
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                return self.send_json(result)
+            except KeyError:
+                return self.send_json({"error": "Google supplier row not found"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except (PermissionError, RuntimeError):
+                return self.send_json({"error": "SANDBOX Google EDR navigation is unavailable"}, 503)
         if parsed.path.startswith("/api/supplier-profile/"):
             code = parsed.path.removeprefix("/api/supplier-profile/")
             try:
@@ -10577,17 +10727,32 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync":
             payload = self.read_json()
-            if not google_effective_enabled():
+            if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
             if SUPPLIER_EDR_SYNC_STATE["running"]:
                 return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
             fingerprint = str(payload.get("source_fingerprint") or "").strip().lower()
             if payload.get("confirmed") is not True or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
                 return self.send_json({"error": "Спочатку виконайте preview і явно підтвердьте той самий source fingerprint"}, 409)
+            state_digest = str(payload.get("state_digest") or "").strip().lower()
+            if SANDBOX_MODE and not re.fullmatch(r"[0-9a-f]{64}", state_digest):
+                return self.send_json({"error": "SANDBOX reviewed PQM state digest is required"}, 409)
+            if SANDBOX_MODE:
+                try:
+                    current_source = supplier_edr_source_snapshot()
+                    if current_source["source_fingerprint"] != fingerprint:
+                        return self.send_json({"error": "Google source changed; run a NEW Preview"}, 409)
+                    with db() as con:
+                        current_plan = edr_sync_v2.build_preview(con, current_source)
+                    if (edr_sync_v2.preview_state_digest(current_plan) != state_digest
+                            or current_plan["conflicts"]):
+                        return self.send_json({"error": "PQM state changed or conflicts exist; run a NEW Preview"}, 409)
+                except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
+                    return self.send_json({"error": str(exc)}, 409)
             SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
                                            started_at=now_iso(), updated_at=None, error=None)
             threading.Thread(target=supplier_edr_sync_worker,
-                             args=(fingerprint, self.auth_user), daemon=True).start()
+                             args=(fingerprint, self.auth_user, state_digest if SANDBOX_MODE else None), daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-export":
             payload = self.read_json()
@@ -10606,7 +10771,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/supplier-edr-sync/preview":
             self.read_json()
-            if not google_effective_enabled():
+            if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
             if SUPPLIER_EDR_SYNC_STATE["running"]:
                 return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
@@ -10629,7 +10794,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/google-oauth/start":
             self.read_json()
-            if not google_effective_enabled():
+            if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google OAuth вимкнено в цьому середовищі"}, 403)
             try:
                 return self.send_json({"authorization_url": google_oauth_authorization_url(self.auth_user)}, 200)
@@ -10757,7 +10922,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Оновлення довідника НАЗК уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/refresh":
-            if not start_reference_refresh(DB_PATH, "amcu"):
+            if not start_amcu_registry_refresh():
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/upload":
@@ -10766,7 +10931,7 @@ class Handler(BaseHTTPRequestHandler):
                 raw = base64.b64decode(payload.get("content") or "", validate=True)
             except Exception:
                 return self.send_json({"error": "Не вдалося прочитати Excel-файл"}, 400)
-            if not start_reference_refresh(DB_PATH, "amcu", raw, str(payload.get("filename") or "АМКУ.xlsx")):
+            if not start_amcu_registry_refresh(raw, str(payload.get("filename") or "АМКУ.xlsx")):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         return self.send_error(404)
@@ -11126,6 +11291,9 @@ class Handler(BaseHTTPRequestHandler):
               FROM application_fields WHERE submission_id=?""", (submission_id,)).fetchone()
             current_protocol_decision, current_compliance_status, current_marketplace_decision = (current_controls[0] or "", current_controls[1] or "", current_controls[2] or "")
             effective_protocol_decision = payload.get("protocol_decision", current_protocol_decision)
+            if (payload.get("protocol_decision") == "admit" or
+                    payload.get("marketplace_decision") == "admit") and amcu_blocks_submission(con, submission_id):
+                return self.send_json({"error": "Постачальник є у чинному реєстрі АМКУ. Для цієї заявки рішення «Так» недоступне; допустиме лише «Ні»."}, 409)
             effective_compliance_status = payload.get("compliance_status", current_compliance_status)
             effective_protocol_remarks = str(payload.get("protocol_remarks", current_controls[11]) or "").strip()
             if payload.get("compliance_status") == "approved":
