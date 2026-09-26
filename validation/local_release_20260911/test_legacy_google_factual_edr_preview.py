@@ -164,6 +164,10 @@ class FactualEdrPreviewTests(unittest.TestCase):
         self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", [
             legacy_ledger("Припинено"),
             {"id": 2, "event_type": "manual_edr", "occurred_at": "2026-09-20",
+             "snapshot_json": '{"edr_status":"Зареєстровано"}'}]), "Припинено")
+        self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", [
+            legacy_ledger("Припинено"),
+            {"id": 3, "event_type": "manual_edr", "occurred_at": "2026-09-21",
              "snapshot_json": '{"edr_status":"Зареєстровано"}'}]), "Зареєстровано")
 
     def test_ui_and_full_registry_share_legacy_factual_ledger_status(self):

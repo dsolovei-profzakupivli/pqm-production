@@ -116,9 +116,18 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
         return
     succeeded = False
     failure = ""
+    target_attested = False
     try:
+        if os.environ.get('PQM_SANDBOX') == '1':
+            import sandbox_runtime
+            sandbox_runtime.attest_internal_target(db_path)
+            if not sandbox_runtime.nazk_read_enabled():
+                raise RuntimeError('STOP: SANDBOX NAZK read is disabled')
+        target_attested = True
         _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
-        payload = json.loads(_fetch(NAZK_URL).decode("utf-8-sig"))
+        raw = (sandbox_runtime.fetch_nazk_bytes(NAZK_URL)
+               if os.environ.get('PQM_SANDBOX') == '1' else _fetch(NAZK_URL))
+        payload = json.loads(raw.decode("utf-8-sig"))
         items = payload if isinstance(payload, list) else payload.get("data", payload.get("items", []))
         if not isinstance(items, list) or not items:
             raise ValueError("Порожній або некоректний реєстр НАЗК; збережені дані не змінено")
@@ -157,7 +166,8 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
         succeeded = True
     except Exception as exc:
         failure = str(exc) or type(exc).__name__
-        _state(db_path, "nazk", "error", str(exc))
+        if target_attested:
+            _state(db_path, "nazk", "error", str(exc))
     finally:
         LOCK.release()
         if succeeded and on_complete:
@@ -170,8 +180,11 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_runtime
+        sandbox_runtime.attest_internal_target(db_path)
     if source == "amcu":
-        return _start_amcu_refresh(db_path, raw, filename)
+        return _start_amcu_refresh(db_path, raw, filename, on_complete)
     with START_LOCK:
         state = reference_status(db_path).get(source, {})
         if state.get("status") == "running" or LOCK.locked():
@@ -196,7 +209,10 @@ def _amcu_error(db_path, exc):
         LOG.exception("AMCU terminal status could not be persisted")
 
 
-def _start_amcu_refresh(db_path, raw, filename):
+def _start_amcu_refresh(db_path, raw, filename, on_complete=None):
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_runtime
+        sandbox_runtime.attest_internal_target(db_path)
     key = str(Path(db_path).resolve())
     with START_LOCK:
         # Reserve before scheduling, including the 202 response delay. AMCU
@@ -208,7 +224,7 @@ def _start_amcu_refresh(db_path, raw, filename):
         try:
             _state(db_path, "amcu", "running", "Підготовка фонового оновлення")
             timer = threading.Timer(0.2, refresh_amcu, args=(db_path, raw, filename),
-                                    kwargs={"_claimed": True})
+                                    kwargs={"_claimed": True, "on_complete": on_complete})
             timer.daemon = True
             timer.start()
         except Exception as exc:
@@ -453,14 +469,19 @@ def _amcu_rows_bounded(raw=None, filename=""):
     return payload["source"], payload["rows"]
 
 
-def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False):
+def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False, on_complete=None):
     if not _claimed and not AMCU_LOCK.acquire(blocking=False): return
     key = str(Path(db_path).resolve())
     AMCU_ACTIVE.add(key)
     AMCU_ERRORS.pop(key, None)
     started = time.monotonic()
     finished = False
+    target_attested = False
     try:
+        if os.environ.get('PQM_SANDBOX') == '1':
+            import sandbox_runtime
+            sandbox_runtime.attest_internal_target(db_path)
+        target_attested = True
         _state(db_path, "amcu", "running", "Завантаження реєстру АМКУ")
         LOG.info("AMCU refresh started")
         source, rows = _amcu_rows_bounded(raw, filename)
@@ -474,14 +495,20 @@ def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False):
             con.execute("""UPDATE reference_sync_state SET status='ok',message=?,row_count=?,
                         updated_at=?,source_updated_at=? WHERE source='amcu'""",
                         (f"Оновлено з {source}", count, _now(), _now()))
+        if on_complete:
+            on_complete()
         finished = True
         LOG.info("AMCU refresh completed rows=%d fetch_parse_seconds=%.3f db_seconds=%.3f total_seconds=%.3f",
                  count, fetched-started, time.monotonic()-fetched, time.monotonic()-started)
     except Exception as exc:
-        _amcu_error(db_path, exc)
+        if target_attested:
+            _amcu_error(db_path, exc)
+        else:
+            AMCU_ERRORS[key] = str(exc)
+            LOG.error('AMCU target attestation failed before DB write: %s', type(exc).__name__)
         finished = True
     finally:
-        if not finished:
+        if not finished and target_attested:
             _amcu_error(db_path, "Фоновий процес АМКУ перервано; повторіть оновлення")
         AMCU_ACTIVE.discard(key)
         AMCU_LOCK.release()

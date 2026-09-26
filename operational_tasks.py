@@ -592,15 +592,24 @@ def create_termination_exclusions(con, supplier_codes, actor):
     return result
 
 
-def amcu_decision_cycle_covered(con, supplier_code, decision_ids):
-    """True when every current AMKU fact belongs to an executed prior cycle."""
+def amcu_decision_cycle_covered(con, supplier_code, decision_ids, active_application_ids=()):
+    """True when both current AMKU facts and active applications belong to prior exclusion work."""
     expected={str(value) for value in decision_ids if str(value)}
     if not expected: return False
     covered={str(row[0]) for row in con.execute("""SELECT DISTINCT d.amcu_decision_id
       FROM operational_task_amcu_decisions d JOIN operational_tasks t ON t.id=d.task_id
       WHERE t.task_type='amcu_exclusion' AND DIGITS(t.supplier_code)=DIGITS(?)
         AND t.status='completed' AND t.resolution_code='amcu_excluded'""",(supplier_code,))}
-    return expected.issubset(covered)
+    if not expected.issubset(covered):
+        return False
+    active_ids={str(value) for value in active_application_ids if str(value)}
+    if not active_ids:
+        return True
+    linked={str(row[0]) for row in con.execute("""SELECT DISTINCT a.application_id
+      FROM operational_task_applications a JOIN operational_tasks t ON t.id=a.task_id
+      WHERE t.task_type='amcu_exclusion' AND DIGITS(t.supplier_code)=DIGITS(?)
+        AND t.status='completed' AND t.resolution_code='amcu_excluded'""", (supplier_code,))}
+    return active_ids.issubset(linked)
 
 
 def reconcile_amcu_after_qualification_sync(con, actor="PQM Prozorro qualification sync"):
@@ -748,7 +757,7 @@ def build(con, actor="PQM task builder", *, include_nazk=False):
         if not apps: continue
         decisions=amcu_decisions.get(code, [])
         decision_ids={x["row_key"] for x in decisions}
-        if amcu_decision_cycle_covered(con,code,decision_ids) and not active:
+        if amcu_decision_cycle_covered(con,code,decision_ids,(x['id'] for x in apps)) and not active:
             continue
         base_key=f"amcu_exclusion:{code}"
         prior=con.execute("SELECT status FROM operational_tasks WHERE task_key=?",(base_key,)).fetchone()

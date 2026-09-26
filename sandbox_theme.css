@@ -130,3 +130,18 @@ html[data-pqm-environment="sandbox"] [data-pqm-dark-ink][data-pqm-dark-ink][data
   color:#edf3fc!important;
 }
 }
+/* One scrolling region: the review header and confirmation stay visible. */
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog{width:min(1180px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:hidden}
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog>form{display:flex;flex-direction:column;max-height:calc(100vh - 24px);overflow:hidden}
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog>form>header,
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog>form>footer{flex:0 0 auto;background:var(--surface,#fff);z-index:1}
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewBody{flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto;overscroll-behavior:contain}
+html[data-pqm-environment="sandbox"] .edr-review-section{margin-top:18px}
+html[data-pqm-environment="sandbox"] .edr-review-filters{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
+html[data-pqm-environment="sandbox"] .edr-review-filters label{display:grid;gap:5px;min-width:220px}
+html[data-pqm-environment="sandbox"] .edr-review-row{padding:12px;margin:10px 0;border:1px solid var(--line,#d7e0ea);border-radius:10px;overflow-wrap:anywhere}
+html[data-pqm-environment="sandbox"] .edr-review-row strong,html[data-pqm-environment="sandbox"] .edr-review-row small{display:block}
+html[data-pqm-environment="sandbox"] .edr-review-row dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 0}
+html[data-pqm-environment="sandbox"] .edr-review-row dd{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+html[data-pqm-environment="sandbox"] .edr-review-pages{display:flex;align-items:center;gap:12px;justify-content:center;padding:12px}
+@media(max-width:700px){html[data-pqm-environment="sandbox"] .edr-review-row dl{grid-template-columns:1fr}}

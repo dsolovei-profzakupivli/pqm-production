@@ -1041,8 +1041,8 @@ class NazkWorkflowTests(unittest.TestCase):
 
     def test_date_only_renderer_does_not_add_timezone_time(self):
         source = Path("app.js").read_text(encoding="utf-8")
-        self.assertIn("if(/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value).trim()))return displayDateOnly(value)",
-                      source)
+        self.assertIn("if(/^\\d{4}-\\d{2}-\\d{2}$/.test(text)||", source)
+        self.assertIn("return displayDateOnly(text)", source)
         self.assertIn("return`${iso[3]}.${iso[2]}.${iso[1]}`", source)
 
     def test_submission_nazk_modal_uses_two_column_overflow_safe_layout(self):
