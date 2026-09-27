@@ -172,6 +172,7 @@ class EdrMonitoringTests(unittest.TestCase):
     def test_registered_status_has_one_option_and_matches_legacy_and_canonical_rows(self):
         rows = [dict(self.rows()[0], supplier_code="001", edr_status="Зареєстровано"),
                 dict(self.rows()[0], supplier_code="002", edr_status="✅ Зареєстровано"),
+                dict(self.rows()[0], supplier_code="004", edr_status="✅Зареєстровано"),
                 dict(self.rows()[0], supplier_code="003", edr_status="Припинено")]
         with patch.object(server, "_edr_monitoring_rows", return_value=rows):
             listing = server.list_edr_monitoring({"edr_status": ["Зареєстровано"]})
@@ -179,8 +180,8 @@ class EdrMonitoringTests(unittest.TestCase):
             terminated = server.edr_monitoring_filtered_codes({"edr_status": ["Припинено"]})
         self.assertEqual(listing["edr_statuses"].count("Зареєстровано"), 1)
         self.assertNotIn("✅ Зареєстровано", listing["edr_statuses"])
-        self.assertEqual({row["supplier_code"] for row in listing["items"]}, {"001", "002"})
-        self.assertEqual(legacy_selection, ["001", "002"])
+        self.assertEqual({row["supplier_code"] for row in listing["items"]}, {"001", "002", "004"})
+        self.assertEqual(legacy_selection, ["001", "002", "004"])
         self.assertEqual(terminated, ["003"])
         self.assertEqual(server._edr_monitoring_status("✅ Зареєстровано"), "Зареєстровано")
         self.assertEqual(server._edr_monitoring_status("Порушено справу про банкрутство"),

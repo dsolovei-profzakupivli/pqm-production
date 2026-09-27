@@ -97,6 +97,7 @@ class EdrSyncV2Tests(unittest.TestCase):
                                              ('46130719',)).fetchone()[0], 'Зареєстровано')
         for presented, canonical in sync.EDR_PRESENTATION_PREFIXES.items():
             self.assertEqual(sync.canonical_edr_status(presented), canonical)
+            self.assertEqual(sync.canonical_edr_status(presented.replace(' ', '', 1)), canonical)
         with self.assertRaisesRegex(ValueError, 'presentation prefix'):
             sync.canonical_edr_status('🟠 Невідомий статус')
 

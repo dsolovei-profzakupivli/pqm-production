@@ -4827,7 +4827,10 @@ def _edr_monitoring_name(value) -> str:
 
 def _edr_monitoring_status(value) -> str:
     status = str(value or "").strip()
-    return edr_sync_v2.EDR_PRESENTATION_PREFIXES.get(status, status)
+    try:
+        return edr_sync_v2.canonical_edr_status(status)
+    except ValueError:
+        return status  # Unknown legacy value stays visible for operator review.
 
 
 def _edr_monitoring_rows() -> list[dict]:

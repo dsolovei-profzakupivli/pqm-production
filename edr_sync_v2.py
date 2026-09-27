@@ -105,6 +105,10 @@ def canonical_edr_status(value) -> str:
     status = clean(value)
     if status in EDR_PRESENTATION_PREFIXES:
         return EDR_PRESENTATION_PREFIXES[status]
+    for presented, canonical in EDR_PRESENTATION_PREFIXES.items():
+        prefix = presented.split(" ", 1)[0]
+        if status.startswith(prefix) and status[len(prefix):].strip() == canonical:
+            return canonical
     if status and unicodedata.category(status[0]) == "So":
         raise ValueError("Невідомий presentation prefix статусу ЄДР")
     return status
