@@ -4819,6 +4819,12 @@ def _edr_monitoring_revision() -> tuple:
                  for path in paths)
 
 
+def _edr_monitoring_name(value) -> str:
+    """Treat display placeholders as missing without changing canonical EDR data."""
+    name = str(value or "").strip()
+    return "" if name.casefold() in {"—", "null"} else name
+
+
 def _edr_monitoring_rows() -> list[dict]:
     """Cache the set-based projection; every request still filters and paginates on the server."""
     fingerprint = _edr_monitoring_revision()
@@ -4873,8 +4879,8 @@ def _edr_monitoring_rows() -> list[dict]:
                   "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
                       and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
-                  "edr_full_name": str(profile.get("full_name") or "").strip(),
-                  "edr_short_name": str(profile.get("short_name") or "").strip(),
+                  "edr_full_name": _edr_monitoring_name(profile.get("full_name")),
+                  "edr_short_name": _edr_monitoring_name(profile.get("short_name")),
                   "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
                   "edr_status": displayed_edr_status, "prozorro_status": status,
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
@@ -4933,7 +4939,8 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
         if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
         if edr_statuses and row["edr_status"] not in edr_statuses: continue
-        full_name, short_name = bool(row.get("edr_full_name")), bool(row.get("edr_short_name"))
+        full_name = bool(_edr_monitoring_name(row.get("edr_full_name")))
+        short_name = bool(_edr_monitoring_name(row.get("edr_short_name")))
         if names_completeness == "complete" and not (full_name and short_name): continue
         if names_completeness == "missing_any" and full_name and short_name: continue
         if names_completeness == "missing_full" and full_name: continue
@@ -5009,7 +5016,8 @@ def list_edr_monitoring(params: dict) -> dict:
     sort_key = str((params.get("sort") or ["freshness"])[0] or "freshness").strip()
     sort_direction = str((params.get("direction") or ["asc"])[0] or "asc").strip().lower()
     allowed_sorts = {
-        "freshness", "supplier_code", "supplier_name", "manager_name", "edr_status",
+        "freshness", "supplier_code", "supplier_name", "edr_full_name", "edr_short_name",
+        "manager_name", "edr_status",
         "prozorro_status", "termination_details", "latest_application_date",
         "verification_date", "verification_officer", "google_note",
     }
@@ -10013,7 +10021,7 @@ class Handler(BaseHTTPRequestHandler):
             filtered_codes = selected_codes
             if mode != "selected":
                 listing_params = {key: list(values) for key, values in query.items()
-                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "freshness",
+                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "edr_names", "freshness",
                                              "verification_from", "verification_to", "application_from",
                                              "application_to", "admission_from", "admission_to", "dk_code", "risk"}}
                 if query.get("view") == ["edr_monitoring"]:

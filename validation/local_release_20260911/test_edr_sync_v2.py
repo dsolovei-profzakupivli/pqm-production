@@ -48,6 +48,38 @@ class EdrSyncV2Tests(unittest.TestCase):
         return sync.apply(con, source, source['source_fingerprint'], confirmed=True,
                           actor='test', synced_at='2026-09-16T12:00:00')
 
+    def test_new_google_code_with_decided_application_creates_canonical_names(self):
+        con = database()
+        code = '46130719'
+        con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('application-1', code, 'Заявка', '2026-09-01'))
+        con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
+                    ('application-1', 'admit', '2026-09-02', 'УО'))
+        google_row = row(code=code, checked='15.09.2026')
+        source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)],
+                                       'ЮО': [list(sync.HEADERS), google_row]})
+        plan = sync.build_preview(con, source)
+        item = plan['items'][0]
+        # Matched means present in PQM, not previously present in the Google snapshot.
+        self.assertTrue(item['matched'])
+        self.assertFalse(item['existing_profile'])
+        self.assertTrue(item['apply_allowed'])
+        self.assertEqual(plan['summary']['conflicts'], 0)
+        result = self.apply_observation(con, source)
+        profile = con.execute('SELECT full_name,short_name,source_sheet FROM supplier_edr_profiles WHERE supplier_code=?',
+                              (code,)).fetchone()
+        self.assertEqual(result['inserted'], 1)
+        self.assertEqual(tuple(profile), ('ПОВНА НАЗВА', 'СКОРОЧЕНА НАЗВА', 'ЮО'))
+
+    def test_new_google_code_without_decided_application_stays_ineligible(self):
+        con = database()
+        source = snapshot(row(code='46130719'))
+        plan = sync.build_preview(con, source)
+        self.assertFalse(plan['items'][0]['apply_allowed'])
+        result = self.apply_observation(con, source)
+        self.assertEqual(result['skipped_ineligible_new'], 1)
+        self.assertIsNone(con.execute('SELECT 1 FROM supplier_edr_profiles WHERE supplier_code=?',
+                                      ('46130719',)).fetchone())
+
     def test_verification_row_move_preserves_event_identity_and_provenance(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")

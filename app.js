@@ -961,6 +961,7 @@ function renderEdrMonitoringEdrStatuses(values){const panel=$('#edrMonitoringEdr
 function clearEdrMonitoringFilter(key,statusValue=''){if(edrMonitoringStatusSelections[key]){statusValue?edrMonitoringStatusSelections[key].delete(statusValue):edrMonitoringStatusSelections[key].clear();bindEdrMonitoringStatusMulti(key==='prozorro_status'?'edrMonitoringProzorro':'edrMonitoringEdr',key)}else{const controls={search:'#edrMonitoringSearch',dk_code:'#edrMonitoringDk',entity_type:'#edrMonitoringType',edr_names:'#edrMonitoringNames',freshness:'#edrMonitoringFreshness',verification_from:'#edrMonitoringVerifiedFrom',verification_to:'#edrMonitoringVerifiedTo',application_from:'#edrMonitoringApplicationFrom',application_to:'#edrMonitoringApplicationTo'};if(controls[key])$(controls[key]).value=''}edrMonitoringPage=1;updateEdrMonitoringFilters();loadEdrMonitoring()}
 function edrMonitoringFilterDisplay(key,value){const controls={entity_type:'#edrMonitoringType',edr_names:'#edrMonitoringNames',freshness:'#edrMonitoringFreshness'},select=controls[key]?$(controls[key]):null;return select?.selectedOptions?.[0]?.textContent||value}
 function updateEdrMonitoringFilters(){const params=edrMonitoringParams(),statusKeys=['prozorro_status','edr_status'],baseKeys=Object.keys(edrMonitoringFilterLabels).filter(key=>!statusKeys.includes(key)),baseActive=baseKeys.filter(key=>params[key]),statusChips=statusKeys.flatMap(key=>[...edrMonitoringStatusSelections[key]].map(value=>({key,value}))),advanced=['entity_type','edr_names','freshness','verification_from','verification_to','application_from','application_to'],count=advanced.filter(key=>params[key]).length+statusChips.length,activeCount=baseActive.length+statusChips.length;$('#edrMonitoringFilterSummary').textContent=count?`Фільтри · ${count}`:'Фільтри';$('#edrMonitoringReset').hidden=!activeCount;const chips=$('#edrMonitoringChips');chips.hidden=!activeCount;chips.innerHTML=baseActive.map(key=>`<button type="button" data-edr-filter-remove="${key}"><span>${esc(edrMonitoringFilterLabels[key])}: ${esc(edrMonitoringFilterDisplay(key,params[key]))}</span> ×</button>`).join('')+statusChips.map(({key,value})=>`<button type="button" data-edr-filter-remove="${key}" data-edr-filter-value="${esc(value)}"><span>${esc(edrMonitoringFilterLabels[key])}: ${esc(value)}</span> ×</button>`).join('')+(activeCount?'<button type="button" data-edr-filter-clear="all">Очистити всі</button>':'');chips.querySelectorAll('[data-edr-filter-remove]').forEach(button=>button.onclick=()=>clearEdrMonitoringFilter(button.dataset.edrFilterRemove,button.dataset.edrFilterValue||''));const clear=chips.querySelector('[data-edr-filter-clear]');if(clear)clear.onclick=()=>$('#edrMonitoringReset').click();syncSharedFilterPresentation($('#edrMonitoringView'))}
+function updateEdrMissingNamesAction(){const selected=$('#edrMonitoringNames').value==='missing_any',button=$('#edrMonitoringMissingNames');button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected))}
 function applyEdrMonitoringColumns(){/* handled by the shared table_widths_ui component */}
 const updateEdrMonitoringFiltersBeforeStatusLabels=updateEdrMonitoringFilters;
 updateEdrMonitoringFilters=function(){
@@ -970,12 +971,21 @@ updateEdrMonitoringFilters=function(){
   });
   const selection=edrMonitoringStatusSelections.edr_status;
   if(selection.size===1)$('#edrMonitoringEdr summary').textContent=displayEdrStatus([...selection][0]);
+  updateEdrMissingNamesAction();
 };
 function updateEdrMonitoringSelection(){const selected=edrMonitoringSelected.size;$('#edrMonitoringCounts').textContent=`Знайдено: ${edrMonitoringTotal.toLocaleString('uk-UA')} · Вибрано: ${selected.toLocaleString('uk-UA')}`;const exportButton=$('#edrMonitoringExport');exportButton.textContent=`Експорт для ClarityChecker · ${(selected||edrMonitoringTotal).toLocaleString('uk-UA')}`;exportButton.href=edrMonitoringExportUrl();const createButton=$('#edrMonitoringCreateTermination');if(createButton){createButton.hidden=!selected;createButton.textContent=`Створити задачі на виключення · ${selected.toLocaleString('uk-UA')}`}const pageCodes=edrMonitoringItems.map(item=>String(item.supplier_code)),onPage=pageCodes.filter(code=>edrMonitoringSelected.has(code)).length,checkbox=$('#edrMonitoringSelectPage');checkbox.checked=Boolean(pageCodes.length)&&onPage===pageCodes.length;checkbox.indeterminate=onPage>0&&onPage<pageCodes.length;updateEdrMonitoringFilters()}
 function decorateEdrMonitoringRows(){
+  $$('#edrMonitoringBody td[colspan="12"]').forEach(cell=>cell.colSpan=14);
   const rows=$$('#edrMonitoringBody tr[data-edr-code]');
   rows.forEach((row,index)=>{
     const item=edrMonitoringItems[index];if(!item)return;
+    const manager=row.querySelector('[data-edr-column="manager_name"]');
+    if(manager&&!row.querySelector('[data-edr-column="edr_full_name"]')){
+      for(const [field,value] of [['edr_full_name',item.edr_full_name],['edr_short_name',item.edr_short_name]]){
+        const cell=document.createElement('td');cell.dataset.edrColumn=field;
+        cell.textContent=String(value||'').trim()||'—';row.insertBefore(cell,manager);
+      }
+    }
     const status=row.querySelector('[data-edr-column="edr_status"]');
     if(status)status.textContent=displayEdrStatus(item.edr_status);
     const cell=row.querySelector('[data-edr-column="supplier_code"]');
@@ -1682,6 +1692,7 @@ $('#edrMonitoringNav').onclick=()=>{showModule('edrMonitoring');loadEdrMonitorin
 $('#edrMonitoringSearch').oninput=$('#edrMonitoringDk').oninput=()=>{edrMonitoringPage=1;clearTimeout(edrMonitoringTimer);edrMonitoringTimer=setTimeout(loadEdrMonitoring,250)};
 bindEdrMonitoringStatusMulti('edrMonitoringProzorro','prozorro_status');
 $('#edrMonitoringType').onchange=$('#edrMonitoringNames').onchange=$('#edrMonitoringFreshness').onchange=$('#edrMonitoringVerifiedFrom').onchange=$('#edrMonitoringVerifiedTo').onchange=$('#edrMonitoringApplicationFrom').onchange=$('#edrMonitoringApplicationTo').onchange=()=>{edrMonitoringPage=1;loadEdrMonitoring()};
+$('#edrMonitoringMissingNames').onclick=()=>{$('#edrMonitoringNames').value=$('#edrMonitoringNames').value==='missing_any'?'':'missing_any';edrMonitoringPage=1;loadEdrMonitoring()};
 $('#edrMonitoringKpis').onclick=event=>{const button=event.target.closest('[data-freshness]');if(!button)return;$('#edrMonitoringFreshness').value=$('#edrMonitoringFreshness').value===button.dataset.freshness?'':button.dataset.freshness;edrMonitoringPage=1;loadEdrMonitoring()};
 $('#edrMonitoringReset').onclick=()=>{$('#edrMonitoringSearch').value=$('#edrMonitoringDk').value=$('#edrMonitoringType').value=$('#edrMonitoringNames').value=$('#edrMonitoringFreshness').value=$('#edrMonitoringVerifiedFrom').value=$('#edrMonitoringVerifiedTo').value=$('#edrMonitoringApplicationFrom').value=$('#edrMonitoringApplicationTo').value='';Object.values(edrMonitoringStatusSelections).forEach(selection=>selection.clear());bindEdrMonitoringStatusMulti('edrMonitoringProzorro','prozorro_status');bindEdrMonitoringStatusMulti('edrMonitoringEdr','edr_status');edrMonitoringPage=1;edrMonitoringSelected.clear();updateEdrMonitoringFilters();loadEdrMonitoring()};
 $('#edrMonitoringSelectPage').onchange=event=>{edrMonitoringItems.forEach(item=>{const code=String(item.supplier_code);event.target.checked?edrMonitoringSelected.add(code):edrMonitoringSelected.delete(code)});$$('#edrMonitoringBody .edr-monitoring-check').forEach(input=>input.checked=event.target.checked);updateEdrMonitoringSelection()};
