@@ -4825,6 +4825,22 @@ def _edr_monitoring_name(value) -> str:
     return "" if name.casefold() in {"—", "null"} else name
 
 
+EDR_MONITORING_LEGACY_STATUSES = {
+    "✅ Зареєстровано": "Зареєстровано",
+    "⚪ Неактуально": "Неактуально",
+    "⚪ Немає інформації": "Немає інформації",
+    "🟡 В стані припинення": "В стані припинення",
+    "🟡 Порушено справу про банкрутство": "Порушено справу про банкрутство",
+    "🔴 Припинено": "Припинено",
+    "🔴 Банкрут": "Банкрут",
+}
+
+
+def _edr_monitoring_status(value) -> str:
+    status = str(value or "").strip()
+    return EDR_MONITORING_LEGACY_STATUSES.get(status, status)
+
+
 def _edr_monitoring_rows() -> list[dict]:
     """Cache the set-based projection; every request still filters and paginates on the server."""
     fingerprint = _edr_monitoring_revision()
@@ -4882,7 +4898,7 @@ def _edr_monitoring_rows() -> list[dict]:
                   "edr_full_name": _edr_monitoring_name(profile.get("full_name")),
                   "edr_short_name": _edr_monitoring_name(profile.get("short_name")),
                   "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
-                  "edr_status": displayed_edr_status, "prozorro_status": status,
+                  "edr_status": _edr_monitoring_status(displayed_edr_status), "prozorro_status": status,
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
                   "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
                   "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
@@ -4924,7 +4940,8 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     values = lambda key: {part.strip() for raw in (params.get(key) or []) for part in str(raw or "").split(",") if part.strip()}
     search, dk_code = value("search").casefold(), value("dk_code")
     entity_type = value("entity_type")
-    prozorro_statuses, edr_statuses = values("prozorro_status"), values("edr_status")
+    prozorro_statuses = values("prozorro_status")
+    edr_statuses = {_edr_monitoring_status(status) for status in values("edr_status")}
     freshness = value("freshness") if include_freshness else ""
     verified_from, verified_to = value("verification_from"), value("verification_to")
     application_from, application_to = value("application_from"), value("application_to")
@@ -4938,7 +4955,7 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
         if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
         if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
-        if edr_statuses and row["edr_status"] not in edr_statuses: continue
+        if edr_statuses and _edr_monitoring_status(row["edr_status"]) not in edr_statuses: continue
         full_name = bool(_edr_monitoring_name(row.get("edr_full_name")))
         short_name = bool(_edr_monitoring_name(row.get("edr_short_name")))
         if names_completeness == "complete" and not (full_name and short_name): continue
@@ -5031,7 +5048,7 @@ def list_edr_monitoring(params: dict) -> dict:
     filtered.sort(key=sortable, reverse=sort_direction == "desc")
     total = len(filtered); offset = (page - 1) * size
     page_rows = filtered[offset:offset + size]
-    statuses = sorted({row["edr_status"] for row in projection if row["edr_status"]})
+    statuses = sorted({_edr_monitoring_status(row["edr_status"]) for row in projection if row["edr_status"]})
     return {"items": [{key: value for key, value in row.items() if not key.startswith("_")}
                       for row in page_rows],
             "total": total, "page": page, "size": size,
