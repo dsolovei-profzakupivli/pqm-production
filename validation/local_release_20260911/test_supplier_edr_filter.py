@@ -27,6 +27,25 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.con.execute("INSERT OR IGNORE INTO frameworks(id,pretty_id,status,raw_json,synced_at) VALUES('current-filter-fixture','current-filter-fixture','active','{}','fixture')")
         self.con.execute("INSERT INTO registry_contracts(id,framework_id,supplier_code,status,raw_json,synced_at) VALUES(?,'current-filter-fixture',?,'active','{}','fixture')",('rc-'+code,code))
     def listing(self,**params):return server.list_qualified_suppliers({k:[str(v)] for k,v in params.items()})
+    def test_all_known_legacy_statuses_match_canonical_filter_without_changing_storage(self):
+        pairs=(
+            ('✅ Зареєстровано','Зареєстровано'),
+            ('⚪️ Неактуально','Неактуально'),
+            ('🔴 Припинено','Припинено'),
+            ('🟡 В стані припинення','В стані припинення'),
+            ('🟡 Порушено справу про банкрутство','Порушено справу про банкрутство'),
+            ('⚪️ Немає інформації','Немає інформації'),
+        )
+        for legacy,canonical in pairs:
+            for raw in (legacy,canonical):
+                with self.subTest(raw=raw):
+                    self.con.execute("UPDATE supplier_edr_profiles SET edr_status=? WHERE supplier_code='30067771'",(raw,))
+                    self.assertEqual(self.listing()['edr_statuses'],sorted({'Зареєстровано',canonical}))
+                    for selected in (legacy,canonical):
+                        result=self.listing(search='30067771',edr_status=selected)
+                        self.assertEqual(result['total'],1)
+                        self.assertEqual(result['items'][0]['edr_profile']['edr_status'],raw)
+                    self.assertEqual(self.listing(search='30067771')['total'],1)
     def test_distinct_and_current_transition_fop_and_legal(self):
         self.assertEqual(self.listing()['edr_statuses'],['Зареєстровано'])
         for code in ('3038301896','30067771'):
