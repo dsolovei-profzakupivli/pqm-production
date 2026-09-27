@@ -94,8 +94,11 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertIn("element.disabled=!admin||element.dataset.runtimeDisabled==='1'", javascript)
         self.assertIn("document.body.classList.toggle('role-viewer',viewer)", javascript)
         self.assertIn("element.dataset.runtimeDisabled='1'", javascript)
-        self.assertIn("requestsRefresh.disabled=viewer||requestsRefresh.dataset.runtimeDisabled==='1'", javascript)
-        self.assertIn("Дія недоступна для ролі лише перегляду", javascript)
+        self.assertIn("updateRequestsRefreshAvailability();", javascript)
+        self.assertIn("currentMe?.permissions?.['appeals.update']===true", javascript)
+        self.assertIn("requestsRefreshState.sandboxOperational&&requestsRefreshState.sandboxProzorroRead", javascript)
+        self.assertIn("requestsRefreshState.running||requestsRefreshState.starting", javascript)
+        self.assertNotIn("requestsRefresh.disabled=viewer", javascript)
 
     def test_bids_disabled_fails_with_controlled_exception(self):
         with patch.object(server, "BIDS_MODE", "disabled"):
