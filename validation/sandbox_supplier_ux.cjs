@@ -17,7 +17,9 @@ assert.equal(context.environmentBannerText({environment:'local',sandbox_mode:fal
 assert.equal(context.environmentBannerText({environment:'test_web',sandbox_mode:false}),'PQM');
 assert.match(fs.readFileSync(path.join(root,'index.html'),'utf8'),/id="environmentBanner"[^>]*>PQM<\/em>/);
 assert.doesNotMatch(fs.readFileSync(path.join(root,'index.html'),'utf8'),/Розроблено для ДУ/);
-assert.match(css,/\.topbar \.brand\{flex:0 0 auto;min-width:0;gap:18px;margin-right:12px\}/);
+const brandLayout=css.match(/\.topbar \.brand\{([^}]*)\}/)?.[1]||'';
+assert.ok(Number(brandLayout.match(/gap:(\d+)px/)?.[1])>=20);
+assert.ok(Number(brandLayout.match(/margin-right:(\d+)px/)?.[1])>=18);
 assert.match(css,/@media\(max-width:1280px\)\{[\s\S]*?\.topbar #mainNav\{order:5/);
 assert.equal(context.displayDateOnly('2026-09-09'),'09.09.2026');
 assert.equal(context.displayDate('2026-09-09'),'09.09.2026');
@@ -85,7 +87,8 @@ for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_ex
 assert.equal(typeReloads,8);
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
 assert.match(app,/cell\.classList\.add\('supplier-code-action-cell'\)/);
-assert.match(css,/\.supplier-code-action-cell \.supplier-card-action\{position:absolute;right:8px/);
+assert.match(app,/line\.append\(code,action\);cell\.classList\.add\('supplier-code-action-cell'\);cell\.replaceChildren\(line\)/);
+assert.match(css,/\.supplier-code-line\{display:grid;grid-template-columns:minmax\(0,1fr\) auto;align-items:center/);
 const overviewContext=vm.createContext({esc:value=>String(value||''),displayDate:value=>String(value||'')});
 vm.runInContext(section(app,'function supplierProfileOverviewHtml(','function compactSupplierNote('),overviewContext);
 const sampleOverview=overviewContext.supplierProfileOverviewHtml('Постачальник','12345678',{}, {history:[]},{note:''},false);

@@ -119,13 +119,17 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 .supplier-card-action{padding:1px 5px;margin-left:6px;border:1px solid #b7c8db;border-radius:5px;background:#fff;color:#075bc7;font-size:13px;line-height:1.3;vertical-align:middle}
 .supplier-card-action:hover{background:#edf5ff}
 .supplier-code-action-cell .supplier-card-action:hover{background:#b9d8ff;border-color:#2767af;color:#123e78;box-shadow:0 0 0 2px #76b7ff66}
-.supplier-edr-metadata{display:flex;flex-wrap:wrap;gap:6px 12px;margin:8px 0 0;padding:8px 10px;border:1px solid #d8e2ed;border-radius:8px;background:#f6f9fd}
-.supplier-edr-metadata>div{display:inline-flex;align-items:baseline;gap:4px;min-width:0;padding:0!important;border:0!important}
-.supplier-edr-metadata dt,.supplier-edr-metadata dd{margin:0;font-size:11px;white-space:nowrap}
-.supplier-edr-metadata dt:after{content:':' }
+.supplier-edr-metadata{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin:10px 0 0}
+.supplier-edr-metadata>div{min-width:0;padding:10px 12px;border:1px solid #d8e2ed;border-radius:9px;background:#f6f9fd}
+.supplier-edr-metadata dt{font-size:12px;font-weight:400;color:#64748b}
+.supplier-edr-metadata dd{margin:5px 0 0;font-size:14px;font-weight:700;overflow-wrap:anywhere}
+html[data-pqm-environment="sandbox"] .supplier-edr-metadata>div{background:#132840;color:#edf3fc;border-color:#44617f}
+html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 #environmentBanner{display:inline-block;padding:5px 11px;border-radius:9px;background:#dbeeff;color:#154376;font-size:17px;font-style:normal;font-weight:800;letter-spacing:.08em;white-space:nowrap}
-.supplier-code-action-cell{position:relative;padding-right:42px!important;user-select:text}
-.supplier-code-action-cell .supplier-card-action{position:absolute;right:8px;top:50%;transform:translateY(-50%)}
+.supplier-code-action-cell{user-select:text}
+.supplier-code-line{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:9px;width:100%}
+.supplier-code-value{min-width:0;overflow-wrap:anywhere}
+.supplier-code-action-cell .supplier-card-action{justify-self:end;align-self:center;margin:0;min-width:26px;height:24px;padding:1px 5px;background:#e7f1ff;border-color:#8eb4dc;color:#184c83}
 .supplier-profile-overview{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:12px}
 .supplier-profile-overview>.supplier-shared-note{min-width:0;margin:0;padding:8px 10px;box-shadow:none}
 .supplier-profile-overview>.supplier-shared-note h3{margin:0 0 5px}
@@ -399,11 +403,11 @@ body[data-density="compact"] table th,body[data-density="compact"] table td{padd
 
 /* WEB account controls must not cover configurable LOCAL navigation buttons. */
 .topbar{height:auto;min-height:72px;padding-block:8px}
-.topbar .brand{flex:0 0 auto;min-width:0;gap:18px;margin-right:12px}
+.topbar .brand{flex:0 0 auto;min-width:0;gap:26px;margin-right:20px}
 .topbar .brand-logo{flex:0 0 118px;width:118px;height:auto}
 .topbar .brand>div{display:block;min-width:0}
 .topbar .brand em{display:block;white-space:nowrap;font-size:27px;font-style:normal;font-weight:800;color:#154376}
-.topbar #environmentBanner{border:1px solid #9bc6e8;background:#dbeeff;padding:1px 12px;border-radius:9px;line-height:1.3}
+.topbar #environmentBanner{border:1px solid #9bc6e8;background:#dbeeff;padding:2px 14px;border-radius:10px;line-height:1.25;font-size:32px;font-weight:800}
 .topbar #mainNav{justify-content:flex-start;overflow-x:auto}
 .topbar #mainNav .main-nav-text{min-height:40px}
 @media(max-width:1280px){
