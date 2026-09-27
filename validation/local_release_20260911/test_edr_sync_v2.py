@@ -80,6 +80,40 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertIsNone(con.execute('SELECT 1 FROM supplier_edr_profiles WHERE supplier_code=?',
                                       ('46130719',)).fetchone())
 
+    def test_google_status_is_canonical_before_profile_write(self):
+        for incoming in ('✅ Зареєстровано', 'Зареєстровано'):
+            with self.subTest(incoming=incoming):
+                con = database()
+                con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('s1', '46130719', 'Заявка', '2026-09-01'))
+                con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
+                            ('s1', 'admit', '2026-09-02', 'УО'))
+                values = row(code='46130719', status=incoming)
+                source = snapshot(values)
+                self.assertEqual(source['rows'][0]['Статус в реєстрі (ЄДР)'], incoming)
+                self.assertEqual(sync.build_preview(con, source)['items'][0]['incoming']['edr_status'],
+                                 'Зареєстровано')
+                self.apply_observation(con, source)
+                self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
+                                             ('46130719',)).fetchone()[0], 'Зареєстровано')
+        for presented, canonical in sync.EDR_PRESENTATION_PREFIXES.items():
+            self.assertEqual(sync.canonical_edr_status(presented), canonical)
+        with self.assertRaisesRegex(ValueError, 'presentation prefix'):
+            sync.canonical_edr_status('🟠 Невідомий статус')
+
+    def test_unrelated_row_move_does_not_migrate_legacy_status(self):
+        con = database()
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?)",
+                    ('12345678', '✅ Зареєстровано', 'ФОП', 12, 'old'))
+        values = row(checked='')
+        values[3] = values[4] = ''
+        values[13] = values[14] = ''
+        source = snapshot(values)
+        source['rows'][0]['source_row'] = 99
+        self.apply_observation(con, source)
+        profile = con.execute('SELECT edr_status,source_row FROM supplier_edr_profiles WHERE supplier_code=?',
+                              ('12345678',)).fetchone()
+        self.assertEqual(tuple(profile), ('✅ Зареєстровано', 99))
+
     def test_verification_row_move_preserves_event_identity_and_provenance(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")

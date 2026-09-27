@@ -209,6 +209,7 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertNotIn('id="edrMonitoringAdmissionFrom"', html)
         self.assertIn("edrMonitoringSelected=new Set()", app)
         self.assertIn("view:'edr_monitoring'", app)
+        self.assertIn("'Зареєстровано':'✅ Зареєстровано'", app)
         self.assertIn('data-edr-sort="supplier_name"', html)
         self.assertIn('id="edrMonitoringNames"', html)
         self.assertIn('id="edrMonitoringMissingNames"', html)

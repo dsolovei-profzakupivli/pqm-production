@@ -4825,20 +4825,9 @@ def _edr_monitoring_name(value) -> str:
     return "" if name.casefold() in {"—", "null"} else name
 
 
-EDR_MONITORING_LEGACY_STATUSES = {
-    "✅ Зареєстровано": "Зареєстровано",
-    "⚪ Неактуально": "Неактуально",
-    "⚪ Немає інформації": "Немає інформації",
-    "🟡 В стані припинення": "В стані припинення",
-    "🟡 Порушено справу про банкрутство": "Порушено справу про банкрутство",
-    "🔴 Припинено": "Припинено",
-    "🔴 Банкрут": "Банкрут",
-}
-
-
 def _edr_monitoring_status(value) -> str:
     status = str(value or "").strip()
-    return EDR_MONITORING_LEGACY_STATUSES.get(status, status)
+    return edr_sync_v2.EDR_PRESENTATION_PREFIXES.get(status, status)
 
 
 def _edr_monitoring_rows() -> list[dict]:
