@@ -147,6 +147,15 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertEqual([row["supplier_code"] for row in descending["items"]], ["002", "001"])
         self.assertEqual([row["supplier_code"] for row in incomplete["items"]], ["002"])
 
+    def test_independent_name_filters_compose_with_quick_filter_and_export(self):
+        rows=[dict(self.rows()[0],supplier_code='46130719',edr_full_name='',edr_short_name=''),
+              dict(self.rows()[0],supplier_code='002',edr_full_name='Повна',edr_short_name=''),
+              dict(self.rows()[0],supplier_code='003',edr_full_name='',edr_short_name='Коротка')]
+        with patch.object(server,'_edr_monitoring_rows',return_value=rows):
+            params={'edr_full_name':['missing'],'edr_short_name':['missing'],'edr_names':['missing_any']}
+            self.assertEqual(server.list_edr_monitoring(params)['total'],1)
+            self.assertEqual(server.edr_monitoring_filtered_codes(params),['46130719'])
+
     def test_missing_names_filter_combines_with_existing_filters_and_exact_export_codes(self):
         rows = [dict(self.rows()[0], supplier_code="46130719", edr_full_name=" — ",
                      edr_short_name="null", prozorro_status="Активний"),
@@ -215,6 +224,8 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertIn("'Зареєстровано':'✅ Зареєстровано'", app)
         self.assertIn('data-edr-sort="supplier_name"', html)
         self.assertIn('id="edrMonitoringNames"', html)
+        self.assertIn('id="edrMonitoringFullName"', html)
+        self.assertIn('id="edrMonitoringShortName"', html)
         self.assertIn('id="edrMonitoringMissingNames"', html)
         self.assertLess(html.index('data-edr-column="supplier_name" data-edr-sort="supplier_name"'),
                         html.index('data-edr-column="edr_full_name" data-edr-sort="edr_full_name"'))
@@ -226,7 +237,11 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertIn("['edr_short_name',item.edr_short_name]", app)
         export_route = Path('server.py').read_text(encoding='utf-8').split(
             'if parsed.path == "/api/supplier-edr-export":', 1)[1]
-        self.assertIn('"edr_names", "freshness"', export_route)
+        self.assertIn('"edr_names", "edr_full_name", "edr_short_name", "freshness"', export_route)
+        self.assertIn("restoreEdrMonitoringFilters();", app)
+        self.assertIn("saveEdrMonitoringFilters();const sequence", app)
+        self.assertIn("localStorage.removeItem(edrMonitoringStorageKey)", app)
+        self.assertNotIn("edrMonitoringSelected:[...", app)
         self.assertIn('id="edrMonitoringChips"', html)
         self.assertIn("syncSharedFilterPresentation($('#edrMonitoringView'))", app)
         self.assertIn("#queueFilterChips button,.edr-monitoring-chips button", styles)

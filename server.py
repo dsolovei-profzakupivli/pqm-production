@@ -4938,6 +4938,9 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     verified_from, verified_to = value("verification_from"), value("verification_to")
     application_from, application_to = value("application_from"), value("application_to")
     names_completeness = value("edr_names")
+    full_completeness, short_completeness = value("edr_full_name"), value("edr_short_name")
+    if full_completeness not in {"", "filled", "missing"} or short_completeness not in {"", "filled", "missing"}:
+        raise ValueError("Невідомий фільтр заповненості назви ЄДР")
     if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
         raise ValueError("Невідомий тип постачальника")
     result = []
@@ -4950,6 +4953,10 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
         if edr_statuses and _edr_monitoring_status(row["edr_status"]) not in edr_statuses: continue
         full_name = bool(_edr_monitoring_name(row.get("edr_full_name")))
         short_name = bool(_edr_monitoring_name(row.get("edr_short_name")))
+        if full_completeness == "filled" and not full_name: continue
+        if full_completeness == "missing" and full_name: continue
+        if short_completeness == "filled" and not short_name: continue
+        if short_completeness == "missing" and short_name: continue
         if names_completeness == "complete" and not (full_name and short_name): continue
         if names_completeness == "missing_any" and full_name and short_name: continue
         if names_completeness == "missing_full" and full_name: continue
@@ -10030,7 +10037,7 @@ class Handler(BaseHTTPRequestHandler):
             filtered_codes = selected_codes
             if mode != "selected":
                 listing_params = {key: list(values) for key, values in query.items()
-                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "edr_names", "freshness",
+                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "edr_names", "edr_full_name", "edr_short_name", "freshness",
                                              "verification_from", "verification_to", "application_from",
                                              "application_to", "admission_from", "admission_to", "dk_code", "risk"}}
                 if query.get("view") == ["edr_monitoring"]:

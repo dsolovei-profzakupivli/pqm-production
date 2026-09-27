@@ -78,6 +78,19 @@ class TerminationExclusionTests(unittest.TestCase):
         self.assertEqual(inactive_item['reason'],'no_active_qualifications')
         self.assertEqual(inactive_item['reasons'],['Немає активних кваліфікацій'])
 
+    def test_legacy_statuses_use_canonical_business_predicate_for_preview_and_create(self):
+        for status, expected in [('Припинено', True), ('🔴 Припинено', True),
+                                 ('🔴Припинено', True), ('Зареєстровано', False),
+                                 ('✅ Зареєстровано', False), ('✅Зареєстровано', False),
+                                 ('🔵 Невідомий legacy status', False)]:
+            with self.subTest(status=status):
+                con=self.connection(status=status)
+                preview=self.call(operational_tasks.preview_termination_exclusions,con,['1234567890'])
+                created=self.call(operational_tasks.create_termination_exclusions,con,['1234567890'],'Тестова УО')
+                self.assertEqual(preview['to_create'],int(expected))
+                self.assertEqual(created['created'],int(expected))
+                self.assertEqual(con.execute('SELECT COUNT(*) FROM operational_tasks').fetchone()[0],int(expected))
+
     def test_preview_reports_all_independent_skip_reasons(self):
         con=self.connection(status='Зареєстровано',active=False)
         item=self.call(operational_tasks.preview_termination_exclusions,con,['1234567890'])['items'][0]
