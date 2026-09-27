@@ -226,6 +226,7 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertIn('id="edrMonitoringChips"', html)
         self.assertIn("syncSharedFilterPresentation($('#edrMonitoringView'))", app)
         self.assertIn("#queueFilterChips button,.edr-monitoring-chips button", styles)
+        self.assertIn('#edrMonitoringMissingNames[aria-pressed="true"]', styles)
         self.assertIn(".data-module-table>:is(.supplier-table-scroll,.table-scroll)", styles)
 
     def test_monitoring_export_uses_exact_filtered_population_and_existing_contract(self):
