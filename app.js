@@ -693,13 +693,14 @@ function decorateSupplierEdrCard(body,code,edr,supplierNote){
   }
   grid.after(metadata);
   metadata.append(actions);
-  if(!source||document.documentElement.dataset.pqmEnvironment!=='sandbox')return;
-  source.textContent='Перевіряємо актуальний рядок у SANDBOX Google…';
-  request(`${API}/sandbox/supplier-google-row/${encodeURIComponent(code)}`).then(result=>{
+  if(!source)return;
+  source.textContent='Перевіряємо актуальний рядок Google…';
+  const googleRowPath=`${API}/${document.documentElement.dataset.pqmEnvironment==='sandbox'?'sandbox/supplier-google-row':'supplier-google-row'}/${encodeURIComponent(code)}`;
+  request(googleRowPath).then(result=>{
     if(!source.isConnected||$('#supplierProfileSubtitle').textContent!==`ЄДРПОУ / РНОКПП: ${code}`)return;
-    const link=document.createElement('a');link.href=`${API}/sandbox/supplier-google-row/${encodeURIComponent(code)}?open=1`;link.target='_blank';link.rel='noopener';link.textContent=`↗ Відкрити рядок у Google · ${result.source_tab}`;
+    const link=document.createElement('a');link.href=`${googleRowPath}?open=1`;link.target='_blank';link.rel='noopener';link.textContent='↗ Google ЄДР';
     source.textContent=result.source_tab;
-    const compact=link.cloneNode(true);compact.textContent='↗ Google ЄДР';actions.append(compact);
+    actions.append(link);
   }).catch(()=>{if(source.isConnected)source.textContent='Поточний рядок Google не підтверджено'});
 }
 function formatLegacyCardDates(root,values){

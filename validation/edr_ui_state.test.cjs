@@ -59,6 +59,28 @@ test('navbar and supplier-card presentation stay scoped to shared UI',()=>{
   assert.match(css,/\.supplier-code-action-cell \.supplier-card-action\{position:absolute;right:8px;top:50%/);
   assert.match(app,/nameAction\.replaceWith\(name\)/);
   assert.match(app,/metadata\.append\(actions\)/);
-  assert.match(app,/compact\.textContent='↗ Google ЄДР'/);
+  assert.match(app,/link\.textContent='↗ Google ЄДР'/);
   assert.doesNotMatch(app,/source\.replaceChildren\(link\)/);
+});
+
+test('one exact-code Google action works for PROD/SANDBOX, ЮО/ФОП, modal/floating',async()=>{
+  const start=app.indexOf('function decorateSupplierEdrCard('),end=app.indexOf('\nfunction formatLegacyCardDates(',start);
+  for(const environment of ['production','sandbox'])for(const [code,tab] of [['46130719','ЮО'],['1234567890','ФОП']])for(const mode of ['modal','floating']){
+    const rows=['Статус у Prozorro','Статус у реєстрі (ЄДР)','Актуальність ЄДР','Дата перевірки','Синхронізовано з Google Sheets','Джерело snapshot'].map(label=>({label,dt:{textContent:label},dd:{textContent:'',isConnected:true},querySelector(selector){return selector==='dt'?this.dt:this.dd}}));
+    const section={querySelectorAll:()=>rows,querySelector(selector){if(selector==='h3')return{after(){}};if(selector==='.supplier-profile-grid')return{after(){}};return null}};
+    const body={dataset:{detailWindow:mode},querySelector(selector){return selector==='.supplier-profile-edr'?section:{}}};
+    const created=[],requests=[];
+    const context=vm.createContext({document:{documentElement:{dataset:{pqmEnvironment:environment}},createElement:()=>{const element={children:[],append(child){this.children.push(child)}};created.push(element);return element}},$:(selector)=>selector==='#supplierProfileSubtitle'?{textContent:`ЄДРПОУ / РНОКПП: ${code}`}:null,compactSupplierNote(){},role:()=> 'admin',displayEdrStatus:value=>value,request:url=>{requests.push(url);return Promise.resolve({source_tab:tab})},API:'/api',encodeURIComponent});
+    vm.runInContext(app.slice(start,end),context);
+    context.decorateSupplierEdrCard(body,code,{edr_status:'Зареєстровано'},{note:''});
+    await Promise.resolve();
+    const expected=`/api/${environment==='sandbox'?'sandbox/supplier-google-row':'supplier-google-row'}/${code}`;
+    assert.deepEqual(requests,[expected]);
+    const actions=created.find(element=>element.className==='supplier-edr-actions');
+    const googleLinks=actions.children.filter(child=>child.textContent==='↗ Google ЄДР');
+    assert.equal(googleLinks.length,1);
+    assert.equal(googleLinks[0].href,`${expected}?open=1`);
+    assert.equal(rows.at(-1).dd.textContent,tab);
+    assert.ok(created.find(element=>element.className==='supplier-edr-metadata').children.includes(actions));
+  }
 });
