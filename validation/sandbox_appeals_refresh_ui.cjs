@@ -27,7 +27,7 @@ update({sandboxProzorroRead:true});check('opt-ins restored',false);
 update({runtimeLoaded:false});check('runtime features unavailable fails closed',true);
 assert(src.includes('updateRequestsRefreshAvailability({running:Boolean(sync.running),starting:false});'));
 assert(src.includes('updateRequestsRefreshAvailability({runtimeLoaded:true,sandboxMode:Boolean(features.sandbox_mode)'));
-assert(src.includes('updateRequestsRefreshAvailability();\n  document.body.classList.toggle'));
+assert(/updateRequestsRefreshAvailability\(\);\r?\n  document\.body\.classList\.toggle/.test(src));
 assert(!src.includes("$('#requestsRefresh').disabled="));
 assert(!src.includes("'#requestsRefresh':features.sandbox_operational"));
 console.log('PASS: appeals refresh RBAC, SANDBOX opt-ins, running/completed, and one canonical button state');
