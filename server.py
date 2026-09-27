@@ -5062,6 +5062,12 @@ def list_qualified_suppliers(params: dict) -> dict:
     risk = params.get("risk", [""])[0].strip()
     dk_code = params.get("dk_code", [""])[0].strip()
     edr_status = params.get("edr_status", [""])[0].strip()
+    # Accept known presentation-only legacy rows until their DB normalization.
+    canonical_edr_status = _edr_monitoring_status(edr_status) if edr_status else ""
+    edr_status_variants = sorted({canonical_edr_status, *(
+        raw for raw, canonical in edr_sync_v2.EDR_PRESENTATION_PREFIXES.items()
+        if canonical == canonical_edr_status
+    )}) if canonical_edr_status else []
     entity_type = params.get("entity_type", [""])[0].strip()
     freshness = params.get("freshness", [""])[0].strip()
     verification_from = params.get("verification_from", [""])[0].strip()
@@ -5119,8 +5125,9 @@ def list_qualified_suppliers(params: dict) -> dict:
         args.extend(codes)
     if edr_status:
         # Same current, one-row-per-code snapshot as supplier_profile; never history/sync date.
-        where.append("EXISTS (SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=DIGITS(combined.supplier_code) AND ep.edr_status=?)")
-        args.append(edr_status)
+        where.append("EXISTS (SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=DIGITS(combined.supplier_code) "
+                     f"AND ep.edr_status IN ({','.join('?' for _ in edr_status_variants)}))")
+        args.extend(edr_status_variants)
     if entity_type:
         where.append("SUPPLIER_ENTITY_TYPE(combined.supplier_code)=?")
         args.append(entity_type)
@@ -5175,7 +5182,8 @@ def list_qualified_suppliers(params: dict) -> dict:
             con.create_function("CANONICAL_FRESHNESS", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("bucket", "not_checked"), deterministic=True)
             con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("verification_date", ""), deterministic=True)
             con.create_function("CANONICAL_LAST_ADMISSION", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("last_admission_date", ""), deterministic=True)
-        edr_statuses = [r[0] for r in con.execute("SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>'' ORDER BY edr_status")]
+        edr_statuses = sorted({_edr_monitoring_status(r[0]) for r in con.execute(
+            "SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>''")})
         if not con.execute("SELECT 1 FROM supplier_registry_summary LIMIT 1").fetchone():
             return {"items": [], "total": 0, "registered_total": 0, "not_registered": 0,
                     "active": 0, "page": 1, "size": size, "pages": 0, "building": True, "edr_statuses": edr_statuses}

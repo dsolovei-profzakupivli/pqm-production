@@ -28,8 +28,9 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.con.execute("INSERT INTO registry_contracts(id,framework_id,supplier_code,status,raw_json,synced_at) VALUES(?,'current-filter-fixture',?,'active','{}','fixture')",('rc-'+code,code))
     def listing(self,**params):return server.list_qualified_suppliers({k:[str(v)] for k,v in params.items()})
     def test_distinct_and_current_transition_fop_and_legal(self):
-        self.assertEqual(self.listing()['edr_statuses'],['✅ Зареєстровано'])
+        self.assertEqual(self.listing()['edr_statuses'],['Зареєстровано'])
         for code in ('3038301896','30067771'):
+            self.assertEqual(self.listing(search=code,edr_status='Зареєстровано')['total'],1)
             self.assertEqual(self.listing(search=code,edr_status='✅ Зареєстровано')['total'],1)
             # Actual importer, isolated DB and mocked read-only Sheets; no real sync.
             headers=list(edr_sync_v2.HEADERS);values=['']*len(headers)
@@ -42,10 +43,14 @@ class SupplierEdrFilterTests(unittest.TestCase):
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')
             self.assertEqual(self.listing(search=code,edr_status='✅ Зареєстровано')['total'],0)
+            self.assertEqual(self.listing(search=code,edr_status='Припинено')['total'],1)
             data=self.listing(search=code,edr_status='🔴 Припинено')
             self.assertEqual(data['total'],1)
+            self.assertEqual(data['items'][0]['edr_profile']['edr_status'],'Припинено')
             self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],'2026-09-07')
+        self.assertEqual(self.listing()['edr_statuses'],['Припинено'])
     def test_and_filters_empty_and_injection(self):
+        self.assertEqual(self.listing(edr_status='Зареєстровано')['total'],2)
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано',status='active')['total'],2)
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано',status='terminated')['total'],0)
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано',search='absent')['total'],0)

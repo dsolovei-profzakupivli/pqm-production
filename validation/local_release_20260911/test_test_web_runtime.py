@@ -83,9 +83,23 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertTrue((root / "assets" / "pqm-tab-icon.png").is_file())
         self.assertTrue((root / "assets" / "pqm-search-icon.png").is_file())
         self.assertNotIn("'PQM · WEB TEST'", javascript)
-        self.assertIn("if(features?.sandbox_mode)return 'PQM · SANDBOX'", javascript)
-        self.assertIn("if(environment==='local')return 'PQM · LOCAL'", javascript)
+        self.assertIn("function environmentBannerText(features){\n  return 'PQM';\n}", javascript)
+        self.assertIn('id="environmentBanner"', html)
         self.assertIn('>PQM</em>', html)
+        self.assertNotIn('id="sandboxWarning"', html)
+        self.assertNotIn('data-pqm-environment="sandbox"', html)
+        self.assertNotIn('id="pqmSandboxTheme"', html)
+        import sandbox_runtime
+        with patch.dict(os.environ, {'PQM_SANDBOX': '1'}):
+            sandbox_html = sandbox_runtime.decorate_html(html.encode()).decode()
+        self.assertIn('data-pqm-environment="sandbox"', sandbox_html)
+        self.assertIn('id="pqmSandboxTheme"', sandbox_html)
+        self.assertIn('/sandbox_contrast.js?v=1', sandbox_html)
+        self.assertIn('pqm-sandbox-tab-inverted.svg', sandbox_html)
+        self.assertIn('id="sandboxWarning"', sandbox_html)
+        self.assertIn('position:fixed;bottom:0', sandbox_html)
+        self.assertIn('SANDBOX · ТЕСТОВІ ДАНІ', sandbox_html)
+        self.assertIn('if SANDBOX_MODE and path == "index.html":', (root / 'server.py').read_text(encoding='utf-8'))
         self.assertIn('document.title=`PQM — ${titles[name]', javascript)
 
     def test_local_role_switch_reapplies_admin_capabilities_centrally(self):
