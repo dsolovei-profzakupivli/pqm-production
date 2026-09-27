@@ -147,6 +147,57 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertEqual([row["supplier_code"] for row in descending["items"]], ["002", "001"])
         self.assertEqual([row["supplier_code"] for row in incomplete["items"]], ["002"])
 
+    def test_independent_name_filters_compose_with_quick_filter_and_export(self):
+        rows=[dict(self.rows()[0],supplier_code='46130719',edr_full_name='',edr_short_name=''),
+              dict(self.rows()[0],supplier_code='002',edr_full_name='Повна',edr_short_name=''),
+              dict(self.rows()[0],supplier_code='003',edr_full_name='',edr_short_name='Коротка')]
+        with patch.object(server,'_edr_monitoring_rows',return_value=rows):
+            params={'edr_full_name':['missing'],'edr_short_name':['missing'],'edr_names':['missing_any']}
+            self.assertEqual(server.list_edr_monitoring(params)['total'],1)
+            self.assertEqual(server.edr_monitoring_filtered_codes(params),['46130719'])
+
+    def test_missing_names_filter_combines_with_existing_filters_and_exact_export_codes(self):
+        rows = [dict(self.rows()[0], supplier_code="46130719", edr_full_name=" — ",
+                     edr_short_name="null", prozorro_status="Активний"),
+                dict(self.rows()[0], supplier_code="33333333", edr_full_name="Назва",
+                     edr_short_name=" ", prozorro_status="Неактивний"),
+                dict(self.rows()[0], supplier_code="44444444", edr_full_name="Назва",
+                     edr_short_name="Коротка", prozorro_status="Активний")]
+        params = {"edr_names": ["missing_any"], "prozorro_status": ["Активний"],
+                  "application_from": ["2026-09-01"], "entity_type": ["legal_entity"]}
+        with patch.object(server, "_edr_monitoring_rows", return_value=rows), \
+             patch.object(server, "supplier_entity_type", return_value="legal_entity"):
+            listing = server.list_edr_monitoring(params)
+            codes = server.edr_monitoring_filtered_codes(params)
+            exported = list(csv.reader(io.StringIO(
+                server.edr_monitoring_export_csv(codes).decode("utf-8-sig"))))
+        self.assertEqual(listing["total"], 1)
+        self.assertEqual(codes, ["46130719"])
+        self.assertEqual([row[0] for row in exported[1:]], codes)
+        self.assertEqual(server._edr_monitoring_name("  null  "), "")
+        self.assertEqual(server._edr_monitoring_name(" — "), "")
+        self.assertEqual(server._edr_monitoring_name("  "), "")
+
+    def test_registered_status_has_one_option_and_matches_legacy_and_canonical_rows(self):
+        rows = [dict(self.rows()[0], supplier_code="001", edr_status="Зареєстровано"),
+                dict(self.rows()[0], supplier_code="002", edr_status="✅ Зареєстровано"),
+                dict(self.rows()[0], supplier_code="004", edr_status="✅Зареєстровано"),
+                dict(self.rows()[0], supplier_code="003", edr_status="Припинено")]
+        with patch.object(server, "_edr_monitoring_rows", return_value=rows):
+            listing = server.list_edr_monitoring({"edr_status": ["Зареєстровано"]})
+            legacy_selection = server.edr_monitoring_filtered_codes({"edr_status": ["✅ Зареєстровано"]})
+            terminated = server.edr_monitoring_filtered_codes({"edr_status": ["Припинено"]})
+        self.assertEqual(listing["edr_statuses"].count("Зареєстровано"), 1)
+        self.assertNotIn("✅ Зареєстровано", listing["edr_statuses"])
+        self.assertEqual({row["supplier_code"] for row in listing["items"]}, {"001", "002", "004"})
+        self.assertEqual(legacy_selection, ["001", "002", "004"])
+        self.assertEqual(terminated, ["003"])
+        self.assertEqual(server._edr_monitoring_status("✅ Зареєстровано"), "Зареєстровано")
+        self.assertEqual(server._edr_monitoring_status("⚪️ Неактуально"), "Неактуально")
+        self.assertEqual(server._edr_monitoring_status("⚪️ Немає інформації"), "Немає інформації")
+        self.assertEqual(server._edr_monitoring_status("Порушено справу про банкрутство"),
+                         "Порушено справу про банкрутство")
+
     def test_freshness_business_sort_order(self):
         expected = ["not_checked", "gt90", "gt60", "gt30", "lt30", "not_current"]
         rows = []
@@ -170,11 +221,31 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertNotIn('id="edrMonitoringAdmissionFrom"', html)
         self.assertIn("edrMonitoringSelected=new Set()", app)
         self.assertIn("view:'edr_monitoring'", app)
+        self.assertIn("'Зареєстровано':'✅ Зареєстровано'", app)
         self.assertIn('data-edr-sort="supplier_name"', html)
         self.assertIn('id="edrMonitoringNames"', html)
+        self.assertIn('id="edrMonitoringFullName"', html)
+        self.assertIn('id="edrMonitoringShortName"', html)
+        self.assertIn('id="edrMonitoringMissingNames"', html)
+        self.assertLess(html.index('data-edr-column="supplier_name" data-edr-sort="supplier_name"'),
+                        html.index('data-edr-column="edr_full_name" data-edr-sort="edr_full_name"'))
+        self.assertLess(html.index('data-edr-column="edr_short_name" data-edr-sort="edr_short_name"'),
+                        html.index('data-edr-column="manager_name" data-edr-sort="manager_name"'))
+        self.assertIn('updateEdrMissingNamesAction()', app)
+        self.assertIn("$('#edrMonitoringMissingNames').onclick", app)
+        self.assertIn("['edr_full_name',item.edr_full_name]", app)
+        self.assertIn("['edr_short_name',item.edr_short_name]", app)
+        export_route = Path('server.py').read_text(encoding='utf-8').split(
+            'if parsed.path == "/api/supplier-edr-export":', 1)[1]
+        self.assertIn('"edr_names", "edr_full_name", "edr_short_name", "freshness"', export_route)
+        self.assertIn("restoreEdrMonitoringFilters();", app)
+        self.assertIn("saveEdrMonitoringFilters();const sequence", app)
+        self.assertIn("localStorage.removeItem(edrMonitoringStorageKey)", app)
+        self.assertNotIn("edrMonitoringSelected:[...", app)
         self.assertIn('id="edrMonitoringChips"', html)
         self.assertIn("syncSharedFilterPresentation($('#edrMonitoringView'))", app)
         self.assertIn("#queueFilterChips button,.edr-monitoring-chips button", styles)
+        self.assertIn('#edrMonitoringMissingNames[aria-pressed="true"]', styles)
         self.assertIn(".data-module-table>:is(.supplier-table-scroll,.table-scroll)", styles)
 
     def test_monitoring_export_uses_exact_filtered_population_and_existing_contract(self):

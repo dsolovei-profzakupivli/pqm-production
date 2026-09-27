@@ -4819,6 +4819,20 @@ def _edr_monitoring_revision() -> tuple:
                  for path in paths)
 
 
+def _edr_monitoring_name(value) -> str:
+    """Treat display placeholders as missing without changing canonical EDR data."""
+    name = str(value or "").strip()
+    return "" if name.casefold() in {"—", "null"} else name
+
+
+def _edr_monitoring_status(value) -> str:
+    status = str(value or "").strip()
+    try:
+        return edr_sync_v2.canonical_edr_status(status)
+    except ValueError:
+        return status  # Unknown legacy value stays visible for operator review.
+
+
 def _edr_monitoring_rows() -> list[dict]:
     """Cache the set-based projection; every request still filters and paginates on the server."""
     fingerprint = _edr_monitoring_revision()
@@ -4873,10 +4887,10 @@ def _edr_monitoring_rows() -> list[dict]:
                   "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
                       and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
-                  "edr_full_name": str(profile.get("full_name") or "").strip(),
-                  "edr_short_name": str(profile.get("short_name") or "").strip(),
+                  "edr_full_name": _edr_monitoring_name(profile.get("full_name")),
+                  "edr_short_name": _edr_monitoring_name(profile.get("short_name")),
                   "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
-                  "edr_status": displayed_edr_status, "prozorro_status": status,
+                  "edr_status": _edr_monitoring_status(displayed_edr_status), "prozorro_status": status,
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
                   "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
                   "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
@@ -4918,11 +4932,15 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     values = lambda key: {part.strip() for raw in (params.get(key) or []) for part in str(raw or "").split(",") if part.strip()}
     search, dk_code = value("search").casefold(), value("dk_code")
     entity_type = value("entity_type")
-    prozorro_statuses, edr_statuses = values("prozorro_status"), values("edr_status")
+    prozorro_statuses = values("prozorro_status")
+    edr_statuses = {_edr_monitoring_status(status) for status in values("edr_status")}
     freshness = value("freshness") if include_freshness else ""
     verified_from, verified_to = value("verification_from"), value("verification_to")
     application_from, application_to = value("application_from"), value("application_to")
     names_completeness = value("edr_names")
+    full_completeness, short_completeness = value("edr_full_name"), value("edr_short_name")
+    if full_completeness not in {"", "filled", "missing"} or short_completeness not in {"", "filled", "missing"}:
+        raise ValueError("Невідомий фільтр заповненості назви ЄДР")
     if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
         raise ValueError("Невідомий тип постачальника")
     result = []
@@ -4932,8 +4950,13 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
         if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
         if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
-        if edr_statuses and row["edr_status"] not in edr_statuses: continue
-        full_name, short_name = bool(row.get("edr_full_name")), bool(row.get("edr_short_name"))
+        if edr_statuses and _edr_monitoring_status(row["edr_status"]) not in edr_statuses: continue
+        full_name = bool(_edr_monitoring_name(row.get("edr_full_name")))
+        short_name = bool(_edr_monitoring_name(row.get("edr_short_name")))
+        if full_completeness == "filled" and not full_name: continue
+        if full_completeness == "missing" and full_name: continue
+        if short_completeness == "filled" and not short_name: continue
+        if short_completeness == "missing" and short_name: continue
         if names_completeness == "complete" and not (full_name and short_name): continue
         if names_completeness == "missing_any" and full_name and short_name: continue
         if names_completeness == "missing_full" and full_name: continue
@@ -5009,7 +5032,8 @@ def list_edr_monitoring(params: dict) -> dict:
     sort_key = str((params.get("sort") or ["freshness"])[0] or "freshness").strip()
     sort_direction = str((params.get("direction") or ["asc"])[0] or "asc").strip().lower()
     allowed_sorts = {
-        "freshness", "supplier_code", "supplier_name", "manager_name", "edr_status",
+        "freshness", "supplier_code", "supplier_name", "edr_full_name", "edr_short_name",
+        "manager_name", "edr_status",
         "prozorro_status", "termination_details", "latest_application_date",
         "verification_date", "verification_officer", "google_note",
     }
@@ -5023,7 +5047,7 @@ def list_edr_monitoring(params: dict) -> dict:
     filtered.sort(key=sortable, reverse=sort_direction == "desc")
     total = len(filtered); offset = (page - 1) * size
     page_rows = filtered[offset:offset + size]
-    statuses = sorted({row["edr_status"] for row in projection if row["edr_status"]})
+    statuses = sorted({_edr_monitoring_status(row["edr_status"]) for row in projection if row["edr_status"]})
     return {"items": [{key: value for key, value in row.items() if not key.startswith("_")}
                       for row in page_rows],
             "total": total, "page": page, "size": size,
@@ -5038,6 +5062,12 @@ def list_qualified_suppliers(params: dict) -> dict:
     risk = params.get("risk", [""])[0].strip()
     dk_code = params.get("dk_code", [""])[0].strip()
     edr_status = params.get("edr_status", [""])[0].strip()
+    # Accept known presentation-only legacy rows until their DB normalization.
+    canonical_edr_status = _edr_monitoring_status(edr_status) if edr_status else ""
+    edr_status_variants = sorted({canonical_edr_status, *(
+        raw for raw, canonical in edr_sync_v2.EDR_PRESENTATION_PREFIXES.items()
+        if canonical == canonical_edr_status
+    )}) if canonical_edr_status else []
     entity_type = params.get("entity_type", [""])[0].strip()
     freshness = params.get("freshness", [""])[0].strip()
     verification_from = params.get("verification_from", [""])[0].strip()
@@ -5095,8 +5125,9 @@ def list_qualified_suppliers(params: dict) -> dict:
         args.extend(codes)
     if edr_status:
         # Same current, one-row-per-code snapshot as supplier_profile; never history/sync date.
-        where.append("EXISTS (SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=DIGITS(combined.supplier_code) AND ep.edr_status=?)")
-        args.append(edr_status)
+        where.append("EXISTS (SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=DIGITS(combined.supplier_code) "
+                     f"AND ep.edr_status IN ({','.join('?' for _ in edr_status_variants)}))")
+        args.extend(edr_status_variants)
     if entity_type:
         where.append("SUPPLIER_ENTITY_TYPE(combined.supplier_code)=?")
         args.append(entity_type)
@@ -5151,7 +5182,8 @@ def list_qualified_suppliers(params: dict) -> dict:
             con.create_function("CANONICAL_FRESHNESS", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("bucket", "not_checked"), deterministic=True)
             con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("verification_date", ""), deterministic=True)
             con.create_function("CANONICAL_LAST_ADMISSION", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("last_admission_date", ""), deterministic=True)
-        edr_statuses = [r[0] for r in con.execute("SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>'' ORDER BY edr_status")]
+        edr_statuses = sorted({_edr_monitoring_status(r[0]) for r in con.execute(
+            "SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>''")})
         if not con.execute("SELECT 1 FROM supplier_registry_summary LIMIT 1").fetchone():
             return {"items": [], "total": 0, "registered_total": 0, "not_registered": 0,
                     "active": 0, "page": 1, "size": size, "pages": 0, "building": True, "edr_statuses": edr_statuses}
@@ -10013,7 +10045,7 @@ class Handler(BaseHTTPRequestHandler):
             filtered_codes = selected_codes
             if mode != "selected":
                 listing_params = {key: list(values) for key, values in query.items()
-                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "freshness",
+                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "edr_names", "edr_full_name", "edr_short_name", "freshness",
                                              "verification_from", "verification_to", "application_from",
                                              "application_to", "admission_from", "admission_to", "dk_code", "risk"}}
                 if query.get("view") == ["edr_monitoring"]:

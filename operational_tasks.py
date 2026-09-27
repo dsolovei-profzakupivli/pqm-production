@@ -7,6 +7,7 @@ import uuid
 import calendar
 from urllib.parse import urlsplit
 import supplier_activity
+import edr_sync_v2
 import nazk_evidence
 from document_semantics import supplier_code_semantics
 from supplier_identity import current_manager_rnokpp
@@ -487,7 +488,9 @@ def _termination_profile(con, code):
 def termination_candidate(con, code):
     """Read-only canonical eligibility and duplicate explanation for one supplier."""
     code=_digits(code); profile=_termination_profile(con,code); qualifications=_effective_active_applications(con,code)
-    status=str(profile.get('edr_status') or '').strip()
+    raw_status=str(profile.get('edr_status') or '').strip()
+    try: status=edr_sync_v2.canonical_edr_status(raw_status)
+    except ValueError: status=raw_status  # Unknown legacy data is visible, never eligible.
     terminated=status.casefold() in {'припинено','terminated'}
     event_key=_termination_event_key(profile) if terminated else ''
     active=con.execute("""SELECT id,status FROM operational_tasks
@@ -524,7 +527,7 @@ def preview_termination_exclusions(con, supplier_codes):
         if item['eligible']:
             reasons.append(reason_labels['eligible'])
         else:
-            if str(item['edr_status'] or '').strip().casefold() not in {'припинено','terminated'}:
+            if item['edr_status'].casefold() not in {'припинено','terminated'}:
                 reasons.append(reason_labels['no_longer_eligible'])
             if not item['qualifications']:
                 reasons.append(reason_labels['no_active_qualifications'])

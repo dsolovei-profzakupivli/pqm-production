@@ -8,7 +8,9 @@
     frameworks:svg('<path d="M4 6h16M4 12h16M4 18h16M7 4v4m5 2v4m5 2v4"/>'),
     procurements:svg('<path d="M5 7h14l-1 12H6L5 7Zm3 0V5a4 4 0 0 1 8 0v2"/>'),
     audit:svg('<path d="M6 3h12v18H6V3Zm3 5h6M9 12h6M9 16h4"/>'),
-    administration:svg('<path d="M4 6h10M18 6h2M4 12h2m4 0h10M4 18h8m4 0h4M14 4v4M6 10v4m6 2v4"/>'),
+    frameworksTarget:'<span aria-hidden="true">🎯</span>',
+    edrSearch:'<span aria-hidden="true">🔎</span>',
+    administration:'<span aria-hidden="true">⚙️</span>',
   };
   let customIcons={};const icons=()=>({...BUILTIN_ICONS,...customIcons});
   const ITEMS=[
@@ -19,14 +21,14 @@
     {id:'requestsNav',module:'requests',route:'requests',label:'Звернення замовників',tooltip:'Звернення замовників',iconKey:'requests',displayMode:'icon',order:5,permission:'appeals.read',visible:true},
     {id:'referencesNav',module:'references',route:'references',label:'Довідники',tooltip:'Довідники',iconKey:'references',displayMode:'icon',order:6,permission:'references.read',visible:true},
     {id:'operationalTasksNav',module:'operationalTasks',route:'operationalTasks',label:'Операційні задачі',tooltip:'Операційні задачі',iconKey:null,displayMode:'text',order:7,permission:'tasks.read',visible:true},
-    {id:'frameworksNav',module:'frameworks',route:'frameworks',label:'Відбори',tooltip:'Відбори',iconKey:'frameworks',displayMode:'icon',order:8,permission:'frameworks.read',visible:true},
+    {id:'frameworksNav',module:'frameworks',route:'frameworks',label:'Відбори',tooltip:'Відбори',iconKey:'frameworksTarget',displayMode:'icon-text',order:8,permission:'frameworks.read',visible:true},
     {id:'procurementsNav',module:'procurements',route:'procurements',label:'Закупівлі за відборами',tooltip:'Закупівлі за відборами',iconKey:'procurements',displayMode:'icon',order:9,permission:'suppliers.read',visible:true},
     {id:'auditBtn',module:'audit',route:'audit',label:'Журнал змін',tooltip:'Журнал змін',iconKey:'audit',displayMode:'icon',order:10,permission:'admin.read',visible:true},
     {id:'administrationNav',module:'administration',route:'administration',label:'Адміністрування',tooltip:'Адміністрування',iconKey:'administration',displayMode:'icon',order:11,permission:'role:admin',visible:true},
-    {id:'edrMonitoringNav',module:'edrMonitoring',route:'edrMonitoring',label:'Перевірка ЄДР',tooltip:'Перевірка ЄДР',iconKey:null,displayMode:'text',order:12,permission:'suppliers.read',visible:true},
+    {id:'edrMonitoringNav',module:'edrMonitoring',route:'edrMonitoring',label:'Перевірка ЄДР',tooltip:'Перевірка ЄДР',iconKey:'edrSearch',displayMode:'icon-text',order:12,permission:'suppliers.read',visible:true},
   ];
   const nav=document.getElementById('mainNav');let currentOverrides={};let currentAccess=null;
-  const resolvedItems=overrides=>ITEMS.map(base=>({...base,...(overrides[base.id]||{})})).sort((a,b)=>a.order-b.order);
+  const resolvedItems=overrides=>ITEMS.map(base=>{const item={...base,...(overrides[base.id]||{})};if(base.id==='frameworksNav')Object.assign(item,{iconKey:'frameworksTarget',displayMode:'icon-text'});if(base.id==='edrMonitoringNav')Object.assign(item,{iconKey:'edrSearch',displayMode:'icon-text'});if(base.id==='administrationNav')item.iconKey='administration';return item}).sort((a,b)=>a.order-b.order);
   const permissionAllows=item=>!currentAccess||!item.permission||(item.permission==='role:admin'?currentAccess.role==='admin':Boolean(currentAccess.permissions?.[item.permission]));
   function canonicalActiveModule(){
     const modules=new Set(ITEMS.map(item=>item.module));

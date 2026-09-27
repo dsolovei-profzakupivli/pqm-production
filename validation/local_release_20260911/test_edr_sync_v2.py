@@ -48,6 +48,96 @@ class EdrSyncV2Tests(unittest.TestCase):
         return sync.apply(con, source, source['source_fingerprint'], confirmed=True,
                           actor='test', synced_at='2026-09-16T12:00:00')
 
+    def test_new_google_code_with_decided_application_creates_canonical_names(self):
+        con = database()
+        code = '46130719'
+        con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('application-1', code, 'Заявка', '2026-09-01'))
+        con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
+                    ('application-1', 'admit', '2026-09-02', 'УО'))
+        google_row = row(code=code, checked='15.09.2026')
+        source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)],
+                                       'ЮО': [list(sync.HEADERS), google_row]})
+        plan = sync.build_preview(con, source)
+        item = plan['items'][0]
+        # Matched means present in PQM, not previously present in the Google snapshot.
+        self.assertTrue(item['matched'])
+        self.assertFalse(item['existing_profile'])
+        self.assertTrue(item['apply_allowed'])
+        self.assertEqual(plan['summary']['conflicts'], 0)
+        result = self.apply_observation(con, source)
+        profile = con.execute('SELECT full_name,short_name,source_sheet FROM supplier_edr_profiles WHERE supplier_code=?',
+                              (code,)).fetchone()
+        self.assertEqual(result['inserted'], 1)
+        self.assertEqual(tuple(profile), ('ПОВНА НАЗВА', 'СКОРОЧЕНА НАЗВА', 'ЮО'))
+
+    def test_new_google_code_without_decided_application_stays_ineligible(self):
+        con = database()
+        source = snapshot(row(code='46130719'))
+        plan = sync.build_preview(con, source)
+        self.assertFalse(plan['items'][0]['apply_allowed'])
+        result = self.apply_observation(con, source)
+        self.assertEqual(result['skipped_ineligible_new'], 1)
+        self.assertIsNone(con.execute('SELECT 1 FROM supplier_edr_profiles WHERE supplier_code=?',
+                                      ('46130719',)).fetchone())
+
+    def test_google_status_is_canonical_before_profile_write(self):
+        for incoming in ('✅ Зареєстровано', 'Зареєстровано'):
+            with self.subTest(incoming=incoming):
+                con = database()
+                con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('s1', '46130719', 'Заявка', '2026-09-01'))
+                con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
+                            ('s1', 'admit', '2026-09-02', 'УО'))
+                values = row(code='46130719', status=incoming)
+                source = snapshot(values)
+                self.assertEqual(source['rows'][0]['Статус в реєстрі (ЄДР)'], incoming)
+                self.assertEqual(sync.build_preview(con, source)['items'][0]['incoming']['edr_status'],
+                                 'Зареєстровано')
+                self.apply_observation(con, source)
+                self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
+                                             ('46130719',)).fetchone()[0], 'Зареєстровано')
+        for presented, canonical in sync.EDR_PRESENTATION_PREFIXES.items():
+            self.assertEqual(sync.canonical_edr_status(presented), canonical)
+            self.assertEqual(sync.canonical_edr_status(presented.replace(' ', '', 1)), canonical)
+        self.assertEqual(len('⚪️ Неактуально'), 14)
+        self.assertEqual(len('⚪️ Немає інформації'), 19)
+        with self.assertRaisesRegex(ValueError, 'presentation prefix'):
+            sync.canonical_edr_status('🟠 Невідомий статус')
+
+    def test_unrelated_row_move_does_not_migrate_legacy_status(self):
+        con = database()
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?)",
+                    ('12345678', '✅ Зареєстровано', 'ФОП', 12, 'old'))
+        values = row(checked='')
+        values[3] = values[4] = ''
+        values[13] = values[14] = ''
+        source = snapshot(values)
+        source['rows'][0]['source_row'] = 99
+        self.apply_observation(con, source)
+        profile = con.execute('SELECT edr_status,source_row FROM supplier_edr_profiles WHERE supplier_code=?',
+                              ('12345678',)).fetchone()
+        self.assertEqual(tuple(profile), ('✅ Зареєстровано', 99))
+
+    def test_google_status_is_canonical_on_existing_profile_update(self):
+        con = database()
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
+                    ('12345678', 'Припинено', 'old'))
+        source = snapshot(row(status='✅ Зареєстровано'))
+        self.apply_observation(con, source)
+        self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
+                                     ('12345678',)).fetchone()[0], 'Зареєстровано')
+
+    def test_equivalent_google_status_does_not_bulk_normalize_legacy_profiles(self):
+        con = database()
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
+                    ('12345678', '✅Зареєстровано', 'old'))
+        source = snapshot(row(status='Зареєстровано'))
+        preview = sync.build_preview(con, source)
+        self.assertEqual(preview['summary']['edr_status_changes'], 0)
+        self.assertNotIn('edr_status', preview['items'][0]['changed_fields'])
+        self.apply_observation(con, source)
+        self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
+                                     ('12345678',)).fetchone()[0], '✅Зареєстровано')
+
     def test_verification_row_move_preserves_event_identity_and_provenance(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")

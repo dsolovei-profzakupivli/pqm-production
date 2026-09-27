@@ -54,6 +54,13 @@ class FullSupplierRegistryTests(unittest.TestCase):
 
     def items(self):return {x['supplier_code']:x for x in integration.full_registry(self.con)['items']}
 
+    def test_new_confirmed_ua_edr_routes_to_legal_entity_without_profile(self):
+        self.add('46130719', 'NEW LEGAL ENTITY', '2026-09-27', scheme='UA-EDR')
+        self.assertEqual(self.items()['46130719']['entity_type'], 'legal_entity')
+        self.assertTrue(self.items()['46130719']['monitoring_eligible'])
+        self.add('12345678', 'UNCONFIRMED', '2026-09-27', scheme='')
+        self.assertEqual(self.items()['12345678']['entity_type'], 'unknown')
+
     def test_monitoring_population_shared_with_register(self):
         active = self.add('00000001','ACTIVE','2026-01-01',contract='active')
         pending = self.add('00000002','PENDING','2026-01-02')
