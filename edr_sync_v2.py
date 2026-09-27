@@ -697,6 +697,9 @@ def build_preview(con, snapshot: dict) -> dict:
                       "verification_decision": verification_decision,
                       "current_verification_date": current_day,
                       "current_verification_officer": current_officer,
+                      "current_profile": old, "current_manager_name": current_manager,
+                      "current_supplier_name": old_current_name,
+                      "planned_supplier_name": new_current_name,
                       "factual_status_protected": status_protected,
                       "conflicts": sorted(set(row_conflicts)), "incoming": incoming})
     summary["conflicts"] = len(conflicts)
@@ -1184,10 +1187,45 @@ def materialize_effective_admission(con, contract_id: str, created_at: str) -> b
     return True
 
 
+def effective_profile_fields(plan: dict, old: dict) -> dict:
+    """Return the field decision shared by Preview and Apply."""
+    item = plan["incoming"]
+    effective = {}
+    for field in ("full_name", "short_name", "manager_name", "edr_status", "edr_checked_at",
+                  "termination_decision_details", "termination_record_date",
+                  "termination_record_number", "edr_officer", "edr_notes"):
+        value = item.get(field, "")
+        if field in {"termination_decision_details", "termination_record_date",
+                     "termination_record_number", "edr_notes"}:
+            effective[field] = value
+        elif field in {"edr_checked_at", "edr_officer"} and plan["verification_decision"] == "older_verification_preserved":
+            effective[field] = (plan["current_verification_date"] if field == "edr_checked_at"
+                                else plan["current_verification_officer"])
+        elif field in {"full_name", "short_name", "manager_name", "edr_status"} and (
+                plan["verification_decision"] == "older_verification_preserved" or
+                (field == "edr_status" and plan["factual_status_protected"])):
+            effective[field] = old.get(field, "")
+        else:
+            effective[field] = value if str(value or "").strip() else old.get(field, "")
+    return effective
+
+
+def preview_state_digest(preview: dict) -> str:
+    """Bind a reviewed Preview to current PQM state without exposing state in a token."""
+    business = [{key: plan.get(key) for key in (
+        "supplier_code", "current_profile", "current_manager_name", "current_verification_date",
+        "current_verification_officer", "verification_decision", "factual_status_protected",
+        "changed_fields", "verification_event_change", "conflicts", "incoming")}
+        for plan in preview["items"]]
+    encoded = json.dumps(business, ensure_ascii=False, sort_keys=True, default=str,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, actor: str,
           synced_at: str, sync_manager=None, enrich_manager=None, establish_manager=None,
           reestablish_manager=None,
-          refresh_manager_controls=None) -> dict:
+          refresh_manager_controls=None, expected_state_digest: str | None = None) -> dict:
     """Apply only a confirmed, unchanged snapshot; caller owns the transaction."""
     if not confirmed:
         raise PermissionError("Потрібне явне підтвердження застосування preview")
@@ -1196,6 +1234,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
     if snapshot["source_fingerprint"] != expected_fingerprint:
         raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
     preview = build_preview(con, snapshot)
+    if expected_state_digest is not None and preview_state_digest(preview) != expected_state_digest:
+        raise RuntimeError("PQM state changed after reviewed preview")
     if preview["conflicts"]:
         raise ValueError("Apply заблоковано: preview містить конфлікти")
     counts = {"inserted": 0, "updated_profiles": 0, "unchanged": 0,
@@ -1227,23 +1267,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                     officer=str(old.get("edr_officer") or ""), source="PQM current snapshot before clear",
                     changed_fields=["termination_decision_details", "termination_record_date",
                                     "termination_record_number"], snapshot=historical, created_at=synced_at))
-        effective = {}
-        for field in ("full_name", "short_name", "manager_name", "edr_status", "edr_checked_at",
-                      "termination_decision_details", "termination_record_date",
-                      "termination_record_number", "edr_officer", "edr_notes"):
-            value = item.get(field, "")
-            if field in {"termination_decision_details", "termination_record_date",
-                         "termination_record_number", "edr_notes"}:
-                effective[field] = value  # All four Google-owned fields are a full mirror.
-            elif field in {"edr_checked_at", "edr_officer"} and plan["verification_decision"] == "older_verification_preserved":
-                effective[field] = (plan["current_verification_date"] if field == "edr_checked_at"
-                                    else plan["current_verification_officer"])
-            elif field in {"full_name", "short_name", "manager_name", "edr_status"} and (
-                    plan["verification_decision"] == "older_verification_preserved" or
-                    (field == "edr_status" and plan["factual_status_protected"])):
-                effective[field] = old.get(field, "")
-            else:
-                effective[field] = value if str(value or "").strip() else old.get(field, "")
+        effective = effective_profile_fields(plan, old)
         if not existing:
             columns = ["supplier_code", *effective, "source_sheet", "source_row", "synced_at"]
             con.execute(f"INSERT INTO supplier_edr_profiles ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",

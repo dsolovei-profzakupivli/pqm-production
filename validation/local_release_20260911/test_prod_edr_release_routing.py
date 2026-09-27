@@ -1,6 +1,8 @@
 """The consolidated code release must not expose Google migration writes."""
 
 import os
+import io
+import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +12,25 @@ import server
 
 
 class ProdEdrReleaseRoutingTests(unittest.TestCase):
+    def test_google_row_navigation_resolves_live_tab_and_row_without_writes(self):
+        values = {"ФОП": [["name", "code"], ["other", "00000000"]],
+                  "ЮО": [["name", "code"], ["other", "11111111"], ["target", "12345678"]]}
+        metadata = {"sheets": [{"properties": {"title": "ФОП", "sheetId": 10}},
+                               {"properties": {"title": "ЮО", "sheetId": 20}}]}
+        with patch.object(server, "_google_sheet_values", side_effect=lambda tab: values[tab]) as read, \
+             patch.object(server, "_google_access_token", return_value="synthetic"), \
+             patch.object(server.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(metadata).encode())) as open_url:
+            result = server.supplier_google_row("12345678")
+        self.assertEqual(result["source_tab"], "ЮО")
+        self.assertTrue(result["url"].endswith("#gid=20&range=B3"))
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(open_url.call_count, 1)
+
+    def test_google_row_navigation_rejects_ambiguous_identity(self):
+        with patch.object(server, "_google_sheet_values", return_value=[["name", "code"], ["target", "12345678"]]):
+            with self.assertRaisesRegex(ValueError, "ambiguous"):
+                server.supplier_google_row("12345678")
+
     def test_all_migration_routes_are_unavailable_even_with_environment_flag(self):
         for path in server.GOOGLE_MIGRATION_DISABLED_PATHS:
             for method in ("GET", "POST"):

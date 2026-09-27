@@ -82,7 +82,10 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertIn('rel="icon" href="/assets/pqm-search-icon.png"', html)
         self.assertTrue((root / "assets" / "pqm-tab-icon.png").is_file())
         self.assertTrue((root / "assets" / "pqm-search-icon.png").is_file())
-        self.assertIn("'PQM (WEB TEST)'", javascript)
+        self.assertIn("if(features?.sandbox_mode)return 'PQM · SANDBOX'", javascript)
+        self.assertIn("if(environment==='local')return 'PQM · LOCAL'", javascript)
+        self.assertIn("return 'PQM';", javascript)
+        self.assertNotIn("'PQM (WEB TEST)'", javascript)
         self.assertIn('document.title=`PQM — ${titles[name]', javascript)
 
     def test_local_role_switch_reapplies_admin_capabilities_centrally(self):
@@ -91,8 +94,9 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertIn("element.disabled=!admin||element.dataset.runtimeDisabled==='1'", javascript)
         self.assertIn("document.body.classList.toggle('role-viewer',viewer)", javascript)
         self.assertIn("element.dataset.runtimeDisabled='1'", javascript)
-        self.assertIn("requestsRefresh.disabled=viewer||requestsRefresh.dataset.runtimeDisabled==='1'", javascript)
-        self.assertIn("Дія недоступна для ролі лише перегляду", javascript)
+        self.assertIn("const permitted=currentMe?.permissions?.['appeals.update']===true", javascript)
+        self.assertIn("button.disabled=!permitted||!requestsRefreshState.runtimeLoaded||requestsRefreshState.running||requestsRefreshState.starting", javascript)
+        self.assertIn("button.title=!permitted?", javascript)
 
     def test_bids_disabled_fails_with_controlled_exception(self):
         with patch.object(server, "BIDS_MODE", "disabled"):

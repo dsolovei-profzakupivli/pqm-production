@@ -592,15 +592,24 @@ def create_termination_exclusions(con, supplier_codes, actor):
     return result
 
 
-def amcu_decision_cycle_covered(con, supplier_code, decision_ids):
-    """True when every current AMKU fact belongs to an executed prior cycle."""
+def amcu_decision_cycle_covered(con, supplier_code, decision_ids, active_application_ids=()):
+    """Require both current AMKU facts and active applications in a prior executed cycle."""
     expected={str(value) for value in decision_ids if str(value)}
     if not expected: return False
     covered={str(row[0]) for row in con.execute("""SELECT DISTINCT d.amcu_decision_id
       FROM operational_task_amcu_decisions d JOIN operational_tasks t ON t.id=d.task_id
       WHERE t.task_type='amcu_exclusion' AND DIGITS(t.supplier_code)=DIGITS(?)
         AND t.status='completed' AND t.resolution_code='amcu_excluded'""",(supplier_code,))}
-    return expected.issubset(covered)
+    if not expected.issubset(covered):
+        return False
+    active_ids={str(value) for value in active_application_ids if str(value)}
+    if not active_ids:
+        return True
+    linked={str(row[0]) for row in con.execute("""SELECT DISTINCT a.application_id
+      FROM operational_task_applications a JOIN operational_tasks t ON t.id=a.task_id
+      WHERE t.task_type='amcu_exclusion' AND DIGITS(t.supplier_code)=DIGITS(?)
+        AND t.status='completed' AND t.resolution_code='amcu_excluded'""", (supplier_code,))}
+    return active_ids.issubset(linked)
 
 
 def reconcile_amcu_after_qualification_sync(con, actor="PQM Prozorro qualification sync"):
@@ -748,7 +757,7 @@ def build(con, actor="PQM task builder", *, include_nazk=False):
         if not apps: continue
         decisions=amcu_decisions.get(code, [])
         decision_ids={x["row_key"] for x in decisions}
-        if amcu_decision_cycle_covered(con,code,decision_ids) and not active:
+        if amcu_decision_cycle_covered(con,code,decision_ids,(x['id'] for x in apps)) and not active:
             continue
         base_key=f"amcu_exclusion:{code}"
         prior=con.execute("SELECT status FROM operational_tasks WHERE task_key=?",(base_key,)).fetchone()
@@ -967,7 +976,6 @@ def list_tasks(con,params):
     where=[]; args=[]
     def value(key):
         raw=params.get(key,[""]); return (raw[0] if isinstance(raw,list) else raw).strip()
-    if value("type"): where.append("task_type=?"); args.append(value("type"))
     if value("officer"): where.append("CAST(assigned_officer_id AS TEXT)=?"); args.append(value("officer"))
     group=value("status_group") or "active"
     if group not in STATUS_GROUPS: raise ValueError("Невідома група статусів")
@@ -992,11 +1000,16 @@ def list_tasks(con,params):
       LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
       LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id"""
     qualified_clause=clause.replace("status", "t.status").replace("task_type", "t.task_type").replace("assigned_officer_id", "COALESCE(c.responsible_officer_id,t.assigned_officer_id)").replace("supplier_name_snapshot", "t.supplier_name_snapshot").replace("supplier_code", "t.supplier_code").replace("created_at", "t.created_at")
+    type_counts={row[0]:row[1] for row in con.execute(
+        "SELECT t.task_type,COUNT(*)"+projection[projection.index("\n      FROM") :]+
+        qualified_clause+" GROUP BY t.task_type",args)}
+    if value("type"):
+        qualified_clause+=" AND t.task_type=?"; args.append(value("type"))
     rows=con.execute(projection+qualified_clause+" ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,t.created_at DESC",args).fetchall()
     items=[_task(con,row) for row in rows]
     all_rows=con.execute("SELECT status FROM operational_tasks").fetchall()
     kpis={key:sum(r[0] in statuses for r in all_rows) for key,statuses in STATUS_GROUPS.items()}
-    return {"items":items,"total":len(items),"kpis":kpis,"status_group":group}
+    return {"items":items,"total":len(items),"kpis":kpis,"type_counts":type_counts,"status_group":group}
 
 
 def detail(con,task_id):
