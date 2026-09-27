@@ -98,6 +98,8 @@ class EdrSyncV2Tests(unittest.TestCase):
         for presented, canonical in sync.EDR_PRESENTATION_PREFIXES.items():
             self.assertEqual(sync.canonical_edr_status(presented), canonical)
             self.assertEqual(sync.canonical_edr_status(presented.replace(' ', '', 1)), canonical)
+        self.assertEqual(len('⚪️ Неактуально'), 14)
+        self.assertEqual(len('⚪️ Немає інформації'), 19)
         with self.assertRaisesRegex(ValueError, 'presentation prefix'):
             sync.canonical_edr_status('🟠 Невідомий статус')
 

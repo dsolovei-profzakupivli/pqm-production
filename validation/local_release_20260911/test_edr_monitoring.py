@@ -184,6 +184,8 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertEqual(legacy_selection, ["001", "002", "004"])
         self.assertEqual(terminated, ["003"])
         self.assertEqual(server._edr_monitoring_status("✅ Зареєстровано"), "Зареєстровано")
+        self.assertEqual(server._edr_monitoring_status("⚪️ Неактуально"), "Неактуально")
+        self.assertEqual(server._edr_monitoring_status("⚪️ Немає інформації"), "Немає інформації")
         self.assertEqual(server._edr_monitoring_status("Порушено справу про банкрутство"),
                          "Порушено справу про банкрутство")
 
