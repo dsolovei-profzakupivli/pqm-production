@@ -124,6 +124,18 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
                                      ('12345678',)).fetchone()[0], 'Зареєстровано')
 
+    def test_equivalent_google_status_does_not_bulk_normalize_legacy_profiles(self):
+        con = database()
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
+                    ('12345678', '✅Зареєстровано', 'old'))
+        source = snapshot(row(status='Зареєстровано'))
+        preview = sync.build_preview(con, source)
+        self.assertEqual(preview['summary']['edr_status_changes'], 0)
+        self.assertNotIn('edr_status', preview['items'][0]['changed_fields'])
+        self.apply_observation(con, source)
+        self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
+                                     ('12345678',)).fetchone()[0], '✅Зареєстровано')
+
     def test_verification_row_move_preserves_event_identity_and_provenance(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")

@@ -533,6 +533,13 @@ def _event_exists(con, code: str, snapshot_hash: str) -> bool:
 def _same(field: str, old, new) -> bool:
     if field == "manager_name":
         return normalize_person(old) == normalize_person(new)
+    if field == "edr_status":
+        def comparable(value):
+            try:
+                return canonical_edr_status(value)
+            except ValueError:
+                return clean(value)
+        return comparable(old) == comparable(new)
     return str(old or "").strip() == str(new or "").strip()
 
 
@@ -627,7 +634,7 @@ def build_preview(con, snapshot: dict) -> dict:
         older = verification_decision == "older_verification_preserved"
         protected_status = _protected_factual_at_or_after(ledger.get(code, []), incoming_day)
         status_protected = bool(incoming["edr_status"] and protected_status
-                                and incoming["edr_status"] != protected_status)
+                                and not _same("edr_status", incoming["edr_status"], protected_status))
         summary[verification_decision] += 1
         summary["factual_status_protected"] += int(status_protected)
         current_manager = managers.get(code, {}).get("manager_name") or ""
@@ -1218,6 +1225,8 @@ def effective_profile_fields(plan: dict, old: dict) -> dict:
                 plan["verification_decision"] == "older_verification_preserved" or
                 (field == "edr_status" and plan["factual_status_protected"])):
             effective[field] = old.get(field, "")
+        elif field == "edr_status" and old.get(field) and _same(field, old.get(field), value):
+            effective[field] = old[field]  # Legacy spelling is not migrated by an ordinary Apply.
         else:
             effective[field] = value if str(value or "").strip() else old.get(field, "")
     return effective
