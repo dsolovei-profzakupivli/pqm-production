@@ -114,6 +114,15 @@ class EdrSyncV2Tests(unittest.TestCase):
                               ('12345678',)).fetchone()
         self.assertEqual(tuple(profile), ('✅ Зареєстровано', 99))
 
+    def test_google_status_is_canonical_on_existing_profile_update(self):
+        con = database()
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
+                    ('12345678', 'Припинено', 'old'))
+        source = snapshot(row(status='✅ Зареєстровано'))
+        self.apply_observation(con, source)
+        self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
+                                     ('12345678',)).fetchone()[0], 'Зареєстровано')
+
     def test_verification_row_move_preserves_event_identity_and_provenance(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")
