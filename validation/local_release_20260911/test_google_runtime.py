@@ -123,11 +123,19 @@ class GoogleRuntimeTests(unittest.TestCase):
 
     def test_permanent_edr_preview_and_apply_keep_confirmed_fingerprint(self):
         fingerprint = "a" * 64
+        state_digest = "b" * 64
         patches = self.common_patches()
         with patches[0], patches[1], patches[2], patches[3], \
              patch.object(server, "google_effective_enabled", return_value=True), \
              patch.object(server, "supplier_edr_sync_preview",
-                          return_value={"source_fingerprint": fingerprint, "summary": {}}), \
+                          return_value={"source_fingerprint": fingerprint,
+                                        "state_digest": state_digest, "summary": {}}), \
+             patch.object(server, "supplier_edr_source_snapshot",
+                          return_value={"source_fingerprint": fingerprint}), \
+             patch.object(server.edr_sync_v2, "build_preview",
+                          return_value={"conflicts": []}), \
+             patch.object(server.edr_sync_v2, "preview_state_digest",
+                          return_value=state_digest), \
              patch.object(server, "supplier_edr_sync_worker") as worker:
             status, preview = self.request("/api/supplier-edr-sync/preview", payload={})
             self.assertEqual(status, 200)
@@ -136,6 +144,9 @@ class GoogleRuntimeTests(unittest.TestCase):
                 "source_fingerprint": fingerprint})[0], 409)
             status, result = self.request("/api/supplier-edr-sync", payload={"confirmed": True,
                 "source_fingerprint": fingerprint})
+            self.assertEqual(status, 409)
+            status, result = self.request("/api/supplier-edr-sync", payload={"confirmed": True,
+                "source_fingerprint": fingerprint, "state_digest": state_digest})
             self.assertEqual(status, 202)
             self.assertTrue(result["started"])
             for _ in range(100):
@@ -144,6 +155,7 @@ class GoogleRuntimeTests(unittest.TestCase):
                 threading.Event().wait(0.01)
             worker.assert_called_once()
             self.assertEqual(worker.call_args.args[0], fingerprint)
+            self.assertEqual(worker.call_args.args[2], state_digest)
             server.SUPPLIER_EDR_SYNC_STATE.update(running=False)
 
     def test_pkce_transaction_survives_memory_restart_and_is_one_time(self):

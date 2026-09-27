@@ -25,11 +25,13 @@ class DeclensionNavigationUiTests(unittest.TestCase):
         self.assertIn("requestContext?.subject_label", self.app)
         self.assertIn("requestContext?.entity_identifier", self.app)
 
-    def test_shared_action_is_available_for_resolved_document_contexts(self):
+    def test_shared_action_and_appeal_side_actions_keep_their_distinct_contracts(self):
         self.assertIn("Перевірити відмінювання",self.app)
         self.assertIn("data-amcu-declension",self.app)
         self.assertIn("data-nazk-declension",self.app)
-        self.assertIn("data-check-declension",self.app)
+        self.assertIn('data-check-declension-side="customer"',self.app)
+        self.assertIn('data-check-declension-side="supplier"',self.app)
+        self.assertIn("entry.status!=='resolved'",self.app)
         self.assertIn("originType:'operational_task'",self.app)
 
     def test_task_toolbar_reuses_module_and_returns_to_list(self):

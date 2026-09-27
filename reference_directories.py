@@ -170,7 +170,7 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")
     if source == "amcu":
-        return _start_amcu_refresh(db_path, raw, filename)
+        return _start_amcu_refresh(db_path, raw, filename, on_complete)
     with START_LOCK:
         state = reference_status(db_path).get(source, {})
         if state.get("status") == "running" or LOCK.locked():
@@ -195,7 +195,7 @@ def _amcu_error(db_path, exc):
         LOG.exception("AMCU terminal status could not be persisted")
 
 
-def _start_amcu_refresh(db_path, raw, filename):
+def _start_amcu_refresh(db_path, raw, filename, on_complete=None):
     key = str(Path(db_path).resolve())
     with START_LOCK:
         # Reserve before scheduling, including the 202 response delay. AMCU
@@ -207,7 +207,7 @@ def _start_amcu_refresh(db_path, raw, filename):
         try:
             _state(db_path, "amcu", "running", "Підготовка фонового оновлення")
             timer = threading.Timer(0.2, refresh_amcu, args=(db_path, raw, filename),
-                                    kwargs={"_claimed": True})
+                                    kwargs={"_claimed": True, "on_complete": on_complete})
             timer.daemon = True
             timer.start()
         except Exception as exc:
@@ -447,7 +447,7 @@ def _amcu_rows_bounded(raw=None, filename=""):
     return payload["source"], payload["rows"]
 
 
-def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False):
+def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False, on_complete=None):
     if not _claimed and not AMCU_LOCK.acquire(blocking=False): return
     key = str(Path(db_path).resolve())
     AMCU_ACTIVE.add(key)
@@ -468,6 +468,8 @@ def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False):
             con.execute("""UPDATE reference_sync_state SET status='ok',message=?,row_count=?,
                         updated_at=?,source_updated_at=? WHERE source='amcu'""",
                         (f"Оновлено з {source}", count, _now(), _now()))
+        if on_complete:
+            on_complete()
         finished = True
         LOG.info("AMCU refresh completed rows=%d fetch_parse_seconds=%.3f db_seconds=%.3f total_seconds=%.3f",
                  count, fetched-started, time.monotonic()-fetched, time.monotonic()-started)

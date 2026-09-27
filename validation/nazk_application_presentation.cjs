@@ -32,5 +32,5 @@ for (const historicalReadOnly of [false, true]) {
   }
 }
 // The participant cell must actually call the tested helper.
-assert(app.includes("if(col.key==='participant'){const nazkMarker=applicationNazkMarker(row);"));
+assert(app.includes("if(col.key==='participant'){const nazkMarker=applicationNazkMarker(row),amcuBlocked="));
 console.log(`PASS: ${cases} application marker cases; no pseudo-NAZK rejection badge or mutations`);

@@ -82,6 +82,18 @@ class AmcuRecoveryTests(unittest.TestCase):
             ref.refresh_amcu(self.path)
         self.assertEqual(self.persisted(), 'ok')
 
+    def test_rebuild_callback_runs_only_after_successful_import_commit(self):
+        observed = []
+        def after_commit():
+            observed.append((self.persisted(), self.rows()))
+        with patch.object(ref, '_amcu_rows_bounded', side_effect=ValueError('invalid Excel')):
+            ref.refresh_amcu(self.path, on_complete=after_commit)
+        self.assertEqual(observed, [])
+        self.assertEqual(self.rows(), [self.old])
+        with patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [self.new])):
+            ref.refresh_amcu(self.path, on_complete=after_commit)
+        self.assertEqual(observed, [('ok', [self.new])])
+
     def test_empty_result_never_deletes_existing_rows(self):
         result = subprocess.CompletedProcess([], 0, json.dumps({'source': 'fixture', 'rows': []}).encode(), b'')
         with patch.object(ref.subprocess, 'run', return_value=result):

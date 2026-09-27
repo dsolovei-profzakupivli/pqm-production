@@ -9,6 +9,7 @@ import supplier_activity
 import supplier_registry_integration
 import prod_google_baseline
 import edr_sync_v2
+import edr_sync_review
 import base64
 import csv
 import hashlib
@@ -1571,6 +1572,23 @@ def rebuild_operational_tasks(actor: str = "PQM task builder") -> dict:
         return {"skipped": "safe_mode"}
     with db() as con:
         return operational_tasks.build(con, actor, include_nazk=False)
+
+
+def start_amcu_registry_refresh(raw=None, filename="") -> bool:
+    """Rebuild tasks only after a successful shared AMKU refresh/import commit."""
+    return start_reference_refresh(
+        DB_PATH, "amcu", raw, filename,
+        on_complete=lambda: rebuild_operational_tasks("PQM AMCU refresh"))
+
+
+def amcu_blocks_submission(con: sqlite3.Connection, submission_id: str) -> bool:
+    """Current AMKU membership blocks an affirmative application decision."""
+    row = con.execute("SELECT supplier_code FROM submissions WHERE id=?", (submission_id,)).fetchone()
+    code = re.sub(r"\D", "", str(row[0] or "")) if row else ""
+    if not code:
+        return False
+    return bool(con.execute(
+        "SELECT 1 FROM amcu_registry WHERE DIGITS(offender_code)=? LIMIT 1", (code,)).fetchone())
 
 
 def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
@@ -4358,17 +4376,54 @@ def supplier_edr_source_snapshot() -> dict:
     })
 
 
+def supplier_google_row(code: str) -> dict:
+    """Resolve the current literal identity in the authorized PROD sheet, read-only."""
+    literal = str(code or "").strip()
+    if not literal or len(literal) > 64 or any(char in literal for char in "/?#"):
+        raise ValueError("Invalid literal supplier identity")
+    matches = []
+    for tab in ("ФОП", "ЮО"):
+        for row_number, row in enumerate(_google_sheet_values(tab), 1):
+            if len(row) > 1 and str(row[1]).strip() == literal:
+                matches.append((tab, row_number))
+                if len(matches) > 1:
+                    raise ValueError("Google supplier identity is ambiguous")
+    if not matches:
+        raise KeyError("Google supplier row not found")
+    tab, row_number = matches[0]
+    query = urllib.parse.urlencode({"fields": "sheets(properties(sheetId,title))"})
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{query}"
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        metadata = json.loads(response.read().decode())
+    gids = [sheet.get("properties", {}).get("sheetId") for sheet in metadata.get("sheets", [])
+            if sheet.get("properties", {}).get("title") == tab]
+    if len(gids) != 1 or not isinstance(gids[0], int) or gids[0] < 0:
+        raise ValueError("Google tab metadata is ambiguous")
+    return {"source_tab": tab, "url":
+            f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit#gid={gids[0]}&range=B{row_number}"}
+
+
 def supplier_edr_sync_preview() -> dict:
-    """Return a compact, mutation-free preview for explicit user confirmation."""
+    """Return every planned change for explicit, mutation-free operator review."""
     snapshot = supplier_edr_source_snapshot()
     with db() as con:
         preview = edr_sync_v2.build_preview(con, snapshot)
+        changes = con.total_changes
+    details = edr_sync_review.details(preview)
     return {
         "source_fingerprint": preview["source_fingerprint"],
+        "state_digest": edr_sync_v2.preview_state_digest(preview),
         "previewed_at": preview["previewed_at"],
-        "summary": preview["summary"],
-        "conflicts": preview["conflicts"][:200],
+        "summary": {**preview["summary"], **edr_sync_review.summary_additions(preview, details)},
+        "conflicts": preview["conflicts"],
         "conflicts_total": len(preview["conflicts"]),
+        "details": details,
+        "details_total": len(details),
+        "details_complete": True,
+        "db_writes": changes,
+        "google_writes": 0,
         "changes": [
             {key: item[key] for key in ("supplier_code", "source_sheet", "source_row",
               "population", "apply_allowed", "changed_fields", "verification_event_change",
@@ -4381,7 +4436,8 @@ def supplier_edr_sync_preview() -> dict:
     }
 
 
-def supplier_edr_sync_worker(expected_fingerprint: str, actor: str) -> None:
+def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
+                             expected_state_digest: str | None = None) -> None:
     started_at = now_iso()
     log_id = None
     try:
@@ -4406,6 +4462,7 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str) -> None:
                 establish_manager=establish_current_supplier_manager,
                 reestablish_manager=reestablish_current_supplier_manager,
                 refresh_manager_controls=refresh_current_submission_nazk_controls,
+                expected_state_digest=expected_state_digest,
             )
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,
               inserted=?,updated=?,source_fingerprint=?,unchanged=?,details_json=? WHERE id=?""",
@@ -4704,6 +4761,12 @@ def _edr_monitoring_rows() -> list[dict]:
               JOIN application_fields af ON af.submission_id=s.id
               WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')""")}
             population = edr_sync_v2.monitoring_population_codes(con)
+            card_identities = set(profiles) | set(registry) | set(latest_app)
+            card_variants = {}
+            for literal in card_identities:
+                normalized = re.sub(r"\D", "", literal)
+                if normalized:
+                    card_variants.setdefault(normalized, set()).add(literal)
             verifications = edr_sync_v2.current_verification_projections(con, population)
             canonical_statuses = edr_sync_v2.canonical_prozorro_statuses(con, population)
             rows = []
@@ -4717,6 +4780,8 @@ def _edr_monitoring_rows() -> list[dict]:
                     status, active_qualification_dates.get(code, ""), ledger.get(code, []),
                     profile.get("edr_status", ""))
                 rows.append({"supplier_code": code,
+                  "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
+                      and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
                   "edr_full_name": str(profile.get("full_name") or "").strip(),
                   "edr_short_name": str(profile.get("short_name") or "").strip(),
@@ -5210,7 +5275,9 @@ def list_qualified_suppliers(params: dict) -> dict:
             (item["nazk_supplier_workflow"].get("workflow_status")
               or (latest_supplier_check.get("workflow_status")
                   if latest_supplier_check.get("workflow_status") == "not_current" else "")),
-            registry_match=bool(item["nazk_match"]) and not record_no_longer_present,
+            registry_match=(item.get("code") in current_manager_registry_matches
+                            and not record_no_longer_present),
+            active_qualification=bool(item.get("active_count")),
             legacy_result=(latest_supplier_check.get("result")
               if latest_supplier_check.get("workflow_status") == "completed"
               else ((review or {}).get("result") if item.get("nazk_review_is_current", not review) else "")),
@@ -5448,7 +5515,8 @@ def supplier_profile(supplier_code: str) -> dict:
         (supplier_nazk_workflow.get("workflow_status")
           or (latest_current_supplier_cycle.get("workflow_status")
               if latest_current_supplier_cycle.get("workflow_status") == "not_current" else "")),
-        registry_match=bool(nazk) and not record_no_longer_present,
+        registry_match=current_registry_match and not record_no_longer_present,
+        active_qualification=bool(summary.get("active_count")),
         legacy_result=(latest_current_supplier_check.get("result")
           or (nazk_review_data.get("result") if nazk_review_data.get("is_current_manager") else "")),
         registry_record_no_longer_present=record_no_longer_present,
@@ -9558,6 +9626,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(list_edr_monitoring(urllib.parse.parse_qs(parsed.query)))
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        if parsed.path.startswith("/api/supplier-google-row/"):
+            code = urllib.parse.unquote(parsed.path.removeprefix("/api/supplier-google-row/"))
+            try:
+                result = supplier_google_row(code)
+            except KeyError:
+                return self.send_json({"error": "Google supplier row not found"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except (PermissionError, GooglePhaseError, urllib.error.URLError, TimeoutError, OSError):
+                return self.send_json({"error": "Google row navigation is unavailable"}, 503)
+            if parsed.query == "open=1":
+                self.send_response(302)
+                self.send_header("Location", result["url"])
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            return self.send_json({"source_tab": result["source_tab"]})
         if parsed.path.startswith("/api/supplier-profile/"):
             code = parsed.path.removeprefix("/api/supplier-profile/")
             try:
@@ -10403,10 +10488,24 @@ class Handler(BaseHTTPRequestHandler):
             fingerprint = str(payload.get("source_fingerprint") or "").strip().lower()
             if payload.get("confirmed") is not True or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
                 return self.send_json({"error": "Спочатку виконайте preview і явно підтвердьте той самий source fingerprint"}, 409)
+            state_digest = str(payload.get("state_digest") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", state_digest):
+                return self.send_json({"error": "Потрібен digest переглянутого стану PQM"}, 409)
+            try:
+                current_source = supplier_edr_source_snapshot()
+                if current_source["source_fingerprint"] != fingerprint:
+                    return self.send_json({"error": "Google source змінився; виконайте новий Preview"}, 409)
+                with db() as con:
+                    current_plan = edr_sync_v2.build_preview(con, current_source)
+                if (edr_sync_v2.preview_state_digest(current_plan) != state_digest
+                        or current_plan["conflicts"]):
+                    return self.send_json({"error": "Стан PQM змінився або є конфлікти; виконайте новий Preview"}, 409)
+            except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
+                return self.send_json({"error": str(exc)}, 409)
             SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
                                            started_at=now_iso(), updated_at=None, error=None)
             threading.Thread(target=supplier_edr_sync_worker,
-                             args=(fingerprint, self.auth_user), daemon=True).start()
+                             args=(fingerprint, self.auth_user, state_digest), daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-export":
             payload = self.read_json()
@@ -10576,7 +10675,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Оновлення довідника НАЗК уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/refresh":
-            if not start_reference_refresh(DB_PATH, "amcu"):
+            if not start_amcu_registry_refresh():
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/upload":
@@ -10585,7 +10684,7 @@ class Handler(BaseHTTPRequestHandler):
                 raw = base64.b64decode(payload.get("content") or "", validate=True)
             except Exception:
                 return self.send_json({"error": "Не вдалося прочитати Excel-файл"}, 400)
-            if not start_reference_refresh(DB_PATH, "amcu", raw, str(payload.get("filename") or "АМКУ.xlsx")):
+            if not start_amcu_registry_refresh(raw, str(payload.get("filename") or "АМКУ.xlsx")):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         return self.send_error(404)
@@ -10945,6 +11044,9 @@ class Handler(BaseHTTPRequestHandler):
               FROM application_fields WHERE submission_id=?""", (submission_id,)).fetchone()
             current_protocol_decision, current_compliance_status, current_marketplace_decision = (current_controls[0] or "", current_controls[1] or "", current_controls[2] or "")
             effective_protocol_decision = payload.get("protocol_decision", current_protocol_decision)
+            if (payload.get("protocol_decision") == "admit" or
+                    payload.get("marketplace_decision") == "admit") and amcu_blocks_submission(con, submission_id):
+                return self.send_json({"error": "Постачальник є у чинному реєстрі АМКУ. Для цієї заявки рішення «Так» недоступне; допустиме лише «Ні»."}, 409)
             effective_compliance_status = payload.get("compliance_status", current_compliance_status)
             effective_protocol_remarks = str(payload.get("protocol_remarks", current_controls[11]) or "").strip()
             if payload.get("compliance_status") == "approved":
