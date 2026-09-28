@@ -317,12 +317,12 @@ class TaskDocumentTests(unittest.TestCase):
         self.assertEqual(values['amcu.decisions[]'][0]['linked_reference'],'від 11.09.2026 № 72/130-р/к')
         self.assertEqual(values['amcu.decisions[]'][0]['extract_url'],'https://example.test/extract')
 
-        review=td.amcu_declension_review(con,item)
+        report=template_runtime.validate_template(td.AMCU_PROTOCOL_KEY,fields)
+        review=td.amcu_declension_review(con,item,td.amcu_required_declension_keys(report))
         short_cases={entry['grammatical_case']:entry['resolved_value'] for entry in review
                      if entry['subject_label']=='Скорочена назва постачальника'}
         self.assertEqual(short_cases,{
           'genitive':'ФОП ПРЕСЛІЦЬКОЇ К.К.',
-          'dative':'ФОП ПРЕСЛІЦЬКІЙ К.К.',
           'accusative':'ФОП ПРЕСЛІЦЬКУ К.К.'})
 
     def test_amcu_decision_count_context_is_mutually_exclusive_and_zero_is_blocked(self):

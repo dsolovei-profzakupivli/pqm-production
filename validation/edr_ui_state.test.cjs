@@ -50,13 +50,27 @@ test('shared topbar keeps the existing Back action separate from PQM and preserv
   assert.match(navigation,/button\.textContent='← Назад';button\.id='pqmBack'/);
   assert.match(navigation,/document\.querySelector\('header\.topbar'\);header\?\.insertBefore\(button,header\.querySelector\('#mainNav'\)\)/);
   assert.match(navigation,/dialogButton=button\.cloneNode\(true\);dialogButton\.id='pqmDialogBack'/);
-  assert.match(navigation,/button\.hidden=false;button\.disabled=!current\?\.previous\|\|restoring/);
+  assert.match(navigation,/button\.hidden=!canShowBack\(current\);button\.disabled=restoring/);
   assert.match(navigation,/dialogButton\.hidden=!current\?\.previous\|\|dialog\.dataset\.detailWindow==='floating'/);
   assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
   assert.match(navigation,/button\.onclick=dialogButton\.onclick=back;window\.pqmNavigationBack=back/);
   assert.match(css,/\.topbar #pqmBack:not\(\[hidden\]\)\{[^}]*display:inline-flex;[^}]*white-space:nowrap/);
   for(const module of ['applications','suppliers','edrMonitoring','history','requests','workQueue'])
     assert.ok(app.includes(`'${module}'`),`${module} remains a shared PQM module`);
+});
+
+test('Back visibility follows prior PQM state and view, without inventing direct-entry history',()=>{
+  const source=navigation.match(/function canShowBack\(entry\)\{[^}]+\}/)?.[0];
+  assert.ok(source,'navigation visibility rule exists');
+  const context=vm.createContext({});vm.runInContext(source,context);
+  const entry=(module,previous)=>({route:{module},previous});
+  assert.equal(context.canShowBack(entry('history',1)),true,'registry → history');
+  assert.equal(context.canShowBack(entry('history',2)),true,'supplier card → history');
+  assert.equal(context.canShowBack(entry('history',null)),false,'F5/direct history has no session predecessor');
+  assert.equal(context.canShowBack(entry('applications',1)),false,'registry is not a contextual Back destination');
+  assert.equal(context.canShowBack(entry('applications',null)),false,'direct registry');
+  assert.equal(context.canShowBack(entry('suppliers',1)),true,'other contextual views retain the previous contract');
+  assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
 });
 
 test('termination details show structured date and number only once',()=>{

@@ -40,6 +40,7 @@
 .declension-actions{display:flex;gap:6px;white-space:nowrap}.declension-actions .danger{color:#b42318}
 .declension-dialog{width:min(1120px,calc(100vw - 32px));max-width:none}.declension-dialog form{overflow-x:hidden}.declension-form{padding:18px 24px;display:flex;flex-direction:column;gap:12px;min-width:0}
 .declension-form label{display:grid;grid-template-columns:105px minmax(0,1fr);gap:14px;align-items:center;font-weight:600;min-width:0}.declension-form label>span{white-space:nowrap}.declension-form label:has(textarea){align-items:start}.declension-form input,.declension-form select,.declension-form textarea{width:100%;min-width:0;box-sizing:border-box}
+.declension-form label[hidden]{display:none}
 .declension-form input,.declension-form select,.declension-form textarea{font-weight:400}
 .declension-form .required-case{padding:10px;border:1px solid #d97706;border-radius:8px;background:#fff8e6}
 #violationProtocolReasons [data-add-declension]{margin-left:8px}
