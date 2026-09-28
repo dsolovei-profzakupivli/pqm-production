@@ -16,8 +16,11 @@ class DeclensionNavigationUiTests(unittest.TestCase):
         self.assertIn("if(reasons){reasons.hidden=false", self.app)
 
     def test_validation_navigation_prefills_and_returns_to_same_report(self):
-        self.assertIn("openDeclensionEditor(existing||{entity_type:item?.entity_type", self.app)
-        self.assertIn("item?.grammatical_case||'',item", self.app)
+        self.assertIn("const entries=context.entries||[item]", self.app)
+        self.assertIn("const pending=remainingDeclensionItems(entries)", self.app)
+        self.assertIn("openDeclensionEditor(existing||{entity_type:target?.entity_type", self.app)
+        self.assertIn("cases=matching.map(entry=>entry.grammatical_case)", self.app)
+        self.assertIn("cases.includes(label.dataset.declensionCase)", self.app)
         self.assertIn("await openViolationReportById(context.reportId)", self.app)
         self.assertIn("unresolvedDeclensionsByReport.delete(String(context.reportId))", self.app)
 

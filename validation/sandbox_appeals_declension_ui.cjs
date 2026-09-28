@@ -5,7 +5,7 @@ const src=fs.readFileSync('app.js','utf8');
 const actions=src.slice(src.indexOf('function unresolvedViolationDeclensionsBySide('),src.indexOf('async function loadReferencesView(){'));
 assert(src.includes('return html+violationDeclensionActions(declensions)+controls}'));
 const openSource=src.slice(src.indexOf('async function openDocumentDeclension('),src.indexOf('async function openDeclensionFromValidation('));
-assert(openSource.indexOf("if(context.originType==='violation_report_side')")<openSource.indexOf("$('#requestDetailsDialog').close()"), 'side editor must keep the appeal card open');
+assert(openSource.includes("else if(context.originType!=='violation_report_side')$('#requestDetailsDialog').close()"), 'side editor must keep the appeal card open');
 const entry=(side,status='unresolved',original=side)=>({subject_label:side==='customer'?'Замовник':'Постачальник',status,original,entity_type:'legal_entity',grammatical_case:'genitive'});
 const customer=entry('customer'),supplier=entry('supplier');
 const context={currentMe:{permissions:{'appeals.review':true,'declension.manage':true}},openDocumentDeclension:async(item,selection)=>{context.selection={item,selection}}};
@@ -52,9 +52,10 @@ const twoCustomer=[entry('customer','resolved'),customer,entry('customer','unres
   assert.strictEqual(next,null);assert.strictEqual(returned,0);
   assert.strictEqual(lastRendered,'');
   assert.strictEqual(context.declensionReturnContext,null);
-  const list=src.slice(src.indexOf('async function loadViolationReports(){'),src.indexOf('function violationDetailHtml(item){'));
+  const listStart=src.indexOf('async function loadViolationReports(){');
+  const list=src.slice(listStart,src.indexOf('\n',listStart));
   const reloadStart=src.indexOf('async function reloadOpenViolationReportDetail(){');
-  const reload=src.slice(reloadStart,src.indexOf('\n}\n',reloadStart)+3);
+  const reload=src.slice(reloadStart,src.indexOf('\n}',reloadStart)+2);
   assert(list.includes('if(syncWasActive&&!sync.running)await reloadOpenViolationReportDetail()'));
   const nodes=new Map();const node=selector=>{if(!nodes.has(selector))nodes.set(selector,{value:'',innerHTML:'',textContent:'',disabled:false,open:selector==='#requestDetailsDialog',querySelectorAll:()=>[]});return nodes.get(selector)};
   const refreshContext={

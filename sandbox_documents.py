@@ -1,5 +1,6 @@
 """Explicit sandbox-only protocol generation and network-denied PDF transport."""
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -19,8 +20,9 @@ def enabled():
 def route_allowed(method, path):
     # Existing auth/RBAC/readiness/final and historical checks remain mandatory.
     # No cancellation, reviews, task completion, refresh or template replacement.
-    return enabled() and method == 'POST' and path in {
-        '/api/protocol/readiness', '/api/protocol/generate'}
+    return enabled() and method == 'POST' and (path in {
+        '/api/protocol/readiness', '/api/protocol/generate'} or bool(re.fullmatch(
+        r'/api/operational-tasks/[a-f0-9]{32}/documents/(?:amcu-exclusion-protocol|termination-exclusion-protocol)', path)))
 
 
 def permitted_process(event, args):
@@ -35,9 +37,9 @@ def export_pdf(source, output):
         raise RuntimeError('Sandbox document generation is disabled')
     import sandbox_runtime
     data, _, _ = sandbox_runtime.validate_environment()
-    root = data / 'protocols'
     source, output = Path(source).resolve(), Path(output).resolve()
-    if (not source.is_relative_to(root) or not output.is_relative_to(root)
+    roots = (data / 'protocols', data / 'generated_documents')
+    if (not any(source.is_relative_to(root) and output.is_relative_to(root) for root in roots)
             or source.suffix.lower() != '.docx' or not source.is_file()):
         raise RuntimeError('Sandbox PDF paths must remain in owned protocols storage')
     with tempfile.TemporaryDirectory(prefix='pqm-sandbox-pdf-') as temp:

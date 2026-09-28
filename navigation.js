@@ -8,7 +8,7 @@
   button.style.cssText='margin:4px 12px;flex:0 0 auto';const header=document.querySelector('header.topbar');header?.insertBefore(button,header.querySelector('#mainNav'));
   if(!button.isConnected)document.body.prepend(button);
   const dialog=document.getElementById('supplierProfileDialog'),dialogButton=button.cloneNode(true);dialogButton.id='pqmDialogBack';dialog.prepend(dialogButton);
-  function update(){button.hidden=!current?.previous;button.disabled=restoring;
+  function update(){button.hidden=false;button.disabled=!current?.previous||restoring;
     // The sibling Back button is not part of a floating form or a nested task card.
     dialogButton.hidden=!current?.previous||dialog.dataset.detailWindow==='floating'||Boolean(document.getElementById('operationalTaskDialog')?.open);
     dialogButton.disabled=restoring}

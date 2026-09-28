@@ -4120,6 +4120,25 @@ def sandbox_supplier_google_row(code: str) -> dict:
             f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit#gid={gids[0]}&range=B{row_number}"}
 
 
+def sandbox_google_row_failure(exc: Exception) -> dict:
+    """Classify lookup failures without exposing OAuth material or sheet identity."""
+    if SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID:
+        return {"code": "sandbox_source_guard", "phase": "source_preflight"}
+    if isinstance(exc, GooglePhaseError):
+        return {"code": "google_request_failed", "phase": exc.details["phase"]}
+    if not sandbox_runtime.edr_google_enabled():
+        return {"code": "sandbox_transport_disabled", "phase": "sandbox_preflight"}
+    if not _google_oauth_client():
+        return {"code": "sandbox_oauth_unavailable" if GOOGLE_OAUTH_CLIENT_ACCESS_ERROR
+                else "sandbox_google_not_configured", "phase": "oauth_client"}
+    token = _google_oauth_token()
+    if not token or not token.get("refresh_token"):
+        return {"code": "sandbox_token_unavailable", "phase": "oauth_token"}
+    if isinstance(exc, PermissionError):
+        return {"code": "sandbox_source_guard", "phase": "source_preflight"}
+    return {"code": "sandbox_transport_unavailable", "phase": "sandbox_transport"}
+
+
 def google_integration_status() -> dict:
     oauth = google_oauth_status()
     with db() as con:
@@ -9442,10 +9461,12 @@ class Handler(BaseHTTPRequestHandler):
         sandbox_amcu = SANDBOX_MODE and sandbox_runtime.sandbox_amcu.route_allowed(self.command, path)
         sandbox_edr_google = SANDBOX_MODE and sandbox_runtime.edr_google_route_allowed(self.command, path)
         sandbox_operational = SANDBOX_MODE and sandbox_runtime.operational_route_allowed(self.command, path)
-        if sandbox_operational or sandbox_amcu or sandbox_manual_sync:
+        sandbox_declension_edit = sandbox_local_edit and path.startswith('/api/admin/declension-overrides')
+        if sandbox_operational or sandbox_amcu or sandbox_manual_sync or sandbox_document or sandbox_declension_edit:
             try:
                 sandbox_runtime.attest_internal_target(DB_PATH,
-                    require_operational=not sandbox_manual_sync or sandbox_operational or sandbox_amcu)
+                    require_operational=sandbox_operational or sandbox_amcu or
+                    bool(sandbox_document and path.startswith('/api/operational-tasks/')))
             except RuntimeError:
                 return self.send_json({'error': 'SANDBOX destination attestation failed',
                                        'code': 'sandbox_target_guard'}, 503)
@@ -9805,8 +9826,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Google supplier row not found"}, 404)
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 409)
-            except (PermissionError, RuntimeError):
-                return self.send_json({"error": "SANDBOX Google EDR navigation is unavailable"}, 503)
+            except (PermissionError, RuntimeError) as exc:
+                failure = sandbox_google_row_failure(exc)
+                SERVER_LOG.warning("SANDBOX Google row lookup unavailable code=%s phase=%s",
+                                   failure["code"], failure["phase"])
+                return self.send_json({"error": "SANDBOX Google EDR navigation is unavailable",
+                                       **failure}, 503)
         if parsed.path.startswith("/api/supplier-profile/"):
             code = parsed.path.removeprefix("/api/supplier-profile/")
             try:
