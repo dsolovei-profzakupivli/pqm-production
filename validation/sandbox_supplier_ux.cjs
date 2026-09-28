@@ -6,6 +6,8 @@ const root=path.resolve(__dirname,'..');
 const app=fs.readFileSync(path.join(root,'app.js'),'utf8');
 const history=fs.readFileSync(path.join(root,'history_ui.js'),'utf8');
 const css=fs.readFileSync(path.join(root,'styles.css'),'utf8');
+const navigation=fs.readFileSync(path.join(root,'navigation.js'),'utf8');
+const widths=fs.readFileSync(path.join(root,'table_widths_ui.js'),'utf8');
 const section=(source,from,to)=>source.slice(source.indexOf(from),source.indexOf(to,source.indexOf(from)));
 const dates=section(app,'function displayDate(value)','function addCalendarDays(');
 const context=vm.createContext({Intl,Date,Object,String});
@@ -20,6 +22,29 @@ assert.doesNotMatch(fs.readFileSync(path.join(root,'index.html'),'utf8'),/Роз
 const brandLayout=css.match(/\.topbar \.brand\{([^}]*)\}/)?.[1]||'';
 assert.ok(Number(brandLayout.match(/gap:(\d+)px/)?.[1])>=20);
 assert.ok(Number(brandLayout.match(/margin-right:(\d+)px/)?.[1])>=18);
+const productLabel=css.match(/\.topbar #environmentBanner\{([^}]*)\}/)?.[1]||'';
+assert.match(productLabel,/font-size:32px/);
+assert.match(productLabel,/font-weight:800/);
+assert.match(css,/html\[data-pqm-environment="sandbox"\] \.topbar #environmentBanner\{background:#234362[^}]*font-weight:700;letter-spacing:\.05em/);
+assert.match(navigation,/function update\(\)\{button\.hidden=false;button\.disabled=!current\?\.previous\|\|restoring/);
+assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
+assert.match(widths,/colgroup\[data-system-widths\]/);
+assert.match(widths,/table\.style\.tableLayout='fixed'/);
+assert.match(widths,/table\.closest\('#suppliersView'\)&&!isVisible\(table\)\)return;apply\(table,saved\[key\]\|\|\{\}\)/);
+assert.match(widths,/saved\[key\]=\{\.\.\.next/);
+const widthContext=vm.createContext({WeakMap,Number,Math,Set,Array,document:{createElement(tag){return {style:{},dataset:{},children:[],replaceChildren(...children){this.children=children}}}}});
+vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}",widthContext);
+vm.runInContext(section(widths,'function apply(table,widths){','const dialog='),widthContext);
+function widthTable(){const heads=['name','code','status'].map(col=>({dataset:{col},style:{},hidden:false,getBoundingClientRect(){return {width:col==='name'?240:80}}}));const row={cells:heads.map(()=>({style:{},hidden:false}))};return {tHead:{rows:[{cells:heads}]},tBodies:[{rows:[row]}],dataset:{},style:{},group:null,closest:()=>({}),querySelector(){return this.group},prepend(group){this.group=group}}}
+const widthFixture=widthTable();widthContext.apply(widthFixture,{code:150});
+assert.equal(widthFixture.tHead.rows[0].cells[1].style.width,'150px');
+assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
+assert.equal(widthFixture.group.children[1].style.width,'150px');
+assert.equal(widthFixture.style.width,'470px');
+widthFixture.tBodies[0].rows=[{cells:[{style:{}},{style:{}},{style:{}}]}];widthContext.apply(widthFixture,{code:150});
+assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
+const afterReload=widthTable();widthContext.apply(afterReload,{code:150});
+assert.equal(afterReload.group.children[1].style.width,'150px');
 assert.match(css,/@media\(max-width:1280px\)\{[\s\S]*?\.topbar #mainNav\{order:5/);
 assert.equal(context.displayDateOnly('2026-09-09'),'09.09.2026');
 assert.equal(context.displayDate('2026-09-09'),'09.09.2026');
@@ -50,6 +75,26 @@ noteContext.compactSupplierNote(supplierNoteSection,'Історична прим
 assert.equal(nodes[0].textContent,'Редагувати');assert.equal(nodes[1].textContent,'Історична примітка');
 assert.match(app,/sandbox\/supplier-google-row/);
 assert.match(app,/link\.href=`\$\{googleRowPath\}\?open=1`/);
+assert.match(app,/actions\.append\(clarity\)/);
+assert.match(app,/actions\.append\(link\)/);
+assert.match(css,/\.supplier-edr-actions a\{display:inline-flex;align-items:center;justify-content:center;min-height:32px/);
+const caseLabels=['genitive','dative','accusative'].map(value=>({dataset:{declensionCase:value},classList:{active:false,toggle(name,state){this.active=state}}}));
+const editorNodes=new Map();
+for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
+for(const value of ['genitive','dative','accusative'])editorNodes.set(`#declensionDialog [data-declension-case="${value}"] input`,{focus(){}});
+const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:()=>caseLabels,editingDeclensionId:null,Set,Array});
+vm.runInContext(section(app,'function openDeclensionEditor(','function declensionLookup('),caseContext);
+for(const [required,expected] of [[['dative'],[false,true,false]],[['genitive'],[true,false,false]],[['genitive','dative'],[true,true,false]],[[],[false,false,false]]]){
+  caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},required);
+  assert.deepEqual(caseLabels.map(label=>label.classList.active),expected);
+}
+const pendingNodes=new Map(),pendingNode=selector=>{if(!pendingNodes.has(selector))pendingNodes.set(selector,{value:'',textContent:'',hidden:false,close(){}});return pendingNodes.get(selector)};
+const pendingContext=vm.createContext({$:pendingNode,declensionItems:[{entity_type:'legal_entity',original:'Тест',genitive:'Тесту',dative:''}],declensionReturnContext:null,showModule(){},setReferenceTab(){},loadDeclensionOverrides:async()=>{},declensionLookup:value=>String(value||'').toLowerCase().trim(),openDeclensionEditor(_item,cases){pendingContext.selected=cases}});
+vm.runInContext(section(app,'function remainingDeclensionItems(','async function returnToDeclensionReport(')+section(app,'async function openDocumentDeclension(','async function openDeclensionFromValidation('),pendingContext);
+const pendingEntries=['genitive','dative'].map(grammatical_case=>({entity_type:'legal_entity',original:'Тест',grammatical_case}));
+pendingContext.openDocumentDeclension(pendingEntries[0],{originType:'operational_task',taskId:'t',label:'задачі',entries:pendingEntries}).then(()=>{
+  assert.deepEqual(Array.from(pendingContext.selected),['dative']);
+}).catch(error=>{console.error(error);process.exitCode=1});
 assert.match(app,/Відкрити картку постачальника/);
 const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
 const docs=html.match(/<dialog id="docsDialog">([\s\S]*?)<\/dialog>/)?.[1]||'';

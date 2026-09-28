@@ -17,6 +17,10 @@ class Policy(unittest.TestCase):
         with patch.dict(os.environ, {'PQM_SANDBOX':'1','PQM_SANDBOX_DOCUMENTS':'1'}):
             for path in ('/api/protocol/readiness','/api/protocol/generate'):
                 self.assertTrue(documents.route_allowed('POST',path))
+            task='a'*32
+            for kind in ('amcu-exclusion-protocol','termination-exclusion-protocol'):
+                self.assertTrue(documents.route_allowed('POST',f'/api/operational-tasks/{task}/documents/{kind}'))
+                self.assertFalse(documents.route_allowed('PATCH',f'/api/operational-tasks/{task}/documents/{kind}'))
             for path in ('/api/sync','/api/operational-tasks/rebuild',
                          '/api/protocol/formed/123/cancel','/api/violation-reports/a/protocol/generate'):
                 self.assertFalse(documents.route_allowed('POST',path))
@@ -45,6 +49,9 @@ result=protocol_pdf.ensure_pdf(source,protocols/'synthetic.pdf')
 assert result.read_bytes().startswith(b'%PDF-')
 assert hashlib.sha256(source.read_bytes()).hexdigest()==digest
 assert protocol_pdf.ensure_pdf(source,protocols/'synthetic.pdf')==result
+generated=root/'generated_documents';generated.mkdir()
+task_source=generated/'synthetic-task.docx';doc.save(task_source)
+assert protocol_pdf.ensure_pdf(task_source,generated/'synthetic-task.pdf').read_bytes().startswith(b'%PDF-')
 os.environ['PQM_SANDBOX_DOCUMENTS']='0'
 try: protocol_pdf.ensure_pdf(source,protocols/'synthetic.pdf')
 except RuntimeError: pass

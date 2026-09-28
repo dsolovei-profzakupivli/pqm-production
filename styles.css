@@ -110,8 +110,13 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 #supplierProfileBody .supplier-profile-grid>div{padding:9px 11px}
 #supplierProfileBody .supplier-profile-grid dt{margin-bottom:3px}
 .supplier-edr-actions{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 8px}
-.supplier-edr-actions a,.supplier-profile-edr dd a{font-weight:600;color:#075bc7;text-decoration:none}
-.supplier-edr-actions a:hover,.supplier-profile-edr dd a:hover{text-decoration:underline}
+.supplier-edr-actions a{display:inline-flex;align-items:center;justify-content:center;min-height:32px;padding:5px 10px;border:1px solid #b7c8db;border-radius:7px;background:#f7f9fc;color:#184c83;font-size:12px;font-weight:600;line-height:1.25;text-decoration:none;white-space:nowrap}
+.supplier-edr-actions a:hover{background:#e9f2ff;border-color:#7ca5d2}
+.supplier-edr-actions a:focus-visible{outline:2px solid #2767af;outline-offset:2px}
+html[data-pqm-environment="sandbox"] .supplier-edr-actions a{background:#193451;border-color:#4a6788;color:#edf3fc}
+html[data-pqm-environment="sandbox"] .supplier-edr-actions a:hover{background:#28517b;border-color:#86bdff}
+.supplier-profile-edr dd a{font-weight:600;color:#075bc7;text-decoration:none}
+.supplier-profile-edr dd a:hover{text-decoration:underline}
 .supplier-note-preview{margin:4px 0 7px;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}
 .supplier-shared-note [hidden]{display:none!important}
 .supplier-note-toggle,.supplier-note-cancel{padding:5px 9px}
@@ -408,6 +413,7 @@ body[data-density="compact"] table th,body[data-density="compact"] table td{padd
 .topbar .brand>div{display:block;min-width:0}
 .topbar .brand em{display:block;white-space:nowrap;font-size:27px;font-style:normal;font-weight:800;color:#154376}
 .topbar #environmentBanner{border:1px solid #9bc6e8;background:#dbeeff;padding:2px 14px;border-radius:10px;line-height:1.25;font-size:32px;font-weight:800}
+html[data-pqm-environment="sandbox"] .topbar #environmentBanner{background:#234362;color:#e6f1ff;border-color:#56718d;font-weight:700;letter-spacing:.05em}
 .topbar #pqmBack:not([hidden]){display:inline-flex;align-items:center;white-space:nowrap;flex:0 0 auto;z-index:1}
 .topbar #mainNav{justify-content:flex-start;overflow-x:auto}
 .topbar #mainNav .main-nav-text{min-height:40px}

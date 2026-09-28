@@ -50,7 +50,7 @@ test('shared topbar keeps the existing Back action separate from PQM and preserv
   assert.match(navigation,/button\.textContent='← Назад';button\.id='pqmBack'/);
   assert.match(navigation,/document\.querySelector\('header\.topbar'\);header\?\.insertBefore\(button,header\.querySelector\('#mainNav'\)\)/);
   assert.match(navigation,/dialogButton=button\.cloneNode\(true\);dialogButton\.id='pqmDialogBack'/);
-  assert.match(navigation,/button\.hidden=!current\?\.previous/);
+  assert.match(navigation,/button\.hidden=false;button\.disabled=!current\?\.previous\|\|restoring/);
   assert.match(navigation,/dialogButton\.hidden=!current\?\.previous\|\|dialog\.dataset\.detailWindow==='floating'/);
   assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
   assert.match(navigation,/button\.onclick=dialogButton\.onclick=back;window\.pqmNavigationBack=back/);
@@ -75,9 +75,11 @@ test('navbar and supplier-card presentation stay scoped to shared UI',()=>{
   assert.match(nav,/edrSearch:'<span aria-hidden="true">🔎<\/span>'/);
   assert.match(nav,/administration:'<span aria-hidden="true">⚙️<\/span>'/);
   assert.match(html,/<em id="environmentBanner"[^>]*>PQM<\/em>/);
-  assert.ok(Number(rule('\\.topbar #environmentBanner').match(/font-size:(\d+)px/)?.[1])>=30);
-  assert.ok(Number(rule('\\.topbar #environmentBanner').match(/font-weight:(\d+)/)?.[1])>=700);
-  assert.match(rule('\\.topbar #environmentBanner'),/background:#[\da-f]+/);
+  const productBase=css.match(/(?<![\w\]])\.topbar #environmentBanner\{([^}]*)\}/)?.[1]||'';
+  const productSandbox=rule('html\\[data-pqm-environment="sandbox"\\] \\.topbar #environmentBanner');
+  assert.ok(Number(productBase.match(/font-size:(\d+)px/)?.[1])>=30);
+  assert.equal(Number(productSandbox.match(/font-weight:(\d+)/)?.[1]),700);
+  assert.match(productSandbox,/background:#[\da-f]+/);
   const brandRule=[...css.matchAll(/\.topbar \.brand\{([^}]*)\}/g)].map(match=>match[1]).find(body=>body.includes('gap:'))||'';
   assert.ok(Number(brandRule.match(/gap:(\d+)px/)?.[1])>=20);
   assert.ok(Number(brandRule.match(/margin-right:(\d+)px/)?.[1])>=18);

@@ -364,16 +364,19 @@ def local_edit_allowed(method, path):
             r'/api/applications/[A-Za-z0-9_-]+(?:/remark-selections)?',
             r'/api/account', r'/api/admin/users/[A-Za-z0-9._-]+',
             r'/api/admin/officers/\d+', r'/api/application-profiles/[A-Za-z0-9_-]+',
+            r'/api/admin/declension-overrides/[a-f0-9]{20}',
         ),
         'POST': (
             r'/api/account/avatar', r'/api/admin/users',
             r'/api/admin/users/[A-Za-z0-9._-]+/avatar', r'/api/admin/officers',
             r'/api/chats', r'/api/chats/\d+/(?:messages|read)',
             r'/api/application-profiles', r'/api/history-columns',
+            r'/api/admin/declension-overrides',
         ),
         'DELETE': (
             r'/api/account/avatar', r'/api/admin/users/[A-Za-z0-9._-]+(?:/avatar)?',
             r'/api/admin/officers/\d+', r'/api/application-profiles/[A-Za-z0-9_-]+',
+            r'/api/admin/declension-overrides/[a-f0-9]{20}',
         ),
     }
     return any(re.fullmatch(pattern, path) for pattern in routes.get(method, ()))

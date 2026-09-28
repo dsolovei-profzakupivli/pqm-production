@@ -13,6 +13,11 @@ class AllowlistTests(unittest.TestCase):
             self.assertFalse(base.sandbox.local_edit_allowed('PATCH','/api/applications/sandbox-pending'))
         with patch.dict(os.environ, {'PQM_SANDBOX':'1','PQM_SANDBOX_EDITS':'1'}):
             self.assertTrue(base.sandbox.local_edit_allowed('PATCH','/api/applications/sandbox-pending'))
+            record='a'*20
+            self.assertTrue(base.sandbox.local_edit_allowed('POST','/api/admin/declension-overrides'))
+            self.assertTrue(base.sandbox.local_edit_allowed('PATCH','/api/admin/declension-overrides/'+record))
+            self.assertTrue(base.sandbox.local_edit_allowed('DELETE','/api/admin/declension-overrides/'+record))
+            self.assertFalse(base.sandbox.local_edit_allowed('PATCH','/api/admin/declension-overrides/not-a-record'))
             for method,path in [('POST','/api/sync'),('POST','/api/unknown-future-feature'),
                 ('PATCH','/api/applications/sandbox-pending/nazk-control'),
                 ('PATCH','/api/applications/sandbox-pending%2Fnazk-control'),
