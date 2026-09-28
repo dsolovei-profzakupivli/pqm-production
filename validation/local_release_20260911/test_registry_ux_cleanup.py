@@ -184,9 +184,20 @@ class RegistryUxCleanupTests(unittest.TestCase):
         self.assertIn("method:'POST'", selected_export)
 
     def test_reload_does_not_restore_last_supplier_modal(self):
+        navigation = (ROOT / "navigation.js").read_text(encoding="utf-8")
         self.assertNotIn("supplierProfile=", self.app)
         self.assertNotIn("openSupplierProfile(new URLSearchParams", self.app)
-        self.assertIn("if(button)openSupplierProfile(button.dataset.supplierCode)", self.app)
+        self.assertIn("installSupplierCodeAction(cell,()=>openSupplierProfile(row.dataset.supplierCode))", self.app)
+        code_action = self.app.split("function installSupplierCodeAction(cell,open){", 1)[1].split(
+            "function supplierEdrDatesHtml", 1
+        )[0]
+        self.assertIn("action.onclick=event=>{event.stopPropagation();open()}", code_action)
+        self.assertNotIn("localStorage", code_action)
+        self.assertNotIn("sessionStorage", code_action)
+        self.assertIn("const session=crypto.randomUUID()", navigation)
+        self.assertIn("token?.session===session?entries.get(token.id):null", navigation)
+        self.assertIn("current={id:++serial,previous:null,route:{module:new URL(location.href).searchParams.get('view')||'applications',tab:null}}", navigation)
+        self.assertIn("const back=()=>{if(current?.previous&&!restoring){snapshot();history.back()}}", navigation)
 
     def test_framework_search_ignores_stale_responses(self):
         self.assertIn("frameworkRequestSequence", self.app)
