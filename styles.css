@@ -408,6 +408,7 @@ body[data-density="compact"] table th,body[data-density="compact"] table td{padd
 .topbar .brand>div{display:block;min-width:0}
 .topbar .brand em{display:block;white-space:nowrap;font-size:27px;font-style:normal;font-weight:800;color:#154376}
 .topbar #environmentBanner{border:1px solid #9bc6e8;background:#dbeeff;padding:2px 14px;border-radius:10px;line-height:1.25;font-size:32px;font-weight:800}
+.topbar #pqmBack:not([hidden]){display:inline-flex;align-items:center;white-space:nowrap;flex:0 0 auto;z-index:1}
 .topbar #mainNav{justify-content:flex-start;overflow-x:auto}
 .topbar #mainNav .main-nav-text{min-height:40px}
 @media(max-width:1280px){

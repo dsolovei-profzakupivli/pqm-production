@@ -4,6 +4,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 
 const app=fs.readFileSync('app.js','utf8');
+const navigation=fs.readFileSync('navigation.js','utf8');
 const paramsCode=app.slice(app.indexOf('function edrMonitoringParams()'),app.indexOf('const edrMonitoringStorageKey='));
 const filterCode=app.slice(app.indexOf("const edrMonitoringStorageKey="),app.indexOf('\nrestoreEdrMonitoringFilters();'));
 
@@ -40,6 +41,22 @@ for(const scenario of [
   assert.equal(params.edr_status,scenario.edr);
   assert.equal(params.prozorro_status,scenario.prozorro);
   assert.equal(params.edr_names,scenario.missing);
+});
+
+test('shared topbar keeps the existing Back action separate from PQM and preserves its history handler',()=>{
+  const html=fs.readFileSync('index.html','utf8');
+  const css=fs.readFileSync('styles.css','utf8');
+  assert.match(html,/<header class="topbar">[\s\S]*?<div class="brand">[\s\S]*?id="environmentBanner"[^>]*>PQM<\/em>/);
+  assert.match(navigation,/button\.textContent='← Назад';button\.id='pqmBack'/);
+  assert.match(navigation,/document\.querySelector\('header\.topbar'\);header\?\.insertBefore\(button,header\.querySelector\('#mainNav'\)\)/);
+  assert.match(navigation,/dialogButton=button\.cloneNode\(true\);dialogButton\.id='pqmDialogBack'/);
+  assert.match(navigation,/button\.hidden=!current\?\.previous/);
+  assert.match(navigation,/dialogButton\.hidden=!current\?\.previous\|\|dialog\.dataset\.detailWindow==='floating'/);
+  assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
+  assert.match(navigation,/button\.onclick=dialogButton\.onclick=back;window\.pqmNavigationBack=back/);
+  assert.match(css,/\.topbar #pqmBack:not\(\[hidden\]\)\{[^}]*display:inline-flex;[^}]*white-space:nowrap/);
+  for(const module of ['applications','suppliers','edrMonitoring','history','requests','workQueue'])
+    assert.ok(app.includes(`'${module}'`),`${module} remains a shared PQM module`);
 });
 
 test('termination details show structured date and number only once',()=>{
