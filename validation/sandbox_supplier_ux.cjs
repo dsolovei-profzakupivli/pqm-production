@@ -27,7 +27,7 @@ assert.ok(Number(brandLayout.match(/margin-right:(\d+)px/)?.[1])>=18);
 const productLabel=css.match(/\.topbar #environmentBanner\{([^}]*)\}/)?.[1]||'';
 assert.match(productLabel,/font-size:32px/);
 assert.match(productLabel,/font-weight:800/);
-assert.match(sandboxCss,/\.sandbox-brand-initials\s*\{[^}]*font-size:32px;font-weight:800;line-height:1/);
+assert.match(sandboxCss,/\.sandbox-brand-initials\s*\{[^}]*font-size:36px;font-weight:800;line-height:1/);
 assert.match(sandboxCss,/\.sandbox-brand-q\s*\{color:#86bdff\}/);
 assert.match(sandboxCss,/\.sandbox-brand-divider\s*\{[^}]*height:32px/);
 assert.match(sandboxCss,/\.sandbox-brand-copy strong\s*\{[^}]*font-size:15px/);

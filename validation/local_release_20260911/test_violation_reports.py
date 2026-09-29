@@ -988,12 +988,14 @@ class ViolationReportTests(unittest.TestCase):
         captured = {}
         def capture(_kind, path, _values, justification, *_args):
             captured["justification"] = justification
+            captured["violation_description"] = _values["violation_description"]
             path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b"docx")
         with patch.object(server, "violation_report_detail", return_value=detail), \
                 patch.object(server, "PROTOCOLS_DIR", Path(self.temp.name) / "protocols"), \
                 patch.object(server, "build_violation_protocol_docx", side_effect=capture):
             server.generate_violation_protocol("report-internal", {"protocol_number": "P-1", "protocol_date": "2026-09-08"})
         self.assertEqual(captured["justification"], "Останній збережений текст УО — без змін.")
+        self.assertEqual(captured["violation_description"], detail["description"])
 
     def test_protocol_reason_bindings_use_full_reason_metadata_not_customer_description(self):
         descriptions = {

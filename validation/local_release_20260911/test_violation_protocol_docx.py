@@ -94,9 +94,8 @@ class ViolationProtocolDocxTests(unittest.TestCase):
                          if rel.reltype.endswith('/hyperlink')]
         for url in urls.values():
             self.assertIn(url, relationships)
-        xml = Document(output).part._element.xml
-        self.assertIn("Повідомлення про намір укласти договір", xml)
-        self.assertIn("Рішення про відхилення", xml)
+        self.assertEqual(relationships.count(urls["winner_notice_url"]), 1)
+        self.assertEqual(relationships.count(urls["rejection_decision_url"]), 1)
 
     def test_decision_dates_and_header_identifiers_link_to_exact_evidence(self):
         urls = {
@@ -251,7 +250,7 @@ class ViolationProtocolDocxTests(unittest.TestCase):
                     self.assertTrue(run._r.rPr is None or run._r.rPr.find(qn("w:shd")) is None,
                                     (protocol_type, run.text))
 
-    def test_reason_block_has_three_distinct_semantic_parts_and_template_styles(self):
+    def test_reason_block_contains_only_the_report_description(self):
         values = {**BASE_VALUES,
                   "reason_label": "Підпункт 1 пункту 49 Постанови Кабінету Міністрів України",
                   "reason_text": "Офіційний нормативний опис Prozorro",
@@ -265,23 +264,50 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             document = Document(output)
             reason_table = document.tables[1]
             label_cell, value_cell = reason_table.rows[0].cells[0], reason_table.rows[0].cells[-1]
-            description_cell = reason_table.rows[1].cells[0]
             self.assertEqual(label_cell.text, "Причина звернення:")
-            self.assertEqual([p.text for p in value_cell.paragraphs], [
-                values["reason_label"], values["reason_text"]])
-            self.assertEqual(description_cell.text, "«Оригінальне пояснення Замовника»")
-            for run in label_cell.paragraphs[0].runs + value_cell.paragraphs[0].runs:
+            self.assertEqual([p.text for p in value_cell.paragraphs], [values["violation_description"]])
+            self.assertNotIn(values["reason_label"], value_cell.text)
+            self.assertNotIn(values["reason_text"], value_cell.text)
+            self.assertEqual(sum(values["violation_description"] in cell.text
+                                 for row in reason_table.rows for cell in row.cells), 1)
+            for run in label_cell.paragraphs[0].runs:
                 self.assertEqual(run.font.name, "Times New Roman")
                 self.assertEqual(run.font.size.pt, 10)
                 self.assertTrue(run.bold)
-            for run in value_cell.paragraphs[1].runs:
+            for run in value_cell.paragraphs[0].runs:
                 self.assertEqual(run.font.name, "Times New Roman")
                 self.assertEqual(run.font.size.pt, 10)
                 self.assertFalse(bool(run.bold))
-            for run in description_cell.paragraphs[0].runs:
-                self.assertEqual(run.font.name, "Times New Roman")
-                self.assertEqual(run.font.size.pt, 10)
-                self.assertTrue(run.italic)
+
+    def test_written_refusal_uses_clickable_label_without_visible_url(self):
+        url = "https://example.test/refusal-evidence"
+        for protocol_type in ("warning", "decline_p49_1_2"):
+            with self.subTest(protocol_type=protocol_type):
+                output = self.build(protocol_type, values={**BASE_VALUES, "refusal_document": url})
+                document = Document(output)
+                matches = ["".join(node.text or "" for node in link.xpath(".//w:t"))
+                           for link in document.part._element.xpath(".//w:hyperlink")
+                           if document.part.rels[link.get(qn("r:id"))].target_ref == url]
+                self.assertEqual(matches, ["лист Постачальник від 04.09.2026 Вих. №42"])
+                self.assertNotIn(url, all_text(output))
+
+    def test_civil_code_condition_applies_to_every_protocol_without_highlighting(self):
+        for protocol_type in EXPECTED_HASHES:
+            for applicable in (True, False):
+                with self.subTest(protocol_type=protocol_type, applicable=applicable):
+                    output = Path(self.temp.name) / f"civil-{protocol_type}-{applicable}.docx"
+                    generator.build_violation_protocol_docx(
+                        protocol_type, output, dict(BASE_VALUES), "Обґрунтування", [], [],
+                        {"has_written_refusal": True, "has_contract": True,
+                         "has_supplier_response": True, "has_civil_code_basis": applicable})
+                    text = all_text(output)
+                    self.assertEqual("Цивільного кодексу України" in text, applicable)
+                    self.assertNotIn("ЦКУ: не застосовується", text)
+                    if applicable:
+                        document = Document(output)
+                        for paragraph in document.paragraphs:
+                            if "Цивільного кодексу України" in paragraph.text:
+                                self.assertFalse(paragraph._p.xpath(".//w:highlight | .//w:shd"))
 
     def test_justification_preserves_paragraphs_and_has_explicit_effective_formatting(self):
         justification = ("\tВідповідно до пп. 2 п. 49 Порядку № 822 застосовується правило.\r\n\r\n"
