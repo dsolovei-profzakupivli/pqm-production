@@ -1,9 +1,8 @@
-"""Isolated, fail-closed first sandbox release. Never bootstrap a working WEB DB.
+"""Isolated, destination-attested SANDBOX runtime. Never use a PROD DB.
 
 Render Docker command: python sandbox_runtime.py
-Only the owned pqm-sandbox service is accepted. Safe mode remains enabled;
-explicit flags allow reviewed local edits and GET-only Prozorro import,
-including an independently opted-in scheduler, never production destinations.
+Local writes require the owned SANDBOX DB or storage. External mutations
+require an independently attested SANDBOX-owned destination.
 """
 from __future__ import annotations
 
@@ -21,6 +20,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import unicodedata
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
@@ -71,20 +71,17 @@ def validate_environment(env=None):
         raise RuntimeError('STOP: PQM_SANDBOX_OPERATIONAL must be 0 or 1')
     if env.get('PQM_SANDBOX_NAZK_READ', '0') not in {'0', '1'}:
         raise RuntimeError('STOP: PQM_SANDBOX_NAZK_READ must be 0 or 1')
-    if env.get('PQM_SANDBOX_NAZK_READ') == '1' and env.get('PQM_SANDBOX_OPERATIONAL') != '1':
-        raise RuntimeError('STOP: NAZK read requires sandbox operational destination')
-    if env.get('PQM_SANDBOX_EDR_GOOGLE') == '1':
-        if env.get('PQM_SANDBOX_EDR_SPREADSHEET_ID') != SANDBOX_EDR_SPREADSHEET_ID:
-            raise RuntimeError('STOP: sandbox EDR spreadsheet identity mismatch')
+    if env.get('PQM_SANDBOX_REQUESTS_SCHEDULER', '0') not in {'0', '1'}:
+        raise RuntimeError('STOP: invalid sandbox requests scheduler opt-in')
+    if env.get('PQM_SANDBOX_EDR_SPREADSHEET_ID') not in (None, '', SANDBOX_EDR_SPREADSHEET_ID):
+        raise RuntimeError('STOP: sandbox EDR spreadsheet identity mismatch')
+    if env.get('PQM_SANDBOX_EDR_GOOGLE') == '1' or env.get('PQM_SANDBOX_EDR_REDIRECT_URI'):
         redirect = env.get('PQM_SANDBOX_EDR_REDIRECT_URI', '')
         parsed_redirect = urllib.parse.urlsplit(redirect)
         if (parsed_redirect.scheme != 'https' or not re.fullmatch(r'pqm-sandbox(?:-[a-z0-9]+)?\.onrender\.com', parsed_redirect.hostname or '')
                 or parsed_redirect.path != '/api/google-oauth/callback' or parsed_redirect.query or parsed_redirect.fragment
                 or parsed_redirect.username or parsed_redirect.password):
             raise RuntimeError('STOP: sandbox EDR OAuth redirect URI mismatch')
-    if (env.get('PQM_SANDBOX_PROZORRO_SCHEDULER') == '1'
-            and env.get('PQM_SANDBOX_PROZORRO_READ') != '1'):
-        raise RuntimeError('STOP: sandbox scheduler requires the restricted Prozorro transport')
     data = Path(env.get('PQM_DATA_DIR', '')).resolve()
     db = Path(env.get('PQM_DB_PATH', '')).resolve()
     if db != data / 'pqm_sandbox.sqlite3' or Path(env['PQM_DB_PATH']).is_symlink():
@@ -92,18 +89,9 @@ def validate_environment(env=None):
     service = env.get('RENDER_SERVICE_ID', '')
     if service:
         if (env.get('RENDER_SERVICE_NAME') != 'pqm-sandbox'
-                or service == 'srv-da7vmitg1s2s73fim0p0' or data != Path('/var/data').resolve()):
+                or service != 'srv-dalfd77f3r2c7392uub0'
+                or data != Path('/var/data').resolve()):
             raise RuntimeError('STOP: wrong Render service or disk path')
-        if env.get('PQM_SANDBOX_PROZORRO_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
-            raise RuntimeError('STOP: Prozorro testing requires the approved sandbox service')
-        if env.get('PQM_SANDBOX_DOCUMENTS') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
-            raise RuntimeError('STOP: document testing requires the approved sandbox service')
-        if env.get('PQM_SANDBOX_AMCU_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
-            raise RuntimeError('STOP: AMCU testing requires the approved sandbox service')
-        if env.get('PQM_SANDBOX_OPERATIONAL') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
-            raise RuntimeError('STOP: operational workflows require the approved sandbox service')
-        if env.get('PQM_SANDBOX_NAZK_READ') == '1' and service != 'srv-dalfd77f3r2c7392uub0':
-            raise RuntimeError('STOP: NAZK testing requires the approved sandbox service')
     elif not (env.get('PQM_SANDBOX_LOCAL_FIXTURE') == '1'
               and data.is_relative_to(Path(tempfile.gettempdir()).resolve())
               and data != Path(tempfile.gettempdir()).resolve()):
@@ -118,13 +106,15 @@ def validate_environment(env=None):
         raise RuntimeError('STOP: no inherited accounts, OAuth or integration credentials allowed')
     if (data / 'google_oauth').exists() and any((data / 'google_oauth').iterdir()):
         raise RuntimeError('STOP: sandbox must not contain OAuth files')
-    if env.get('PQM_SANDBOX_EDR_GOOGLE') != '1' and (data / 'sandbox_edr_oauth').exists() and any((data / 'sandbox_edr_oauth').iterdir()):
-        raise RuntimeError('STOP: sandbox EDR OAuth files require the narrow opt-in')
+    # SANDBOX OAuth files belong to the SANDBOX destination; the production
+    # OAuth directory above remains forbidden regardless of feature settings.
     return data, db, service or 'local-synthetic-fixture'
 
 
 def edr_google_enabled():
-    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_EDR_GOOGLE') == '1'
+    # Transport authorization is by destination identity, not by an action
+    # switch. The OAuth paths and spreadsheet id remain SANDBOX-specific.
+    return os.environ.get('PQM_SANDBOX') == '1'
 
 
 def edr_google_route_allowed(method, path):
@@ -134,11 +124,15 @@ def edr_google_route_allowed(method, path):
 
 
 def operational_enabled():
-    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_OPERATIONAL') == '1'
+    return os.environ.get('PQM_SANDBOX') == '1'
 
 
 def nazk_read_enabled():
-    return operational_enabled() and os.environ.get('PQM_SANDBOX_NAZK_READ') == '1'
+    return operational_enabled()
+
+
+def scheduler_job_allowed(job_key):
+    return operational_enabled() and job_key in {'prozorro', 'violation_reports', 'nazk_registry'}
 
 
 def attest_internal_target(db_path, *, require_operational=True):
@@ -169,6 +163,9 @@ def operational_route_allowed(method, path):
         return True
     if path == '/api/nazk-registry/refresh':
         return nazk_read_enabled()
+    if path in {'/api/admin/scheduler-jobs/violation_reports',
+                '/api/admin/scheduler-jobs/nazk_registry'}:
+        return scheduler_job_allowed(path.rsplit('/', 1)[-1])
     # Task cards and responses are local SANDBOX records, never documents or sends.
     return bool(re.fullmatch(
         r'/api/operational-tasks/[a-f0-9]{32}(?:/channels/(?:supplier|nazk)/sent|'
@@ -176,11 +173,11 @@ def operational_route_allowed(method, path):
 
 
 def local_edits_enabled():
-    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_EDITS', '0') == '1'
+    return os.environ.get('PQM_SANDBOX') == '1'
 
 
 def prozorro_read_enabled():
-    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_PROZORRO_READ', '0') == '1'
+    return os.environ.get('PQM_SANDBOX') == '1'
 
 
 def prozorro_scheduler_enabled():
@@ -254,6 +251,45 @@ class _NoGoogleRedirect(urllib.request.HTTPRedirectHandler):
         raise RuntimeError('Sandbox Google redirect is not approved')
 
 
+def validate_public_read_request(url, method):
+    parsed = urllib.parse.urlsplit(url)
+    search_read = method == 'POST' and url == 'https://prozorro.gov.ua/api/search/contracts'
+    if (method != 'GET' and not search_read or parsed.scheme != 'https' or not parsed.hostname
+            or parsed.port not in (None, 443) or parsed.username or parsed.password
+            or parsed.fragment):
+        raise RuntimeError('Sandbox external request is not a public read')
+    return parsed.hostname
+
+
+class _PublicReadRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        host = validate_public_read_request(newurl, 'GET')
+        _egress.reference_host = host
+        _egress.addresses = set()
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+@contextmanager
+def external_read_open(request, timeout=60):
+    """Destination-checked public GET; all external mutations remain blocked."""
+    host = validate_public_read_request(request.full_url, request.get_method())
+    if getattr(_egress, 'active', False):
+        raise RuntimeError('Nested sandbox network scope is not supported')
+    _egress.active = True
+    _egress.public_read = True
+    _egress.reference_host = host
+    _egress.addresses = set()
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _PublicReadRedirect())
+        with opener.open(request, timeout=timeout) as response:
+            yield response
+    finally:
+        _egress.active = False
+        _egress.public_read = False
+        _egress.reference_host = None
+        _egress.addresses = set()
+
+
 def validate_nazk_request(url, method):
     parsed = urllib.parse.urlsplit(url)
     if (not nazk_read_enabled() or method != 'GET' or parsed.scheme != 'https'
@@ -289,20 +325,51 @@ def fetch_nazk_bytes(url):
 def validate_google_request(url, method):
     if not edr_google_enabled():
         raise RuntimeError('Sandbox Google EDR path is disabled')
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != 'https' or parsed.port not in (None, 443) or parsed.username or parsed.password or parsed.fragment:
+    if not isinstance(url, str) or any(ord(char) < 32 or ord(char) == 127 for char in url):
+        raise RuntimeError('Sandbox Google destination is malformed')
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid_authority = (parsed.scheme == 'https' and parsed.port in (None, 443)
+                           and not parsed.username and not parsed.password and not parsed.fragment)
+    except (TypeError, ValueError):
+        valid_authority = False
+    if not valid_authority:
         raise RuntimeError('Sandbox Google destination is not approved')
     if method == 'POST' and parsed.hostname == GOOGLE_TOKEN_HOST and parsed.path == '/token' and not parsed.query:
         return GOOGLE_TOKEN_HOST
-    expected_prefix = '/v4/spreadsheets/' + SANDBOX_EDR_SPREADSHEET_ID + '/values/'
-    range_part = urllib.parse.unquote(parsed.path[len(expected_prefix):]) if parsed.path.startswith(expected_prefix) else ''
-    if (method == 'GET' and parsed.hostname == GOOGLE_SHEETS_HOST and
-            range_part in {"'ФОП'!A:O", "'ЮО'!A:O"} and
-            urllib.parse.parse_qs(parsed.query) == {'majorDimension': ['ROWS']}):
-        return GOOGLE_SHEETS_HOST
-    if (method == 'GET' and parsed.hostname == GOOGLE_SHEETS_HOST and
-            parsed.path == '/v4/spreadsheets/' + SANDBOX_EDR_SPREADSHEET_ID and
-            urllib.parse.parse_qs(parsed.query) == {'fields': ['sheets(properties(sheetId,title))']}):
+    if parsed.hostname != GOOGLE_SHEETS_HOST or method not in {'GET', 'POST', 'PUT', 'PATCH', 'DELETE'}:
+        raise RuntimeError('Sandbox Google destination or method is not approved')
+    # Decode every segment to a fixed point before comparing identities. An
+    # encoded separator, dot segment or residual percent escape is ambiguous
+    # to an upstream proxy and must never reach Google as a write target.
+    raw_segments = parsed.path.split('/')
+    if len(raw_segments) < 4 or raw_segments[0] != '' or any(not item for item in raw_segments[1:]):
+        raise RuntimeError('Sandbox Google destination path is malformed')
+    segments = []
+    for raw in raw_segments[1:]:
+        segment = raw
+        for _ in range(8):
+            try:
+                decoded = urllib.parse.unquote(segment, errors='strict')
+            except UnicodeDecodeError as exc:
+                raise RuntimeError('Sandbox Google destination path is malformed') from exc
+            if decoded == segment:
+                break
+            segment = decoded
+        if ('%' in segment or '/' in segment or '\\' in segment or '?' in segment
+                or '#' in segment or any(ord(char) < 32 or ord(char) == 127 for char in segment)
+                or segment in {'.', '..'}
+                or unicodedata.normalize('NFKC', segment) != segment):
+            raise RuntimeError('Sandbox Google destination path is not canonical')
+        segments.append(segment)
+    identity = ['v4', 'spreadsheets', SANDBOX_EDR_SPREADSHEET_ID]
+    valid_path = (segments == identity or
+                  segments == ['v4', 'spreadsheets', SANDBOX_EDR_SPREADSHEET_ID + ':batchUpdate'] or
+                  segments == identity + ['values:batchUpdate'] or
+                  (len(segments) == 5 and segments[:4] == identity + ['values']))
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if (valid_path and not ({'key', 'access_token', 'spreadsheetId', 'sheetId'} & query.keys())
+            and not any(ord(char) < 32 for char in parsed.query)):
         return GOOGLE_SHEETS_HOST
     raise RuntimeError('Sandbox Google destination or method is not approved')
 
@@ -401,6 +468,8 @@ def outbound_audit(event, args):
     if event == 'urllib.Request' and getattr(_egress, 'active', False):
         if getattr(_egress, 'google_host', None):
             validate_google_request(args[0], args[3])
+        elif getattr(_egress, 'public_read', False):
+            validate_public_read_request(args[0], args[3])
         elif getattr(_egress, 'reference_host', None):
             validate_nazk_request(args[0], args[3])
         else:
@@ -433,8 +502,10 @@ def _verify_existing(db, service):
             raise RuntimeError('STOP: existing database has no sandbox ownership marker') from exc
         if identity != [('sandbox', service)]:
             raise RuntimeError('STOP: sandbox database belongs to another environment/service')
-        if con.execute('SELECT COUNT(*) FROM scheduler_job_settings WHERE enabled<>0').fetchone()[0]:
-            raise RuntimeError('STOP: sandbox contains enabled scheduler settings')
+        enabled_jobs = {str(row[0]) for row in con.execute(
+            'SELECT job_key FROM scheduler_job_settings WHERE enabled<>0')}
+        if any(not scheduler_job_allowed(job_key) for job_key in enabled_jobs):
+            raise RuntimeError('STOP: sandbox contains scheduler state without its own opt-in')
         if con.execute('SELECT COUNT(*) FROM runtime_feature_settings WHERE enabled<>0').fetchone()[0]:
             raise RuntimeError('STOP: sandbox contains enabled runtime integrations')
         if not con.execute("SELECT 1 FROM auth_users WHERE role='admin' AND active=1").fetchone():
@@ -544,18 +615,8 @@ def decorate_html(raw):
         text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
         text = text.replace('</head>', '<script src="/sandbox_contrast.js?v=1" defer></script></head>', 1)
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
-    mode = ('ЛОКАЛЬНІ ТЕСТОВІ ЗМІНИ — інтеграції, імпорти та jobs вимкнено'
-            if local_edits_enabled() else 'SAFE MODE — зміни та зовнішні оновлення вимкнено')
-    if prozorro_read_enabled():
-        mode = 'РУЧНИЙ PROZORRO → лише БД SANDBOX · автоматичні jobs та інші інтеграції вимкнено'
-    if prozorro_scheduler_enabled():
-        mode = 'PROZORRO → лише БД SANDBOX · автоматично щогодини о :05 (Київ) · інші інтеграції вимкнено'
-    if edr_google_enabled():
-        mode = 'ЛИШЕ SANDBOX Google ЄДР → SANDBOX PQM · Preview перед явним Apply · інші Google інтеграції вимкнено'
-    if operational_enabled():
-        mode = ('ОПЕРАЦІЙНІ ТЕСТИ У БД SANDBOX · дозволені джерела лише для читання · '
-                'зовнішні записи й PROD призначення заблоковані'
-                + (' · Google ЄДР: SANDBOX Sheet → SANDBOX PQM' if edr_google_enabled() else ''))
+    mode = ('ЗОВНІШНІ ДЖЕРЕЛА — читання · локальні записи лише в SANDBOX · '
+            'Google-записи лише в підтверджену SANDBOX Sheet · PROD призначення заблоковані')
     text = text.replace('<body>', '<body><aside id="sandboxWarning" role="note" style="position:fixed;bottom:0;left:0;right:0;z-index:100000;background:#fff3cd;color:#583d00;padding:8px 16px;text-align:center;font:600 14px system-ui;border-top:2px solid #d29b00">SANDBOX · ТЕСТОВІ ДАНІ · ' + mode + '</aside>', 1)
     text = text.replace('PQM · WEB TEST</em>', 'PQM · SANDBOX</em>', 1)
     return text.encode('utf-8')

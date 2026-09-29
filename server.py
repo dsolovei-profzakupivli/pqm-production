@@ -67,6 +67,7 @@ import document_bindings
 import template_runtime
 import template_catalog
 import scheduler_runtime
+import winner_decisions
 import protocol_pdf
 import historical_applications
 from violation_text import normalize_justification_text
@@ -218,6 +219,8 @@ GOOGLE_OAUTH_CLIENT_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_client.json" if SAN
 GOOGLE_OAUTH_TOKEN_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_token.json" if SANDBOX_MODE else
                            Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json"))))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
+GOOGLE_SHEETS_SCOPE = ("https://www.googleapis.com/auth/spreadsheets"
+                       if SANDBOX_MODE else GOOGLE_SHEETS_READONLY_SCOPE)
 GOOGLE_RUNTIME_FEATURE_KEY = "google_integration"
 GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS = 600
 GOOGLE_TOKEN_WRITE_LOCK = threading.RLock()
@@ -709,7 +712,8 @@ def remarks_catalog(force: bool = False, include_inactive: bool = False) -> dict
             pass
     try:
         request = urllib.request.Request(REMARKS_CSV, headers={"User-Agent": "PQM/0.1"})
-        with urllib.request.urlopen(request, timeout=20) as response:
+        opener = sandbox_runtime.external_read_open if SANDBOX_MODE else urllib.request.urlopen
+        with opener(request, timeout=20) as response:
             text = response.read().decode("utf-8-sig")
         items, seen = [], set()
         for row_number, row in enumerate(csv.DictReader(io.StringIO(text)), start=2):
@@ -955,11 +959,18 @@ def sync_framework_officers() -> dict:
 def load_announcement_rows() -> list[dict]:
     try:
         request = urllib.request.Request(ANNOUNCEMENTS_CSV, headers={"User-Agent": "PQM/0.1"})
-        with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+        if SANDBOX_MODE:
+            response_scope = sandbox_runtime.external_read_open(request, timeout=30)
+        else:
+            response_scope = urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context())
+        with response_scope as response:
             return list(csv.DictReader(io.StringIO(response.read().decode("utf-8-sig"))))
     except Exception:
         # The directory is private. Reuse the existing read-only OAuth token;
         # do not require public link sharing and do not write to Google Sheets.
+        if SANDBOX_MODE:
+            # Never substitute PROD OAuth for an unavailable public source.
+            raise
         values = _google_sheet_values("Оголошення", ANNOUNCEMENTS_SHEET_ID, "A:Z")
         if not values:
             return []
@@ -1411,6 +1422,11 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS ix_violation_reports_defendant ON violation_reports(defendant_code);
         CREATE INDEX IF NOT EXISTS ix_violation_reports_status ON violation_reports(status);
         CREATE INDEX IF NOT EXISTS ix_violation_reports_date ON violation_reports(date_published);
+        CREATE TABLE IF NOT EXISTS violation_winner_decision_snapshots (
+          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,
+          decision_json TEXT,
+          created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS violation_report_reviews (
           report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,
           review_status TEXT DEFAULT 'not_reviewed', assigned_officer TEXT DEFAULT '',
@@ -1930,13 +1946,16 @@ def discover_active_frameworks() -> list[dict]:
 
 def discover_tracked_frameworks() -> list[dict]:
     """Load every active and closed PQM category listed in the announcements directory."""
-    if SANDBOX_MODE:
-        # Google remains isolated. Read the already copied WEB scope; do not
-        # discover unrelated frameworks or pretend that Google was refreshed.
+    try:
+        rows = load_announcement_rows()
+    except Exception:
+        if not SANDBOX_MODE:
+            raise
+        # Offline/private source: retain the attested SANDBOX scope without
+        # borrowing production credentials or writing to any external sheet.
         with db() as con:
             ids = [row[0] for row in con.execute("SELECT id FROM frameworks ORDER BY pretty_id")]
         return [api_get(f"{API_ROOT}/frameworks/{identifier}")["data"] for identifier in ids]
-    rows = load_announcement_rows()
     tracked_pretty_ids = sorted({
         (row.get("ID") or "").strip()
         for row in rows
@@ -2149,6 +2168,8 @@ def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error:
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
                         trigger: str = "manual") -> bool:
     """Claim process and SQLite job locks before starting any Prozorro refresh."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with SYNC_STATE_LOCK:
         if SYNC_STATE.get("running"):
             return False
@@ -2265,7 +2286,7 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
     except ValueError:
         last_sync = None
     SYNC_STATE['last_data_sync_at'] = last_value
-    if catch_up and SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled():
+    if catch_up and SANDBOX_MODE:
         while not stop_event.is_set() and _scheduler_is_configured('prozorro'):
             SCHEDULER_HEARTBEATS['prozorro'] = now_iso()
             delay = sandbox_runtime.prozorro_catchup_delay(DB_PATH, datetime.now(timezone.utc))
@@ -2408,10 +2429,13 @@ def scheduler_environment_defaults() -> dict[str, bool]:
 
 
 def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
-    if SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled():
-        return ({key: key == 'prozorro' for key in SCHEDULER_TARGETS},
-                {key: 'sandbox_environment' if key == 'prozorro' else 'safe_mode'
-                 for key in SCHEDULER_TARGETS})
+    if SANDBOX_MODE:
+        with db() as con:
+            overrides = scheduler_runtime.effective_enabled(
+                con, {key: False for key in SCHEDULER_TARGETS})
+            sources = scheduler_runtime.setting_sources(con)
+        return ({key: bool(overrides[key]) and sandbox_runtime.scheduler_job_allowed(key)
+                 for key in SCHEDULER_TARGETS}, sources)
     if SAFE_MODE:
         return ({key: False for key in SCHEDULER_TARGETS},
                 {key: "safe_mode" for key in SCHEDULER_TARGETS})
@@ -2431,12 +2455,31 @@ def apply_scheduler_settings(*, catch_up: bool) -> dict[str, bool]:
 
 
 def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
-    if SAFE_MODE:
+    if SAFE_MODE and not SANDBOX_MODE:
         raise ValueError("Планувальники заблоковано в safe mode")
     if job_key not in SCHEDULER_TARGETS:
         raise ValueError("Невідома scheduler job")
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
+        if not sandbox_runtime.scheduler_job_allowed(job_key):
+            raise ValueError("SANDBOX scheduler target is not attested")
     before, _ = effective_scheduler_settings()
     old_enabled = bool(before[job_key])
+    if SANDBOX_MODE:
+        if old_enabled != bool(enabled):
+            with db() as con:
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor)
+                con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+                  VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
+                  "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
+                  "enabled" if enabled else "disabled"))
+        # Persist first: a newly registered thread must see its own effective
+        # setting, and a disabled job must never get another scheduled run.
+        if enabled:
+            register_scheduler_job(job_key, SCHEDULER_TARGETS[job_key], catch_up=False)
+        else:
+            unregister_scheduler_job(job_key)
+        return next(item for item in scheduler_status_payload() if item["job"] == job_key)
     if enabled:
         register_scheduler_job(job_key, SCHEDULER_TARGETS[job_key], catch_up=False)
     else:
@@ -2478,6 +2521,7 @@ def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
         row["configured_enabled"] = configured[key]
         row["registered"] = key in registered
         row["configuration_source"] = sources[key]
+        row["manageable"] = (not SANDBOX_MODE or sandbox_runtime.scheduler_job_allowed(key))
     return rows
 
 
@@ -4014,7 +4058,7 @@ def google_oauth_authorization_url(actor: str = "") -> str:
     redirect_uri = _google_oauth_redirect_uri()
     _store_google_oauth_transaction(state, verifier, redirect_uri, actor)
     params = {"client_id": client["client_id"], "redirect_uri": redirect_uri, "response_type": "code",
-              "scope": GOOGLE_SHEETS_READONLY_SCOPE, "access_type": "offline", "prompt": "consent",
+              "scope": GOOGLE_SHEETS_SCOPE, "access_type": "offline", "prompt": "consent",
               "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
     return (client.get("auth_uri") or "https://accounts.google.com/o/oauth2/auth") + "?" + urllib.parse.urlencode(params)
 
@@ -4083,13 +4127,21 @@ def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHE
         _raise_google_phase_error("sheets_values_read", exc)
 
 
+def sandbox_google_row_navigation_enabled() -> bool:
+    """Keep the read-only card route's explicit availability contract separate
+    from destination-based authorization of SANDBOX Google writes.
+    """
+    return (SANDBOX_MODE and sandbox_runtime.edr_google_enabled()
+            and os.environ.get('PQM_SANDBOX_EDR_GOOGLE', '0') == '1')
+
+
 def sandbox_supplier_google_row(code: str) -> dict:
     """Resolve a literal supplier identity against the current SANDBOX sheet.
 
     Stored source_row is historical provenance, not a safe navigation target.
     Never derive the destination tab from identifier length or profile routing.
     """
-    if (not SANDBOX_MODE or not sandbox_runtime.edr_google_enabled() or
+    if (not sandbox_google_row_navigation_enabled() or
             SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID):
         raise PermissionError("SANDBOX Google EDR navigation is unavailable")
     literal = str(code or "").strip()
@@ -5937,6 +5989,17 @@ def _resolve_violation_tender(tender_id: str, contract_id: str) -> tuple[str, st
         return "", ""
 
 
+def violation_request_public_url(contract_pretty_id: str, report_pretty_id: str) -> str:
+    """Match the already-used Prozorro request route in the PQM registry UI."""
+    contract = str(contract_pretty_id or "").strip()
+    report = str(report_pretty_id or "").strip()
+    if not contract or not re.fullmatch(r"UA-D-\d{4}-\d{2}-\d{2}-\d{6}", report):
+        return ""
+    return ("https://prozorro.gov.ua/uk/contract/"
+            + urllib.parse.quote(contract, safe="")
+            + "/violation-reports#report-" + urllib.parse.quote(report, safe=""))
+
+
 def save_violation_report(payload: dict) -> bool:
     details = payload.get("details") or {}
     author_name, author_code = _organization_fields(payload.get("author"))
@@ -5980,6 +6043,12 @@ def save_violation_report(payload: dict) -> bool:
             str(decision.get("description") or ""), str(decision.get("datePublished") or decision.get("dateModified") or ""),
             json.dumps(details.get("documents") or [], ensure_ascii=False),
             json.dumps(decision.get("documents") or [], ensure_ascii=False), json.dumps(payload, ensure_ascii=False), now_iso()))
+        # Only reports first seen after this schema exists are eligible for a
+        # durable winner snapshot. Existing historical rows are not backfilled.
+        if existing is None:
+            con.execute("""INSERT OR IGNORE INTO violation_winner_decision_snapshots
+              (report_id,decision_json,created_at) VALUES (?,NULL,?)""",
+              (str(payload.get("id") or ""), now_iso()))
     return True
 
 
@@ -6038,6 +6107,8 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
 
 def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
     """Share process and SQLite locks between manual and scheduled refreshes."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     with VIOLATION_SYNC_LOCK:
         if VIOLATION_SYNC_STATE["running"]:
             return False
@@ -6069,6 +6140,8 @@ def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
 
 
 def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger)
     if not owner:
         return False
@@ -6332,6 +6405,53 @@ def _award_sort_key(award: dict) -> str:
 
 def _documents_without_signature(documents: list[dict]) -> list[dict]:
     return sorted(documents or [], key=lambda item: str(item.get("datePublished") or ""), reverse=True)
+
+
+def _attested_winner_snapshot_connection() -> sqlite3.Connection:
+    # A read-path may persist the first evidenced decision. Attest its actual
+    # destination before opening each connection, not only at HTTP dispatch.
+    if SANDBOX_MODE:
+        import sandbox_runtime
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+    return db()
+
+
+def _report_winner_decision(report: dict, tender: dict) -> dict | None:
+    """Keep a new report's first evidenced decision; never backfill old rows."""
+    report_id = str(report.get("id") or "")
+    record = None
+    if report_id:
+        try:
+            with _attested_winner_snapshot_connection() as con:
+                record = con.execute(
+                    "SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id=?",
+                    (report_id,),
+                ).fetchone()
+        except sqlite3.OperationalError:
+            # Small isolated unit fixtures may not include the application schema.
+            pass
+    if record and record[0]:
+        frozen = json.loads(record[0])
+        linked = next((award for award in tender.get("awards") or []
+                       if str(award.get("id") or "") == frozen.get("award_id")), None)
+        if linked and linked.get("status") in {"cancelled", "unsuccessful"} and not frozen.get("later_cancelled"):
+            frozen["later_cancelled"] = True
+            with _attested_winner_snapshot_connection() as con:
+                con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
+                  WHERE report_id=?""", (json.dumps(frozen, ensure_ascii=False), report_id))
+        return frozen
+    decision = winner_decisions.historical_decision(tender, report, snapshot_at=now_iso())
+    if decision and record is not None:
+        with _attested_winner_snapshot_connection() as con:
+            con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
+              WHERE report_id=? AND decision_json IS NULL""",
+              (json.dumps(decision, ensure_ascii=False), report_id))
+            stored = con.execute(
+                "SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id=?",
+                (report_id,),
+            ).fetchone()
+        return json.loads(stored[0]) if stored and stored[0] else decision
+    return decision
 
 
 def classify_award_rejection_reason(award: dict | None) -> str:
@@ -6717,13 +6837,15 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         return {"available": False, "error": "У зверненні відсутній tender_id"}
     tender = api_get(f"{API_ROOT}/tenders/{tender_id}").get("data") or {}
     defendant_code = str(report.get("defendant_code") or "")
-    supplier_awards = [award for award in tender.get("awards") or [] if _award_matches_supplier(award, defendant_code)]
-    winner_candidates = [award for award in supplier_awards if award.get("qualified") is True]
-    winner = max(winner_candidates, key=_award_sort_key, default=None)
-    rejected_candidates = [award for award in supplier_awards
-                           if award.get("status") == "unsuccessful" and award.get("qualified") is False]
-    rejected = max(rejected_candidates, key=_award_sort_key, default=None)
-    winner_selected = _parse_prozorro_date(((winner or {}).get("period") or {}).get("startDate"))
+    supplier_awards = winner_decisions.relevant_awards(tender, report)
+    historical = _report_winner_decision(report, tender)
+    winner = next((award for award in supplier_awards
+                   if str(award.get("id") or "") == str((historical or {}).get("award_id") or "")), None)
+    current_winner = winner_decisions.current_winner_state(tender, report)
+    rejected = winner_decisions.relevant_rejection(tender, report)
+    rejection_protocol_document = winner_decisions.protocol_document(rejected or {})
+    winner_selected = _parse_prozorro_date((historical or {}).get("decision_datetime")
+                                           or (historical or {}).get("decision_date"))
     extended = bool((review or {}).get("contract_deadline_extended"))
     deadline = _calendar_deadline(winner_selected, 10 if extended else 5)
     rejection_date = _parse_prozorro_date((rejected or {}).get("date"))
@@ -6731,7 +6853,16 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     explicit_non_signing = rejection_classification in {
         "non_signing", "guarantee_missing", "non_signing_and_guarantee"
     }
+    # Contract association is independent of proof of a winner-decision date.
+    # A cancelled contract remains visible even when no notice can establish
+    # the historical decision timestamp.
     contract_award = rejected if explicit_non_signing and rejected else winner
+    if contract_award is None:
+        linked_awards = [award for award in supplier_awards if any(
+            str(item.get("awardID") or "") == str(award.get("id") or "")
+            for item in tender.get("contracts") or [])]
+        if len(linked_awards) == 1:
+            contract_award = linked_awards[0]
     contract = next((item for item in tender.get("contracts") or []
                      if contract_award and str(item.get("awardID") or "") == str(contract_award.get("id") or "")
                      and (not item.get("suppliers") or any(
@@ -6746,7 +6877,13 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     context = {
         "available": True, "tender_id": tender_id, "tender_pretty_id": tender.get("tenderID") or report.get("tender_pretty_id"),
         "defendant_code": defendant_code, "supplier_awards_count": len(supplier_awards),
-        "winner_award_id": (winner or {}).get("id"), "winner_selected_at": ((winner or {}).get("period") or {}).get("startDate"),
+        "winner_award_id": (historical or {}).get("award_id"),
+        "winner_selected_at": (historical or {}).get("decision_datetime") or (historical or {}).get("decision_date"),
+        "historical_winner_decision": historical,
+        "winner_protocol_document": (historical or {}).get("protocol_document"),
+        "rejection_protocol_document": rejection_protocol_document,
+        "current_winner_state": current_winner,
+        "active_winner": current_winner["active_winner"],
         "winner_award_status": (winner or {}).get("status"),
         "rejection_present": bool(rejected), "rejection_award_id": (rejected or {}).get("id"),
         "rejection_date": (rejected or {}).get("date"), "rejection_title": (rejected or {}).get("title"),
@@ -7009,13 +7146,15 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     # It therefore resolves for every report, including official historical
     # reports which have never been reviewed in PQM and are not JSON-eligible.
     # Keep this separate from the immutable decision context used below.
-    if item.get("procurement_context"):
+    if item.get("procurement_context") and (
+            item.get("decision_context_source") != "completion_snapshot" or not refresh):
         item["factual_procurement_context"] = item["procurement_context"]
         item["factual_procurement_context_source"] = item.get("decision_context_source") or "resolved_context"
     else:
         (item["factual_procurement_context"],
          item["factual_procurement_context_source"]) = resolve_violation_procurement_context(
             item, item["review"], prefer_snapshot=False)
+    item["current_winner_state"] = (item.get("factual_procurement_context") or {}).get("current_winner_state")
     item["scenario_summary"] = violation_scenario_summary(
         item, item.get("procurement_context") or {})
     # JSON export follows the canonical status presented by the case card, not
@@ -7579,7 +7718,16 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     values = {
         "protocol_number": gate["protocol_number"], "protocol_date": _protocol_date(gate["protocol_date"]),
         "report_id": str(item.get("report_id") or item.get("id") or ""),
-        "procurement_id": str(item.get("tender_pretty_id") or ""),
+        "procurement_id": str(item.get("tender_pretty_id") or context.get("tender_pretty_id") or ""),
+        "procurement_url": ("https://prozorro.gov.ua/uk/tender/" + urllib.parse.quote(
+            str(item.get("tender_pretty_id") or context.get("tender_pretty_id")), safe="")
+            if item.get("tender_pretty_id") or context.get("tender_pretty_id") else ""),
+        "report_url": violation_request_public_url(
+            str(item.get("contract_pretty_id") or context.get("contract_pretty_id") or ""),
+            str(item.get("report_id") or "")),
+        "winner_notice_url": str(((context.get("historical_winner_decision") or {}).get(
+            "protocol_document") or {}).get("url") or ""),
+        "rejection_decision_url": str((context.get("rejection_protocol_document") or {}).get("url") or ""),
         "procurement_date": _protocol_date(context.get("tender_date_published") or item.get("date_created")),
         "cpv_category": str(context.get("dk_code") or ""),
         "customer_name": customer_name, "customer_name_genitive": normalize_document_name(declined_names["customer_name_genitive"].value),
@@ -7793,6 +7941,8 @@ def _download_archive_document(document: dict, opener=urllib.request.urlopen, sl
 
 
 def build_application_archive(submission_id: str, opener=urllib.request.urlopen, sleeper=time.sleep):
+    if SANDBOX_MODE and opener is urllib.request.urlopen:
+        opener = lambda request, timeout, context=None: sandbox_runtime.external_read_open(request, timeout)
     collected = application_documents(submission_id)
     if not collected:
         return None
@@ -7841,7 +7991,11 @@ def normalized_value(value: str) -> str:
 
 def download_document(document: dict, limit: int = 25 * 1024 * 1024) -> bytes:
     request = urllib.request.Request(document["url"], headers={"User-Agent": "PQM/0.1"})
-    with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context()) as response:
+    if SANDBOX_MODE:
+        response_scope = sandbox_runtime.external_read_open(request, timeout=60)
+    else:
+        response_scope = urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context())
+    with response_scope as response:
         length = int(response.headers.get("Content-Length") or 0)
         if length > limit:
             raise ValueError("Файл перевищує 25 МБ")
@@ -8455,7 +8609,11 @@ def _contract_experience_http_json(url: str, payload: dict | None = None) -> dic
         if wait > 0:
             time.sleep(wait)
         try:
-            with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+            if SANDBOX_MODE:
+                response_scope = sandbox_runtime.external_read_open(request, timeout=30)
+            else:
+                response_scope = urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context())
+            with response_scope as response:
                 result = json.loads(response.read().decode("utf-8"))
             if not isinstance(result, dict):
                 raise ValueError("Prozorro повернув некоректну відповідь пошуку договорів")
@@ -9455,22 +9613,17 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/login", "/api/logout"}:
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        sandbox_local_edit = SANDBOX_MODE and sandbox_runtime.local_edit_allowed(self.command, path)
-        sandbox_manual_sync = SANDBOX_MODE and sandbox_runtime.manual_sync_allowed(self.command, path)
-        sandbox_document = SANDBOX_MODE and sandbox_runtime.sandbox_documents.route_allowed(self.command, path)
-        sandbox_amcu = SANDBOX_MODE and sandbox_runtime.sandbox_amcu.route_allowed(self.command, path)
-        sandbox_edr_google = SANDBOX_MODE and sandbox_runtime.edr_google_route_allowed(self.command, path)
-        sandbox_operational = SANDBOX_MODE and sandbox_runtime.operational_route_allowed(self.command, path)
-        sandbox_declension_edit = sandbox_local_edit and path.startswith('/api/admin/declension-overrides')
-        if sandbox_operational or sandbox_amcu or sandbox_manual_sync or sandbox_document or sandbox_declension_edit:
+        sandbox_mutation = SANDBOX_MODE and self.command in {"POST", "PATCH", "PUT", "DELETE"}
+        sandbox_refresh = SANDBOX_MODE and any(
+            query.get(key, [""])[0].lower() in {"1", "true", "yes"}
+            for key in ("refresh", "force"))
+        if sandbox_mutation or sandbox_refresh:
             try:
-                sandbox_runtime.attest_internal_target(DB_PATH,
-                    require_operational=sandbox_operational or sandbox_amcu or
-                    bool(sandbox_document and path.startswith('/api/operational-tasks/')))
+                sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
             except RuntimeError:
                 return self.send_json({'error': 'SANDBOX destination attestation failed',
                                        'code': 'sandbox_target_guard'}, 503)
-        if SAFE_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"} and not (sandbox_local_edit or sandbox_manual_sync or sandbox_document or sandbox_amcu or sandbox_edr_google or sandbox_operational))
+        if SAFE_MODE and not SANDBOX_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"})
                           or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
                                  for key in ("refresh", "force"))
                           or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
@@ -9711,7 +9864,7 @@ class Handler(BaseHTTPRequestHandler):
                 "sandbox_documents": SANDBOX_MODE and sandbox_runtime.sandbox_documents.enabled(),
                 "sandbox_amcu_read": SANDBOX_MODE and sandbox_runtime.sandbox_amcu.enabled(),
                 "sandbox_prozorro_read": SANDBOX_MODE and sandbox_runtime.prozorro_read_enabled(),
-                "sandbox_prozorro_scheduler": SANDBOX_MODE and sandbox_runtime.prozorro_scheduler_enabled(),
+                "sandbox_prozorro_scheduler": SANDBOX_MODE and scheduler_flags.get("prozorro", False),
                 "sandbox_operational": SANDBOX_MODE and sandbox_runtime.operational_enabled(),
                 "sandbox_nazk_read": SANDBOX_MODE and sandbox_runtime.nazk_read_enabled(),
                 "safe_mode": SAFE_MODE,
@@ -9756,7 +9909,9 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as con:
                     control = get_submission_nazk_control(con, submission_id)
                     historical_read_only = historical_applications.is_read_only(submission_id)
-                    if not control and not historical_read_only and not SAFE_MODE:
+                    if not control and not historical_read_only and (not SAFE_MODE or SANDBOX_MODE):
+                        if SANDBOX_MODE:
+                            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
                         control = ensure_submission_nazk_control(con, submission_id)
                     state = get_submission_nazk_state(con, submission_id)
                     context = submission_nazk_context(con, submission_id)
@@ -9810,7 +9965,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
         if parsed.path.startswith("/api/sandbox/supplier-google-row/"):
-            if not SANDBOX_MODE or not sandbox_runtime.edr_google_enabled():
+            if not sandbox_google_row_navigation_enabled():
                 return self.send_json({"error": "Not found"}, 404)
             code = urllib.parse.unquote(parsed.path.removeprefix("/api/sandbox/supplier-google-row/"))
             try:

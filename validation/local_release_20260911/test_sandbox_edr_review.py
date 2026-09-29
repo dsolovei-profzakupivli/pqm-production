@@ -14,7 +14,7 @@ except ImportError:
 
 
 class SandboxEdrReviewTests(unittest.TestCase):
-    def test_runtime_google_status_uses_only_narrow_sandbox_scope(self):
+    def test_runtime_google_status_uses_sandbox_destination_scope(self):
         con = mock.MagicMock()
         con.execute.return_value.fetchone.return_value = None
         con.__enter__.return_value = con
@@ -33,7 +33,7 @@ class SandboxEdrReviewTests(unittest.TestCase):
              mock.patch.object(server, 'google_oauth_status', return_value={'configured': True}), \
              mock.patch.dict(sandbox_runtime.os.environ,
                              {'PQM_SANDBOX': '1', 'PQM_SANDBOX_EDR_GOOGLE': '0'}):
-            self.assertFalse(server.google_integration_status()['enabled'])
+            self.assertTrue(server.google_integration_status()['enabled'])
 
     def test_complete_detail_and_clear_without_preview_write(self):
         con = database()
@@ -90,7 +90,7 @@ class SandboxEdrReviewTests(unittest.TestCase):
             sandbox_runtime.os.environ.clear()
             sandbox_runtime.os.environ.update(previous)
 
-    def test_scoped_google_transport_accepts_only_sandbox_reads_and_oauth_token(self):
+    def test_scoped_google_transport_accepts_sandbox_destination_writes_only(self):
         with mock.patch.dict(sandbox_runtime.os.environ,
                              {'PQM_SANDBOX': '1', 'PQM_SANDBOX_EDR_GOOGLE': '1'}):
             sheet = sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID
@@ -99,10 +99,13 @@ class SandboxEdrReviewTests(unittest.TestCase):
                 'GET'), sandbox_runtime.GOOGLE_SHEETS_HOST)
             self.assertEqual(sandbox_runtime.validate_google_request(
                 'https://oauth2.googleapis.com/token', 'POST'), sandbox_runtime.GOOGLE_TOKEN_HOST)
+            self.assertEqual(sandbox_runtime.validate_google_request(
+                f'https://sheets.googleapis.com/v4/spreadsheets/{sheet}/values/%27ФОП%27%21A%3AO:append',
+                'POST'), sandbox_runtime.GOOGLE_SHEETS_HOST)
             for url, method in [
                 ('https://oauth2.googleapis.com/token', 'GET'),
                 ('https://sheets.googleapis.com/v4/spreadsheets/PROD/values/%27ФОП%27%21A%3AO?majorDimension=ROWS', 'GET'),
-                (f'https://sheets.googleapis.com/v4/spreadsheets/{sheet}/values/%27ФОП%27%21A%3AO?majorDimension=ROWS', 'POST'),
+                ('https://sheets.googleapis.com/v4/spreadsheets/PROD/values/X:append', 'POST'),
                 ('https://www.googleapis.com/drive/v3/files', 'GET'),
             ]:
                 with self.subTest(url=url, method=method), self.assertRaises(RuntimeError):

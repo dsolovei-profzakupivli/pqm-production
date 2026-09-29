@@ -14,7 +14,7 @@ WORKER = Path(__file__).resolve().with_name('sandbox_pdf_worker.py')
 
 
 def enabled():
-    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_DOCUMENTS') == '1'
+    return os.environ.get('PQM_SANDBOX') == '1'
 
 
 def route_allowed(method, path):

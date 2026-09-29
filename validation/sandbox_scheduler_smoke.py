@@ -13,18 +13,41 @@ class SchedulerPolicy(unittest.TestCase):
         for value in ['yes','true','invalid']:
             with self.assertRaises(RuntimeError):sandbox.validate_environment({**env,'PQM_SANDBOX_PROZORRO_SCHEDULER':value})
         env['PQM_SANDBOX_PROZORRO_SCHEDULER']='1'
-        with self.assertRaises(RuntimeError):sandbox.validate_environment(env)
+        env['PQM_SANDBOX_PROZORRO_READ']='0'
+        sandbox.validate_environment(env)
+        with patch.dict(os.environ,env):
+            self.assertTrue(sandbox.scheduler_job_allowed('prozorro'))
+            # Legacy env opt-in describes fixture/capability, never the
+            # persisted enabled state returned by runtime-features.
+            self.assertTrue(sandbox.prozorro_scheduler_enabled())
+        with patch.dict(os.environ,{**env,'PQM_SANDBOX_PROZORRO_SCHEDULER':'0'}):
+            self.assertTrue(sandbox.scheduler_job_allowed('prozorro'))
+            self.assertFalse(sandbox.prozorro_scheduler_enabled())
         env['PQM_SANDBOX_PROZORRO_READ']='1'
-        with self.assertRaises(RuntimeError):sandbox.validate_environment(env)
-        env['RENDER_SERVICE_ID']='srv-dalfd77f3r2c7392uub0'
         sandbox.validate_environment(env)
         with patch.dict(os.environ,env):self.assertTrue(sandbox.prozorro_scheduler_enabled())
-        for change in [{'PQM_SANDBOX':'0'},{'PQM_SANDBOX_PROZORRO_READ':'0'},{'PQM_SANDBOX_PROZORRO_SCHEDULER':'0'}]:
+        for change in [{'PQM_SANDBOX':'0'},{'PQM_SANDBOX_PROZORRO_SCHEDULER':'0'}]:
             with patch.dict(os.environ,{**env,**change}):self.assertFalse(sandbox.prozorro_scheduler_enabled())
+        for change in [{'PQM_DB_PATH':'/var/data/pqm_test_20260831.sqlite3'},
+                       {'PQM_DB_PATH':'/var/data/unknown.sqlite3'},
+                       {'PQM_SANDBOX_EDR_SPREADSHEET_ID':'PROD'},
+                       {'PQM_SANDBOX_EDR_SPREADSHEET_ID':'unknown'},
+                       {'PQM_ENABLE_PROZORRO_SCHEDULER':'1'},
+                       {'PQM_ENABLE_GOOGLE':'1'}]:
+            with self.subTest(change=change),self.assertRaises(RuntimeError):
+                sandbox.validate_environment({**env,**change})
+        with patch.dict(os.environ,env):
+            sandbox._egress.active=True
+            try:
+                with self.assertRaises(RuntimeError):
+                    sandbox.outbound_audit('urllib.Request',(
+                        'https://public-api.prozorro.gov.ua/api/2.5/frameworks/test',b'write',{},'POST'))
+            finally:
+                sandbox._egress.active=False
 
     def test_durable_catchup_and_180s_lease(self):
         now=datetime.datetime(2026,9,17,0,0,tzinfo=UTC)
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path=Path(tmp)/'fixture.sqlite3'
             with sqlite3.connect(path) as con:scheduler_runtime.migrate(con)
             self.assertEqual(0,sandbox.prozorro_catchup_delay(path,now))
@@ -67,14 +90,33 @@ class AutomaticHTTP(unittest.TestCase):
 
     def test_automatic_start_schedule_restart_and_orphan_recovery(self):
         flags=self.request('/api/runtime-features')[1]
-        self.assertTrue(flags['safe_mode']);self.assertTrue(flags['sandbox_prozorro_scheduler'])
+        self.assertTrue(flags['safe_mode']);self.assertFalse(flags['sandbox_prozorro_scheduler'])
         for job in flags['scheduler_jobs']:
-            self.assertEqual(job['job']=='prozorro',job['enabled'])
-            self.assertEqual(job['job']=='prozorro',job['running'])
-        for key in ['google','bids_update','powerbi','nazk_scheduler']:self.assertFalse(flags[key],key)
-        for path in ['/api/amcu-registry/refresh','/api/nazk-registry/refresh','/api/operational-tasks/rebuild',
-                     '/api/violation-reports/sync','/api/admin/scheduler-jobs/violation_reports']:
-            self.assertEqual(503,self.request(path,'admin','POST',{'enabled':True})[0],path)
+            self.assertTrue(job['manageable'])
+            self.assertFalse(job['configured_enabled'])
+            self.assertFalse(job['enabled'])
+            self.assertFalse(job['running'])
+        # SANDBOX Google EDR availability is not an OAuth connection, write,
+        # or scheduler state. The synthetic fixture has no Google token.
+        self.assertTrue(flags['google'])
+        self.assertEqual('sandbox_edr_scope',flags['google_integration']['configuration_source'])
+        self.assertFalse(flags['google_integration']['oauth_connected'])
+        self.assertIsNone(flags['google_integration']['last_edr_sync_at'])
+        for key in ['bids_update','powerbi','nazk_scheduler']:self.assertFalse(flags[key],key)
+        with sqlite3.connect(self.data/'pqm_sandbox.sqlite3') as con:
+            self.assertEqual(0,con.execute('SELECT COUNT(*) FROM scheduler_job_settings WHERE enabled<>0').fetchone()[0])
+        self.stop();self.start()
+        self.assertTrue(all(not job['enabled'] and not job['running']
+                            for job in self.request('/api/runtime-features')[1]['scheduler_jobs']))
+        self.assertEqual(403,self.request('/api/admin/scheduler-jobs/prozorro','viewer','POST',{'enabled':True})[0])
+        self.assertEqual(200,self.request('/api/admin/scheduler-jobs/prozorro','admin','POST',{'enabled':True})[0])
+        with sqlite3.connect(self.data/'pqm_sandbox.sqlite3') as con:
+            self.assertEqual({'prozorro'},set(row[0] for row in con.execute(
+                'SELECT job_key FROM scheduler_job_settings WHERE enabled<>0')))
+        self.stop();self.start()
+        flags=self.request('/api/runtime-features')[1]
+        self.assertTrue(flags['sandbox_prozorro_scheduler'])
+        self.assertFalse(any(job['enabled'] for job in flags['scheduler_jobs'] if job['job']!='prozorro'))
         first=self.wait_job('startup_catchup')
         self.assertTrue(first['next_run']);self.assertTrue(first['heartbeat_at'])
         self.assertEqual('Europe/Kyiv',first['timezone'])
@@ -94,9 +136,20 @@ class AutomaticHTTP(unittest.TestCase):
             for table in ['supplier_nazk_checks','supplier_nazk_reviews','operational_tasks','amcu_registry','nazk_registry','scheduler_job_leases']:
                 self.assertEqual(0,con.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],table)
             self.assertEqual(0,con.execute("SELECT COUNT(*) FROM scheduler_job_state WHERE job_key<>'prozorro' AND last_status<>'never'").fetchone()[0])
-            self.assertEqual(0,con.execute('SELECT COUNT(*) FROM scheduler_job_settings WHERE enabled<>0').fetchone()[0])
+            self.assertEqual({'prozorro'},set(row[0] for row in con.execute(
+                'SELECT job_key FROM scheduler_job_settings WHERE enabled<>0')))
+            self.assertEqual(0,con.execute('SELECT COUNT(*) FROM supplier_edr_sync_log').fetchone()[0])
             self.assertEqual('ok',con.execute('PRAGMA integrity_check').fetchone()[0])
             self.assertEqual([],con.execute('PRAGMA foreign_key_check').fetchall())
-        self.assertIn('автоматично щогодини о :05',self.request('/',None)[1].decode())
+        self.assertEqual(200,self.request('/api/admin/scheduler-jobs/prozorro','admin','POST',{'enabled':False})[0])
+        self.stop();self.start()
+        flags=self.request('/api/runtime-features')[1]
+        self.assertFalse(flags['sandbox_prozorro_scheduler'])
+        self.assertTrue(flags['google'])
+        self.assertIsNone(flags['google_integration']['last_edr_sync_at'])
+        self.assertTrue(all(not job['enabled'] and not job['running'] for job in flags['scheduler_jobs']))
+        with sqlite3.connect(self.data/'pqm_sandbox.sqlite3') as con:
+            self.assertEqual(0,con.execute('SELECT COUNT(*) FROM scheduler_job_settings WHERE enabled<>0').fetchone()[0])
+            self.assertEqual(0,con.execute('SELECT COUNT(*) FROM supplier_edr_sync_log').fetchone()[0])
 
 if __name__=='__main__':unittest.main(verbosity=2)

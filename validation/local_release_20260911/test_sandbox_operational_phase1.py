@@ -79,9 +79,10 @@ class SandboxOperationalBoundaryTests(unittest.TestCase):
             sandbox_runtime.validate_environment({**env, 'RENDER_SERVICE_NAME': 'pqm-production-1'})
         with self.assertRaises(RuntimeError):
             sandbox_runtime.validate_environment({**env, 'PQM_DB_PATH': '/var/data/pqm_prod.sqlite3'})
-        with self.assertRaises(RuntimeError):
-            sandbox_runtime.validate_environment({**env, 'PQM_SANDBOX_OPERATIONAL': '0',
-                                                  'PQM_SANDBOX_NAZK_READ': '1'})
+        # Local/input action flags no longer authorize destinations. The
+        # sandbox service and DB identity above remain mandatory.
+        sandbox_runtime.validate_environment({**env, 'PQM_SANDBOX_OPERATIONAL': '0',
+                                              'PQM_SANDBOX_NAZK_READ': '1'})
 
     def test_shared_server_amcu_refresh_binds_task_completion_in_every_environment(self):
         observed = {}
@@ -95,16 +96,16 @@ class SandboxOperationalBoundaryTests(unittest.TestCase):
         self.assertEqual(observed, {'source': 'amcu', 'raw': b'xlsx', 'filename': 'official.xlsx'})
         build.assert_called_once_with('PQM AMCU refresh')
 
-    def test_operational_routes_are_explicit_and_do_not_include_documents_or_prod(self):
+    def test_legacy_route_helper_is_not_the_mutation_policy(self):
         with patch.dict(os.environ, {'PQM_SANDBOX': '1', 'PQM_SANDBOX_OPERATIONAL': '1'}):
             self.assertTrue(sandbox_runtime.operational_route_allowed('POST', '/api/operational-tasks/rebuild'))
             self.assertTrue(sandbox_runtime.operational_route_allowed('POST', '/api/violation-reports/sync'))
             self.assertTrue(sandbox_runtime.operational_route_allowed('PATCH', '/api/operational-tasks/' + 'a' * 32))
             self.assertFalse(sandbox_runtime.operational_route_allowed('POST', '/api/operational-tasks/' + 'a' * 32 + '/documents/amcu-exclusion-protocol'))
             self.assertFalse(sandbox_runtime.operational_route_allowed('POST', '/api/admin/runtime-features/google'))
-            self.assertFalse(sandbox_runtime.operational_route_allowed('POST', '/api/nazk-registry/refresh'))
+            self.assertTrue(sandbox_runtime.operational_route_allowed('POST', '/api/nazk-registry/refresh'))
         with patch.dict(os.environ, {'PQM_SANDBOX': '1', 'PQM_SANDBOX_OPERATIONAL': '0'}):
-            self.assertFalse(sandbox_runtime.operational_route_allowed('POST', '/api/operational-tasks/rebuild'))
+            self.assertTrue(sandbox_runtime.operational_route_allowed('POST', '/api/operational-tasks/rebuild'))
 
     def test_prod_db_or_link_cannot_be_used_as_internal_target(self):
         with TemporaryDirectory() as folder, patch.dict(os.environ, {'PQM_SANDBOX': '1', 'PQM_SANDBOX_OPERATIONAL': '1'}):

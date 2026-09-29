@@ -411,6 +411,52 @@ def _add_hyperlink(paragraph, label: str, url: str, font_name: str | None = None
     run.append(node); hyperlink.append(run); paragraph._p.append(hyperlink)
 
 
+def _link_existing_identifier(paragraph, label: str, url: str):
+    """Link resolved identifiers in place without rebuilding template typography."""
+    if not label or not str(url).startswith("https://"):
+        return
+    pending = list(paragraph.runs)
+    while pending:
+        run = pending.pop(0)
+        if label not in run.text:
+            continue
+        before, after = run.text.split(label, 1)
+        properties = deepcopy(run._r.rPr) if run._r.rPr is not None else None
+        run.text = before
+        _add_hyperlink(paragraph, label, url, run_properties=properties)
+        link = paragraph._p[-1]
+        run._r.addnext(link)
+        if after:
+            suffix = paragraph.add_run(after)
+            if properties is not None:
+                suffix._r.insert(0, deepcopy(properties))
+            link.addnext(suffix._r)
+            pending.insert(0, suffix)
+
+
+def _append_decision_links_after_description(document, values):
+    links = [
+        ("Повідомлення про намір укласти договір: ", values.get("winner_notice_url")),
+        ("Рішення про відхилення: ", values.get("rejection_decision_url")),
+    ]
+    links = [(label, url) for label, url in links if str(url or "").startswith("https://")]
+    if not links:
+        return
+    for table in document.tables:
+        for index, row in enumerate(table.rows):
+            if "причина звернення" not in " ".join(cell.text for cell in row.cells).lower():
+                continue
+            if index + 1 >= len(table.rows):
+                return
+            cell = table.rows[index + 1].cells[0]
+            for label, url in links:
+                paragraph = cell.add_paragraph()
+                _set_run_font(paragraph.add_run(label), 10)
+                _add_hyperlink(paragraph, "електронний протокол", url,
+                               "Times New Roman", 10)
+            return
+
+
 def _display_document_datetime(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -868,6 +914,12 @@ def build_violation_protocol_docx(
                 _set_document_links(paragraph, supplier_documents or [])
             else:
                 _replace_in_paragraph(paragraph, normalized_values)
+        for paragraph in _all_paragraphs(document):
+            _link_existing_identifier(paragraph, normalized_values.get("procurement_id", ""),
+                                      normalized_values.get("procurement_url", ""))
+            _link_existing_identifier(paragraph, normalized_values.get("report_id", ""),
+                                      normalized_values.get("report_url", ""))
+        _append_decision_links_after_description(document, normalized_values)
         _format_supplier_result_rows(document)
         _replace_justification(document, justification, protocol_type, normalized_values)
         _normalize_legal_reference_spaces(document)
