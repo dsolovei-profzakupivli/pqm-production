@@ -1,0 +1,46 @@
+name: Temporary networked pre-deploy gate
+
+on:
+  push:
+    branches: [codex/temp-pr-fixture-legacy-gate-20260929]
+    paths: [.github/workflows/networked-predeploy-gate.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  networked-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact tested revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 487cbcffc896e50a2006431d1c3a3659c65538c4
+          persist-credentials: false
+
+      - name: Attest tested revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "487cbcffc896e50a2006431d1c3a3659c65538c4"
+          test ! -e .github/workflows/networked-predeploy-gate.yml
+          test -z "$(git status --porcelain)"
+          echo "TESTED_SHA=$(git rev-parse HEAD)"
+
+      - name: Build exact revision
+        run: docker build --tag pqm-ci:tested .
+
+      - name: Run networked synthetic pre-deploy gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network bridge \
+            --add-host=docs.google.com:127.0.0.1 \
+            --add-host=accounts.google.com:127.0.0.1 \
+            --add-host=oauth2.googleapis.com:127.0.0.1 \
+            --add-host=sheets.googleapis.com:127.0.0.1 \
+            --add-host=drive.google.com:127.0.0.1 \
+            --add-host=www.googleapis.com:127.0.0.1 \
+            --entrypoint python pqm-ci:tested \
+            -B validation/docker_release_gate.py
