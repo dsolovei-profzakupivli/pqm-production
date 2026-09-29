@@ -226,13 +226,14 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertIn('id="edrMonitoringNames"', html)
         self.assertIn('id="edrMonitoringFullName"', html)
         self.assertIn('id="edrMonitoringShortName"', html)
-        self.assertIn('id="edrMonitoringMissingNames"', html)
+        self.assertNotIn('id="edrMonitoringMissingNames"', html)
+        self.assertIn('<option value="missing_any">Потребують заповнення</option>', html)
+        self.assertLess(html.index('id="edrMonitoringNames"'), html.index('id="edrMonitoringReset"'))
         self.assertLess(html.index('data-edr-column="supplier_name" data-edr-sort="supplier_name"'),
                         html.index('data-edr-column="edr_full_name" data-edr-sort="edr_full_name"'))
         self.assertLess(html.index('data-edr-column="edr_short_name" data-edr-sort="edr_short_name"'),
                         html.index('data-edr-column="manager_name" data-edr-sort="manager_name"'))
-        self.assertIn('updateEdrMissingNamesAction()', app)
-        self.assertIn("$('#edrMonitoringMissingNames').onclick", app)
+        self.assertNotIn("$('#edrMonitoringMissingNames').onclick", app)
         self.assertIn("['edr_full_name',item.edr_full_name]", app)
         self.assertIn("['edr_short_name',item.edr_short_name]", app)
         export_route = Path('server.py').read_text(encoding='utf-8').split(
@@ -245,7 +246,6 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertIn('id="edrMonitoringChips"', html)
         self.assertIn("syncSharedFilterPresentation($('#edrMonitoringView'))", app)
         self.assertIn("#queueFilterChips button,.edr-monitoring-chips button", styles)
-        self.assertIn('#edrMonitoringMissingNames[aria-pressed="true"]', styles)
         self.assertIn(".data-module-table>:is(.supplier-table-scroll,.table-scroll)", styles)
 
     def test_monitoring_export_uses_exact_filtered_population_and_existing_contract(self):

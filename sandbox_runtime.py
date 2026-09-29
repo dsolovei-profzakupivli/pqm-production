@@ -621,9 +621,13 @@ def decorate_html(raw):
         if text.count(current_brand) != 1:
             raise RuntimeError('STOP: SANDBOX navbar brand markup mismatch')
         text = text.replace(current_brand, sandbox_brand, 1)
-        text = text.replace('<link rel="icon" href="/assets/pqm-search-icon.png" type="image/png" sizes="192x192">', '')
+        text = text.replace('<link rel="icon" href="/assets/pqm-search-icon.png" type="image/png" sizes="192x192">',
+                            '<link rel="icon" href="/assets/pqm-q-favicon-192.png" type="image/png" sizes="192x192">')
         text = text.replace('<link rel="icon" href="/assets/pqm-tab-icon.png" type="image/png" sizes="32x32">',
-                            '<link rel="icon" href="/assets/pqm-sandbox-tab-inverted.svg?v=1" type="image/svg+xml" sizes="any">')
+                            '<link rel="icon" href="/assets/pqm-q-favicon.svg?v=1" type="image/svg+xml" sizes="any">'
+                            '<link rel="icon" href="/assets/pqm-q-favicon-32.png" type="image/png" sizes="32x32">')
+        text = text.replace('<link rel="apple-touch-icon" href="/assets/pqm-search-icon.png">',
+                            '<link rel="apple-touch-icon" href="/assets/pqm-q-favicon-180.png">')
         theme = (ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
         text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
         text = text.replace('</head>', '<script src="/sandbox_contrast.js?v=1" defer></script></head>', 1)

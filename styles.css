@@ -446,4 +446,3 @@ tbody tr.application-review-completed:hover td{background:#eceff2}
 tbody tr.application-review-completed.active td,tbody tr.application-review-completed:has(.row-check:checked) td{background:#dcecff;box-shadow:inset 0 1px #8db9ec,inset 0 -1px #8db9ec}
 tbody tr.application-review-completed .status.admit{color:var(--green);background:var(--green2)}tbody tr.application-review-completed .status.reject{color:var(--red);background:var(--red2)}
 .system-width-fields.with-visibility label{grid-template-columns:22px minmax(0,1fr) 100px 24px}.system-width-fields.with-visibility input[type=checkbox]{width:17px;height:17px;margin:0}
-#edrMonitoringMissingNames[aria-pressed="true"]{background:#e8f2ff;border-color:#5b96d6;color:#075fc7;box-shadow:inset 0 0 0 1px #5b96d6}

@@ -11,6 +11,14 @@ import scheduler_runtime
 
 
 class TestWebRuntimeTests(unittest.TestCase):
+    def test_requests_template_button_reuses_admin_template_view(self):
+        root = server.ROOT
+        html = (root / "index.html").read_text(encoding="utf-8")
+        javascript = (root / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="requestsTemplates"', html)
+        self.assertIn("$('#requestsTemplates').onclick=()=>{showModule('administration');setAdminTab('templates')}", javascript)
+        self.assertIn("requestsTemplates.hidden=!admin", javascript)
+
     def test_basic_auth_users_are_read_only_from_environment(self):
         payload = json.dumps({"users": [{"username": "reviewer", "password": "temporary"}]})
         with patch.dict(os.environ, {"PQM_USERS_JSON": payload}, clear=False):
@@ -95,7 +103,7 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertIn('data-pqm-environment="sandbox"', sandbox_html)
         self.assertIn('id="pqmSandboxTheme"', sandbox_html)
         self.assertIn('/sandbox_contrast.js?v=1', sandbox_html)
-        self.assertIn('pqm-sandbox-tab-inverted.svg', sandbox_html)
+        self.assertIn('pqm-q-favicon.svg', sandbox_html)
         self.assertIn('id="sandboxWarning"', sandbox_html)
         self.assertIn('position:fixed;bottom:0', sandbox_html)
         self.assertIn('SANDBOX · ТЕСТОВІ ДАНІ', sandbox_html)

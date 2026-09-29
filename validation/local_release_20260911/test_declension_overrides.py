@@ -7,6 +7,8 @@ from declension import OverrideStore, decline_name
 from declension_overrides import (OverrideConflictError, delete_override,
                                   ensure_pending_overrides, list_overrides, save_override)
 import server
+import declension
+import declension_overrides
 
 
 class DeclensionOverrideRepositoryTests(unittest.TestCase):
@@ -23,6 +25,43 @@ class DeclensionOverrideRepositoryTests(unittest.TestCase):
                      comment="перевірено")
         value.update(changes)
         return value
+
+    def test_sandbox_seed_once_survives_deploy_and_reopens_for_generation(self):
+        data = Path(self.temp.name)
+        bootstrap = data / "bootstrap.csv"
+        persistent = data / "declension_overrides.csv"
+        bootstrap.write_text("entity_type;original;genitive;dative;accusative;comment\n", encoding="utf-8")
+        with patch.object(declension, "SANDBOX_OVERRIDES", True), \
+                patch.object(declension, "BOOTSTRAP_OVERRIDES_PATH", bootstrap), \
+                patch.object(declension, "DEFAULT_OVERRIDES_PATH", persistent), \
+                patch.object(declension_overrides, "DEFAULT_OVERRIDES_PATH", persistent), \
+                patch("sandbox_runtime.validate_environment", return_value=(data, data / "pqm_sandbox.sqlite3", "fixture")):
+            self.assertEqual(list_overrides(persistent), [])
+            saved = save_override(self.payload(accusative="ДЕРЖАВНУ УСТАНОВУ «ТЕСТ»"), path=persistent)
+            bootstrap.write_text("entity_type;original;genitive;dative;accusative;comment\n"
+                                 "person;ДРУГА ОСОБА;інше;;інше;новий deploy\n", encoding="utf-8")
+            declension.ensure_default_overrides()
+            reopened = list_overrides(persistent)
+            self.assertEqual(len(reopened), 1)
+            self.assertEqual(reopened[0]["id"], saved["id"])
+            self.assertEqual(reopened[0]["accusative"], "ДЕРЖАВНУ УСТАНОВУ «ТЕСТ»")
+            self.assertEqual(OverrideStore(persistent).form(self.payload()["original"],
+                                                       "legal_entity", "genitive"),
+                             "ДЕРЖАВНОЇ УСТАНОВИ «ТЕСТ»")
+            generated = decline_name(self.payload()["original"], "legal_entity",
+                                     "accusative", OverrideStore(persistent))
+            self.assertEqual(generated.value, "ДЕРЖАВНУ УСТАНОВУ «ТЕСТ»")
+            self.assertEqual(save_override(self.payload(comment="редаговано"), saved["id"], persistent)["comment"], "редаговано")
+
+    def test_sandbox_storage_attestation_failure_does_not_seed_or_write(self):
+        persistent = Path(self.temp.name) / "declension_overrides.csv"
+        with patch.object(declension, "SANDBOX_OVERRIDES", True), \
+                patch.object(declension, "DEFAULT_OVERRIDES_PATH", persistent), \
+                patch.object(declension_overrides, "DEFAULT_OVERRIDES_PATH", persistent), \
+                patch("sandbox_runtime.validate_environment", side_effect=RuntimeError("wrong target")):
+            with self.assertRaisesRegex(RuntimeError, "wrong target"):
+                save_override(self.payload(), path=persistent)
+        self.assertFalse(persistent.exists())
 
     def test_create_list_edit_delete_and_bom(self):
         created = save_override(self.payload(), path=self.path)

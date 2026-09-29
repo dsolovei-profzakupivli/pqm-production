@@ -1,4 +1,5 @@
 import sqlite3, unittest
+from pathlib import Path
 import auth_access, navigation_settings
 
 class NavigationSettingsTests(unittest.TestCase):
@@ -10,6 +11,18 @@ class NavigationSettingsTests(unittest.TestCase):
         self.assertEqual(saved['overrides']['historyNav']['iconKey'],'audit')
         self.assertEqual(navigation_settings.get(self.con)['updated_by'],'Admin')
         self.assertEqual(navigation_settings.reset(self.con)['overrides'],{})
+    def test_rendered_builtin_icon_keys_are_valid_for_save(self):
+        browser = (Path(navigation_settings.__file__).resolve().parent / "nav_icons.js").read_text(encoding="utf-8")
+        for item_id,key in (('frameworksNav','frameworksTarget'),('edrMonitoringNav','edrSearch')):
+            with self.subTest(item_id=item_id):
+                self.assertIn(f"id:'{item_id}'", browser)
+                self.assertIn(f"iconKey:'{key}'", browser)
+                self.assertIn(f"{key}:", browser)
+                self.assertEqual(navigation_settings.ITEM_DEFAULTS[item_id][0],key)
+                saved=navigation_settings.save(self.con,{item_id:{'iconKey':key,'visible':False}},'Admin')
+                self.assertEqual(saved['overrides'][item_id]['visible'],False)
+        with self.assertRaisesRegex(ValueError,'Невідома іконка'):
+            navigation_settings.save(self.con,{'frameworksNav':{'iconKey':'not_a_real_icon'}},'Admin')
     def test_rejects_system_fields_unknown_icons_and_duplicate_order(self):
         for value in ({'historyNav':{'route':'bad'}},{'historyNav':{'iconKey':'raw-svg'}},{'historyNav':{'order':2}}):
             with self.assertRaises(ValueError): navigation_settings.validate(value)

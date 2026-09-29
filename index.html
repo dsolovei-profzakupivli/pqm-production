@@ -191,7 +191,6 @@
         <label>Остання заявка від<input id="edrMonitoringApplicationFrom" type="date"></label><label>Остання заявка до<input id="edrMonitoringApplicationTo" type="date"></label>
         <div class="edr-monitoring-filter-actions"><button id="edrMonitoringReset" type="button" class="ghost" hidden>Очистити</button></div>
       </div></details>
-      <button id="edrMonitoringMissingNames" type="button" class="ghost" aria-pressed="false">Назви ЄДР: потребують заповнення</button>
       <button id="edrMonitoringSync" type="button" class="primary">Синхронізувати дані ЄДР</button>
       <button id="edrMonitoringCreateTermination" type="button" class="ghost" hidden>Створити задачі на виключення</button>
       <a id="edrMonitoringExport" class="ghost button-link" href="/api/supplier-edr-export?type=ALL&amp;mode=filtered&amp;view=edr_monitoring">Експорт для ClarityChecker · —</a>
@@ -289,6 +288,7 @@
       <select id="requestsReason"><option value="">Усі підстави</option></select>
       <label class="compact-date">Від <input id="requestsDateFrom" type="date"></label>
       <label class="compact-date">До <input id="requestsDateTo" type="date"></label>
+      <button id="requestsTemplates" type="button" class="ghost" hidden>Шаблони</button>
       <button id="requestsRefresh" class="ghost">Оновити з Prozorro</button>
     </section>
     <p id="requestsSyncStatus" class="module-sync muted"></p>

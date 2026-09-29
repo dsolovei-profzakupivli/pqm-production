@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from declension import DEFAULT_OVERRIDES_PATH, ENTITY_TYPES, normalize_lookup
+from declension import DEFAULT_OVERRIDES_PATH, ENTITY_TYPES, ensure_default_overrides, normalize_lookup
 
 FIELDS = ("entity_type", "original", "genitive", "dative", "accusative", "comment")
 _WRITE_LOCK = threading.Lock()
@@ -43,6 +43,8 @@ def _record_id(entity_type: str, original: str) -> str:
 
 def list_overrides(path: str | Path = DEFAULT_OVERRIDES_PATH) -> list[dict[str, str]]:
     target = Path(path)
+    if target == DEFAULT_OVERRIDES_PATH:
+        ensure_default_overrides()
     if not target.exists():
         return []
     with target.open("r", encoding="utf-8-sig", newline="") as handle:

@@ -168,3 +168,23 @@ html[data-pqm-environment="sandbox"] .edr-review-row dl{display:grid;grid-templa
 html[data-pqm-environment="sandbox"] .edr-review-row dd{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
 html[data-pqm-environment="sandbox"] .edr-review-pages{display:flex;align-items:center;gap:12px;justify-content:center;padding:12px}
 @media(max-width:700px){html[data-pqm-environment="sandbox"] .edr-review-row dl{grid-template-columns:1fr}}
+/* Keep filter controls inside the available viewport without changing tables. */
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar,.frameworks-toolbar,.history-filters){
+  display:flex;flex-wrap:wrap;gap:6px;max-width:100%;overflow:visible;
+}
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar,.frameworks-toolbar) :is(input,select,button,summary){min-height:32px;padding-block:5px}
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar,.frameworks-toolbar)>.search-wrap{flex:1 1 220px;min-width:min(220px,100%)}
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar>input{width:auto;flex:1 1 125px;min-width:min(125px,100%);height:32px}
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar>button,
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar>.button-link{min-height:32px;white-space:normal}
+html[data-pqm-environment="sandbox"] :is(.advanced-filter-panel,.edr-monitoring-filter-grid){
+  width:min(780px,calc(100vw - 24px));max-width:calc(100vw - 24px);
+  grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));gap:7px;padding:10px;
+}
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar{position:relative}
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar)>.advanced-filters{position:static}
+html[data-pqm-environment="sandbox"] .edr-monitoring-filter-grid{top:calc(100% + 6px);right:0}
+html[data-pqm-environment="sandbox"] .supplier-toolbar-compact{grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));max-width:100%;gap:6px}
+html[data-pqm-environment="sandbox"] .supplier-toolbar-compact .supplier-filter-search{grid-column:span 2}
+html[data-pqm-environment="sandbox"] .history-filters>*{min-width:min(150px,100%);flex:1 1 150px}
+@media(max-width:440px){html[data-pqm-environment="sandbox"] .supplier-toolbar-compact .supplier-filter-search{grid-column:auto}}

@@ -250,7 +250,7 @@ class ViolationProtocolDocxTests(unittest.TestCase):
                     self.assertTrue(run._r.rPr is None or run._r.rPr.find(qn("w:shd")) is None,
                                     (protocol_type, run.text))
 
-    def test_reason_block_contains_only_the_report_description(self):
+    def test_reason_block_keeps_the_three_template_fields(self):
         values = {**BASE_VALUES,
                   "reason_label": "Підпункт 1 пункту 49 Постанови Кабінету Міністрів України",
                   "reason_text": "Офіційний нормативний опис Prozorro",
@@ -264,20 +264,25 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             document = Document(output)
             reason_table = document.tables[1]
             label_cell, value_cell = reason_table.rows[0].cells[0], reason_table.rows[0].cells[-1]
-            self.assertEqual(label_cell.text, "Причина звернення:")
-            self.assertEqual([p.text for p in value_cell.paragraphs], [values["violation_description"]])
-            self.assertNotIn(values["reason_label"], value_cell.text)
-            self.assertNotIn(values["reason_text"], value_cell.text)
+            description_cell = reason_table.rows[1].cells[0]
+            self.assertEqual(label_cell.text.strip(), "Причина звернення:")
+            self.assertEqual([p.text for p in value_cell.paragraphs], [
+                values["reason_label"], values["reason_text"]])
+            self.assertEqual(description_cell.text, values["violation_description"])
+            physical_cells = {id(cell._tc): cell for row in reason_table.rows for cell in row.cells}
             self.assertEqual(sum(values["violation_description"] in cell.text
-                                 for row in reason_table.rows for cell in row.cells), 1)
-            for run in label_cell.paragraphs[0].runs:
-                self.assertEqual(run.font.name, "Times New Roman")
-                self.assertEqual(run.font.size.pt, 10)
-                self.assertTrue(run.bold)
-            for run in value_cell.paragraphs[0].runs:
-                self.assertEqual(run.font.name, "Times New Roman")
-                self.assertEqual(run.font.size.pt, 10)
-                self.assertFalse(bool(run.bold))
+                                 for cell in physical_cells.values()), 1)
+
+    def test_report_description_is_verbatim_without_identifier_links(self):
+        source = "  Довільний текст Замовника: № 12; UA-D-TEST; UA-2026-TEST. https://example.test/note  "
+        values = {**BASE_VALUES, "violation_description": source,
+                  "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+                  "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST"}
+        output = self.build(values=values)
+        document = Document(output)
+        paragraph = document.tables[1].rows[1].cells[0].paragraphs[0]
+        self.assertEqual(paragraph.text, source)
+        self.assertFalse(paragraph._p.xpath(".//w:hyperlink"))
 
     def test_written_refusal_uses_clickable_label_without_visible_url(self):
         url = "https://example.test/refusal-evidence"
@@ -308,6 +313,32 @@ class ViolationProtocolDocxTests(unittest.TestCase):
                         for paragraph in document.paragraphs:
                             if "Цивільного кодексу України" in paragraph.text:
                                 self.assertFalse(paragraph._p.xpath(".//w:highlight | .//w:shd"))
+
+    def test_older_runtime_template_without_condition_markers_still_obeys_civil_code_flag(self):
+        source = Document(generator.TEMPLATES["warning"])
+        for paragraph in list(source.paragraphs):
+            if "{{#if decision.civil_code_basis" in paragraph.text or "{{/if}}" in paragraph.text:
+                paragraph._p.getparent().remove(paragraph._p)
+        marked = next(paragraph for paragraph in source.paragraphs
+                      if "Цивільного кодексу України" in paragraph.text)
+        highlight = OxmlElement("w:highlight")
+        highlight.set(qn("w:val"), "yellow")
+        marked.runs[0]._r.get_or_add_rPr().append(highlight)
+        runtime = Path(self.temp.name) / "older_runtime.docx"
+        source.save(runtime)
+        with patch.dict(generator.TEMPLATES, {"warning": runtime}), \
+                patch.object(generator, "ensure_runtime_templates"):
+            for applicable in (True, False):
+                output = Path(self.temp.name) / f"older-{applicable}.docx"
+                generator.build_violation_protocol_docx(
+                    "warning", output, dict(BASE_VALUES), "Обґрунтування", [], [],
+                    {"has_written_refusal": True, "has_contract": True,
+                     "has_supplier_response": True, "has_civil_code_basis": applicable})
+                document = Document(output)
+                civil = [paragraph for paragraph in document.paragraphs
+                         if "Цивільного кодексу України" in paragraph.text]
+                self.assertEqual(bool(civil), applicable)
+                self.assertFalse(any(paragraph._p.xpath(".//w:highlight | .//w:shd") for paragraph in civil))
 
     def test_justification_preserves_paragraphs_and_has_explicit_effective_formatting(self):
         justification = ("\tВідповідно до пп. 2 п. 49 Порядку № 822 застосовується правило.\r\n\r\n"
