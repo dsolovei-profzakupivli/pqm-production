@@ -10,19 +10,27 @@ assert service=='local-synthetic-fixture' and os.environ.get('PQM_SANDBOX_LOCAL_
 sandbox.install_outbound_guard()
 import server
 sandbox.bootstrap(server)
+# Keep full-sync discovery deterministic in both networkless CI and Render:
+# exercise the real directory/list/detail path with synthetic inputs only.
+server.load_announcement_rows=lambda: [{'ID':'SANDBOX-TEST-ONLY','status':'активне'}]
 def transport(url):
     sandbox.validate_prozorro_url(url)
-    url=urlsplit(url).path
+    path=urlsplit(url).path
     time.sleep(.15)
-    if url.endswith('/frameworks/sandbox-framework'):
+    if path=='/api/2.5/frameworks':
+        return {'data':[{'id':'sandbox-framework'}]}
+    if path=='/api/2.5/frameworks/sandbox-framework':
         return {'data':{'id':'sandbox-framework','prettyID':'SANDBOX-TEST-ONLY','status':'active',
-            'procuringEntity':{'identifier':{'id':'40996564'}},'classification':{'id':'00000000-0'}}}
-    if url.endswith('/submissions'):
+            'procuringEntity':{'identifier':{'id':'40996564'}},'classification':{'id':'00000000-0'},
+            'agreementID':'sandbox-agreement'}}
+    if path=='/api/2.5/frameworks/sandbox-framework/submissions':
         return {'data':[{'id':'sandbox-pending','qualificationID':'sandbox-q-pending','status':'active',
             'datePublished':'2026-09-16T10:00:00+03:00','tenderers':[{'name':'SYNTHETIC UPDATED','identifier':{'id':'00000000'}}]}]}
-    if url.endswith('/qualifications'):
+    if path=='/api/2.5/frameworks/sandbox-framework/qualifications':
         return {'data':[{'id':'sandbox-q-pending','submissionID':'sandbox-pending','status':'active'}]}
-    raise RuntimeError('Unexpected synthetic API URL: '+url)
+    if path=='/api/2.5/agreements/sandbox-agreement/contracts':
+        return {'data':[]}
+    raise RuntimeError('Unexpected synthetic API URL: '+path)
 sandbox.fetch_prozorro_json=transport
 if sandbox.prozorro_scheduler_enabled():
     with sqlite3.connect(db) as con:
