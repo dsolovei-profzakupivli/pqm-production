@@ -45,6 +45,73 @@ class WinnerDecisionsTests(unittest.TestCase):
                               "period": {"startDate": "2026-09-18T10:00:05+03:00"}}]}
         self.assertIsNone(winner_decisions.historical_decision(tender, self.report, snapshot_at="capture"))
 
+    def test_electronic_protocol_links_bind_to_exact_awards_and_notice_times(self):
+        tender_id = "30bc165d549d4ad3bb4855280e515f01"
+        first = "070af0f3ed7a4edabd5b3f002f1f5129"
+        rejected = "81ee0d85d179456f8e324d1bb5f160b1"
+        first_notice = {"id": "d791e3400de349cdbea2e74f1688f7c9",
+                        "documentType": "notice",
+                        "datePublished": "2026-09-21T09:28:37.604079+03:00"}
+        rejected_notice = {"id": "6a1f256ac2e643b38eb3d34dd84e22d0",
+                           "documentType": "notice",
+                           "datePublished": "2026-09-23T11:42:49.560567+03:00"}
+        winner_url = winner_decisions.electronic_protocol_url(
+            tender_id, first, first_notice, decision="winner")
+        rejection_url = winner_decisions.electronic_protocol_url(
+            tender_id, rejected, rejected_notice, decision="rejection")
+        self.assertEqual(winner_url,
+            "https://prozorro.gov.ua/pdf/determining_winner_of_procurement?"
+            "dateModified=2026-09-21T09%253A28%253A37.604079%252B03%253A00&"
+            "url=https%253A%252F%252Fpublic-api.prozorro.gov.ua%252Fapi%252F2.5%252F"
+            f"tenders%252F{tender_id}%252Fawards%252F{first}")
+        self.assertEqual(rejection_url,
+            "https://prozorro.gov.ua/pdf/tender_rejection_protocol?"
+            "dateModified=2026-09-23T11%253A42%253A49.560567%252B03%253A00&"
+            "url=https%253A%252F%252Fpublic-api.prozorro.gov.ua%252Fapi%252F2.5%252F"
+            f"tenders%252F{tender_id}%252Fawards%252F{rejected}")
+        revised_notice = {**first_notice,
+                          "dateModified": "2026-09-21T09:29:01.000000+03:00"}
+        self.assertIn("dateModified=2026-09-21T09%253A29%253A01.000000%252B03%253A00",
+                      winner_decisions.electronic_protocol_url(
+                          tender_id, first, revised_notice, decision="winner"))
+        for bad_notice in ({}, {"id": "sig", "type": "notice", "date_published": "2026-09-21"},
+                           {"id": "pdf", "type": "rejectionProtocol",
+                            "date_published": "2026-09-21T09:28:37+03:00"}):
+            self.assertEqual(winner_decisions.electronic_protocol_url(
+                tender_id, first, bad_notice, decision="winner"), "")
+        self.assertEqual(winner_decisions.electronic_protocol_url(
+            tender_id, "other-award", first_notice, decision="winner"), "")
+
+    def test_context_displays_publication_time_but_deadlines_use_decision_day(self):
+        import server
+        tender_id = "30bc165d549d4ad3bb4855280e515f01"
+        first = "070af0f3ed7a4edabd5b3f002f1f5129"
+        rejected = "81ee0d85d179456f8e324d1bb5f160b1"
+        winner = award(first, "cancelled", supplier="3434910316",
+                       notice="2026-09-21T09:28:37.604079+03:00")
+        winner["documents"][0]["id"] = "d791e3400de349cdbea2e74f1688f7c9"
+        winner["period"] = {"startDate": "2026-09-18T10:00:05+03:00"}
+        rejection = award(rejected, "unsuccessful", supplier="3434910316",
+                          notice="2026-09-23T11:42:49.560567+03:00")
+        rejection["qualified"] = False
+        report = {"id": "", "tender_id": tender_id, "defendant_code": "3434910316",
+                  "date_created": "2026-09-23T11:44:00+03:00", "reason": "signingRefusal"}
+        with patch.object(server, "api_get", return_value={"data": {
+                "tenderID": "UA-2026-09-15-012926-a", "awards": [winner, rejection],
+                "tenderPeriod": {"endDate": "2026-09-18T10:00:00+03:00"},
+                "contracts": [], "items": []}}):
+            context = server.build_procurement_context(report)
+        self.assertEqual(context["winner_selected_at"],
+                         "2026-09-21T09:28:37.604079+03:00")
+        self.assertEqual(context["historical_winner_decision"]["decision_date"],
+                         "2026-09-21")
+        self.assertIsNone(context["historical_winner_decision"]["decision_datetime"])
+        self.assertEqual(context["written_refusal_deadline"], "2026-09-24")
+        self.assertEqual(context["day_5"], "2026-09-26")
+        self.assertFalse(context["active_winner"])
+        self.assertIn(first, context["winner_notice_url"])
+        self.assertIn(rejected, context["rejection_decision_url"])
+
     def test_same_day_cancellation_needs_ordered_timestamps(self):
         previous = award("first", "cancelled", notice="2026-09-21T09:28:37+03:00")
         previous["date"] = "2026-09-21T11:39:00+03:00"
