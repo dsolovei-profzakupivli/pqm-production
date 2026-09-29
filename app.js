@@ -1112,7 +1112,29 @@ function violationDetailHtml(item){const deadline=requestDeadline(item),clarity=
 function collectViolationReview(){const payload={};$$('#requestDetailsBody [data-review]').forEach(input=>{const key=input.dataset.review;if(input.type==='radio'){if(input.checked)payload[key]=input.value==='true'}else if(input.type==='checkbox')payload[key]=input.checked;else payload[key]=input.value});return payload}
 async function saveViolationReview(reportId){try{const data=await request(`${API}/violation-reports/${encodeURIComponent(reportId)}/review`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectViolationReview())});$('#requestDetailsBody').innerHTML=violationDetailHtml(data);bindViolationReview(data);toast('Розгляд збережено')}catch(error){toast(error.message);try{const fresh=await request(`${API}/violation-reports/${encodeURIComponent(reportId)}`);$('#requestDetailsBody').innerHTML=violationDetailHtml(fresh);bindViolationReview(fresh)}catch{}}}
 function bindViolationReview(item){const save=$('#saveViolationReview');if(save)save.onclick=()=>saveViolationReview(item.id);const status=$('[data-review="review_status"]');if(status&&item.review)status.value=item.review.review_status||'not_reviewed';const rec=item.recommendation?.recommended_decision||'';const decision=$('[data-review="internal_decision"]');if(decision)decision.onchange=()=>{if(decision.value&&rec&&decision.value!==rec)toast('Обране рішення відрізняється від рекомендації системи')};const extension=$('[data-review="contract_deadline_extended"]'),refusal=$('[data-review="written_refusal_date"]');if(extension)extension.onchange=()=>saveViolationReview(item.id);if(refusal)refusal.onchange=()=>saveViolationReview(item.id)}
-async function openViolationReport(index){const source=violationReports[index];if(!source)return;$('#requestDetailsTitle').textContent=source.report_id||'Звернення замовника';$('#requestDetailsSubtitle').textContent='Оновлення актуальних даних…';$('#requestDetailsBody').innerHTML='<p>Завантаження…</p>';$('#requestDetailsDialog').showModal();try{const item=await request(`${API}/violation-reports/${encodeURIComponent(source.id)}`);$('#requestDetailsTitle').textContent=item.report_id||'Звернення замовника';$('#requestDetailsSubtitle').textContent=`${displayDate(item.date_published)} · ${requestLabel(item.status,requestStatusLabels)}`;$('#requestDetailsBody').innerHTML=violationDetailHtml(item);bindViolationReview(item)}catch(error){$('#requestDetailsBody').innerHTML=`<p class="request-warning">${esc(error.message)}</p>`}}
+async function openViolationReportById(reportId){
+  if(!reportId)return;
+  const source=violationReports.find(item=>String(item.id)===String(reportId)||String(item.report_id)===String(reportId));
+  const dialog=$('#requestDetailsDialog');
+  $('#requestDetailsTitle').textContent=source?.report_id||'Звернення замовника';
+  $('#requestDetailsSubtitle').textContent='Оновлення актуальних даних…';
+  $('#requestDetailsBody').innerHTML='<p>Завантаження…</p>';
+  if(!dialog.open)dialog.showModal();
+  try{
+    const item=await request(`${API}/violation-reports/${encodeURIComponent(reportId)}`);
+    $('#requestDetailsTitle').textContent=item.report_id||'Звернення замовника';
+    $('#requestDetailsSubtitle').textContent=`${displayDate(item.date_published)} · ${requestLabel(item.status,requestStatusLabels)}`;
+    $('#requestDetailsBody').innerHTML=violationDetailHtml(item);
+    bindViolationReview(item);
+    return item;
+  }catch(error){
+    $('#requestDetailsBody').innerHTML=`<p class="request-warning">${esc(error.message)}</p>`;
+  }
+}
+async function openViolationReport(index){
+  const source=violationReports[index];
+  if(source)return openViolationReportById(source.id);
+}
 async function syncViolationReports(){
   const started=Date.now();
   updateRequestsRefreshAvailability({starting:true});
