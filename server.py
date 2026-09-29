@@ -6841,9 +6841,29 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     historical = _report_winner_decision(report, tender)
     winner = next((award for award in supplier_awards
                    if str(award.get("id") or "") == str((historical or {}).get("award_id") or "")), None)
+    historical_notice = (historical or {}).get("evidence_document") or {}
+    current_notice = next((document for document in (winner or {}).get("documents") or []
+                           if document.get("documentType") == "notice"
+                           and str(document.get("id") or "") == str(historical_notice.get("id") or "")
+                           and str(document.get("datePublished") or "") ==
+                           str(historical_notice.get("date_published") or "")), None)
+    notice_for_url = dict(historical_notice)
+    if current_notice and current_notice.get("dateModified") and not notice_for_url.get("date_modified"):
+        notice_for_url["date_modified"] = current_notice["dateModified"]
+    winner_electronic_url = winner_decisions.electronic_protocol_url(
+        tender_id, (historical or {}).get("award_id"), notice_for_url,
+        decision="winner") if winner else ""
+    notice_published_at = str(historical_notice.get("date_published") or "")
+    winner_display_date = ((notice_published_at if winner_electronic_url and
+                            notice_published_at[:10] == (historical or {}).get("decision_date")
+                            else None) or (historical or {}).get("decision_datetime")
+                           or (historical or {}).get("decision_date"))
     current_winner = winner_decisions.current_winner_state(tender, report)
     rejected = winner_decisions.relevant_rejection(tender, report)
     rejection_protocol_document = winner_decisions.protocol_document(rejected or {})
+    rejection_electronic_url = winner_decisions.electronic_protocol_url(
+        tender_id, (rejected or {}).get("id"),
+        winner_decisions.notice_document(rejected or {}), decision="rejection")
     winner_selected = _parse_prozorro_date((historical or {}).get("decision_datetime")
                                            or (historical or {}).get("decision_date"))
     extended = bool((review or {}).get("contract_deadline_extended"))
@@ -6878,10 +6898,12 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         "available": True, "tender_id": tender_id, "tender_pretty_id": tender.get("tenderID") or report.get("tender_pretty_id"),
         "defendant_code": defendant_code, "supplier_awards_count": len(supplier_awards),
         "winner_award_id": (historical or {}).get("award_id"),
-        "winner_selected_at": (historical or {}).get("decision_datetime") or (historical or {}).get("decision_date"),
+        "winner_selected_at": winner_display_date,
         "historical_winner_decision": historical,
         "winner_protocol_document": (historical or {}).get("protocol_document"),
+        "winner_notice_url": winner_electronic_url,
         "rejection_protocol_document": rejection_protocol_document,
+        "rejection_decision_url": rejection_electronic_url,
         "current_winner_state": current_winner,
         "active_winner": current_winner["active_winner"],
         "winner_award_status": (winner or {}).get("status"),
@@ -7725,9 +7747,8 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "report_url": violation_request_public_url(
             str(item.get("contract_pretty_id") or context.get("contract_pretty_id") or ""),
             str(item.get("report_id") or "")),
-        "winner_notice_url": str(((context.get("historical_winner_decision") or {}).get(
-            "protocol_document") or {}).get("url") or ""),
-        "rejection_decision_url": str((context.get("rejection_protocol_document") or {}).get("url") or ""),
+        "winner_notice_url": str(context.get("winner_notice_url") or ""),
+        "rejection_decision_url": str(context.get("rejection_decision_url") or ""),
         "procurement_date": _protocol_date(context.get("tender_date_published") or item.get("date_created")),
         "cpv_category": str(context.get("dk_code") or ""),
         "customer_name": customer_name, "customer_name_genitive": normalize_document_name(declined_names["customer_name_genitive"].value),

@@ -98,6 +98,27 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         self.assertIn("Повідомлення про намір укласти договір", xml)
         self.assertIn("Рішення про відхилення", xml)
 
+    def test_decision_dates_and_header_identifiers_link_to_exact_evidence(self):
+        urls = {
+            "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+            "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST",
+            "winner_notice_url": "https://prozorro.gov.ua/pdf/determining_winner_of_procurement?dateModified=winner",
+            "rejection_decision_url": "https://prozorro.gov.ua/pdf/tender_rejection_protocol?dateModified=rejection",
+        }
+        for protocol_type in ("warning", "decline_p49_1_2"):
+            with self.subTest(protocol_type=protocol_type):
+                document = Document(self.build(protocol_type, values={**BASE_VALUES, **urls}))
+                linked_text = {}
+                for paragraph in generator._all_paragraphs(document):
+                    for link in paragraph._p.xpath(".//w:hyperlink"):
+                        target = document.part.rels[link.get(qn("r:id"))].target_ref
+                        linked_text.setdefault(target, []).append(
+                            "".join(node.text or "" for node in link.xpath(".//w:t")))
+                self.assertIn(BASE_VALUES["winner_date"], linked_text[urls["winner_notice_url"]])
+                self.assertIn(BASE_VALUES["rejection_date"], linked_text[urls["rejection_decision_url"]])
+                self.assertIn(BASE_VALUES["procurement_id"], linked_text[urls["procurement_url"]])
+                self.assertIn(BASE_VALUES["report_id"], linked_text[urls["report_url"]])
+
     def test_missing_decision_documents_do_not_create_false_links(self):
         output = self.build(values={**BASE_VALUES,
                                     "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",

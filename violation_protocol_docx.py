@@ -914,6 +914,11 @@ def build_violation_protocol_docx(
                 _set_document_links(paragraph, supplier_documents or [])
             else:
                 _replace_in_paragraph(paragraph, normalized_values)
+                for date_key, url_key in (("winner_date", "winner_notice_url"),
+                                          ("rejection_date", "rejection_decision_url")):
+                    if date_key in token_names:
+                        _link_existing_identifier(paragraph, normalized_values.get(date_key, ""),
+                                                  normalized_values.get(url_key, ""))
         for paragraph in _all_paragraphs(document):
             _link_existing_identifier(paragraph, normalized_values.get("procurement_id", ""),
                                       normalized_values.get("procurement_url", ""))

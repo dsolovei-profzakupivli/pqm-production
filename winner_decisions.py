@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+from urllib.parse import quote
 
 
 def _date(value):
@@ -18,11 +19,38 @@ def _supplier_codes(award):
             for item in award.get("suppliers") or []}
 
 
-def _notice(award):
+def notice_document(award):
     notices = [document for document in award.get("documents") or []
                if document.get("documentType") == "notice"
                and _date(document.get("datePublished"))]
     return min(notices, key=lambda document: str(document["datePublished"]), default=None)
+
+
+def electronic_protocol_url(tender_id, award_id, notice, *, decision):
+    """Link an exact award's published electronic protocol, never a nearby award."""
+    route = {"winner": "determining_winner_of_procurement",
+             "rejection": "tender_rejection_protocol"}.get(decision)
+    if not route or not re.fullmatch(r"[0-9a-f]{32}", str(tender_id or ""), re.I) \
+            or not re.fullmatch(r"[0-9a-f]{32}", str(award_id or ""), re.I):
+        return ""
+    if not notice or str(notice.get("documentType") or notice.get("type") or "") != "notice" \
+            or not str(notice.get("id") or ""):
+        return ""
+    published = str(notice.get("datePublished") or notice.get("date_published") or "")
+    modified = str(notice.get("dateModified") or notice.get("date_modified") or published)
+    try:
+        parsed = datetime.fromisoformat(published.replace("Z", "+00:00"))
+        modified_at = datetime.fromisoformat(modified.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None or modified_at.tzinfo is None:
+        return ""
+    award_url = ("https://public-api.prozorro.gov.ua/api/2.5/tenders/"
+                 f"{tender_id}/awards/{award_id}")
+    encoded_date = quote(quote(modified, safe=""), safe="")
+    encoded_award = quote(quote(award_url, safe=""), safe="")
+    return (f"https://prozorro.gov.ua/pdf/{route}?dateModified={encoded_date}"
+            f"&url={encoded_award}")
 
 
 def protocol_document(award):
@@ -75,7 +103,7 @@ def historical_decision(tender, report, *, snapshot_at):
             continue
         if award.get("status") == "cancelled" and award.get("qualified") is not True:
             continue
-        notice = _notice(award)
+        notice = notice_document(award)
         if not notice:
             continue
         decision_date = _date(notice.get("datePublished"))
@@ -120,6 +148,7 @@ def historical_decision(tender, report, *, snapshot_at):
             "title": str(notice.get("title") or ""),
             "url": str(notice.get("url") or ""),
             "date_published": str(notice.get("datePublished") or ""),
+            "date_modified": str(notice.get("dateModified") or ""),
         },
         "protocol_document": protocol_document(award),
     }
