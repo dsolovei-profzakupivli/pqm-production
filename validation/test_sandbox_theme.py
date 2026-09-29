@@ -58,6 +58,25 @@ class Theme(unittest.TestCase):
         self.assertNotIn(b'id="sandboxWarning"', raw)
         self.assertIn('if SANDBOX_MODE and path == "index.html":',
                       (sandbox.ROOT / 'server.py').read_text(encoding='utf-8'))
+    def test_navbar_brand_is_sandbox_only(self):
+        raw = (sandbox.ROOT / 'index.html').read_bytes()
+        with patch.dict(os.environ, PQM_SANDBOX='1'):
+            html = sandbox.decorate_html(raw).decode()
+        with patch.dict(os.environ, PQM_SANDBOX='0'):
+            prod_html = sandbox.decorate_html(raw).decode()
+        self.assertIn('class="brand sandbox-brand"', html)
+        self.assertIn('<span>P</span><span class="sandbox-brand-q">Q</span><span>M</span>', html)
+        self.assertIn('class="sandbox-brand-divider"', html)
+        self.assertIn('<strong>Професійні закупівлі</strong>', html)
+        self.assertIn('<small>Procurement Qualification Manager</small>', html)
+        self.assertIn('id="environmentBanner" class="sandbox-brand-accessible"', html)
+        self.assertNotIn('<img class="brand-logo"', html)
+        self.assertIn('id="sandboxWarning"', html)
+        self.assertIn('<nav id="mainNav" aria-label="Основна навігація"></nav>', html)
+        self.assertNotIn('sandbox-brand', prod_html)
+        self.assertIn('<img class="brand-logo"', prod_html)
+        self.assertIn('id="environmentBanner" title="Profzakupivli Qualification Manager">PQM</em>', prod_html)
+        self.assertIn('<nav id="mainNav" aria-label="Основна навігація"></nav>', prod_html)
     def test_text_contrast(self):
         for foreground in ('#edf3fc', '#b2c3db', '#86bdff'):
             for background in ('#0b172a', '#132840', '#193451'):
