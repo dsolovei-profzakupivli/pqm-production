@@ -29,21 +29,30 @@ class Theme(unittest.TestCase):
                        ('#ffb1b8', '#492936'), ('#edf3fc', '#203e62')):
             self.assertGreaterEqual((luminance(fg)+.05)/(luminance(bg)+.05), 4.5)
     def test_sandbox_favicon_isolated(self):
-        import base64
         import xml.etree.ElementTree as ET
+        import struct
         raw = (sandbox.ROOT / 'index.html').read_bytes()
         for flag in ('0', '1'):
             with patch.dict(os.environ, PQM_SANDBOX=flag):
                 html = sandbox.decorate_html(raw).decode()
-                self.assertEqual('pqm-sandbox-tab-inverted.svg' in html, flag == '1')
-                self.assertEqual('sizes="32x32"' in html, flag == '0')
-        root = ET.parse(sandbox.ROOT / 'assets/pqm-sandbox-tab-inverted.svg').getroot()
-        ns = {'s': 'http://www.w3.org/2000/svg'}
-        for channel in ('R', 'G', 'B'):
-            self.assertEqual(root.find('.//s:feFunc'+channel, ns).get('tableValues'), '1 0')
-        self.assertEqual(root.find('.//s:feFuncA', ns).get('type'), 'identity')
-        embedded = root.find('s:image', ns).get('href').split(',', 1)[1]
-        self.assertEqual(base64.b64decode(embedded), (sandbox.ROOT / 'assets/pqm-tab-icon.png').read_bytes())
+                self.assertEqual('pqm-q-favicon.svg' in html, flag == '1')
+                self.assertEqual('pqm-q-favicon-180.png' in html, flag == '1')
+                if flag == '0': self.assertIn('pqm-tab-icon.png', html)
+        root = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
+        self.assertEqual(root.find('{http://www.w3.org/2000/svg}rect').get('fill'), '#132840')
+        self.assertEqual(root.find('{http://www.w3.org/2000/svg}circle').get('stroke'), '#86bdff')
+        for size in (32, 180, 192):
+            png = (sandbox.ROOT / 'assets' / f'pqm-q-favicon-{size}.png').read_bytes()
+            self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
+            self.assertEqual(struct.unpack('>II', png[16:24]), (size, size))
+    def test_compact_filters_are_sandbox_scoped_and_keep_actions(self):
+        css = (sandbox.ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
+        html = (sandbox.ROOT / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar,.frameworks-toolbar,.history-filters)', css)
+        self.assertIn('flex-wrap:wrap', css)
+        self.assertIn('max-width:calc(100vw - 24px)', css)
+        for control in ('edrMonitoringReset', 'edrMonitoringChips', 'clearFiltersBtn', 'historyReset'):
+            self.assertIn(f'id="{control}"', html)
     def test_sandbox_only(self):
         raw = (sandbox.ROOT / 'index.html').read_bytes()
         for flag in ('0', '1'):
