@@ -608,6 +608,19 @@ def decorate_html(raw):
     text = raw.decode('utf-8')
     if os.environ.get('PQM_SANDBOX') == '1':
         text = text.replace('<html', '<html data-pqm-environment="sandbox"', 1)
+        current_brand = ('<div class="brand"><img class="brand-logo" src="assets/professional-purchasing-logo.webp" '
+                         'alt="ДУ Професійні закупівлі"><div><em id="environmentBanner" '
+                         'title="Profzakupivli Qualification Manager">PQM</em></div></div>')
+        sandbox_brand = ('<div class="brand sandbox-brand">'
+                         '<span class="sandbox-brand-initials" aria-hidden="true">'
+                         '<span>P</span><span class="sandbox-brand-q">Q</span><span>M</span></span>'
+                         '<span class="sandbox-brand-divider" aria-hidden="true"></span>'
+                         '<span class="sandbox-brand-copy"><strong>Професійні закупівлі</strong>'
+                         '<small>Procurement Qualification Manager</small></span>'
+                         '<em id="environmentBanner" class="sandbox-brand-accessible">PQM</em></div>')
+        if text.count(current_brand) != 1:
+            raise RuntimeError('STOP: SANDBOX navbar brand markup mismatch')
+        text = text.replace(current_brand, sandbox_brand, 1)
         text = text.replace('<link rel="icon" href="/assets/pqm-search-icon.png" type="image/png" sizes="192x192">', '')
         text = text.replace('<link rel="icon" href="/assets/pqm-tab-icon.png" type="image/png" sizes="32x32">',
                             '<link rel="icon" href="/assets/pqm-sandbox-tab-inverted.svg?v=1" type="image/svg+xml" sizes="any">')
