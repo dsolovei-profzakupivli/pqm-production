@@ -17,7 +17,7 @@ WORKER = Path(__file__).resolve()
 
 
 def enabled():
-    return os.environ.get('PQM_SANDBOX') == '1' and os.environ.get('PQM_SANDBOX_AMCU_READ') == '1'
+    return os.environ.get('PQM_SANDBOX') == '1'
 
 
 def route_allowed(method, path):

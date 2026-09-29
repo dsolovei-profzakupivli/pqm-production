@@ -1,6 +1,7 @@
 """Offline single-supplier Google EDR workflow; no network or live Apply."""
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,6 +83,7 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
                                           google_open=lambda *_args, **_kwargs:
                                           io.BytesIO(json.dumps(metadata).encode()))
         with patch.object(server, 'SANDBOX_MODE', True), \
+             patch.dict(os.environ, {'PQM_SANDBOX': '1', 'PQM_SANDBOX_EDR_GOOGLE': '1'}), \
              patch.object(server, 'sandbox_runtime', sandbox_runtime, create=True), \
              patch.object(server, 'SUPPLIER_EDR_SHEET_ID', 'offline-sheet'), \
              patch.object(server, '_google_sheet_values', side_effect=lambda tab: values[tab]), \

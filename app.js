@@ -1778,7 +1778,10 @@ async function toggleManualBidsUpdate(){
 }
 async function toggleSchedulerJob(button){
   const job=button.dataset.schedulerJob,enabled=button.dataset.enabled==='true';
-  if(enabled&&!confirm(schedulerEnableConfirmations[job]||`Увімкнути ${schedulerJobLabels[job]||job}?`))return;
+  const confirmation=button.dataset.sandbox==='true'
+    ?'Увімкнути автоматичне оновлення в SANDBOX? Оновлюватимуться лише тестові дані SANDBOX; PROD не змінюється.'
+    :(schedulerEnableConfirmations[job]||`Увімкнути ${schedulerJobLabels[job]||job}?`);
+  if(enabled&&!confirm(confirmation))return;
   button.disabled=true;
   try{
     await request(`${API}/admin/scheduler-jobs/${encodeURIComponent(job)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
@@ -1799,8 +1802,8 @@ async function loadRuntimeFeatures(){
     }
     const schedulerRoot=$('#schedulerJobs');
     if(schedulerRoot){
-      const canManage=role()==='admin'&&!features.sandbox_mode;
-      schedulerRoot.innerHTML=(features.scheduler_jobs||[]).map(job=>`<article class="scheduler-job ${job.enabled?'enabled':'disabled'}"><header><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong><span>${job.enabled?'Увімкнено':'Вимкнено'}</span></header><dl><div><dt>Розклад</dt><dd>${esc(job.schedule)}</dd></div><div><dt>Timezone</dt><dd>${esc(job.timezone)}</dd></div><div><dt>Останній запуск</dt><dd>${esc(job.last_finished_at?displayDate(job.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(job.enabled&&job.next_run?displayDate(job.next_run):'—')}</dd></div><div><dt>Джерело налаштування</dt><dd>${job.configuration_source==='runtime'?'Адміністратор':'Середовище'}</dd></div></dl>${canManage?`<footer><button type="button" class="ghost scheduler-toggle" data-scheduler-job="${esc(job.job)}" data-enabled="${job.enabled?'false':'true'}">${job.enabled?'Вимкнути':'Увімкнути'}</button></footer>`:''}</article>`).join('');
+      const isAdmin=role()==='admin';
+      schedulerRoot.innerHTML=(features.scheduler_jobs||[]).map(job=>{const showAction=isAdmin;const manageable=job.manageable===true;return`<article class="scheduler-job ${job.enabled?'enabled':'disabled'}"><header><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong><span>${job.enabled?'Увімкнено':'Вимкнено'}</span></header><dl><div><dt>Розклад</dt><dd>${esc(job.schedule)}</dd></div><div><dt>Timezone</dt><dd>${esc(job.timezone)}</dd></div><div><dt>Останній запуск</dt><dd>${esc(job.last_finished_at?displayDate(job.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(job.enabled&&job.next_run?displayDate(job.next_run):'—')}</dd></div><div><dt>Джерело налаштування</dt><dd>${job.configuration_source==='runtime'?'Адміністратор':'Середовище'}</dd></div></dl>${showAction?`<footer><button type="button" class="ghost scheduler-toggle" data-scheduler-job="${esc(job.job)}" data-sandbox="${features.sandbox_mode?'true':'false'}" data-enabled="${job.enabled?'false':'true'}" ${features.sandbox_mode&&!manageable?'disabled title="SANDBOX destination не підтверджено"':''}>${job.enabled?'Вимкнути':'Увімкнути'}</button></footer>`:''}</article>`}).join('');
       schedulerRoot.onclick=event=>{const button=event.target.closest('.scheduler-toggle');if(button)toggleSchedulerJob(button)};
     }
     renderGoogleRuntimeState(features.google_integration||{enabled:Boolean(features.google),configuration_source:'environment'});
@@ -1818,36 +1821,11 @@ async function loadRuntimeFeatures(){
       disable('#supplierEdrSync','Google integration вимкнено');
       disable('#supplierNazkReviewSync','Google integration вимкнено');
     }
-    if(features.sandbox_mode){
-      const message='Sandbox: зовнішні оновлення, імпорти й jobs заблоковані';
-      const scopedActions={
-        '#resetBtn':features.sandbox_prozorro_read,
-        '#supplierRegistryRefresh':features.sandbox_prozorro_read,
-        '#frameworksRefresh':features.sandbox_operational&&features.sandbox_prozorro_read,
-        '#refNazkRefresh':features.sandbox_nazk_read,
-        '#refAmcuRefresh':features.sandbox_operational&&features.sandbox_amcu_read,
-        '#refAmcuUploadBtn':features.sandbox_operational&&features.sandbox_amcu_read,
-        '#edrMonitoringSync':features.google,
-      };
-      ['#resetBtn','#supplierRegistryRefresh','#frameworksRefresh',
-       '#refNazkRefresh','#refAmcuRefresh','#refAmcuUploadBtn','#adminFrameworkImportNew',
-       '#edrMonitoringSync','#googleRuntimeToggle','#googleDisconnect','#bidsManualUpdateToggle',
-       '#bidsDataRefresh','#powerbiExportBtn'].forEach(selector=>{
-        if(scopedActions[selector]){
-          const element=$(selector);
-          if(element){delete element.dataset.runtimeDisabled;delete element.dataset.sandboxBlocked;
-            element.disabled=element.dataset.roleDisabled!=='0';
-            element.title=selector==='#resetBtn'&&features.sandbox_prozorro_scheduler
-              ? 'Читання Prozorro; зміни лише в БД sandbox. Автоматично щогодини о :05 (Київ).'
-              : 'Дозволена дія в ізольованому SANDBOX; PROD-цілі заблоковані.'}
-          return;
-        }
-        disable(selector,message);const element=$(selector);if(element)element.dataset.sandboxBlocked='1';
-      });
-    }
+    // SANDBOX local actions use the same role/UI controls as PROD. The server
+    // attests the destination before mutation; no per-button sandbox allowlist.
     updateRequestsRefreshAvailability({runtimeLoaded:true,sandboxMode:Boolean(features.sandbox_mode),sandboxOperational:Boolean(features.sandbox_operational),sandboxProzorroRead:Boolean(features.sandbox_prozorro_read)});
     return features;
-  }catch(error){return null}
+  }catch(error){const schedulerRoot=$('#schedulerJobs');if(schedulerRoot)schedulerRoot.innerHTML='<p>Статус автоматичних оновлень недоступний. Увімкнення заблоковано.</p>';return null}
 }
 document.addEventListener('click',event=>{
   const blocked=event.target.closest('[data-sandbox-blocked="1"]');

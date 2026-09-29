@@ -23,7 +23,7 @@ class PolicyTests(unittest.TestCase):
     def env(self):
         return {**sandbox.POLICY, 'PQM_DATA_DIR': '/var/data',
                 'PQM_DB_PATH': '/var/data/pqm_sandbox.sqlite3',
-                'RENDER_SERVICE_ID': 'srv-sandbox-fixture', 'RENDER_SERVICE_NAME': 'pqm-sandbox'}
+                'RENDER_SERVICE_ID': 'srv-dalfd77f3r2c7392uub0', 'RENDER_SERVICE_NAME': 'pqm-sandbox'}
 
     def test_01_valid_policy(self):
         self.assertEqual(Path('/var/data/pqm_sandbox.sqlite3').resolve(), sandbox.validate_environment(self.env())[1])
@@ -35,7 +35,7 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(RuntimeError):
                 sandbox.validate_environment({**self.env(), key: value})
 
-    def test_03_no_flag_can_enable_mutations_or_integrations(self):
+    def test_03_fixed_environment_and_prod_integrations_remain_disabled(self):
         for key in sandbox.POLICY:
             with self.subTest(key=key), self.assertRaises(RuntimeError):
                 sandbox.validate_environment({**self.env(), key: 'invalid'})
@@ -172,8 +172,10 @@ class SandboxHTTP(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(flags['sandbox_mode'])
         self.assertTrue(flags['safe_mode'])
-        for key in ['google', 'bids_update', 'powerbi', 'scheduler', 'nazk_scheduler']:
+        for key in ['bids_update', 'powerbi', 'scheduler', 'nazk_scheduler']:
             self.assertFalse(flags[key], key)
+        self.assertTrue(flags['sandbox_local_edits'])
+        self.assertTrue(flags['sandbox_documents'])
         self.assertTrue(all(not row['enabled'] and not row['running'] for row in flags['scheduler_jobs']))
         for path in ['/api/applications', '/api/application-history', '/api/admin/users', '/api/admin/templates',
                      '/api/uo-work-queue', '/api/violation-reports', '/api/chats', '/api/reference-status',
@@ -181,13 +183,10 @@ class SandboxHTTP(unittest.TestCase):
             self.assertEqual(200, self.request(path)[0], path)
         self.assertEqual(7, len(self.request('/api/admin/templates')[1]['items']))
 
-    def test_12_safe_mode_denies_updates(self):
-        for role in ['admin', 'officer', 'viewer']:
-            for path in ['/api/sync', '/api/admin/scheduler-jobs/prozorro', '/api/admin/runtime-features/google']:
-                self.assertEqual(503, self.request(path, role, 'POST', {'enabled': True})[0])
-            self.assertEqual(503, self.request('/api/applications/sandbox-pending', role, 'PATCH', {'notes': 'forbidden'})[0])
-        for path in ['/api/amcu-registry?refresh=1', '/api/nazk-registry?refresh=1']:
-            self.assertEqual(503, self.request(path)[0])
+    def test_12_local_destination_preserves_auth_and_unknown_route_guard(self):
+        self.assertEqual(401,self.request('/api/applications/sandbox-pending',None,'PATCH',{'notes':'forbidden'})[0])
+        self.assertEqual(403,self.request('/api/applications/sandbox-pending','viewer','PATCH',{'notes':'forbidden'})[0])
+        self.assertEqual(404,self.request('/api/unknown-future-route','admin','POST',{})[0])
 
     def test_13_only_synthetic_data_no_tasks_or_registry(self):
         with sqlite3.connect((self.data / 'pqm_sandbox.sqlite3').as_uri() + '?mode=ro', uri=True) as con:

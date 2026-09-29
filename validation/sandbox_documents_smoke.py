@@ -13,7 +13,7 @@ import sandbox_documents as documents
 
 
 class Policy(unittest.TestCase):
-    def test_allowlist(self):
+    def test_owned_document_generation_is_not_an_action_flag(self):
         with patch.dict(os.environ, {'PQM_SANDBOX':'1','PQM_SANDBOX_DOCUMENTS':'1'}):
             for path in ('/api/protocol/readiness','/api/protocol/generate'):
                 self.assertTrue(documents.route_allowed('POST',path))
@@ -26,7 +26,8 @@ class Policy(unittest.TestCase):
                 self.assertFalse(documents.route_allowed('POST',path))
             self.assertFalse(documents.permitted_process('subprocess.Popen',('sh',['sh'],None,None)))
         with patch.dict(os.environ, {'PQM_SANDBOX':'1','PQM_SANDBOX_DOCUMENTS':'0'}):
-            self.assertFalse(documents.route_allowed('POST','/api/protocol/generate'))
+            self.assertTrue(documents.enabled())
+            self.assertTrue(documents.route_allowed('POST','/api/protocol/generate'))
 
     def test_real_worker_network_denial_and_pdf(self):
         if sys.platform != 'linux':
@@ -53,9 +54,7 @@ generated=root/'generated_documents';generated.mkdir()
 task_source=generated/'synthetic-task.docx';doc.save(task_source)
 assert protocol_pdf.ensure_pdf(task_source,generated/'synthetic-task.pdf').read_bytes().startswith(b'%PDF-')
 os.environ['PQM_SANDBOX_DOCUMENTS']='0'
-try: protocol_pdf.ensure_pdf(source,protocols/'synthetic.pdf')
-except RuntimeError: pass
-else: raise AssertionError('Disabled documents reused cached PDF')
+assert protocol_pdf.ensure_pdf(source,protocols/'synthetic.pdf')==result
 os.environ['PQM_SANDBOX_DOCUMENTS']='1'
 try: sandbox.sandbox_documents.export_pdf(source,root/'escaped.pdf')
 except RuntimeError: pass

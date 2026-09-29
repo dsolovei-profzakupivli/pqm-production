@@ -68,11 +68,11 @@ class ViolationProtocolDocxTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def build(self, protocol_type="warning", customer=None, supplier=None):
+    def build(self, protocol_type="warning", customer=None, supplier=None, values=None):
         output = Path(self.temp.name) / f"{protocol_type}.docx"
         generator.build_violation_protocol_docx(
             protocol_type, output,
-            dict(BASE_VALUES),
+            dict(BASE_VALUES if values is None else values),
             "ОСТАТОЧНЕ ОБҐРУНТУВАННЯ УО ДОСЛІВНО",
             customer or [], supplier or [],
             {"has_written_refusal": True, "has_contract": True, "has_contract_security": True,
@@ -81,6 +81,60 @@ class ViolationProtocolDocxTests(unittest.TestCase):
              "has_customer_documents": bool(customer)},
         )
         return output
+
+    def test_decision_links_are_real_docx_relationships(self):
+        urls = {
+            "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+            "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST",
+            "winner_notice_url": "https://public-docs.prozorro.gov.ua/winner",
+            "rejection_decision_url": "https://public-docs.prozorro.gov.ua/rejection",
+        }
+        output = self.build(values={**BASE_VALUES, **urls})
+        relationships = [rel.target_ref for rel in Document(output).part.rels.values()
+                         if rel.reltype.endswith('/hyperlink')]
+        for url in urls.values():
+            self.assertIn(url, relationships)
+        xml = Document(output).part._element.xml
+        self.assertIn("Повідомлення про намір укласти договір", xml)
+        self.assertIn("Рішення про відхилення", xml)
+
+    def test_missing_decision_documents_do_not_create_false_links(self):
+        output = self.build(values={**BASE_VALUES,
+                                    "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+                                    "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST"})
+        xml = Document(output).part._element.xml
+        self.assertNotIn("Повідомлення про намір укласти договір", xml)
+        self.assertNotIn("Рішення про відхилення", xml)
+
+    def test_pdf_conversion_preserves_decision_link_annotations(self):
+        import protocol_pdf
+        from pypdf import PdfReader
+        if not protocol_pdf._soffice_executable() and not protocol_pdf._word_available():
+            self.skipTest("LibreOffice/Word PDF converter unavailable locally")
+        urls = {
+            "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+            "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST",
+            "winner_notice_url": "https://public-docs.prozorro.gov.ua/winner",
+            "rejection_decision_url": "https://public-docs.prozorro.gov.ua/rejection",
+        }
+        source = self.build(values={**BASE_VALUES, **urls})
+        target = Path(self.temp.name) / "linked.pdf"
+        try:
+            protocol_pdf.ensure_pdf(source, target)
+        except RuntimeError as exc:
+            # Some Windows CI/sandbox logon sessions can see WINWORD.EXE but
+            # cannot activate COM (80070520). Do not confuse that with a PDF
+            # that was created and lost its links; Linux LibreOffice still runs.
+            if os.name == "nt" and "80070520" in str(exc):
+                self.skipTest("Word COM unavailable in this Windows logon session")
+            raise
+        actual = set()
+        for page in PdfReader(str(target)).pages:
+            for reference in page.get("/Annots", []):
+                action = reference.get_object().get("/A")
+                if action and action.get("/URI"):
+                    actual.add(str(action["/URI"]))
+        self.assertTrue(set(urls.values()).issubset(actual), actual)
 
     def test_approved_source_templates_are_unchanged(self):
         for key, expected in EXPECTED_HASHES.items():

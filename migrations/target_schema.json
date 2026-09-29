@@ -5755,6 +5755,36 @@
       ]
     },
     {
+      "name": "violation_winner_decision_snapshots",
+      "sql": "CREATE TABLE violation_winner_decision_snapshots (\n          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,\n          decision_json TEXT,\n          created_at TEXT NOT NULL\n        )",
+      "columns": [
+        {
+          "cid": 0,
+          "name": "report_id",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "decision_json",
+          "type": "TEXT",
+          "notnull": 0,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "created_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "default": null,
+          "pk": 0
+        }
+      ]
+    },
+    {
       "name": "violation_reports",
       "sql": "CREATE TABLE violation_reports (\n          id TEXT PRIMARY KEY, report_id TEXT DEFAULT '', status TEXT DEFAULT '',\n          date_created TEXT DEFAULT '', date_published TEXT DEFAULT '', date_modified TEXT DEFAULT '',\n          tender_id TEXT DEFAULT '', tender_pretty_id TEXT DEFAULT '', contract_id TEXT DEFAULT '', contract_pretty_id TEXT DEFAULT '',\n          author_name TEXT DEFAULT '', author_code TEXT DEFAULT '', defendant_name TEXT DEFAULT '', defendant_code TEXT DEFAULT '',\n          authority_name TEXT DEFAULT '', authority_code TEXT DEFAULT '', reason TEXT DEFAULT '', description TEXT DEFAULT '',\n          defendant_period_start TEXT DEFAULT '', defendant_period_end TEXT DEFAULT '',\n          decision_resolution TEXT DEFAULT '', decision_description TEXT DEFAULT '', decision_date TEXT DEFAULT '',\n          evidence_documents_json TEXT NOT NULL DEFAULT '[]', decision_documents_json TEXT NOT NULL DEFAULT '[]',\n          raw_json TEXT NOT NULL, synced_at TEXT NOT NULL\n        )",
       "columns": [

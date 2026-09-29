@@ -29,12 +29,25 @@ class ChatAndWidthsTests(unittest.TestCase):
         self.assertEqual(saved['__visible__'],['supplier_name'])
         self.assertEqual(table_widths.list_all(self.db)['edr-monitoring']['__visible__'],['supplier_name'])
     def test_width_control_is_scoped_to_visible_table_toolbar(self):
-        source=(Path(__file__).with_name('table_widths_ui.js')).read_text(encoding='utf-8')
+        source=self._width_ui_source()
         self.assertIn("if(table.closest('#applicationsView,#historyView'))return",source)
         self.assertIn("if(document.body.dataset.authRole!=='admin'||!isVisible(table))return",source)
         self.assertIn("occupied.has(toolbar)",source)
         self.assertIn("data-visible",source)
         self.assertIn("visibilityControl",source)
         self.assertNotIn(".module-heading')||",source)
+    def test_supplier_widths_save_reload_and_visible_failure(self):
+        key='suppliersView:supplierRegistryBody'
+        table_widths.save(self.db,key,{'єдрпоу-рнокпп':240},'admin')
+        self.assertEqual(table_widths.list_all(self.db)[key]['єдрпоу-рнокпп'],240)
+        source=self._width_ui_source()
+        self.assertIn("request(`${API}/admin/table-widths`,{method:'POST'",source)
+        self.assertIn("apply(table,saved[key])",source)
+        self.assertIn("catch(error){toast(error.message||'Не вдалося зберегти колонки','error')}",source)
+    @staticmethod
+    def _width_ui_source():
+        path=next(parent/'table_widths_ui.js' for parent in Path(__file__).resolve().parents
+                  if (parent/'table_widths_ui.js').is_file())
+        return path.read_text(encoding='utf-8')
 
 if __name__=='__main__': unittest.main()
