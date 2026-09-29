@@ -36,12 +36,14 @@ class Theme(unittest.TestCase):
             with patch.dict(os.environ, PQM_SANDBOX=flag):
                 html = sandbox.decorate_html(raw).decode()
                 self.assertEqual('pqm-q-favicon.svg' in html, flag == '1')
+                self.assertEqual('pqm-q-favicon-16.png' in html, flag == '1')
                 self.assertEqual('pqm-q-favicon-180.png' in html, flag == '1')
                 if flag == '0': self.assertIn('pqm-tab-icon.png', html)
         root = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}rect').get('fill'), '#132840')
-        self.assertEqual(root.find('{http://www.w3.org/2000/svg}circle').get('stroke'), '#86bdff')
-        for size in (32, 180, 192):
+        self.assertEqual(root.find('{http://www.w3.org/2000/svg}title').text, 'PQM')
+        self.assertEqual([path.get('fill') for path in root.findall('{http://www.w3.org/2000/svg}path')], ['#ffffff', '#86bdff'])
+        for size in (16, 32, 180, 192):
             png = (sandbox.ROOT / 'assets' / f'pqm-q-favicon-{size}.png').read_bytes()
             self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
             self.assertEqual(struct.unpack('>II', png[16:24]), (size, size))
