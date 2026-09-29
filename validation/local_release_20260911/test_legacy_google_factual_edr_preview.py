@@ -49,6 +49,16 @@ def legacy_ledger(status, day="2026-09-20"):
 
 
 class FactualEdrPreviewTests(unittest.TestCase):
+    def assert_no_supplier_codes_in_preview_output(self, result, codes):
+        # Digests and the signed preview ticket are opaque metadata, not rows
+        # or a write plan. Only inspect fields that can expose factual output.
+        output_fields = ("rows", "by_reason", "by_status_reason", "by_activity_reason",
+                         "planned_writes", "mutations")
+        output = {key: result[key] for key in output_fields if key in result}
+        serialized = json.dumps(output, ensure_ascii=False, sort_keys=True)
+        for code in codes:
+            self.assertNotIn(code, serialized)
+
     def setUp(self):
         self.con = sqlite3.connect(":memory:")
         self.con.row_factory = sqlite3.Row
@@ -109,7 +119,19 @@ class FactualEdrPreviewTests(unittest.TestCase):
         self.assertEqual((result["db_writes"], result["google_writes"],
                           result["query_only"], self.con.total_changes-before), (0, 0, 1, 0))
         self.assertNotIn("Test Officer", str(result))
-        self.assertNotIn("001", str(result))
+        self.assert_no_supplier_codes_in_preview_output(result, {row["supplier_code"] for row in rows})
+
+    def test_preview_ticket_code_collision_does_not_hide_output_leak(self):
+        with patch.object(preview.verification, "_preview_ticket", return_value="synthetic-ticket-001"):
+            result = self.preview([item("001", 2)])
+        self.assertIn("001", result["preview_ticket"])
+        self.assert_no_supplier_codes_in_preview_output(result, {"001"})
+        leaked = dict(result, rows=[dict(result["rows"][0], supplier_code="001")])
+        with self.assertRaises(AssertionError):
+            self.assert_no_supplier_codes_in_preview_output(leaked, {"001"})
+        leaked_plan = dict(result, planned_writes=[{"supplier_code": "001"}])
+        with self.assertRaises(AssertionError):
+            self.assert_no_supplier_codes_in_preview_output(leaked_plan, {"001"})
 
     def test_nonactive_evidence_is_historical_and_profile_newer_blocks(self):
         rows = [item("001", 2), item("002", 3)]
