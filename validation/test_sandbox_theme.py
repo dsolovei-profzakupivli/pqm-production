@@ -52,8 +52,12 @@ class Theme(unittest.TestCase):
                 self.assertEqual('id="pqmSandboxTheme"' in html, flag == '1')
                 self.assertEqual('data-pqm-environment="sandbox"' in html, flag == '1')
                 self.assertEqual('/sandbox_contrast.js?v=1' in html, flag == '1')
+                self.assertIn('id="sandboxWarning"', html)
         self.assertNotIn(b'sandbox_theme.css', raw)
         self.assertNotIn(b'id="pqmSandboxTheme"', raw)
+        self.assertNotIn(b'id="sandboxWarning"', raw)
+        self.assertIn('if SANDBOX_MODE and path == "index.html":',
+                      (sandbox.ROOT / 'server.py').read_text(encoding='utf-8'))
     def test_text_contrast(self):
         for foreground in ('#edf3fc', '#b2c3db', '#86bdff'):
             for background in ('#0b172a', '#132840', '#193451'):

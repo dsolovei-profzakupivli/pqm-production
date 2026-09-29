@@ -40,10 +40,6 @@
       "required_fields": [
         "decision.number",
         "decision.date",
-        "supplier.name_genitive",
-        "supplier.name_accusative",
-        "supplier.short_name_genitive",
-        "supplier.short_name_accusative",
         "supplier.code",
         "supplier.code_label",
         "uo.full_name",

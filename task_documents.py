@@ -23,6 +23,23 @@ KEY='nazk_supplier_request'  # Server-owned action mapping, never supplied by cl
 AMCU_PROTOCOL_KEY='amcu_exclusion_protocol'
 TERMINATION_PROTOCOL_KEY='termination_exclusion_protocol'
 
+# The mapping describes how a placeholder is resolved; the active template,
+# not this mapping, decides which forms a document actually requires.
+AMCU_SUPPLIER_DECLENSIONS={
+    'supplier.name_genitive':('full_name','genitive','Постачальник'),
+    'supplier.name_dative':('full_name','dative','Постачальник'),
+    'supplier.name_accusative':('full_name','accusative','Постачальник'),
+    'supplier.short_name_genitive':('short_name','genitive','Скорочена назва постачальника'),
+    'supplier.short_name_dative':('short_name','dative','Скорочена назва постачальника'),
+    'supplier.short_name_accusative':('short_name','accusative','Скорочена назва постачальника'),
+}
+
+
+def amcu_required_declension_keys(template_report):
+    """Name source × case requirements from the validated runtime template."""
+    recognized=set(template_report.get('recognized') or ())
+    return tuple(key for key in AMCU_SUPPLIER_DECLENSIONS if key in recognized)
+
 
 class DeclensionRequired(ValueError):
     def __init__(self,unresolved):
@@ -160,19 +177,15 @@ def resolve_amcu_protocol_context(con,item,fields,keys):
     if any(not str(decision['extract_url']).strip() for decision in decisions):
         raise ValueError('Додайте посилання на витяг для всіх рішень АМКУ')
     unresolved=[]
-    cases={'supplier.name_genitive':('genitive',data['document_name']),
-           'supplier.name_accusative':('accusative',data['document_name']),
-           'supplier.short_name_genitive':('genitive',data['document_short_name']),
-           'supplier.short_name_dative':('dative',data['document_short_name']),
-           'supplier.short_name_accusative':('accusative',data['document_short_name'])}
     entity_type='fop' if semantics['entity_type']=='individual_entrepreneur' else semantics['entity_type']
-    for key,(grammatical_case,original) in cases.items():
+    for key,(name_source,grammatical_case,subject_label) in AMCU_SUPPLIER_DECLENSIONS.items():
         if key not in keys:continue
+        original=data['document_short_name' if name_source=='short_name' else 'document_name']
         result=(decline_short_name(original,entity_type,grammatical_case)
-                if key.startswith('supplier.short_name_') else
+                if name_source=='short_name' else
                 decline_name(original,entity_type,grammatical_case))
         if result.status!='resolved':
-            unresolved.append({'subject_label':'Постачальник','original':original,
+            unresolved.append({'subject_label':subject_label,'original':original,
               'entity_type':entity_type,'grammatical_case':grammatical_case,
               'entity_identifier':code,'task_id':item.get('id'),'context_type':'amcu_exclusion'})
     if unresolved:raise DeclensionRequired(unresolved)
@@ -223,18 +236,19 @@ def _short_declension_item(original,entity_type,grammatical_case,subject_label,i
             'source':result.source,'resolved_value':result.value}
 
 
-def amcu_declension_review(con,item):
-    """All AMKU forms remain reviewable even when automatic resolution succeeded."""
+def amcu_declension_review(con,item,required_keys):
+    """Review only forms used by the validated runtime document template."""
     code=re.sub(r'\D','',str(item.get('supplier_code') or ''))
     semantics=supplier_code_semantics(code)
     entity_type='fop' if semantics['entity_type']=='individual_entrepreneur' else semantics['entity_type']
     full=supplier_document_name(con,code)
     short=supplier_document_short_name(con,code)
-    return [_declension_item(full,entity_type,'genitive','Постачальник',code,item.get('id'),'amcu_exclusion'),
-            _declension_item(full,entity_type,'accusative','Постачальник',code,item.get('id'),'amcu_exclusion'),
-            _short_declension_item(short,entity_type,'genitive','Скорочена назва постачальника',code,item.get('id'),'amcu_exclusion'),
-            _short_declension_item(short,entity_type,'dative','Скорочена назва постачальника',code,item.get('id'),'amcu_exclusion'),
-            _short_declension_item(short,entity_type,'accusative','Скорочена назва постачальника',code,item.get('id'),'amcu_exclusion')]
+    originals={'full_name':full,'short_name':short}
+    return [(_short_declension_item if name_source=='short_name' else _declension_item)(
+              originals[name_source],entity_type,grammatical_case,subject_label,
+              code,item.get('id'),'amcu_exclusion')
+            for key,(name_source,grammatical_case,subject_label) in AMCU_SUPPLIER_DECLENSIONS.items()
+            if key in required_keys]
 
 
 def _termination_boundary(con,item):
@@ -341,11 +355,16 @@ def prepared_amcu(con,item,schema):
 
 
 def amcu_readiness(con,item,schema):
-    declensions=amcu_declension_review(con,item)
-    result={'ready':False,'errors':[],'declensions':declensions,
-            'unresolved':[entry for entry in declensions if entry['status']!='resolved'],
+    result={'ready':False,'errors':[],'declensions':[],
+            'unresolved':[],
             'documents':[doc for doc in documents(con,item['id']) if doc['document_type']==AMCU_PROTOCOL_KEY]}
-    try:prepared_amcu(con,item,schema);result['ready']=True
+    try:
+        fields=template_catalog.validate(template_catalog.load(),schema)
+        report=template_runtime.validate_template(AMCU_PROTOCOL_KEY,fields)
+        declensions=amcu_declension_review(con,item,amcu_required_declension_keys(report))
+        result['declensions']=declensions
+        result['unresolved']=[entry for entry in declensions if entry['status']!='resolved']
+        prepared_amcu(con,item,schema);result['ready']=True
     except DeclensionRequired as exc:
         result['errors']=[str(exc)];result['unresolved']=exc.unresolved
     except (ValueError,OSError) as exc:result['errors']=[str(exc)]
