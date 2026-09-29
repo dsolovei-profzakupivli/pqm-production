@@ -1,11 +1,37 @@
 """Manual sandbox Prozorro exception: narrow egress, RBAC and stable guards."""
-import io,os,socket,sqlite3,threading,time,unittest
+import io,os,re,socket,sqlite3,threading,time,unittest
 from unittest.mock import patch
 import sandbox_smoke as base
 sandbox=base.sandbox
 URL='https://public-api.prozorro.gov.ua/api/2.5/frameworks/test'
 
+def safe_sync_diagnostic(state):
+    """Expose the worker failure in CI without leaking URLs or credentials."""
+    result=state.get('last_result') or {}
+    fields={'mode':state.get('last_mode'),'status':result.get('status'),
+            'code':result.get('code'),'error':result.get('error'),
+            'errors':result.get('errors'),'message':state.get('message'),
+            'last_message':state.get('last_message')}
+    raw=repr({key:value for key,value in fields.items() if value is not None})
+    raw=re.sub(r'https?://[^\s\'"<>]+','[URL REDACTED]',raw,flags=re.I)
+    raw=re.sub(r'(?i)\b(access_token|refresh_token|client_secret|authorization|api_key|token|password|sheet_id)\b[\'\"]?\s*[:=]\s*[\'\"]?[^\s,}\]\'\"]+',r'\1=[REDACTED]',raw)
+    raw=re.sub(r'(?i)/(?:spreadsheets/d|v4/spreadsheets)/[A-Za-z0-9_-]+','/[SHEET REDACTED]',raw)
+    return raw[:1200]
+
 class NetworkPolicy(unittest.TestCase):
+    def test_sync_failure_diagnostic_is_sanitized(self):
+        diagnostic=safe_sync_diagnostic({
+            'last_mode':'full','last_result':{'status':'failed',
+                'error':'/v4/spreadsheets/private-sheet-id; client_secret=private-value'},
+            'message':'Unexpected synthetic API URL: /api/2.5/frameworks; token=private-value; '
+                      'https://example.test/private?key=private-value',
+        })
+        self.assertIn('Unexpected synthetic API URL: /api/2.5/frameworks',diagnostic)
+        self.assertIn('token=[REDACTED]',diagnostic)
+        self.assertIn('[URL REDACTED]',diagnostic)
+        self.assertNotIn('private-value',diagnostic)
+        self.assertNotIn('private-sheet-id',diagnostic)
+
     def setUp(self):
         self.env=patch.dict(os.environ,{'PQM_SANDBOX':'1','PQM_SANDBOX_PROZORRO_READ':'1'})
         self.env.start();sandbox._egress.active=False;sandbox._egress.addresses=set()
@@ -127,7 +153,9 @@ class ManualHTTP(base.SandboxHTTP):
                 state=self.request('/api/health',None)[1]['sync']
                 if not state['running']:break
                 time.sleep(.05)
-            self.assertFalse(state['running']);self.assertNotEqual('failed',state['last_result'].get('status'))
+            self.assertFalse(state['running'])
+            self.assertNotEqual('failed',state['last_result'].get('status'),
+                                safe_sync_diagnostic(state))
             self.assertEqual(1,state['last_result']['submissions'])
         with sqlite3.connect(self.data/'pqm_sandbox.sqlite3') as c:
             self.assertEqual('SYNTHETIC UPDATED',c.execute("SELECT supplier_name FROM submissions WHERE id='sandbox-pending'").fetchone()[0])
