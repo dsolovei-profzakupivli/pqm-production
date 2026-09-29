@@ -434,29 +434,6 @@ def _link_existing_identifier(paragraph, label: str, url: str):
             pending.insert(0, suffix)
 
 
-def _append_decision_links_after_description(document, values):
-    links = [
-        ("Повідомлення про намір укласти договір: ", values.get("winner_notice_url")),
-        ("Рішення про відхилення: ", values.get("rejection_decision_url")),
-    ]
-    links = [(label, url) for label, url in links if str(url or "").startswith("https://")]
-    if not links:
-        return
-    for table in document.tables:
-        for index, row in enumerate(table.rows):
-            if "причина звернення" not in " ".join(cell.text for cell in row.cells).lower():
-                continue
-            if index + 1 >= len(table.rows):
-                return
-            cell = table.rows[index + 1].cells[0]
-            for label, url in links:
-                paragraph = cell.add_paragraph()
-                _set_run_font(paragraph.add_run(label), 10)
-                _add_hyperlink(paragraph, "електронний протокол", url,
-                               "Times New Roman", 10)
-            return
-
-
 def _display_document_datetime(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -511,6 +488,18 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         else:
             run = current.add_run(label)
             _set_run_font(run, 11)
+
+
+def _set_refusal_link(paragraph, values: dict[str, str]) -> None:
+    """Render the evidence label as the link and omit the raw URL."""
+    label = (f"лист {values.get('supplier_short_name', '')} від {values.get('refusal_date', '')} "
+             f"Вих. №{values.get('refusal_outgoing_number', '')}").strip()
+    url = values.get("refusal_document", "")
+    _clear_paragraph_content(paragraph)
+    if str(url).startswith("https://"):
+        _add_hyperlink(paragraph, label, url, "Times New Roman", 10)
+    else:
+        _set_run_font(paragraph.add_run(label), 10)
 
 
 def _normalized_documents(documents: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -612,24 +601,19 @@ def _format_reason_block(document, values: dict[str, str]):
             label_p = _clear_cell(label_cell)
             label_run = label_p.add_run("Причина звернення:")
             _set_run_font(label_run, 10, bold=True)
-            reason_label = _clear_cell(value_cell)
-            label = reason_label.add_run(values.get("reason_label", ""))
-            _set_run_font(label, 10, bold=True)
-            reason_text = value_cell.add_paragraph()
-            _copy_paragraph_properties(reason_label, reason_text)
-            text_run = reason_text.add_run(values.get("reason_text", ""))
+            reason_text = _clear_cell(value_cell)
+            text_run = reason_text.add_run(values.get("violation_description", "").strip())
             _set_run_font(text_run, 10)
-            if index + 1 >= len(table.rows):
-                raise ValueError("У шаблоні немає рядка для опису Замовника")
-            description_cell = table.rows[index + 1].cells[0]
-            description_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            description_p = _clear_cell(description_cell)
-            description = values.get("violation_description", "").strip()
-            # Preserve an existing Ukrainian quotation (including punctuation
-            # after the closing mark) and never create doubled quotation marks.
-            quoted = description if description.startswith("«") and "»" in description else f"«{description}»"
-            description_run = description_p.add_run(quoted)
-            _set_run_font(description_run, 10, italic=True)
+            if index + 1 < len(table.rows):
+                # Remove only the template row that repeats this source field.
+                description_row = table.rows[index + 1]
+                repeated = any(
+                    _token_name(match.group(1)) == "violation_description"
+                    for cell in description_row.cells for paragraph in cell.paragraphs
+                    for match in TOKEN_RE.finditer(paragraph.text)
+                )
+                if repeated:
+                    description_row._element.getparent().remove(description_row._element)
             return
     raise ValueError("У погодженому шаблоні не знайдено блок «Причина звернення»")
 
@@ -912,6 +896,8 @@ def build_violation_protocol_docx(
                 _set_document_links(paragraph, customer_documents or [])
             elif "supplier_documents" in token_names:
                 _set_document_links(paragraph, supplier_documents or [])
+            elif "refusal_document" in token_names:
+                _set_refusal_link(paragraph, normalized_values)
             else:
                 _replace_in_paragraph(paragraph, normalized_values)
                 for date_key, url_key in (("winner_date", "winner_notice_url"),
@@ -924,7 +910,6 @@ def build_violation_protocol_docx(
                                       normalized_values.get("procurement_url", ""))
             _link_existing_identifier(paragraph, normalized_values.get("report_id", ""),
                                       normalized_values.get("report_url", ""))
-        _append_decision_links_after_description(document, normalized_values)
         _format_supplier_result_rows(document)
         _replace_justification(document, justification, protocol_type, normalized_values)
         _normalize_legal_reference_spaces(document)
