@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 98 48" role="img" aria-label="PQM">
+  <path fill="#132840" fill-rule="evenodd" d="M2 5h16c11 0 16 6 16 15s-5 15-16 15h-7v7H2V5Zm9 8v14h7c5 0 7-3 7-7s-2-7-7-7h-7Z"/>
+  <path fill="#132840" d="M62 5h10l8 20 8-20h10v37h-9V20l-7 17h-4l-7-17v22h-9V5Z"/>
+  <g transform="translate(21 0)" fill="#63b2ff">
+    <circle cx="24" cy="22" r="19"/>
+    <circle cx="24" cy="22" r="10" fill="#fff"/>
+    <path d="m24 27 7-4 16 23H35L24 27Z"/>
+  </g>
+</svg>

@@ -63,6 +63,34 @@ class DeclensionOverrideRepositoryTests(unittest.TestCase):
                 save_override(self.payload(), path=persistent)
         self.assertFalse(persistent.exists())
 
+    def test_prod_legacy_csv_migrates_once_and_survives_release_seed(self):
+        data = Path(self.temp.name)
+        legacy = data / "legacy.csv"
+        persistent = data / "declension_overrides.csv"
+        legacy_bytes = ("entity_type;original;genitive;dative;accusative;comment\n"
+                        "person;ТЕСТОВА ОСОБА;ТЕСТОВОЇ ОСОБИ;;ТЕСТОВУ ОСОБУ;чинний PROD запис\n").encode("utf-8")
+        legacy.write_bytes(legacy_bytes)
+        with patch.object(declension, "PROD_OVERRIDES", True), \
+                patch.object(declension, "SANDBOX_OVERRIDES", False), \
+                patch.object(declension, "BOOTSTRAP_OVERRIDES_PATH", legacy), \
+                patch.object(declension, "DEFAULT_OVERRIDES_PATH", persistent), \
+                patch.object(declension_overrides, "DEFAULT_OVERRIDES_PATH", persistent), \
+                patch.dict("os.environ", {"PQM_DATA_DIR": str(data)}):
+            declension.ensure_default_overrides()
+            self.assertEqual(persistent.read_bytes(), legacy_bytes)
+            row = list_overrides(persistent)[0]
+            self.assertEqual(row["genitive"], "ТЕСТОВОЇ ОСОБИ")
+            saved = save_override({**row, "dative": "ТЕСТОВІЙ ОСОБІ"}, row["id"], persistent)
+            before_restart = persistent.read_bytes()
+            legacy.write_text("entity_type;original;genitive;dative;accusative;comment\n",
+                              encoding="utf-8")
+            declension.ensure_default_overrides()
+            self.assertEqual(persistent.read_bytes(), before_restart)
+            self.assertEqual(list_overrides(persistent)[0]["dative"], saved["dative"])
+            store = OverrideStore(persistent)
+            self.assertEqual(decline_name("ТЕСТОВА ОСОБА", "person", "dative", store).value,
+                             "ТЕСТОВІЙ ОСОБІ")
+
     def test_create_list_edit_delete_and_bom(self):
         created = save_override(self.payload(), path=self.path)
         self.assertEqual(self.path.read_bytes()[:3], b"\xef\xbb\xbf")

@@ -46,7 +46,7 @@ for(const scenario of [
 test('shared topbar keeps the existing Back action separate from PQM and preserves its history handler',()=>{
   const html=fs.readFileSync('index.html','utf8');
   const css=fs.readFileSync('styles.css','utf8');
-  assert.match(html,/<header class="topbar">[\s\S]*?<div class="brand">[\s\S]*?id="environmentBanner"[^>]*>PQM<\/em>/);
+  assert.match(html,/<header class="topbar">[\s\S]*?<div class="brand prod-brand">[\s\S]*?id="environmentBanner"[^>]*>PQM<\/em>/);
   assert.match(navigation,/button\.textContent='← Назад';button\.id='pqmBack'/);
   assert.match(navigation,/document\.querySelector\('header\.topbar'\);header\?\.insertBefore\(button,header\.querySelector\('#mainNav'\)\)/);
   assert.match(navigation,/dialogButton=button\.cloneNode\(true\);dialogButton\.id='pqmDialogBack'/);

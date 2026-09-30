@@ -420,6 +420,14 @@ body[data-density="compact"] table th,body[data-density="compact"] table td{padd
 .topbar .brand>div{display:block;min-width:0}
 .topbar .brand em{display:block;white-space:nowrap;font-size:27px;font-style:normal;font-weight:800;color:#154376}
 .topbar #environmentBanner{border:1px solid #9bc6e8;background:#dbeeff;padding:2px 14px;border-radius:10px;line-height:1.25;font-size:32px;font-weight:800}
+/* PROD uses the approved SANDBOX lockup geometry with light-surface colours only. */
+.topbar .brand.prod-brand{gap:0;align-items:center}
+.topbar .prod-brand-initials{display:block;flex:0 0 82px;width:82px;height:40px;object-fit:contain}
+.topbar .prod-brand-divider{display:block;flex:0 0 1px;height:32px;margin:0 12px 0 15px;background:#9bb0c4}
+.topbar .prod-brand-copy{display:flex;flex-direction:column;justify-content:center;min-width:0}
+.topbar .prod-brand-copy strong{color:#132840;font-size:15px;line-height:1.15;font-weight:700;white-space:nowrap}
+.topbar .prod-brand-copy small{color:#61758a;font-size:9.5px;line-height:1.1;margin-top:1px;white-space:nowrap}
+.topbar .prod-brand #environmentBanner{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0!important;padding:0!important;margin:-1px!important}
 html[data-pqm-environment="sandbox"] .topbar #environmentBanner{background:#234362;color:#e6f1ff;border-color:#56718d;font-size:30px;font-weight:700;letter-spacing:.05em}
 .topbar #pqmBack:not([hidden]){display:inline-flex;align-items:center;white-space:nowrap;flex:0 0 auto;z-index:1}
 .topbar #mainNav{justify-content:flex-start;overflow-x:auto}
