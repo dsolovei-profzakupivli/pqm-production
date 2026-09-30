@@ -1,5 +1,17 @@
 # PQM → Google — NEXT LOCAL implementation
 
+Permanent daily-sync package: install `PqmSandboxPreviewDependencies.gs`,
+`PqmSandboxPreview.gs`, `PqmSandboxControlledApply.gs`,
+`PqmSandboxFullApply.gs`, and `PqmSandboxAppendApply.gs` together. The matched-row
+Full Apply and bounded append stage both use the same `pqmGooglePlan_()` and the
+full-registry `google_sync_eligible` decision predicate. H uses
+`google_sync_last_decided_application_date`, never an undecided application.
+
+`PqmGoogleWriter.gs` below is a historical standalone prototype with its own
+planner globals and eligibility predicate. It is **deprecated** for this package:
+do not install or run it alongside the permanent daily-sync files. It remains in
+the repository for historical reference, not as an alternate production writer.
+
 Status: standalone writer implemented and tested offline. Existing cloud scripts and the current onOpen were not available; integration into the actual menu is pending. No real PQM API, Google spreadsheet, trigger, tunnel, WEB deployment or database operation was performed.
 
 Files:

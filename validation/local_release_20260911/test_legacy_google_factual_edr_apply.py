@@ -1,5 +1,6 @@
 """Bounded factual Google E Apply regressions; SQLite fixtures only."""
 import json
+import os
 import sqlite3
 import time
 import unittest
@@ -24,6 +25,11 @@ def request(items):
 
 class FactualEdrApplyTests(unittest.TestCase):
     def setUp(self):
+        registry_id = factual.verification.SANDBOX_SPREADSHEET_ID
+        configured_registry = patch.dict(os.environ, {
+            edr_sync_v2.LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID_ENV: registry_id})
+        configured_registry.start()
+        self.addCleanup(configured_registry.stop)
         self.con = sqlite3.connect(":memory:")
         self.con.row_factory = sqlite3.Row
         self.con.execute("""CREATE TABLE supplier_edr_verification_events (

@@ -596,7 +596,7 @@ def create_termination_exclusions(con, supplier_codes, actor):
 
 
 def amcu_decision_cycle_covered(con, supplier_code, decision_ids, active_application_ids=()):
-    """True when both current AMKU facts and active applications belong to prior exclusion work."""
+    """Require both current AMKU facts and active applications in a prior executed cycle."""
     expected={str(value) for value in decision_ids if str(value)}
     if not expected: return False
     covered={str(row[0]) for row in con.execute("""SELECT DISTINCT d.amcu_decision_id

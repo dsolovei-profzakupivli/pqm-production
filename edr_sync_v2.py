@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import unicodedata
 from datetime import date, datetime
@@ -38,6 +39,15 @@ def normalize_person(value) -> str:
     text = str(value or "").casefold().replace("’", "'").replace("`", "'")
     text = re.sub(r"\s*-\s*", "-", text)
     return " ".join(re.sub(r"[.,;:]+", " ", text).split())
+
+
+def register_verification_sql_functions(con) -> None:
+    """Register the UI's deterministic officer lookup function on this connection."""
+    con.create_function(
+        "NORMALIZE_NAME", 1,
+        lambda value: " ".join(re.sub(r"[’'`\-]+", " ", str(value or "").casefold()).split()),
+        deterministic=True,
+    )
 
 
 def _abbreviated_person_signature(value) -> tuple[str, str, str] | None:
@@ -870,11 +880,15 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
 
 LEGACY_GOOGLE_FACTUAL_STATUSES = frozenset({
     "Припинено", "В стані припинення", "Порушено справу про банкрутство", "Банкрут"})
-LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID = "1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww"
+LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID_ENV = "PQM_GOOGLE_REGISTRY_SPREADSHEET_ID"
 
 
 def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) -> str:
     """Accept only a complete, attributable Google date/officer/status evidence pair."""
+    authorized_spreadsheet_id = os.environ.get(
+        LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID_ENV, "").strip()
+    if not authorized_spreadsheet_id:
+        return ""
     status = clean(snapshot.get("factual_edr_status"))
     if status not in LEGACY_GOOGLE_FACTUAL_STATUSES:
         return ""
@@ -891,7 +905,7 @@ def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) 
         not officer or normalize_person(snapshot.get("verification_officer")) != officer or
         tab not in {"ФОП", "ЮО"} or snapshot.get("source_tab") != tab or
         row < 2 or snapshot_row != row or
-        snapshot.get("factual_spreadsheet_id") != LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID or
+        snapshot.get("factual_spreadsheet_id") != authorized_spreadsheet_id or
         snapshot.get("factual_source_tab") != tab or
         type(snapshot.get("factual_source_row")) is not int or
         snapshot["factual_source_row"] < 2 or

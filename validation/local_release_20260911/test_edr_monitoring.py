@@ -1,6 +1,8 @@
 import unittest
 import csv
 import io
+import os
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,6 +36,55 @@ class EdrMonitoringTests(unittest.TestCase):
             'officer': 'EDR Officer', 'snapshot_json': '{"edr_status":"Припинено"}'}
         self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', [event]), 'Припинено')
         self.assertEqual(edr_sync_v2.active_edr_status('2026-09-03', [event]), 'Зареєстровано')
+
+    def test_legacy_factual_evidence_requires_configured_spreadsheet_and_provenance(self):
+        digest = 'a' * 64
+        for configured in ('sandbox-registry', 'prod-registry'):
+            with self.subTest(configured=configured):
+                snapshot = {
+                    'source': 'legacy_google_registry', 'verification_date': '2026-09-02',
+                    'verification_officer': 'Actual Officer', 'source_tab': 'ФОП',
+                    'source_row': 12, 'source_digest': digest,
+                    'factual_edr_status': 'Припинено',
+                    'factual_spreadsheet_id': configured,
+                    'factual_source_tab': 'ФОП', 'factual_source_row': 12,
+                    'factual_source_digest': digest, 'factual_provenance_version': 1,
+                }
+                event = {'id': 1, 'event_type': 'legacy_google_registry',
+                         'source': 'legacy_google_registry', 'occurred_at': '2026-09-02',
+                         'officer': 'Actual Officer', 'source_sheet': 'ФОП',
+                         'source_row': 12, 'snapshot_json': json.dumps(snapshot)}
+                def projected():
+                    return edr_sync_v2.active_edr_status('2026-09-01', [event])
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': configured}):
+                    for status in edr_sync_v2.LEGACY_GOOGLE_FACTUAL_STATUSES:
+                        snapshot['factual_edr_status'] = status
+                        event['snapshot_json'] = json.dumps(snapshot)
+                        self.assertEqual(projected(), status)
+                    snapshot['factual_edr_status'] = 'Зареєстровано'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_edr_status'] = 'Неактуально'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_edr_status'] = 'Припинено'
+                    snapshot['factual_source_digest'] = ''
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_source_digest'] = digest
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    event['event_type'] = 'manual_edr'
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    event['event_type'] = 'legacy_google_registry'
+                    snapshot.pop('factual_edr_status')
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Зареєстровано')
+                    snapshot['factual_edr_status'] = 'Припинено'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': 'wrong-registry'}):
+                    self.assertEqual(projected(), 'Зареєстровано')
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': ''}):
+                    self.assertEqual(projected(), 'Зареєстровано')
 
     def test_current_operational_edr_status_preserves_historical_evidence(self):
         later = {'event_type': 'manual_edr', 'occurred_at': '2026-09-03',
