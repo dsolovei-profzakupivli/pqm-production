@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <title>PQM</title>
-  <rect width="32" height="32" rx="6" fill="#132840"/>
-  <text x="2" y="23" fill="#ffffff" font-family="Arial Narrow, Arial, sans-serif" font-size="23" font-weight="700" textLength="28" lengthAdjust="spacingAndGlyphs">P<tspan fill="#86bdff">Q</tspan>M</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <title>Q — PQM</title>
+  <rect width="48" height="48" rx="10" fill="#132840"/>
+  <circle cx="24" cy="22" r="19" fill="#63b2ff"/>
+  <circle cx="24" cy="22" r="10" fill="#132840"/>
+  <path d="m24 27 7-4 16 23H35L24 27Z" fill="#63b2ff"/>
 </svg>

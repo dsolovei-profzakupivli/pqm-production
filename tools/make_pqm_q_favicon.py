@@ -1,25 +1,20 @@
-"""Build smooth, compact SANDBOX PQM favicon rasters."""
+"""Build SANDBOX favicon rasters from the approved brand Q geometry."""
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
-FONT = Path("C:/Windows/Fonts/ARIALNB.TTF")
 SCALE = 8
 
 
 def icon(size):
-    canvas = Image.new("RGBA", (32 * SCALE, 32 * SCALE), "#132840")
-    mask = Image.new("RGBA", (50 * SCALE, 30 * SCALE), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(mask)
-    font = ImageFont.truetype(str(FONT), 23 * SCALE)
-    x = 0
-    for letter, color in (("P", "#ffffff"), ("Q", "#86bdff"), ("M", "#ffffff")):
-        draw.text((x, 0), letter, font=font, fill=color)
-        x += draw.textlength(letter, font=font)
-    bounds = mask.getbbox()
-    letters = mask.crop(bounds).resize((28 * SCALE, 21 * SCALE), Image.Resampling.LANCZOS)
-    canvas.alpha_composite(letters, (2 * SCALE, 5 * SCALE))
+    canvas = Image.new("RGBA", (48 * SCALE, 48 * SCALE), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle((0, 0, 48 * SCALE - 1, 48 * SCALE - 1), radius=10 * SCALE, fill="#132840")
+    draw.ellipse((5 * SCALE, 3 * SCALE, 43 * SCALE, 41 * SCALE), fill="#63b2ff")
+    draw.ellipse((14 * SCALE, 12 * SCALE, 34 * SCALE, 32 * SCALE), fill="#132840")
+    draw.polygon([(24 * SCALE, 27 * SCALE), (31 * SCALE, 23 * SCALE),
+                  (47 * SCALE, 46 * SCALE), (35 * SCALE, 46 * SCALE)], fill="#63b2ff")
     return canvas.resize((size, size), Image.Resampling.LANCZOS)
 
 

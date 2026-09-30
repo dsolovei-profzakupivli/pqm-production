@@ -55,10 +55,8 @@ html[data-pqm-environment="sandbox"] .brand-logo {background:#fff;border-radius:
 /* One SANDBOX-only lockup; the shared navbar geometry and navigation stay intact. */
 html[data-pqm-environment="sandbox"] .topbar .brand.sandbox-brand {gap:0;align-items:center}
 html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-initials {
-  display:inline-flex;align-items:baseline;white-space:nowrap;color:#fff;
-  font-size:36px;font-weight:800;line-height:1;letter-spacing:-.055em;
+  display:block;flex:0 0 82px;width:82px;height:40px;object-fit:contain;
 }
-html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-q {color:#86bdff}
 html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-divider {
   display:block;flex:0 0 1px;height:32px;margin:0 12px 0 15px;background:#6f8ba8;
 }
