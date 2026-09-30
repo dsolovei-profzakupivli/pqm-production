@@ -10718,6 +10718,10 @@ class Handler(BaseHTTPRequestHandler):
             payload=self.read_json()
             try:
                 with db() as con: result=navigation_settings.save(con,payload.get('overrides'),self.auth_user)
+                if SANDBOX_MODE:
+                    with db() as con: persisted=navigation_settings.get(con)
+                    if persisted != result:
+                        return self.send_json({'error':'Не вдалося підтвердити збереження навігації'},503)
             except ValueError as exc: return self.send_json({'error':str(exc)},400)
             return self.send_json(result)
         if parsed.path == '/api/admin/navigation-icons':

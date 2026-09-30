@@ -612,8 +612,7 @@ def decorate_html(raw):
                          'alt="ДУ Професійні закупівлі"><div><em id="environmentBanner" '
                          'title="Profzakupivli Qualification Manager">PQM</em></div></div>')
         sandbox_brand = ('<div class="brand sandbox-brand">'
-                         '<span class="sandbox-brand-initials" aria-hidden="true">'
-                         '<span>P</span><span class="sandbox-brand-q">Q</span><span>M</span></span>'
+                         '<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark.svg" alt="" aria-hidden="true">'
                          '<span class="sandbox-brand-divider" aria-hidden="true"></span>'
                          '<span class="sandbox-brand-copy"><strong>Професійні закупівлі</strong>'
                          '<small>Procurement Qualification Manager</small></span>'
@@ -622,12 +621,13 @@ def decorate_html(raw):
             raise RuntimeError('STOP: SANDBOX navbar brand markup mismatch')
         text = text.replace(current_brand, sandbox_brand, 1)
         text = text.replace('<link rel="icon" href="/assets/pqm-search-icon.png" type="image/png" sizes="192x192">',
-                            '<link rel="icon" href="/assets/pqm-q-favicon-192.png" type="image/png" sizes="192x192">')
+                            '<link rel="icon" href="/assets/pqm-q-favicon-192.png?v=4" type="image/png" sizes="192x192">')
         text = text.replace('<link rel="icon" href="/assets/pqm-tab-icon.png" type="image/png" sizes="32x32">',
-                            '<link rel="icon" href="/assets/pqm-q-favicon.svg?v=1" type="image/svg+xml" sizes="any">'
-                            '<link rel="icon" href="/assets/pqm-q-favicon-32.png" type="image/png" sizes="32x32">')
+                            '<link rel="icon" href="/assets/pqm-q-favicon.svg?v=4" type="image/svg+xml" sizes="any">'
+                            '<link rel="icon" href="/assets/pqm-q-favicon-16.png?v=4" type="image/png" sizes="16x16">'
+                            '<link rel="icon" href="/assets/pqm-q-favicon-32.png?v=4" type="image/png" sizes="32x32">')
         text = text.replace('<link rel="apple-touch-icon" href="/assets/pqm-search-icon.png">',
-                            '<link rel="apple-touch-icon" href="/assets/pqm-q-favicon-180.png">')
+                            '<link rel="apple-touch-icon" href="/assets/pqm-q-favicon-180.png?v=4">')
         theme = (ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
         text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
         text = text.replace('</head>', '<script src="/sandbox_contrast.js?v=1" defer></script></head>', 1)

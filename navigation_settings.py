@@ -174,3 +174,19 @@ def save(con,raw,user):
 def reset(con):
     con.execute('DELETE FROM navigation_settings WHERE id=1')
     return get(con)
+
+def install_release_seed(con,seed,preserve_existing=False):
+    """Install packaged defaults without replacing SANDBOX operator choices."""
+    for item in seed['icons']:
+        stored_icon(item)
+        old=con.execute('SELECT name,svg FROM navigation_icons WHERE icon_key=?',(item['icon_key'],)).fetchone()
+        if old is None or (not preserve_existing and tuple(old)!=(item['name'],item['svg'])):
+            con.execute('''INSERT INTO navigation_icons(icon_key,name,svg,updated_at,updated_by) VALUES(?,?,?,?,?)
+              ON CONFLICT(icon_key) DO UPDATE SET name=excluded.name,svg=excluded.svg,updated_at=excluded.updated_at,updated_by=excluded.updated_by''',
+              (item['icon_key'],item['name'],item['svg'],'2026-09-10','release seed'))
+    validate(seed['navigation'],ICON_KEYS|{r[0] for r in con.execute('SELECT icon_key FROM navigation_icons')})
+    current=con.execute('SELECT overrides_json FROM navigation_settings WHERE id=1').fetchone()
+    if current is None or (not preserve_existing and json.loads(current[0])!=seed['navigation']):
+        con.execute('''INSERT INTO navigation_settings(id,overrides_json,updated_at,updated_by) VALUES(1,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET overrides_json=excluded.overrides_json,updated_at=excluded.updated_at,updated_by=excluded.updated_by''',
+          (json.dumps(seed['navigation'],ensure_ascii=False,separators=(',',':')),'2026-09-10','release seed'))
