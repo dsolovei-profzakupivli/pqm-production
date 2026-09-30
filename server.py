@@ -7,8 +7,15 @@ import table_widths
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
-import prod_google_baseline
+import legacy_google_verification_preview
+import legacy_google_verification_overlap_audit
+import legacy_google_factual_edr_audit
+import legacy_google_factual_edr_preview
+import legacy_google_termination_audit
+import legacy_google_termination_import
 import edr_sync_v2
+import sandbox_edr_review
+import prod_google_baseline
 import edr_sync_review
 import base64
 import csv
@@ -62,6 +69,7 @@ import document_bindings
 import template_runtime
 import template_catalog
 import scheduler_runtime
+import winner_decisions
 import protocol_pdf
 import historical_applications
 from violation_text import normalize_justification_text
@@ -87,7 +95,17 @@ from uo_work_queue import get_uo_work_queue
 
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
+GOOGLE_VERIFICATION_PREVIEW_PATH = legacy_google_verification_preview.PATH
+GOOGLE_VERIFICATION_OVERLAP_AUDIT_PATH = legacy_google_verification_overlap_audit.PATH
+GOOGLE_FACTUAL_EDR_AUDIT_PATH = legacy_google_factual_edr_audit.PATH
+GOOGLE_FACTUAL_EDR_PREVIEW_PATH = legacy_google_factual_edr_preview.PATH
+GOOGLE_FACTUAL_EDR_APPLY_PATH = legacy_google_factual_edr_preview.APPLY_PATH
+GOOGLE_TERMINATION_AUDIT_PATH = legacy_google_termination_audit.PATH
+GOOGLE_TERMINATION_IMPORT_PREVIEW_PATH = legacy_google_termination_import.PREVIEW_PATH
+GOOGLE_TERMINATION_IMPORT_APPLY_PATH = legacy_google_termination_import.APPLY_PATH
+GOOGLE_VERIFICATION_APPLY_PATH = legacy_google_verification_preview.APPLY_PATH
 SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
+SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN"
 GOOGLE_MIGRATION_DISABLED_PATHS = frozenset({
     "/api/integrations/google/verification-events/preview",
     "/api/integrations/google/verification-events/apply",
@@ -130,7 +148,12 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 PQM_ENV = os.environ.get("PQM_ENV", "local").strip().casefold() or "local"
 IS_WEB_ENV = PQM_ENV in {"test", "test_web", "web", "production"}
+SANDBOX_MODE = env_flag("PQM_SANDBOX", False)
 SAFE_MODE = env_flag("PQM_SAFE_MODE", False)
+if SANDBOX_MODE:
+    import sandbox_runtime
+    sandbox_runtime.validate_environment()
+    sandbox_runtime.install_outbound_guard()
 DATA_DIR = Path(os.environ.get("PQM_DATA_DIR", str(ROOT / "data"))).resolve()
 DB_PATH = Path(os.environ.get("PQM_DB_PATH", str(DATA_DIR / "pqm.sqlite3"))).resolve()
 PROTOCOLS_DIR = Path(os.environ.get("PQM_PROTOCOLS_DIR", str(DATA_DIR / "protocols"))).resolve()
@@ -195,15 +218,22 @@ POWERBI_EXPORT_STATE = {"running": False, "message": "Експорт ще не �
 POWERBI_START_LOCK = threading.Lock()
 POWERBI_OUTPUT_ROOT = BIDS_PROJECT_PATH / "output"
 POWERBI_CURRENT_PATH = POWERBI_OUTPUT_ROOT / "powerbi_current"
-SUPPLIER_EDR_SHEET_ID = "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA"
+SUPPLIER_EDR_SHEET_ID = (sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID if SANDBOX_MODE
+                         else "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA")
 SUPPLIER_EDR_SHEETS = {"ФОП": "1278053622", "ЮО": "511647713"}
 SUPPLIER_NAZK_REVIEW_SHEET_ID = "1hAgy_YQFWf8m6yHQTO4g22Et94Gm46dC9WTBaoyZloA"
 SUPPLIER_NAZK_REVIEW_SHEET = "nazk_data"
 CURRENT_USER = os.environ.get("PQM_CURRENT_USER", "Світлана НАМЯСЕНКО")
-GOOGLE_OAUTH_DIR = Path(os.environ.get("PQM_GOOGLE_OAUTH_DIR", str((Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "PQM") if not IS_WEB_ENV else (DATA_DIR / "google_oauth"))))
-GOOGLE_OAUTH_CLIENT_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json")))
-GOOGLE_OAUTH_TOKEN_PATH = Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json")))
+GOOGLE_OAUTH_DIR = (DATA_DIR / "sandbox_edr_oauth" if SANDBOX_MODE else Path(os.environ.get(
+    "PQM_GOOGLE_OAUTH_DIR", str((Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "PQM")
+                                       if not IS_WEB_ENV else (DATA_DIR / "google_oauth")))))
+GOOGLE_OAUTH_CLIENT_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_client.json" if SANDBOX_MODE else
+                            Path(os.environ.get("PQM_GOOGLE_OAUTH_CLIENT", str(GOOGLE_OAUTH_DIR / "google_oauth_client.json"))))
+GOOGLE_OAUTH_TOKEN_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_token.json" if SANDBOX_MODE else
+                           Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json"))))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
+GOOGLE_SHEETS_SCOPE = ("https://www.googleapis.com/auth/spreadsheets"
+                       if SANDBOX_MODE else GOOGLE_SHEETS_READONLY_SCOPE)
 GOOGLE_RUNTIME_FEATURE_KEY = "google_integration"
 GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS = 600
 GOOGLE_TOKEN_WRITE_LOCK = threading.RLock()
@@ -418,6 +448,8 @@ def admin_read_allowed(role: str, path: str, query: dict[str, list[str]] | None 
     """Protect administration reads while keeping work-filter data available."""
     if role == "admin":
         return True
+    if role == "officer" and re.fullmatch(r"/api/admin/declension-overrides(?:/[^/]+)?", path):
+        return True  # The separate declension.manage permission still gates writes.
     if path == "/api/admin/officers" and (query or {}).get("active") == ["1"]:
         return True
     if path == "/api/admin/frameworks":
@@ -695,7 +727,8 @@ def remarks_catalog(force: bool = False, include_inactive: bool = False) -> dict
             pass
     try:
         request = urllib.request.Request(REMARKS_CSV, headers={"User-Agent": "PQM/0.1"})
-        with urllib.request.urlopen(request, timeout=20) as response:
+        opener = sandbox_runtime.external_read_open if SANDBOX_MODE else urllib.request.urlopen
+        with opener(request, timeout=20) as response:
             text = response.read().decode("utf-8-sig")
         items, seen = [], set()
         for row_number, row in enumerate(csv.DictReader(io.StringIO(text)), start=2):
@@ -884,6 +917,8 @@ def announcement_officer_name(value: str) -> str:
 
 
 def sync_framework_officers() -> dict:
+    if SANDBOX_MODE:
+        return {"matched": 0, "skipped": "sandbox_preserves_copied_directory"}
     rows = load_announcement_rows()
     assignments = {}
     for row in rows:
@@ -939,11 +974,18 @@ def sync_framework_officers() -> dict:
 def load_announcement_rows() -> list[dict]:
     try:
         request = urllib.request.Request(ANNOUNCEMENTS_CSV, headers={"User-Agent": "PQM/0.1"})
-        with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+        if SANDBOX_MODE:
+            response_scope = sandbox_runtime.external_read_open(request, timeout=30)
+        else:
+            response_scope = urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context())
+        with response_scope as response:
             return list(csv.DictReader(io.StringIO(response.read().decode("utf-8-sig"))))
     except Exception:
         # The directory is private. Reuse the existing read-only OAuth token;
         # do not require public link sharing and do not write to Google Sheets.
+        if SANDBOX_MODE:
+            # Never substitute PROD OAuth for an unavailable public source.
+            raise
         values = _google_sheet_values("Оголошення", ANNOUNCEMENTS_SHEET_ID, "A:Z")
         if not values:
             return []
@@ -1088,6 +1130,11 @@ def google_runtime_state(con: sqlite3.Connection | None = None) -> dict:
 
 def google_effective_enabled() -> bool:
     return bool(google_runtime_state()["enabled"])
+
+
+def google_edr_effective_enabled() -> bool:
+    """The narrow SANDBOX EDR path never enables the global Google integration."""
+    return (sandbox_runtime.edr_google_enabled() if SANDBOX_MODE else google_effective_enabled())
 
 
 def set_google_runtime_enabled(enabled: bool, actor: str) -> dict:
@@ -1386,6 +1433,11 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS ix_violation_reports_defendant ON violation_reports(defendant_code);
         CREATE INDEX IF NOT EXISTS ix_violation_reports_status ON violation_reports(status);
         CREATE INDEX IF NOT EXISTS ix_violation_reports_date ON violation_reports(date_published);
+        CREATE TABLE IF NOT EXISTS violation_winner_decision_snapshots (
+          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,
+          decision_json TEXT,
+          created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS violation_report_reviews (
           report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,
           review_status TEXT DEFAULT 'not_reviewed', assigned_officer TEXT DEFAULT '',
@@ -1568,21 +1620,27 @@ def init_db() -> None:
 
 def rebuild_operational_tasks(actor: str = "PQM task builder") -> dict:
     """Generic rebuild: unrelated startup/sync paths must never mutate NAZK."""
-    if SAFE_MODE:
+    if SAFE_MODE and not (SANDBOX_MODE and sandbox_runtime.operational_enabled()):
         return {"skipped": "safe_mode"}
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     with db() as con:
         return operational_tasks.build(con, actor, include_nazk=False)
 
 
 def start_amcu_registry_refresh(raw=None, filename="") -> bool:
-    """Rebuild tasks only after a successful shared AMKU refresh/import commit."""
+    """Shared PROD/SANDBOX completion chain; source commit precedes task rebuild.
+
+    A failed task rebuild raises into the AMCU refresh worker, which records an
+    error instead of presenting the source refresh as fully successful.
+    """
     return start_reference_refresh(
         DB_PATH, "amcu", raw, filename,
         on_complete=lambda: rebuild_operational_tasks("PQM AMCU refresh"))
 
 
 def amcu_blocks_submission(con: sqlite3.Connection, submission_id: str) -> bool:
-    """Current AMKU membership blocks an affirmative application decision."""
+    """Current AMCU membership blocks an affirmative decision on this application."""
     row = con.execute("SELECT supplier_code FROM submissions WHERE id=?", (submission_id,)).fetchone()
     code = re.sub(r"\D", "", str(row[0] or "")) if row else ""
     if not code:
@@ -1593,11 +1651,13 @@ def amcu_blocks_submission(con: sqlite3.Connection, submission_id: str) -> bool:
 
 def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
     """Explicit NAZK-only workflow; no external fetch and no unrelated tasks."""
-    if SAFE_MODE:
+    if SAFE_MODE and not (SANDBOX_MODE and sandbox_runtime.nazk_read_enabled()):
         return {"skipped": "safe_mode", "created": 0}
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     if workflow not in {"nazk_job", "maintenance"}:
         raise ValueError("Explicit NAZK workflow or maintenance action required")
-    if workflow == "nazk_job" and not env_flag("PQM_ENABLE_NAZK_WORKFLOW", False):
+    if workflow == "nazk_job" and not (SANDBOX_MODE and sandbox_runtime.nazk_read_enabled()) and not env_flag("PQM_ENABLE_NAZK_WORKFLOW", False):
         SERVER_LOG.info("NAZK materialization skipped: workflow not explicitly enabled")
         return {"skipped": "nazk_workflow_disabled", "created": 0}
     with db() as con:
@@ -1610,6 +1670,8 @@ def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
 
 def reconcile_prozorro_task_lifecycles(actor: str = "PQM Prozorro qualification sync") -> dict:
     """Run post-sync task transitions from already persisted Prozorro facts."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with db() as con:
         return {"amcu": operational_tasks.reconcile_amcu_after_qualification_sync(con, actor),
                 "termination": operational_tasks.reconcile_termination_after_qualification_sync(con, actor)}
@@ -1619,6 +1681,8 @@ def api_get(url: str) -> dict:
     last_error = None
     for attempt in range(3):
         try:
+            if SANDBOX_MODE:
+                return sandbox_runtime.fetch_prozorro_json(url)
             req = urllib.request.Request(url, headers={"User-Agent": "PQM/0.1"})
             with urllib.request.urlopen(req, timeout=60, context=ssl.create_default_context()) as res:
                 return json.load(res)
@@ -1722,6 +1786,8 @@ def refresh_framework_metadata_worker() -> None:
     SYNC_STATE.update(running=True, mode="framework_metadata", started_at=started.isoformat(),
                       message="Отримання актуальних відборів із Prozorro…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH)
         result = refresh_framework_metadata()
         SYNC_STATE["message"] = f"Відбори оновлено з Prozorro: {result['updated']}/{result['frameworks']}"
     except Exception as exc:
@@ -1891,7 +1957,16 @@ def discover_active_frameworks() -> list[dict]:
 
 def discover_tracked_frameworks() -> list[dict]:
     """Load every active and closed PQM category listed in the announcements directory."""
-    rows = load_announcement_rows()
+    try:
+        rows = load_announcement_rows()
+    except Exception:
+        if not SANDBOX_MODE:
+            raise
+        # Offline/private source: retain the attested SANDBOX scope without
+        # borrowing production credentials or writing to any external sheet.
+        with db() as con:
+            ids = [row[0] for row in con.execute("SELECT id FROM frameworks ORDER BY pretty_id")]
+        return [api_get(f"{API_ROOT}/frameworks/{identifier}")["data"] for identifier in ids]
     tracked_pretty_ids = sorted({
         (row.get("ID") or "").strip()
         for row in rows
@@ -2015,6 +2090,8 @@ def sync_incremental_active_frameworks() -> dict:
 def sync_worker(framework_id: str) -> None:
     SYNC_STATE.update(running=True, message="Синхронізація триває…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_one_framework(framework_id)
         sync_framework_officers()
         result["supplier_registry"] = refresh_supplier_registry_summary()
@@ -2036,6 +2113,8 @@ def sync_all_worker() -> None:
     started = datetime.now(timezone.utc)
     SYNC_STATE.update(running=True, mode="full", started_at=started.isoformat(), message="Пошук активних і закритих відборів…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_all_tracked_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
         rebuild_operational_tasks()
@@ -2062,6 +2141,8 @@ def sync_incremental_worker() -> None:
     SERVER_LOG.info('Prozorro automatic sync started')
     SYNC_STATE.update(running=True, mode="incremental", started_at=started.isoformat(), message="Підготовка щогодинного оновлення…")
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_incremental_active_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
         rebuild_operational_tasks()
@@ -2098,6 +2179,8 @@ def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error:
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
                         trigger: str = "manual") -> bool:
     """Claim process and SQLite job locks before starting any Prozorro refresh."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with SYNC_STATE_LOCK:
         if SYNC_STATE.get("running"):
             return False
@@ -2214,7 +2297,17 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
     except ValueError:
         last_sync = None
     SYNC_STATE['last_data_sync_at'] = last_value
-    if catch_up and scheduler_runtime.hourly_catchup_due(
+    if catch_up and SANDBOX_MODE:
+        while not stop_event.is_set() and _scheduler_is_configured('prozorro'):
+            SCHEDULER_HEARTBEATS['prozorro'] = now_iso()
+            delay = sandbox_runtime.prozorro_catchup_delay(DB_PATH, datetime.now(timezone.utc))
+            if delay is None:
+                break
+            if delay == 0 and _trigger_scheduler_job('prozorro', 'startup_catchup'):
+                break
+            if stop_event.wait(delay or 30):
+                break
+    elif catch_up and scheduler_runtime.hourly_catchup_due(
             datetime.now(timezone.utc), last_sync.isoformat() if last_sync else None):
         _trigger_scheduler_job('prozorro', 'startup_catchup')
     while not stop_event.is_set():
@@ -2347,6 +2440,13 @@ def scheduler_environment_defaults() -> dict[str, bool]:
 
 
 def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
+    if SANDBOX_MODE:
+        with db() as con:
+            overrides = scheduler_runtime.effective_enabled(
+                con, {key: False for key in SCHEDULER_TARGETS})
+            sources = scheduler_runtime.setting_sources(con)
+        return ({key: bool(overrides[key]) and sandbox_runtime.scheduler_job_allowed(key)
+                 for key in SCHEDULER_TARGETS}, sources)
     if SAFE_MODE:
         return ({key: False for key in SCHEDULER_TARGETS},
                 {key: "safe_mode" for key in SCHEDULER_TARGETS})
@@ -2366,12 +2466,31 @@ def apply_scheduler_settings(*, catch_up: bool) -> dict[str, bool]:
 
 
 def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
-    if SAFE_MODE:
+    if SAFE_MODE and not SANDBOX_MODE:
         raise ValueError("Планувальники заблоковано в safe mode")
     if job_key not in SCHEDULER_TARGETS:
         raise ValueError("Невідома scheduler job")
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
+        if not sandbox_runtime.scheduler_job_allowed(job_key):
+            raise ValueError("SANDBOX scheduler target is not attested")
     before, _ = effective_scheduler_settings()
     old_enabled = bool(before[job_key])
+    if SANDBOX_MODE:
+        if old_enabled != bool(enabled):
+            with db() as con:
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor)
+                con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+                  VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
+                  "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
+                  "enabled" if enabled else "disabled"))
+        # Persist first: a newly registered thread must see its own effective
+        # setting, and a disabled job must never get another scheduled run.
+        if enabled:
+            register_scheduler_job(job_key, SCHEDULER_TARGETS[job_key], catch_up=False)
+        else:
+            unregister_scheduler_job(job_key)
+        return next(item for item in scheduler_status_payload() if item["job"] == job_key)
     if enabled:
         register_scheduler_job(job_key, SCHEDULER_TARGETS[job_key], catch_up=False)
     else:
@@ -2413,6 +2532,7 @@ def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
         row["configured_enabled"] = configured[key]
         row["registered"] = key in registered
         row["configuration_source"] = sources[key]
+        row["manageable"] = (not SANDBOX_MODE or sandbox_runtime.scheduler_job_allowed(key))
     return rows
 
 
@@ -3761,9 +3881,8 @@ def _raise_google_phase_error(phase: str, exc: urllib.error.HTTPError) -> None:
 
 
 def _google_oauth_redirect_uri() -> str:
-    redirect_uri = os.environ.get(
-        "PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback"
-    ).strip()
+    redirect_uri = (os.environ.get("PQM_SANDBOX_EDR_REDIRECT_URI", "") if SANDBOX_MODE else
+                    os.environ.get("PQM_GOOGLE_OAUTH_REDIRECT_URI", f"http://127.0.0.1:{PORT}/api/google-oauth/callback")).strip()
     parsed = urllib.parse.urlparse(redirect_uri)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Некоректний Google OAuth callback URI")
@@ -3861,7 +3980,14 @@ def _google_oauth_client() -> dict | None:
         SERVER_LOG.warning("Google OAuth client configuration is invalid path=%s type=%s",
                        GOOGLE_OAUTH_CLIENT_PATH, type(exc).__name__)
         return None
-    return data.get("installed") or data.get("web")
+    client = data.get("installed") or data.get("web")
+    if SANDBOX_MODE and client:
+        if (client.get("auth_uri") not in {"https://accounts.google.com/o/oauth2/auth",
+                                             "https://accounts.google.com/o/oauth2/v2/auth"}
+                or client.get("token_uri") != "https://oauth2.googleapis.com/token"):
+            GOOGLE_OAUTH_CLIENT_ACCESS_ERROR = "invalid_configuration"
+            return None
+    return client
 
 
 def _google_oauth_token() -> dict | None:
@@ -3890,6 +4016,9 @@ def _google_oauth_token() -> dict | None:
 
 def google_oauth_status() -> dict:
     feature = google_runtime_state()
+    if SANDBOX_MODE:
+        feature = {**feature, "enabled": google_edr_effective_enabled(),
+                   "configuration_source": "sandbox_edr_scope"}
     client = _google_oauth_client()
     token = _google_oauth_token()
     configuration_error = GOOGLE_OAUTH_CLIENT_ACCESS_ERROR or GOOGLE_OAUTH_TOKEN_ACCESS_ERROR
@@ -3927,7 +4056,7 @@ def google_oauth_status() -> dict:
 
 
 def google_oauth_authorization_url(actor: str = "") -> str:
-    if not google_effective_enabled():
+    if not google_edr_effective_enabled():
         raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
     client = _google_oauth_client()
     if not client:
@@ -3940,13 +4069,13 @@ def google_oauth_authorization_url(actor: str = "") -> str:
     redirect_uri = _google_oauth_redirect_uri()
     _store_google_oauth_transaction(state, verifier, redirect_uri, actor)
     params = {"client_id": client["client_id"], "redirect_uri": redirect_uri, "response_type": "code",
-              "scope": GOOGLE_SHEETS_READONLY_SCOPE, "access_type": "offline", "prompt": "consent",
+              "scope": GOOGLE_SHEETS_SCOPE, "access_type": "offline", "prompt": "consent",
               "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
     return (client.get("auth_uri") or "https://accounts.google.com/o/oauth2/auth") + "?" + urllib.parse.urlencode(params)
 
 
 def google_oauth_exchange(code: str, state: str) -> dict:
-    if not google_effective_enabled():
+    if not google_edr_effective_enabled():
         raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
     pending = _consume_google_oauth_transaction(state)
     client = _google_oauth_client()
@@ -3957,7 +4086,8 @@ def google_oauth_exchange(code: str, state: str) -> dict:
                "code_verifier": pending["code_verifier"]}
     request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
         data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+    with opener(request, timeout=60) as response:
         token = json.loads(response.read().decode())
     token["obtained_at"] = time.time()
     with GOOGLE_TOKEN_WRITE_LOCK:
@@ -3966,7 +4096,7 @@ def google_oauth_exchange(code: str, state: str) -> dict:
 
 
 def _google_access_token() -> str:
-    if not google_effective_enabled():
+    if not google_edr_effective_enabled():
         raise PermissionError("Google integration вимкнено адміністратором")
     with GOOGLE_TOKEN_WRITE_LOCK:
         token = _google_oauth_token()
@@ -3980,7 +4110,8 @@ def _google_access_token() -> str:
         request = urllib.request.Request(client.get("token_uri") or "https://oauth2.googleapis.com/token",
             data=urllib.parse.urlencode(payload).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+            with opener(request, timeout=60) as response:
                 refreshed = json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
             _raise_google_phase_error("oauth_token_refresh", exc)
@@ -3991,16 +4122,84 @@ def _google_access_token() -> str:
 
 def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHEET_ID,
                          columns: str = "A:O") -> list[list]:
-    if not google_effective_enabled():
+    if SANDBOX_MODE and (spreadsheet_id != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID
+                         or sheet_name not in {"ФОП", "ЮО"} or columns != "A:O"):
+        raise PermissionError("SANDBOX EDR Google source guard rejected the request")
+    if not google_edr_effective_enabled():
         raise PermissionError("Google integration вимкнено адміністратором")
     cell_range = urllib.parse.quote(f"'{sheet_name}'!{columns}", safe="")
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{cell_range}?majorDimension=ROWS"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+        with opener(request, timeout=120) as response:
             return json.loads(response.read().decode()).get("values", [])
     except urllib.error.HTTPError as exc:
         _raise_google_phase_error("sheets_values_read", exc)
+
+
+def sandbox_google_row_navigation_enabled() -> bool:
+    """Keep the read-only card route's explicit availability contract separate
+    from destination-based authorization of SANDBOX Google writes.
+    """
+    return (SANDBOX_MODE and sandbox_runtime.edr_google_enabled()
+            and os.environ.get('PQM_SANDBOX_EDR_GOOGLE', '0') == '1')
+
+
+def sandbox_supplier_google_row(code: str) -> dict:
+    """Resolve a literal supplier identity against the current SANDBOX sheet.
+
+    Stored source_row is historical provenance, not a safe navigation target.
+    Never derive the destination tab from identifier length or profile routing.
+    """
+    if (not sandbox_google_row_navigation_enabled() or
+            SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID):
+        raise PermissionError("SANDBOX Google EDR navigation is unavailable")
+    literal = str(code or "").strip()
+    if not literal or len(literal) > 64 or any(char in literal for char in "/?#"):
+        raise ValueError("Invalid literal supplier identity")
+    matches = []
+    for tab in ("ФОП", "ЮО"):
+        for row_number, row in enumerate(_google_sheet_values(tab), 1):
+            if len(row) > 1 and str(row[1]).strip() == literal:
+                matches.append((tab, row_number))
+                if len(matches) > 1:
+                    raise ValueError("Google supplier identity is ambiguous")
+    if not matches:
+        raise KeyError("Google supplier row not found")
+    tab, row_number = matches[0]
+    query = urllib.parse.urlencode({"fields": "sheets(properties(sheetId,title))"})
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{query}"
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
+    opener = sandbox_runtime.google_open
+    with opener(request, timeout=30) as response:
+        metadata = json.loads(response.read().decode())
+    gids = [sheet.get("properties", {}).get("sheetId") for sheet in metadata.get("sheets", [])
+            if sheet.get("properties", {}).get("title") == tab]
+    if len(gids) != 1 or not isinstance(gids[0], int) or gids[0] < 0:
+        raise ValueError("Google tab metadata is ambiguous")
+    return {"source_tab": tab, "url":
+            f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit#gid={gids[0]}&range=B{row_number}"}
+
+
+def sandbox_google_row_failure(exc: Exception) -> dict:
+    """Classify lookup failures without exposing OAuth material or sheet identity."""
+    if SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID:
+        return {"code": "sandbox_source_guard", "phase": "source_preflight"}
+    if isinstance(exc, GooglePhaseError):
+        return {"code": "google_request_failed", "phase": exc.details["phase"]}
+    if not sandbox_runtime.edr_google_enabled():
+        return {"code": "sandbox_transport_disabled", "phase": "sandbox_preflight"}
+    if not _google_oauth_client():
+        return {"code": "sandbox_oauth_unavailable" if GOOGLE_OAUTH_CLIENT_ACCESS_ERROR
+                else "sandbox_google_not_configured", "phase": "oauth_client"}
+    token = _google_oauth_token()
+    if not token or not token.get("refresh_token"):
+        return {"code": "sandbox_token_unavailable", "phase": "oauth_token"}
+    if isinstance(exc, PermissionError):
+        return {"code": "sandbox_source_guard", "phase": "source_preflight"}
+    return {"code": "sandbox_transport_unavailable", "phase": "sandbox_transport"}
 
 
 def google_integration_status() -> dict:
@@ -4009,7 +4208,8 @@ def google_integration_status() -> dict:
         last = con.execute("""SELECT finished_at,status FROM supplier_edr_sync_log
           ORDER BY id DESC LIMIT 1""").fetchone()
     return {
-        **google_runtime_state(),
+        **({"enabled": google_edr_effective_enabled(),
+            "configuration_source": "sandbox_edr_scope"} if SANDBOX_MODE else google_runtime_state()),
         "client_configured": bool(oauth.get("configured")),
         "oauth_connected": bool(oauth.get("authorized")),
         "client_state": oauth.get("client_state", "absent"),
@@ -4373,7 +4573,7 @@ def supplier_edr_source_snapshot() -> dict:
     return edr_sync_v2.source_snapshot({
         sheet_name: _google_sheet_values(sheet_name)
         for sheet_name in SUPPLIER_EDR_SHEETS
-    })
+    }, spreadsheet_id=SUPPLIER_EDR_SHEET_ID)
 
 
 def supplier_google_row(code: str) -> dict:
@@ -4411,6 +4611,15 @@ def supplier_edr_sync_preview() -> dict:
     with db() as con:
         preview = edr_sync_v2.build_preview(con, snapshot)
         changes = con.total_changes
+    if SANDBOX_MODE:
+        details = sandbox_edr_review.details(preview)
+        return {"source_fingerprint": preview["source_fingerprint"],
+                "state_digest": edr_sync_v2.preview_state_digest(preview),
+                "previewed_at": preview["previewed_at"],
+                "summary": {**preview["summary"], **sandbox_edr_review.summary_additions(preview, details)},
+                "conflicts": preview["conflicts"], "conflicts_total": len(preview["conflicts"]),
+                "details": details, "details_total": len(details),
+                "details_complete": True, "db_writes": 0, "google_writes": 0}
     details = edr_sync_review.details(preview)
     return {
         "source_fingerprint": preview["source_fingerprint"],
@@ -4729,6 +4938,20 @@ def _edr_monitoring_revision() -> tuple:
                  for path in paths)
 
 
+def _edr_monitoring_name(value) -> str:
+    """Treat display placeholders as missing without changing canonical EDR data."""
+    name = str(value or "").strip()
+    return "" if name.casefold() in {"—", "null"} else name
+
+
+def _edr_monitoring_status(value) -> str:
+    status = str(value or "").strip()
+    try:
+        return edr_sync_v2.canonical_edr_status(status)
+    except ValueError:
+        return status  # Unknown legacy value stays visible for operator review.
+
+
 def _edr_monitoring_rows() -> list[dict]:
     """Cache the set-based projection; every request still filters and paginates on the server."""
     fingerprint = _edr_monitoring_revision()
@@ -4783,10 +5006,10 @@ def _edr_monitoring_rows() -> list[dict]:
                   "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
                       and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
-                  "edr_full_name": str(profile.get("full_name") or "").strip(),
-                  "edr_short_name": str(profile.get("short_name") or "").strip(),
+                  "edr_full_name": _edr_monitoring_name(profile.get("full_name")),
+                  "edr_short_name": _edr_monitoring_name(profile.get("short_name")),
                   "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
-                  "edr_status": displayed_edr_status, "prozorro_status": status,
+                  "edr_status": _edr_monitoring_status(displayed_edr_status), "prozorro_status": status,
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
                   "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
                   "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
@@ -4828,11 +5051,15 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     values = lambda key: {part.strip() for raw in (params.get(key) or []) for part in str(raw or "").split(",") if part.strip()}
     search, dk_code = value("search").casefold(), value("dk_code")
     entity_type = value("entity_type")
-    prozorro_statuses, edr_statuses = values("prozorro_status"), values("edr_status")
+    prozorro_statuses = values("prozorro_status")
+    edr_statuses = {_edr_monitoring_status(status) for status in values("edr_status")}
     freshness = value("freshness") if include_freshness else ""
     verified_from, verified_to = value("verification_from"), value("verification_to")
     application_from, application_to = value("application_from"), value("application_to")
     names_completeness = value("edr_names")
+    full_completeness, short_completeness = value("edr_full_name"), value("edr_short_name")
+    if full_completeness not in {"", "filled", "missing"} or short_completeness not in {"", "filled", "missing"}:
+        raise ValueError("Невідомий фільтр заповненості назви ЄДР")
     if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
         raise ValueError("Невідомий тип постачальника")
     result = []
@@ -4842,8 +5069,13 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
         if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
         if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
-        if edr_statuses and row["edr_status"] not in edr_statuses: continue
-        full_name, short_name = bool(row.get("edr_full_name")), bool(row.get("edr_short_name"))
+        if edr_statuses and _edr_monitoring_status(row["edr_status"]) not in edr_statuses: continue
+        full_name = bool(_edr_monitoring_name(row.get("edr_full_name")))
+        short_name = bool(_edr_monitoring_name(row.get("edr_short_name")))
+        if full_completeness == "filled" and not full_name: continue
+        if full_completeness == "missing" and full_name: continue
+        if short_completeness == "filled" and not short_name: continue
+        if short_completeness == "missing" and short_name: continue
         if names_completeness == "complete" and not (full_name and short_name): continue
         if names_completeness == "missing_any" and full_name and short_name: continue
         if names_completeness == "missing_full" and full_name: continue
@@ -4919,7 +5151,8 @@ def list_edr_monitoring(params: dict) -> dict:
     sort_key = str((params.get("sort") or ["freshness"])[0] or "freshness").strip()
     sort_direction = str((params.get("direction") or ["asc"])[0] or "asc").strip().lower()
     allowed_sorts = {
-        "freshness", "supplier_code", "supplier_name", "manager_name", "edr_status",
+        "freshness", "supplier_code", "supplier_name", "edr_full_name", "edr_short_name",
+        "manager_name", "edr_status",
         "prozorro_status", "termination_details", "latest_application_date",
         "verification_date", "verification_officer", "google_note",
     }
@@ -4933,7 +5166,7 @@ def list_edr_monitoring(params: dict) -> dict:
     filtered.sort(key=sortable, reverse=sort_direction == "desc")
     total = len(filtered); offset = (page - 1) * size
     page_rows = filtered[offset:offset + size]
-    statuses = sorted({row["edr_status"] for row in projection if row["edr_status"]})
+    statuses = sorted({_edr_monitoring_status(row["edr_status"]) for row in projection if row["edr_status"]})
     return {"items": [{key: value for key, value in row.items() if not key.startswith("_")}
                       for row in page_rows],
             "total": total, "page": page, "size": size,
@@ -4948,6 +5181,12 @@ def list_qualified_suppliers(params: dict) -> dict:
     risk = params.get("risk", [""])[0].strip()
     dk_code = params.get("dk_code", [""])[0].strip()
     edr_status = params.get("edr_status", [""])[0].strip()
+    # Accept known presentation-only legacy rows until their DB normalization.
+    canonical_edr_status = _edr_monitoring_status(edr_status) if edr_status else ""
+    edr_status_variants = sorted({canonical_edr_status, *(
+        raw for raw, canonical in edr_sync_v2.EDR_PRESENTATION_PREFIXES.items()
+        if canonical == canonical_edr_status
+    )}) if canonical_edr_status else []
     entity_type = params.get("entity_type", [""])[0].strip()
     freshness = params.get("freshness", [""])[0].strip()
     verification_from = params.get("verification_from", [""])[0].strip()
@@ -5005,8 +5244,9 @@ def list_qualified_suppliers(params: dict) -> dict:
         args.extend(codes)
     if edr_status:
         # Same current, one-row-per-code snapshot as supplier_profile; never history/sync date.
-        where.append("EXISTS (SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=DIGITS(combined.supplier_code) AND ep.edr_status=?)")
-        args.append(edr_status)
+        where.append("EXISTS (SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=DIGITS(combined.supplier_code) "
+                     f"AND ep.edr_status IN ({','.join('?' for _ in edr_status_variants)}))")
+        args.extend(edr_status_variants)
     if entity_type:
         where.append("SUPPLIER_ENTITY_TYPE(combined.supplier_code)=?")
         args.append(entity_type)
@@ -5061,7 +5301,8 @@ def list_qualified_suppliers(params: dict) -> dict:
             con.create_function("CANONICAL_FRESHNESS", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("bucket", "not_checked"), deterministic=True)
             con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("verification_date", ""), deterministic=True)
             con.create_function("CANONICAL_LAST_ADMISSION", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("last_admission_date", ""), deterministic=True)
-        edr_statuses = [r[0] for r in con.execute("SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>'' ORDER BY edr_status")]
+        edr_statuses = sorted({_edr_monitoring_status(r[0]) for r in con.execute(
+            "SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>''")})
         if not con.execute("SELECT 1 FROM supplier_registry_summary LIMIT 1").fetchone():
             return {"items": [], "total": 0, "registered_total": 0, "not_registered": 0,
                     "active": 0, "page": 1, "size": size, "pages": 0, "building": True, "edr_statuses": edr_statuses}
@@ -5796,6 +6037,17 @@ def _resolve_violation_tender(tender_id: str, contract_id: str) -> tuple[str, st
         return "", ""
 
 
+def violation_request_public_url(contract_pretty_id: str, report_pretty_id: str) -> str:
+    """Match the already-used Prozorro request route in the PQM registry UI."""
+    contract = str(contract_pretty_id or "").strip()
+    report = str(report_pretty_id or "").strip()
+    if not contract or not re.fullmatch(r"UA-D-\d{4}-\d{2}-\d{2}-\d{6}", report):
+        return ""
+    return ("https://prozorro.gov.ua/uk/contract/"
+            + urllib.parse.quote(contract, safe="")
+            + "/violation-reports#report-" + urllib.parse.quote(report, safe=""))
+
+
 def save_violation_report(payload: dict) -> bool:
     details = payload.get("details") or {}
     author_name, author_code = _organization_fields(payload.get("author"))
@@ -5839,6 +6091,12 @@ def save_violation_report(payload: dict) -> bool:
             str(decision.get("description") or ""), str(decision.get("datePublished") or decision.get("dateModified") or ""),
             json.dumps(details.get("documents") or [], ensure_ascii=False),
             json.dumps(decision.get("documents") or [], ensure_ascii=False), json.dumps(payload, ensure_ascii=False), now_iso()))
+        # Only reports first seen after this schema exists are eligible for a
+        # durable winner snapshot. Existing historical rows are not backfilled.
+        if existing is None:
+            con.execute("""INSERT OR IGNORE INTO violation_winner_decision_snapshots
+              (report_id,decision_json,created_at) VALUES (?,NULL,?)""",
+              (str(payload.get("id") or ""), now_iso()))
     return True
 
 
@@ -5862,6 +6120,8 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
             VIOLATION_SYNC_STATE.update(running=True, message="Отримання переліку звернень…",
                                         processed=0, total=0, errors=0)
     try:
+        if SANDBOX_MODE:
+            sandbox_runtime.attest_internal_target(DB_PATH)
         feed = []
         for batch in paginated_pages(f"{API_ROOT}/violation_reports"):
             feed.extend(batch)
@@ -5895,6 +6155,8 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
 
 def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
     """Share process and SQLite locks between manual and scheduled refreshes."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     with VIOLATION_SYNC_LOCK:
         if VIOLATION_SYNC_STATE["running"]:
             return False
@@ -5926,6 +6188,8 @@ def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
 
 
 def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
     owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger)
     if not owner:
         return False
@@ -6189,6 +6453,53 @@ def _award_sort_key(award: dict) -> str:
 
 def _documents_without_signature(documents: list[dict]) -> list[dict]:
     return sorted(documents or [], key=lambda item: str(item.get("datePublished") or ""), reverse=True)
+
+
+def _attested_winner_snapshot_connection() -> sqlite3.Connection:
+    # A read-path may persist the first evidenced decision. Attest its actual
+    # destination before opening each connection, not only at HTTP dispatch.
+    if SANDBOX_MODE:
+        import sandbox_runtime
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+    return db()
+
+
+def _report_winner_decision(report: dict, tender: dict) -> dict | None:
+    """Keep a new report's first evidenced decision; never backfill old rows."""
+    report_id = str(report.get("id") or "")
+    record = None
+    if report_id:
+        try:
+            with _attested_winner_snapshot_connection() as con:
+                record = con.execute(
+                    "SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id=?",
+                    (report_id,),
+                ).fetchone()
+        except sqlite3.OperationalError:
+            # Small isolated unit fixtures may not include the application schema.
+            pass
+    if record and record[0]:
+        frozen = json.loads(record[0])
+        linked = next((award for award in tender.get("awards") or []
+                       if str(award.get("id") or "") == frozen.get("award_id")), None)
+        if linked and linked.get("status") in {"cancelled", "unsuccessful"} and not frozen.get("later_cancelled"):
+            frozen["later_cancelled"] = True
+            with _attested_winner_snapshot_connection() as con:
+                con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
+                  WHERE report_id=?""", (json.dumps(frozen, ensure_ascii=False), report_id))
+        return frozen
+    decision = winner_decisions.historical_decision(tender, report, snapshot_at=now_iso())
+    if decision and record is not None:
+        with _attested_winner_snapshot_connection() as con:
+            con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
+              WHERE report_id=? AND decision_json IS NULL""",
+              (json.dumps(decision, ensure_ascii=False), report_id))
+            stored = con.execute(
+                "SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id=?",
+                (report_id,),
+            ).fetchone()
+        return json.loads(stored[0]) if stored and stored[0] else decision
+    return decision
 
 
 def classify_award_rejection_reason(award: dict | None) -> str:
@@ -6574,13 +6885,35 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         return {"available": False, "error": "У зверненні відсутній tender_id"}
     tender = api_get(f"{API_ROOT}/tenders/{tender_id}").get("data") or {}
     defendant_code = str(report.get("defendant_code") or "")
-    supplier_awards = [award for award in tender.get("awards") or [] if _award_matches_supplier(award, defendant_code)]
-    winner_candidates = [award for award in supplier_awards if award.get("qualified") is True]
-    winner = max(winner_candidates, key=_award_sort_key, default=None)
-    rejected_candidates = [award for award in supplier_awards
-                           if award.get("status") == "unsuccessful" and award.get("qualified") is False]
-    rejected = max(rejected_candidates, key=_award_sort_key, default=None)
-    winner_selected = _parse_prozorro_date(((winner or {}).get("period") or {}).get("startDate"))
+    supplier_awards = winner_decisions.relevant_awards(tender, report)
+    historical = _report_winner_decision(report, tender)
+    winner = next((award for award in supplier_awards
+                   if str(award.get("id") or "") == str((historical or {}).get("award_id") or "")), None)
+    historical_notice = (historical or {}).get("evidence_document") or {}
+    current_notice = next((document for document in (winner or {}).get("documents") or []
+                           if document.get("documentType") == "notice"
+                           and str(document.get("id") or "") == str(historical_notice.get("id") or "")
+                           and str(document.get("datePublished") or "") ==
+                           str(historical_notice.get("date_published") or "")), None)
+    notice_for_url = dict(historical_notice)
+    if current_notice and current_notice.get("dateModified") and not notice_for_url.get("date_modified"):
+        notice_for_url["date_modified"] = current_notice["dateModified"]
+    winner_electronic_url = winner_decisions.electronic_protocol_url(
+        tender_id, (historical or {}).get("award_id"), notice_for_url,
+        decision="winner") if winner else ""
+    notice_published_at = str(historical_notice.get("date_published") or "")
+    winner_display_date = ((notice_published_at if winner_electronic_url and
+                            notice_published_at[:10] == (historical or {}).get("decision_date")
+                            else None) or (historical or {}).get("decision_datetime")
+                           or (historical or {}).get("decision_date"))
+    current_winner = winner_decisions.current_winner_state(tender, report)
+    rejected = winner_decisions.relevant_rejection(tender, report)
+    rejection_protocol_document = winner_decisions.protocol_document(rejected or {})
+    rejection_electronic_url = winner_decisions.electronic_protocol_url(
+        tender_id, (rejected or {}).get("id"),
+        winner_decisions.notice_document(rejected or {}), decision="rejection")
+    winner_selected = _parse_prozorro_date((historical or {}).get("decision_datetime")
+                                           or (historical or {}).get("decision_date"))
     extended = bool((review or {}).get("contract_deadline_extended"))
     deadline = _calendar_deadline(winner_selected, 10 if extended else 5)
     rejection_date = _parse_prozorro_date((rejected or {}).get("date"))
@@ -6588,7 +6921,16 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     explicit_non_signing = rejection_classification in {
         "non_signing", "guarantee_missing", "non_signing_and_guarantee"
     }
+    # Contract association is independent of proof of a winner-decision date.
+    # A cancelled contract remains visible even when no notice can establish
+    # the historical decision timestamp.
     contract_award = rejected if explicit_non_signing and rejected else winner
+    if contract_award is None:
+        linked_awards = [award for award in supplier_awards if any(
+            str(item.get("awardID") or "") == str(award.get("id") or "")
+            for item in tender.get("contracts") or [])]
+        if len(linked_awards) == 1:
+            contract_award = linked_awards[0]
     contract = next((item for item in tender.get("contracts") or []
                      if contract_award and str(item.get("awardID") or "") == str(contract_award.get("id") or "")
                      and (not item.get("suppliers") or any(
@@ -6603,7 +6945,15 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     context = {
         "available": True, "tender_id": tender_id, "tender_pretty_id": tender.get("tenderID") or report.get("tender_pretty_id"),
         "defendant_code": defendant_code, "supplier_awards_count": len(supplier_awards),
-        "winner_award_id": (winner or {}).get("id"), "winner_selected_at": ((winner or {}).get("period") or {}).get("startDate"),
+        "winner_award_id": (historical or {}).get("award_id"),
+        "winner_selected_at": winner_display_date,
+        "historical_winner_decision": historical,
+        "winner_protocol_document": (historical or {}).get("protocol_document"),
+        "winner_notice_url": winner_electronic_url,
+        "rejection_protocol_document": rejection_protocol_document,
+        "rejection_decision_url": rejection_electronic_url,
+        "current_winner_state": current_winner,
+        "active_winner": current_winner["active_winner"],
         "winner_award_status": (winner or {}).get("status"),
         "rejection_present": bool(rejected), "rejection_award_id": (rejected or {}).get("id"),
         "rejection_date": (rejected or {}).get("date"), "rejection_title": (rejected or {}).get("title"),
@@ -6866,13 +7216,15 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     # It therefore resolves for every report, including official historical
     # reports which have never been reviewed in PQM and are not JSON-eligible.
     # Keep this separate from the immutable decision context used below.
-    if item.get("procurement_context"):
+    if item.get("procurement_context") and (
+            item.get("decision_context_source") != "completion_snapshot" or not refresh):
         item["factual_procurement_context"] = item["procurement_context"]
         item["factual_procurement_context_source"] = item.get("decision_context_source") or "resolved_context"
     else:
         (item["factual_procurement_context"],
          item["factual_procurement_context_source"]) = resolve_violation_procurement_context(
             item, item["review"], prefer_snapshot=False)
+    item["current_winner_state"] = (item.get("factual_procurement_context") or {}).get("current_winner_state")
     item["scenario_summary"] = violation_scenario_summary(
         item, item.get("procurement_context") or {})
     # JSON export follows the canonical status presented by the case card, not
@@ -7436,7 +7788,15 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     values = {
         "protocol_number": gate["protocol_number"], "protocol_date": _protocol_date(gate["protocol_date"]),
         "report_id": str(item.get("report_id") or item.get("id") or ""),
-        "procurement_id": str(item.get("tender_pretty_id") or ""),
+        "procurement_id": str(item.get("tender_pretty_id") or context.get("tender_pretty_id") or ""),
+        "procurement_url": ("https://prozorro.gov.ua/uk/tender/" + urllib.parse.quote(
+            str(item.get("tender_pretty_id") or context.get("tender_pretty_id")), safe="")
+            if item.get("tender_pretty_id") or context.get("tender_pretty_id") else ""),
+        "report_url": violation_request_public_url(
+            str(item.get("contract_pretty_id") or context.get("contract_pretty_id") or ""),
+            str(item.get("report_id") or "")),
+        "winner_notice_url": str(context.get("winner_notice_url") or ""),
+        "rejection_decision_url": str(context.get("rejection_decision_url") or ""),
         "procurement_date": _protocol_date(context.get("tender_date_published") or item.get("date_created")),
         "cpv_category": str(context.get("dk_code") or ""),
         "customer_name": customer_name, "customer_name_genitive": normalize_document_name(declined_names["customer_name_genitive"].value),
@@ -7650,6 +8010,8 @@ def _download_archive_document(document: dict, opener=urllib.request.urlopen, sl
 
 
 def build_application_archive(submission_id: str, opener=urllib.request.urlopen, sleeper=time.sleep):
+    if SANDBOX_MODE and opener is urllib.request.urlopen:
+        opener = lambda request, timeout, context=None: sandbox_runtime.external_read_open(request, timeout)
     collected = application_documents(submission_id)
     if not collected:
         return None
@@ -7698,7 +8060,11 @@ def normalized_value(value: str) -> str:
 
 def download_document(document: dict, limit: int = 25 * 1024 * 1024) -> bytes:
     request = urllib.request.Request(document["url"], headers={"User-Agent": "PQM/0.1"})
-    with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context()) as response:
+    if SANDBOX_MODE:
+        response_scope = sandbox_runtime.external_read_open(request, timeout=60)
+    else:
+        response_scope = urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context())
+    with response_scope as response:
         length = int(response.headers.get("Content-Length") or 0)
         if length > limit:
             raise ValueError("Файл перевищує 25 МБ")
@@ -8312,7 +8678,11 @@ def _contract_experience_http_json(url: str, payload: dict | None = None) -> dic
         if wait > 0:
             time.sleep(wait)
         try:
-            with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+            if SANDBOX_MODE:
+                response_scope = sandbox_runtime.external_read_open(request, timeout=30)
+            else:
+                response_scope = urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context())
+            with response_scope as response:
                 result = json.loads(response.read().decode("utf-8"))
             if not isinstance(result, dict):
                 raise ValueError("Prozorro повернув некоректну відповідь пошуку договорів")
@@ -9102,6 +9472,10 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
 
 
 def enqueue_contract_experience_search(submission_ids) -> int:
+    if SANDBOX_MODE:
+        # Separate document/tender integration is not part of the approved
+        # framework API scope; do not queue failing retries or overwrite checks.
+        return 0
     unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
@@ -9128,6 +9502,11 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "PQM/0.1"
+
+    def end_headers(self):
+        if SANDBOX_MODE:
+            self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+        super().end_headers()
 
     def send_json(self, data, status=200):
         raw = json.dumps(data, ensure_ascii=False).encode()
@@ -9256,7 +9635,9 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _authorize_supplier_registry_integration(self) -> bool:
-        configured = str(os.environ.get(SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV) or "")
+        token_env = (SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV
+                     if SANDBOX_MODE else SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV)
+        configured = str(os.environ.get(token_env) or "")
         if not configured:
             self.send_json({"error": "Integration token не налаштовано", "status": 503}, 503)
             return False
@@ -9270,7 +9651,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method) -> None:
         path = urllib.parse.urlparse(self.path).path
-        if path in GOOGLE_MIGRATION_DISABLED_PATHS:
+        if not SANDBOX_MODE and path in GOOGLE_MIGRATION_DISABLED_PATHS:
             return self.send_json({"error": "Migration API disabled", "status": 404}, 404)
         if path == prod_google_baseline.PATH:
             if not prod_google_baseline.enabled() or not IS_WEB_ENV:
@@ -9280,6 +9661,20 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorize_supplier_registry_integration():
                 return
             self.auth_user = "integration:prod-google-baseline"
+            self.auth_role = "integration"
+            return method()
+        if path in {GOOGLE_VERIFICATION_PREVIEW_PATH, GOOGLE_VERIFICATION_OVERLAP_AUDIT_PATH,
+                    GOOGLE_VERIFICATION_APPLY_PATH,
+                    GOOGLE_FACTUAL_EDR_AUDIT_PATH, GOOGLE_FACTUAL_EDR_PREVIEW_PATH,
+                    GOOGLE_FACTUAL_EDR_APPLY_PATH, GOOGLE_TERMINATION_AUDIT_PATH,
+                    GOOGLE_TERMINATION_IMPORT_PREVIEW_PATH, GOOGLE_TERMINATION_IMPORT_APPLY_PATH}:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only", "status": 404}, 404)
+            if self.command != "POST":
+                return self.send_json({"error": "Endpoint підтримує тільки POST", "status": 405}, 405)
+            if not self._authorize_supplier_registry_integration():
+                return
+            self.auth_user = "integration:google-verification-events"
             self.auth_role = "integration"
             return method()
         if path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
@@ -9299,14 +9694,27 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/login", "/api/logout"}:
             return method()
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if SAFE_MODE and (self.command in {"POST", "PATCH", "PUT", "DELETE"}
+        sandbox_mutation = SANDBOX_MODE and self.command in {"POST", "PATCH", "PUT", "DELETE"}
+        sandbox_refresh = SANDBOX_MODE and any(
+            query.get(key, [""])[0].lower() in {"1", "true", "yes"}
+            for key in ("refresh", "force"))
+        if sandbox_mutation or sandbox_refresh:
+            try:
+                sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+            except RuntimeError:
+                return self.send_json({'error': 'SANDBOX destination attestation failed',
+                                       'code': 'sandbox_target_guard'}, 503)
+        if SAFE_MODE and not SANDBOX_MODE and ((self.command in {"POST", "PATCH", "PUT", "DELETE"})
                           or any(query.get(key, [""])[0].lower() in {"1", "true", "yes"}
                                  for key in ("refresh", "force"))
                           or re.fullmatch(r"/api/applications/[^/]+/verify-documents/start", path)):
             length = int(self.headers.get("Content-Length", "0"))
             if 0 < length <= 1024 * 1024:
                 self.rfile.read(length)
-            return self.send_json({"error": "WEB працює в safe mode: зміни й оновлення вимкнено",
+            message = ("Sandbox: ця дія заблокована. Дозволені лише локальні тестові зміни; інтеграції та jobs вимкнено"
+                       if SANDBOX_MODE and sandbox_runtime.local_edits_enabled()
+                       else "WEB працює в safe mode: зміни й оновлення вимкнено")
+            return self.send_json({"error": message,
                                    "code": "safe_mode", "status": 503}, 503)
         with db() as con:
             self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
@@ -9321,6 +9729,9 @@ class Handler(BaseHTTPRequestHandler):
         managed_grant = (self.auth_role == 'officer' and permission
                          and not permission.startswith('admin.')
                          and self.auth_access['permissions'].get(permission, False))
+        if (self.auth_role == 'officer' and self.command == 'DELETE'
+                and re.fullmatch(r'/api/admin/declension-overrides/[^/]+', path)):
+            return self.send_json({'error': 'Недостатньо прав для цієї дії', 'status': 403}, 403)
         if not mutation_allowed(self.auth_role, self.command, path) and not managed_grant:
             # Drain the small mutation body before closing the connection on Windows.
             # Otherwise the client may see a TCP reset instead of the JSON 403.
@@ -9532,6 +9943,15 @@ class Handler(BaseHTTPRequestHandler):
             google = google_integration_status()
             return self.send_json({
                 "environment": PQM_ENV,
+                "sandbox_mode": SANDBOX_MODE,
+                "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
+                "sandbox_documents": SANDBOX_MODE and sandbox_runtime.sandbox_documents.enabled(),
+                "sandbox_amcu_read": SANDBOX_MODE and sandbox_runtime.sandbox_amcu.enabled(),
+                "sandbox_prozorro_read": SANDBOX_MODE and sandbox_runtime.prozorro_read_enabled(),
+                "sandbox_prozorro_scheduler": SANDBOX_MODE and scheduler_flags.get("prozorro", False),
+                "sandbox_operational": SANDBOX_MODE and sandbox_runtime.operational_enabled(),
+                "sandbox_nazk_read": SANDBOX_MODE and sandbox_runtime.nazk_read_enabled(),
+                "safe_mode": SAFE_MODE,
                 "bids_mode": BIDS_MODE,
                 "bids_update": manual_bids["enabled"],
                 "manual_bids_update": manual_bids,
@@ -9573,7 +9993,9 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as con:
                     control = get_submission_nazk_control(con, submission_id)
                     historical_read_only = historical_applications.is_read_only(submission_id)
-                    if not control and not historical_read_only and not SAFE_MODE:
+                    if not control and not historical_read_only and (not SAFE_MODE or SANDBOX_MODE):
+                        if SANDBOX_MODE:
+                            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
                         control = ensure_submission_nazk_control(con, submission_id)
                     state = get_submission_nazk_state(con, submission_id)
                     context = submission_nazk_context(con, submission_id)
@@ -9626,6 +10048,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(list_edr_monitoring(urllib.parse.parse_qs(parsed.query)))
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        if parsed.path.startswith("/api/sandbox/supplier-google-row/"):
+            if not sandbox_google_row_navigation_enabled():
+                return self.send_json({"error": "Not found"}, 404)
+            code = urllib.parse.unquote(parsed.path.removeprefix("/api/sandbox/supplier-google-row/"))
+            try:
+                result = sandbox_supplier_google_row(code)
+                if parsed.query == "open=1":
+                    self.send_response(302)
+                    self.send_header("Location", result["url"])
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                return self.send_json(result)
+            except KeyError:
+                return self.send_json({"error": "Google supplier row not found"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except (PermissionError, RuntimeError) as exc:
+                failure = sandbox_google_row_failure(exc)
+                SERVER_LOG.warning("SANDBOX Google row lookup unavailable code=%s phase=%s",
+                                   failure["code"], failure["phase"])
+                return self.send_json({"error": "SANDBOX Google EDR navigation is unavailable",
+                                       **failure}, 503)
         if parsed.path.startswith("/api/supplier-google-row/"):
             code = urllib.parse.unquote(parsed.path.removeprefix("/api/supplier-google-row/"))
             try:
@@ -9881,7 +10326,7 @@ class Handler(BaseHTTPRequestHandler):
             filtered_codes = selected_codes
             if mode != "selected":
                 listing_params = {key: list(values) for key, values in query.items()
-                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "freshness",
+                                  if key in {"search", "entity_type", "status", "prozorro_status", "edr_status", "edr_names", "edr_full_name", "edr_short_name", "freshness",
                                              "verification_from", "verification_to", "application_from",
                                              "application_to", "admission_from", "admission_to", "dk_code", "risk"}}
                 if query.get("view") == ["edr_monitoring"]:
@@ -9972,7 +10417,10 @@ class Handler(BaseHTTPRequestHandler):
                 or not (path in {"index.html"} or (target.parent == ROOT and target.suffix in {".js", ".css"})
                         or (ROOT / "assets") in target.parents)):
             return self.send_error(404)
-        raw = target.read_bytes(); self.send_response(200)
+        raw = target.read_bytes()
+        if SANDBOX_MODE and path == "index.html":
+            raw = sandbox_runtime.decorate_html(raw)
+        self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
@@ -9995,6 +10443,137 @@ class Handler(BaseHTTPRequestHandler):
                     con.close()
                 return self.send_json(result)
             except (ValueError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        if parsed.path in {GOOGLE_TERMINATION_IMPORT_PREVIEW_PATH,
+                           GOOGLE_TERMINATION_IMPORT_APPLY_PATH}:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 1_000_000:
+                    return self.send_json({"error": "Import payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                is_preview = parsed.path == GOOGLE_TERMINATION_IMPORT_PREVIEW_PATH
+                con = (legacy_google_verification_preview.open_read_only(DB_PATH)
+                       if is_preview else db())
+                try:
+                    result = (legacy_google_termination_import.preview(con, payload) if is_preview
+                              else legacy_google_termination_import.apply(con, payload))
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 400 if parsed.path == GOOGLE_TERMINATION_IMPORT_PREVIEW_PATH else 409)
+        if parsed.path == GOOGLE_TERMINATION_AUDIT_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 131072:
+                    return self.send_json({"error": "Audit payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = legacy_google_verification_preview.open_read_only(DB_PATH)
+                try:
+                    result = legacy_google_termination_audit.audit(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 400)
+        if parsed.path == GOOGLE_VERIFICATION_OVERLAP_AUDIT_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 4_000_000:
+                    return self.send_json({"error": "Audit payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = legacy_google_verification_preview.open_read_only(DB_PATH)
+                try:
+                    result = legacy_google_verification_overlap_audit.audit(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 400)
+        if parsed.path == GOOGLE_FACTUAL_EDR_APPLY_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 32768:
+                    return self.send_json({"error": "Apply payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = db()
+                try:
+                    result = legacy_google_factual_edr_preview.apply(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 400)
+        if parsed.path == GOOGLE_FACTUAL_EDR_PREVIEW_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 32768:
+                    return self.send_json({"error": "Preview payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = legacy_google_verification_preview.open_read_only(DB_PATH)
+                try:
+                    result = legacy_google_factual_edr_preview.preview(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 400)
+        if parsed.path == GOOGLE_FACTUAL_EDR_AUDIT_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 65536:
+                    return self.send_json({"error": "Audit payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = legacy_google_verification_preview.open_read_only(DB_PATH)
+                try:
+                    result = legacy_google_factual_edr_audit.audit(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 400)
+        if parsed.path == GOOGLE_VERIFICATION_APPLY_PATH:
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 1_000_000:
+                    return self.send_json({"error": "Apply payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = db()
+                try:
+                    result = legacy_google_verification_preview.apply(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc), "db_writes": 0}, 409)
+        if parsed.path == GOOGLE_VERIFICATION_PREVIEW_PATH:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 1_000_000:
+                    return self.send_json({"error": "Preview payload size invalid"}, 413)
+                payload = json.loads(self.rfile.read(size))
+                con = legacy_google_verification_preview.open_read_only(DB_PATH)
+                try:
+                    result = legacy_google_verification_preview.preview(con, payload)
+                    result["query_only"] = con.execute("PRAGMA query_only").fetchone()[0]
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/login":
             payload = self.read_json(); username = str(payload.get("username") or "").strip()
@@ -10236,6 +10815,10 @@ class Handler(BaseHTTPRequestHandler):
             payload=self.read_json()
             try:
                 with db() as con: result=navigation_settings.save(con,payload.get('overrides'),self.auth_user)
+                if SANDBOX_MODE:
+                    with db() as con: persisted=navigation_settings.get(con)
+                    if persisted != result:
+                        return self.send_json({'error':'Не вдалося підтвердити збереження навігації'},503)
             except ValueError as exc: return self.send_json({'error':str(exc)},400)
             return self.send_json(result)
         if parsed.path == '/api/admin/navigation-icons':
@@ -10481,7 +11064,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync":
             payload = self.read_json()
-            if not google_effective_enabled():
+            if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
             if SUPPLIER_EDR_SYNC_STATE["running"]:
                 return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
@@ -10524,7 +11107,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/supplier-edr-sync/preview":
             self.read_json()
-            if not google_effective_enabled():
+            if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
             if SUPPLIER_EDR_SYNC_STATE["running"]:
                 return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
@@ -10547,7 +11130,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/google-oauth/start":
             self.read_json()
-            if not google_effective_enabled():
+            if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google OAuth вимкнено в цьому середовищі"}, 403)
             try:
                 return self.send_json({"authorization_url": google_oauth_authorization_url(self.auth_user)}, 200)
@@ -10679,12 +11262,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/upload":
+            if SANDBOX_MODE:
+                import reference_directories as _amcu_ref
+                max_body = ((_amcu_ref.AMCU_MAX_BYTES + 2) // 3) * 4 + 8192
+                length = int(self.headers.get('Content-Length', '0'))
+                if length <= 0 or length > max_body:
+                    return self.send_json({'error': 'Excel-файл АМКУ перевищує 25 МБ'}, 413)
             payload = self.read_json()
+            filename = str(payload.get('filename') or '')
+            if SANDBOX_MODE and not filename.lower().endswith('.xlsx'):
+                return self.send_json({'error': 'Потрібен файл .xlsx'}, 400)
             try:
                 raw = base64.b64decode(payload.get("content") or "", validate=True)
             except Exception:
                 return self.send_json({"error": "Не вдалося прочитати Excel-файл"}, 400)
-            if not start_amcu_registry_refresh(raw, str(payload.get("filename") or "АМКУ.xlsx")):
+            if SANDBOX_MODE and (not raw or len(raw) > _amcu_ref.AMCU_MAX_BYTES):
+                return self.send_json({'error': 'Excel-файл АМКУ перевищує 25 МБ'}, 413)
+            if not start_amcu_registry_refresh(raw, str(payload.get("filename") or filename or "АМКУ.xlsx")):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         return self.send_error(404)

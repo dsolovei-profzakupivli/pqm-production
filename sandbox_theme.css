@@ -1,0 +1,188 @@
+/* Loaded only by the sandbox HTML decorator. Never included by index.html. */
+@media screen {
+html[data-pqm-environment="sandbox"] {
+  color-scheme: dark;
+  --ink:#edf3fc; --muted:#b2c3db; --line:#38516e; --soft:#152b46;
+  --blue:#86bdff; --blue2:#203e62; --green:#8be0b6; --green2:#173e38;
+  --red:#ffb1b8; --red2:#492936; --amber:#ffdc8a; --amber2:#443b26;
+  --shadow:0 8px 30px rgb(0 0 0 / 22%);
+  background:#0b172a;
+}
+html[data-pqm-environment="sandbox"] body {
+  background:#0b172a!important; color:var(--ink)!important;
+}
+html[data-pqm-environment="sandbox"] #loginGate {background:#0b172a!important}
+html[data-pqm-environment="sandbox"] .login-card>img {background:#fff;padding:8px;border-radius:8px}
+html[data-pqm-environment="sandbox"] :is(header,nav,main,section,article,aside,footer,dialog,table,thead,tbody,th,td,form,
+  [class*="card"],[class*="panel"],[class*="toolbar"],[class*="modal"],[class*="popover"],[class*="dropdown"],
+  .topbar,.filters,.table-wrap,.table-scroll,.auth-card,.login-card,.search-wrap) {
+  color:var(--ink); border-color:var(--line)!important;
+}
+html[data-pqm-environment="sandbox"] :is(.topbar,dialog,th,
+  [class*="card"],[class*="panel"],[class*="toolbar"],[class*="modal-content"],
+  [class*="popover"],[class*="dropdown-menu"],.filters,.table-wrap,.search-wrap) {
+  background-color:#132840!important;
+}
+html[data-pqm-environment="sandbox"] :is(td,tbody,table) {background-color:#102238!important}
+html[data-pqm-environment="sandbox"] tr:hover td,
+html[data-pqm-environment="sandbox"] tr.active td {background-color:#203e62!important}
+html[data-pqm-environment="sandbox"] :is(h1,h2,h3,h4,h5,strong,b,label,summary) {color:var(--ink)}
+html[data-pqm-environment="sandbox"] :is(p,span,div) {color:inherit}
+html[data-pqm-environment="sandbox"] :is(.login-view,.login-screen,.chat-message,.chat-list,.chat-main,.chat-compose) {
+  background-color:#132840!important;color:var(--ink)!important;
+}
+html[data-pqm-environment="sandbox"] :is(small,.muted,[class*="subtitle"],[class*="hint"],td small) {color:var(--muted)!important}
+html[data-pqm-environment="sandbox"] a {color:var(--blue)}
+html[data-pqm-environment="sandbox"] :is(input,select,textarea,button) {
+  color:var(--ink)!important; background-color:#193451!important; border-color:#4a6788!important;
+  color-scheme:dark;
+}
+html[data-pqm-environment="sandbox"] :is(input,textarea)::placeholder {color:#b2c3db;opacity:1}
+html[data-pqm-environment="sandbox"] :is(input[type="checkbox"],input[type="radio"]) {accent-color:#86bdff}
+html[data-pqm-environment="sandbox"] button:hover:not(:disabled) {background-color:#28517b!important}
+html[data-pqm-environment="sandbox"] :is(button.active,button[aria-selected="true"],.primary,.btn-primary) {
+  background-color:#215487!important; color:#fff!important; border-color:#86bdff!important;
+}
+html[data-pqm-environment="sandbox"] :is(button,input,select,textarea):disabled {color:#a7b6c9!important;opacity:.7}
+html[data-pqm-environment="sandbox"] :focus-visible {outline:3px solid #ffdc8a!important;outline-offset:3px}
+html[data-pqm-environment="sandbox"] :is(.registry-flag.amcu,.check-result-card.reject) {background:#492936!important;color:#ffb1b8!important}
+html[data-pqm-environment="sandbox"] :is(.registry-flag.nazk,.check-result-card.wait) {background:#443b26!important;color:#ffdc8a!important}
+html[data-pqm-environment="sandbox"] .check-result-card.admit {background:#173e38!important;color:#8be0b6!important}
+html[data-pqm-environment="sandbox"] td.auto-filled {background:#20334c!important;color:var(--ink)!important}
+html[data-pqm-environment="sandbox"] :is(.registry-risk-amcu,.supplier-amcu) td {background:#392635!important}
+html[data-pqm-environment="sandbox"] :is(.registry-risk-nazk,.supplier-nazk) td {background:#343327!important}
+html[data-pqm-environment="sandbox"] .brand-logo {background:#fff;border-radius:8px;padding:4px}
+/* One SANDBOX-only lockup; the shared navbar geometry and navigation stay intact. */
+html[data-pqm-environment="sandbox"] .topbar .brand.sandbox-brand {gap:0;align-items:center}
+html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-initials {
+  display:block;flex:0 0 82px;width:82px;height:40px;object-fit:contain;
+}
+html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-divider {
+  display:block;flex:0 0 1px;height:32px;margin:0 12px 0 15px;background:#6f8ba8;
+}
+html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-copy {
+  display:flex;flex-direction:column;justify-content:center;min-width:0;
+}
+html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-copy strong {
+  color:#edf3fc;font-size:15px;line-height:1.15;font-weight:700;white-space:nowrap;
+}
+html[data-pqm-environment="sandbox"] .topbar .sandbox-brand-copy small {
+  color:#b2c3db!important;font-size:9.5px;line-height:1.1;margin-top:1px;white-space:nowrap;
+}
+html[data-pqm-environment="sandbox"] .topbar .sandbox-brand #environmentBanner {
+  position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);
+  white-space:nowrap;border:0!important;padding:0!important;margin:-1px!important;
+}
+html[data-pqm-environment="sandbox"] #sandboxWarning {
+  background:#17365c!important;color:#edf3fc!important;border-top:2px solid #86bdff!important;
+}
+/* Documents/images retain their own colours; never use an inversion filter. */
+/* Intentionally light controls need their own ink, not inherited navy-theme ink. */
+html[data-pqm-environment="sandbox"] :is(.multi-filter,.advanced-filters,.supplier-advanced-filters,.toolbar-settings)>summary {
+  background:#f2f5fa!important;color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] :is(.multi-filter,.advanced-filters,.supplier-advanced-filters,.toolbar-settings)>summary :is(span,strong) {
+  color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] .table-card>footer {
+  background:#f2f5fa!important;color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] .table-card>footer>span,
+html[data-pqm-environment="sandbox"] .paperclip>span {
+  color:#172b43!important;
+}
+html[data-pqm-environment="sandbox"] .paperclip>span {background:#e8eff7!important}
+/* Detail windows have explicit light backgrounds in styles.css. Pair each
+   surface with its ink; do not change geometry or invert documents/images. */
+html[data-pqm-environment="sandbox"] :is(
+  dialog>form,dialog form>header,dialog form>footer,
+  .request-details-body,.supplier-profile-body,.operational-workspace,
+  .operational-sticky-context,.operational-summary,.operational-context-card,
+  .request-details-body section,.supplier-profile-section,.supplier-profile-grid,
+  .supplier-profile-overview,.supplier-profile-identity,.supplier-nazk-context,
+  .supplier-application-history details,.supplier-application-history summary,
+  .supplier-nazk-completed-history,.supplier-nazk-completed-history>summary,
+  .submission-nazk-registry,.operational-document-metadata,.operational-amcu-generated,
+  .operational-workspace>section,.operational-workspace>details,
+  .operational-facts>div,.operational-channels>div,.operational-registry-list article,
+  .operational-inline-form,.request-context-grid>div,.request-recommendation,
+  .request-result.neutral,.supplier-profile-stats>div,.module-kpis>article) {
+  background-color:#132840!important;color:#edf3fc!important;
+}
+html[data-pqm-environment="sandbox"] :is(
+  .operational-compact-facts dt,.operational-facts dt,.supplier-profile-grid dt,
+  .operational-empty,.operational-work-instruction p,.operational-summary-actions>strong,
+  .supplier-profile-stats span,.module-kpis span) {color:#b2c3db!important}
+html[data-pqm-environment="sandbox"] :is(.status-chip,.registry-profile-block) {
+  background-color:#203e62!important;color:#edf3fc!important;
+}
+html[data-pqm-environment="sandbox"] :is(.operational-ready,.registry-profile-block.safe,
+  .supplier-nazk-current.safe,
+  .supplier-registry-state.registered,.supplier-status-count:not(.inactive)) {
+  background-color:#173e38!important;color:#8be0b6!important;
+}
+html[data-pqm-environment="sandbox"] :is(.operational-registry-list:has(table),
+  .request-warning,.request-readonly,.registry-profile-block.warning) {
+  background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.registry-profile-block.danger,.supplier-status-count.inactive) {
+  background-color:#492936!important;color:#ffb1b8!important;
+}
+html[data-pqm-environment="sandbox"] .operational-registry-list>h4 {color:#ffdc8a!important}
+html[data-pqm-environment="sandbox"] .supplier-registry-state.candidate {
+  background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.supplier-nazk-current.warning,.submission-nazk-supplier-context) {
+  background-color:#443b26!important;color:#ffdc8a!important;
+}
+html[data-pqm-environment="sandbox"] :is(.supplier-nazk-current.danger,.supplier-request-stat.threshold-reached) {
+  background-color:#492936!important;color:#ffb1b8!important;
+}
+html[data-pqm-environment="sandbox"] .supplier-nazk-current.inactive {
+  background-color:#203e62!important;color:#b2c3db!important;
+}
+/* Applied per element from its actual composited solid background. Dark
+   descendants receive no marker, even inside a light parent surface. */
+html[data-pqm-environment="sandbox"] [data-pqm-light-ink][data-pqm-light-ink][data-pqm-light-ink],
+html[data-pqm-environment="sandbox"] [data-pqm-light-ink][data-pqm-light-ink][data-pqm-light-ink]::placeholder {
+  color:#000!important;
+}
+html[data-pqm-environment="sandbox"] [data-pqm-dark-ink][data-pqm-dark-ink][data-pqm-dark-ink] {
+  color:#edf3fc!important;
+}
+}
+/* One scrolling region: the review header and confirmation stay visible. */
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog{width:min(1180px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:hidden}
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog>form{display:flex;flex-direction:column;max-height:calc(100vh - 24px);overflow:hidden}
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog>form>header,
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewDialog>form>footer{flex:0 0 auto;background:var(--surface,#fff);z-index:1}
+html[data-pqm-environment="sandbox"] #supplierEdrPreviewBody{flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto;overscroll-behavior:contain}
+html[data-pqm-environment="sandbox"] .edr-review-section{margin-top:18px}
+html[data-pqm-environment="sandbox"] .edr-review-filters{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
+html[data-pqm-environment="sandbox"] .edr-review-filters label{display:grid;gap:5px;min-width:220px}
+html[data-pqm-environment="sandbox"] .edr-review-row{padding:12px;margin:10px 0;border:1px solid var(--line,#d7e0ea);border-radius:10px;overflow-wrap:anywhere}
+html[data-pqm-environment="sandbox"] .edr-review-row strong,html[data-pqm-environment="sandbox"] .edr-review-row small{display:block}
+html[data-pqm-environment="sandbox"] .edr-review-row dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 0}
+html[data-pqm-environment="sandbox"] .edr-review-row dd{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+html[data-pqm-environment="sandbox"] .edr-review-pages{display:flex;align-items:center;gap:12px;justify-content:center;padding:12px}
+@media(max-width:700px){html[data-pqm-environment="sandbox"] .edr-review-row dl{grid-template-columns:1fr}}
+/* Keep filter controls inside the available viewport without changing tables. */
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar,.frameworks-toolbar,.history-filters){
+  display:flex;flex-wrap:wrap;gap:6px;max-width:100%;overflow:visible;
+}
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar,.frameworks-toolbar) :is(input,select,button,summary){min-height:32px;padding-block:5px}
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar,.frameworks-toolbar)>.search-wrap{flex:1 1 220px;min-width:min(220px,100%)}
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar>input{width:auto;flex:1 1 125px;min-width:min(125px,100%);height:32px}
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar>button,
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar>.button-link{min-height:32px;white-space:normal}
+html[data-pqm-environment="sandbox"] :is(.advanced-filter-panel,.edr-monitoring-filter-grid){
+  width:min(780px,calc(100vw - 24px));max-width:calc(100vw - 24px);
+  grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));gap:7px;padding:10px;
+}
+html[data-pqm-environment="sandbox"] .edr-monitoring-toolbar{position:relative}
+html[data-pqm-environment="sandbox"] :is(.applications-toolbar,.edr-monitoring-toolbar)>.advanced-filters{position:static}
+html[data-pqm-environment="sandbox"] .edr-monitoring-filter-grid{top:calc(100% + 6px);right:0}
+html[data-pqm-environment="sandbox"] .supplier-toolbar-compact{grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));max-width:100%;gap:6px}
+html[data-pqm-environment="sandbox"] .supplier-toolbar-compact .supplier-filter-search{grid-column:span 2}
+html[data-pqm-environment="sandbox"] .history-filters>*{min-width:min(150px,100%);flex:1 1 150px}
+@media(max-width:440px){html[data-pqm-environment="sandbox"] .supplier-toolbar-compact .supplier-filter-search{grid-column:auto}}

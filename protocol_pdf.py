@@ -72,6 +72,10 @@ def _running_on_windows() -> bool:
 
 def _export_faithfully(source: Path, output: Path) -> str:
     """Export the DOCX itself; never approximate its layout through HTML."""
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_documents
+        sandbox_documents.export_pdf(source, output)
+        return 'sandbox_libreoffice_seccomp'
     failures = []
     if _running_on_windows() and _word_available():
         try:
@@ -97,6 +101,10 @@ def _export_faithfully(source: Path, output: Path) -> str:
 
 
 def ensure_pdf(source_path: str | Path, output_path: str | Path) -> Path:
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_documents
+        if not sandbox_documents.enabled():
+            raise RuntimeError('Sandbox document generation is disabled')
     source, output = Path(source_path).resolve(), Path(output_path).resolve()
     if not source.is_file() or source.suffix.lower() != ".docx":
         raise FileNotFoundError("DOCX протоколу не знайдено")
@@ -105,7 +113,8 @@ def ensure_pdf(source_path: str | Path, output_path: str | Path) -> Path:
         provenance = output.with_suffix(output.suffix + ".converter")
         cached_converter = provenance.read_text(encoding="utf-8").strip() if provenance.is_file() else ""
         if (output.is_file() and output.stat().st_mtime_ns >= source.stat().st_mtime_ns
-                and cached_converter in {"word_com", "libreoffice"}):
+                and cached_converter in ({'sandbox_libreoffice_seccomp'} if os.environ.get('PQM_SANDBOX') == '1'
+                                         else {"word_com", "libreoffice"})):
             return output
         temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.tmp.pdf")
         temporary_provenance = provenance.with_name(f".{provenance.name}.{uuid.uuid4().hex}.tmp")

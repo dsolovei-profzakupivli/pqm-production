@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <title>Q — PQM</title>
+  <rect width="48" height="48" rx="10" fill="#132840"/>
+  <circle cx="24" cy="22" r="19" fill="#63b2ff"/>
+  <circle cx="24" cy="22" r="10" fill="#132840"/>
+  <path d="m24 27 7-4 16 23H35L24 27Z" fill="#63b2ff"/>
+</svg>

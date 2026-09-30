@@ -82,6 +82,23 @@ function runtime(input = body([item()]), state, status = 200) {
 }
 p = runtime().p;
 
+test('46130719 routes to one ЮО append; repeat does not duplicate and preserves Google-owned fields',()=>{
+  const t=tabs(), incoming=item({supplier_code:'46130719'});
+  const first=p.plan(body([incoming]),t);
+  assert.equal(first.counts.appended,1);
+  assert.equal(first.changes.length,1);
+  assert.equal(first.changes[0].tab,'ЮО');
+  const requests=p.requests(first,t);
+  assert.equal(requests.filter(x=>x.updateCells?.range.startColumnIndex===1).length,1);
+  assert.ok(requests.every(x=>!x.updateCells||![3,4,6,8,9,10,11,12,13,14].includes(x.updateCells.range.startColumnIndex)));
+  assert.ok(requests.some(x=>x.copyPaste?.pasteType==='PASTE_FORMAT'));
+  assert.ok(requests.some(x=>x.copyPaste?.pasteType==='PASTE_DATA_VALIDATION'));
+  applyPlan(first,t);
+  const second=p.plan(body([incoming]),t);
+  assert.equal(second.counts.appended,0);
+  assert.equal(t['ЮО'].rows.filter(x=>x.codeDisplay==='46130719').length,1);
+});
+
 test('routing, foreign/unknown, leading zero identity, and counts', () => {
   const plan = p.plan(body([item(), item({supplier_code:'0012345678',entity_type:'individual_entrepreneur'}),
     item({supplier_code:'US-7',entity_type:'foreign_legal_entity'}),item({supplier_code:'X',entity_type:'unknown'})]), tabs());

@@ -246,7 +246,7 @@ class WebAcceptance(unittest.TestCase):
 
     def test_09_public_favicons(self):
         from html.parser import HTMLParser
-        import struct
+        import xml.etree.ElementTree as ET
         class IconLinks(HTMLParser):
             def __init__(self):super().__init__();self.items=[]
             def handle_starttag(self, tag, attrs):
@@ -255,16 +255,21 @@ class WebAcceptance(unittest.TestCase):
         status,html,_=self.request('/',None)
         self.assertEqual(200,status)
         links=IconLinks();links.feed(html.decode())
-        expected={'/assets/pqm-search-icon.png':192,'/assets/pqm-tab-icon.png':32}
-        self.assertEqual(set(expected),{item['href'] for item in links.items})
+        expected='/assets/pqm-q-favicon-prod.svg?v=1'
+        self.assertEqual({expected},{item['href'] for item in links.items})
         for item in links.items:
             status,raw,headers=self.request(item['href'],None)
             self.assertEqual(200,status)
-            self.assertEqual('image/png',headers['Content-Type'])
-            self.assertEqual(b'\x89PNG\r\n\x1a\n',raw[:8])
-            size=expected[item['href']]
-            self.assertEqual((size,size),struct.unpack('>II',raw[16:24]))
-            if item['rel']=='icon':self.assertEqual(f'{size}x{size}',item['sizes'])
+            self.assertEqual('image/svg+xml',headers['Content-Type'])
+            self.assertEqual('icon',item['rel'])
+            self.assertEqual('any',item['sizes'])
+            root=ET.fromstring(raw)
+            ns='{http://www.w3.org/2000/svg}'
+            self.assertEqual('0 0 48 48',root.get('viewBox'))
+            self.assertEqual('#f5f7f8',root.find(ns+'rect').get('fill'))
+            self.assertEqual('#63b2ff',root.find(ns+'path').get('fill'))
+            sandbox=ET.parse(ROOT/'assets'/'pqm-q-favicon.svg').getroot()
+            self.assertEqual(sandbox.find(ns+'path').get('d'),root.find(ns+'path').get('d'))
 
 if __name__=='__main__':
     if '--serve' in sys.argv:

@@ -11,6 +11,14 @@ import scheduler_runtime
 
 
 class TestWebRuntimeTests(unittest.TestCase):
+    def test_requests_template_button_reuses_admin_template_view(self):
+        root = server.ROOT
+        html = (root / "index.html").read_text(encoding="utf-8")
+        javascript = (root / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="requestsTemplates"', html)
+        self.assertIn("$('#requestsTemplates').onclick=()=>{showModule('administration');setAdminTab('templates')}", javascript)
+        self.assertIn("requestsTemplates.hidden=!admin", javascript)
+
     def test_basic_auth_users_are_read_only_from_environment(self):
         payload = json.dumps({"users": [{"username": "reviewer", "password": "temporary"}]})
         with patch.dict(os.environ, {"PQM_USERS_JSON": payload}, clear=False):
@@ -77,15 +85,26 @@ class TestWebRuntimeTests(unittest.TestCase):
         html = (root / "index.html").read_text(encoding="utf-8")
         javascript = (root / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="environmentBanner"', html)
-        # Preserve the user's separately approved WEB magnifier/favicon assets.
-        self.assertIn('rel="icon" href="/assets/pqm-tab-icon.png"', html)
-        self.assertIn('rel="icon" href="/assets/pqm-search-icon.png"', html)
-        self.assertTrue((root / "assets" / "pqm-tab-icon.png").is_file())
-        self.assertTrue((root / "assets" / "pqm-search-icon.png").is_file())
-        self.assertIn("if(features?.sandbox_mode)return 'PQM · SANDBOX'", javascript)
-        self.assertIn("if(environment==='local')return 'PQM · LOCAL'", javascript)
-        self.assertIn("return 'PQM';", javascript)
-        self.assertNotIn("'PQM (WEB TEST)'", javascript)
+        self.assertIn('rel="icon" href="/assets/pqm-q-favicon-prod.svg?v=1" type="image/svg+xml" sizes="any"', html)
+        self.assertTrue((root / "assets" / "pqm-q-favicon-prod.svg").is_file())
+        self.assertNotIn("'PQM · WEB TEST'", javascript)
+        self.assertIn("function environmentBannerText(features){\n  return 'PQM';\n}", javascript)
+        self.assertIn('id="environmentBanner"', html)
+        self.assertIn('class="prod-brand-accessible">PQM</em>', html)
+        self.assertNotIn('id="sandboxWarning"', html)
+        self.assertNotIn('data-pqm-environment="sandbox"', html)
+        self.assertNotIn('id="pqmSandboxTheme"', html)
+        import sandbox_runtime
+        with patch.dict(os.environ, {'PQM_SANDBOX': '1'}):
+            sandbox_html = sandbox_runtime.decorate_html(html.encode()).decode()
+        self.assertIn('data-pqm-environment="sandbox"', sandbox_html)
+        self.assertIn('id="pqmSandboxTheme"', sandbox_html)
+        self.assertIn('/sandbox_contrast.js?v=1', sandbox_html)
+        self.assertIn('pqm-q-favicon.svg', sandbox_html)
+        self.assertIn('id="sandboxWarning"', sandbox_html)
+        self.assertIn('position:fixed;bottom:0', sandbox_html)
+        self.assertIn('SANDBOX · ТЕСТОВІ ДАНІ', sandbox_html)
+        self.assertIn('if SANDBOX_MODE and path == "index.html":', (root / 'server.py').read_text(encoding='utf-8'))
         self.assertIn('document.title=`PQM — ${titles[name]', javascript)
 
     def test_local_role_switch_reapplies_admin_capabilities_centrally(self):
@@ -94,9 +113,11 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertIn("element.disabled=!admin||element.dataset.runtimeDisabled==='1'", javascript)
         self.assertIn("document.body.classList.toggle('role-viewer',viewer)", javascript)
         self.assertIn("element.dataset.runtimeDisabled='1'", javascript)
-        self.assertIn("const permitted=currentMe?.permissions?.['appeals.update']===true", javascript)
-        self.assertIn("button.disabled=!permitted||!requestsRefreshState.runtimeLoaded||requestsRefreshState.running||requestsRefreshState.starting", javascript)
-        self.assertIn("button.title=!permitted?", javascript)
+        self.assertIn("updateRequestsRefreshAvailability();", javascript)
+        self.assertIn("currentMe?.permissions?.['appeals.update']===true", javascript)
+        self.assertIn("requestsRefreshState.sandboxOperational&&requestsRefreshState.sandboxProzorroRead", javascript)
+        self.assertIn("requestsRefreshState.running||requestsRefreshState.starting", javascript)
+        self.assertNotIn("requestsRefresh.disabled=viewer", javascript)
 
     def test_bids_disabled_fails_with_controlled_exception(self):
         with patch.object(server, "BIDS_MODE", "disabled"):

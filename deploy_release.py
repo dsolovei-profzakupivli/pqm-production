@@ -17,16 +17,7 @@ with sqlite3.connect(path) as con:
  con.execute('PRAGMA foreign_keys=ON')
  if args.apply_navigation:
   seed=json.loads((Path(__file__).parent/'config/navigation.release.json').read_text(encoding='utf-8'))
-  for item in seed['icons']:
-   parsed=navigation_settings.stored_icon(item)
-   old=con.execute('SELECT name,svg FROM navigation_icons WHERE icon_key=?',(item['icon_key'],)).fetchone()
-   if old is None or tuple(old)!=(item['name'],item['svg']):
-    con.execute('INSERT INTO navigation_icons(icon_key,name,svg,updated_at,updated_by) VALUES(?,?,?,?,?) ON CONFLICT(icon_key) DO UPDATE SET name=excluded.name,svg=excluded.svg,updated_at=excluded.updated_at,updated_by=excluded.updated_by',(item['icon_key'],item['name'],item['svg'],'2026-09-10','release seed'))
-  navigation_settings.validate(seed['navigation'],navigation_settings.ICON_KEYS|{r[0] for r in con.execute('SELECT icon_key FROM navigation_icons')})
-  encoded=json.dumps(seed['navigation'],ensure_ascii=False,separators=(',',':'))
-  current=con.execute('SELECT overrides_json FROM navigation_settings WHERE id=1').fetchone()
-  if current is None or json.loads(current[0])!=seed['navigation']:
-   con.execute('INSERT INTO navigation_settings(id,overrides_json,updated_at,updated_by) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET overrides_json=excluded.overrides_json,updated_at=excluded.updated_at,updated_by=excluded.updated_by',(encoded,'2026-09-10','release seed'))
+  navigation_settings.install_release_seed(con,seed,preserve_existing=server.SANDBOX_MODE)
  integrity=[r[0] for r in con.execute('PRAGMA integrity_check')]
  violations=con.execute('PRAGMA foreign_key_check').fetchall()
  if integrity!=['ok'] or violations:raise RuntimeError('SQLite validation failed; stop deployment and inspect backup')

@@ -68,11 +68,11 @@ class ViolationProtocolDocxTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def build(self, protocol_type="warning", customer=None, supplier=None):
+    def build(self, protocol_type="warning", customer=None, supplier=None, values=None):
         output = Path(self.temp.name) / f"{protocol_type}.docx"
         generator.build_violation_protocol_docx(
             protocol_type, output,
-            dict(BASE_VALUES),
+            dict(BASE_VALUES if values is None else values),
             "ОСТАТОЧНЕ ОБҐРУНТУВАННЯ УО ДОСЛІВНО",
             customer or [], supplier or [],
             {"has_written_refusal": True, "has_contract": True, "has_contract_security": True,
@@ -81,6 +81,80 @@ class ViolationProtocolDocxTests(unittest.TestCase):
              "has_customer_documents": bool(customer)},
         )
         return output
+
+    def test_decision_links_are_real_docx_relationships(self):
+        urls = {
+            "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+            "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST",
+            "winner_notice_url": "https://public-docs.prozorro.gov.ua/winner",
+            "rejection_decision_url": "https://public-docs.prozorro.gov.ua/rejection",
+        }
+        output = self.build(values={**BASE_VALUES, **urls})
+        relationships = [rel.target_ref for rel in Document(output).part.rels.values()
+                         if rel.reltype.endswith('/hyperlink')]
+        for url in urls.values():
+            self.assertIn(url, relationships)
+        self.assertEqual(relationships.count(urls["winner_notice_url"]), 1)
+        self.assertEqual(relationships.count(urls["rejection_decision_url"]), 1)
+
+    def test_decision_dates_and_header_identifiers_link_to_exact_evidence(self):
+        urls = {
+            "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+            "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST",
+            "winner_notice_url": "https://prozorro.gov.ua/pdf/determining_winner_of_procurement?dateModified=winner",
+            "rejection_decision_url": "https://prozorro.gov.ua/pdf/tender_rejection_protocol?dateModified=rejection",
+        }
+        for protocol_type in ("warning", "decline_p49_1_2"):
+            with self.subTest(protocol_type=protocol_type):
+                document = Document(self.build(protocol_type, values={**BASE_VALUES, **urls}))
+                linked_text = {}
+                for paragraph in generator._all_paragraphs(document):
+                    for link in paragraph._p.xpath(".//w:hyperlink"):
+                        target = document.part.rels[link.get(qn("r:id"))].target_ref
+                        linked_text.setdefault(target, []).append(
+                            "".join(node.text or "" for node in link.xpath(".//w:t")))
+                self.assertIn(BASE_VALUES["winner_date"], linked_text[urls["winner_notice_url"]])
+                self.assertIn(BASE_VALUES["rejection_date"], linked_text[urls["rejection_decision_url"]])
+                self.assertIn(BASE_VALUES["procurement_id"], linked_text[urls["procurement_url"]])
+                self.assertIn(BASE_VALUES["report_id"], linked_text[urls["report_url"]])
+
+    def test_missing_decision_documents_do_not_create_false_links(self):
+        output = self.build(values={**BASE_VALUES,
+                                    "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+                                    "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST"})
+        xml = Document(output).part._element.xml
+        self.assertNotIn("Повідомлення про намір укласти договір", xml)
+        self.assertNotIn("Рішення про відхилення", xml)
+
+    def test_pdf_conversion_preserves_decision_link_annotations(self):
+        import protocol_pdf
+        from pypdf import PdfReader
+        if not protocol_pdf._soffice_executable() and not protocol_pdf._word_available():
+            self.skipTest("LibreOffice/Word PDF converter unavailable locally")
+        urls = {
+            "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+            "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST",
+            "winner_notice_url": "https://public-docs.prozorro.gov.ua/winner",
+            "rejection_decision_url": "https://public-docs.prozorro.gov.ua/rejection",
+        }
+        source = self.build(values={**BASE_VALUES, **urls})
+        target = Path(self.temp.name) / "linked.pdf"
+        try:
+            protocol_pdf.ensure_pdf(source, target)
+        except RuntimeError as exc:
+            # Some Windows CI/sandbox logon sessions can see WINWORD.EXE but
+            # cannot activate COM (80070520). Do not confuse that with a PDF
+            # that was created and lost its links; Linux LibreOffice still runs.
+            if os.name == "nt" and "80070520" in str(exc):
+                self.skipTest("Word COM unavailable in this Windows logon session")
+            raise
+        actual = set()
+        for page in PdfReader(str(target)).pages:
+            for reference in page.get("/Annots", []):
+                action = reference.get_object().get("/A")
+                if action and action.get("/URI"):
+                    actual.add(str(action["/URI"]))
+        self.assertTrue(set(urls.values()).issubset(actual), actual)
 
     def test_approved_source_templates_are_unchanged(self):
         for key, expected in EXPECTED_HASHES.items():
@@ -176,7 +250,7 @@ class ViolationProtocolDocxTests(unittest.TestCase):
                     self.assertTrue(run._r.rPr is None or run._r.rPr.find(qn("w:shd")) is None,
                                     (protocol_type, run.text))
 
-    def test_reason_block_has_three_distinct_semantic_parts_and_template_styles(self):
+    def test_reason_block_keeps_the_three_template_fields(self):
         values = {**BASE_VALUES,
                   "reason_label": "Підпункт 1 пункту 49 Постанови Кабінету Міністрів України",
                   "reason_text": "Офіційний нормативний опис Prozorro",
@@ -191,22 +265,80 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             reason_table = document.tables[1]
             label_cell, value_cell = reason_table.rows[0].cells[0], reason_table.rows[0].cells[-1]
             description_cell = reason_table.rows[1].cells[0]
-            self.assertEqual(label_cell.text, "Причина звернення:")
+            self.assertEqual(label_cell.text.strip(), "Причина звернення:")
             self.assertEqual([p.text for p in value_cell.paragraphs], [
                 values["reason_label"], values["reason_text"]])
-            self.assertEqual(description_cell.text, "«Оригінальне пояснення Замовника»")
-            for run in label_cell.paragraphs[0].runs + value_cell.paragraphs[0].runs:
-                self.assertEqual(run.font.name, "Times New Roman")
-                self.assertEqual(run.font.size.pt, 10)
-                self.assertTrue(run.bold)
-            for run in value_cell.paragraphs[1].runs:
-                self.assertEqual(run.font.name, "Times New Roman")
-                self.assertEqual(run.font.size.pt, 10)
-                self.assertFalse(bool(run.bold))
-            for run in description_cell.paragraphs[0].runs:
-                self.assertEqual(run.font.name, "Times New Roman")
-                self.assertEqual(run.font.size.pt, 10)
-                self.assertTrue(run.italic)
+            self.assertEqual(description_cell.text, values["violation_description"])
+            physical_cells = {id(cell._tc): cell for row in reason_table.rows for cell in row.cells}
+            self.assertEqual(sum(values["violation_description"] in cell.text
+                                 for cell in physical_cells.values()), 1)
+
+    def test_report_description_is_verbatim_without_identifier_links(self):
+        source = "  Довільний текст Замовника: № 12; UA-D-TEST; UA-2026-TEST. https://example.test/note  "
+        values = {**BASE_VALUES, "violation_description": source,
+                  "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
+                  "report_url": "https://prozorro.gov.ua/uk/contract/UA-2026-TEST-a1/violation-reports#report-UA-D-TEST"}
+        output = self.build(values=values)
+        document = Document(output)
+        paragraph = document.tables[1].rows[1].cells[0].paragraphs[0]
+        self.assertEqual(paragraph.text, source)
+        self.assertFalse(paragraph._p.xpath(".//w:hyperlink"))
+
+    def test_written_refusal_uses_clickable_label_without_visible_url(self):
+        url = "https://example.test/refusal-evidence"
+        for protocol_type in ("warning", "decline_p49_1_2"):
+            with self.subTest(protocol_type=protocol_type):
+                output = self.build(protocol_type, values={**BASE_VALUES, "refusal_document": url})
+                document = Document(output)
+                matches = ["".join(node.text or "" for node in link.xpath(".//w:t"))
+                           for link in document.part._element.xpath(".//w:hyperlink")
+                           if document.part.rels[link.get(qn("r:id"))].target_ref == url]
+                self.assertEqual(matches, ["лист Постачальник від 04.09.2026 Вих. №42"])
+                self.assertNotIn(url, all_text(output))
+
+    def test_civil_code_condition_applies_to_every_protocol_without_highlighting(self):
+        for protocol_type in EXPECTED_HASHES:
+            for applicable in (True, False):
+                with self.subTest(protocol_type=protocol_type, applicable=applicable):
+                    output = Path(self.temp.name) / f"civil-{protocol_type}-{applicable}.docx"
+                    generator.build_violation_protocol_docx(
+                        protocol_type, output, dict(BASE_VALUES), "Обґрунтування", [], [],
+                        {"has_written_refusal": True, "has_contract": True,
+                         "has_supplier_response": True, "has_civil_code_basis": applicable})
+                    text = all_text(output)
+                    self.assertEqual("Цивільного кодексу України" in text, applicable)
+                    self.assertNotIn("ЦКУ: не застосовується", text)
+                    if applicable:
+                        document = Document(output)
+                        for paragraph in document.paragraphs:
+                            if "Цивільного кодексу України" in paragraph.text:
+                                self.assertFalse(paragraph._p.xpath(".//w:highlight | .//w:shd"))
+
+    def test_older_runtime_template_without_condition_markers_still_obeys_civil_code_flag(self):
+        source = Document(generator.TEMPLATES["warning"])
+        for paragraph in list(source.paragraphs):
+            if "{{#if decision.civil_code_basis" in paragraph.text or "{{/if}}" in paragraph.text:
+                paragraph._p.getparent().remove(paragraph._p)
+        marked = next(paragraph for paragraph in source.paragraphs
+                      if "Цивільного кодексу України" in paragraph.text)
+        highlight = OxmlElement("w:highlight")
+        highlight.set(qn("w:val"), "yellow")
+        marked.runs[0]._r.get_or_add_rPr().append(highlight)
+        runtime = Path(self.temp.name) / "older_runtime.docx"
+        source.save(runtime)
+        with patch.dict(generator.TEMPLATES, {"warning": runtime}), \
+                patch.object(generator, "ensure_runtime_templates"):
+            for applicable in (True, False):
+                output = Path(self.temp.name) / f"older-{applicable}.docx"
+                generator.build_violation_protocol_docx(
+                    "warning", output, dict(BASE_VALUES), "Обґрунтування", [], [],
+                    {"has_written_refusal": True, "has_contract": True,
+                     "has_supplier_response": True, "has_civil_code_basis": applicable})
+                document = Document(output)
+                civil = [paragraph for paragraph in document.paragraphs
+                         if "Цивільного кодексу України" in paragraph.text]
+                self.assertEqual(bool(civil), applicable)
+                self.assertFalse(any(paragraph._p.xpath(".//w:highlight | .//w:shd") for paragraph in civil))
 
     def test_justification_preserves_paragraphs_and_has_explicit_effective_formatting(self):
         justification = ("\tВідповідно до пп. 2 п. 49 Порядку № 822 застосовується правило.\r\n\r\n"

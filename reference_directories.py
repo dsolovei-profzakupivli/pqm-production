@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -27,6 +28,10 @@ AMCU_LOCK = threading.Lock()
 AMCU_WORKER_TIMEOUT = 300
 AMCU_MAX_BYTES = 25 * 1024 * 1024
 LOG = logging.getLogger("pqm.server")
+NAZK_SANDBOX_LOG = logging.getLogger("pqm.sandbox.nazk")
+NAZK_SANDBOX_LOG.propagate = False
+if not NAZK_SANDBOX_LOG.handlers:
+    NAZK_SANDBOX_LOG.addHandler(logging.StreamHandler(sys.stderr))
 
 
 def _now():
@@ -115,9 +120,21 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
         return
     succeeded = False
     failure = ""
+    target_attested = False
+    phase = "preflight"
     try:
+        if os.environ.get('PQM_SANDBOX') == '1':
+            import sandbox_runtime
+            sandbox_runtime.attest_internal_target(db_path)
+            if not sandbox_runtime.nazk_read_enabled():
+                raise RuntimeError('STOP: SANDBOX NAZK read is disabled')
+        target_attested = True
         _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
-        payload = json.loads(_fetch(NAZK_URL).decode("utf-8-sig"))
+        phase = "fetch"
+        raw = (sandbox_runtime.fetch_nazk_bytes(NAZK_URL)
+               if os.environ.get('PQM_SANDBOX') == '1' else _fetch(NAZK_URL))
+        phase = "validate"
+        payload = json.loads(raw.decode("utf-8-sig"))
         items = payload if isinstance(payload, list) else payload.get("data", payload.get("items", []))
         if not isinstance(items, list) or not items:
             raise ValueError("Порожній або некоректний реєстр НАЗК; збережені дані не змінено")
@@ -141,6 +158,7 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
                 *(str(x or "").strip() for x in names), full_name, str(item.get("offenseId") or ""), str(item.get("offenseName") or ""), str(item.get("punishment") or ""),
                 str(item.get("courtCaseNumber") or ""), _date_iso(item.get("sentenceDate")), sentence, _date_iso(item.get("punishmentStart")), str(item.get("courtId") or ""),
                 str(item.get("courtName") or ""), articles, decision_url, json.dumps(item, ensure_ascii=False)))
+        phase = "commit"
         with sqlite3.connect(db_path) as con:
             con.execute("PRAGMA foreign_keys=ON")
             con.execute("BEGIN IMMEDIATE")
@@ -152,11 +170,16 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
             con.executemany("INSERT INTO nazk_registry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             if con.execute("PRAGMA foreign_key_check").fetchone():
                 raise ValueError("НАЗК: FK-перевірка не пройдена; збережені дані не змінено")
+        phase = "status"
         _state(db_path, "nazk", "ok", "Оновлено", len(rows), _now())
         succeeded = True
     except Exception as exc:
         failure = str(exc) or type(exc).__name__
-        _state(db_path, "nazk", "error", str(exc))
+        if os.environ.get('PQM_SANDBOX') == '1':
+            NAZK_SANDBOX_LOG.error("SANDBOX NAZK refresh failed phase=%s exception_type=%s",
+                                   phase, type(exc).__name__)
+        if target_attested:
+            _state(db_path, "nazk", "error", str(exc))
     finally:
         LOCK.release()
         if succeeded and on_complete:
@@ -169,6 +192,9 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_runtime
+        sandbox_runtime.attest_internal_target(db_path)
     if source == "amcu":
         return _start_amcu_refresh(db_path, raw, filename, on_complete)
     with START_LOCK:
@@ -196,6 +222,9 @@ def _amcu_error(db_path, exc):
 
 
 def _start_amcu_refresh(db_path, raw, filename, on_complete=None):
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_runtime
+        sandbox_runtime.attest_internal_target(db_path)
     key = str(Path(db_path).resolve())
     with START_LOCK:
         # Reserve before scheduling, including the 202 response delay. AMCU
@@ -430,6 +459,11 @@ def _amcu_rows_bounded(raw=None, filename=""):
     The child never opens a database or imports the application. A hung network
     response or workbook parser cannot retain the refresh lock indefinitely.
     """
+    if os.environ.get('PQM_SANDBOX') == '1':
+        import sandbox_amcu
+        if raw is not None:
+            return sandbox_amcu.upload_rows(raw, filename)
+        return sandbox_amcu.download_rows()
     if raw is not None and len(raw) > AMCU_MAX_BYTES:
         raise ValueError("Файл АМКУ перевищує дозволений розмір 25 МБ")
     try:
@@ -454,7 +488,12 @@ def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False, on_complete=
     AMCU_ERRORS.pop(key, None)
     started = time.monotonic()
     finished = False
+    target_attested = False
     try:
+        if os.environ.get('PQM_SANDBOX') == '1':
+            import sandbox_runtime
+            sandbox_runtime.attest_internal_target(db_path)
+        target_attested = True
         _state(db_path, "amcu", "running", "Завантаження реєстру АМКУ")
         LOG.info("AMCU refresh started")
         source, rows = _amcu_rows_bounded(raw, filename)
@@ -474,10 +513,14 @@ def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False, on_complete=
         LOG.info("AMCU refresh completed rows=%d fetch_parse_seconds=%.3f db_seconds=%.3f total_seconds=%.3f",
                  count, fetched-started, time.monotonic()-fetched, time.monotonic()-started)
     except Exception as exc:
-        _amcu_error(db_path, exc)
+        if target_attested:
+            _amcu_error(db_path, exc)
+        else:
+            AMCU_ERRORS[key] = str(exc)
+            LOG.error('AMCU target attestation failed before DB write: %s', type(exc).__name__)
         finished = True
     finally:
-        if not finished:
+        if not finished and target_attested:
             _amcu_error(db_path, "Фоновий процес АМКУ перервано; повторіть оновлення")
         AMCU_ACTIVE.discard(key)
         AMCU_LOCK.release()

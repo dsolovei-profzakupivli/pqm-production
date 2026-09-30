@@ -4,9 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PQM — Реєстр заявок</title>
-  <link rel="icon" href="/assets/pqm-search-icon.png" type="image/png" sizes="192x192">
-  <link rel="icon" href="/assets/pqm-tab-icon.png" type="image/png" sizes="32x32">
-  <link rel="apple-touch-icon" href="/assets/pqm-search-icon.png">
+  <link rel="icon" href="/assets/pqm-q-favicon-prod.svg?v=1" type="image/svg+xml" sizes="any">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="filters.css">
   <link rel="stylesheet" href="modules.css">
@@ -27,7 +25,7 @@
   </section>
   <div id="applicationShell" hidden>
   <header class="topbar">
-    <div class="brand"><img class="brand-logo" src="assets/professional-purchasing-logo.webp" alt="ДУ Професійні закупівлі"><div><em id="environmentBanner" title="Profzakupivli Qualification Manager">PQM</em></div></div>
+    <div class="brand prod-brand"><img class="prod-brand-initials" src="/assets/pqm-brand-mark-prod.svg" alt="" aria-hidden="true"><span class="prod-brand-divider" aria-hidden="true"></span><span class="prod-brand-copy"><strong>Професійні закупівлі</strong><small>Procurement Qualification Manager</small></span><em id="environmentBanner" class="prod-brand-accessible">PQM</em></div>
     <nav id="mainNav" aria-label="Основна навігація"></nav>
     <div class="service-nav" aria-label="Службова навігація">
       <button id="messagesNav" class="service-nav-button" title="Повідомлення" aria-label="Повідомлення"><span aria-hidden="true">🔔</span><b id="messagesUnreadBadge" hidden>0</b></button>
@@ -183,7 +181,9 @@
         <label>Тип<select id="edrMonitoringType"><option value="">Усі</option><option value="individual_entrepreneur">ФОП</option><option value="legal_entity">ЮО</option></select></label>
         <div class="edr-monitoring-filter-field"><span>Статус Prozorro</span><details id="edrMonitoringProzorro" class="multi-filter"><summary>Усі</summary><div class="multi-panel"><label><input type="checkbox" value="Активний"> Активний</label><label><input type="checkbox" value="Призупинений"> Призупинений</label><label><input type="checkbox" value="Неактивний"> Неактивний</label><label><input type="checkbox" value="Ще не в реєстрі"> Ще не в реєстрі</label></div></details></div>
         <div class="edr-monitoring-filter-field"><span>Статус ЄДР</span><details id="edrMonitoringEdr" class="multi-filter"><summary>Усі</summary><div class="multi-panel"></div></details></div>
-        <label>Назви з ЄДР<select id="edrMonitoringNames"><option value="">Усі</option><option value="complete">Заповнені</option><option value="missing_any">Не заповнені</option></select></label>
+        <label>Назви з ЄДР<select id="edrMonitoringNames"><option value="">Усі</option><option value="complete">Заповнені</option><option value="missing_any">Потребують заповнення</option><option value="missing_full">Немає повної</option><option value="missing_short">Немає скороченої</option></select></label>
+        <label>Повна назва з ЄДР<select id="edrMonitoringFullName"><option value="">Усі</option><option value="filled">Заповнена</option><option value="missing">Не заповнена</option></select></label>
+        <label>Скорочена назва з ЄДР<select id="edrMonitoringShortName"><option value="">Усі</option><option value="filled">Заповнена</option><option value="missing">Не заповнена</option></select></label>
         <label>Актуальність<select id="edrMonitoringFreshness"><option value="">Усі</option><option value="not_current">Неактуально</option><option value="lt30">&lt;30 днів</option><option value="gt30">&gt;30 днів</option><option value="gt60">&gt;60 днів</option><option value="gt90">&gt;90 днів</option><option value="not_checked">Не перевірено</option></select></label>
         <label>Перевірено від<input id="edrMonitoringVerifiedFrom" type="date"></label><label>Перевірено до<input id="edrMonitoringVerifiedTo" type="date"></label>
         <label>Остання заявка від<input id="edrMonitoringApplicationFrom" type="date"></label><label>Остання заявка до<input id="edrMonitoringApplicationTo" type="date"></label>
@@ -195,7 +195,7 @@
       <span id="edrMonitoringCounts" class="muted">Знайдено: — · Вибрано: 0</span>
     </section>
     <div id="edrMonitoringChips" class="filter-chips edr-monitoring-chips" hidden></div>
-    <section class="card edr-monitoring-table-card data-module-table"><div class="table-scroll"><table class="edr-monitoring-table"><thead><tr><th data-edr-column="selected"><input id="edrMonitoringSelectPage" type="checkbox" aria-label="Вибрати поточну сторінку"></th><th data-edr-column="freshness" data-edr-sort="freshness">Маркер актуальності</th><th data-edr-column="supplier_code" data-edr-sort="supplier_code">Код ЄДРПОУ/РНОКПП</th><th data-edr-column="supplier_name" data-edr-sort="supplier_name">Найменування</th><th data-edr-column="manager_name" data-edr-sort="manager_name">ПІБ для перевірки</th><th data-edr-column="edr_status" data-edr-sort="edr_status">Статус ЄДР</th><th data-edr-column="prozorro_status" data-edr-sort="prozorro_status">Статус Prozorro</th><th data-edr-column="termination_details" data-edr-sort="termination_details">Реквізити припинення</th><th data-edr-column="latest_application_date" data-edr-sort="latest_application_date">Дата останньої заявки</th><th data-edr-column="verification_date" data-edr-sort="verification_date">Дата перевірки</th><th data-edr-column="verification_officer" data-edr-sort="verification_officer">УО</th><th data-edr-column="google_note" data-edr-sort="google_note">Примітка з Google</th></tr></thead><tbody id="edrMonitoringBody"></tbody></table></div><footer class="supplier-pagination"><span id="edrMonitoringPageInfo"></span><div><button id="edrMonitoringPrev" class="ghost" type="button">←</button><button id="edrMonitoringNext" class="ghost" type="button">→</button></div></footer></section>
+    <section class="card edr-monitoring-table-card data-module-table"><div class="table-scroll"><table class="edr-monitoring-table"><thead><tr><th data-edr-column="selected"><input id="edrMonitoringSelectPage" type="checkbox" aria-label="Вибрати поточну сторінку"></th><th data-edr-column="freshness" data-edr-sort="freshness">Маркер актуальності</th><th data-edr-column="supplier_code" data-edr-sort="supplier_code">Код ЄДРПОУ/РНОКПП</th><th data-edr-column="supplier_name" data-edr-sort="supplier_name">Найменування</th><th data-edr-column="edr_full_name" data-edr-sort="edr_full_name">Повна назва з ЄДР</th><th data-edr-column="edr_short_name" data-edr-sort="edr_short_name">Скорочена назва з ЄДР</th><th data-edr-column="manager_name" data-edr-sort="manager_name">ПІБ для перевірки</th><th data-edr-column="edr_status" data-edr-sort="edr_status">Статус ЄДР</th><th data-edr-column="prozorro_status" data-edr-sort="prozorro_status">Статус Prozorro</th><th data-edr-column="termination_details" data-edr-sort="termination_details">Реквізити припинення</th><th data-edr-column="latest_application_date" data-edr-sort="latest_application_date">Дата останньої заявки</th><th data-edr-column="verification_date" data-edr-sort="verification_date">Дата перевірки</th><th data-edr-column="verification_officer" data-edr-sort="verification_officer">УО</th><th data-edr-column="google_note" data-edr-sort="google_note">Примітка з Google</th></tr></thead><tbody id="edrMonitoringBody"></tbody></table></div><footer class="supplier-pagination"><span id="edrMonitoringPageInfo"></span><div><button id="edrMonitoringPrev" class="ghost" type="button">←</button><button id="edrMonitoringNext" class="ghost" type="button">→</button></div></footer></section>
   </main>
 
   <main id="frameworkAnalyticsView" class="module-view" hidden>
@@ -282,10 +282,12 @@
     </section>
     <section class="supplier-toolbar requests-toolbar card">
       <div class="search-wrap"><span>⌕</span><input id="requestsSearch" placeholder="Пошук за UA-D, замовником, постачальником, кодом або закупівлею…"></div>
-      <select id="requestsStatus"><option value="">Усі статуси</option></select>
+      <select id="requestsStatus" hidden aria-hidden="true" tabindex="-1"><option value="">Усі статуси</option></select>
       <select id="requestsReason"><option value="">Усі підстави</option></select>
       <label class="compact-date">Від <input id="requestsDateFrom" type="date"></label>
       <label class="compact-date">До <input id="requestsDateTo" type="date"></label>
+      <button id="requestsDeclension" type="button" class="ghost">Відмінювання</button>
+      <button id="requestsTemplates" type="button" class="ghost" hidden>Шаблони</button>
       <button id="requestsRefresh" class="ghost">Оновити з Prozorro</button>
     </section>
     <p id="requestsSyncStatus" class="module-sync muted"></p>

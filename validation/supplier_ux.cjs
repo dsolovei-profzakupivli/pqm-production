@@ -6,18 +6,27 @@ const root=path.resolve(__dirname,'..');
 const app=fs.readFileSync(path.join(root,'app.js'),'utf8');
 const history=fs.readFileSync(path.join(root,'history_ui.js'),'utf8');
 const css=fs.readFileSync(path.join(root,'styles.css'),'utf8');
+const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
+const sandboxRuntime=fs.readFileSync(path.join(root,'sandbox_runtime.py'),'utf8');
+const sandboxTheme=fs.readFileSync(path.join(root,'sandbox_theme.css'),'utf8');
 const section=(source,from,to)=>source.slice(source.indexOf(from),source.indexOf(to,source.indexOf(from)));
 const dates=section(app,'function displayDate(value)','function addCalendarDays(');
 const context=vm.createContext({Intl,Date,Object,String});
 vm.runInContext(dates,context);
 vm.runInContext(section(app,'function environmentBannerText(features)','async function loadRuntimeFeatures()'),context);
 assert.equal(context.environmentBannerText({environment:'production',sandbox_mode:false}),'PQM');
-assert.equal(context.environmentBannerText({environment:'test_web',sandbox_mode:true}),'PQM · SANDBOX');
-assert.equal(context.environmentBannerText({environment:'local',sandbox_mode:false}),'PQM · LOCAL');
+assert.equal(context.environmentBannerText({environment:'test_web',sandbox_mode:true}),'PQM');
+assert.equal(context.environmentBannerText({environment:'local',sandbox_mode:false}),'PQM');
 assert.equal(context.environmentBannerText({environment:'test_web',sandbox_mode:false}),'PQM');
-assert.match(fs.readFileSync(path.join(root,'index.html'),'utf8'),/id="environmentBanner"[^>]*>PQM<\/em>/);
-assert.doesNotMatch(fs.readFileSync(path.join(root,'index.html'),'utf8'),/Розроблено для ДУ/);
-assert.match(css,/\.topbar \.brand\{flex:0 0 auto;min-width:0;gap:8px\}/);
+assert.match(html,/<div class="brand prod-brand">[\s\S]*?id="environmentBanner" class="prod-brand-accessible">PQM<\/em>/);
+assert.match(html,/src="\/assets\/pqm-brand-mark-prod\.svg"/);
+assert.match(html,/href="\/assets\/pqm-q-favicon-prod\.svg\?v=1"/);
+assert.match(sandboxRuntime,/class="brand sandbox-brand"/);
+assert.match(sandboxRuntime,/pqm-brand-mark\.svg/);
+assert.match(sandboxRuntime,/pqm-q-favicon\.svg\?v=4/);
+assert.match(css,/\.topbar \.brand\.prod-brand\{gap:0;align-items:center\}/);
+assert.match(sandboxTheme,/html\[data-pqm-environment="sandbox"\] \.topbar \.brand\.sandbox-brand/);
+assert.doesNotMatch(html,/Розроблено для ДУ/);
 assert.match(css,/@media\(max-width:1280px\)\{[\s\S]*?\.topbar #mainNav\{order:5/);
 assert.equal(context.displayDateOnly('2026-09-09'),'09.09.2026');
 assert.equal(context.displayDate('2026-09-09'),'09.09.2026');
@@ -46,10 +55,29 @@ nodes[2].onclick();assert.equal(editor.hidden,true);assert.equal(save.hidden,tru
 nodes.length=0;
 noteContext.compactSupplierNote(supplierNoteSection,'Історична примітка',false);
 assert.equal(nodes[0].textContent,'Редагувати');assert.equal(nodes[1].textContent,'Історична примітка');
-assert.match(app,/\/supplier-google-row\/\$\{encodeURIComponent\(code\)\}/);
-assert.match(app,/supplier-google-row\/\$\{encodeURIComponent\(code\)\}\?open=1/);
+for(const [environment,expected] of [
+  ['production','/api/supplier-google-row/46130719'],
+  ['sandbox','/api/sandbox/supplier-google-row/46130719'],
+]){
+  const requests=[],links=[];
+  const edrSection={isConnected:true,querySelectorAll:()=>[],querySelector(selector){
+    if(selector==='h3')return{after(){}};
+    if(selector==='.supplier-profile-grid')return{after(){}};
+  }};
+  const body={querySelector(selector){return selector==='.supplier-profile-edr'?edrSection:{}}};
+  const routeContext=vm.createContext({
+    document:{documentElement:{dataset:{pqmEnvironment:environment}},createElement:()=>({append(node){links.push(node)}})},
+    $:()=>({textContent:'ЄДРПОУ / РНОКПП: 46130719'}),
+    compactSupplierNote(){},role:()=> 'admin',displayEdrStatus:value=>value,
+    request:url=>{requests.push(url);return{then(callback){callback();return{catch(){}}}}},
+    API:'/api',encodeURIComponent,
+  });
+  vm.runInContext(section(app,'function decorateSupplierEdrCard(','function formatLegacyCardDates('),routeContext);
+  routeContext.decorateSupplierEdrCard(body,'46130719',{edr_status:'Зареєстровано'},{note:''});
+  assert.deepEqual(requests,[expected],`${environment} must request its own Google-row route`);
+  assert.equal(links.find(link=>link.textContent==='↗ Google ЄДР')?.href,`${expected}?open=1`,`${environment} must open its own Google-row route`);
+}
 assert.match(app,/Відкрити картку постачальника/);
-const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
 const docs=html.match(/<dialog id="docsDialog">([\s\S]*?)<\/dialog>/)?.[1]||'';
 assert.match(docs,/<form method="dialog"><header>/);
 assert.match(docs,/<div id="docsList" class="docs-list"><\/div><footer>/);
@@ -84,8 +112,30 @@ for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_ex
 }
 assert.equal(typeReloads,8);
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
-assert.match(app,/cell\.classList\.add\('supplier-code-action-cell'\)/);
-assert.match(css,/\.supplier-code-action-cell \.supplier-card-action\{position:absolute;right:8px/);
+let supplierCardOpens=0,supplierRowClicks=0;
+const makeSupplierElement=()=>({children:[],append(...children){this.children.push(...children)},setAttribute(name,value){this[name]=value}});
+const supplierCodeCell={textContent:'46130719',classList:{add(value){this.value=value}},replaceChildren(value){this.child=value}};
+const supplierCardContext=vm.createContext({document:{createElement:makeSupplierElement}});
+vm.runInContext(section(app,'function installSupplierCodeAction(','function supplierEdrDatesHtml('),supplierCardContext);
+supplierCardContext.installSupplierCodeAction(supplierCodeCell,()=>supplierCardOpens++);
+assert.equal(supplierCodeCell.classList.value,'supplier-code-action-cell');
+assert.equal(supplierCodeCell.child.className,'supplier-code-line');
+assert.equal(supplierCodeCell.child.children.length,2,'supplier code and action must both remain in the cell');
+const [supplierCodeText,supplierCardButton]=supplierCodeCell.child.children;
+assert.equal(supplierCodeText.className,'supplier-code-value');
+assert.equal(supplierCodeText.textContent,'46130719');
+assert.equal(supplierCardButton.className,'supplier-card-action');
+assert.equal(supplierCardButton.type,'button');
+assert.equal(supplierCardButton.title,'Відкрити картку постачальника');
+assert.equal(supplierCardButton['aria-label'],supplierCardButton.title);
+assert.equal(supplierCardButton.textContent,'↗');
+assert.notEqual(supplierCardButton.hidden,true);
+assert.match(css,/\.supplier-code-line\{[^}]*display:grid;[^}]*grid-template-columns:minmax\(0,1fr\) auto/);
+assert.doesNotMatch(css.match(/\.supplier-code-action-cell \.supplier-card-action\{[^}]*\}/)?.[0]||'',/display:none|visibility:hidden/);
+supplierCardButton.onclick({stopPropagation(){supplierRowClicks++}});
+assert.equal(supplierCardOpens,1);
+assert.equal(supplierRowClicks,1);
+assert.match(app,/installSupplierCodeAction\(cell,\(\)=>openSupplierProfile\(row\.dataset\.supplierCode\)\)/);
 const overviewContext=vm.createContext({esc:value=>String(value||''),displayDate:value=>String(value||'')});
 vm.runInContext(section(app,'function supplierProfileOverviewHtml(','function compactSupplierNote('),overviewContext);
 const sampleOverview=overviewContext.supplierProfileOverviewHtml('Постачальник','12345678',{}, {history:[]},{note:''},false);

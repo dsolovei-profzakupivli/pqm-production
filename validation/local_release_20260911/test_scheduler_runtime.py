@@ -205,7 +205,10 @@ class SchedulerRuntimeTests(unittest.TestCase):
         self.assertIn("/admin/scheduler-jobs/", app)
         self.assertIn("schedulerEnableConfirmations", app)
         self.assertIn("data-scheduler-job", app)
-        self.assertIn("canManage=role()==='admin'", app)
+        self.assertIn("isAdmin=role()==='admin'", app)
+        self.assertIn("const showAction=isAdmin", app)
+        self.assertNotIn("job.job==='violation_reports'||job.job==='nazk_registry'", app)
+        self.assertIn("features.sandbox_mode&&!manageable?'disabled", app)
 
     def test_viewer_cannot_toggle_scheduler(self):
         self.assertTrue(server.mutation_allowed("admin", "POST", "/api/admin/scheduler-jobs/prozorro"))

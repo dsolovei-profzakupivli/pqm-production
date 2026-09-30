@@ -411,6 +411,29 @@ def _add_hyperlink(paragraph, label: str, url: str, font_name: str | None = None
     run.append(node); hyperlink.append(run); paragraph._p.append(hyperlink)
 
 
+def _link_existing_identifier(paragraph, label: str, url: str):
+    """Link resolved identifiers in place without rebuilding template typography."""
+    if not label or not str(url).startswith("https://"):
+        return
+    pending = list(paragraph.runs)
+    while pending:
+        run = pending.pop(0)
+        if label not in run.text:
+            continue
+        before, after = run.text.split(label, 1)
+        properties = deepcopy(run._r.rPr) if run._r.rPr is not None else None
+        run.text = before
+        _add_hyperlink(paragraph, label, url, run_properties=properties)
+        link = paragraph._p[-1]
+        run._r.addnext(link)
+        if after:
+            suffix = paragraph.add_run(after)
+            if properties is not None:
+                suffix._r.insert(0, deepcopy(properties))
+            link.addnext(suffix._r)
+            pending.insert(0, suffix)
+
+
 def _display_document_datetime(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -465,6 +488,18 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         else:
             run = current.add_run(label)
             _set_run_font(run, 11)
+
+
+def _set_refusal_link(paragraph, values: dict[str, str]) -> None:
+    """Render the evidence label as the link and omit the raw URL."""
+    label = (f"лист {values.get('supplier_short_name', '')} від {values.get('refusal_date', '')} "
+             f"Вих. №{values.get('refusal_outgoing_number', '')}").strip()
+    url = values.get("refusal_document", "")
+    _clear_paragraph_content(paragraph)
+    if str(url).startswith("https://"):
+        _add_hyperlink(paragraph, label, url, "Times New Roman", 10)
+    else:
+        _set_run_font(paragraph.add_run(label), 10)
 
 
 def _normalized_documents(documents: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -553,39 +588,6 @@ def _set_paragraph_geometry(paragraph, size: float, first_line: bool = False,
     fmt.first_line_indent = Cm(first_line_cm) if first_line else None
     for run in paragraph.runs:
         _set_run_font(run, size, bool(run.bold), bool(run.italic))
-
-
-def _format_reason_block(document, values: dict[str, str]):
-    for table in document.tables:
-        for index, row in enumerate(table.rows):
-            if "причина звернення" not in " ".join(cell.text for cell in row.cells).lower():
-                continue
-            label_cell, value_cell = row.cells[0], row.cells[-1]
-            label_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            value_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            label_p = _clear_cell(label_cell)
-            label_run = label_p.add_run("Причина звернення:")
-            _set_run_font(label_run, 10, bold=True)
-            reason_label = _clear_cell(value_cell)
-            label = reason_label.add_run(values.get("reason_label", ""))
-            _set_run_font(label, 10, bold=True)
-            reason_text = value_cell.add_paragraph()
-            _copy_paragraph_properties(reason_label, reason_text)
-            text_run = reason_text.add_run(values.get("reason_text", ""))
-            _set_run_font(text_run, 10)
-            if index + 1 >= len(table.rows):
-                raise ValueError("У шаблоні немає рядка для опису Замовника")
-            description_cell = table.rows[index + 1].cells[0]
-            description_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            description_p = _clear_cell(description_cell)
-            description = values.get("violation_description", "").strip()
-            # Preserve an existing Ukrainian quotation (including punctuation
-            # after the closing mark) and never create doubled quotation marks.
-            quoted = description if description.startswith("«") and "»" in description else f"«{description}»"
-            description_run = description_p.add_run(quoted)
-            _set_run_font(description_run, 10, italic=True)
-            return
-    raise ValueError("У погодженому шаблоні не знайдено блок «Причина звернення»")
 
 
 def _format_supplier_result_rows(document) -> None:
@@ -681,7 +683,7 @@ def _normalize_all_text_run_fonts(document) -> None:
                 fonts.set(qn(f"w:{attr}"), "Times New Roman")
 
 
-def _normalize_legal_reference_spaces(document) -> None:
+def _normalize_legal_reference_spaces(document, preserve_paragraphs=()) -> None:
     """Apply non-breaking spaces to all visible template/generated text."""
     for part in document.part.package.parts:
         root = getattr(part, "_element", None)
@@ -689,7 +691,37 @@ def _normalize_legal_reference_spaces(document) -> None:
             continue
         for node in root.xpath(".//w:t"):
             if node.text:
+                paragraph = node.getparent()
+                while paragraph is not None and paragraph.tag != qn("w:p"):
+                    paragraph = paragraph.getparent()
+                if paragraph in preserve_paragraphs:
+                    continue
                 node.text = _presentation_text(node.text)
+
+
+def _finalize_civil_code_block(document, applicable: bool) -> None:
+    """Enforce the document flag even for an older persistent runtime template."""
+    paragraphs = list(document.paragraphs)
+    start = next((index for index, paragraph in enumerate(paragraphs)
+                  if "роз’яснень Міністерства економіки України" in paragraph.text), None)
+    end = (next((index for index in range(start + 1, len(paragraphs))
+                 if "За результатами розгляду встановлено" in paragraphs[index].text), None)
+           if start is not None else None)
+    if start is not None and end is None:
+        raise ValueError("У runtime шаблоні не визначено кінець фрагмента ЦКУ")
+    if applicable:
+        if start is None:
+            raise ValueError("У runtime шаблоні відсутній фрагмент ЦКУ")
+        for paragraph in paragraphs[start:end]:
+            for mark in paragraph._p.xpath(".//w:highlight | .//w:shd"):
+                mark.getparent().remove(mark)
+    elif start is not None:
+        for paragraph in paragraphs[start:end]:
+            paragraph._p.getparent().remove(paragraph._p)
+    if not applicable:
+        for paragraph in list(_all_paragraphs(document)):
+            if "ЦКУ: не застосовується" in paragraph.text:
+                paragraph._p.getparent().remove(paragraph._p)
 
 
 def _replace_justification(document, justification: str, protocol_type: str,
@@ -829,12 +861,14 @@ def build_violation_protocol_docx(
             document_type,
         )
         document = Document(temporary)
+        _finalize_civil_code_block(document, bool((flags or {}).get("has_civil_code_basis")))
         customer_documents = _normalized_documents(customer_documents)
         supplier_documents = _normalized_documents(supplier_documents)
         normalized_values = {
-            _token_name(key): _presentation_text(
-                _presentation_entity_name(value) if _token_name(key) in ENTITY_NAME_TOKENS else value
-            ).strip()
+            _token_name(key): (str(value or "") if _token_name(key) == "violation_description"
+                               else _presentation_text(
+                                   _presentation_entity_name(value) if _token_name(key) in ENTITY_NAME_TOKENS else value
+                               ).strip())
             for key, value in values.items()
         }
         normalized_values["supplier_response"] = normalized_values.get("supplier_response") or "не надано"
@@ -856,21 +890,45 @@ def build_violation_protocol_docx(
             "court": effective_flags.get("has_court_decision", False),
         })
         _validate_context(document, normalized_values, justification)
-        _format_reason_block(document, normalized_values)
         if customer_documents:
             _configure_customer_document_block(document, customer_documents)
+        description_paragraphs = set()
         for paragraph in list(_all_paragraphs(document)):
             source = paragraph.text
             token_names = [_token_name(m.group(1)) for m in TOKEN_RE.finditer(source)]
+            if "violation_description" in token_names:
+                description_paragraphs.add(paragraph._p)
+                # The template frames this placeholder with guillemets. The
+                # Prozorro free text must remain verbatim, including quotes
+                # already supplied by the author.
+                if source.startswith("«") and source.endswith("»"):
+                    first = next((run for run in paragraph.runs if run.text), None)
+                    last = next((run for run in reversed(paragraph.runs) if run.text), None)
+                    if first is not None and last is not None:
+                        first.text = first.text[1:]
+                        last.text = last.text[:-1]
             if "customer_documents" in token_names:
                 _set_document_links(paragraph, customer_documents or [])
             elif "supplier_documents" in token_names:
                 _set_document_links(paragraph, supplier_documents or [])
+            elif "refusal_document" in token_names:
+                _set_refusal_link(paragraph, normalized_values)
             else:
                 _replace_in_paragraph(paragraph, normalized_values)
+                for date_key, url_key in (("winner_date", "winner_notice_url"),
+                                          ("rejection_date", "rejection_decision_url")):
+                    if date_key in token_names:
+                        _link_existing_identifier(paragraph, normalized_values.get(date_key, ""),
+                                                  normalized_values.get(url_key, ""))
+                if "procurement_id" in token_names:
+                    _link_existing_identifier(paragraph, normalized_values.get("procurement_id", ""),
+                                              normalized_values.get("procurement_url", ""))
+                if "report_id" in token_names:
+                    _link_existing_identifier(paragraph, normalized_values.get("report_id", ""),
+                                              normalized_values.get("report_url", ""))
         _format_supplier_result_rows(document)
         _replace_justification(document, justification, protocol_type, normalized_values)
-        _normalize_legal_reference_spaces(document)
+        _normalize_legal_reference_spaces(document, description_paragraphs)
         _normalize_all_text_run_fonts(document)
         unresolved = [p.text for p in _all_paragraphs(document) if "{{" in p.text or "}}" in p.text]
         if unresolved:

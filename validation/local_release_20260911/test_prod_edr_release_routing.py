@@ -62,9 +62,27 @@ class ProdEdrReleaseRoutingTests(unittest.TestCase):
     def test_normal_prod_paths_and_schema_are_not_sandbox_specific(self):
         source = Path(server.__file__).read_text(encoding="utf-8")
         self.assertNotIn("pqm_sandbox.sqlite3", source)
-        self.assertNotIn("PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN", source)
         self.assertNotIn("1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww", source)
         self.assertIn('"pqm.sqlite3"', source)
+        responses = []
+        dispatched = []
+        handler = SimpleNamespace(
+            path=server.SUPPLIER_REGISTRY_INTEGRATION_PATH,
+            command="GET",
+            headers={"Authorization": "Bearer sandbox-only-token"},
+            send_json=lambda body, status=200: responses.append((body, status)),
+        )
+        handler._authorize_supplier_registry_integration = lambda: (
+            server.Handler._authorize_supplier_registry_integration(handler))
+        with patch.object(server, "SANDBOX_MODE", False), patch.dict(os.environ, {
+                server.SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV: "prod-only-token",
+                server.SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV: "sandbox-only-token"}):
+            server.Handler._dispatch(handler, lambda: dispatched.append(True))
+            self.assertEqual(responses[-1][1], 401)
+            self.assertEqual(dispatched, [])
+            handler.headers["Authorization"] = "Bearer prod-only-token"
+            server.Handler._dispatch(handler, lambda: dispatched.append(True))
+            self.assertEqual(dispatched, [True])
 
 
 if __name__ == "__main__":

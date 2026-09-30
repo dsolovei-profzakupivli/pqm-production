@@ -273,6 +273,7 @@ class ViolationReportTests(unittest.TestCase):
         tender = {"data": {"tenderID": "UA-TEST", "awards": [
             {"id": "winner", "qualified": True, "status": "active",
              "period": {"startDate": "2026-08-17T10:00:00+03:00"},
+             "documents": [{"id": "notice", "documentType": "notice", "datePublished": "2026-08-17T11:00:00+03:00"}],
              "suppliers": [organization("22222222")]},
             {"id": "rejected", "qualified": False, "status": "unsuccessful",
              "date": "2026-08-23T18:00:00+03:00", "title": "Не підписано договір",
@@ -423,6 +424,7 @@ class ViolationReportTests(unittest.TestCase):
         tender = {"data": {"tenderID": "UA-TEST", "awards": [
             {"id": "winner", "qualified": True, "status": "active",
              "period": {"startDate": "2026-08-24T08:00:00+03:00"},
+             "documents": [{"id": "notice", "documentType": "notice", "datePublished": "2026-08-24T09:00:00+03:00"}],
              "suppliers": [organization("22222222")]},
             {"id": "rejected", "qualified": False, "status": "unsuccessful",
              "date": "2026-08-31T15:22:00+03:00", "title": "Не підписано договір",
@@ -487,7 +489,7 @@ class ViolationReportTests(unittest.TestCase):
         tender = {
             "tenderID": "UA-TEST", "criteria": [], "contracts": [{"id": "c1", "awardID": "w1", "status": "cancelled", "date": "2026-07-20"}],
             "awards": [
-                {"id": "w1", "status": "cancelled", "qualified": True, "period": {"startDate": "2026-07-10T10:00:00+03:00"}, "suppliers": [organization("22222222")]},
+                {"id": "w1", "status": "cancelled", "qualified": True, "date": "2026-07-20", "period": {"startDate": "2026-07-10T10:00:00+03:00"}, "documents": [{"id": "notice", "documentType": "notice", "datePublished": "2026-07-11"}], "suppliers": [organization("22222222")]},
                 {"id": "r1", "status": "unsuccessful", "qualified": False, "date": "2026-07-16T10:00:00+03:00", "suppliers": [organization("22222222")]},
                 {"id": "other", "status": "unsuccessful", "qualified": False, "date": "2026-07-17T10:00:00+03:00", "suppliers": [organization("33333333")]},
             ],
@@ -532,7 +534,9 @@ class ViolationReportTests(unittest.TestCase):
     def test_contract_block_hidden_only_for_explicit_reason_without_related_contract(self):
         tender = {"tenderID": "UA-TEST", "criteria": [], "contracts": [], "awards": [
             {"id": "w1", "status": "cancelled", "qualified": True,
+             "date": "2026-07-20",
              "period": {"startDate": "2026-07-10T10:00:00+03:00"},
+             "documents": [{"id": "notice", "documentType": "notice", "datePublished": "2026-07-11"}],
              "suppliers": [organization("22222222")]},
             {"id": "r1", "status": "unsuccessful", "qualified": False,
              "date": "2026-07-16T10:00:00+03:00", "title": "Не підписано договір",
@@ -551,6 +555,7 @@ class ViolationReportTests(unittest.TestCase):
                   "awards": [
                       {"id": "w1", "status": "active", "qualified": True,
                        "period": {"startDate": "2026-08-18T09:00:00+03:00"},
+                       "documents": [{"id": "notice", "documentType": "notice", "datePublished": "2026-08-18T11:00:00+03:00"}],
                        "suppliers": [organization("22222222")]},
                       {"id": "r1", "status": "unsuccessful", "qualified": False,
                        "date": "2026-08-25T10:13:00+03:00", "title": "Не підписано договір",
@@ -983,12 +988,14 @@ class ViolationReportTests(unittest.TestCase):
         captured = {}
         def capture(_kind, path, _values, justification, *_args):
             captured["justification"] = justification
+            captured["violation_description"] = _values["violation_description"]
             path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b"docx")
         with patch.object(server, "violation_report_detail", return_value=detail), \
                 patch.object(server, "PROTOCOLS_DIR", Path(self.temp.name) / "protocols"), \
                 patch.object(server, "build_violation_protocol_docx", side_effect=capture):
             server.generate_violation_protocol("report-internal", {"protocol_number": "P-1", "protocol_date": "2026-09-08"})
         self.assertEqual(captured["justification"], "Останній збережений текст УО — без змін.")
+        self.assertEqual(captured["violation_description"], detail["description"])
 
     def test_protocol_reason_bindings_use_full_reason_metadata_not_customer_description(self):
         descriptions = {

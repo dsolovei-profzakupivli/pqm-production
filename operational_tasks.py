@@ -7,6 +7,7 @@ import uuid
 import calendar
 from urllib.parse import urlsplit
 import supplier_activity
+import edr_sync_v2
 import nazk_evidence
 from document_semantics import supplier_code_semantics
 from supplier_identity import current_manager_rnokpp
@@ -487,7 +488,9 @@ def _termination_profile(con, code):
 def termination_candidate(con, code):
     """Read-only canonical eligibility and duplicate explanation for one supplier."""
     code=_digits(code); profile=_termination_profile(con,code); qualifications=_effective_active_applications(con,code)
-    status=str(profile.get('edr_status') or '').strip()
+    raw_status=str(profile.get('edr_status') or '').strip()
+    try: status=edr_sync_v2.canonical_edr_status(raw_status)
+    except ValueError: status=raw_status  # Unknown legacy data is visible, never eligible.
     terminated=status.casefold() in {'припинено','terminated'}
     event_key=_termination_event_key(profile) if terminated else ''
     active=con.execute("""SELECT id,status FROM operational_tasks
@@ -524,7 +527,7 @@ def preview_termination_exclusions(con, supplier_codes):
         if item['eligible']:
             reasons.append(reason_labels['eligible'])
         else:
-            if str(item['edr_status'] or '').strip().casefold() not in {'припинено','terminated'}:
+            if item['edr_status'].casefold() not in {'припинено','terminated'}:
                 reasons.append(reason_labels['no_longer_eligible'])
             if not item['qualifications']:
                 reasons.append(reason_labels['no_active_qualifications'])
@@ -1000,6 +1003,7 @@ def list_tasks(con,params):
       LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
       LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id"""
     qualified_clause=clause.replace("status", "t.status").replace("task_type", "t.task_type").replace("assigned_officer_id", "COALESCE(c.responsible_officer_id,t.assigned_officer_id)").replace("supplier_name_snapshot", "t.supplier_name_snapshot").replace("supplier_code", "t.supplier_code").replace("created_at", "t.created_at")
+    # Keep the LOCAL type facet: all other filters apply, the selected type does not.
     type_counts={row[0]:row[1] for row in con.execute(
         "SELECT t.task_type,COUNT(*)"+projection[projection.index("\n      FROM") :]+
         qualified_clause+" GROUP BY t.task_type",args)}

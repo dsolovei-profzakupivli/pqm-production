@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from datetime import date, datetime
 
 import supplier_activity
@@ -98,6 +99,33 @@ def clean(value) -> str:
     return " ".join(str(value or "").split())
 
 
+EDR_PRESENTATION_PREFIXES = {
+    "✅ Зареєстровано": "Зареєстровано",
+    "⚪ Неактуально": "Неактуально",
+    "⚪️ Неактуально": "Неактуально",
+    "⚪ Немає інформації": "Немає інформації",
+    "⚪️ Немає інформації": "Немає інформації",
+    "🟡 В стані припинення": "В стані припинення",
+    "🟡 Порушено справу про банкрутство": "Порушено справу про банкрутство",
+    "🔴 Припинено": "Припинено",
+    "🔴 Банкрут": "Банкрут",
+}
+
+
+def canonical_edr_status(value) -> str:
+    """Remove known UI presentation before EDR facts enter Preview or the DB."""
+    status = clean(value)
+    if status in EDR_PRESENTATION_PREFIXES:
+        return EDR_PRESENTATION_PREFIXES[status]
+    for presented, canonical in EDR_PRESENTATION_PREFIXES.items():
+        prefix = presented.split(" ", 1)[0]
+        if status.startswith(prefix) and status[len(prefix):].strip() == canonical:
+            return canonical
+    if status and unicodedata.category(status[0]) == "So":
+        raise ValueError("Невідомий presentation prefix статусу ЄДР")
+    return status
+
+
 def valid_manager_name(value) -> bool:
     text = clean(value)
     return bool(text and text.casefold() not in {
@@ -137,7 +165,8 @@ def _header(values: list[list]) -> tuple[str, ...]:
     return tuple(str(value or "").lstrip("\ufeff").strip() for value in values[0])
 
 
-def source_snapshot(values_by_sheet: dict[str, list[list]]) -> dict:
+def source_snapshot(values_by_sheet: dict[str, list[list]], *,
+                    spreadsheet_id: str = "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA") -> dict:
     """Validate the exact source contract and produce a stable content hash."""
     missing = [sheet for sheet in SHEETS if sheet not in values_by_sheet]
     if missing:
@@ -164,7 +193,7 @@ def source_snapshot(values_by_sheet: dict[str, list[list]]) -> dict:
                         supplier_code=normalize_code(item["Код ЄДРПОУ"]))
             rows.append(item)
     serialized = json.dumps(
-        {"contract": 2, "spreadsheet_id": "1rqghaEduW8Aer4ri36aysMurEdK2UH5laXKw_Oo1FKA",
+        {"contract": 2, "spreadsheet_id": spreadsheet_id,
          "sheets": canonical}, ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8")
     return {"rows": rows, "source_fingerprint": hashlib.sha256(serialized).hexdigest(),
@@ -172,14 +201,14 @@ def source_snapshot(values_by_sheet: dict[str, list[list]]) -> dict:
 
 
 def source_item(row: dict) -> dict:
+    status = canonical_edr_status(row.get("Статус в реєстрі (ЄДР)"))
     return {
         "supplier_code": normalize_code(row.get("supplier_code") or row.get("Код ЄДРПОУ")),
         "full_name": str(row.get("Повна назва з ЄДР") or "").strip(),
         "short_name": str(row.get("Скорочена назва з ЄДР") or "").strip(),
         "manager_name": str(row.get("ПІБ для перевірки") or "").strip(),
         # This Google-owned placeholder is not factual EDR evidence.
-        "edr_status": ("" if clean(row.get("Статус в реєстрі (ЄДР)")) == "Немає інформації"
-                       else clean(row.get("Статус в реєстрі (ЄДР)"))),
+        "edr_status": "" if status == "Немає інформації" else status,
         "edr_checked_at": normalized_date(row.get("Дата перевірки")),
         "termination_decision_details": str(row.get("Реквізити рішення про припинення") or "").strip(),
         "termination_record_date": normalized_date(row.get("Дата запису")),
@@ -516,6 +545,13 @@ def _event_exists(con, code: str, snapshot_hash: str) -> bool:
 def _same(field: str, old, new) -> bool:
     if field == "manager_name":
         return normalize_person(old) == normalize_person(new)
+    if field == "edr_status":
+        def comparable(value):
+            try:
+                return canonical_edr_status(value)
+            except ValueError:
+                return clean(value)
+        return comparable(old) == comparable(new)
     return str(old or "").strip() == str(new or "").strip()
 
 
@@ -610,7 +646,7 @@ def build_preview(con, snapshot: dict) -> dict:
         older = verification_decision == "older_verification_preserved"
         protected_status = _protected_factual_at_or_after(ledger.get(code, []), incoming_day)
         status_protected = bool(incoming["edr_status"] and protected_status
-                                and incoming["edr_status"] != protected_status)
+                                and not _same("edr_status", incoming["edr_status"], protected_status))
         summary[verification_decision] += 1
         summary["factual_status_protected"] += int(status_protected)
         current_manager = managers.get(code, {}).get("manager_name") or ""
@@ -1188,7 +1224,7 @@ def materialize_effective_admission(con, contract_id: str, created_at: str) -> b
 
 
 def effective_profile_fields(plan: dict, old: dict) -> dict:
-    """Return the field decision shared by Preview and Apply."""
+    """The one canonical field decision shared by Apply and SANDBOX review."""
     item = plan["incoming"]
     effective = {}
     for field in ("full_name", "short_name", "manager_name", "edr_status", "edr_checked_at",
@@ -1205,13 +1241,15 @@ def effective_profile_fields(plan: dict, old: dict) -> dict:
                 plan["verification_decision"] == "older_verification_preserved" or
                 (field == "edr_status" and plan["factual_status_protected"])):
             effective[field] = old.get(field, "")
+        elif field == "edr_status" and old.get(field) and _same(field, old.get(field), value):
+            effective[field] = old[field]  # Legacy spelling is not migrated by an ordinary Apply.
         else:
             effective[field] = value if str(value or "").strip() else old.get(field, "")
     return effective
 
 
 def preview_state_digest(preview: dict) -> str:
-    """Bind a reviewed Preview to current PQM state without exposing state in a token."""
+    """Bind reviewed decisions to current PQM state without returning that state in a token."""
     business = [{key: plan.get(key) for key in (
         "supplier_code", "current_profile", "current_manager_name", "current_verification_date",
         "current_verification_officer", "verification_decision", "factual_status_protected",
@@ -1279,9 +1317,11 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
             source_changed = (str(old.get("source_sheet") or "") != item["source_sheet"]
                               or int(old.get("source_row") or 0) != item["source_row"])
             if changed or source_changed:
-                assignments = [f"{field}=?" for field in effective]
-                con.execute(f"UPDATE supplier_edr_profiles SET {','.join(assignments)},source_sheet=?,source_row=?,synced_at=? WHERE supplier_code=?",
-                            [*effective.values(), item["source_sheet"], item["source_row"], synced_at,
+                # Do not re-write unchanged legacy fields during an unrelated row move.
+                assignments = [f"{field}=?" for field in changed]
+                assignments.extend(("source_sheet=?", "source_row=?", "synced_at=?"))
+                con.execute(f"UPDATE supplier_edr_profiles SET {','.join(assignments)} WHERE supplier_code=?",
+                            [*(effective[field] for field in changed), item["source_sheet"], item["source_row"], synced_at,
                              item["supplier_code"]])
                 counts["updated_profiles"] += 1
             else:

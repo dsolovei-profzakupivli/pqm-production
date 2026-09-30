@@ -184,6 +184,10 @@ def _build_full_registry(con):
             entity_type = "legal_entity"
         elif scheme == "UA-IPN":
             entity_type = "individual_entrepreneur"
+        elif scheme == "UA-EDR" and re.fullmatch(r"\d{8}", code):
+            # A literal, eight-digit UA-EDR identifier is sufficient to route
+            # a new legal entity before its first Google EDR profile exists.
+            entity_type = "legal_entity"
         else:
             entity_type = "unknown"
         supplier_name = names.get(code) or ""
