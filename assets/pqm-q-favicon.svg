@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <title>PQM</title>
-  <rect width="16" height="16" rx="3" fill="#132840"/>
-  <path fill="#ffffff" d="M1 4h3v1H1zm0 1h1v2H1zm3 0h1v2H4zM1 7h3v1H1zm0 1h1v3H1zM11 4h1v1h-1zm3 0h1v1h-1zm-3 1h4v2h-4zm0 2h1v4h-1zm3 0h1v4h-1z"/>
-  <path fill="#86bdff" d="M7 4h2v1H7zM6 5h1v4H6zm3 0h1v4H9zM8 8h1v1H8zm-1 1h3v1H7zm2 1h1v1H9z"/>
+  <rect width="32" height="32" rx="6" fill="#132840"/>
+  <text x="2" y="23" fill="#ffffff" font-family="Arial Narrow, Arial, sans-serif" font-size="23" font-weight="700" textLength="28" lengthAdjust="spacingAndGlyphs">P<tspan fill="#86bdff">Q</tspan>M</text>
 </svg>

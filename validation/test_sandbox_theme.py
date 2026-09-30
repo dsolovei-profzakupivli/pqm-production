@@ -42,7 +42,11 @@ class Theme(unittest.TestCase):
         root = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}rect').get('fill'), '#132840')
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}title').text, 'PQM')
-        self.assertEqual([path.get('fill') for path in root.findall('{http://www.w3.org/2000/svg}path')], ['#ffffff', '#86bdff'])
+        wordmark = root.find('{http://www.w3.org/2000/svg}text')
+        self.assertEqual(wordmark.text, 'P')
+        self.assertEqual(wordmark.find('{http://www.w3.org/2000/svg}tspan').text, 'Q')
+        self.assertEqual(wordmark.find('{http://www.w3.org/2000/svg}tspan').tail, 'M')
+        self.assertEqual(wordmark.find('{http://www.w3.org/2000/svg}tspan').get('fill'), '#86bdff')
         for size in (16, 32, 180, 192):
             png = (sandbox.ROOT / 'assets' / f'pqm-q-favicon-{size}.png').read_bytes()
             self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')

@@ -1,26 +1,26 @@
-"""Build sandbox PQM favicon rasters from a purpose-drawn 16-pixel monogram."""
+"""Build smooth, compact SANDBOX PQM favicon rasters."""
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
-GLYPHS = {
-    "P": ("1110", "1001", "1001", "1110", "1000", "1000", "1000"),
-    "Q": ("0110", "1001", "1001", "1001", "1011", "0111", "0001"),
-    "M": ("1001", "1111", "1111", "1001", "1001", "1001", "1001"),
-}
+FONT = Path("C:/Windows/Fonts/ARIALNB.TTF")
+SCALE = 8
 
 
 def icon(size):
-    canvas = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle((0, 0, 15, 15), radius=3, fill="#132840")
-    for letter, x_offset, color in (("P", 1, "#ffffff"), ("Q", 6, "#86bdff"), ("M", 11, "#ffffff")):
-        for y, row in enumerate(GLYPHS[letter], start=4):
-            for x, pixel in enumerate(row, start=x_offset):
-                if pixel == "1":
-                    draw.point((x, y), fill=color)
-    return canvas.resize((size, size), Image.Resampling.NEAREST)
+    canvas = Image.new("RGBA", (32 * SCALE, 32 * SCALE), "#132840")
+    mask = Image.new("RGBA", (50 * SCALE, 30 * SCALE), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(mask)
+    font = ImageFont.truetype(str(FONT), 23 * SCALE)
+    x = 0
+    for letter, color in (("P", "#ffffff"), ("Q", "#86bdff"), ("M", "#ffffff")):
+        draw.text((x, 0), letter, font=font, fill=color)
+        x += draw.textlength(letter, font=font)
+    bounds = mask.getbbox()
+    letters = mask.crop(bounds).resize((28 * SCALE, 21 * SCALE), Image.Resampling.LANCZOS)
+    canvas.alpha_composite(letters, (2 * SCALE, 5 * SCALE))
+    return canvas.resize((size, size), Image.Resampling.LANCZOS)
 
 
 if __name__ == "__main__":
