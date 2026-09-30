@@ -28,7 +28,8 @@
     {id:'edrMonitoringNav',module:'edrMonitoring',route:'edrMonitoring',label:'Перевірка ЄДР',tooltip:'Перевірка ЄДР',iconKey:'edrSearch',displayMode:'icon-text',order:12,permission:'suppliers.read',visible:true},
   ];
   const nav=document.getElementById('mainNav');let currentOverrides={};let currentAccess=null;
-  const resolvedItems=overrides=>ITEMS.map(base=>{const item={...base,...(overrides[base.id]||{})};if(base.id==='frameworksNav')Object.assign(item,{iconKey:'frameworksTarget',displayMode:'icon-text'});if(base.id==='edrMonitoringNav')Object.assign(item,{iconKey:'edrSearch',displayMode:'icon-text'});if(base.id==='administrationNav')item.iconKey='administration';return item}).sort((a,b)=>a.order-b.order);
+  const sandbox=document.documentElement.dataset.pqmEnvironment==='sandbox';
+  const resolvedItems=overrides=>ITEMS.map(base=>{const item={...base,...(overrides[base.id]||{})};if(!sandbox){if(base.id==='frameworksNav')Object.assign(item,{iconKey:'frameworksTarget',displayMode:'icon-text'});if(base.id==='edrMonitoringNav')Object.assign(item,{iconKey:'edrSearch',displayMode:'icon-text'});if(base.id==='administrationNav')item.iconKey='administration'}return item}).sort((a,b)=>a.order-b.order);
   const permissionAllows=item=>!currentAccess||!item.permission||(item.permission==='role:admin'?currentAccess.role==='admin':Boolean(currentAccess.permissions?.[item.permission]));
   function canonicalActiveModule(){
     const modules=new Set(ITEMS.map(item=>item.module));
