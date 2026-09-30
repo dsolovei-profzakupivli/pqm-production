@@ -435,6 +435,8 @@ def admin_read_allowed(role: str, path: str, query: dict[str, list[str]] | None 
     """Protect administration reads while keeping work-filter data available."""
     if role == "admin":
         return True
+    if role == "officer" and re.fullmatch(r"/api/admin/declension-overrides(?:/[^/]+)?", path):
+        return True  # The separate declension.manage permission still gates writes.
     if path == "/api/admin/officers" and (query or {}).get("active") == ["1"]:
         return True
     if path == "/api/admin/frameworks":
@@ -9669,6 +9671,9 @@ class Handler(BaseHTTPRequestHandler):
         managed_grant = (self.auth_role == 'officer' and permission
                          and not permission.startswith('admin.')
                          and self.auth_access['permissions'].get(permission, False))
+        if (self.auth_role == 'officer' and self.command == 'DELETE'
+                and re.fullmatch(r'/api/admin/declension-overrides/[^/]+', path)):
+            return self.send_json({'error': 'Недостатньо прав для цієї дії', 'status': 403}, 403)
         if not mutation_allowed(self.auth_role, self.command, path) and not managed_grant:
             # Drain the small mutation body before closing the connection on Windows.
             # Otherwise the client may see a TCP reset instead of the JSON 403.

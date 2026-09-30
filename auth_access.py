@@ -30,7 +30,7 @@ PERMISSIONS = [
  ('remarks.edit','Довідники','Керування пунктами зауважень',False,True,r'/api/remarks-catalog(?:/[^/]+)?'),
  ('references.read','Довідники','Перегляд реєстрів',True,False,r'/api/(?:reference-status|nazk-registry|amcu-registry|references|nazk|amcu)(?:/.*)?'),
  ('declension.read','Довідники','Перегляд довідника відмінювання',True,False,r'/api/declension-overrides'),
- ('declension.manage','Довідники','Керування відмінюванням',False,True,r'/api/admin/declension-overrides(?:/.*)?'),
+ ('declension.manage','Довідники','Керування відмінюванням',True,True,r'/api/admin/declension-overrides(?:/.*)?'),
  ('references.update','Довідники','Оновлення та імпорт реєстрів',False,True,r'/api/(?:nazk-registry|amcu-registry|references|nazk|amcu)(?:/.*)?'),
  ('bids.read','Bids','Перегляд статусу',True,False,r'/api/bids-sync-status'),
  ('bids.update','Bids','Запуск оновлення',False,True,r'/api/bids-sync'),

@@ -284,10 +284,11 @@
     </section>
     <section class="supplier-toolbar requests-toolbar card">
       <div class="search-wrap"><span>⌕</span><input id="requestsSearch" placeholder="Пошук за UA-D, замовником, постачальником, кодом або закупівлею…"></div>
-      <select id="requestsStatus"><option value="">Усі статуси</option></select>
+      <select id="requestsStatus" hidden aria-hidden="true" tabindex="-1"><option value="">Усі статуси</option></select>
       <select id="requestsReason"><option value="">Усі підстави</option></select>
       <label class="compact-date">Від <input id="requestsDateFrom" type="date"></label>
       <label class="compact-date">До <input id="requestsDateTo" type="date"></label>
+      <button id="requestsDeclension" type="button" class="ghost">Відмінювання</button>
       <button id="requestsTemplates" type="button" class="ghost" hidden>Шаблони</button>
       <button id="requestsRefresh" class="ghost">Оновити з Prozorro</button>
     </section>

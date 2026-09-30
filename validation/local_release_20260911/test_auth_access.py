@@ -23,6 +23,25 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(list(self.c.execute('PRAGMA foreign_key_check')),[])
     def test_legacy_no_assignment(self):
         self.assertTrue(a.effective(self.c,'legacy','officer')['permissions']['applications.edit'])
+    def test_officer_declension_editor_uses_explicit_permission(self):
+        import server
+        self.assertTrue(a.effective(self.c,'legacy','officer')['permissions']['declension.manage'])
+        self.assertTrue(server.admin_read_allowed('officer','/api/admin/declension-overrides'))
+        self.assertFalse(server.admin_read_allowed('officer','/api/admin/templates'))
+        handler=object.__new__(server.Handler)
+        handler.auth_user='legacy';handler.auth_role='officer';handler.auth_officer_id=1
+        handler.path='/api/admin/declension-overrides';handler.command='POST';handler.headers={}
+        handler._authorize=lambda:True;handler.send_json=Mock()
+        action=Mock()
+        with patch.object(server,'db',return_value=self.c):handler._dispatch(action)
+        action.assert_called_once()
+        handler.path='/api/admin/declension-overrides/fixture';handler.command='DELETE'
+        action.reset_mock()
+        with patch.object(server,'db',return_value=self.c):handler._dispatch(action)
+        action.assert_not_called()
+        self.assertEqual(handler.send_json.call_args.args[1],403)
+        self.c.execute("INSERT INTO auth_role_permissions VALUES('officer','declension.manage',0,'now','test')")
+        self.assertFalse(a.effective(self.c,'legacy','officer')['permissions']['declension.manage'])
     def test_existing_account_preserved(self):
         self.c.execute("INSERT INTO auth_users VALUES('legacy','unchanged','viewer',NULL,1,'c','u','creator','seen')")
         original=tuple(self.c.execute('SELECT * FROM auth_users').fetchone())
