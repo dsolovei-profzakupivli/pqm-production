@@ -4,32 +4,39 @@ const path=require('node:path');
 const vm=require('node:vm');
 
 const source=fs.readFileSync(path.join(__dirname,'..','nav_icons.js'),'utf8');
-function resolved(environment){
+function render(environment,overrides){
   const elements=new Map();
   const navigation={append(button){elements.set(button.id,button)}};
   const document={
     documentElement:{dataset:{pqmEnvironment:environment}},
     getElementById(id){return id==='mainNav'?navigation:elements.get(id)},
-    createElement(){return {dataset:{},classList:{toggle(){}},setAttribute(){}}},
+    createElement(){
+      const classes=new Set();
+      return {dataset:{},classes,classList:{toggle(name,on){if(on)classes.add(name);else classes.delete(name)}},setAttribute(){}};
+    },
   };
   const window={};
   vm.runInNewContext(source,{document,window,URL,Set,location:{href:'https://example.test/?view=applications'},localStorage:{getItem(){return null}}});
-  window.pqmRenderNavigation({frameworksNav:{iconKey:'history',displayMode:'icon',visible:false},
-    edrMonitoringNav:{iconKey:'requests',displayMode:'text'},
-    administrationNav:{iconKey:'audit',displayMode:'icon-text'}});
-  return Object.fromEntries(window.pqmResolvedNavigation().map(item=>[item.id,item]));
+  window.pqmSetNavigationIcons([{icon_key:'attach',svg:'<svg data-test="attach"></svg>'}]);
+  window.pqmRenderNavigation(overrides);
+  return {items:Object.fromEntries(window.pqmResolvedNavigation().map(item=>[item.id,item])),elements};
 }
 
-const sandbox=resolved('sandbox');
-assert.equal(sandbox.frameworksNav.iconKey,'history');
-assert.equal(sandbox.frameworksNav.displayMode,'icon');
-assert.equal(sandbox.frameworksNav.visible,false);
-assert.equal(sandbox.edrMonitoringNav.iconKey,'requests');
-assert.equal(sandbox.edrMonitoringNav.displayMode,'text');
-assert.equal(sandbox.administrationNav.iconKey,'audit');
-
-const prod=resolved('');
-assert.equal(prod.frameworksNav.iconKey,'frameworksTarget');
-assert.equal(prod.edrMonitoringNav.iconKey,'edrSearch');
-assert.equal(prod.administrationNav.iconKey,'administration');
-process.stdout.write('SANDBOX navigation overrides persist in rendered state; PROD baseline unchanged\n');
+// The DB round-trip test covers Save; a fresh VM represents F5 loading saved overrides.
+const saved={frameworksNav:{iconKey:'attach',displayMode:'icon',visible:true},
+  edrMonitoringNav:{iconKey:'edrSearch',displayMode:'icon',visible:true}};
+for(const state of [render('sandbox',saved),render('sandbox',JSON.parse(JSON.stringify(saved)))]){
+  assert.equal(state.items.frameworksNav.iconKey,'attach');
+  assert.equal(state.items.frameworksNav.displayMode,'icon');
+  assert.equal(state.items.edrMonitoringNav.iconKey,'edrSearch');
+  assert.equal(state.items.edrMonitoringNav.displayMode,'icon');
+  assert.equal(state.elements.get('frameworksNav').classes.has('main-nav-icon'),true);
+  assert.match(state.elements.get('frameworksNav').innerHTML,/data-test="attach"/);
+  assert.equal(state.elements.get('edrMonitoringNav').classes.has('main-nav-icon'),true);
+  assert.doesNotMatch(state.elements.get('edrMonitoringNav').innerHTML,/Перевірка ЄДР/);
+}
+const prod=render('',{});
+assert.equal(prod.items.frameworksNav.iconKey,'frameworksTarget');
+assert.equal(prod.items.edrMonitoringNav.iconKey,'edrSearch');
+assert.equal(prod.items.administrationNav.iconKey,'administration');
+process.stdout.write('attach and edrSearch saved modes render unchanged after reload; PROD defaults unchanged\n');

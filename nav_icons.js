@@ -29,7 +29,11 @@
   ];
   const nav=document.getElementById('mainNav');let currentOverrides={};let currentAccess=null;
   const sandbox=document.documentElement.dataset.pqmEnvironment==='sandbox';
-  const resolvedItems=overrides=>ITEMS.map(base=>{const item={...base,...(overrides[base.id]||{})};if(!sandbox){if(base.id==='frameworksNav')Object.assign(item,{iconKey:'frameworksTarget',displayMode:'icon-text'});if(base.id==='edrMonitoringNav')Object.assign(item,{iconKey:'edrSearch',displayMode:'icon-text'});if(base.id==='administrationNav')item.iconKey='administration'}return item}).sort((a,b)=>a.order-b.order);
+  const resolvedItems=overrides=>ITEMS.map(base=>{
+    const item={...base,...(overrides[base.id]||{})};
+    if(!sandbox&&base.id==='administrationNav')item.iconKey='administration';
+    return item;
+  }).sort((a,b)=>a.order-b.order);
   const permissionAllows=item=>!currentAccess||!item.permission||(item.permission==='role:admin'?currentAccess.role==='admin':Boolean(currentAccess.permissions?.[item.permission]));
   function canonicalActiveModule(){
     const modules=new Set(ITEMS.map(item=>item.module));
