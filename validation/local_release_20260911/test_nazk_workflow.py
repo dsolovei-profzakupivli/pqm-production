@@ -374,6 +374,98 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertEqual(self.state()["state"], "refuted")
         self.assertEqual(self.state()["check_id"], 1)
 
+    def test_refuted_same_court_case_new_source_does_not_reopen(self):
+        manager_id = self.seed_supplier()
+        with server.db() as con:
+            con.execute("UPDATE nazk_registry SET court_case_number='',sentence_number='1601/4778/2012',court_name='Суд А',sentence_date='2012-07-12',punishment_start='2012-07-30' WHERE source_id='nazk-10000001'")
+            con.execute("""INSERT INTO nazk_registry(source_id,full_name,court_case_number,court_name,
+              sentence_date,punishment_start,raw_json) VALUES ('additional','КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ',
+              '1601/4778/2012','Суд А','2012-03-14','2012-07-27','{}')""")
+            check_id = con.execute("""INSERT INTO supplier_nazk_checks
+              (supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,
+               is_legacy,created_at,created_by,updated_at,updated_by)
+              VALUES ('10000001',?,?,'completed','refuted','2026-09-15','2026-09-16',0,
+                      '2026-09-15','УО','2026-09-16','УО')""",
+              (manager_id, 'КЕРІВНИК ТЕСТОВИЙ ІВАНОВИЧ')).lastrowid
+            self.link_check(con, check_id)
+            state = workflow.reconcile_supplier_nazk(con, '10000001', apply=True)
+            preview = workflow.reconcile_active_supplier_nazk(con, apply=False)
+            self.assertEqual(state['state'], 'refuted')
+            self.assertIsNone(state['action'])
+            self.assertEqual(preview['potential_needs_review'], 0)
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_nazk_checks').fetchone()[0], 1)
+
+    def test_refuted_new_case_or_post_boundary_fact_still_reopens(self):
+        old = {'id': 1, 'workflow_status': 'completed', 'result': 'refuted',
+               'completed_at': '2026-09-16', 'source_ids': 'old'}
+        known = {'source_id': 'old', 'court_case_number': '',
+                 'sentence_number': '1601/4778/2012', 'court_name': 'Суд А',
+                 'sentence_date': '2012-07-12', 'punishment_start': '2012-07-30'}
+        new = {'source_id': 'new', 'court_case_number': '1601/4778/2012',
+               'sentence_number': '', 'court_name': 'Суд А',
+               'sentence_date': '2012-03-14', 'punishment_start': '2012-07-27'}
+        self.assertIsNotNone(workflow.find_covering_factual_check([old], [known, new]))
+        self.assertIsNone(workflow.find_covering_factual_check(
+            [old], [known, {**new, 'court_case_number': 'OTHER/2012'}]))
+        self.assertIsNone(workflow.find_covering_factual_check(
+            [old], [known, {**new, 'sentence_date': '2026-10-01'}]))
+        self.assertIsNone(workflow.find_covering_factual_check(
+            [{**old, 'result': 'confirmed'}], [known, new]))
+
+    def test_prod_reconciliation_acceptance_set_seven_of_eight(self):
+        candidates = [
+            ('2640203035', 'ШЕВЧУК ВАСИЛЬ ВАСИЛЬОВИЧ', '564938', '2025-03-17', '2026-04-17'),
+            ('3041707578', 'МЕЛЬНИК ЮРІЙ ВОЛОДИМИРОВИЧ', '564147', '2025-10-23', '2025-11-25'),
+            ('3618109260', 'СЕЛЕГЕНЬ АНАСТАСІЯ СЕРГІЇВНА', '563408', '2026-08-26', '2026-09-08'),
+            ('38261938', 'ДОВБЕНКО ВОЛОДИМИР ВІТАЛІЙОВИЧ', '565327', '2026-07-28', '2026-09-03'),
+            ('40469992', 'КОВАЛЕНКО ВАЛЕНТИН МИКОЛАЙОВИЧ', '563322', '2025-07-31', '2025-09-02'),
+            ('44105998', 'ПИСЬМЕННИЙ ОЛЕКСАНДР ВОЛОДИМИРОВИЧ', '565592', '2026-08-14', '2026-09-15'),
+            ('45091889', 'ЛУНАЙЧУК СЕРГІЙ ВІКТОРОВИЧ', '563581', '2026-08-27', '2026-09-08'),
+        ]
+        with server.db() as con:
+            for code, manager, source_id, sentence, punishment in candidates:
+                con.execute("INSERT INTO supplier_registry_summary(supplier_code,active_count,refreshed_at) VALUES (?,1,'2026-09-30')", (code,))
+                con.execute("""INSERT INTO supplier_managers
+                  (supplier_code,manager_name,normalized_name,is_current,source,created_at,updated_at)
+                  VALUES (?,?,?,1,'test','2026-09-30','2026-09-30')""",
+                            (code, manager, workflow.normalize_name(manager)))
+                con.execute("""INSERT INTO nazk_registry(source_id,full_name,sentence_date,punishment_start,raw_json)
+                  VALUES (?,?,?,?, '{}')""", (source_id, manager, sentence, punishment))
+            code = '41552981'
+            manager = 'ШИМКІВ ОЛЕКСАНДР СТЕПАНОВИЧ'
+            con.execute("INSERT INTO supplier_registry_summary(supplier_code,active_count,refreshed_at) VALUES (?,1,'2026-09-30')", (code,))
+            manager_id = con.execute("""INSERT INTO supplier_managers
+              (supplier_code,manager_name,normalized_name,is_current,source,created_at,updated_at)
+              VALUES (?,?,?,1,'test','2026-09-30','2026-09-30')""",
+                                     (code, manager, workflow.normalize_name(manager))).lastrowid
+            con.execute("""INSERT INTO nazk_registry(source_id,full_name,sentence_number,court_name,
+              sentence_date,punishment_start,raw_json) VALUES ('17953',?,'1601/4778/2012',
+              'Автозаводський районний суд м. Кременчука','2012-07-12','2012-07-30','{}')""", (manager,))
+            con.execute("""INSERT INTO nazk_registry(source_id,full_name,court_case_number,court_name,
+              sentence_date,punishment_start,raw_json) VALUES ('565463',?,'1601/4778/2012',
+              'Автозаводський районний суд м. Кременчука','2012-03-14','2012-07-27','{}')""", (manager,))
+            check_id = con.execute("""INSERT INTO supplier_nazk_checks
+              (supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,
+               is_legacy,created_at,created_by,updated_at,updated_by)
+              VALUES (?,?,?,'completed','refuted','2026-09-15','2026-09-16',0,
+                      '2026-09-15','УО','2026-09-16','УО')""", (code, manager_id, manager)).lastrowid
+            self.link_check(con, check_id, '17953')
+            expected = {row[0] for row in candidates}
+            preview = workflow.reconcile_active_supplier_nazk(con, apply=False)
+            self.assertEqual({item['supplier_code'] for item in preview['items']}, expected)
+            first = workflow.reconcile_active_supplier_nazk(con, apply=True)
+            self.assertEqual({item['supplier_code'] for item in first['items']}, expected)
+            active = {code: [{'id': 'application-' + code}] for code in expected}
+            tasks = operational_tasks.materialize_nazk_tasks(con, 'test', active_applications=active,
+                                                             supplier_names={code: code for code in expected})
+            self.assertEqual(tasks['created'], 7)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_nazk_checks WHERE supplier_code='41552981'").fetchone()[0], 1)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM operational_tasks WHERE supplier_code='41552981'").fetchone()[0], 0)
+            self.assertEqual(workflow.reconcile_active_supplier_nazk(con, apply=True)['potential_needs_review'], 0)
+            self.assertEqual(operational_tasks.materialize_nazk_tasks(
+                con, 'test', active_applications=active,
+                supplier_names={code: code for code in expected})['created'], 0)
+
     def test_current_confirmed_is_current_state(self):
         manager_id = self.seed_supplier()
         with server.db() as con:

@@ -151,7 +151,7 @@ def registry_matches(con: sqlite3.Connection, manager_name: str) -> list[dict]:
     if not normalized:
         return []
     return [dict(row) for row in con.execute(
-        """SELECT source_id,full_name,offense_name,court_case_number,sentence_date,punishment_start,
+        """SELECT source_id,full_name,offense_name,court_case_number,sentence_number,court_name,sentence_date,punishment_start,
                   decision_url,raw_json
            FROM nazk_registry WHERE NORMALIZE_NAME(full_name)=? ORDER BY sentence_date,source_id""",
         (normalized,),
@@ -184,6 +184,19 @@ def _check_source_ids(check: dict) -> set[str]:
     return {part.strip() for part in str(check.get("source_ids") or "").split(",") if part.strip()}
 
 
+def _same_refuted_case(old: dict, new: dict) -> bool:
+    """Recognize an additional source row for the same court case, not just person."""
+    old_court = normalize_name(old.get("court_name"))
+    new_court = normalize_name(new.get("court_name"))
+    if not old_court or old_court != new_court:
+        return False
+    def references(row):
+        return {str(row.get(field) or "").strip().casefold() for field in
+                ("court_case_number", "sentence_number")
+                if "/" in str(row.get(field) or "")}
+    return bool(references(old) & references(new))
+
+
 def find_covering_factual_check(checks: list[dict], matches: list[dict], *,
                                 exclude_check_id: int | None = None) -> dict | None:
     """Find factual coverage for the current manager *and* registry cycle.
@@ -197,6 +210,7 @@ def find_covering_factual_check(checks: list[dict], matches: list[dict], *,
     registry_ids = {str(row.get("source_id") or "").strip() for row in matches}
     registry_ids.discard("")
     latest_fact_date = max((registry_fact_date(row) for row in matches), default="")
+    current_by_id = {str(row.get("source_id") or "").strip(): row for row in matches}
     candidates = []
     for check in checks:
         if exclude_check_id is not None and int(check.get("id") or 0) == int(exclude_check_id):
@@ -205,6 +219,18 @@ def find_covering_factual_check(checks: list[dict], matches: list[dict], *,
             continue
         linked_ids = _check_source_ids(check)
         exact_relation = bool(registry_ids and registry_ids.issubset(linked_ids))
+        # A later-imported registry row is not a new cycle merely because its
+        # source ID differs, if it describes the same already-refuted court case.
+        # Keep this narrow: never infer coverage from person/date alone.
+        if not exact_relation and check["result"] == "refuted" and linked_ids:
+            boundary = _date_value(check.get("evidence_date") or check.get("completed_at"))
+            prior = [current_by_id[source_id] for source_id in linked_ids if source_id in current_by_id]
+            exact_relation = bool(boundary and prior and registry_ids and all(
+                source_id in linked_ids or (
+                    registry_fact_date(current_by_id[source_id]) and
+                    registry_fact_date(current_by_id[source_id]) <= boundary and
+                    any(_same_refuted_case(old, current_by_id[source_id]) for old in prior))
+                for source_id in registry_ids))
         coverage_date = max((_date_value(check.get(key)) for key in (
             "covered_nazk_date", "evidence_date", "completed_at", "started_at"
         )), default="")
@@ -960,7 +986,7 @@ def reconcile_active_supplier_nazk(con: sqlite3.Connection, *, apply: bool = Fal
         if allowed is None or str(row["supplier_code"]) in allowed]
     registry_by_name: dict[str, list[dict]] = {}
     for registry_row in con.execute(
-        """SELECT source_id,full_name,offense_name,court_case_number,sentence_date,punishment_start,
+        """SELECT source_id,full_name,offense_name,court_case_number,sentence_number,court_name,sentence_date,punishment_start,
                   decision_url,raw_json FROM nazk_registry WHERE COALESCE(full_name,'')<>''"""
     ):
         registry_by_name.setdefault(normalize_name(registry_row["full_name"]), []).append(dict(registry_row))
