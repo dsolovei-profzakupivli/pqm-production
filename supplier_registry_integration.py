@@ -204,6 +204,7 @@ def _build_full_registry(con):
             "supplier_code": code,
             "entity_type": entity_type,
             "supplier_name": supplier_name,
+            "latest_submission_name": str(application.get("supplier_name") or "").strip(),
             "current_manager_name": current_manager,
             "prozorro_status": ({"Активний": "🟢 Активний", "Неактивний": "🔴 Неактивний",
               "Призупинений": "🟠 Призупинений", "Ще не в реєстрі": "Ще не в реєстрі"}

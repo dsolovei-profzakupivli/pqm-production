@@ -623,11 +623,11 @@ def decorate_html(raw):
         if text.count(current_brand) != 1:
             raise RuntimeError('STOP: SANDBOX navbar brand markup mismatch')
         text = text.replace(current_brand, sandbox_brand, 1)
-        prod_favicon = ('<link rel="icon" href="/assets/pqm-q-favicon-192.png?v=5" type="image/png" sizes="192x192">'
-                        '\n  <link rel="icon" href="/assets/pqm-q-favicon.svg?v=5" type="image/svg+xml" sizes="any">'
-                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-16.png?v=5" type="image/png" sizes="16x16">'
-                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-32.png?v=5" type="image/png" sizes="32x32">'
-                        '\n  <link rel="apple-touch-icon" href="/assets/pqm-q-favicon-180.png?v=5">')
+        prod_favicon = ('<link rel="icon" href="/assets/pqm-q-favicon-prod-192.png?v=6" type="image/png" sizes="192x192">'
+                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-prod.svg?v=6" type="image/svg+xml" sizes="any">'
+                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-prod-16.png?v=6" type="image/png" sizes="16x16">'
+                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-prod-32.png?v=6" type="image/png" sizes="32x32">'
+                        '\n  <link rel="apple-touch-icon" href="/assets/pqm-q-favicon-prod-180.png?v=6">')
         prod_favicon = prod_favicon.replace('\n', '\r\n' if '\r\n' in text else '\n')
         sandbox_favicon = ('<link rel="icon" href="/assets/pqm-q-favicon-192.png?v=4" type="image/png" sizes="192x192">'
                            '<link rel="icon" href="/assets/pqm-q-favicon.svg?v=4" type="image/svg+xml" sizes="any">'

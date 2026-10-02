@@ -256,17 +256,17 @@ class WebAcceptance(unittest.TestCase):
         self.assertEqual(200,status)
         links=IconLinks();links.feed(html.decode())
         expected=[
-            ('icon','/assets/pqm-q-favicon-192.png?v=5','192x192'),
-            ('icon','/assets/pqm-q-favicon.svg?v=5','any'),
-            ('icon','/assets/pqm-q-favicon-16.png?v=5','16x16'),
-            ('icon','/assets/pqm-q-favicon-32.png?v=5','32x32'),
-            ('apple-touch-icon','/assets/pqm-q-favicon-180.png?v=5',None),
+            ('icon','/assets/pqm-q-favicon-prod-192.png?v=6','192x192'),
+            ('icon','/assets/pqm-q-favicon-prod.svg?v=6','any'),
+            ('icon','/assets/pqm-q-favicon-prod-16.png?v=6','16x16'),
+            ('icon','/assets/pqm-q-favicon-prod-32.png?v=6','32x32'),
+            ('apple-touch-icon','/assets/pqm-q-favicon-prod-180.png?v=6',None),
         ]
         self.assertEqual(expected,[(item['rel'],item['href'],item.get('sizes')) for item in links.items])
         for item in links.items:
             status,raw,headers=self.request(item['href'],None)
             self.assertEqual(200,status)
-            if item['href'].endswith('.png?v=5'):
+            if item['href'].endswith('.png?v=6'):
                 self.assertEqual('image/png',headers['Content-Type'])
                 self.assertTrue(raw.startswith(b'\x89PNG\r\n\x1a\n'))
                 continue
