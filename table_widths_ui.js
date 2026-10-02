@@ -34,5 +34,30 @@ function install(){
 }
 function clearApplied(table){table.querySelector(':scope>colgroup[data-system-widths]')?.remove();defaultWidths.delete(table);[...table.tHead.rows[0].cells].forEach((th,i)=>{th.hidden=false;th.style.width=th.style.minWidth=th.style.maxWidth='';for(const row of table.tBodies[0]?.rows||[]){if(row.cells[i]){row.cells[i].hidden=false;row.cells[i].style.width=row.cells[i].style.minWidth=row.cells[i].style.maxWidth=''}}});table.style.width=table.style.minWidth=table.style.tableLayout=''}
 async function edit(table,key){const widths={...(saved[key]||{})},heads=[...table.tHead.rows[0].cells],fields=dialog.querySelector('.system-width-fields'),visibility=table.dataset.visibilityControl==='1',configured=Array.isArray(widths.__visible__),visible=new Set(configured?widths.__visible__:heads.map(columnKey));fields.classList.toggle('with-visibility',visibility);fields.innerHTML=heads.map((th,i)=>{const k=columnKey(th,i);if(th.dataset.columnFixed==='1')return'';const current=Number(widths[k])||Math.max(40,Math.min(1200,Math.round(th.getBoundingClientRect().width)||120));return `<label>${visibility?`<input type="checkbox" data-visible="${esc(k)}" ${visible.has(k)?'checked':''}>`:''}<span>${esc(th.textContent.trim()||k)}</span><input type="number" min="40" max="1200" required value="${current}" data-column="${esc(k)}"><small>px</small></label>`}).join('');dialog.querySelector('form').onsubmit=async event=>{event.preventDefault();if(!event.currentTarget.reportValidity())return;const next={};fields.querySelectorAll('[data-column]').forEach(input=>next[input.dataset.column]=Math.max(40,Math.min(1200,Number(input.value))));const selected=visibility?[...fields.querySelectorAll('[data-visible]:checked')].map(input=>input.dataset.visible):undefined;try{await request(`${API}/admin/table-widths`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({table_key:key,widths:next,visible:selected})});saved[key]={...next,...(visibility?{__visible__:selected}:{})};apply(table,saved[key]);dialog.close();toast('Налаштування колонок збережено')}catch(error){toast(error.message||'Не вдалося зберегти колонки','error')}};dialog.querySelector('.system-width-reset').onclick=async()=>{try{await request(`${API}/admin/table-widths?table_key=${encodeURIComponent(key)}`,{method:'DELETE'});delete saved[key];clearApplied(table);dialog.close();toast('Стандартні налаштування відновлено')}catch(error){toast(error.message||'Не вдалося відновити колонки','error')}};dialog.showModal()}
-authReady.then(async()=>{try{saved=(await request(`${API}/table-widths`)).tables||{};let queued=false;const schedule=()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;install()})};install();new MutationObserver(schedule).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden','class','data-auth-role']})}catch(e){console.warn('System table widths unavailable',e)}});
+let initialized=false,initializing=null;
+function initialize(){
+  if(initialized)return Promise.resolve();
+  if(initializing)return initializing;
+  initializing=(async()=>{
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        const data=await request(`${API}/table-widths`);
+        saved=data.tables||{};
+        let queued=false;
+        const schedule=()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;install()})};
+        install();
+        new MutationObserver(schedule).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden','class','data-auth-role']});
+        initialized=true;
+        return;
+      }catch(e){
+        if(attempt===2){console.warn('System table widths unavailable',e);return}
+        await new Promise(resolve=>setTimeout(resolve,350*(attempt+1)));
+      }
+    }
+  })().finally(()=>{initializing=null});
+  return initializing;
+}
+authReady.then(initialize);
+window.addEventListener('online',()=>{if(!initialized)initialize()});
+window.addEventListener('focus',()=>{if(!initialized)initialize()});
 })();

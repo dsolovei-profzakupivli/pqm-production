@@ -839,7 +839,7 @@ def projected_verification_officer(con, value: str) -> str:
 
 def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
     """UI-compatible current verification selection by literal supplier identity."""
-    codes = {str(code or "").strip() for code in supplier_codes if str(code or "").strip()}
+    codes = {str(code) for code in supplier_codes if str(code or "").strip()}
     candidates = {code: [] for code in codes}
     admissions = {}
     qualification_link = ("qualification_id" in _columns(con, "submissions")
@@ -1024,7 +1024,7 @@ def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
 
 def canonical_prozorro_statuses(con, supplier_codes) -> dict[str, str]:
     """The same literal-code resolver for EDR monitoring and full-registry."""
-    codes = {str(code or "").strip() for code in supplier_codes if str(code or "").strip()}
+    codes = {str(code) for code in supplier_codes if str(code or "").strip()}
     statuses = prozorro_statuses(con)
     active = supplier_activity.effective_active_sql("rc", "f")
     activity = {str(row["supplier_code"] or "").strip(): bool(row["is_active"])
@@ -1032,7 +1032,7 @@ def canonical_prozorro_statuses(con, supplier_codes) -> dict[str, str]:
         MAX(CASE WHEN {active} THEN 1 ELSE 0 END) is_active
         FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
         WHERE TRIM(COALESCE(rc.supplier_code,''))<>'' GROUP BY rc.supplier_code""")}
-    return {code: statuses.get(code) or ("Активний" if activity.get(code) else "Неактивний")
+    return {code: statuses.get(code.strip()) or ("Активний" if activity.get(code.strip()) else "Неактивний")
             for code in codes}
 
 

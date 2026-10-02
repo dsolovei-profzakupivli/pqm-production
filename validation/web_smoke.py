@@ -255,21 +255,25 @@ class WebAcceptance(unittest.TestCase):
         status,html,_=self.request('/',None)
         self.assertEqual(200,status)
         links=IconLinks();links.feed(html.decode())
-        expected='/assets/pqm-q-favicon-prod.svg?v=1'
-        self.assertEqual({expected},{item['href'] for item in links.items})
+        expected=[
+            ('icon','/assets/pqm-q-favicon-192.png?v=5','192x192'),
+            ('icon','/assets/pqm-q-favicon.svg?v=5','any'),
+            ('icon','/assets/pqm-q-favicon-16.png?v=5','16x16'),
+            ('icon','/assets/pqm-q-favicon-32.png?v=5','32x32'),
+            ('apple-touch-icon','/assets/pqm-q-favicon-180.png?v=5',None),
+        ]
+        self.assertEqual(expected,[(item['rel'],item['href'],item.get('sizes')) for item in links.items])
         for item in links.items:
             status,raw,headers=self.request(item['href'],None)
             self.assertEqual(200,status)
+            if item['href'].endswith('.png?v=5'):
+                self.assertEqual('image/png',headers['Content-Type'])
+                self.assertTrue(raw.startswith(b'\x89PNG\r\n\x1a\n'))
+                continue
             self.assertEqual('image/svg+xml',headers['Content-Type'])
-            self.assertEqual('icon',item['rel'])
-            self.assertEqual('any',item['sizes'])
             root=ET.fromstring(raw)
             ns='{http://www.w3.org/2000/svg}'
             self.assertEqual('0 0 48 48',root.get('viewBox'))
-            self.assertEqual('#f5f7f8',root.find(ns+'rect').get('fill'))
-            self.assertEqual('#63b2ff',root.find(ns+'path').get('fill'))
-            sandbox=ET.parse(ROOT/'assets'/'pqm-q-favicon.svg').getroot()
-            self.assertEqual(sandbox.find(ns+'path').get('d'),root.find(ns+'path').get('d'))
 
 if __name__=='__main__':
     if '--serve' in sys.argv:

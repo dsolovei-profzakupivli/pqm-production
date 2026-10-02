@@ -122,7 +122,7 @@ function applyRoleCapabilities(me){
   document.body.dataset.authRole=me.role||'viewer';
   const admin=me.role==='admin',viewer=me.role==='viewer';
   if(!admin&&activeModule==='administration')showModule('applications');
-  const adminNav=$('#administrationNav');if(adminNav)adminNav.hidden=!admin;
+  const adminNav=$('#administrationNav');if(adminNav)adminNav.hidden=!admin||adminNav.dataset.navVisible==='false';
   $$('[data-admin-only]').forEach(element=>element.hidden=!admin);
   const taskTemplates=$('#operationalTaskTemplates');if(taskTemplates)taskTemplates.hidden=!admin;
   const requestsTemplates=$('#requestsTemplates');if(requestsTemplates)requestsTemplates.hidden=!admin;
@@ -1937,7 +1937,7 @@ loadAdminOfficers=async function(){
 const storedLocalRole=localStorage.getItem(localRoleKey);if(storedLocalRole&&$('#roleSelect').querySelector(`option[value="${storedLocalRole}"]`))$('#roleSelect').value=storedLocalRole;
 $('#resetBtn').textContent='Оновити з Prozorro';
 let applicationsRegistryInitialization=null,applicationsRegistryInitialized=false;
-const initializeApplicationsRegistry=()=>{if(applicationsRegistryInitialized)return Promise.resolve();if(applicationsRegistryInitialization)return applicationsRegistryInitialization;applicationsRegistryInitialization=reloadApplicationsRegistry({reloadMetadata:true}).then(()=>{applicationsRegistryInitialized=true}).catch(error=>{renderProfileFallback();loading=false;render();toast(`Не вдалося ініціалізувати реєстр: ${error.message}`,'error')}).finally(()=>{applicationsRegistryInitialization=null});return applicationsRegistryInitialization};
+const initializeApplicationsRegistry=()=>{if(applicationsRegistryInitialized)return Promise.resolve();if(applicationsRegistryInitialization)return applicationsRegistryInitialization;applicationsRegistryInitialization=(async()=>{for(let attempt=0;attempt<3;attempt++){try{const result=await reloadApplicationsRegistry({reloadMetadata:true});if(result.ok){applicationsRegistryInitialized=true;return}if(attempt===2)throw new Error(`Не завантажено: ${result.failures.join(', ')}`)}catch(error){if(attempt===2){renderProfileFallback();loading=false;render();toast(`Не вдалося ініціалізувати реєстр: ${error.message}`,'error');return}}await new Promise(resolve=>setTimeout(resolve,350*(attempt+1)))}})().finally(()=>{applicationsRegistryInitialization=null});return applicationsRegistryInitialization};
 $('#applicationsNav').onclick=()=>{showModule('applications');initializeApplicationsRegistry()};
 authReady.then(()=>{if(activeModule==='applications')return initializeApplicationsRegistry()},()=>{if(activeModule==='applications')return initializeApplicationsRegistry()});
 refreshSyncStatus();setInterval(refreshSyncStatus,30000);

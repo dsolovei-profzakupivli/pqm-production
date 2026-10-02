@@ -100,6 +100,37 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'ambiguous'):
                 server.sandbox_supplier_google_row('46130719')
 
+    def test_monitoring_literal_eligible_codes_survive_projection_and_endpoint(self):
+        codes = ('2981209581 ', 'СР 918414', '00001234', 'AB-12')
+        with server.db() as con:
+            for index, code in enumerate(codes):
+                submission_id, qualification_id = f's{index}', f'q{index}'
+                con.execute("""INSERT INTO submissions
+                  (id,framework_id,supplier_code,supplier_name,date_published,raw_json,synced_at,qualification_id)
+                  VALUES(?,?,?,?,?,'{}',?,?)""",
+                  (submission_id, 'f', code, code, '2026-09-28', server.now_iso(), qualification_id))
+                con.execute("""INSERT INTO qualifications
+                  (id,framework_id,submission_id,status,decision_date,raw_json,synced_at)
+                  VALUES(?,?,?,?,'2026-09-28','{}',?)""",
+                  (qualification_id, 'f', submission_id,
+                   'unsuccessful' if index == 1 else 'active', server.now_iso()))
+            expected = server.edr_sync_v2.monitoring_population_codes(con)
+            self.assertEqual(len(expected), 5)
+            self.assertEqual(len({code.strip() for code in expected}), len(expected))
+            registry = server.supplier_registry_integration.eligible_full_registry(con)
+            self.assertEqual({item['supplier_code'] for item in registry['items']},
+                             {code.strip() for code in expected})
+        server.EDR_MONITORING_CACHE['fingerprint'] = None
+        response = server.list_edr_monitoring({'page': ['1'], 'size': ['100']})
+        self.assertEqual(response['total'], len(expected))
+        self.assertEqual(sum(response['kpis'].values()), len(expected))
+        self.assertEqual({item['supplier_code'] for item in response['items']}, expected)
+        handler = SimpleNamespace(path='/api/edr-monitoring?page=1&size=100',
+                                  send_json=lambda body, status=200: (status, body))
+        status, payload = server.Handler._do_GET(handler)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload['total'], len(expected))
+
     def test_existing_profile_preview_apply_card_and_noop(self):
         first = self.source('ПЕРША ПОВНА', 'ПЕРША КОРОТКА', 'Зареєстровано')
         self.apply(first)
