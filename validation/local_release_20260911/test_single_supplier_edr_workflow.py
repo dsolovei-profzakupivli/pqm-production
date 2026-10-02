@@ -29,6 +29,11 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
                server.now_iso()))
             con.execute("""INSERT INTO application_fields(submission_id,protocol_decision)
               VALUES('s','admit')""")
+            con.execute("""INSERT INTO qualifications
+              (id,framework_id,submission_id,status,decision_date,raw_json,synced_at)
+              VALUES('q','f','s','active','2026-09-27','{}',?)""",
+              (server.now_iso(),))
+            con.execute("UPDATE submissions SET qualification_id='q' WHERE id='s'")
 
     def tearDown(self):
         server.DB_PATH = self.old_db
