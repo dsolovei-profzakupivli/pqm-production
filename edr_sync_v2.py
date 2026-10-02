@@ -318,19 +318,35 @@ def _columns(con, table: str) -> set[str]:
     return {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
 
 
-MONITORING_POPULATION_SQL = """
-SELECT supplier_code FROM supplier_edr_profiles WHERE supplier_code<>''
-UNION SELECT supplier_code FROM supplier_registry_summary WHERE supplier_code<>''
-UNION SELECT s.supplier_code FROM submissions s
-  JOIN application_fields af ON af.submission_id=s.id
-  WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')
+DECIDED_APPLICATIONS_SQL = """
+SELECT s.id,s.supplier_code,s.date_published,q.status
+FROM submissions s JOIN qualifications q ON q.id=s.qualification_id
+WHERE TRIM(COALESCE(s.supplier_code,''))<>''
+  AND q.status IN ('active','unsuccessful')
 """
+
+MONITORING_ELIGIBILITY_SQL = """
+SELECT supplier_code,
+  MAX(CASE WHEN status='active' THEN 1 ELSE 0 END) has_admitted,
+  MAX(CASE WHEN status='unsuccessful' THEN 1 ELSE 0 END) has_rejected
+FROM (
+""" + DECIDED_APPLICATIONS_SQL + """
+) GROUP BY supplier_code
+HAVING has_admitted=1 OR has_rejected=1
+"""
+
+MONITORING_POPULATION_SQL = "SELECT supplier_code FROM (" + MONITORING_ELIGIBILITY_SQL + ")"
+
+
+def monitoring_eligibility(con) -> dict[str, str]:
+    """One literal supplier code and Google status per decided application group."""
+    return {row[0]: ("Активний" if row[1] else "Ще не в реєстрі")
+            for row in con.execute(MONITORING_ELIGIBILITY_SQL)}
 
 
 def monitoring_population_codes(con) -> set[str]:
-    """EDR register population, not the recurring active-only freshness queue."""
-    return {str(row[0]).strip() for row in con.execute(MONITORING_POPULATION_SQL)
-            if str(row[0] or '').strip()}
+    """The same qualification-status population used by Google sync."""
+    return set(monitoring_eligibility(con))
 
 
 def google_prozorro_presentation(status: str) -> str:

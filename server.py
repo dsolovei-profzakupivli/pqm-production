@@ -4980,9 +4980,6 @@ def _edr_monitoring_rows() -> list[dict]:
                 item = dict(raw); code = item["supplier_code"]
                 if edr_sync_v2.normalized_date(item.get("occurred_at")):
                     ledger.setdefault(code, []).append(item)
-            eligible = {row[0] for row in con.execute("""SELECT DISTINCT s.supplier_code FROM submissions s
-              JOIN application_fields af ON af.submission_id=s.id
-              WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')""")}
             population = edr_sync_v2.monitoring_population_codes(con)
             card_identities = set(profiles) | set(registry) | set(latest_app)
             card_variants = {}
@@ -9841,7 +9838,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"items": items})
         if parsed.path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
             with db() as con:
-                result=supplier_registry_integration.full_registry(con)
+                result=supplier_registry_integration.eligible_full_registry(con)
             return self.send_json(result)
         if parsed.path == '/api/navigation-settings':
             with db() as con: return self.send_json(navigation_settings.get(con))

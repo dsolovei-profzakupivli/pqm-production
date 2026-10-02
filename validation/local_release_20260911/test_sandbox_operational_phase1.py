@@ -4,6 +4,7 @@ import contextlib
 import gc
 import sqlite3
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -229,11 +230,17 @@ class SandboxOperationalTaskChainTests(unittest.TestCase):
         self.assertFalse(server.amcu_blocks_submission(self.con, 'S'))
 
     def test_warning_appeal_source_creates_local_task(self):
+        class FrozenDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 9, 21)
+
         for number, day in enumerate(('2026-09-01', '2026-09-10', '2026-09-20'), 1):
             self.con.execute('INSERT INTO violation_reports VALUES(?,?,?,?,?,?,?,?,?)',
                              (str(number), f'UA-D-{number}', 'satisfied', day, self.fixture.CODE,
                               day, 'UA-TEST', 'SANDBOX CUSTOMER', ''))
-        counts = operational_tasks.build(self.con, 'SANDBOX violation refresh', include_nazk=False)
+        with patch.object(operational_tasks, 'date', FrozenDate):
+            counts = operational_tasks.build(self.con, 'SANDBOX violation refresh', include_nazk=False)
         self.assertEqual(counts['warning'], 1)
         row = self.con.execute("SELECT id FROM operational_tasks WHERE task_type='warning_block'").fetchone()
         self.assertEqual(operational_tasks.detail(self.con, row['id'])['task_type'], 'warning_block')

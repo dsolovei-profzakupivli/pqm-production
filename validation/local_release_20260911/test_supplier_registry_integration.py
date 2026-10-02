@@ -14,7 +14,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.con.create_function('DIGITS',1,integration.edr_sync_v2.normalize_code)
         self.con.executescript('''CREATE TABLE submissions(
           id TEXT PRIMARY KEY,supplier_code TEXT,supplier_name TEXT,date_published TEXT,
-          status TEXT,raw_json TEXT,synced_at TEXT);
+          status TEXT,raw_json TEXT,synced_at TEXT,qualification_id TEXT);
         CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,manager_name TEXT,protocol_officer TEXT,
           protocol_decision TEXT DEFAULT '',protocol_date TEXT DEFAULT '');
         CREATE TABLE qualifications(id TEXT PRIMARY KEY,submission_id TEXT,status TEXT,decision_date TEXT);
@@ -40,10 +40,11 @@ class FullSupplierRegistryTests(unittest.TestCase):
     def add(self,code,name,date,scheme='UA-EDR',qualification=None,officer='',manager='',source='',contract=None):
         sid=f's{self.con.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]+1}'
         raw=json.dumps({'tenderers':[{'identifier':{'id':code,'scheme':scheme}}]})
-        self.con.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?)',(sid,code,name,date,'active',raw,date))
+        self.con.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',(sid,code,name,date,'active',raw,date,None))
         self.con.execute('INSERT INTO application_fields(submission_id,manager_name,protocol_officer) VALUES(?,?,?)',(sid,manager,officer))
         if qualification:
             qid='q'+sid;self.con.execute('INSERT INTO qualifications VALUES(?,?,?,?)',(qid,sid,qualification,date))
+            self.con.execute('UPDATE submissions SET qualification_id=? WHERE id=?',(qid,sid))
         if contract:
             self.con.execute('INSERT INTO registry_contracts VALUES(?,?,?,?,?)',('r'+sid,code,contract,'f',qid if qualification else None))
         self.con.execute('INSERT OR REPLACE INTO supplier_registry_summary VALUES(?,?,?,0)',
@@ -54,10 +55,59 @@ class FullSupplierRegistryTests(unittest.TestCase):
 
     def items(self):return {x['supplier_code']:x for x in integration.full_registry(self.con)['items']}
 
+    def test_endpoint_exact_shared_set_excludes_prod_only_ten(self):
+        endpoint_only = ('1922319119', '25586283', '2617901540', '3069605914',
+                         '3292301719', '3315012247', '39369840', '40323076',
+                         '44726167', '45614852')
+        for code in endpoint_only:
+            sid = self.add(code, 'PENDING', '2026-09-20')
+            self.con.execute("UPDATE application_fields SET protocol_decision='reject' WHERE submission_id=?", (sid,))
+        self.add('00000001', 'ADMITTED', '2026-09-21', qualification='active')
+        self.add('AB-008', 'REJECTED', '2026-09-22', qualification='unsuccessful')
+        self.add('2981209581 ', 'OUTER SPACE', '2026-09-23', qualification='active')
+        result = integration.eligible_full_registry(self.con)
+        actual = {item['supplier_code'] for item in result['items']}
+        expected = {code.strip() for code in integration.edr_sync_v2.monitoring_population_codes(self.con)}
+        self.assertEqual(actual, expected)
+        self.assertEqual(result['count'], len(expected))
+        self.assertEqual(actual, {'00000001', 'AB-008', '2981209581'})
+        self.assertFalse(actual.intersection(endpoint_only))
+        self.assertTrue(all(item['google_sync_eligible'] for item in result['items']))
+
+    def test_endpoint_rejects_outer_whitespace_identity_collision(self):
+        self.add('2981209581 ', 'FIRST', '2026-09-20', qualification='active')
+        self.add('2981209581', 'SECOND', '2026-09-21', qualification='unsuccessful')
+        with self.assertRaisesRegex(ValueError, 'Ambiguous supplier code'):
+            integration.eligible_full_registry(self.con)
+
+    def test_shared_literal_qualification_eligibility_and_active_priority(self):
+        cases = {
+            '00000001': ([None], None),
+            '00000002': (['unsuccessful'], 'Ще не в реєстрі'),
+            '00000003': (['active'], 'Активний'),
+            '00000004': (['unsuccessful', None], 'Ще не в реєстрі'),
+            '00000005': (['active', None], 'Активний'),
+            '00000006': (['unsuccessful', 'active'], 'Активний'),
+            'AB-008': (['active', 'active'], 'Активний'),
+            'PENDING-X': (['pending'], None),
+        }
+        for code, (statuses, _) in cases.items():
+            for index, status in enumerate(statuses):
+                self.add(code, code, f'2026-01-{index + 1:02d}', qualification=status)
+        self.con.execute("UPDATE application_fields SET protocol_decision='admit'")
+        expected = {code for code, (_, status) in cases.items() if status}
+        self.assertEqual(integration.edr_sync_v2.monitoring_population_codes(self.con), expected)
+        endpoint = {item['supplier_code']: item for item in integration.eligible_full_registry(self.con)['items']}
+        self.assertEqual(set(endpoint), expected)
+        self.assertEqual({code: status for code, status in integration.edr_sync_v2.monitoring_eligibility(self.con).items()},
+                         {code: status for code, (_, status) in cases.items() if status})
+        self.assertEqual(endpoint['00000006']['google_sync_eligible'], True)
+        self.assertNotIn('PENDING-X', endpoint)
+
     def test_new_confirmed_ua_edr_routes_to_legal_entity_without_profile(self):
         self.add('46130719', 'NEW LEGAL ENTITY', '2026-09-27', scheme='UA-EDR')
         self.assertEqual(self.items()['46130719']['entity_type'], 'legal_entity')
-        self.assertTrue(self.items()['46130719']['monitoring_eligible'])
+        self.assertFalse(self.items()['46130719']['monitoring_eligible'])
         self.add('12345678', 'UNCONFIRMED', '2026-09-27', scheme='')
         self.assertEqual(self.items()['12345678']['entity_type'], 'unknown')
 
@@ -67,6 +117,9 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertFalse(pending['google_sync_eligible'])
         self.assertIsNone(pending['google_sync_last_decided_application_date'])
         self.con.execute("UPDATE application_fields SET protocol_decision='reject' WHERE submission_id=?", (first,))
+        self.assertFalse(self.items()['00000081']['google_sync_eligible'])
+        self.con.execute("INSERT INTO qualifications VALUES(?,?,?,?)", ('q'+first,first,'unsuccessful','2026-09-20'))
+        self.con.execute("UPDATE submissions SET qualification_id=? WHERE id=?", ('q'+first,first))
         decided = self.items()['00000081']
         self.assertTrue(decided['google_sync_eligible'])
         self.assertEqual(decided['google_sync_last_decided_application_date'], '2026-09-20')
@@ -78,13 +131,15 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(followup['prozorro_status_google'], decided['prozorro_status_google'])
         later = self.add('00000081', 'SECOND DECISION', '2026-09-27', source='ЮО')
         self.con.execute("UPDATE application_fields SET protocol_decision='admit' WHERE submission_id=?", (later,))
+        self.con.execute("INSERT INTO qualifications VALUES(?,?,?,?)", ('q'+later,later,'active','2026-09-27'))
+        self.con.execute("UPDATE submissions SET qualification_id=? WHERE id=?", ('q'+later,later))
         self.assertEqual(self.items()['00000081']['google_sync_last_decided_application_date'],
                          '2026-09-27')
 
     def test_monitoring_population_shared_with_register(self):
-        active = self.add('00000001','ACTIVE','2026-01-01',contract='active')
+        active = self.add('00000001','ACTIVE','2026-01-01',qualification='active',contract='active')
         pending = self.add('00000002','PENDING','2026-01-02')
-        final = self.add('00000003','FINAL','2026-01-03')
+        final = self.add('00000003','FINAL','2026-01-03',qualification='unsuccessful')
         legacy = self.add('00000004','LEGACY','2026-01-04',source='ЮО')
         self.con.execute("DELETE FROM supplier_registry_summary")
         self.con.execute("INSERT INTO supplier_registry_summary(supplier_code,supplier_name,active_count) VALUES('00000001','ACTIVE',1)")
@@ -93,8 +148,9 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual({code for code,item in got.items() if item['monitoring_eligible']},
                          integration.edr_sync_v2.monitoring_population_codes(self.con))
         self.assertFalse(got['00000002']['monitoring_eligible'])
-        for code in ('00000001','00000003','00000004'):
+        for code in ('00000001','00000003'):
             self.assertTrue(got[code]['monitoring_eligible'])
+        self.assertFalse(got['00000004']['monitoring_eligible'])
         self.assertTrue(all(type(item['monitoring_eligible']) is bool for item in got.values()))
 
     def test_all_freshness_buckets_and_verification_change(self):
@@ -144,7 +200,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
         not_registered='00000042'
         self.add(inactive,'HISTORICAL','2026-01-01',source='ЮО',
                  qualification='active',contract='terminated')
-        sid=self.add(not_registered,'REJECTED','2026-01-02',source='ЮО')
+        sid=self.add(not_registered,'REJECTED','2026-01-02',source='ЮО',qualification='unsuccessful')
         self.con.execute("UPDATE application_fields SET protocol_decision='reject' WHERE submission_id=?",(sid,))
         self.con.execute("UPDATE supplier_edr_profiles SET edr_status='Припинено' WHERE supplier_code IN (?,?)",
                          (inactive,not_registered))
@@ -195,11 +251,11 @@ class FullSupplierRegistryTests(unittest.TestCase):
         profile_code='00000021'
         meddata_code='00000022'
         event_code='00000023'
-        self.add(profile_code,'PROFILE','2026-01-01',source='ЮО')
+        self.add(profile_code,'PROFILE','2026-01-01',source='ЮО',qualification='active')
         self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at='2026-02-01',edr_officer='Profile UO' WHERE supplier_code=?",(profile_code,))
-        sid=self.add(meddata_code,'MEDDATA','2026-01-02',source='ЮО')
+        sid=self.add(meddata_code,'MEDDATA','2026-01-02',source='ЮО',qualification='active')
         self.con.execute("UPDATE application_fields SET protocol_decision='admit',protocol_date='2026-02-02',protocol_officer='MedData UO' WHERE submission_id=?",(sid,))
-        self.add(event_code,'EVENT','2026-01-03',source='ЮО')
+        self.add(event_code,'EVENT','2026-01-03',source='ЮО',qualification='unsuccessful')
         for kind,officer in (('google_clarity','Google UO'),('manual_edr','Manual UO')):
             self.con.execute("""INSERT INTO supplier_edr_verification_events
               (supplier_code,event_type,occurred_at,snapshot_json,officer,source,source_submission_id)

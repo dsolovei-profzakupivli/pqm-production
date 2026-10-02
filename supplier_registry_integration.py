@@ -115,18 +115,14 @@ def _build_full_registry(con):
             latest[code] = row
     for raw in con.execute("""SELECT s.id,s.supplier_code,s.date_published,
       NULLIF(TRIM(af.protocol_officer),'') protocol_officer
-      FROM qualifications q JOIN submissions s ON s.id=q.submission_id
+      FROM qualifications q JOIN submissions s ON q.id=s.qualification_id
       LEFT JOIN application_fields af ON af.submission_id=s.id
-      WHERE q.status='active' AND q.submission_id<>''
+      WHERE q.status='active'
       ORDER BY s.date_published DESC,s.id DESC"""):
         row = dict(raw); code = str(row["supplier_code"] or "").strip()
         approved.setdefault(code, row)
-    for raw in con.execute("""SELECT s.id,s.supplier_code,s.date_published
-      FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
-      LEFT JOIN qualifications q ON q.submission_id=s.id
-      WHERE (af.protocol_decision IN ('admit','reject') OR q.status IN ('active','unsuccessful'))
-        AND TRIM(COALESCE(s.supplier_code,''))<>''
-      ORDER BY s.date_published DESC,s.id DESC"""):
+    for raw in con.execute(edr_sync_v2.DECIDED_APPLICATIONS_SQL
+                           + " ORDER BY s.date_published DESC,s.id DESC"):
         row = dict(raw); code = str(row["supplier_code"] or "").strip()
         decided.setdefault(code, row)
     summaries = {str(row["supplier_code"] or "").strip(): dict(row) for row in con.execute(
@@ -165,7 +161,15 @@ def _build_full_registry(con):
       WHERE is_current=1 ORDER BY COALESCE(NULLIF(updated_at,''),created_at) DESC,id DESC"""):
         managers.setdefault(str(row["supplier_code"] or "").strip(), str(row["manager_name"] or "").strip())
     statuses = edr_sync_v2.canonical_prozorro_statuses(con, latest)
-    monitoring_codes = edr_sync_v2.monitoring_population_codes(con)
+    google_statuses = {}
+    eligibility_raw_codes = {}
+    for raw_code, status in edr_sync_v2.monitoring_eligibility(con).items():
+        code = str(raw_code).strip()
+        if code in eligibility_raw_codes and raw_code != eligibility_raw_codes[code]:
+            raise ValueError(f"Ambiguous supplier code after outer whitespace strip: {code!r}")
+        eligibility_raw_codes[code] = raw_code
+        google_statuses[code] = status
+    monitoring_codes = set(google_statuses)
     names = _current_names(con, latest, profile_columns)
     verifications = edr_sync_v2.current_verification_projections(con, latest)
     qualification_dates = edr_sync_v2.active_qualification_dates(con)
@@ -210,7 +214,7 @@ def _build_full_registry(con):
                 canonical_status, qualification_dates.get(code, ""),
                 factual_edr_events.get(code, []), str(profile.get("edr_status") or "")),
             "monitoring_eligible": code in monitoring_codes,
-            "google_sync_eligible": code in decided,
+            "google_sync_eligible": code in google_statuses,
             "freshness_marker": edr_sync_v2.marker_for_status(
                 canonical_status, verification["verification_date"]),
             "last_application_date": str(application.get("date_published") or "")[:10] or None,
@@ -244,3 +248,10 @@ def full_registry(con):
         with _CACHE_LOCK:
             _FULL_REGISTRY_CACHE.update(revision=after, payload=payload)
     return json.loads(payload)
+
+
+def eligible_full_registry(con):
+    """Expose only the shared qualification-status population to Google."""
+    result = full_registry(con)
+    items = [item for item in result["items"] if item["google_sync_eligible"]]
+    return {"generated_at": result["generated_at"], "count": len(items), "items": items}
