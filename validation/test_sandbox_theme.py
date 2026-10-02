@@ -35,11 +35,11 @@ class Theme(unittest.TestCase):
         for flag in ('0', '1'):
             with patch.dict(os.environ, PQM_SANDBOX=flag):
                 html = sandbox.decorate_html(raw).decode()
-                self.assertEqual('pqm-q-favicon.svg' in html, flag == '1')
-                self.assertEqual('pqm-q-favicon-16.png' in html, flag == '1')
-                self.assertEqual('pqm-q-favicon-180.png' in html, flag == '1')
+                self.assertEqual('pqm-q-favicon.svg?v=4' in html, flag == '1')
+                self.assertEqual('pqm-q-favicon-16.png?v=4' in html, flag == '1')
+                self.assertEqual('pqm-q-favicon-180.png?v=4' in html, flag == '1')
                 self.assertEqual('pqm-brand-mark.svg' in html, flag == '1')
-                if flag == '0': self.assertIn('pqm-q-favicon-prod.svg', html)
+                if flag == '0': self.assertIn('pqm-q-favicon-192.png?v=5', html)
         root = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}rect').get('fill'), '#132840')
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}title').text, 'Q — PQM')

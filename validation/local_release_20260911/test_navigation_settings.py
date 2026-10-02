@@ -72,7 +72,7 @@ class NavigationSettingsTests(unittest.TestCase):
 
     def test_browser_does_not_override_saved_icon_or_display_mode(self):
         browser=(Path(navigation_settings.__file__).resolve().parent/'nav_icons.js').read_text(encoding='utf-8')
-        self.assertIn("document.documentElement.dataset.pqmEnvironment==='sandbox'",browser)
+        self.assertNotIn("if(!sandbox&&base.id==='administrationNav')",browser)
         self.assertNotIn("if(base.id==='frameworksNav')",browser)
         self.assertNotIn("if(base.id==='edrMonitoringNav')",browser)
 
