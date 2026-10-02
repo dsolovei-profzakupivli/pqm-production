@@ -44,7 +44,10 @@ class SupplierEdrFilterTests(unittest.TestCase):
                     for selected in (legacy,canonical):
                         result=self.listing(search='30067771',edr_status=selected)
                         self.assertEqual(result['total'],1)
-                        self.assertEqual(result['items'][0]['edr_profile']['edr_status'],raw)
+                        self.assertEqual(result['items'][0]['edr_profile']['edr_status'],canonical)
+                    self.assertEqual(self.con.execute(
+                        "SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code='30067771'"
+                    ).fetchone()[0], raw, "API projection must not migrate stored history")
                     self.assertEqual(self.listing(search='30067771')['total'],1)
     def test_distinct_and_current_transition_fop_and_legal(self):
         self.assertEqual(self.listing()['edr_statuses'],['Зареєстровано'])

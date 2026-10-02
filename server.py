@@ -4471,7 +4471,8 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
         profile, last = profiles.get(code, {}), latest.get(code, {})
         rows.append({"code": code, "full_name": profile.get("full_name", ""),
           "short_name": profile.get("short_name", ""), "edr_manager": profile.get("manager_name", ""),
-          "edr_status": profile.get("edr_status", ""), "edr_checked_at": profile.get("edr_checked_at", ""),
+          "edr_status": edr_sync_v2.compatible_edr_status(profile.get("edr_status", "")),
+          "edr_checked_at": profile.get("edr_checked_at", ""),
           "source_sheet": profile.get("source_sheet", ""),
           "termination_decision_details": profile.get("termination_decision_details", ""),
           "edr_officer": profile.get("edr_officer", ""), "edr_notes": profile.get("edr_notes", ""),
@@ -4945,11 +4946,7 @@ def _edr_monitoring_name(value) -> str:
 
 
 def _edr_monitoring_status(value) -> str:
-    status = str(value or "").strip()
-    try:
-        return edr_sync_v2.canonical_edr_status(status)
-    except ValueError:
-        return status  # Unknown legacy value stays visible for operator review.
+    return edr_sync_v2.compatible_edr_status(value)
 
 
 def _edr_monitoring_rows() -> list[dict]:
@@ -5477,7 +5474,9 @@ def list_qualified_suppliers(params: dict) -> dict:
                        "edr_officer": verification.get("officer") or "",
                        "verification_event_type": verification.get("event_type") or ""}
         item["name"] = edr_sync_v2.current_supplier_name(profile.get("full_name"), item.get("name"))
-        item["edr_profile"] = profile
+        item["edr_profile"] = ({**profile,
+            "edr_status": edr_sync_v2.compatible_edr_status(profile.get("edr_status"))}
+            if profile else profile)
         item["current_manager"] = (known_managers.get(code) or {}).get("manager_name", "")
         item["current_manager_source"] = (known_managers.get(code) or {}).get("resolution_source", "")
         item["prozorro_status"] = canonical_state.get("prozorro_status", "Ще не в реєстрі")
@@ -5760,6 +5759,9 @@ def supplier_profile(supplier_code: str) -> dict:
         registry_record_no_longer_present=record_no_longer_present,
     )
     profile_data = dict(profile) if profile else {}
+    if profile_data:
+        profile_data["edr_status"] = edr_sync_v2.compatible_edr_status(
+            profile_data.get("edr_status"))
     with db() as event_con:
         canonical_edr = edr_sync_v2.canonical_supplier_edr_states(event_con, [code]).get(code, {})
         verification = canonical_edr.get("verification_event")
