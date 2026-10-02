@@ -39,7 +39,7 @@ class Theme(unittest.TestCase):
                 self.assertEqual('pqm-q-favicon-16.png?v=4' in html, flag == '1')
                 self.assertEqual('pqm-q-favicon-180.png?v=4' in html, flag == '1')
                 self.assertEqual('pqm-brand-mark.svg' in html, flag == '1')
-                if flag == '0': self.assertIn('pqm-q-favicon-192.png?v=5', html)
+                if flag == '0': self.assertIn('pqm-q-favicon-prod-192.png?v=6', html)
         root = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}rect').get('fill'), '#132840')
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}title').text, 'Q — PQM')

@@ -292,9 +292,24 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.con.execute("ALTER TABLE supplier_edr_profiles ADD COLUMN full_name TEXT DEFAULT ''")
         self.add('00000001', 'LATEST APPLICATION NAME', '2026-01-01', source='ЮО')
         self.assertEqual(self.items()['00000001']['supplier_name'], '')
+        self.assertEqual(self.items()['00000001']['latest_submission_name'], 'LATEST APPLICATION NAME')
         self.con.execute("UPDATE supplier_edr_profiles SET full_name='VERIFIED EDR FULL NAME' WHERE supplier_code='00000001'")
         integration.reset_full_registry_cache()
         self.assertEqual(self.items()['00000001']['supplier_name'], 'VERIFIED EDR FULL NAME')
+        self.assertEqual(self.items()['00000001']['latest_submission_name'], 'LATEST APPLICATION NAME')
+
+    def test_latest_submission_name_is_separate_literal_application_data(self):
+        for code in ('2981209581 ', 'СР 918414', '00123456', 'AB-008'):
+            self.add(code, 'OLDER', '2026-01-01', qualification='active')
+            self.add(code, ' LATEST NAME ', '2026-02-01')
+        self.add('EMPTY-ID', '', '2026-02-01', qualification='unsuccessful')
+        items = self.items()
+        for code in ('2981209581', 'СР 918414', '00123456', 'AB-008'):
+            self.assertEqual(items[code]['supplier_name'], '')
+            self.assertEqual(items[code]['latest_submission_name'], 'LATEST NAME')
+        self.assertEqual(items['EMPTY-ID']['latest_submission_name'], '')
+        self.assertEqual(items['СР 918414']['supplier_code'], 'СР 918414')
+        self.assertEqual(items['00123456']['supplier_code'], '00123456')
 
     def test_real_verification_projection_parity_and_newer_observation(self):
         code='00000001'

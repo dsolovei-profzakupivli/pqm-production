@@ -20,7 +20,7 @@ assert.equal(context.environmentBannerText({environment:'local',sandbox_mode:fal
 assert.equal(context.environmentBannerText({environment:'test_web',sandbox_mode:false}),'PQM');
 assert.match(html,/<div class="brand prod-brand">[\s\S]*?id="environmentBanner" class="prod-brand-accessible">PQM<\/em>/);
 assert.match(html,/src="\/assets\/pqm-brand-mark-prod\.svg"/);
-assert.match(html,/href="\/assets\/pqm-q-favicon-192\.png\?v=5"/);
+assert.match(html,/href="\/assets\/pqm-q-favicon-prod-192\.png\?v=6"/);
 assert.match(sandboxRuntime,/class="brand sandbox-brand"/);
 assert.match(sandboxRuntime,/pqm-brand-mark\.svg/);
 assert.match(sandboxRuntime,/pqm-q-favicon\.svg\?v=4/);
