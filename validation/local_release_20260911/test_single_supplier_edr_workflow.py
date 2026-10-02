@@ -51,6 +51,36 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
             return edr_sync_v2.apply(con, source, source['source_fingerprint'],
                                      confirmed=True, actor='offline-test', synced_at=server.now_iso())
 
+    def test_legacy_edr_statuses_are_canonical_at_card_boundary_without_db_migration(self):
+        pairs = (
+            ('✅ Зареєстровано', 'Зареєстровано'),
+            ('⚪️ Неактуально', 'Неактуально'),
+            ('🔴 Припинено', 'Припинено'),
+            ('🟡 В стані припинення', 'В стані припинення'),
+            ('🟡 Порушено справу про банкрутство', 'Порушено справу про банкрутство'),
+            ('⚪️ Немає інформації', 'Немає інформації'),
+        )
+        for presented, canonical in pairs:
+            for raw in (presented, canonical):
+                with self.subTest(raw=raw):
+                    with server.db() as con:
+                        con.execute("""INSERT INTO supplier_edr_profiles
+                          (supplier_code,edr_status,synced_at) VALUES('46130719',?,'fixture')
+                          ON CONFLICT(supplier_code) DO UPDATE SET edr_status=excluded.edr_status""",
+                          (raw,))
+                    self.assertEqual(server.supplier_profile('46130719')['edr_profile']['edr_status'],
+                                     canonical)
+                    self.assertEqual(edr_sync_v2.operational_edr_status(
+                        'Призупинений', '', [], raw), canonical)
+                    self.assertEqual(edr_sync_v2.active_edr_status('2026-09-01', [{
+                        'id': 1, 'event_type': 'manual_edr', 'occurred_at': '2026-09-02',
+                        'snapshot_json': json.dumps({'edr_status': raw})
+                    }]), 'Зареєстровано' if canonical == 'Немає інформації' else canonical)
+                    with server.db() as con:
+                        self.assertEqual(con.execute(
+                            "SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code='46130719'"
+                        ).fetchone()[0], raw)
+
     def test_new_row_preview_apply_card_lookup_and_repeat_noop(self):
         with server.db() as con:
             item = next(x for x in server.supplier_registry_integration.full_registry(con)['items']

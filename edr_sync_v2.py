@@ -126,6 +126,14 @@ def canonical_edr_status(value) -> str:
     return status
 
 
+def compatible_edr_status(value) -> str:
+    """Canonicalize known legacy presentation; preserve unknown facts for review."""
+    try:
+        return canonical_edr_status(value)
+    except ValueError:
+        return clean(value)
+
+
 def valid_manager_name(value) -> bool:
     text = clean(value)
     return bool(text and text.casefold() not in {
@@ -562,12 +570,7 @@ def _same(field: str, old, new) -> bool:
     if field == "manager_name":
         return normalize_person(old) == normalize_person(new)
     if field == "edr_status":
-        def comparable(value):
-            try:
-                return canonical_edr_status(value)
-            except ValueError:
-                return clean(value)
-        return comparable(old) == comparable(new)
+        return compatible_edr_status(old) == compatible_edr_status(new)
     return str(old or "").strip() == str(new or "").strip()
 
 
@@ -905,7 +908,7 @@ def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) 
         LEGACY_GOOGLE_FACTUAL_SPREADSHEET_ID_ENV, "").strip()
     if not authorized_spreadsheet_id:
         return ""
-    status = clean(snapshot.get("factual_edr_status"))
+    status = compatible_edr_status(snapshot.get("factual_edr_status"))
     if status not in LEGACY_GOOGLE_FACTUAL_STATUSES:
         return ""
     officer = normalize_person(item.get("officer"))
@@ -961,11 +964,11 @@ def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
                     continue  # I/L-only or invalid legacy evidence never changes E.
                 priority = 3  # Controlled factual evidence wins an ordinary same-day check.
             else:
-                status = clean(snapshot.get("edr_status"))
+                status = compatible_edr_status(snapshot.get("edr_status"))
                 priority = 2 if kind == "manual_edr" else 1
             if status and status != "Немає інформації":
                 checks.append((checked_day, priority, int(item.get("id") or 0), status))
-    return max(checks)[3] if checks else "Зареєстровано"
+    return compatible_edr_status(max(checks)[3]) if checks else "Зареєстровано"
 
 
 def operational_edr_status(prozorro_status: str, qualification_date: str,
@@ -976,7 +979,7 @@ def operational_edr_status(prozorro_status: str, qualification_date: str,
     if prozorro_status in {"Неактивний", "Ще не в реєстрі"}:
         return "Неактуально"
     # The suspended-state rule is unchanged by the current business decision.
-    return str(profile_status or "")
+    return compatible_edr_status(profile_status)
 
 
 def active_qualification_dates(con) -> dict[str, str]:
@@ -1199,7 +1202,7 @@ def materialize_effective_admission(con, contract_id: str, created_at: str) -> b
     # Effective admission supersedes earlier EDR status evidence. Only a
     # contradictory status observed after the protocol date can block it.
     if profile:
-        prior_status = clean(profile["edr_status"])
+        prior_status = compatible_edr_status(profile["edr_status"])
         prior_day = normalized_date(profile["edr_checked_at"])
         if (prior_status not in ("", "Зареєстровано")
                 and prior_day > protocol_day):
@@ -1216,10 +1219,10 @@ def materialize_effective_admission(con, contract_id: str, created_at: str) -> b
             return False  # malformed newer authoritative evidence: fail closed
         if not isinstance(snapshot, dict):
             return False
-        evidence_status = clean(snapshot.get("edr_status"))
+        evidence_status = compatible_edr_status(snapshot.get("edr_status"))
         if evidence_status and evidence_status != "Зареєстровано":
             return False
-    if profile and clean(profile["edr_status"]) == "Зареєстровано" and normalized_date(profile["edr_checked_at"]) == protocol_day:
+    if profile and compatible_edr_status(profile["edr_status"]) == "Зареєстровано" and normalized_date(profile["edr_checked_at"]) == protocol_day:
         return False
     item = {"supplier_code": code, "source_submission_id": submission_id,
             "source_sheet": "", "source_row": 0}
