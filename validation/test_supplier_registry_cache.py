@@ -24,7 +24,7 @@ class SupplierRegistryCacheTests(unittest.TestCase):
         self.con.create_function("DIGITS", 1, edr_sync_v2.normalize_code)
         self.con.executescript("""
           CREATE TABLE submissions(id TEXT PRIMARY KEY,supplier_code TEXT,supplier_name TEXT,date_published TEXT,
-            status TEXT,raw_json TEXT,synced_at TEXT);
+            status TEXT,raw_json TEXT,synced_at TEXT,qualification_id TEXT);
           CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,manager_name TEXT,protocol_officer TEXT,
             protocol_decision TEXT DEFAULT '',protocol_date TEXT DEFAULT '');
           CREATE TABLE qualifications(id TEXT PRIMARY KEY,submission_id TEXT,status TEXT,decision_date TEXT);
@@ -57,8 +57,8 @@ class SupplierRegistryCacheTests(unittest.TestCase):
 
     def add(self, code, name, published, submission_id, decision="", officer=""):
         raw = json.dumps({"tenderers": [{"identifier": {"scheme": "UA-EDR"}}]})
-        self.con.execute("INSERT INTO submissions VALUES(?,?,?,?,?,?,?)",
-                         (submission_id, code, name, published, "active", raw, published))
+        self.con.execute("INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)",
+                         (submission_id, code, name, published, "active", raw, published, None))
         self.con.execute("INSERT INTO application_fields VALUES(?,?,?,?,?)",
                          (submission_id, "", officer, decision, ""))
         self.con.execute("INSERT OR REPLACE INTO supplier_registry_summary VALUES(?,?)", (code, name))
@@ -85,7 +85,8 @@ class SupplierRegistryCacheTests(unittest.TestCase):
         self.assertEqual(set(first), {"generated_at", "count", "items"})
         self.assertEqual(set(first["items"][0]), {
             "supplier_code", "entity_type", "supplier_name", "current_manager_name", "prozorro_status",
-            "prozorro_status_canonical", "prozorro_status_google", "edr_status_current", "monitoring_eligible", "freshness_marker",
+            "prozorro_status_canonical", "prozorro_status_google", "edr_status_current", "monitoring_eligible", "google_sync_eligible", "freshness_marker",
+            "google_sync_last_decided_application_date",
             "last_application_date", "last_approved_application_date", "last_approved_application_uo",
             "verification_date", "verification_officer", "verification_event_type"})
 
