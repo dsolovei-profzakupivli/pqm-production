@@ -8,6 +8,18 @@ const navigation=fs.readFileSync('navigation.js','utf8');
 const paramsCode=app.slice(app.indexOf('function edrMonitoringParams()'),app.indexOf('const edrMonitoringStorageKey='));
 const filterCode=app.slice(app.indexOf("const edrMonitoringStorageKey="),app.indexOf('\nrestoreEdrMonitoringFilters();'));
 
+test('EDR manager cell displays JSON null as dash without altering a real name',()=>{
+  const expression=app.match(/<td data-edr-column="manager_name">\$\{([^}]+)\}<\/td>/)?.[1];
+  assert.equal(expression,"esc(item.manager_name??'')||'—'");
+  const render=new Function('item','esc',`return ${expression}`);
+  const esc=(value='')=>String(value).replace(/[&<>"']/g,character=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[character]));
+  assert.equal(render({manager_name:null},esc),'—');
+  assert.equal(render({manager_name:''},esc),'—');
+  assert.equal(render({manager_name:'Олена Коваль'},esc),'Олена Коваль');
+});
+
 function filterSession(saved){
   const controls=Object.fromEntries(['edrMonitoringSearch','edrMonitoringDk','edrMonitoringType','edrMonitoringNames','edrMonitoringFullName','edrMonitoringShortName','edrMonitoringFreshness','edrMonitoringVerifiedFrom','edrMonitoringVerifiedTo','edrMonitoringApplicationFrom','edrMonitoringApplicationTo'].map(id=>['#'+id,{value:''}]));
   const storage=new Map(saved||[]);
