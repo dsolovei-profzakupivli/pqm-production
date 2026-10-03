@@ -5102,7 +5102,8 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     result = []
     dk_map = _edr_monitoring_dk_map() if dk_code else {}
     for row in rows:
-        if search and search not in " ".join((row["supplier_code"], row["supplier_name"], row["manager_name"], str(row.get("google_note") or ""))).casefold(): continue
+        if search and search not in " ".join(str(row.get(field) or "") for field in
+                ("supplier_code", "supplier_name", "manager_name", "google_note")).casefold(): continue
         if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
         if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
@@ -5120,10 +5121,12 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
         if names_completeness and names_completeness not in {"complete", "missing_any", "missing_full", "missing_short"}:
             raise ValueError("Невідомий фільтр повноти назв ЄДР")
         if freshness and row["freshness"] != freshness: continue
-        if verified_from and row["verification_date"] < verified_from: continue
-        if verified_to and row["verification_date"] > verified_to: continue
-        if application_from and row["latest_application_date"] < application_from: continue
-        if application_to and row["latest_application_date"] > application_to: continue
+        verification_date = str(row.get("verification_date") or "")
+        application_date = str(row.get("latest_application_date") or "")
+        if verified_from and (not verification_date or verification_date < verified_from): continue
+        if verified_to and (not verification_date or verification_date > verified_to): continue
+        if application_from and (not application_date or application_date < application_from): continue
+        if application_to and (not application_date or application_date > application_to): continue
         result.append(row)
     return result
 
@@ -5198,6 +5201,7 @@ def list_edr_monitoring(params: dict) -> dict:
     freshness_order = {"not_checked": 0, "gt90": 1, "gt60": 2, "gt30": 3, "lt30": 4, "not_current": 5}
     def sortable(row):
         value = freshness_order.get(row.get("freshness"), 6) if sort_key == "freshness" else row.get(sort_key, "")
+        if value is None: value = ""
         if isinstance(value, str): value = value.casefold()
         return (value, row["supplier_code"])
     filtered.sort(key=sortable, reverse=sort_direction == "desc")

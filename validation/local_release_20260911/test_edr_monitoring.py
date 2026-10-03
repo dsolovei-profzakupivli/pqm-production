@@ -154,6 +154,51 @@ class EdrMonitoringTests(unittest.TestCase):
              "verification_event_type": "google_clarity", "verification_source": "Google"},
         ]
 
+    def test_nullable_search_fields_keep_literal_codes_and_known_manager_search(self):
+        base = self.rows()[0]
+        rows = [
+            dict(base, supplier_code='36109916', supplier_name='Постачальник А', manager_name=None,
+                 google_note='Нотатка'),
+            dict(base, supplier_code='37521072', supplier_name=None, manager_name=None,
+                 google_note=None),
+            dict(base, supplier_code='00000003', supplier_name='Постачальник В',
+                 manager_name='Олена Коваль', google_note=None),
+        ]
+        with patch.object(server, '_edr_monitoring_rows', return_value=rows):
+            for code in ('36109916', '37521072'):
+                with self.subTest(code=code):
+                    result = server.list_edr_monitoring({'search': [code]})
+                    self.assertEqual([item['supplier_code'] for item in result['items']], [code])
+                    self.assertIsNone(result['items'][0]['manager_name'])
+            self.assertEqual(server.list_edr_monitoring({'search': ['Коваль']})['total'], 1)
+            self.assertEqual(server.list_edr_monitoring({'search': ['']})['total'], len(rows))
+            self.assertEqual(server.edr_monitoring_filtered_codes({'search': ['37521072']}),
+                             ['37521072'])
+
+    def test_all_nullable_search_fields_and_date_filters_and_sort_are_safe(self):
+        base = self.rows()[0]
+        rows = [dict(base, supplier_code='36109916', supplier_name=None, manager_name=None,
+                     google_note=None, edr_full_name=None, edr_short_name=None,
+                     edr_status=None, verification_officer=None, termination_details=None,
+                     verification_date=None, latest_application_date=None),
+                dict(base, supplier_code='37521072', supplier_name='Назва', manager_name='Керівник',
+                     google_note=None, verification_date='2026-01-01',
+                     latest_application_date='2026-09-10')]
+        with patch.object(server, '_edr_monitoring_rows', return_value=rows):
+            self.assertEqual(server.list_edr_monitoring({'search': ['36109916']})['total'], 1)
+            self.assertEqual(server.list_edr_monitoring({'search': ['']})['total'], 2)
+            for sort in ('supplier_name', 'manager_name', 'google_note', 'edr_full_name',
+                         'edr_short_name', 'edr_status', 'verification_officer',
+                         'termination_details', 'verification_date', 'latest_application_date'):
+                with self.subTest(sort=sort):
+                    self.assertEqual(server.list_edr_monitoring({'sort': [sort]})['total'], 2)
+            for field in ('verification_from', 'verification_to',
+                          'application_from', 'application_to'):
+                with self.subTest(field=field):
+                    value = '2026-01-01' if field.startswith('verification') else '2026-09-10'
+                    self.assertEqual([item['supplier_code'] for item in
+                        server.list_edr_monitoring({field: [value]})['items']], ['37521072'])
+
     def test_lightweight_projection_filters_and_kpi_without_dossier_counts(self):
         with patch.object(server, "_edr_monitoring_rows", return_value=self.rows()):
             result = server.list_edr_monitoring({"freshness": ["gt90"], "page": ["1"], "size": ["100"]})
