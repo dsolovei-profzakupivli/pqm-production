@@ -97,6 +97,42 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(ui['latest_application_date'], endpoint['last_application_date'])
         self.assertEqual(ui['manager_name'], endpoint['current_manager_name'])
 
+    def test_sandbox_edr_monitoring_covers_literal_population_with_outer_whitespace(self):
+        import server
+        self.add('00000009', 'ACTIVE', '2026-09-20', qualification='active')
+        self.add('2981209581 ', 'TRAILING SPACE', '2026-09-21',
+                 qualification='active', contract='active')
+        self.add(' 00000010', 'LEADING SPACE', '2026-09-21', qualification='unsuccessful')
+        self.add('СР 918414', 'INTERNAL SPACE', '2026-09-22', qualification='unsuccessful')
+        population = integration.edr_sync_v2.monitoring_population_codes(self.con)
+        with patch.object(server, 'SANDBOX_MODE', True), patch.object(server, 'db', return_value=self.con), \
+             patch.object(server, '_edr_monitoring_revision', return_value=('literal-population',)):
+            server.EDR_MONITORING_CACHE.update(fingerprint=None, rows=[])
+            response = server.list_edr_monitoring({'page': ['1'], 'size': ['100']})
+        rows = {row['supplier_code']: row for row in response['items']}
+        self.assertEqual(set(rows), population)
+        self.assertEqual(response['total'], len(population))
+        self.assertEqual(rows['2981209581 ']['shared_projection']['supplier_code'], '2981209581 ')
+        self.assertIsNone(rows['2981209581 ']['verification_date'])
+        self.assertIsNone(rows['2981209581 ']['verification_officer'])
+        self.assertEqual(rows['2981209581 ']['freshness'], 'not_checked')
+        self.assertEqual(rows['2981209581 ']['prozorro_status'], 'Активний')
+        self.assertEqual(rows[' 00000010']['shared_projection']['supplier_code'], ' 00000010')
+        self.assertIsNone(rows[' 00000010']['verification_date'])
+        self.assertIn('СР 918414', rows)
+
+    def test_resolver_retains_collision_guard_for_outer_whitespace_variants(self):
+        import supplier_edr_projection
+        self.add('2981209581 ', 'TRAILING', '2026-09-21', qualification='active')
+        self.add('2981209581', 'PLAIN', '2026-09-22', qualification='unsuccessful')
+        population = integration.edr_sync_v2.monitoring_population_codes(self.con)
+        projected = supplier_edr_projection.resolve_supplier_edr_business_state(
+            self.con, population, environment_policy='sandbox')
+        self.assertTrue(population.issubset(projected))
+        for code in population:
+            self.assertEqual(projected[code]['supplier_code'], code)
+            self.assertIn('outer_whitespace_identity_collision', projected[code]['conflicts'])
+
     def test_endpoint_exact_shared_set_excludes_prod_only_ten(self):
         endpoint_only = ('1922319119', '25586283', '2617901540', '3069605914',
                          '3292301719', '3315012247', '39369840', '40323076',

@@ -253,7 +253,8 @@ def resolve_supplier_edr_business_state(con, supplier_codes, environment_policy=
     """
     if environment_policy not in {"prod", "sandbox"}:
         raise ValueError("Unknown officer environment policy")
-    requested = {str(code).strip() for code in supplier_codes if str(code or "").strip()}
+    literal_requested = {str(code) for code in supplier_codes if str(code or "").strip()}
+    requested = {code.strip() for code in literal_requested}
     facts = {code: {"supplier_code": code, "submissions": [], "qualifications": [],
                     "verification_events": []} for code in requested}
     raw_variants = {code: set() for code in requested}
@@ -317,14 +318,28 @@ def resolve_supplier_edr_business_state(con, supplier_codes, environment_policy=
                 facts[code]["working_name_update_confirmed"] = (
                     row["source_type"] == "google_verified_name" and bool(row["source_id"]))
     statuses = status_by_code if status_by_code is not None else edr_sync_v2.canonical_prozorro_statuses(con, requested)
-    eligible = edr_sync_v2.monitoring_population_codes(con)
+    normalized_statuses = {}
+    for raw_code, status in statuses.items():
+        code = str(raw_code).strip()
+        if code in requested:
+            if code in normalized_statuses and normalized_statuses[code] != status:
+                raise ValueError("Conflicting supplier statuses for one outer-whitespace identity")
+            normalized_statuses[code] = status
+    eligible = {str(code).strip() for code in edr_sync_v2.monitoring_population_codes(con)}
     result = {}
     for code, item in facts.items():
-        item["prozorro_status"] = statuses.get(code, "Ще не в реєстрі")
+        item["prozorro_status"] = normalized_statuses.get(code, "Ще не в реєстрі")
         item["google_sync_eligible"] = code in eligible
         item["entity_type"] = (entity_by_code or {}).get(code, "unknown")
         projected = project_supplier_facts(item, officer_required=environment_policy == "prod", today=today)
         if len(raw_variants[code]) > 1:
             projected["conflicts"] = sorted(set(projected["conflicts"] + ["outer_whitespace_identity_collision"]))
         result[code] = projected
+    # Callers index by the literal population identifier.  Outer whitespace is
+    # only a comparison key, so expose every requested literal without losing
+    # the collision guard or rewriting the supplier code in its projection.
+    for literal in literal_requested:
+        code = literal.strip()
+        if literal != code:
+            result[literal] = {**result[code], "supplier_code": literal}
     return result
