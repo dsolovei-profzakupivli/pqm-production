@@ -103,6 +103,8 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.add('2981209581 ', 'TRAILING SPACE', '2026-09-21',
                  qualification='active', contract='active')
         self.add(' 00000010', 'LEADING SPACE', '2026-09-21', qualification='unsuccessful')
+        self.add('\u200300000011\u00a0', 'UNICODE OUTER SPACE', '2026-09-21',
+                 qualification='unsuccessful')
         self.add('СР 918414', 'INTERNAL SPACE', '2026-09-22', qualification='unsuccessful')
         population = integration.edr_sync_v2.monitoring_population_codes(self.con)
         with patch.object(server, 'SANDBOX_MODE', True), patch.object(server, 'db', return_value=self.con), \
@@ -119,12 +121,27 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(rows['2981209581 ']['prozorro_status'], 'Активний')
         self.assertEqual(rows[' 00000010']['shared_projection']['supplier_code'], ' 00000010')
         self.assertIsNone(rows[' 00000010']['verification_date'])
+        self.assertEqual(rows['\u200300000011\u00a0']['shared_projection']['supplier_code'],
+                         '\u200300000011\u00a0')
+        self.assertIsNone(rows['\u200300000011\u00a0']['verification_date'])
         self.assertIn('СР 918414', rows)
 
     def test_resolver_retains_collision_guard_for_outer_whitespace_variants(self):
         import supplier_edr_projection
         self.add('2981209581 ', 'TRAILING', '2026-09-21', qualification='active')
         self.add('2981209581', 'PLAIN', '2026-09-22', qualification='unsuccessful')
+        population = integration.edr_sync_v2.monitoring_population_codes(self.con)
+        projected = supplier_edr_projection.resolve_supplier_edr_business_state(
+            self.con, population, environment_policy='sandbox')
+        self.assertTrue(population.issubset(projected))
+        for code in population:
+            self.assertEqual(projected[code]['supplier_code'], code)
+            self.assertIn('outer_whitespace_identity_collision', projected[code]['conflicts'])
+
+    def test_resolver_does_not_silently_merge_unicode_outer_whitespace_collision(self):
+        import supplier_edr_projection
+        self.add('00000012', 'PLAIN', '2026-09-21', qualification='active')
+        self.add('\u00a000000012', 'NBSP PREFIX', '2026-09-22', qualification='unsuccessful')
         population = integration.edr_sync_v2.monitoring_population_codes(self.con)
         projected = supplier_edr_projection.resolve_supplier_edr_business_state(
             self.con, population, environment_policy='sandbox')
