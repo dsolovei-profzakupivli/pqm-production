@@ -69,6 +69,26 @@ class EdrSyncV2Tests(unittest.TestCase):
                               (code,)).fetchone()
         self.assertEqual(result['inserted'], 1)
         self.assertEqual(tuple(profile), ('ПОВНА НАЗВА', 'СКОРОЧЕНА НАЗВА', 'ЮО'))
+        working = con.execute("SELECT working_name,source_type,source_id FROM supplier_working_names WHERE supplier_code=?",
+                              (code,)).fetchone()
+        self.assertEqual(working['working_name'], 'ПОВНА НАЗВА')
+        self.assertEqual(working['source_type'], 'google_verified_name')
+        self.assertIn(source['source_fingerprint'], working['source_id'])
+
+    def test_google_rename_materializes_working_c_without_rewriting_edr_source(self):
+        con = database()
+        code = '46130719'
+        con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('s1', code, 'Назва заявки', '2026-09-01'))
+        con.execute("INSERT INTO application_fields(submission_id,protocol_decision) VALUES(?,'admit')", ('s1',))
+        first = row(code=code); first[13] = 'Назва А'
+        self.apply_observation(con, snapshot(first))
+        second = row(code=code); second[13] = 'Назва Б'
+        self.apply_observation(con, snapshot(second))
+        stored = con.execute("SELECT working_name,source_type FROM supplier_working_names WHERE supplier_code=?",
+                             (code,)).fetchone()
+        self.assertEqual(tuple(stored), ('Назва Б', 'google_verified_name'))
+        self.assertEqual(con.execute("SELECT full_name FROM supplier_edr_profiles WHERE supplier_code=?",
+                                     (code,)).fetchone()[0], 'Назва Б')
 
     def test_new_google_code_without_decided_application_stays_ineligible(self):
         con = database()

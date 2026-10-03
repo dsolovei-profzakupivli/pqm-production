@@ -258,6 +258,13 @@ test('large snapshot batches reads into at most 17 bounded requests', () => {
   assert.ok(grids.every(call => call.options.ranges.every(range => /![HI]\d+:[HI]\d+$/.test(range))));
 });
 
+test('15k-row initial snapshot uses a fixed 25 read calls independent of APPEND batch', () => {
+  const f = fixture({rowCount: 15000});
+  f.context.pqmGoogleSnapshot_(f.id);
+  assert.equal(f.calls.length, 25);
+  assert.equal(f.calls.filter(call => call.api === 'Values.get').length, 0);
+});
+
 test('only read quota errors retry; semantic errors never retry', () => {
   const f = fixture();
   let attempts = 0, sleeps = 0;

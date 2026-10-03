@@ -1,6 +1,7 @@
 import re
 import sqlite3
 import unittest
+from datetime import date, timedelta
 from unittest.mock import patch
 import server
 import edr_sync_v2
@@ -101,13 +102,18 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано')['total'],1)
 
     def test_canonical_freshness_and_verification_date_filters(self):
+        checked = date.today() - timedelta(days=10)
+        checked_iso = checked.isoformat()
+        self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at=?", (checked_iso,))
         self.con.execute("""INSERT INTO supplier_edr_verification_events
           (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
            source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
-          VALUES('30067771','google_clarity','2026-09-03','Тестова УО','Google Sheets','',
-                 'ЮО',2,'[]','freshness-fixture','{}','2026-09-03T10:00:00Z')""")
+          VALUES('30067771','google_clarity',?,'Тестова УО','Google Sheets','',
+                 'ЮО',2,'[]','freshness-fixture','{}',?)""",
+          (checked_iso, checked_iso + 'T10:00:00Z'))
         self.con.commit()
-        recent=self.listing(freshness='lt30',verification_from='2026-09-01',verification_to='2026-09-04')
+        recent=self.listing(freshness='lt30',verification_from=(checked - timedelta(days=2)).isoformat(),
+                            verification_to=(checked + timedelta(days=1)).isoformat())
         self.assertEqual([row['code'] for row in recent['items']],['30067771','3038301896'])
         self.assertEqual(recent['items'][0]['edr_freshness_marker'],'🟢 <30 днів')
         self.assertEqual(recent['items'][0]['edr_verification_officer'],'Тестова УО')

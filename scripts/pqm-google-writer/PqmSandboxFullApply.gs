@@ -11,18 +11,18 @@ function pqmSandboxFullTimed_(timing, key, action) {
 }
 
 function pqmSandboxFullBlocked_(plan) {
-  return !!(plan.counts.appended || plan.counts.conflicts || plan.counts.duplicate_keys ||
-    plan.counts.errors || plan.changes.some(function(change) { return change.append; }));
+  pqmGoogleValidateWriteSet_(plan.changes);
+  return false;
 }
 
 function pqmSandboxFullEntries_(plan, tabs) {
   var seen = {};
-  return plan.changes.map(function(change) {
+  return plan.changes.filter(function(change) { return !change.append; }).map(function(change) {
     var tab = tabs[change.tab], row = tab && tab.rows[change.row - 2];
     var code = row && String(row.codeDisplay || '').trim();
     var columns = pqmSandboxControlledColumns_(change);
     if (!tab || !row || !code || change.append || change.row < 2 || change.row > tab.maxRows ||
-        seen[change.tab + ':' + change.row] || columns.some(function(column) { return [2, 4, 5, 7, 8, 11].indexOf(column) < 0; })) {
+        seen[change.tab + ':' + change.row] || columns.some(function(column) { return [2, 3, 4, 5, 7, 8, 11].indexOf(column) < 0; })) {
       throw new Error('PQM SANDBOX FULL: invalid matched-only plan; no writes.');
     }
     seen[change.tab + ':' + change.row] = true;
@@ -81,9 +81,7 @@ function pqmSandboxFullLoad_(spreadsheetId) {
   googlePhases.snapshot_reconstruction = {total_ms: Math.max(0, snapshotMs - apiMs)};
   var plannerStarted = Date.now(), plan = pqmGooglePlan_(body, tabs);
   var plannerMs = Date.now() - plannerStarted;
-  if (pqmSandboxFullBlocked_(plan)) {
-    throw new Error('PQM SANDBOX FULL: BLOCKED_APPEND_CONFLICT_DUPLICATE_OR_ERROR; no writes.');
-  }
+  pqmSandboxFullBlocked_(plan);
   var entries = pqmSandboxFullEntries_(plan, tabs);
   pqmSandboxControlledProtectionCheck_(entries, tabs);
   var guardStarted = Date.now(), state = pqmSandboxFullState_(body, tabs, plan, googlePhases);
@@ -97,7 +95,7 @@ function pqmSandboxFullLoad_(spreadsheetId) {
 function pqmSandboxFullApplyPreview() {
   var id = pqmSandboxControlledSpreadsheetId_();
   var started = Date.now(), loaded = pqmSandboxFullLoad_(id);
-  var byColumn = {C: 0, E: 0, F: 0, H: 0, I: 0, L: 0}, total = 0;
+  var byColumn = {C: 0, D: 0, E: 0, F: 0, H: 0, I: 0, L: 0}, total = 0;
   loaded.entries.forEach(function(entry) {
     entry.columns.forEach(function(column) {
       byColumn[PQM_SANDBOX_CONTROLLED_COLUMNS[column]]++;
@@ -108,7 +106,8 @@ function pqmSandboxFullApplyPreview() {
     total_pqm_suppliers: loaded.body.count,
     matched: loaded.plan.counts.matched, skipped: loaded.plan.counts.skipped,
     updated: loaded.plan.counts.updated, unchanged: loaded.plan.counts.unchanged,
-    appended: 0, conflicts: 0, duplicate_keys: 0, errors: 0,
+    appended: loaded.plan.counts.appended, conflicts: loaded.plan.counts.conflicts,
+    duplicate_keys: loaded.plan.counts.duplicate_keys, errors: loaded.plan.counts.errors,
     verification_pair_decisions: {
       google_newer_preserved: loaded.plan.counts.google_newer_preserved,
       same_date_google_officer_preserved: loaded.plan.counts.same_date_google_officer_preserved,
@@ -234,6 +233,7 @@ function pqmSandboxFullBeforeCheck_(chunk, rawRows, tabs) {
 }
 
 function pqmSandboxFullRequests_(chunk, tabs) {
+  pqmGoogleValidateWriteSet_(chunk.map(function(entry) { return entry.change; }));
   var requests = [];
   chunk.forEach(function(entry) {
     entry.columns.forEach(function(column) {
@@ -253,6 +253,7 @@ function pqmSandboxFullRequests_(chunk, tabs) {
       chunk.length > PQM_SANDBOX_FULL_CHUNK_MAX_ROWS) {
     throw new Error('PQM SANDBOX FULL: chunk bound exceeded; no further writes.');
   }
+  pqmGoogleValidateValueRequests_(requests, false);
   return requests;
 }
 

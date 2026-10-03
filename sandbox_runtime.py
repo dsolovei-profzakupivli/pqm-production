@@ -26,6 +26,7 @@ import urllib.request
 from contextlib import contextmanager
 import sandbox_documents
 import sandbox_amcu
+import sandbox_google_docs_access
 
 ROOT = Path(__file__).resolve().parent
 POLICY = {
@@ -44,6 +45,8 @@ _egress = threading.local()
 PROZORRO_HOST = 'public-api.prozorro.gov.ua'
 GOOGLE_TOKEN_HOST = 'oauth2.googleapis.com'
 GOOGLE_SHEETS_HOST = 'sheets.googleapis.com'
+GOOGLE_DRIVE_HOST = 'www.googleapis.com'
+GOOGLE_DOCS_HOST = 'docs.googleapis.com'
 NAZK_HOST = 'corruptinfo.nazk.gov.ua'
 NAZK_PATH = '/ep/1.0/corrupt/getAllData'
 SANDBOX_EDR_SPREADSHEET_ID = '1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww'
@@ -322,7 +325,7 @@ def fetch_nazk_bytes(url):
         _egress.addresses = set()
 
 
-def validate_google_request(url, method):
+def validate_google_request(url, method, *, generated_document_id=None):
     if not edr_google_enabled():
         raise RuntimeError('Sandbox Google EDR path is disabled')
     if not isinstance(url, str) or any(ord(char) < 32 or ord(char) == 127 for char in url):
@@ -337,6 +340,41 @@ def validate_google_request(url, method):
         raise RuntimeError('Sandbox Google destination is not approved')
     if method == 'POST' and parsed.hostname == GOOGLE_TOKEN_HOST and parsed.path == '/token' and not parsed.query:
         return GOOGLE_TOKEN_HOST
+    if parsed.hostname == GOOGLE_DRIVE_HOST:
+        from urllib.parse import parse_qs
+        prefix = '/drive/v3/files/'
+        path_suffix = parsed.path[len(prefix):] if parsed.path.startswith(prefix) else ''
+        if method == 'POST' and path_suffix.endswith('/copy'):
+            file_id = path_suffix[:-5]
+            if (file_id in sandbox_google_docs_access.TEMPLATES.values()
+                    and parsed.path == prefix + file_id + '/copy'
+                    and parsed.query == 'fields=id%2Cname%2CmimeType%2Cparents'):
+                return GOOGLE_DRIVE_HOST
+            raise RuntimeError('Sandbox Google Drive copy source is not approved')
+        file_id = path_suffix
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if (method == 'GET' and file_id in {*sandbox_google_docs_access.TEMPLATES.values(),
+                        sandbox_google_docs_access.SANDBOX_FOLDER_ID}
+                and parsed.path == prefix + file_id
+                and query == {'fields': [sandbox_google_docs_access.METADATA_FIELDS]}):
+            return GOOGLE_DRIVE_HOST
+        raise RuntimeError('Sandbox Google Drive read target is not approved')
+    if parsed.hostname == GOOGLE_DOCS_HOST:
+        prefix = '/v1/documents/'
+        suffix = parsed.path[len(prefix):] if parsed.path.startswith(prefix) else ''
+        generated = (isinstance(generated_document_id, str)
+                     and bool(re.fullmatch(r'[A-Za-z0-9_-]{20,100}', generated_document_id))
+                     and generated_document_id not in {*sandbox_google_docs_access.TEMPLATES.values(),
+                                                       sandbox_google_docs_access.SANDBOX_FOLDER_ID,
+                                                       sandbox_google_docs_access.WORKING_FOLDER_ID})
+        if (method == 'GET' and suffix in sandbox_google_docs_access.TEMPLATES.values()
+                and parsed.query == 'includeTabsContent=true'):
+            return GOOGLE_DOCS_HOST
+        if generated and method == 'GET' and suffix == generated_document_id and parsed.query == 'includeTabsContent=true':
+            return GOOGLE_DOCS_HOST
+        if generated and method == 'POST' and suffix == generated_document_id + ':batchUpdate' and not parsed.query:
+            return GOOGLE_DOCS_HOST
+        raise RuntimeError('Sandbox Google Docs target is not approved')
     if parsed.hostname != GOOGLE_SHEETS_HOST or method not in {'GET', 'POST', 'PUT', 'PATCH', 'DELETE'}:
         raise RuntimeError('Sandbox Google destination or method is not approved')
     # Decode every segment to a fixed point before comparing identities. An
@@ -374,10 +412,40 @@ def validate_google_request(url, method):
     raise RuntimeError('Sandbox Google destination or method is not approved')
 
 
+def validate_google_document_body(request, generated_document_id=None):
+    parsed = urllib.parse.urlsplit(request.full_url)
+    if request.get_method() != 'POST' or parsed.hostname not in {GOOGLE_DRIVE_HOST, GOOGLE_DOCS_HOST}:
+        return
+    try:
+        payload = json.loads(request.data or b'')
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError('Sandbox Google document request body is invalid') from exc
+    if parsed.hostname == GOOGLE_DRIVE_HOST:
+        if (set(payload) != {'name', 'parents'} or payload['parents'] != [sandbox_google_docs_access.SANDBOX_FOLDER_ID]
+                or not isinstance(payload['name'], str) or not payload['name'].strip()):
+            raise RuntimeError('Sandbox Google document copy destination is not approved')
+    else:
+        requests = payload.get('requests') if set(payload) == {'requests'} else None
+        if not isinstance(requests, list) or not requests or len(requests) > 100:
+            raise RuntimeError('Sandbox Google Docs mutation is not approved')
+        for entry in requests:
+            replacement = entry.get('replaceAllText') if isinstance(entry, dict) else None
+            matched = replacement.get('containsText') if isinstance(replacement, dict) else None
+            if (not isinstance(entry, dict) or not isinstance(replacement, dict)
+                    or set(entry) != {'replaceAllText'} or set(replacement) != {'containsText', 'replaceText'}
+                    or set(matched or {}) != {'text', 'matchCase'}
+                    or not isinstance(replacement['replaceText'], str)
+                    or not isinstance(matched['text'], str) or not matched['text'].startswith('{{')
+                    or matched['matchCase'] is not True):
+                raise RuntimeError('Sandbox Google Docs mutation is not approved')
+
+
 @contextmanager
-def google_open(request, timeout=60):
+def google_open(request, timeout=60, *, generated_document_id=None):
     """One exact HTTPS request; never expose generic Google or network egress."""
-    host = validate_google_request(request.full_url, request.get_method())
+    host = validate_google_request(request.full_url, request.get_method(),
+                                   generated_document_id=generated_document_id)
+    validate_google_document_body(request, generated_document_id)
     if getattr(_egress, 'active', False):
         raise RuntimeError('Nested sandbox network scope is not supported')
     _egress.active = True

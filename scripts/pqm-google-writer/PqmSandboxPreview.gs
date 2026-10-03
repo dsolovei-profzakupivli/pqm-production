@@ -55,6 +55,10 @@ function pqmSandboxFetchRegistry_() {
   }
 
   pqmGoogleSchema_(body);
+  if (body.projection_contract !== 'shared_edr_v1' ||
+      body.items.some(function(item) { return !item.shared_projection; })) {
+    throw new Error('PQM SANDBOX: shared projection unavailable; no writes.');
+  }
   return body;
 }
 

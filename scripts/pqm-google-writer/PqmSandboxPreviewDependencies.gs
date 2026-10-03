@@ -5,9 +5,42 @@ var PQM_GOOGLE_HEADERS = [
   'УО', 'Примітки', 'Повна назва з ЄДР', 'Скорочена назва з ЄДР'
 ];
 var PQM_GOOGLE_TABS = ['ФОП', 'ЮО'];
-var PQM_GOOGLE_OWNED = [1, 2, 4, 5, 7, 8, 11];
-var PQM_GOOGLE_APPEND_OWNED = [1, 2, 4, 5, 7, 8, 11];
+var PQM_GOOGLE_OWNED = [1, 2, 3, 4, 5, 7, 8, 11];
+var PQM_GOOGLE_APPEND_OWNED = [1, 2, 3, 4, 5, 7, 8, 11];
 var PQM_GOOGLE_SNAPSHOT_CHUNK_ROWS = 500;
+// Physical write boundary. Presence here never bypasses a field-specific guard.
+var PQM_GOOGLE_WRITE_ALLOWLIST = [1, 2, 3, 4, 5, 7, 8, 11];
+
+function pqmGoogleValidateWriteSet_(changes) {
+  (changes || []).forEach(function(change) {
+    if (!change || (change.tab !== 'ФОП' && change.tab !== 'ЮО') ||
+        !Number.isInteger(change.row) || change.row < 2 ||
+        !change.cells || typeof change.cells !== 'object') {
+      throw new Error('PQM: invalid plan; zero writes.');
+    }
+    Object.keys(change.cells).forEach(function(key) {
+      var column = Number(key);
+      if (!/^\d+$/.test(key) || PQM_GOOGLE_WRITE_ALLOWLIST.indexOf(column) < 0 ||
+          (column === 1 && !change.append)) {
+        throw new Error('PQM: forbidden planned column ' + key + '; zero writes.');
+      }
+    });
+  });
+  return true;
+}
+
+function pqmGoogleValidateValueRequests_(requests, append) {
+  (requests || []).forEach(function(request) {
+    var range = request && request.updateCells && request.updateCells.range;
+    if (!range || !Number.isInteger(range.startColumnIndex) ||
+        range.endColumnIndex !== range.startColumnIndex + 1 ||
+        PQM_GOOGLE_WRITE_ALLOWLIST.indexOf(range.startColumnIndex) < 0 ||
+        (range.startColumnIndex === 1 && !append)) {
+      throw new Error('PQM: forbidden Apply value request; zero writes.');
+    }
+  });
+  return true;
+}
 
 function pqmGoogleCounts_() {
   return {api_records: 0, matched: 0, appended: 0, updated: 0, unchanged: 0,
@@ -97,6 +130,81 @@ function pqmGoogleOfficerComparable_(value) {
   return String(value || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('uk-UA');
 }
 
+function pqmGoogleProzorroCanonical_(value) {
+  if (pqmGoogleBlank_(value)) return '';
+  var text = String(value).trim().replace(/^[^\p{L}\p{N}]+/u, '').trim();
+  return ['Активний', 'Неактивний', 'Призупинений', 'Ще не в реєстрі'].indexOf(text) >= 0 ? text : null;
+}
+
+function pqmGoogleSharedRow_(item, found, key) {
+  var state = item.shared_projection, cells = {}, provenance = state.provenance || {};
+  if (!state || !Array.isArray(state.conflicts) || state.conflicts.length) {
+    return {issue: 'ambiguous_shared_projection'};
+  }
+  if (!found) {
+    cells[1] = key;
+    var appendName = String(state.working_supplier_name || '').trim() ||
+      String(item.latest_submission_name || '').trim();
+    if (!appendName) return {issue: 'append_name_missing'};
+    cells[2] = appendName;
+    if (provenance.D && provenance.D.confirmed && !provenance.D.ambiguous &&
+        provenance.D.source_type === 'application_manager' &&
+        !pqmGoogleBlank_(state.manager_for_verification)) cells[3] = state.manager_for_verification;
+  } else if (state.working_name_update_confirmed && !pqmGoogleBlank_(state.working_supplier_name) &&
+             found.data.values[2] !== state.working_supplier_name) {
+    cells[2] = state.working_supplier_name;
+  }
+  var proposedF = pqmGoogleProzorroCanonical_(item.prozorro_status_google);
+  if (!proposedF || proposedF !== state.prozorro_status) return {issue: 'invalid_prozorro_status'};
+  if (!found) cells[5] = item.prozorro_status_google;
+  else {
+    var currentF = pqmGoogleProzorroCanonical_(found.data.values[5]);
+    if (currentF === null) return {issue: 'unknown_google_prozorro_status'};
+    if (currentF !== proposedF) cells[5] = item.prozorro_status_google;
+  }
+  var proposedH = pqmGoogleCalendarDate_(state.last_application_date);
+  if (proposedH.kind === 'invalid') return {issue: 'invalid_last_application_date'};
+  if (proposedH.kind === 'date') {
+    if (!found) cells[7] = pqmGoogleDate_(proposedH.value);
+    else {
+      var currentH = pqmGoogleCalendarDate_(found.data.values[7]);
+      if (currentH.kind === 'invalid') return {issue: 'invalid_google_last_application_date'};
+      if (currentH.value !== proposedH.value) cells[7] = pqmGoogleDate_(proposedH.value);
+    }
+  }
+  var proposedI = pqmGoogleCalendarDate_(state.verification_date);
+  var currentI = found ? pqmGoogleCalendarDate_(found.data.values[8]) : {kind: 'blank', value: null};
+  if (proposedI.kind === 'invalid' || currentI.kind === 'invalid') return {issue: 'invalid_verification_date'};
+  var iEvidence = provenance.I || {}, lEvidence = provenance.L || {};
+  if (proposedI.kind === 'date' && (!iEvidence.confirmed || iEvidence.ambiguous ||
+      iEvidence.source_id !== lEvidence.source_id)) return {issue: 'unverified_verification_pair'};
+  if (proposedI.kind === 'date' && (currentI.kind === 'blank' || proposedI.value > currentI.value)) {
+    if (pqmGoogleBlank_(state.verification_officer)) {
+      if (found && !pqmGoogleBlank_(found.data.values[11])) return {issue: 'sandbox_officer_would_be_stale'};
+      if (lEvidence.officer_availability !== 'unavailable_in_sandbox') return {issue: 'missing_verification_officer'};
+    } else if (!lEvidence.confirmed || lEvidence.ambiguous) return {issue: 'unverified_verification_officer'};
+    cells[8] = pqmGoogleDate_(proposedI.value);
+    if (!pqmGoogleBlank_(state.verification_officer)) cells[11] = state.verification_officer;
+  }
+  var proposedE = pqmGoogleEdrCurrentStatus_(state.edr_status);
+  if (proposedE === null) return {issue: 'unknown_edr_status'};
+  if (proposedE && provenance.E && provenance.E.confirmed && !provenance.E.ambiguous) {
+    var currentE = found ? pqmGoogleEdrCurrentStatus_(found.data.values[4]) : '';
+    if (found && currentE === null) return {issue: 'unknown_google_edr_status'};
+    if (currentE !== proposedE && (!found || currentI.kind === 'blank' ||
+        (provenance.E.event_date && provenance.E.event_date > currentI.value))) cells[4] = proposedE;
+  }
+  if (found && provenance.D && provenance.D.confirmed && !provenance.D.ambiguous &&
+      provenance.D.source_type === 'application_manager' &&
+      !pqmGoogleBlank_(state.manager_for_verification) &&
+      pqmGoogleOfficerComparable_(state.manager_for_verification) !==
+        pqmGoogleOfficerComparable_(found.data.values[3]) &&
+      currentI.kind === 'date' && provenance.D.event_date > currentI.value) {
+    cells[3] = state.manager_for_verification;
+  }
+  return {cells: cells};
+}
+
 function pqmGooglePlan_(body, tabs) {
   pqmGoogleSchema_(body);
   var result = pqmGoogleCounts_(), perTab = {}, issues = [], changes = [], index = new Map(), apiKeys = new Map();
@@ -160,6 +268,16 @@ function pqmGooglePlan_(body, tabs) {
     })) { count('conflicts'); issue('merged_append_template_or_destination', key, name); return; }
     if (!found && PQM_GOOGLE_APPEND_OWNED.some(function(c) { return !!tabs[name].rows[tabs[name].rows.length - 1].formulas[c]; })) {
       count('conflicts'); issue('formula_in_append_template_owned_cell', key, name); return;
+    }
+    if (x.shared_projection) {
+      var shared = pqmGoogleSharedRow_(x, found, key);
+      if (shared.issue) { count('conflicts'); issue(shared.issue, key, name); return; }
+      if (!found || Object.keys(shared.cells).length) {
+        changes.push({tab: name, row: found ? found.row : nextRows[name]++, append: !found,
+          cells: shared.cells});
+        count(found ? 'updated' : 'appended');
+      } else count('unchanged');
+      return;
     }
     var incoming = {2: x.supplier_name, 5: x.prozorro_status_google,
       7: x.google_sync_last_decided_application_date};
@@ -235,6 +353,7 @@ function pqmGooglePlan_(body, tabs) {
       count(found ? 'updated' : 'appended');
     } else count('unchanged');
   });
+  pqmGoogleValidateWriteSet_(changes);
   return {counts: result, per_tab: perTab, issues: issues, gaps: gaps, changes: changes};
 }
 

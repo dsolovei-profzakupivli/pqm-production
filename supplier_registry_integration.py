@@ -6,6 +6,7 @@ import re
 import threading
 
 import edr_sync_v2
+import supplier_edr_projection
 
 
 ENTITY_TYPES = {
@@ -251,8 +252,27 @@ def full_registry(con):
     return json.loads(payload)
 
 
-def eligible_full_registry(con):
+def eligible_full_registry(con, projection_policy=None):
     """Expose only the shared qualification-status population to Google."""
     result = full_registry(con)
     items = [item for item in result["items"] if item["google_sync_eligible"]]
-    return {"generated_at": result["generated_at"], "count": len(items), "items": items}
+    if projection_policy is not None:
+        if projection_policy not in {"prod", "sandbox"}:
+            raise ValueError("Unknown projection policy")
+        states = supplier_edr_projection.resolve_supplier_edr_business_state(
+            con, [item["supplier_code"] for item in items], environment_policy=projection_policy,
+            status_by_code={item["supplier_code"]: item["prozorro_status_canonical"] for item in items},
+            entity_by_code={item["supplier_code"]: item["entity_type"] for item in items})
+        for item in items:
+            state = states[item["supplier_code"]]
+            item.update({"current_manager_name": state["manager_for_verification"],
+                         "edr_status_current": state["edr_status"],
+                         "last_application_date": state["last_application_date"],
+                         "verification_date": state["verification_date"],
+                         "verification_officer": state["verification_officer"],
+                         "freshness_marker": state["freshness_marker"],
+                         "shared_projection": state})
+    response = {"generated_at": result["generated_at"], "count": len(items), "items": items}
+    if projection_policy is not None:
+        response["projection_contract"] = "shared_edr_v1"
+    return response

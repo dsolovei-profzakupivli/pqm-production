@@ -284,6 +284,15 @@ def marker_for_status(prozorro_status: str, verification_date: str,
 
 def migrate(con) -> None:
     con.executescript("""
+    CREATE TABLE IF NOT EXISTS supplier_working_names (
+      supplier_code TEXT PRIMARY KEY,
+      working_name TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      source_sheet TEXT NOT NULL DEFAULT '',
+      source_row INTEGER NOT NULL DEFAULT 0
+    );
     CREATE TABLE IF NOT EXISTS supplier_edr_verification_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       supplier_code TEXT NOT NULL,
@@ -1347,6 +1356,18 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 counts["unchanged"] += 1
         for field in plan["changed_fields"]:
             counts["changed_fields"][field] = counts["changed_fields"].get(field, 0) + 1
+        if "full_name" in plan["changed_fields"] and plan.get("planned_supplier_name"):
+            con.execute("""INSERT INTO supplier_working_names
+              (supplier_code,working_name,source_type,source_id,event_date,source_sheet,source_row)
+              VALUES (?,?,?,?,?,?,?)
+              ON CONFLICT(supplier_code) DO UPDATE SET working_name=excluded.working_name,
+                source_type=excluded.source_type,source_id=excluded.source_id,
+                event_date=excluded.event_date,source_sheet=excluded.source_sheet,
+                source_row=excluded.source_row""",
+                (item["supplier_code"], plan["planned_supplier_name"], "google_verified_name",
+                 snapshot["source_fingerprint"] + ":" + item["supplier_code"],
+                 normalized_date(item.get("edr_checked_at")) or "",
+                 item.get("source_sheet") or "", int(item.get("source_row") or 0)))
         if plan["termination_explicit_clear"]:
             counts["termination_clears"] += 1
         if plan["verification_event_change"]:

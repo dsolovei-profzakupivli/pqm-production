@@ -7,6 +7,9 @@ import table_widths
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
+import supplier_edr_projection
+import sandbox_google_docs_access
+import sandbox_appeal_google_docs
 import legacy_google_verification_preview
 import legacy_google_verification_overlap_audit
 import legacy_google_factual_edr_audit
@@ -232,7 +235,8 @@ GOOGLE_OAUTH_CLIENT_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_client.json" if SAN
 GOOGLE_OAUTH_TOKEN_PATH = (GOOGLE_OAUTH_DIR / "google_oauth_token.json" if SANDBOX_MODE else
                            Path(os.environ.get("PQM_GOOGLE_OAUTH_TOKEN", str(GOOGLE_OAUTH_DIR / "google_oauth_token.json"))))
 GOOGLE_SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
-GOOGLE_SHEETS_SCOPE = ("https://www.googleapis.com/auth/spreadsheets"
+GOOGLE_SHEETS_SCOPE = ("https://www.googleapis.com/auth/spreadsheets "
+                       + sandbox_google_docs_access.DRIVE_FILE_SCOPE
                        if SANDBOX_MODE else GOOGLE_SHEETS_READONLY_SCOPE)
 GOOGLE_RUNTIME_FEATURE_KEY = "google_integration"
 GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS = 600
@@ -434,7 +438,7 @@ def mutation_allowed(role: str, method: str, path: str) -> bool:
         r"^/api/applications/[^/]+$",
         r"^/api/applications/[^/]+/(?:verify-documents|verify-documents/start|nazk-control)$",
         r"^/api/protocol/(?:readiness|generate|formed/[^/]+/cancel|legacy/[^/]+/cancel)$",
-        r"^/api/violation-reports/[^/]+/(?:review|review/complete|protocol/generate)$",
+        r"^/api/violation-reports/[^/]+/(?:review|review/complete|protocol/generate|protocol/google-doc/generate)$",
         r"^/api/violation-reports/[^/]+/documents/(?:customer|supplier)/[^/]+$",
         r"^/api/suppliers/[^/]+/nazk-check$",
         r"^/api/suppliers/[^/]+/note$",
@@ -475,7 +479,7 @@ def officer_mutation_scope_allowed(path: str, officer_id) -> bool:
         application = re.fullmatch(r"/api/applications/([^/]+)(?:/.*)?", path)
         if application:
             return True
-        report = re.fullmatch(r"/api/violation-reports/([^/]+)/(?:review(?:/complete)?|protocol/generate|documents/.*)", path)
+        report = re.fullmatch(r"/api/violation-reports/([^/]+)/(?:review(?:/complete)?|protocol/generate|protocol/google-doc/generate|documents/.*)", path)
         if report:
             row = con.execute("""SELECT r.assigned_officer_id FROM violation_report_reviews r
               JOIN violation_reports v ON v.id=r.report_id
@@ -1601,6 +1605,21 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS ix_violation_review_events_report
           ON violation_report_review_events(report_id,changed_at);
         """)
+        if SANDBOX_MODE:
+            con.execute("""CREATE TABLE IF NOT EXISTS sandbox_violation_google_docs (
+              id TEXT PRIMARY KEY,
+              report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,
+              document_id TEXT NOT NULL DEFAULT '',
+              document_name TEXT NOT NULL DEFAULT '',
+              template_id TEXT NOT NULL,
+              destination_folder_id TEXT NOT NULL,
+              source_digest TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('pending','copy_created','complete','uncertain')),
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )""")
+            con.execute("""CREATE INDEX IF NOT EXISTS ix_sandbox_violation_google_docs_report
+              ON sandbox_violation_google_docs(report_id,created_at)""")
         nazk_document_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_nazk_check_documents)")}
         if "submission_id" not in nazk_document_columns:
             con.execute("ALTER TABLE supplier_nazk_check_documents ADD COLUMN submission_id TEXT REFERENCES submissions(id)")
@@ -4055,6 +4074,17 @@ def google_oauth_status() -> dict:
     return result
 
 
+def sandbox_appeal_docs_access_check() -> dict:
+    """Capability-only check. No copies, document edits, or DB writes."""
+    if not SANDBOX_MODE:
+        raise PermissionError("SANDBOX only")
+    granted = set(str((_google_oauth_token() or {}).get("scope") or "").split())
+    if sandbox_google_docs_access.DRIVE_FILE_SCOPE not in granted:
+        raise PermissionError("SANDBOX Drive scope missing; reauthorization required")
+    return sandbox_google_docs_access.check_access(
+        _google_access_token(), sandbox_runtime.google_open)
+
+
 def google_oauth_authorization_url(actor: str = "") -> str:
     if not google_edr_effective_enabled():
         raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
@@ -4984,16 +5014,22 @@ def _edr_monitoring_rows() -> list[dict]:
                 normalized = re.sub(r"\D", "", literal)
                 if normalized:
                     card_variants.setdefault(normalized, set()).add(literal)
-            verifications = edr_sync_v2.current_verification_projections(con, population)
             canonical_statuses = edr_sync_v2.canonical_prozorro_statuses(con, population)
+            shared_states = (supplier_edr_projection.resolve_supplier_edr_business_state(
+                con, population, environment_policy="sandbox", status_by_code=canonical_statuses)
+                if SANDBOX_MODE else None)
+            verifications = ({} if shared_states is not None else
+                edr_sync_v2.current_verification_projections(con, population))
             rows = []
             for code in population:
                 profile, reg, application = profiles.get(code, {}), registry.get(code, {}), latest_app.get(code, {})
-                verification = verifications[code]
+                state = shared_states.get(code) if shared_states is not None else None
+                verification = verifications.get(code) if state is None else None
                 status = canonical_statuses[code]
-                checked = verification["verification_date"]
-                officer_raw = verification["verification_officer_raw"]
-                displayed_edr_status = edr_sync_v2.operational_edr_status(
+                checked = state["verification_date"] if state is not None else verification["verification_date"]
+                officer_raw = (state["verification_officer"] if state is not None else
+                    verification["verification_officer_raw"])
+                displayed_edr_status = state["edr_status"] if state is not None else edr_sync_v2.operational_edr_status(
                     status, active_qualification_dates.get(code, ""), ledger.get(code, []),
                     profile.get("edr_status", ""))
                 rows.append({"supplier_code": code,
@@ -5002,20 +5038,27 @@ def _edr_monitoring_rows() -> list[dict]:
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
                   "edr_full_name": _edr_monitoring_name(profile.get("full_name")),
                   "edr_short_name": _edr_monitoring_name(profile.get("short_name")),
-                  "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
+                  "manager_name": (state["manager_for_verification"] if state is not None else
+                      managers.get(code) or profile.get("manager_name") or application.get("manager_name", "")),
                   "edr_status": _edr_monitoring_status(displayed_edr_status), "prozorro_status": status,
                   "termination_details": str(profile.get("termination_decision_details") or "").strip(),
                   "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
                   "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
-                  "last_admission_date": verification["last_admission_date"],
-                  "latest_application_date": edr_sync_v2.normalized_date(application.get("latest_application_date")),
+                  "last_admission_date": (verification["last_admission_date"] if verification else
+                      active_qualification_dates.get(code, "")),
+                  "latest_application_date": (state["last_application_date"] if state is not None else
+                      edr_sync_v2.normalized_date(application.get("latest_application_date"))),
                   "verification_date": checked,
-                  "verification_officer": verification["verification_officer"],
+                  "verification_officer": (state["verification_officer"] if state is not None else
+                      verification["verification_officer"]),
                   "verification_officer_raw": officer_raw,
-                  "verification_event_type": verification["verification_event_type"],
-                  "verification_source": verification["verification_source"],
+                  "verification_event_type": (state["provenance"]["I"]["source_type"] if state is not None else
+                      verification["verification_event_type"]),
+                  "verification_source": (state["provenance"]["I"]["source_id"] if state is not None else
+                      verification["verification_source"]),
                   "google_note": str(profile.get("edr_notes") or "").strip(),
-                  "freshness": edr_sync_v2.freshness_state(status, checked)["bucket"]})
+                  "freshness": edr_sync_v2.freshness_state(status, checked)["bucket"],
+                  "shared_projection": state})
         # Re-read after building: a concurrent mutation invalidates rather than blessing stale rows.
         final_fingerprint = _edr_monitoring_revision()
         if final_fingerprint == fingerprint:
@@ -7070,6 +7113,9 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
         if not row:
             raise KeyError(report_id)
         review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (row["id"],)).fetchone()
+        google_doc_row = (con.execute("""SELECT * FROM sandbox_violation_google_docs
+            WHERE report_id=? AND status='complete' ORDER BY created_at DESC,id DESC LIMIT 1""",
+                                      (row["id"],)).fetchone() if SANDBOX_MODE else None)
         effective_review = _reuse_customer_names(con, row, _review_dict(review_row))
         supplier = con.execute("SELECT full_name,short_name FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=DIGITS(?)", (row["defendant_code"],)).fetchone()
         warning_dates = [value[0] for value in con.execute(
@@ -7119,6 +7165,8 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     elif item["review"].get("review_status") == "completed":
         item["review"]["review_status"] = "reviewed"
     item["supplier_verified"] = dict(supplier) if supplier else None
+    if SANDBOX_MODE:
+        item["generated_google_doc"] = (dict(google_doc_row) if google_doc_row else None)
     item["warning_summary"] = violation_threshold_summary(warning_dates)
     item["warning_summary"]["month"] = item["warning_summary"]["current_month"]
     item["warning_summary"]["three_months"] = item["warning_summary"]["three_calendar_months"]
@@ -7746,7 +7794,8 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
     return {"review_status": "reviewed", "completed_at": now, "completed_by": completed_by}
 
 
-def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER) -> dict:
+def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER,
+                                *, prepare_only: bool = False) -> dict:
     # violation_report_detail performs the mandatory fail-closed fresh Prozorro read.
     require_local_violation_report_owned(report_id)
     item = violation_report_detail(report_id, refresh=True)
@@ -7838,6 +7887,18 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "has_supplier_response": bool(supplier_text),
         "has_supplier_documents": bool(supplier_documents),
     }
+    if prepare_only:
+        def document_lines(documents):
+            return "\n".join(str(document.get("title") or document.get("name") or
+                document.get("url") or "").strip() for document in documents
+                if str(document.get("title") or document.get("name") or document.get("url") or "").strip())
+        doc_values = {**values,
+            "customer_short_name": normalize_document_name(review.get("customer_verified_short_name") or ""),
+            "supplier_short_name": normalize_document_name(
+                (item.get("supplier_verified") or {}).get("short_name") or ""),
+            "customer_documents": document_lines(item.get("evidence_documents") or []),
+            "supplier_documents": document_lines(supplier_documents)}
+        return {"item": item, "gate": gate, "values": doc_values, "flags": flags}
     safe_report = safe_archive_name(str(item.get("report_id") or item.get("id")), "report")
     decision_name = "Попередження" if gate["protocol_type"] == "warning" else "Відмова"
     safe_customer = safe_archive_name(customer_name, "Замовник")[:48]
@@ -7928,6 +7989,79 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
             "metadata": protocol_metadata,
             "resolved_metadata": document_metadata.resolved_items(protocol_metadata),
             "review_status": review.get("review_status") or "in_review"}
+
+
+def generate_sandbox_violation_google_doc(report_id: str, payload: dict,
+                                          generated_by: str = CURRENT_USER) -> dict:
+    """One explicit SANDBOX copy; an uncertain copy is never retried blindly."""
+    if not SANDBOX_MODE:
+        raise PermissionError("SANDBOX only")
+    import sandbox_runtime
+    prepared_context = generate_violation_protocol(report_id, payload, generated_by,
+                                                    prepare_only=True)
+    item, gate, values = (prepared_context[key] for key in ("item", "gate", "values"))
+    protocol_type = gate["protocol_type"]
+    # The access-check is read-only and must succeed before even the source
+    # template preflight, let alone a Drive copy.
+    sandbox_appeal_docs_access_check()
+    token = _google_access_token()
+    preflight = sandbox_appeal_google_docs.preflight_document(
+        protocol_type, values, token, sandbox_runtime.google_open)
+    digest = hashlib.sha256(json.dumps({key: preflight[key] for key in
+        ("template_id", "destination_folder_id", "name", "replacements")},
+        ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    report_key = str(item["id"])
+    regenerate = payload.get("regenerate") is True
+    now = now_iso()
+    attempt_id = uuid.uuid4().hex
+    with db() as con:
+        unresolved = con.execute("""SELECT 1 FROM sandbox_violation_google_docs
+            WHERE report_id=? AND status IN ('pending','copy_created','uncertain') LIMIT 1""",
+            (report_key,)).fetchone()
+        if unresolved:
+            raise RuntimeError("Prior Google Docs generation is uncertain; reconcile before retry")
+        previous = con.execute("""SELECT * FROM sandbox_violation_google_docs
+            WHERE report_id=? AND status='complete' ORDER BY created_at DESC,id DESC LIMIT 1""",
+            (report_key,)).fetchone()
+        if previous and not regenerate:
+            if previous["source_digest"] == digest:
+                return {"document_id": previous["document_id"],
+                    "document_url": f"https://docs.google.com/document/d/{previous['document_id']}/edit",
+                    "name": previous["document_name"], "reused": True}
+            raise ValueError("Existing generated Google Doc differs; explicit regeneration required")
+        con.execute("""INSERT INTO sandbox_violation_google_docs
+            (id,report_id,document_id,document_name,template_id,destination_folder_id,
+             source_digest,status,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (attempt_id, report_key, "", preflight["name"], preflight["template_id"],
+             sandbox_google_docs_access.SANDBOX_FOLDER_ID, digest, "pending", now, now))
+
+    def copied(document_id, plan):
+        with db() as con:
+            changed = con.execute("""UPDATE sandbox_violation_google_docs
+                SET document_id=?,status='copy_created',updated_at=?
+                WHERE id=? AND status='pending'""",
+                (document_id, now_iso(), attempt_id)).rowcount
+            if changed != 1:
+                raise RuntimeError("Google Docs copy identity could not be recorded")
+
+    try:
+        result = sandbox_appeal_google_docs.create_document(
+            protocol_type, values, token, sandbox_runtime.google_open, copied,
+            preflight=preflight)
+    except Exception:
+        with db() as con:
+            con.execute("""UPDATE sandbox_violation_google_docs
+                SET status='uncertain',updated_at=? WHERE id=? AND status<>'complete'""",
+                (now_iso(), attempt_id))
+        raise
+    with db() as con:
+        changed = con.execute("""UPDATE sandbox_violation_google_docs
+            SET status='complete',updated_at=? WHERE id=? AND status='copy_created'
+              AND document_id=?""", (now_iso(), attempt_id, result["document_id"])).rowcount
+        if changed != 1:
+            raise RuntimeError("Google Docs completion is uncertain; reconcile before retry")
+    return {**result, "reused": False}
 
 
 def violation_protocol_pdf(report_id: str) -> tuple[Path, str]:
@@ -9840,7 +9974,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"items": items})
         if parsed.path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
             with db() as con:
-                result=supplier_registry_integration.eligible_full_registry(con)
+                result=supplier_registry_integration.eligible_full_registry(
+                    con, projection_policy="sandbox" if SANDBOX_MODE else None)
             return self.send_json(result)
         if parsed.path == '/api/navigation-settings':
             with db() as con: return self.send_json(navigation_settings.get(con))
@@ -10366,6 +10501,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(supplier_nazk_review_sync_status())
         if parsed.path == "/api/google-oauth/status":
             return self.send_json(google_oauth_status())
+        if parsed.path == "/api/sandbox/appeals-google-docs/access-check":
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            try:
+                return self.send_json(sandbox_appeal_docs_access_check())
+            except (PermissionError, RuntimeError, urllib.error.HTTPError, ValueError) as exc:
+                # Do not echo provider responses or credentials into a browser.
+                return self.send_json({"ready_for_single_generation_test": False,
+                                       "documents_created": 0,
+                                       "error": type(exc).__name__}, 409)
         if parsed.path == "/api/google-oauth/callback":
             query = urllib.parse.parse_qs(parsed.query)
             expected_origin = _google_origin(_google_oauth_redirect_uri())
@@ -10925,6 +11070,22 @@ class Handler(BaseHTTPRequestHandler):
                 except sqlite3.IntegrityError:
                     return self.send_json({"error": "Профіль із такою назвою вже існує"}, 409)
             return self.send_json({"saved": True, "id": profile_id}, 201)
+        if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/protocol/google-doc/generate"):
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/protocol/google-doc/generate")]).rstrip("/")
+            try:
+                return self.send_json(generate_sandbox_violation_google_doc(
+                    report_id, self.read_json(), self.auth_user))
+            except DeclensionValidationError as exc:
+                return self.send_json(exc.payload(), 422)
+            except KeyError:
+                return self.send_json({"error": "Звернення не знайдено"}, 404)
+            except (ValueError, PermissionError) as exc:
+                return self.send_json({"error": str(exc)}, 422)
+            except Exception:
+                SERVER_LOG.exception("SANDBOX Google Docs generation requires reconciliation")
+                return self.send_json({"error": "Стан генерації невизначений; повтор без звірки заборонено"}, 409)
         if parsed.path.startswith("/api/violation-reports/") and parsed.path.endswith("/protocol/generate"):
             report_id = urllib.parse.unquote(parsed.path[len("/api/violation-reports/"):-len("/protocol/generate")]).rstrip("/")
             payload = self.read_json()

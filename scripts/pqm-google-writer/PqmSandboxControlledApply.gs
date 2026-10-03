@@ -3,7 +3,7 @@ var PQM_SANDBOX_CONTROLLED_SPREADSHEET_ID = '1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnj
 var PQM_SANDBOX_CONTROLLED_MIN_ROWS = 8;
 var PQM_SANDBOX_CONTROLLED_MAX_ROWS = 10;
 var PQM_SANDBOX_CONTROLLED_GUARD_CACHE_SECONDS = 21600;
-var PQM_SANDBOX_CONTROLLED_COLUMNS = {2: 'C', 4: 'E', 5: 'F', 7: 'H', 8: 'I', 11: 'L'};
+var PQM_SANDBOX_CONTROLLED_COLUMNS = {2: 'C', 3: 'D', 4: 'E', 5: 'F', 7: 'H', 8: 'I', 11: 'L'};
 var PQM_SANDBOX_CONTROLLED_DESIRED_COMBINATIONS = [
   'C', 'F', 'H', 'C+F', 'C+H', 'F+H', 'C+F+H'
 ];
@@ -74,10 +74,8 @@ function pqmSandboxControlledColumns_(change) {
 
 function pqmSandboxControlledPlan_(body, tabs) {
   var plan = pqmGooglePlan_(body, tabs);
-  if (plan.counts.appended || plan.counts.conflicts || plan.counts.duplicate_keys || plan.counts.errors ||
-      plan.changes.some(function(change) { return change.append; })) {
-    throw new Error('PQM SANDBOX: plan contains append, conflict, duplicate or error.');
-  }
+  pqmGoogleValidateWriteSet_(plan.changes);
+  plan.changes = plan.changes.filter(function(change) { return !change.append; });
   return plan;
 }
 
@@ -325,6 +323,7 @@ function pqmSandboxControlledPreview() {
 
 function pqmSandboxControlledRequests_(selected, tabs) {
   var requests = [];
+  pqmGoogleValidateWriteSet_(selected.map(function(entry) { return entry.change; }));
   selected.forEach(function(entry) {
     entry.columns.forEach(function(column) {
       var value = entry.change.cells[column];
@@ -340,9 +339,10 @@ function pqmSandboxControlledRequests_(selected, tabs) {
       }});
     });
   });
-  if (!requests.length || requests.length > PQM_SANDBOX_CONTROLLED_MAX_ROWS * 6) {
+  if (!requests.length || requests.length > PQM_SANDBOX_CONTROLLED_MAX_ROWS * 7) {
     throw new Error('PQM SANDBOX: controlled write limit exceeded.');
   }
+  pqmGoogleValidateValueRequests_(requests, false);
   return requests;
 }
 

@@ -215,11 +215,11 @@ test('a stale digest or changed row fails closed before batchUpdate', () => {
   assert.equal(f.writes, 0);
 });
 
-test('append, conflict, duplicate or protected selected cells fail closed', () => {
+test('unrelated append is isolated; protected selected cells still fail closed', () => {
   const f = fixture();
   f.body.items.push({...f.body.items[0], supplier_code: '9999999999'});
   f.body.count++;
-  assert.throws(() => f.context.pqmSandboxControlledPreview(), /append/);
+  assert.equal(f.context.pqmSandboxControlledPreview().selected.length, 10);
   f.body.items.pop(); f.body.count--;
   f.tabs['ФОП'].protectedRanges.push({range: {startRowIndex: 1, endRowIndex: 2,
     startColumnIndex: 2, endColumnIndex: 3}, requestingUserCanEdit: false});

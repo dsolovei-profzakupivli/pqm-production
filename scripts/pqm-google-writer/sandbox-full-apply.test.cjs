@@ -271,13 +271,15 @@ test('morning I/L planner keeps the evidence pair chronological and preserves Go
   }
 });
 
-test('invalid Google/PQM verification dates fail closed before any write', () => {
+test('invalid Google/PQM verification dates isolate their row before any write', () => {
   for (const origin of ['Google', 'PQM']) {
     const f = fixture();
     f.body.items[0].verification_date = origin === 'PQM' ? 'bad-date' : '2026-09-20';
     f.body.items[0].verification_officer = 'Officer A';
     setGoogleCell(f, 8, origin === 'Google' ? 'bad-date' : f.context.pqmGoogleDate_('2026-09-19'));
-    assert.throws(() => f.context.pqmSandboxFullApplyPreview(), /BLOCKED_/);
+    const preview = f.context.pqmSandboxFullApplyPreview();
+    assert.ok(preview.conflicts + preview.errors >= 1);
+    assert.equal(preview.google_writes, 0);
     assert.equal(f.writes, 0);
   }
 });
@@ -304,7 +306,7 @@ test('four Apps Script sources parse together; Full Preview is aggregate-only an
   assert.equal(p.skipped, 0);
   assert.equal(p.appended + p.conflicts + p.duplicate_keys + p.errors, 0);
   assert.equal(p.total_planned_cells, 24);
-  assert.deepEqual(Object.fromEntries(Object.entries(p.changes_by_column)), {C: 8, E: 0, F: 8, H: 8, I: 0, L: 0});
+  assert.deepEqual(Object.fromEntries(Object.entries(p.changes_by_column)), {C: 8, D: 0, E: 0, F: 8, H: 8, I: 0, L: 0});
   assert.equal(f.writes, 0);
   assert.equal(JSON.stringify(p).includes('verified-name'), false);
   assert.equal(JSON.stringify(p).includes(f.body.items[0].supplier_code), false);
@@ -326,18 +328,20 @@ test('expanded impact Preview is aggregate-only, zero-write and exposes blockers
   assert.equal(JSON.stringify(impact).includes('verified officer'), false);
   f.body.items.push({...f.body.items[0], supplier_code: 'new-supplier'});
   f.body.count++;
-  assert.equal(f.context.pqmSandboxExpandedImpactPreview().full_apply_blocked, true);
+  assert.equal(f.context.pqmSandboxExpandedImpactPreview().full_apply_blocked, false);
   assert.equal(f.writes, 0);
 });
 
-test('full preview blocks append, conflict, duplicate and planner error', () => {
+test('full preview reports independent append, conflict, duplicate and planner error without unsafe writes', () => {
   const types = ['appended', 'conflicts', 'duplicate_keys', 'errors'];
   types.forEach(type => {
     const f = fixture(), original = f.context.pqmGooglePlan_;
     f.context.pqmGooglePlan_ = (body, tabs) => {
       const p = original(body, tabs); p.counts[type]++; return p;
     };
-    assert.throws(() => f.context.pqmSandboxFullApplyPreview(), /BLOCKED_/);
+    const preview = f.context.pqmSandboxFullApplyPreview();
+    assert.ok(preview[type] > 0);
+    assert.equal(preview.google_writes, 0);
     assert.equal(f.writes, 0);
   });
 });
@@ -480,7 +484,7 @@ test('expanded Full Apply writes E/I/L with C/F/H and preserves every untouched 
   const before = clone(f.raw.get('1:2'));
   const preview = f.context.pqmSandboxFullApplyPreview();
   assert.deepEqual(Object.fromEntries(Object.entries(preview.changes_by_column)),
-    {C: 8, E: 1, F: 8, H: 8, I: 1, L: 1});
+    {C: 8, D: 0, E: 1, F: 8, H: 8, I: 1, L: 1});
   arm(f, preview);
   const result = f.context.pqmSandboxFullApply();
   assert.equal(result.status, 'COMPLETE');
@@ -603,7 +607,8 @@ test('sandbox host and token guards remain the only source of registry credentia
     fetched = true;
     assert.equal(new URL(url).host, 'pqm-sandbox.onrender.com');
     assert.equal(options.followRedirects, false);
-    return {getResponseCode: () => 200, getContentText: () => JSON.stringify({count: 0, items: []})};
+    return {getResponseCode: () => 200, getContentText: () => JSON.stringify({
+      projection_contract: 'shared_edr_v1', count: 0, items: []})};
   }};
   context.pqmSandboxFetchRegistry_();
   assert.equal(property, 'PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN');

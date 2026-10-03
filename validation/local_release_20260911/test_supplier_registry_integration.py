@@ -55,6 +55,48 @@ class FullSupplierRegistryTests(unittest.TestCase):
 
     def items(self):return {x['supplier_code']:x for x in integration.full_registry(self.con)['items']}
 
+    def test_sandbox_endpoint_uses_shared_projection_and_allows_unavailable_officer(self):
+        sid = self.add('00000009', 'Остання заявка', '2026-09-20',
+                       qualification='active', manager='Керівник')
+        self.con.execute("UPDATE application_fields SET protocol_date='2026-09-20' WHERE submission_id=?", (sid,))
+        result = integration.eligible_full_registry(self.con, projection_policy='sandbox')
+        self.assertEqual(result['projection_contract'], 'shared_edr_v1')
+        item = result['items'][0]
+        self.assertEqual(item['last_application_date'], '2026-09-20')
+        self.assertEqual(item['edr_status_current'], 'Зареєстровано')
+        self.assertEqual(item['verification_date'], '2026-09-20')
+        self.assertIsNone(item['verification_officer'])
+        self.assertEqual(item['shared_projection']['provenance']['L']['officer_availability'],
+                         'unavailable_in_sandbox')
+
+    def test_verified_google_name_is_distinct_from_working_c_name(self):
+        sid = self.add('00000009', 'Заявка А', '2026-09-20', qualification='active')
+        self.con.execute("UPDATE application_fields SET protocol_date='2026-09-20' WHERE submission_id=?", (sid,))
+        self.con.execute("ALTER TABLE supplier_edr_profiles ADD COLUMN full_name TEXT DEFAULT ''")
+        self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name) VALUES('00000009','Назва ЄДР')")
+        self.con.execute("""CREATE TABLE supplier_working_names(supplier_code TEXT PRIMARY KEY,
+          working_name TEXT,source_type TEXT,source_id TEXT,event_date TEXT)""")
+        self.con.execute("INSERT INTO supplier_working_names VALUES('00000009','Робоча назва Б','google_verified_name','event-1','2026-09-21')")
+        item = integration.eligible_full_registry(self.con, projection_policy='sandbox')['items'][0]
+        self.assertEqual(item['supplier_name'], 'Назва ЄДР')
+        self.assertEqual(item['shared_projection']['working_supplier_name'], 'Робоча назва Б')
+        self.assertTrue(item['shared_projection']['working_name_update_confirmed'])
+
+    def test_sandbox_edr_ui_and_registry_share_business_state(self):
+        import server
+        sid = self.add('00000009', 'Заявка А', '2026-09-20', qualification='active')
+        self.con.execute("UPDATE application_fields SET protocol_date='2026-09-20' WHERE submission_id=?", (sid,))
+        endpoint = integration.eligible_full_registry(self.con, projection_policy='sandbox')['items'][0]
+        with patch.object(server, 'SANDBOX_MODE', True), patch.object(server, 'db', return_value=self.con), \
+             patch.object(server, '_edr_monitoring_revision', return_value=('sandbox-fixture',)):
+            server.EDR_MONITORING_CACHE.update(fingerprint=None, rows=[])
+            ui = next(row for row in server._edr_monitoring_rows() if row['supplier_code'] == '00000009')
+        self.assertEqual(ui['edr_status'], endpoint['edr_status_current'])
+        self.assertEqual(ui['verification_date'], endpoint['verification_date'])
+        self.assertEqual(ui['verification_officer'], endpoint['verification_officer'])
+        self.assertEqual(ui['latest_application_date'], endpoint['last_application_date'])
+        self.assertEqual(ui['manager_name'], endpoint['current_manager_name'])
+
     def test_endpoint_exact_shared_set_excludes_prod_only_ten(self):
         endpoint_only = ('1922319119', '25586283', '2617901540', '3069605914',
                          '3292301719', '3315012247', '39369840', '40323076',
