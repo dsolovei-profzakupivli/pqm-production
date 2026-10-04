@@ -810,7 +810,7 @@ def _validate_context(document, values: dict[str, str], justification: str) -> N
                 continue
             if key not in values:
                 unknown.add(key)
-            elif not str(values[key]).strip():
+            elif key != "violation_description" and not str(values[key]).strip():
                 missing.add(key)
     if unknown:
         raise ProtocolContextValidationError(

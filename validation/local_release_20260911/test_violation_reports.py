@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import server
@@ -41,6 +42,41 @@ class ViolationReportTests(unittest.TestCase):
     def tearDown(self):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
+
+    def test_protocol_missing_required_context_returns_422(self):
+        request = SimpleNamespace(
+            path="/api/violation-reports/report-internal/protocol/generate",
+            auth_user="УО", read_json=lambda: {},
+            send_json=lambda body, status=200: (body, status))
+        error = server.ProtocolContextValidationError(
+            "Не заповнено обов’язкові поля: supplier_name", missing=("supplier_name",))
+        with patch.object(server, "generate_violation_protocol", side_effect=error):
+            body, status = server.Handler._do_POST(request)
+        self.assertEqual(status, 422)
+        self.assertEqual(body["missing"], ["supplier_name"])
+
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
+    def test_prod_empty_description_fixture_is_not_a_generation_blocker(self):
+        item = {
+            "id": "7733b223a90f4770b39d35082bbcb9cd",
+            "report_id": "UA-D-2026-09-25-000001", "reason": "signingRefusal",
+            "description": "", "has_official_decision": False,
+            "deadline_control": {"supplier_ready": True},
+            "procurement_context": {"available": True, "winner_selected_at": "2026-09-21",
+                "winner_state": "confirmed", "rejection_present": False,
+                "rejection_ambiguous": False},
+            "review": {"assigned_officer": "УО", "internal_decision": "decline",
+                "decision_justification": "Погоджений текст", "protocol_number": "P-1",
+                "protocol_date": "2026-10-05", "written_refusal_date": "2026-09-24",
+                "written_refusal_number": "42", "written_refusal_url": "https://example.test/refusal"},
+        }
+        self.assertTrue(server.violation_protocol_readiness(item)["ready"])
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+            prepared = server.generate_violation_protocol(item["id"], {}, prepare_only=True)
+        self.assertEqual(prepared["values"]["violation_description"], "")
 
     def test_justification_plain_text_normalization(self):
         raw = "\tПерший абзац.\r\n\r\n  Другий абзац.\rТретій абзац.\n\n"

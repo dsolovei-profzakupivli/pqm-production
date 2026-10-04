@@ -11191,6 +11191,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(generate_violation_protocol(report_id, payload, self.auth_user))
             except DeclensionValidationError as exc:
                 return self.send_json(exc.payload(), 422)
+            except ProtocolContextValidationError as exc:
+                return self.send_json({"error": str(exc), "missing": sorted(exc.missing),
+                                       "unknown": sorted(exc.unknown)}, 422)
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)
             except ConnectionError as exc:

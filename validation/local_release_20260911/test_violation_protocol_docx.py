@@ -306,6 +306,24 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         self.assertEqual(paragraph.text, source)
         self.assertFalse(paragraph._p.xpath(".//w:hyperlink"))
 
+    def test_optional_report_description_is_blank_without_fallback(self):
+        for source in ("", None):
+            for protocol_type in EXPECTED_HASHES:
+                with self.subTest(source=source, protocol_type=protocol_type):
+                    output = self.build(protocol_type, values={**BASE_VALUES,
+                        "violation_description": source})
+                    description = Document(output).tables[1].rows[1].cells[0].text
+                    self.assertEqual(description, "")
+                    self.assertNotIn("не зазначено", all_text(output))
+
+    def test_other_required_template_values_remain_required(self):
+        values = {**BASE_VALUES, "violation_description": "",
+                  "supplier_name": ""}
+        with self.assertRaises(generator.ProtocolContextValidationError) as caught:
+            self.build(values=values)
+        self.assertIn("supplier_name", caught.exception.missing)
+        self.assertNotIn("violation_description", caught.exception.missing)
+
     def test_written_refusal_uses_clickable_label_without_visible_url(self):
         url = "https://example.test/refusal-evidence"
         for protocol_type in ("warning", "decline_p49_1_2"):
