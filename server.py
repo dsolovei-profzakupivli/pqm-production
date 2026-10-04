@@ -4085,6 +4085,26 @@ def sandbox_appeal_docs_access_check() -> dict:
         _google_access_token(), sandbox_runtime.google_open)
 
 
+def sandbox_docs_picker_config() -> dict:
+    """Short-lived admin browser setup credentials; never expose a refresh token."""
+    if not SANDBOX_MODE:
+        raise PermissionError("SANDBOX only")
+    api_key = os.environ.get("PQM_SANDBOX_PICKER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("SANDBOX Picker API key is not configured")
+    project_number = "785118226581"
+    client = _google_oauth_client()
+    if not client or not str(client.get("client_id") or "").startswith(project_number + "-"):
+        raise RuntimeError("SANDBOX Picker and OAuth project do not match")
+    granted = set(str((_google_oauth_token() or {}).get("scope") or "").split())
+    if sandbox_google_docs_access.DRIVE_FILE_SCOPE not in granted:
+        raise PermissionError("SANDBOX Drive scope missing")
+    return {"api_key": api_key, "app_id": project_number,
+            "access_token": _google_access_token(),
+            "resources": {**sandbox_google_docs_access.TEMPLATES,
+                          "destination": sandbox_google_docs_access.SANDBOX_FOLDER_ID}}
+
+
 def google_oauth_authorization_url(actor: str = "") -> str:
     if not google_edr_effective_enabled():
         raise RuntimeError("Google OAuth вимкнено у цьому середовищі")
@@ -9650,6 +9670,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
 
+    def send_no_store_json(self, data, status=200):
+        raw = json.dumps(data, ensure_ascii=False).encode()
+        self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
+
     def send_session(self, data, token: str, status=200):
         raw = json.dumps(data, ensure_ascii=False).encode()
         secure = "; Secure" if IS_WEB_ENV else ""
@@ -10505,6 +10532,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(supplier_nazk_review_sync_status())
         if parsed.path == "/api/google-oauth/status":
             return self.send_json(google_oauth_status())
+        if parsed.path == "/api/sandbox/admin/google-docs-picker/config":
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            if self.auth_role != "admin":
+                return self.send_json({"error": "Administrator only"}, 403)
+            try:
+                return self.send_no_store_json(sandbox_docs_picker_config())
+            except (PermissionError, RuntimeError, ValueError) as exc:
+                return self.send_json({"error": str(exc)}, 503)
+        if parsed.path == "/api/sandbox/admin/google-docs-picker/resource":
+            if not SANDBOX_MODE:
+                return self.send_json({"error": "SANDBOX only"}, 404)
+            if self.auth_role != "admin":
+                return self.send_json({"error": "Administrator only"}, 403)
+            key = urllib.parse.parse_qs(parsed.query).get("key", [""])[0]
+            try:
+                return self.send_json(sandbox_google_docs_access.check_resource(
+                    _google_access_token(), sandbox_runtime.google_open, key))
+            except (PermissionError, RuntimeError, urllib.error.HTTPError, ValueError) as exc:
+                return self.send_json({"authorized": False, "error": type(exc).__name__}, 409)
         if parsed.path == "/api/sandbox/appeals-google-docs/access-check":
             if not SANDBOX_MODE:
                 return self.send_json({"error": "SANDBOX only"}, 404)

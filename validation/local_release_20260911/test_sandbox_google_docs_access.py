@@ -38,6 +38,7 @@ class SandboxGoogleDocsAccessTests(unittest.TestCase):
                 "id": file_id,
                 "mimeType": ("application/vnd.google-apps.folder" if is_folder
                              else "application/vnd.google-apps.document"),
+                "isAppAuthorized": True,
                 "capabilities": {"canAddChildren": True} if is_folder else {"canCopy": True},
             }).encode())
 
@@ -53,9 +54,33 @@ class SandboxGoogleDocsAccessTests(unittest.TestCase):
             file_id = request.full_url.split("/files/", 1)[1].split("?", 1)[0]
             return io.BytesIO(json.dumps({"id": file_id,
                 "mimeType": "application/vnd.google-apps.document",
+                "isAppAuthorized": True,
                 "capabilities": {"canCopy": False}}).encode())
         with self.assertRaises(PermissionError):
             docs.check_access("test-only-token", opener)
+
+    def test_picker_grant_requires_exact_resource_identity_and_app_authorization(self):
+        def opener(request, timeout):
+            file_id = request.full_url.split("/files/", 1)[1].split("?", 1)[0]
+            return io.BytesIO(json.dumps({"id": file_id,
+                "mimeType": "application/vnd.google-apps.document",
+                "isAppAuthorized": False,
+                "capabilities": {"canCopy": True}}).encode())
+        with self.assertRaises(PermissionError):
+            docs.check_resource("test-only-token", opener, "warning")
+        with self.assertRaises(PermissionError):
+            docs.check_resource("test-only-token", opener, "arbitrary")
+        with self.assertRaises(PermissionError):
+            docs.metadata_url(docs.WORKING_FOLDER_ID)
+
+    def test_picker_grant_never_trusts_returned_wrong_id_or_mime(self):
+        for item in ({"id": "wrong", "isAppAuthorized": True,
+                      "mimeType": "application/vnd.google-apps.document", "capabilities": {"canCopy": True}},
+                     {"id": docs.WARNING_TEMPLATE_ID, "isAppAuthorized": True,
+                      "mimeType": "application/vnd.google-apps.folder", "capabilities": {"canCopy": True}}):
+            with self.subTest(item=item), self.assertRaises(PermissionError):
+                docs.check_resource("test-only-token", lambda request, timeout: io.BytesIO(
+                    json.dumps(item).encode()), "warning")
 
     def test_copy_and_edit_guard_never_target_original_or_working_folder(self):
         copy_url = f"https://www.googleapis.com/drive/v3/files/{docs.WARNING_TEMPLATE_ID}/copy?fields=id%2Cname%2CmimeType%2Cparents"
