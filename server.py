@@ -6463,19 +6463,35 @@ def require_local_violation_report_owned(report_id: str) -> None:
 
 
 def _justification_basis(report: dict, context: dict, review: dict) -> dict:
+    presentation_keys = {"manual_reviewed", "file_unavailable", "checked_at", "checked_by"}
+    def source_fact(value):
+        if isinstance(value, dict):
+            return {key: source_fact(item) for key, item in value.items()
+                    if key not in presentation_keys}
+        if isinstance(value, list):
+            return [source_fact(item) for item in value]
+        return value
+    review_inputs = {key: review.get(key) for key in (
+        "internal_decision", "additional_check_required", "guarantee_documents_visible",
+        "supplier_explanation_assessment", "established_discrepancy", "written_refusal_date",
+        "written_refusal_number", "written_refusal_url", "court_decision_final_present")}
+    review_inputs["additional_check_required"] = bool(review_inputs["additional_check_required"])
+    for key in ("guarantee_documents_visible", "court_decision_final_present"):
+        if review_inputs[key] is not None:
+            review_inputs[key] = bool(review_inputs[key])
+    for key in ("internal_decision", "supplier_explanation_assessment", "established_discrepancy",
+                "written_refusal_date", "written_refusal_number", "written_refusal_url"):
+        review_inputs[key] = review_inputs[key] or ""
     return {
         "reason": report.get("reason"), "description": report.get("description"),
-        "statements": report.get("defendant_statements") or [],
-        "evidence": report.get("evidence_documents") or [],
+        "statements": source_fact(report.get("defendant_statements") or []),
+        "evidence": source_fact(report.get("evidence_documents") or []),
         "winner": context.get("winner_selected_at"), "rejection": context.get("rejection_date"),
         "rejection_reason": context.get("rejection_reason_classification"),
         "contract": [context.get("contract_status"), context.get("contract_date"), context.get("contract_pretty_id")],
         "performance_security_required": context.get(
             "performance_security_required", context.get("contract_guarantee_required")),
-        "review": {key: review.get(key) for key in (
-            "internal_decision", "additional_check_required", "guarantee_documents_visible",
-            "supplier_explanation_assessment", "established_discrepancy", "written_refusal_date",
-            "written_refusal_number", "written_refusal_url", "court_decision_final_present")},
+        "review": review_inputs,
     }
 
 
@@ -6579,8 +6595,7 @@ def violation_decision_template_key(report: dict, context: dict, review: dict | 
         return ""
     review = review or {}
     reason = report.get("reason") or ""
-    # Officer choice is not a prerequisite for previewing an already-approved rule.
-    decision = review.get("internal_decision") or violation_rules_engine(reason, context, review).get("recommended_decision") or ""
+    decision = review.get("internal_decision") or ""
     statements = report.get("defendant_statements") or []
     if (reason == "goodsNonCompliance" and decision == "decline"
             and review.get("court_decision_final_present") is False
@@ -6964,6 +6979,28 @@ def violation_rules_engine(reason: str, context: dict, review: dict | None) -> d
                 "recommendation_reason": "Потрібен індивідуальний розгляд." if present else "Рішення суду, що набрало законної сили, відсутнє."}
     return {"recommended_decision": None, "recommended_scenario": "unsupported_reason",
             "recommendation_reason": "Для цієї підстави автоматичну рекомендацію не налаштовано."}
+
+
+def violation_review_ready(item: dict) -> bool:
+    if not (item.get("deadline_control") or {}).get("supplier_ready"):
+        return False
+    reason = item.get("reason") or ""
+    context, review = item.get("procurement_context") or {}, item.get("review") or {}
+    if reason in {"contractBreach", "signingRefusal"}:
+        if context.get("winner_state") in {"unknown", "ambiguous", "unavailable"}:
+            if not (context.get("winner_date_source") == "officer_manual"
+                    and context.get("winner_selected_at") and context.get("winner_manual_provenance")):
+                return False
+        elif context.get("winner_state") != "absent_confirmed" and not context.get("winner_selected_at"):
+            return False
+    if reason == "contractBreach" and context.get("rejection_ambiguous"):
+        return False
+    if (reason == "signingRefusal" and context.get("winner_state") != "absent_confirmed"
+            and not str(review.get("written_refusal_date") or "").strip()):
+        return False
+    if reason == "goodsNonCompliance" and review.get("court_decision_final_present") is None:
+        return False
+    return True
 
 
 def build_procurement_context(report: dict, review: dict | None = None) -> dict:
@@ -7353,12 +7390,20 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
         recommendation_context["defendant_statements_present"] = bool(item["defendant_statements"])
         item["recommendation"] = violation_rules_engine(
             item["reason"], recommendation_context, item["review"])
+        item["review_ready"] = violation_review_ready(item)
+        recommended_decision = (item["recommendation"] or {}).get("recommended_decision")
+        recommendation_review = {**item["review"], "internal_decision": recommended_decision}
+        item["recommended_justification_key"] = (violation_decision_template_key(
+            item, item["procurement_context"] or {}, recommendation_review
+        ) if item["review_ready"] else "")
+        selected_matches = bool(item["review"].get("internal_decision") == recommended_decision
+                                and recommended_decision in {"warning", "decline"})
         item["justification_draft"] = (build_violation_decision_justification(
             item, item["procurement_context"] or {}, item["review"]
-        ) if supplier_ready else "")
+        ) if supplier_ready and selected_matches else "")
         item["justification_template_key"] = (violation_decision_template_key(
             item, item["procurement_context"] or {}, item["review"]
-        ) if supplier_ready else "")
+        ) if supplier_ready and selected_matches else "")
         saved_review = item["review"] or {}
         automatic_saved_draft = bool(
             saved_review.get("decision_justification")
@@ -7603,6 +7648,9 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
                 context = build_procurement_context(report_dict, merged)
             except Exception:
                 context = {}
+            recommendation = violation_rules_engine(report_dict.get("reason") or "", context, merged)
+            if merged.get("internal_decision") != recommendation.get("recommended_decision"):
+                raise ValueError("Рішення УО відрізняється від рекомендації системи; внесіть обґрунтування вручну")
             draft = build_violation_decision_justification(report_dict, context, merged)
             template_key = violation_decision_template_key(report_dict, context, merged)
             if not draft or not template_key:
@@ -7703,7 +7751,7 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
     if (officer_decision in {"warning", "decline"}
             and recommendation in {"warning", "decline"}
             and officer_decision != recommendation):
-        recommended_review = {**review, "internal_decision": ""}
+        recommended_review = {**review, "internal_decision": recommendation}
         recommended_draft = build_violation_decision_justification(
             item, item.get("procurement_context") or {}, recommended_review)
         saved_text = normalize_justification_text(review.get("decision_justification"))

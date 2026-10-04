@@ -1991,13 +1991,9 @@ violationReasonFields=function(item){
 requestContextBlock=function(item){const r=item.review||{},d=item.deadline_control||{},recommendation=item.recommendation||{},templateAvailable=Boolean(item.justification_template_key),generationReady=Boolean(d.supplier_ready),shownJustification=item.hide_saved_automatic_justification?'':(r.decision_justification||''),waitingNotice=!generationReady?'<p class="request-info">Обґрунтування рішення буде доступне після завершення строку для надання пояснень та документів постачальника.</p>':'';return `<section class="request-review violation-workbench"><h3>ПЕРЕВІРКА УО</h3><div class="request-form-grid violation-review-header"><label>Відповідальна УО<select data-review="assigned_officer_id">${violationOfficerOptions(item)}</select></label><label>Статус розгляду<select data-review="review_status"><option value="not_reviewed">Не розглянуто</option><option value="in_review">На розгляді</option><option value="reviewed">Розглянуто</option></select></label><div class="violation-admin-deadline"><small>Строк Адміністратора · 10 робочих днів</small><strong>${esc(displayDateOnly(d.admin_deadline))||'—'}</strong><span class="${d.admin_overdue?'deadline-overdue':''}">${d.admin_overdue?'Прострочено':'У межах строку'}</span></div><label class="request-check"><input type="checkbox" data-review="additional_check_required" ${r.additional_check_required?'checked':''}> Потребує додаткової перевірки за п. 50</label></div>${violationReasonFields(item)}<div class="request-recommendation"><small>Рекомендація системи</small><strong>${esc(internalDecisionLabels[recommendation.recommended_decision]||'Потрібна оцінка УО')}</strong><p>${esc(recommendation.recommendation_reason||'Система не формує остаточний юридичний висновок.')}</p></div>${item.scenario_summary?`<div class="violation-scenario-summary"><small>Контрольний сценарій</small><p>${esc(item.scenario_summary)}</p></div>`:''}<div class="request-form-grid"><label>Рішення УО<select data-review="internal_decision" ${!generationReady?'disabled title="До завершення строку постачальника"':''}><option value="">Не визначено</option>${Object.entries(internalDecisionLabels).map(([v,l])=>`<option value="${v}" ${r.internal_decision===v?'selected':''}>${l}</option>`).join('')}</select></label><label class="wide">Коментар УО<textarea data-review="review_notes">${esc(r.review_notes||'')}</textarea></label></div><section class="violation-justification"><h3>Обґрунтування рішення</h3>${waitingNotice}${generationReady&&item.justification_stale?'<p class="request-warning">Вихідні дані змінилися. За потреби оновіть обґрунтування</p>':''}${generationReady&&!templateAvailable&&!shownJustification?'<p class="request-warning">Для поточного збереженого стану погоджений шаблон не визначено. Після вибору підтримуваного рішення скористайтеся явною генерацією.</p>':''}<textarea data-review="decision_justification" placeholder="Чернетка з погодженого шаблону або ручний текст УО…">${esc(shownJustification)}</textarea><div class="violation-inline-actions"><button type="button" class="ghost" id="regenerateViolationJustification" ${!generationReady?'disabled title="До завершення строку постачальника"':''}>${shownJustification?'Оновити обґрунтування':'Сформувати обґрунтування'}</button><button type="button" class="ghost" id="copyViolationJustification">Копіювати</button></div></section></section>`}
 
 const violationScenarioReviewBase=requestContextBlock;
-// Approved drafts are shown before officer choice without replacing saved officer text.
+// A matched draft is generated only after the officer chooses the recommended decision.
 const violationApprovedDraftReviewBase=violationScenarioReviewBase;
 requestContextBlock=function(item){
-  if(item.justification_template_key && item.deadline_control?.supplier_ready && item.justification_draft
-      && !item.review?.decision_justification){
-    return violationApprovedDraftReviewBase({...item,review:{...(item.review||{}),decision_justification:item.justification_draft}});
-  }
   return violationApprovedDraftReviewBase(item);
 };
 const violationContractReviewBase=requestContextBlock;
@@ -2060,18 +2056,22 @@ requestContextBlock=function(item){
   }
   return html;
 };
-const violationP3DraftReviewNotice='Обране рішення не відповідає автоматичній рекомендації. Перевірте та відредагуйте текст обґрунтування вручну перед формуванням протоколу.';
+const violationP3DraftReviewNotice='Рішення УО відрізняється від рекомендації системи. Внесіть обґрунтування рішення вручну.';
 function violationP3DraftNeedsReview(item,decision,text){
   const recommended=item.recommendation?.recommended_decision;
   return ['warning','decline'].includes(recommended)
     && ['warning','decline'].includes(decision)
-    && decision!==recommended && Boolean(String(text||'').trim());
+    && decision!==recommended;
 }
 const violationP3ReviewNoticeBase=requestContextBlock;
 requestContextBlock=function(item){
-  const html=violationP3ReviewNoticeBase(item),review=item.review||{};
+  let html=violationP3ReviewNoticeBase(item);const review=item.review||{};
   const visibleText=review.decision_justification||item.justification_draft||'';
   const show=violationP3DraftNeedsReview(item,review.internal_decision,visibleText);
+  if(!item.review_ready){
+    html=html.replace(/<select data-review="internal_decision"(?![^>]*disabled)/,
+      '<select data-review="internal_decision" disabled title="Не завершено перевірку обов’язкових фактів або строку пояснень"');
+  }
   return html.replace('<section class="violation-justification">',`<section class="violation-justification"><p class="request-warning" id="violationP3DraftReviewNotice" ${show?'':'hidden'}>${esc(violationP3DraftReviewNotice)}</p>`);
 };
 async function generateViolationProtocol(item){const button=$('#generateViolationProtocol'),payload=collectViolationReview(),old=button.textContent,canGenerate=Boolean(item.protocol_readiness?.ready);button.disabled=true;button.textContent='Формування…';try{await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/review`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/protocol/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({protocol_number:payload.protocol_number||'',protocol_date:payload.protocol_date||''})});unresolvedDeclensionsByReport.delete(String(item.id));toast('Протокол сформовано · звернення залишається на розгляді');await openViolationReportById(item.id)}catch(error){toast(error.message,error.code==='declension_unresolved'?'warning':'error');const reasons=$('#violationProtocolReasons');if(reasons){reasons.hidden=false;if(error.code==='declension_unresolved'&&Array.isArray(error.unresolved)){unresolvedDeclensionsByReport.set(String(item.id),error.unresolved);reasons.innerHTML=`<strong>Потрібні перевірені відмінкові форми:</strong><ul>${error.unresolved.map((entry,index)=>`<li><span>${esc(entry.subject_label||'Назва')} · ${esc(entry.original)} · ${esc({genitive:'родовий',dative:'давальний',accusative:'знахідний'}[entry.grammatical_case]||entry.grammatical_case)}</span> <button type="button" class="ghost" data-go-declension="${index}">Відкрити модуль відмінювання</button></li>`).join('')}</ul>`;reasons.querySelectorAll('[data-go-declension]').forEach(action=>action.onclick=()=>openDeclensionFromValidation(error.unresolved[Number(action.dataset.goDeclension)],item))}else reasons.textContent=error.message}}finally{button.disabled=!canGenerate||Boolean((unresolvedDeclensionsByReport.get(String(item.id))||[]).length);button.textContent=old}}
@@ -2250,7 +2250,14 @@ bindViolationReview=function(item){
   const draftNotice=$('#violationP3DraftReviewNotice');
   if(decision&&justification&&draftNotice){
     const refreshDraftNotice=()=>{draftNotice.hidden=!violationP3DraftNeedsReview(item,decision.value,justification.value)};
-    decision.addEventListener('change',refreshDraftNotice);
+    decision.addEventListener('change',async()=>{
+      refreshDraftNotice();
+      if(decision.value===item.recommendation?.recommended_decision
+          && item.recommended_justification_key
+          && (!justification.value.trim()||item.review?.justification_manually_edited===false)){
+        await regenerateViolationJustification(item);
+      }
+    });
     justification.addEventListener('input',refreshDraftNotice);
     refreshDraftNotice();
   }

@@ -1452,6 +1452,12 @@ class ViolationReportTests(unittest.TestCase):
         self.assertFalse(result["review"]["justification_manually_edited"])
         self.assertEqual(result["review"]["decision_template_key"],
                          "p49_1_warning_guarantee_no_documents_no_explanation")
+        self.assertFalse(result["justification_stale"],
+                         "A freshly generated draft cannot be stale without an input change")
+        changed_context = {**context, "rejection_date": "2026-08-08T12:00:00+03:00"}
+        with patch.object(server, "build_procurement_context", return_value=changed_context):
+            changed = server.violation_report_detail("report-internal", refresh=False)
+        self.assertTrue(changed["justification_stale"])
 
     def test_p1_approved_template_requires_exact_supported_combination(self):
         report = {"reason": "contractBreach", "defendant_statements": []}
@@ -1486,12 +1492,10 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(server.violation_decision_template_key(report, {}, review),
                          "p49_3_decline_no_final_court_decision_no_explanation")
         self.assertEqual(server.build_violation_decision_justification(report, {}, review), expected)
-        # Live SANDBOX UA-D-2026-09-29-000002: the officer has not selected
-        # a decision yet, although the recommendation and control facts resolve.
+        # The approved rule is only applied after the officer selects decline.
         unselected = {**review, "internal_decision": ""}
-        self.assertEqual(server.violation_decision_template_key(report, {}, unselected),
-                         "p49_3_decline_no_final_court_decision_no_explanation")
-        self.assertEqual(server.build_violation_decision_justification(report, {}, unselected), expected)
+        self.assertEqual(server.violation_decision_template_key(report, {}, unselected), "")
+        self.assertEqual(server.build_violation_decision_justification(report, {}, unselected), "")
         # Live SANDBOX UA-D-2026-09-25-000002: a saved manual text remains
         # authoritative in the card; the resolver must not rewrite it.
         saved = {**review, "decision_justification": expected}
@@ -1526,6 +1530,45 @@ class ViolationReportTests(unittest.TestCase):
         gate = server.violation_protocol_readiness(item)
         self.assertFalse(any("не відповідає рішенню УО" in reason for reason in gate["reasons"]))
 
+    def test_generated_justification_fingerprint_ignores_sqlite_boolean_representation(self):
+        report = {"reason": "contractBreach", "defendant_statements": [],
+                  "description": "Підстава звернення"}
+        context = {"winner_selected_at": "2026-09-24", "rejection_date": "2026-09-28"}
+        saved = {"internal_decision": "decline", "additional_check_required": 0,
+                 "guarantee_documents_visible": 0, "court_decision_final_present": 0}
+        saved_fingerprint = server._justification_hash(report, context, saved)
+        reopened = {**saved, "additional_check_required": False,
+                    "guarantee_documents_visible": False, "court_decision_final_present": False}
+        self.assertEqual(server._justification_hash(report, context, reopened), saved_fingerprint)
+        self.assertNotEqual(server._justification_hash(report, context,
+                            {**reopened, "additional_check_required": True}), saved_fingerprint)
+        self.assertNotEqual(server._justification_hash(report,
+                            {**context, "rejection_date": "2026-09-29"}, reopened), saved_fingerprint)
+
+    def test_review_ready_separates_missing_facts_from_no_auto_rule(self):
+        item = {"reason": "contractBreach", "deadline_control": {"supplier_ready": False},
+                "procurement_context": {"winner_state": "present", "winner_selected_at": "2026-09-25",
+                                        "rejection_present": False}, "review": {}}
+        self.assertFalse(server.violation_review_ready(item))
+        item["deadline_control"]["supplier_ready"] = True
+        self.assertTrue(server.violation_review_ready(item))
+        self.assertIsNone(server.violation_rules_engine("contractBreach", item["procurement_context"],
+                                                        item["review"])["recommended_decision"])
+        item["procurement_context"].update(winner_state="ambiguous", winner_selected_at=None)
+        self.assertFalse(server.violation_review_ready(item))
+        item["procurement_context"].update(winner_date_source="officer_manual",
+                                            winner_selected_at="2026-09-26",
+                                            winner_manual_provenance={"basis": "Перевірено ЕСЗ"})
+        self.assertTrue(server.violation_review_ready(item))
+        item["reason"] = "signingRefusal"
+        self.assertFalse(server.violation_review_ready(item))
+        item["review"]["written_refusal_date"] = "2026-09-28"
+        self.assertTrue(server.violation_review_ready(item))
+        item["reason"] = "goodsNonCompliance"
+        self.assertFalse(server.violation_review_ready(item))
+        item["review"]["court_decision_final_present"] = False
+        self.assertTrue(server.violation_review_ready(item))
+
     def test_existing_p1_p2_justification_keys_remain_reachable(self):
         cases = (
             ({"reason": "contractBreach", "defendant_statements": []},
@@ -1558,8 +1601,8 @@ class ViolationReportTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(server.violation_decision_template_key(report, context, review), expected)
                 unselected = {**review, "internal_decision": ""}
-                self.assertEqual(server.violation_decision_template_key(report, context, unselected), expected)
-                self.assertTrue(server.build_violation_decision_justification(report, context, unselected))
+                self.assertEqual(server.violation_decision_template_key(report, context, unselected), "")
+                self.assertFalse(server.build_violation_decision_justification(report, context, unselected))
                 opposite = "warning" if review["internal_decision"] == "decline" else "decline"
                 self.assertEqual(server.violation_decision_template_key(
                     report, context, {**review, "internal_decision": opposite}), "")
@@ -1583,8 +1626,10 @@ class ViolationReportTests(unittest.TestCase):
                 self.assertEqual(recommendation["recommended_scenario"], "court_decision_absent")
                 self.assertIn("пояснення постачальника — відсутні",
                               server.violation_scenario_summary(report, {}))
-                self.assertEqual(server.violation_decision_template_key(report, {}, review), key)
-                draft = server.build_violation_decision_justification(report, {}, review)
+                self.assertEqual(server.violation_decision_template_key(report, {}, review),
+                                 key if officer_decision else "")
+                selected = {**review, "internal_decision": "decline"}
+                draft = server.build_violation_decision_justification(report, {}, selected)
                 self.assertTrue(draft.startswith("Замовником подано звернення про порушення"))
                 self.assertEqual(review["decision_justification"], saved_text)
                 if saved_text:
