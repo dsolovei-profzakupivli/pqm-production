@@ -2069,6 +2069,13 @@ function violationP3DraftNeedsReview(item,decision,text){
     && ['warning','decline'].includes(decision)
     && decision!==recommended;
 }
+function violationShouldAutoGenerateOnDecision(item,decision,text,editedInCard){
+  return item.review_ready===true
+    && decision===item.recommendation?.recommended_decision
+    && Boolean(item.recommended_justification_key)
+    && !editedInCard
+    && (!String(text||'').trim() || item.review?.justification_manually_edited!==true);
+}
 const violationP3ReviewNoticeBase=requestContextBlock;
 requestContextBlock=function(item){
   let html=violationP3ReviewNoticeBase(item);const review=item.review||{};
@@ -2255,16 +2262,15 @@ bindViolationReview=function(item){
   const justification=$('#requestDetailsBody [data-review="decision_justification"]');
   const draftNotice=$('#violationP3DraftReviewNotice');
   if(decision&&justification&&draftNotice){
+    let editedInCard=false;
     const refreshDraftNotice=()=>{draftNotice.hidden=!violationP3DraftNeedsReview(item,decision.value,justification.value)};
     decision.addEventListener('change',async()=>{
       refreshDraftNotice();
-      if(decision.value===item.recommendation?.recommended_decision
-          && item.recommended_justification_key
-          && (!justification.value.trim()||item.review?.justification_manually_edited===false)){
+      if(violationShouldAutoGenerateOnDecision(item,decision.value,justification.value,editedInCard)){
         await regenerateViolationJustification(item);
       }
     });
-    justification.addEventListener('input',refreshDraftNotice);
+    justification.addEventListener('input',()=>{editedInCard=true;refreshDraftNotice()});
     refreshDraftNotice();
   }
   const button=$('#generateViolationProtocol');if(button)button.onclick=()=>generateViolationProtocol(item);

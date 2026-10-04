@@ -1493,6 +1493,11 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(server.violation_decision_template_key(report, {}, review),
                          "p49_3_decline_no_final_court_decision_no_explanation")
         self.assertEqual(server.build_violation_decision_justification(report, {}, review), expected)
+        for stored_value in (False, 0, "0", "false"):
+            with self.subTest(stored_value=stored_value):
+                self.assertEqual(server.violation_decision_template_key(
+                    report, {}, {**review, "court_decision_final_present": stored_value}),
+                    "p49_3_decline_no_final_court_decision_no_explanation")
         # The approved rule is only applied after the officer selects decline.
         unselected = {**review, "internal_decision": ""}
         self.assertEqual(server.violation_decision_template_key(report, {}, unselected), "")
@@ -1508,6 +1513,39 @@ class ViolationReportTests(unittest.TestCase):
             ({**report, "defendant_statements": [{"description": "Пояснення"}]}, review),
         ):
             self.assertEqual(server.violation_decision_template_key(changed_report, {}, changed_review), "")
+
+    def test_p3_decision_round_trip_recomputes_rule_from_current_tri_state_fact(self):
+        payload = report_payload()
+        payload["details"]["reason"] = "goodsNonCompliance"
+        payload["defendantStatements"] = []
+        server.save_violation_report(payload)
+        context = {"available": True, "rejection_present": False}
+        with patch.object(server, "api_get", return_value={"data": payload}), \
+                patch.object(server, "build_procurement_context", return_value=context):
+            first = server.save_violation_review("report-internal", {
+                "action": "regenerate_justification", "internal_decision": "decline",
+                "court_decision_final_present": "0"})
+            draft = first["review"]["decision_justification"]
+            self.assertTrue(draft)
+            self.assertFalse(first["justification_stale"])
+            warning = server.save_violation_review("report-internal", {"internal_decision": "warning"})
+            self.assertEqual(warning["justification_template_key"], "")
+            restored = server.save_violation_review("report-internal", {
+                "action": "regenerate_justification", "internal_decision": "decline",
+                "court_decision_final_present": "0"})
+            self.assertEqual(restored["review"]["decision_justification"], draft)
+            self.assertFalse(restored["justification_stale"])
+            repeated = server.save_violation_review("report-internal", {
+                "action": "regenerate_justification", "internal_decision": "decline",
+                "court_decision_final_present": "0"})
+            self.assertEqual(repeated["review"]["decision_justification"], draft)
+            self.assertFalse(repeated["justification_stale"])
+            manual = server.save_violation_review("report-internal", {
+                "internal_decision": "warning", "decision_justification": "Ручний текст УО"})
+            self.assertEqual(manual["review"]["decision_justification"], "Ручний текст УО")
+            back_without_regeneration = server.save_violation_review("report-internal", {
+                "internal_decision": "decline"})
+            self.assertEqual(back_without_regeneration["review"]["decision_justification"], "Ручний текст УО")
 
     def test_contrary_officer_decision_requires_review_of_recommendation_draft(self):
         report = {"reason": "goodsNonCompliance", "defendant_statements": []}

@@ -34,12 +34,25 @@ assert.equal(guardContext.violationP3DraftNeedsReview(scenario, '', base.justifi
 assert.equal(guardContext.violationP3DraftNeedsReview(scenario, 'decline', base.justification_draft), false);
 assert.equal(guardContext.violationP3DraftNeedsReview(scenario, 'warning', base.justification_draft), true);
 assert.equal(guardContext.violationP3DraftNeedsReview(scenario, 'warning', ''), true);
+const roundTrip = {...scenario, review_ready: true,
+  recommended_justification_key: base.justification_template_key,
+  review: {...scenario.review, justification_manually_edited: false}};
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', '', false), true);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'warning', base.justification_draft, false), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', base.justification_draft, false), true);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', base.justification_draft, false), true,
+  'Repeated matching decision remains deterministic');
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'warning', '', false), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', '', false), true);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'warning', base.justification_draft, false), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', 'Ручний текст УО', true), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision({...roundTrip,
+  review: {...roundTrip.review, justification_manually_edited: true}}, 'decline', 'Ручний текст УО', false), false);
 assert.match(guardContext.requestContextBlock({...scenario, review: {...scenario.review, internal_decision: 'warning', decision_justification: base.justification_draft}}), /id="violationP3DraftReviewNotice" >Рішення УО відрізняється/);
 assert.match(guardContext.requestContextBlock({...scenario, review: {...scenario.review, internal_decision: 'decline'}}), /id="violationP3DraftReviewNotice" hidden>/);
 assert.match(guardContext.requestContextBlock({...scenario, review_ready: false}), /<select data-review="internal_decision" disabled/);
 assert.doesNotMatch(guardContext.requestContextBlock({...scenario, review_ready: true}), /<select data-review="internal_decision" disabled/);
 assert.match(source, /decision\.addEventListener\('change',async\(\)=>\{/);
-assert.match(source, /decision\.value===item\.recommendation\?\.recommended_decision/);
-assert.match(source, /item\.recommended_justification_key/);
+assert.match(source, /violationShouldAutoGenerateOnDecision\(item,decision\.value,justification\.value,editedInCard\)/);
 assert.match(source, /await regenerateViolationJustification\(item\)/);
 console.log('APPEALS_P3_JUSTIFICATION_UI=PASS');
