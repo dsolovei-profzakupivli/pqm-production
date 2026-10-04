@@ -5,7 +5,7 @@
   const view=()=>document.getElementById(activeModule==='frameworks'?'frameworkAnalyticsView':activeModule+'View');
   const clone=x=>structuredClone(x);
   const button=document.createElement('button');button.type='button';button.textContent='← Назад';button.id='pqmBack';button.hidden=true;
-  button.style.cssText='margin:4px 12px;flex:0 0 auto';const header=document.querySelector('header.topbar');header?.insertBefore(button,header.querySelector('#mainNav'));
+  button.style.cssText='margin:4px 0;flex:0 0 auto';const header=document.querySelector('header.topbar');const backSlot=document.getElementById('pqmBackSlot');(backSlot||header)?.append(button);
   if(!button.isConnected)document.body.prepend(button);
   const dialog=document.getElementById('supplierProfileDialog'),dialogButton=button.cloneNode(true);dialogButton.id='pqmDialogBack';dialog.prepend(dialogButton);
   function canShowBack(entry){return Boolean(entry?.previous)&&entry.route.module!=='applications'}

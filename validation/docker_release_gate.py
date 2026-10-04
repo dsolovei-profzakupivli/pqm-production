@@ -35,6 +35,7 @@ def main():
         ["node", "validation/sandbox_appeals_refresh_ui.cjs"],
         ["node", "validation/sandbox_appeals_declension_ui.cjs"],
         ["node", "validation/sandbox_appeals_contract_controls_ui.cjs"],
+        ["node", "validation/navigation_back_slot_ui.cjs"],
         ["node", "validation/sandbox_supplier_ux.cjs"],
         [sys.executable, str(root / "validation/release_0916_smoke.py")],
         [sys.executable, str(root / "validation/nazk_scheduler_failure_smoke.py")],
