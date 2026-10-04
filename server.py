@@ -6581,7 +6581,7 @@ def violation_decision_template_key(report: dict, context: dict, review: dict | 
     reason = report.get("reason") or ""
     decision = review.get("internal_decision") or ""
     statements = report.get("defendant_statements") or []
-    if (reason == "goodsNonCompliance" and decision == "decline"
+    if (reason == "goodsNonCompliance" and decision in {"", "decline"}
             and review.get("court_decision_final_present") is False
             and not statements):
         return "p49_3_decline_no_final_court_decision_no_explanation"

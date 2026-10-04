@@ -13,7 +13,7 @@ vm.runInContext(source.slice(start, end), context);
 const base = {
   justification_template_key: 'p49_3_decline_no_final_court_decision_no_explanation',
   justification_draft: 'Погоджене типове обґрунтування',
-  deadline_control: {supplier_ready: true}, review: {},
+  deadline_control: {supplier_ready: true}, review: {internal_decision: ''},
 };
 assert.equal(context.requestContextBlock(base), base.justification_draft);
 assert.equal(base.review.decision_justification, undefined, 'Rendering must not mutate saved state');

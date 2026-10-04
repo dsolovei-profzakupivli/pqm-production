@@ -11,7 +11,7 @@ const css = readFileSync(path.resolve(import.meta.dirname, '..', 'styles.css'), 
 const labels = ['Дата визначення переможцем', 'Граничний строк письмової відмови',
   'Дата письмової відмови', 'Дата відхилення'];
 const cells = labels.map((label, index) => `<div><small>${label}</small><strong>0${index + 1}.10.2026</strong></div>`).join('');
-const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><style>.panel{width:min(1100px,calc(100vw - 40px))}</style></head><body><div class="panel"><div class="violation-p2-chronology"><div class="violation-p2-chronology-row">${cells}</div><div class="violation-p2-rejection-ground"><small>Підстава відхилення</small><strong id="ground">${'Довга підстава відхилення '.repeat(40)}</strong></div></div></div></body></html>`;
+const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><style>.panel{width:min(1100px,calc(100vw - 40px))}</style></head><body><div class="panel"><div class="request-form-grid violation-review-header"><label id="officerControl">Відповідальна УО<select><option>УО</option></select></label><label id="statusControl">Статус розгляду<select><option>На розгляді</option></select></label><div class="violation-admin-deadline" data-deadline-state="normal" id="adminDeadline"><small>Строк Адміністратора · 10 робочих днів</small><strong>09.10.2026</strong></div><label>Додаткова перевірка<input type="checkbox"></label></div><div class="violation-p2-chronology"><div class="violation-p2-chronology-row">${cells}</div><div class="violation-p2-rejection-ground"><small>Підстава відхилення</small><strong id="ground">${'Довга підстава відхилення '.repeat(40)}</strong></div></div></div></body></html>`;
 const profile = await mkdtemp(path.join(os.tmpdir(), 'pqm-p2-chronology-'));
 const port = 19234 + Math.floor(Math.random() * 2000);
 const child = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], {stdio: 'ignore'});
@@ -65,6 +65,25 @@ try {
     assert.equal(result.columns, expectedColumns, `width=${width}`);
     assert.ok(Math.abs(result.longHeight - result.shortHeight) <= 1, `long rejection changes chronology height at ${width}`);
     assert.ok(Math.abs(result.rowWidth - result.groundWidth) <= 1, `ground is not full width at ${width}`);
+    if (width === 1360) {
+      const header = await send('Runtime.evaluate', {expression: `(() => {
+        const deadline = document.getElementById('adminDeadline');
+        const heights = [];
+        for (const state of ['normal', 'attention', 'overdue']) {
+          deadline.dataset.deadlineState = state;
+          deadline.querySelector('span')?.remove();
+          if (state === 'overdue') deadline.insertAdjacentHTML('beforeend', '<span>Строк сплив</span>');
+          heights.push(deadline.getBoundingClientRect().height);
+        }
+        return {heights, officer: document.getElementById('officerControl').getBoundingClientRect().height,
+          status: document.getElementById('statusControl').getBoundingClientRect().height,
+          arrow: getComputedStyle(document.querySelector('.violation-p2-chronology-row>div'), '::after').content};
+      })()`, returnByValue: true});
+      const {heights, officer, status, arrow} = header.result.value;
+      assert.ok(heights.every(height => Math.abs(height - officer) <= 6 && Math.abs(height - status) <= 6),
+        `admin control height ${heights}, officer=${officer}, status=${status}`);
+      assert.equal(arrow, 'none', 'chronology arrows must be removed');
+    }
     console.log(`width=${width} P2_CHRONOLOGY_COLUMNS=${result.columns} GROUND_FULL_WIDTH=YES ROW_HEIGHT_STABLE=YES`);
   }
 } finally {
