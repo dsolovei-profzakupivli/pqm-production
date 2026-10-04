@@ -349,6 +349,60 @@ class WinnerDecisionsTests(unittest.TestCase):
         self.assertIsNone(absence["award"])
         self.assertFalse(absence["ambiguous"])
 
+    def test_review_time_winner_accepts_notice_after_report_without_date_fallback(self):
+        report = {**self.report, "date_created": "2026-09-25T12:00:00+03:00"}
+        late = award("late-winner", "active", notice="2026-09-26T10:00:00+03:00")
+        tender = {"id": report["tender_id"], "awards": [late]}
+        self.assertIsNone(winner_decisions.historical_decision(
+            tender, report, snapshot_at="report-time"))
+        review = winner_decisions.review_time_winner_selection(
+            tender, report, snapshot_at="review-time")
+        self.assertEqual(review["decision"]["award_id"], "late-winner")
+        self.assertEqual(review["decision"]["decision_date"], "2026-09-26")
+        self.assertEqual(review["decision"]["evidence_document"]["date_published"],
+                         "2026-09-26T10:00:00+03:00")
+        self.assertFalse(review["ambiguous"])
+        no_notice = winner_decisions.review_time_winner_selection(
+            {"id": report["tender_id"], "awards": [award("no-notice", "active")]},
+            report, snapshot_at="review-time")
+        self.assertIsNone(no_notice["decision"])
+        self.assertFalse(no_notice["ambiguous"])
+        self.assertEqual(no_notice["state"], "unknown")
+
+    def test_review_time_winner_identity_ambiguity_never_chooses_latest(self):
+        report = {**self.report, "date_created": "2026-09-25T12:00:00+03:00"}
+        tender = {"id": report["tender_id"], "awards": [
+            award("first", "active", notice="2026-09-26T10:00:00+03:00"),
+            award("second", "active", notice="2026-09-27T10:00:00+03:00")]}
+        result = winner_decisions.review_time_winner_selection(
+            tender, report, snapshot_at="review-time")
+        self.assertIsNone(result["decision"])
+        self.assertTrue(result["ambiguous"])
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["candidate_ids"], ["first", "second"])
+
+    def test_missing_awards_population_is_unknown_not_confirmed_absence(self):
+        result = winner_decisions.review_time_winner_selection(
+            {"id": self.report["tender_id"]}, self.report, snapshot_at="review-time")
+        self.assertEqual(result["state"], "unknown")
+        self.assertIsNone(result["decision"])
+        self.assertEqual(result["reason"], "awards_population_unavailable")
+
+    def test_review_time_winner_before_report_and_lot_identity(self):
+        before = award("before", "active", lot="lot-1",
+                       notice="2026-09-24T10:00:00+03:00")
+        other = award("other-lot", "active", lot="lot-2",
+                      notice="2026-09-26T10:00:00+03:00")
+        tender = {"id": self.report["tender_id"], "awards": [before, other]}
+        exact = winner_decisions.review_time_winner_selection(
+            tender, {**self.report, "lot_id": "lot-1"}, snapshot_at="review-time")
+        self.assertEqual(exact["decision"]["award_id"], "before")
+        self.assertEqual(exact["decision"]["decision_date"], "2026-09-24")
+        unresolved = winner_decisions.review_time_winner_selection(
+            tender, self.report, snapshot_at="review-time")
+        self.assertTrue(unresolved["ambiguous"])
+        self.assertIsNone(unresolved["decision"])
+
 
 if __name__ == "__main__":
     unittest.main()
