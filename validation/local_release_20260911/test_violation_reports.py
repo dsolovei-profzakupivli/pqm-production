@@ -395,7 +395,8 @@ class ViolationReportTests(unittest.TestCase):
         source = (server.ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("function violationHasCompleteRejection(context={})", source)
         self.assertIn("context.rejection_date&&String(context.rejection_reason||context.rejection_title||context.rejection_description||'').trim()", source)
-        self.assertIn("const contract=c.contract_info_required===true?", source)
+        self.assertIn("const contract=violationContractEditorVisible(item)?", source)
+        self.assertIn("context.rejection_present===true", source)
         self.assertIn("const extension=item.reason==='contractBreach'?", source)
 
     # These four tests isolate review/persistence, not the separately tested name gate.

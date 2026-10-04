@@ -1997,11 +1997,17 @@ requestContextBlock=function(item){
   return violationApprovedDraftReviewBase(item);
 };
 const violationContractReviewBase=requestContextBlock;
+function violationContractEditorVisible(item){
+  const context=item.procurement_context||{};
+  if(context.contract_info_required!==true)return false;
+  return !(['contractBreach','signingRefusal'].includes(item.reason)
+    && context.rejection_present===true);
+}
 requestContextBlock=function(item){
   const html=violationContractReviewBase(item),c=item.procurement_context||{},r=item.review||{};
   if(c.available!==true)return html;
   const extension=item.reason==='contractBreach'?`<label class="request-check violation-contract-extension"><input type="checkbox" data-review="contract_deadline_extended" ${r.contract_deadline_extended?'checked':''}> Строк укладення договору продовжено до 10 к.д.</label>`:'';
-  const contract=c.contract_info_required===true?`<div class="violation-contract-editor"><label class="request-check"><input type="checkbox" id="violationContractSigned" data-review="actual_contract_signed" ${r.actual_contract_signed?'checked':''}> Договір укладено</label><div id="violationContractDetails" class="request-form-grid"><label>Дата укладення договору<input type="date" data-review="actual_contract_date" value="${esc(r.actual_contract_date||'')}"></label><label>№ договору<input data-review="actual_contract_number" value="${esc(r.actual_contract_number||'')}"></label><label class="wide">Посилання на договір<input type="url" data-review="actual_contract_url" value="${esc(r.actual_contract_url||'')}"></label></div></div>`:'';
+  const contract=violationContractEditorVisible(item)?`<div class="violation-contract-editor"><label class="request-check"><input type="checkbox" id="violationContractSigned" data-review="actual_contract_signed" ${r.actual_contract_signed?'checked':''}> Договір укладено</label><div id="violationContractDetails" class="request-form-grid"><label>Дата укладення договору<input type="date" data-review="actual_contract_date" value="${esc(r.actual_contract_date||'')}"></label><label>№ договору<input data-review="actual_contract_number" value="${esc(r.actual_contract_number||'')}"></label><label class="wide">Посилання на договір<input type="url" data-review="actual_contract_url" value="${esc(r.actual_contract_url||'')}"></label></div></div>`:'';
   return html.replace('<section class="violation-justification">',extension+contract+'<section class="violation-justification">');
 };
 function violationKyivTodayISO(){

@@ -50,7 +50,24 @@ check('contractBreach', false, true, {procurement_context: {
   rejection_date: '2026-09-03', rejection_title: 'Не підписано договір'}});
 check('signingRefusal', true, false);
 check('signingRefusal', false, false);
+for (const reason of ['contractBreach', 'signingRefusal']) {
+  const prior = render(reason, true, {procurement_context: {rejection_present: false}});
+  const rejected = render(reason, true, {procurement_context: {
+    rejection_present: true, rejection_date: '2026-09-29T09:20:00+03:00',
+    rejection_title: 'Не підписано договір'}});
+  const reopened = render(reason, true, {procurement_context: {
+    rejection_present: true, rejection_date: '2026-09-29T09:20:00+03:00',
+    rejection_title: 'Не підписано договір'}});
+  const restored = render(reason, true, {procurement_context: {rejection_present: false}});
+  assert.match(prior, /data-review="actual_contract_signed"/);
+  assert.doesNotMatch(rejected, /data-review="actual_contract_signed"/);
+  assert.doesNotMatch(reopened, /data-review="actual_contract_signed"/);
+  assert.match(restored, /value="MANUAL-77"/);
+  assert.match(restored, /value="https:\/\/example\.test\/77"/);
+}
 check('goodsNonCompliance', true, false);
+assert.match(render('goodsNonCompliance', true, {procurement_context: {
+  rejection_present: true, rejection_date: '2026-09-29'}}), /data-review="actual_contract_signed"/);
 check('goodsNonCompliance', false, false);
 check('other', true, false);
 check('other', false, false);
