@@ -55,7 +55,7 @@
     if (!pickerApi?.PickerBuilder || !pickerApi?.DocsView)
       throw new Error('Google Picker API недоступний');
     const view = new pickerApi.DocsView(key === 'destination'
-      ? pickerApi.ViewId.FOLDERS : pickerApi.ViewId.DOCUMENTS).setFileIds([expected]);
+      ? pickerApi.ViewId.FOLDERS : pickerApi.ViewId.DOCUMENTS).setFileIds(expected);
     if (key === 'destination') view.setSelectFolderEnabled(true);
     return new Promise((resolve, reject) => {
       let finished = false;

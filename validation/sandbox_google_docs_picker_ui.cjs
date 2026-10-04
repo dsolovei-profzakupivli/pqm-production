@@ -19,7 +19,12 @@ function setup(environment = 'sandbox') {
   const panel = {hidden: true};
   class DocsView {
     constructor(type) {this.type = type;}
-    setFileIds(files) {this.files = files; views.push(this); return this;}
+    setFileIds(files) {
+      assert.equal(typeof files, 'string', 'Picker setFileIds requires a string');
+      this.files = files;
+      views.push(this);
+      return this;
+    }
     setSelectFolderEnabled(value) {this.selectFolder = value; return this;}
   }
   class PickerBuilder {
@@ -71,7 +76,7 @@ async function tick() {await new Promise(resolve => setImmediate(resolve));}
   assert.equal(success.button.disabled, true);
   for (let i = 0; i < order.length; i++) {
     assert.equal(success.callbacks.length, i + 1, 'exactly one Picker at a time');
-    assert.deepEqual([...success.views[i].files], [ids[order[i]]]);
+    assert.equal(success.views[i].files, ids[order[i]], `${order[i]} uses exact configured ID`);
     if (i === 3) assert.equal(success.views[i].selectFolder, true);
     await success.callbacks[i]({action: 'picked', docs: [{id: ids[order[i]]}]});
     await tick();
