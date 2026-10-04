@@ -6579,9 +6579,10 @@ def violation_decision_template_key(report: dict, context: dict, review: dict | 
         return ""
     review = review or {}
     reason = report.get("reason") or ""
-    decision = review.get("internal_decision") or ""
+    # Officer choice is not a prerequisite for previewing an already-approved rule.
+    decision = review.get("internal_decision") or violation_rules_engine(reason, context, review).get("recommended_decision") or ""
     statements = report.get("defendant_statements") or []
-    if (reason == "goodsNonCompliance" and decision in {"", "decline"}
+    if (reason == "goodsNonCompliance" and decision == "decline"
             and review.get("court_decision_final_present") is False
             and not statements):
         return "p49_3_decline_no_final_court_decision_no_explanation"
@@ -7697,6 +7698,22 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
         reasons.append("Не визначено підтримуваний тип протоколу для рішення і підстави")
     if not str(review.get("decision_justification") or "").strip():
         reasons.append("Не заповнене обґрунтування рішення")
+    officer_decision = review.get("internal_decision") or ""
+    recommendation = (item.get("recommendation") or {}).get("recommended_decision")
+    if (officer_decision in {"warning", "decline"}
+            and recommendation in {"warning", "decline"}
+            and officer_decision != recommendation):
+        recommended_review = {**review, "internal_decision": ""}
+        recommended_draft = build_violation_decision_justification(
+            item, item.get("procurement_context") or {}, recommended_review)
+        saved_text = normalize_justification_text(review.get("decision_justification"))
+        selected_key = violation_decision_template_key(
+            item, item.get("procurement_context") or {}, review)
+        unedited_automatic = bool(review.get("decision_template_key")
+                                  and review.get("decision_template_key") != selected_key
+                                  and not review.get("justification_manually_edited"))
+        if unedited_automatic or (recommended_draft and saved_text == normalize_justification_text(recommended_draft)):
+            reasons.append("Обґрунтування для рекомендації не відповідає рішенню УО; перевірте та відредагуйте текст вручну")
     if not number:
         reasons.append("Не введено номер протоколу")
     if not date:

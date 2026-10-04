@@ -1504,6 +1504,28 @@ class ViolationReportTests(unittest.TestCase):
         ):
             self.assertEqual(server.violation_decision_template_key(changed_report, {}, changed_review), "")
 
+    def test_contrary_officer_decision_requires_review_of_recommendation_draft(self):
+        report = {"reason": "goodsNonCompliance", "defendant_statements": []}
+        recommendation = {"recommended_decision": "decline"}
+        draft = server.build_violation_decision_justification(
+            report, {}, {"internal_decision": "", "court_decision_final_present": False})
+        item = {**report, "recommendation": recommendation,
+                "procurement_context": {"available": True},
+                "deadline_control": {"supplier_ready": True},
+                "review": {"internal_decision": "warning", "court_decision_final_present": False,
+                           "decision_justification": draft}}
+        gate = server.violation_protocol_readiness(item)
+        self.assertTrue(any("не відповідає рішенню УО" in reason for reason in gate["reasons"]))
+        item["review"].update(decision_template_key="p49_3_decline_no_final_court_decision_no_explanation",
+                              justification_manually_edited=False,
+                              decision_justification="Раніше автоматично збережений текст")
+        gate = server.violation_protocol_readiness(item)
+        self.assertTrue(any("не відповідає рішенню УО" in reason for reason in gate["reasons"]))
+        item["review"]["justification_manually_edited"] = True
+        item["review"]["decision_justification"] = "Перевірене та відредаговане УО обґрунтування."
+        gate = server.violation_protocol_readiness(item)
+        self.assertFalse(any("не відповідає рішенню УО" in reason for reason in gate["reasons"]))
+
     def test_existing_p1_p2_justification_keys_remain_reachable(self):
         cases = (
             ({"reason": "contractBreach", "defendant_statements": []},
@@ -1535,6 +1557,12 @@ class ViolationReportTests(unittest.TestCase):
         for report, context, review, expected in cases:
             with self.subTest(expected=expected):
                 self.assertEqual(server.violation_decision_template_key(report, context, review), expected)
+                unselected = {**review, "internal_decision": ""}
+                self.assertEqual(server.violation_decision_template_key(report, context, unselected), expected)
+                self.assertTrue(server.build_violation_decision_justification(report, context, unselected))
+                opposite = "warning" if review["internal_decision"] == "decline" else "decline"
+                self.assertEqual(server.violation_decision_template_key(
+                    report, context, {**review, "internal_decision": opposite}), "")
 
     def test_both_live_p3_review_states_resolve_approved_draft_without_overwriting_manual_text(self):
         key = "p49_3_decline_no_final_court_decision_no_explanation"
