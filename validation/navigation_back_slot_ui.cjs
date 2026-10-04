@@ -11,6 +11,6 @@ assert.match(html, /id="pqmBackSlot" class="back-slot"><\/div>\s*<nav id="mainNa
 assert.match(navigation, /getElementById\('pqmBackSlot'\)/);
 assert.match(navigation, /\(backSlot\|\|header\)\?\.append\(button\)/);
 assert.match(css, /\.topbar \.back-slot\{[^}]*flex:0 0 116px;[^}]*padding-inline:8px;/);
-assert.match(css, /\.topbar \.back-slot #pqmBack\{width:100%;justify-content:center\}/);
+assert.match(css, /\.topbar \.back-slot #pqmBack\{width:max-content;max-width:100%;padding-inline:9px;justify-content:center;transform:translateX\(-10px\)\}/);
 assert.doesNotMatch(css, /\.back-slot\s*\{[^}]*display\s*:\s*none/);
 console.log('NAV_BACK_SLOT_STRUCTURE=PASS');

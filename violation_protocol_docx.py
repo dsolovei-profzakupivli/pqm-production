@@ -926,6 +926,9 @@ def build_violation_protocol_docx(
                 if "report_id" in token_names:
                     _link_existing_identifier(paragraph, normalized_values.get("report_id", ""),
                                               normalized_values.get("report_url", ""))
+                if "contract_number" in token_names:
+                    _link_existing_identifier(paragraph, normalized_values.get("contract_number", ""),
+                                              normalized_values.get("contract_url", ""))
         _format_supplier_result_rows(document)
         _replace_justification(document, justification, protocol_type, normalized_values)
         _normalize_legal_reference_spaces(document, description_paragraphs)

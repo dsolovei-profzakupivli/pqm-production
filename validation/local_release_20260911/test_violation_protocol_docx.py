@@ -97,6 +97,28 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         self.assertEqual(relationships.count(urls["winner_notice_url"]), 1)
         self.assertEqual(relationships.count(urls["rejection_decision_url"]), 1)
 
+    def test_contract_number_links_to_saved_url_without_printing_raw_url(self):
+        url = "https://example.test/signed-contract"
+        values = {**BASE_VALUES, "contract_date": "14.08.2026",
+                  "contract_number": "2026/08-25", "contract_url": url}
+        for protocol_type in ("decline_p49_1_2", "decline_p49_3"):
+            with self.subTest(protocol_type=protocol_type):
+                linked = self.build(protocol_type, values=values)
+                text = all_text(linked)
+                self.assertIn("14.08.2026", text)
+                self.assertIn("2026/08-25", text)
+                self.assertNotIn(url, text)
+                with zipfile.ZipFile(linked) as package:
+                    document_xml = package.read("word/document.xml").decode("utf-8")
+                    relations_xml = package.read("word/_rels/document.xml.rels").decode("utf-8")
+                self.assertIn("2026/08-25", document_xml)
+                self.assertIn("w:hyperlink", document_xml)
+                self.assertIn(url, relations_xml)
+                plain = self.build(protocol_type, values={**values, "contract_url": ""})
+                self.assertIn("2026/08-25", all_text(plain))
+                with zipfile.ZipFile(plain) as package:
+                    self.assertNotIn(url, package.read("word/_rels/document.xml.rels").decode("utf-8"))
+
     def test_decision_dates_and_header_identifiers_link_to_exact_evidence(self):
         urls = {
             "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",

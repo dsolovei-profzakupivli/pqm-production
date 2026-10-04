@@ -6581,6 +6581,10 @@ def violation_decision_template_key(report: dict, context: dict, review: dict | 
     reason = report.get("reason") or ""
     decision = review.get("internal_decision") or ""
     statements = report.get("defendant_statements") or []
+    if (reason == "goodsNonCompliance" and decision == "decline"
+            and review.get("court_decision_final_present") is False
+            and not statements):
+        return "p49_3_decline_no_final_court_decision_no_explanation"
     if (reason in {"contractBreach", "signingRefusal"} and decision == "decline"
             and context.get("available") is True
             and context.get("winner_state") == "absent_confirmed"):
@@ -6610,6 +6614,13 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
     review = review or {}
     template_key = violation_decision_template_key(report, context, review)
     winner_date = _display_legal_date(context.get("winner_selected_at"))
+    if template_key == "p49_3_decline_no_final_court_decision_no_explanation":
+        return normalize_justification_text("\n".join((
+            "Замовником подано звернення про порушення з посиланням на пп. 3 п. 49 Порядку № 822. Зазначена норма передбачає вжиття заходів реагування у разі, якщо постачальник не виконав зобов’язання за раніше укладеним договором із цим самим замовником, що призвело до його дострокового розірвання та застосування санкцій.",
+            "Відповідно до положень Порядку № 822, факт невиконання зобов'язань та застосування санкцій (штрафів/збитків) має обов'язково підтверджуватися рішенням суду, що набрало законної сили.",
+            "Однак Замовником до звернення не додано відповідного судового рішення, яке б підтверджувало факт порушення та застосування санкцій до Постачальника. Оскільки наявність такого рішення є імперативною (обов'язковою) умовою для кваліфікації порушення за пп. 3 п. 49 Порядку № 822, відсутність документального підтвердження унеможливлює задоволення звернення.",
+            "Отже, Адміністратор приймає рішення про відмову в задоволенні звернення Замовника.",
+        )))
     if template_key == "winner_absent_decline":
         return normalize_justification_text(
             "За результатами перевірки актуальних даних ЕСЗ не підтверджено визначення "
@@ -7019,9 +7030,6 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
                                            (historical or {}).get("decision_datetime")
                                            or (historical or {}).get("decision_date"))
     report_created_at = report.get("date_created") or report.get("date_published")
-    report_created_date = _parse_prozorro_date(report_created_at)
-    winner_chronology_mismatch = bool(winner_selected and report_created_date
-                                      and winner_selected.date() != report_created_date.date())
     extended = bool((review or {}).get("contract_deadline_extended"))
     deadline = _calendar_deadline(winner_selected, 10 if extended else 5)
     rejection_date = _parse_prozorro_date((rejected or {}).get("date"))
@@ -7065,7 +7073,6 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         "winner_candidate_ids": (winner_selection or {}).get("candidate_ids") or [],
         "winner_provenance": historical,
         "report_created_at": report_created_at,
-        "winner_chronology_mismatch": winner_chronology_mismatch,
         "historical_winner_decision": historical,
         "winner_protocol_document": (historical or {}).get("protocol_document"),
         "winner_notice_url": winner_electronic_url,
@@ -7168,14 +7175,12 @@ def _unavailable_winner_context(item: dict, review: dict | None, error: str) -> 
     day3, day5 = _calendar_deadline(selected, 3), _calendar_deadline(selected, 5)
     day10 = _calendar_deadline(selected, 10)
     report_created = item.get("date_created") or item.get("date_published")
-    created = _parse_prozorro_date(report_created)
     return {"available": False, "error": error,
             "winner_state": "present" if frozen else "unavailable",
             "winner_present": bool(frozen) if frozen else None, "winner_selected_at": winner_date,
             "winner_date_source": "prozorro" if frozen else "officer_manual" if manual else None,
             "winner_manual_provenance": manual, "winner_provenance": frozen,
             "report_created_at": report_created,
-            "winner_chronology_mismatch": bool(selected and created and selected.date() != created.date()),
             "day_3": day3["calendar_day"], "day_5": day5["calendar_day"],
             "day_10": day10["calendar_day"] if extended else None,
             "written_refusal_deadline": day3["deadline"],
@@ -8006,6 +8011,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "supplier_response": supplier_text,
         "contract_date": "" if rejected else _protocol_date(review.get("actual_contract_date")),
         "contract_number": "" if rejected else str(review.get("actual_contract_number") or ""),
+        "contract_url": "" if rejected else str(review.get("actual_contract_url") or ""),
         "decision_justification": normalize_justification_text(
             review.get("decision_justification")),
     }

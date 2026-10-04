@@ -55,11 +55,20 @@ try {
       const withoutBack = tab.getBoundingClientRect().x;
       back.hidden = false;
       const withBack = tab.getBoundingClientRect().x;
-      return {withoutBack, withBack};
+      const brand = document.querySelector('.prod-brand-copy strong').getBoundingClientRect();
+      const button = back.getBoundingClientRect();
+      return {withoutBack, withBack, leftGap: button.left - brand.right,
+        rightGap: tab.getBoundingClientRect().left - button.right,
+        buttonWidth: button.width, slotWidth: document.getElementById('pqmBackSlot').getBoundingClientRect().width};
     })()`, returnByValue: true});
-    const {withoutBack, withBack} = positions.result.value;
+    const {withoutBack, withBack, leftGap, rightGap, buttonWidth, slotWidth} = positions.result.value;
     assert.ok(Math.abs(withBack - withoutBack) <= 1,
       `NAV_TABS_X_WITH_BACK=${withBack} NAV_TABS_X_WITHOUT_BACK=${withoutBack} width=${width}`);
+    if (width > 1280) {
+      assert.ok(buttonWidth < slotWidth, `Back button should be content-sized at width=${width}`);
+      assert.ok(Math.abs(leftGap - rightGap) <= 5,
+        `BACK_SPACING left=${leftGap} right=${rightGap} width=${width}`);
+    }
     console.log(`width=${width} NAV_TABS_X_WITH_BACK=${withBack} NAV_TABS_X_WITHOUT_BACK=${withoutBack}`);
   }
 } finally {

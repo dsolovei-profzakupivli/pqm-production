@@ -780,8 +780,45 @@ class ViolationReportTests(unittest.TestCase):
                 "protocol_number": "TEST-MANUAL", "protocol_date": "2026-09-07"})
         self.assertEqual(captured["values"]["contract_number"], "MANUAL-42")
         self.assertEqual(captured["values"]["contract_date"], "06.09.2026")
+        self.assertEqual(captured["values"]["contract_url"], "")
         self.assertNotIn("UA-AUTO-a1", captured["values"].values())
         self.assertTrue(captured["flags"]["has_contract"])
+
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
+    def test_saved_contract_url_reaches_protocol_without_changing_date_or_number(self):
+        with patch.object(server, "api_get", return_value={"data": report_payload()}), \
+                patch.object(server, "build_procurement_context", return_value={"available": True}):
+            server.save_violation_review("report-internal", {
+                "actual_contract_signed": True, "actual_contract_date": "2026-08-14",
+                "actual_contract_number": "2026/08-25",
+                "actual_contract_url": "https://example.test/contract",
+            })
+        with patch.object(server, "build_procurement_context", return_value={"available": True}):
+            review = server.violation_report_detail("report-internal", refresh=False)["review"]
+        item = {
+            "id": "report-internal", "report_id": "UA-D-TEST", "reason": "goodsNonCompliance",
+            "authority_code": "40996564", "date_published": "2026-08-18T10:00:00+03:00",
+            "date_created": "2026-08-18T10:00:00+03:00", "tender_pretty_id": "UA-TEST",
+            "author_name": "Замовник", "author_code": "11111111",
+            "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "Порушення", "evidence_documents": [], "defendant_statements": [],
+            "supplier_verified": None, "deadline_control": {"supplier_ready": True},
+            "procurement_context": {"available": True,
+                                    "winner_selected_at": "2026-08-01T10:00:00+03:00"},
+            "review": {**review, "review_status": "in_review", "assigned_officer": "УО",
+                       "customer_verified_short_name": "Замовник", "internal_decision": "decline",
+                       "decision_justification": "Обґрунтування", "protocol_number": "42",
+                       "protocol_date": "2026-10-04"},
+        }
+        self.assertEqual(item["review"]["actual_contract_url"], "https://example.test/contract")
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+            prepared = server.generate_violation_protocol("report-internal", {}, prepare_only=True)
+        self.assertEqual(prepared["values"]["contract_url"], "https://example.test/contract")
+        self.assertEqual(prepared["values"]["contract_date"], "14.08.2026")
+        self.assertEqual(prepared["values"]["contract_number"], "2026/08-25")
 
     def test_protocol_normalizes_customer_supplier_quotes_before_all_declensions(self):
         now = server.now_iso()
@@ -1437,6 +1474,58 @@ class ViolationReportTests(unittest.TestCase):
             {**report, "defendant_statements": [{"description": "Надано пояснення"}]},
             context, review), "")
 
+    def test_p3_existing_no_court_no_explanation_justification_restored_exactly(self):
+        report = {"reason": "goodsNonCompliance", "defendant_statements": []}
+        review = {"internal_decision": "decline", "court_decision_final_present": False}
+        expected = "\n".join((
+            "Замовником подано звернення про порушення з посиланням на пп. 3 п. 49 Порядку № 822. Зазначена норма передбачає вжиття заходів реагування у разі, якщо постачальник не виконав зобов’язання за раніше укладеним договором із цим самим замовником, що призвело до його дострокового розірвання та застосування санкцій.",
+            "Відповідно до положень Порядку № 822, факт невиконання зобов'язань та застосування санкцій (штрафів/збитків) має обов'язково підтверджуватися рішенням суду, що набрало законної сили.",
+            "Однак Замовником до звернення не додано відповідного судового рішення, яке б підтверджувало факт порушення та застосування санкцій до Постачальника. Оскільки наявність такого рішення є імперативною (обов'язковою) умовою для кваліфікації порушення за пп. 3 п. 49 Порядку № 822, відсутність документального підтвердження унеможливлює задоволення звернення.",
+            "Отже, Адміністратор приймає рішення про відмову в задоволенні звернення Замовника.",
+        ))
+        self.assertEqual(server.violation_decision_template_key(report, {}, review),
+                         "p49_3_decline_no_final_court_decision_no_explanation")
+        self.assertEqual(server.build_violation_decision_justification(report, {}, review), expected)
+        for changed_report, changed_review in (
+            (report, {**review, "court_decision_final_present": True}),
+            (report, {**review, "court_decision_final_present": None}),
+            (report, {**review, "internal_decision": "warning"}),
+            ({**report, "defendant_statements": [{"description": "Пояснення"}]}, review),
+        ):
+            self.assertEqual(server.violation_decision_template_key(changed_report, {}, changed_review), "")
+
+    def test_existing_p1_p2_justification_keys_remain_reachable(self):
+        cases = (
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"available": True, "winner_state": "absent_confirmed"},
+             {"internal_decision": "decline"}, "winner_absent_decline"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": True},
+             {"internal_decision": "decline"}, "p49_1_decline_before_deadline"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": True,
+              "day_5_shifted": True},
+             {"internal_decision": "decline"}, "p49_1_decline_before_deadline_civil_shift"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": False,
+              "contract_guarantee_required": False},
+             {"internal_decision": "warning"}, "p49_1_warning"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": False,
+              "contract_guarantee_required": True},
+             {"internal_decision": "warning", "guarantee_documents_visible": False},
+             "p49_1_warning_guarantee_no_documents_no_explanation"),
+            ({"reason": "signingRefusal", "defendant_statements": []},
+             {"written_refusal_within_deadline": True},
+             {"internal_decision": "decline"}, "p49_2_decline_timely_refusal"),
+            ({"reason": "signingRefusal", "defendant_statements": []},
+             {"written_refusal_within_deadline": True, "day_3_shifted": True},
+             {"internal_decision": "decline"}, "p49_2_decline_timely_refusal_civil_shift"),
+        )
+        for report, context, review, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(server.violation_decision_template_key(report, context, review), expected)
+
     def test_p1_warning_without_guarantee_uses_approved_base_scenario(self):
         report = {"reason": "contractBreach", "defendant_statements": []}
         context = {
@@ -1552,7 +1641,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertIsNone(server.violation_rules_engine("contractBreach", ambiguous, {})[
             "recommended_decision"])
 
-    def test_late_winner_is_review_time_deadline_base_and_chronology_flag(self):
+    def test_late_winner_is_review_time_deadline_base_without_report_date_comparison(self):
         report = {"id": "report-internal", "report_id": "UA-D-TEST",
                   "reason": "signingRefusal", "tender_id": "tender-id",
                   "defendant_code": "22222222",
@@ -1575,7 +1664,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(context["written_refusal_deadline"], "2026-09-29")
         self.assertEqual(context["day_5"], "2026-10-01")
         self.assertEqual(context["day_10"], "2026-10-06")
-        self.assertTrue(context["winner_chronology_mismatch"])
+        self.assertNotIn("winner_chronology_mismatch", context)
         self.assertTrue(context["written_refusal_within_deadline"])
         self.assertEqual(server.violation_rules_engine("signingRefusal", context, {})[
             "recommended_decision"], "decline")
@@ -1607,7 +1696,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(server.violation_rules_engine("signingRefusal", unavailable, {})[
             "recommended_scenario"], "winner_unavailable")
 
-    def test_winner_same_day_has_no_chronology_mismatch(self):
+    def test_winner_same_day_uses_winner_date_without_report_date_comparison(self):
         report = {"id": "unsnapshotted-same-day", "reason": "signingRefusal",
                   "tender_id": "tender-id", "defendant_code": "22222222",
                   "date_created": "2026-09-26T09:00:00+03:00"}
@@ -1620,7 +1709,7 @@ class ViolationReportTests(unittest.TestCase):
             context = server.build_procurement_context(report)
         self.assertTrue(context["winner_present"])
         self.assertEqual(context["winner_state"], "present")
-        self.assertFalse(context["winner_chronology_mismatch"])
+        self.assertNotIn("winner_chronology_mismatch", context)
 
     def test_manual_winner_date_resolves_unknown_ambiguous_and_unavailable(self):
         report = {"id": "manual-winner-fixture", "reason": "signingRefusal",
@@ -1866,13 +1955,13 @@ class ViolationReportTests(unittest.TestCase):
         self.assertIn("Забезпечення виконання договору", p1)
         self.assertIn("Дата укладення договору", source)
         self.assertIn("violationContractSigned", source)
-        self.assertIn("Дата визначення переможцем не збігається з датою подання звернення", source)
-        self.assertIn("Строки розраховуються від дати визначення переможцем", source)
+        self.assertNotIn("Дата визначення переможцем не збігається з датою подання звернення", source)
+        self.assertNotIn("winner_chronology_mismatch", source)
         self.assertIn("Автоматичну рекомендацію не визначено", source)
         self.assertIn("УО може внести обґрунтування вручну", source)
         p2 = reason_fields[reason_fields.find("if(item.reason==='signingRefusal')"):]
         self.assertIn("Дата письмової відмови</small>", p2)
-        self.assertIn("Дата звернення замовника</small>", p2)
+        self.assertNotIn("Дата звернення замовника</small>", p2)
         self.assertIn("rejectionDate", p2)
         self.assertIn("rejectionGround", p2)
         self.assertIn("c.contract_info_required===true", source)
