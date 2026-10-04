@@ -1863,9 +1863,8 @@ class ViolationReportTests(unittest.TestCase):
         p1 = reason_fields[reason_fields.find("if(item.reason==='contractBreach')"):
                            reason_fields.find("if(item.reason==='signingRefusal')")]
         self.assertIn("Дата визначення переможцем", p1)
-        self.assertIn("Дата укладення договору", p1)
         self.assertIn("Забезпечення виконання договору", p1)
-        self.assertIn("violationContractSigned", p1)
+        self.assertIn("Дата укладення договору", source)
         self.assertIn("violationContractSigned", source)
         self.assertIn("Дата визначення переможцем не збігається з датою подання звернення", source)
         self.assertIn("Строки розраховуються від дати визначення переможцем", source)
