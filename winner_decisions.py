@@ -93,9 +93,8 @@ def relevant_awards(tender, report):
     return matching
 
 
-def historical_decision(tender, report, *, snapshot_at):
-    """Return a date-precision decision only where an exact award notice proves it."""
-    created_raw = report.get("date_created") or report.get("date_published")
+def _winner_candidates(tender, report, *, report_cutoff):
+    created_raw = (report.get("date_created") or report.get("date_published")) if report_cutoff else None
     created = _date(created_raw)
     candidates = []
     for award in relevant_awards(tender, report):
@@ -118,17 +117,29 @@ def historical_decision(tender, report, *, snapshot_at):
                 continue
         if created and decision_date > created:
             continue
-        try:
-            published_at = datetime.fromisoformat(str(notice["datePublished"]).replace("Z", "+00:00"))
-            report_at = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
-            if published_at.tzinfo and report_at.tzinfo and published_at > report_at:
-                continue
-        except (TypeError, ValueError):
-            pass
+        if created_raw:
+            try:
+                published_at = datetime.fromisoformat(str(notice["datePublished"]).replace("Z", "+00:00"))
+                report_at = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+                if published_at.tzinfo and report_at.tzinfo and published_at > report_at:
+                    continue
+            except (TypeError, ValueError):
+                pass
         candidates.append((decision_date, str(award.get("id") or ""), award, notice))
+    return candidates
+
+
+def historical_decision(tender, report, *, snapshot_at):
+    """Return the original report-time decision for legacy snapshot callers."""
+    candidates = _winner_candidates(tender, report, report_cutoff=True)
     if not candidates:
         return None
-    decision_date, _, award, notice = max(candidates)
+    return _winner_decision_from_candidate(max(candidates), report, snapshot_at)
+
+
+def _winner_decision_from_candidate(candidate, report, snapshot_at):
+    """Project only evidence from the selected exact award notice."""
+    decision_date, _, award, notice = candidate
     supplier = re.sub(r"\D", "", str(report.get("defendant_code") or ""))
     return {
         "report_id": str(report.get("id") or report.get("report_id") or ""),
@@ -154,6 +165,41 @@ def historical_decision(tender, report, *, snapshot_at):
     }
 
 
+def review_time_winner_selection(tender, report, *, snapshot_at):
+    """Resolve one evidenced current winner without using report creation as cutoff."""
+    if not isinstance(tender.get("awards"), list):
+        return {"decision": None, "state": "unknown", "ambiguous": False,
+                "candidate_ids": [], "reason": "awards_population_unavailable"}
+    if tender.get("id") and report.get("tender_id") and str(tender["id"]) != str(report["tender_id"]):
+        return {"decision": None, "state": "ambiguous", "ambiguous": True, "candidate_ids": [],
+                "reason": "tender_identity_mismatch"}
+    supplier = re.sub(r"\D", "", str(report.get("defendant_code") or ""))
+    if not supplier:
+        return {"decision": None, "state": "ambiguous", "ambiguous": True, "candidate_ids": [],
+                "reason": "supplier_identity_missing"}
+    candidates = _winner_candidates(tender, report, report_cutoff=False)
+    scoped = relevant_awards(tender, report)
+    same_supplier = [award for award in tender.get("awards") or []
+                     if supplier in _supplier_codes(award)]
+    unresolved_lot = (not scoped and len({str(award.get("lotID") or "")
+                                       for award in same_supplier}) > 1)
+    unlinked = any(award.get("status") in {"active", "cancelled"}
+                   and notice_document(award) and not _supplier_codes(award)
+                   for award in tender.get("awards") or [])
+    ids = sorted(str(award.get("id") or "") for _, _, award, _ in candidates)
+    if unresolved_lot or unlinked or len(candidates) > 1:
+        return {"decision": None, "state": "ambiguous", "ambiguous": True, "candidate_ids": ids,
+                "reason": ("lot_identity_unresolved" if unresolved_lot else
+                           "supplier_identity_unresolved" if unlinked else
+                           "multiple_winner_events")}
+    if not candidates:
+        return {"decision": None, "state": "unknown" if same_supplier else "absent_confirmed",
+                "ambiguous": False, "candidate_ids": [],
+                "reason": "winner_notice_missing" if same_supplier else ""}
+    return {"decision": _winner_decision_from_candidate(candidates[0], report, snapshot_at),
+            "state": "present", "ambiguous": False, "candidate_ids": ids, "reason": ""}
+
+
 def current_winner_state(tender, report):
     awards = relevant_awards(tender, report)
     active = [award for award in awards if award.get("status") == "active"]
@@ -166,32 +212,38 @@ def current_winner_state(tender, report):
 
 
 def relevant_rejection(tender, report):
-    """Never bind a protocol to an arbitrary later/latest rejection award."""
-    candidates = [award for award in relevant_awards(tender, report)
+    """Return only a uniquely evidenced review-time rejection award."""
+    return rejection_selection(tender, report)["award"]
+
+
+def rejection_selection(tender, report):
+    """Distinguish absent, selected, and ambiguous current rejection evidence."""
+    if tender.get("id") and report.get("tender_id") and str(tender["id"]) != str(report["tender_id"]):
+        return {"award": None, "ambiguous": True, "candidate_ids": [],
+                "reason": "tender_identity_mismatch"}
+    scoped_awards = relevant_awards(tender, report)
+    candidates = [award for award in scoped_awards
                   if award.get("status") == "unsuccessful" and award.get("qualified") is False]
+    supplier = re.sub(r"\D", "", str(report.get("defendant_code") or ""))
+    supplier_awards = [award for award in tender.get("awards") or []
+                       if supplier and supplier in _supplier_codes(award)]
+    if not scoped_awards and len({str(award.get("lotID") or "")
+                                  for award in supplier_awards}) > 1:
+        unresolved = [award for award in supplier_awards
+                      if award.get("status") == "unsuccessful" and award.get("qualified") is False]
+        return {"award": None, "ambiguous": bool(unresolved),
+                "candidate_ids": sorted(str(award.get("id") or "") for award in unresolved),
+                "reason": "lot_identity_unresolved"}
     explicit = str(report.get("rejection_award_id") or "")
     if explicit:
-        return next((award for award in candidates
-                     if str(award.get("id") or "") == explicit), None)
-    report_at_raw = report.get("date_created") or report.get("date_published")
-    if report_at_raw:
-        try:
-            report_at = datetime.fromisoformat(str(report_at_raw).replace("Z", "+00:00"))
-            candidates = [award for award in candidates
-                          if not award.get("date") or _not_after(award["date"], report_at)]
-        except (TypeError, ValueError):
-            pass
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _not_after(value, boundary):
-    try:
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if moment.date() > boundary.date():
-            return False
-        return not (moment.tzinfo and boundary.tzinfo and moment > boundary)
-    except (TypeError, ValueError):
-        return False
+        candidates = [award for award in candidates if str(award.get("id") or "") == explicit]
+        if not candidates:
+            return {"award": None, "ambiguous": True, "candidate_ids": [explicit],
+                    "reason": "explicit_award_not_verified"}
+    return {"award": candidates[0] if len(candidates) == 1 else None,
+            "ambiguous": len(candidates) > 1,
+            "candidate_ids": sorted(str(award.get("id") or "") for award in candidates),
+            "reason": "multiple_matching_awards" if len(candidates) > 1 else ""}
 
 
 def _strictly_before(first, second):

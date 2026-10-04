@@ -1578,6 +1578,10 @@ def init_db() -> None:
             "customer_protocol_decision_date": "TEXT DEFAULT ''",
             "customer_protocol_decision_number": "TEXT DEFAULT ''",
             "customer_protocol_decision_url": "TEXT DEFAULT ''",
+            "manual_winner_date": "TEXT NOT NULL DEFAULT ''",
+            "manual_winner_basis": "TEXT NOT NULL DEFAULT ''",
+            "manual_winner_entered_by": "TEXT NOT NULL DEFAULT ''",
+            "manual_winner_entered_at": "TEXT NOT NULL DEFAULT ''",
             "generated_protocol_filename": "TEXT DEFAULT ''",
             "generated_protocol_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
             "protocol_generated_at": "TEXT DEFAULT ''",
@@ -6298,6 +6302,7 @@ VIOLATION_REVIEW_FIELDS = {
     "supplier_explanation_assessment", "established_discrepancy", "decision_template_key",
     "customer_protocol_decision_date", "customer_protocol_decision_number",
     "customer_protocol_decision_url",
+    "manual_winner_date", "manual_winner_basis",
 }
 VIOLATION_INTERNAL_DECISIONS = {"", "warning", "decline", "individual_review"}
 
@@ -6309,6 +6314,48 @@ def _parse_prozorro_date(value: str | None) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _manual_winner_fact(review: dict | None) -> dict | None:
+    review = review or {}
+    raw = str(review.get("manual_winner_date") or "").strip()
+    basis = str(review.get("manual_winner_basis") or "").strip()
+    try:
+        valid = bool(raw and datetime.strptime(raw, "%Y-%m-%d").date().isoformat() == raw)
+    except ValueError:
+        valid = False
+    if (not valid or not basis or not str(review.get("manual_winner_entered_by") or "").strip()
+            or not str(review.get("manual_winner_entered_at") or "").strip()):
+        return None
+    return {"date": raw, "basis": basis,
+            "entered_by": review.get("manual_winner_entered_by"),
+            "entered_at": review.get("manual_winner_entered_at")}
+
+
+def _validate_manual_winner_edit(values: dict, existing: dict, actor: str, now: str) -> None:
+    if not {"manual_winner_date", "manual_winner_basis"}.intersection(values):
+        return
+    date = str(values.get("manual_winner_date", existing.get("manual_winner_date")) or "").strip()
+    basis = str(values.get("manual_winner_basis", existing.get("manual_winner_basis")) or "").strip()
+    if ("manual_winner_date" in values and date != str(existing.get("manual_winner_date") or "").strip()
+            and date and "manual_winner_basis" not in values):
+        raise ValueError("Укажіть джерело для нової ручної дати переможця")
+    if date:
+        try:
+            if datetime.strptime(date, "%Y-%m-%d").date().isoformat() != date:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("Дата переможця УО має формат YYYY-MM-DD") from exc
+        if not basis:
+            raise ValueError("Укажіть коротке джерело ручного підтвердження дати переможця")
+    elif basis:
+        raise ValueError("Для примітки потрібна ручна дата переможця")
+    values["manual_winner_date"] = date
+    values["manual_winner_basis"] = basis
+    if (date, basis) != (str(existing.get("manual_winner_date") or "").strip(),
+                         str(existing.get("manual_winner_basis") or "").strip()):
+        values["manual_winner_entered_by"] = actor if date else ""
+        values["manual_winner_entered_at"] = now if date else ""
 
 
 def _iso_date(value: datetime | None) -> str | None:
@@ -6464,7 +6511,7 @@ def _attested_winner_snapshot_connection() -> sqlite3.Connection:
 
 
 def _report_winner_decision(report: dict, tender: dict) -> dict | None:
-    """Keep a new report's first evidenced decision; never backfill old rows."""
+    """Keep the first evidenced review-time winner; never replace a frozen event."""
     report_id = str(report.get("id") or "")
     record = None
     if report_id:
@@ -6487,7 +6534,8 @@ def _report_winner_decision(report: dict, tender: dict) -> dict | None:
                 con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
                   WHERE report_id=?""", (json.dumps(frozen, ensure_ascii=False), report_id))
         return frozen
-    decision = winner_decisions.historical_decision(tender, report, snapshot_at=now_iso())
+    decision = winner_decisions.review_time_winner_selection(
+        tender, report, snapshot_at=now_iso())["decision"]
     if decision and record is not None:
         with _attested_winner_snapshot_connection() as con:
             con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
@@ -6527,10 +6575,16 @@ def _display_legal_date(value) -> str:
 
 def violation_decision_template_key(report: dict, context: dict, review: dict | None = None) -> str:
     """Return only a legally approved template key; unsupported combinations have no draft."""
+    if context.get("rejection_ambiguous"):
+        return ""
     review = review or {}
     reason = report.get("reason") or ""
     decision = review.get("internal_decision") or ""
     statements = report.get("defendant_statements") or []
+    if (reason in {"contractBreach", "signingRefusal"} and decision == "decline"
+            and context.get("available") is True
+            and context.get("winner_state") == "absent_confirmed"):
+        return "winner_absent_decline"
     if (reason == "contractBreach" and decision == "decline"
             and context.get("rejection_present")
             and context.get("rejected_before_deadline") is True):
@@ -6556,6 +6610,13 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
     review = review or {}
     template_key = violation_decision_template_key(report, context, review)
     winner_date = _display_legal_date(context.get("winner_selected_at"))
+    if template_key == "winner_absent_decline":
+        return normalize_justification_text(
+            "За результатами перевірки актуальних даних ЕСЗ не підтверджено визначення "
+            "Постачальника переможцем цієї закупівлі. Відсутня дата визначення переможцем, "
+            "з якої починається перебіг відповідного строку. Тому заявлений факт порушення "
+            "Постачальником не може бути встановлений. Адміністратор відмовляє в задоволенні звернення."
+        )
     if template_key in {"p49_1_decline_before_deadline", "p49_1_decline_before_deadline_civil_shift"}:
         security_required = bool(context.get(
             "performance_security_required", context.get("contract_guarantee_required")))
@@ -6635,6 +6696,8 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
 
 def violation_scenario_summary(report: dict, context: dict) -> str:
     """Derived officer-only acceptance hint; never persisted or sent to DOCX."""
+    if context.get("rejection_ambiguous"):
+        return "Відхилення: кілька відповідних рішень або не доведено identity; потрібна перевірка provenance."
     reason = report.get("reason")
     statements = report.get("defendant_statements") or []
     supplier_response_present = any(str(
@@ -6837,6 +6900,19 @@ def _violation_review_officer_presentation(review: dict | None) -> tuple[dict | 
 
 def violation_rules_engine(reason: str, context: dict, review: dict | None) -> dict:
     review = review or {}
+    if reason in {"contractBreach", "signingRefusal"} and context.get("available") is False:
+        return {"recommended_decision": None, "recommended_scenario": "winner_unavailable",
+                "recommendation_reason": "Доказові відомості про визначення переможця недоступні; потрібна перевірка."}
+    if reason in {"contractBreach", "signingRefusal"} and context.get("available") is True:
+        if context.get("winner_state") in {"unknown", "ambiguous", "unavailable"}:
+            return {"recommended_decision": None, "recommended_scenario": "winner_unresolved",
+                    "recommendation_reason": "Подію визначення переможцем не підтверджено однозначно; потрібна перевірка provenance."}
+        if context.get("winner_state") == "absent_confirmed":
+            return {"recommended_decision": "decline", "recommended_scenario": "winner_absent",
+                    "recommendation_reason": "Неможливо встановити факт заявленого порушення у зв'язку з відсутністю дати визначення постачальника переможцем, з якої починається перебіг відповідного строку."}
+    if context.get("rejection_ambiguous") and reason != "signingRefusal":
+        return {"recommended_decision": None, "recommended_scenario": "rejection_ambiguous",
+                "recommendation_reason": "Кілька відповідних рішень про відхилення; потрібна перевірка конкретного рішення."}
     if reason == "contractBreach":
         if not context.get("rejection_present"):
             return {"recommended_decision": None, "recommended_scenario": "review_without_rejection",
@@ -6881,11 +6957,19 @@ def violation_rules_engine(reason: str, context: dict, review: dict | None) -> d
 def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     tender_id = str(report.get("tender_id") or "")
     if not tender_id:
-        return {"available": False, "error": "У зверненні відсутній tender_id"}
+        return _unavailable_winner_context(report, review, "У зверненні відсутній tender_id")
     tender = api_get(f"{API_ROOT}/tenders/{tender_id}").get("data") or {}
+    if not tender:
+        return _unavailable_winner_context(report, review, "Не отримано актуальний tender context")
     defendant_code = str(report.get("defendant_code") or "")
     supplier_awards = winner_decisions.relevant_awards(tender, report)
     historical = _report_winner_decision(report, tender)
+    winner_selection = winner_decisions.review_time_winner_selection(
+        tender, report, snapshot_at=now_iso()) if historical is None else None
+    winner_state = "present" if historical else winner_selection["state"]
+    manual_winner = (_manual_winner_fact(review) if winner_state in
+                     {"unknown", "ambiguous", "unavailable"} else None)
+    winner_ambiguous = bool(winner_selection and winner_selection["ambiguous"])
     winner = next((award for award in supplier_awards
                    if str(award.get("id") or "") == str((historical or {}).get("award_id") or "")), None)
     historical_notice = (historical or {}).get("evidence_document") or {}
@@ -6905,14 +6989,39 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
                             notice_published_at[:10] == (historical or {}).get("decision_date")
                             else None) or (historical or {}).get("decision_datetime")
                            or (historical or {}).get("decision_date"))
+    if manual_winner:
+        winner_display_date = manual_winner["date"]
     current_winner = winner_decisions.current_winner_state(tender, report)
-    rejected = winner_decisions.relevant_rejection(tender, report)
+    rejection_selection = winner_decisions.rejection_selection(tender, report)
+    rejected = rejection_selection["award"]
+    rejection_provenance = ({
+        "source_type": "current_tender_award",
+        "tender_id": tender_id,
+        "award_id": rejected.get("id"),
+        "status": rejected.get("status"),
+        "qualified": rejected.get("qualified"),
+        "rejection_datetime": rejected.get("date"),
+        "title": rejected.get("title"),
+        "description": rejected.get("description"),
+        "documents": (rejected.get("documents") or []),
+        "supplier_codes": sorted(str((supplier.get("identifier") or {}).get("id") or "")
+                                 for supplier in rejected.get("suppliers") or []),
+        "lot_id": rejected.get("lotID"),
+        "contract_ids": sorted(str(contract.get("id") or "")
+                               for contract in tender.get("contracts") or []
+                               if str(contract.get("awardID") or "") == str(rejected.get("id") or "")),
+    } if rejected else None)
     rejection_protocol_document = winner_decisions.protocol_document(rejected or {})
     rejection_electronic_url = winner_decisions.electronic_protocol_url(
         tender_id, (rejected or {}).get("id"),
         winner_decisions.notice_document(rejected or {}), decision="rejection")
-    winner_selected = _parse_prozorro_date((historical or {}).get("decision_datetime")
+    winner_selected = _parse_prozorro_date(manual_winner["date"] if manual_winner else
+                                           (historical or {}).get("decision_datetime")
                                            or (historical or {}).get("decision_date"))
+    report_created_at = report.get("date_created") or report.get("date_published")
+    report_created_date = _parse_prozorro_date(report_created_at)
+    winner_chronology_mismatch = bool(winner_selected and report_created_date
+                                      and winner_selected.date() != report_created_date.date())
     extended = bool((review or {}).get("contract_deadline_extended"))
     deadline = _calendar_deadline(winner_selected, 10 if extended else 5)
     rejection_date = _parse_prozorro_date((rejected or {}).get("date"))
@@ -6946,6 +7055,17 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         "defendant_code": defendant_code, "supplier_awards_count": len(supplier_awards),
         "winner_award_id": (historical or {}).get("award_id"),
         "winner_selected_at": winner_display_date,
+        "winner_present": bool(historical),
+        "winner_state": winner_state,
+        "winner_date_source": ("prozorro" if historical else "officer_manual" if manual_winner
+                               else "absent_confirmed" if winner_state == "absent_confirmed" else None),
+        "winner_manual_provenance": manual_winner,
+        "winner_ambiguous": winner_ambiguous,
+        "winner_ambiguity_reason": (winner_selection or {}).get("reason") or "",
+        "winner_candidate_ids": (winner_selection or {}).get("candidate_ids") or [],
+        "winner_provenance": historical,
+        "report_created_at": report_created_at,
+        "winner_chronology_mismatch": winner_chronology_mismatch,
         "historical_winner_decision": historical,
         "winner_protocol_document": (historical or {}).get("protocol_document"),
         "winner_notice_url": winner_electronic_url,
@@ -6955,6 +7075,15 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         "active_winner": current_winner["active_winner"],
         "winner_award_status": (winner or {}).get("status"),
         "rejection_present": bool(rejected), "rejection_award_id": (rejected or {}).get("id"),
+        "rejection_ambiguous": rejection_selection["ambiguous"],
+        "rejection_ambiguity_reason": rejection_selection["reason"],
+        "rejection_candidate_ids": rejection_selection["candidate_ids"],
+        "rejection_status": (rejected or {}).get("status"),
+        "rejection_qualified": (rejected or {}).get("qualified"),
+        "rejection_datetime": (rejected or {}).get("date"),
+        "rejection_date_display": (_display_legal_date(rejected.get("date")) if rejected
+                                   else None if rejection_selection["ambiguous"] else "—"),
+        "rejection_provenance": rejection_provenance,
         "rejection_date": (rejected or {}).get("date"), "rejection_title": (rejected or {}).get("title"),
         "rejection_description": (rejected or {}).get("description"),
         "rejection_documents": _documents_without_signature((rejected or {}).get("documents") or []),
@@ -7021,6 +7150,40 @@ def _normalized_violation_procurement_context(context: dict | None) -> dict:
     return resolved
 
 
+def _unavailable_winner_context(item: dict, review: dict | None, error: str) -> dict:
+    frozen = None
+    if item.get("id"):
+        try:
+            with db() as con:
+                row = con.execute("SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id=?",
+                                  (str(item["id"]),)).fetchone()
+            frozen = json.loads(row[0]) if row and row[0] else None
+        except (sqlite3.OperationalError, ValueError, TypeError):
+            pass
+    manual = _manual_winner_fact(review) if not frozen else None
+    winner_date = ((frozen or {}).get("decision_datetime") or (frozen or {}).get("decision_date")
+                   or (manual or {}).get("date"))
+    selected = _parse_prozorro_date(winner_date)
+    extended = bool((review or {}).get("contract_deadline_extended"))
+    day3, day5 = _calendar_deadline(selected, 3), _calendar_deadline(selected, 5)
+    day10 = _calendar_deadline(selected, 10)
+    report_created = item.get("date_created") or item.get("date_published")
+    created = _parse_prozorro_date(report_created)
+    return {"available": False, "error": error,
+            "winner_state": "present" if frozen else "unavailable",
+            "winner_present": bool(frozen) if frozen else None, "winner_selected_at": winner_date,
+            "winner_date_source": "prozorro" if frozen else "officer_manual" if manual else None,
+            "winner_manual_provenance": manual, "winner_provenance": frozen,
+            "report_created_at": report_created,
+            "winner_chronology_mismatch": bool(selected and created and selected.date() != created.date()),
+            "day_3": day3["calendar_day"], "day_5": day5["calendar_day"],
+            "day_10": day10["calendar_day"] if extended else None,
+            "written_refusal_deadline": day3["deadline"],
+            "contract_deadline": day10["deadline"] if extended else day5["deadline"],
+            "rejection_present": None, "rejection_ambiguous": False,
+            "cpv": "", "rejection_at": None, "rejection_reason": ""}
+
+
 def resolve_violation_procurement_context(
     item: dict, review: dict | None = None, *, prefer_snapshot: bool = True,
 ) -> tuple[dict, str]:
@@ -7038,8 +7201,7 @@ def resolve_violation_procurement_context(
             "violation_context_unavailable report=%s error=%s",
             item.get("report_id") or item.get("id"), type(exc).__name__,
         )
-        return {"available": False, "error": str(exc), "cpv": "",
-                "rejection_at": None, "rejection_reason": ""}, "unavailable"
+        return _unavailable_winner_context(item, review, str(exc)), "unavailable"
 
 
 def _violation_sheets_json_eligible(review: dict | None) -> bool:
@@ -7424,6 +7586,7 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
         if final_status == "reviewed":
             raise ValueError("Статус «Розглянуто» встановлюється лише окремою дією «Завершити розгляд»")
         now = now_iso()
+        _validate_manual_winner_edit(values, existing, updated_by, now)
         con.execute("INSERT OR IGNORE INTO violation_report_reviews(report_id,updated_at,updated_by) VALUES (?,?,?)",
                     (report["id"], now, updated_by))
         if action == "regenerate_justification":
@@ -7534,10 +7697,23 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
     if not date:
         reasons.append("Не введено дату протоколу")
     context = item.get("procurement_context") or {}
+    if context.get("rejection_ambiguous"):
+        reasons.append("Неоднозначне рішення про відхилення: потрібна перевірка provenance")
     rejected = violation_has_complete_rejection(context)
-    if not context.get("available"):
+    manual_winner_confirmed = (context.get("winner_date_source") == "officer_manual"
+                               and bool(context.get("winner_selected_at"))
+                               and bool(context.get("winner_manual_provenance")))
+    if not context.get("available") and not manual_winner_confirmed:
         reasons.append("Не отримано актуальні відомості закупівлі")
-    if item.get("reason") in {"contractBreach", "signingRefusal"} and not context.get("winner_selected_at"):
+    winner_absent_decline = (context.get("available") is True
+                             and context.get("winner_state") == "absent_confirmed"
+                             and review.get("internal_decision") == "decline")
+    if (item.get("reason") in {"contractBreach", "signingRefusal"}
+            and context.get("winner_state") in {"unknown", "ambiguous", "unavailable"}
+            and not manual_winner_confirmed):
+        reasons.append("Подію визначення переможцем не підтверджено: потрібна перевірка provenance")
+    if (item.get("reason") in {"contractBreach", "signingRefusal"}
+            and not context.get("winner_selected_at") and not winner_absent_decline):
         reasons.append("Не визначено дату визначення переможцем")
     if item.get("reason") == "signingRefusal":
         missing_refusal = []
@@ -7690,6 +7866,7 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
                 raise ValueError("Оберіть активну уповноважену особу")
             values["assigned_officer_id"] = officer["id"] if officer else None
             values["assigned_officer"] = officer["full_name"] if officer else baseline.get("assigned_officer", "")
+        _validate_manual_winner_edit(values, baseline, completed_by, now)
         if ("decision_justification" in values and
                 values["decision_justification"] != normalize_justification_text(
                     baseline.get("decision_justification", ""))):
@@ -7746,7 +7923,8 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
     return {"review_status": "reviewed", "completed_at": now, "completed_by": completed_by}
 
 
-def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER) -> dict:
+def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER,
+                                *, prepare_only: bool = False) -> dict:
     # violation_report_detail performs the mandatory fail-closed fresh Prozorro read.
     require_local_violation_report_owned(report_id)
     item = violation_report_detail(report_id, refresh=True)
@@ -7784,6 +7962,12 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         log("violation_protocol_declension token=%s entity_type=%s source=%s status=%s original=%r",
             token, result.entity_type, result.source, result.status, result.original)
     rejected = violation_has_complete_rejection(context)
+    winner_absent_decline = (context.get("available") is True
+                             and context.get("winner_state") == "absent_confirmed"
+                             and review.get("internal_decision") == "decline")
+    rejection_absent = (context.get("available") is True
+                        and context.get("rejection_present") is False
+                        and not context.get("rejection_ambiguous"))
     values = {
         "protocol_number": gate["protocol_number"], "protocol_date": _protocol_date(gate["protocol_date"]),
         "report_id": str(item.get("report_id") or item.get("id") or ""),
@@ -7810,11 +7994,12 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "reason_label": reason_metadata.get("label", ""),
         "reason_text": reason_metadata.get("text", ""),
         "violation_description": str(item.get("description") or ""),
-        "winner_date": _protocol_date(context.get("winner_selected_at")),
+        "winner_date": "—" if winner_absent_decline else _protocol_date(context.get("winner_selected_at")),
         "supplier_deadline": _protocol_date((item.get("deadline_control") or {}).get("supplier_deadline")),
         "contract_deadline": _protocol_date(context.get("contract_deadline")),
-        "rejection_date": _protocol_date(context.get("rejection_date")),
-        "rejection_reason": str(context.get("rejection_title") or context.get("rejection_description") or ""),
+        "rejection_date": "—" if rejection_absent else _protocol_date(context.get("rejection_date")),
+        "rejection_reason": ("—" if rejection_absent else
+                             str(context.get("rejection_title") or context.get("rejection_description") or "")),
         "refusal_date": _protocol_date(review.get("written_refusal_date")),
         "refusal_outgoing_number": str(review.get("written_refusal_number") or ""),
         "refusal_document": str(review.get("written_refusal_url") or ""),
@@ -7838,6 +8023,8 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "has_supplier_response": bool(supplier_text),
         "has_supplier_documents": bool(supplier_documents),
     }
+    if prepare_only:
+        return {"item": item, "gate": gate, "values": values, "flags": flags}
     safe_report = safe_archive_name(str(item.get("report_id") or item.get("id")), "report")
     decision_name = "Попередження" if gate["protocol_type"] == "warning" else "Відмова"
     safe_customer = safe_archive_name(customer_name, "Замовник")[:48]
