@@ -296,9 +296,58 @@ class WinnerDecisionsTests(unittest.TestCase):
             {"awards": [first, later]}, self.report))
         self.assertEqual(winner_decisions.relevant_rejection(
             {"awards": [first, later]}, {**self.report, "rejection_award_id": "r1"})["id"], "r1")
-        self.assertEqual(winner_decisions.relevant_rejection(
+        selection = winner_decisions.rejection_selection(
             {"awards": [first, later]}, {**self.report,
-                                          "date_created": "2026-09-22T12:00:00+03:00"})["id"], "r1")
+                                          "date_created": "2026-09-22T12:00:00+03:00"})
+        self.assertTrue(selection["ambiguous"])
+        self.assertEqual(selection["candidate_ids"], ["r1", "r2"])
+
+    def test_two_real_late_rejection_fixtures_and_winner_stability(self):
+        cases = (
+            ("UA-D-2026-09-28-000003", "2026-09-28T11:30:28.828548+03:00",
+             "67428cb69cd04582972a2208f72efa9e", "2026-09-21T13:44:00+03:00",
+             "a7577944b8824a0b9b84de6cd66bee20", "2026-09-28T11:33:37.882743+03:00"),
+            ("UA-D-2026-09-25-000001", "2026-09-25T15:15:31.441565+03:00",
+             "5a57485c2052426091dd13c03ecb2c3f", "2026-09-24T12:18:44.456072+03:00",
+             "b89a345d8c7f433ba4f896b126fc4e15", "2026-09-29T09:20:17.335629+03:00"),
+        )
+        for report_id, created, winner_id, notice_at, rejection_id, rejection_at in cases:
+            with self.subTest(report_id=report_id):
+                winner = {**award(winner_id, "cancelled", notice=notice_at),
+                          "date": rejection_at}
+                rejected = {**award(rejection_id, "unsuccessful"), "qualified": False,
+                            "date": rejection_at}
+                report = {**self.report, "report_id": report_id, "date_created": created}
+                tender = {"id": report["tender_id"], "awards": [winner, rejected]}
+                historical = winner_decisions.historical_decision(
+                    tender, report, snapshot_at="synthetic")
+                selected = winner_decisions.rejection_selection(tender, report)
+                self.assertEqual(historical["award_id"], winner_id)
+                self.assertEqual(historical["decision_date"], notice_at[:10])
+                self.assertEqual(selected["award"]["id"], rejection_id)
+                self.assertFalse(selected["ambiguous"])
+
+    def test_rejection_scope_and_true_absence(self):
+        right = {**award("right", "unsuccessful", lot="lot-1"), "qualified": False}
+        other_supplier = {**award("other-supplier", "unsuccessful", "33333333", "lot-1"),
+                          "qualified": False}
+        other_lot = {**award("other-lot", "unsuccessful", lot="lot-2"),
+                     "qualified": False}
+        report = {**self.report, "lot_id": "lot-1"}
+        tender = {"id": report["tender_id"],
+                  "awards": [right, other_supplier, other_lot]}
+        self.assertEqual(winner_decisions.rejection_selection(tender, report)["award"]["id"],
+                         "right")
+        self.assertIsNone(winner_decisions.rejection_selection(
+            tender, {**report, "lot_id": "another-lot"})["award"])
+        self.assertTrue(winner_decisions.rejection_selection(
+            tender, {**report, "lot_id": ""})["ambiguous"])
+        self.assertTrue(winner_decisions.rejection_selection(
+            {**tender, "id": "other-tender"}, report)["ambiguous"])
+        absence = winner_decisions.rejection_selection(
+            {"awards": [award("winner", "active")]}, self.report)
+        self.assertIsNone(absence["award"])
+        self.assertFalse(absence["ambiguous"])
 
 
 if __name__ == "__main__":

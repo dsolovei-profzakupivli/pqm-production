@@ -6594,6 +6594,8 @@ def _display_legal_date(value) -> str:
 
 def violation_decision_template_key(report: dict, context: dict, review: dict | None = None) -> str:
     """Return only a legally approved template key; unsupported combinations have no draft."""
+    if context.get("rejection_ambiguous"):
+        return ""
     review = review or {}
     reason = report.get("reason") or ""
     decision = review.get("internal_decision") or ""
@@ -6702,6 +6704,8 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
 
 def violation_scenario_summary(report: dict, context: dict) -> str:
     """Derived officer-only acceptance hint; never persisted or sent to DOCX."""
+    if context.get("rejection_ambiguous"):
+        return "Відхилення: кілька відповідних рішень або не доведено identity; потрібна перевірка provenance."
     reason = report.get("reason")
     statements = report.get("defendant_statements") or []
     supplier_response_present = any(str(
@@ -6904,6 +6908,9 @@ def _violation_review_officer_presentation(review: dict | None) -> tuple[dict | 
 
 def violation_rules_engine(reason: str, context: dict, review: dict | None) -> dict:
     review = review or {}
+    if context.get("rejection_ambiguous") and reason != "signingRefusal":
+        return {"recommended_decision": None, "recommended_scenario": "rejection_ambiguous",
+                "recommendation_reason": "Кілька відповідних рішень про відхилення; потрібна перевірка конкретного рішення."}
     if reason == "contractBreach":
         if not context.get("rejection_present"):
             return {"recommended_decision": None, "recommended_scenario": "review_without_rejection",
@@ -6973,7 +6980,25 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
                             else None) or (historical or {}).get("decision_datetime")
                            or (historical or {}).get("decision_date"))
     current_winner = winner_decisions.current_winner_state(tender, report)
-    rejected = winner_decisions.relevant_rejection(tender, report)
+    rejection_selection = winner_decisions.rejection_selection(tender, report)
+    rejected = rejection_selection["award"]
+    rejection_provenance = ({
+        "source_type": "current_tender_award",
+        "tender_id": tender_id,
+        "award_id": rejected.get("id"),
+        "status": rejected.get("status"),
+        "qualified": rejected.get("qualified"),
+        "rejection_datetime": rejected.get("date"),
+        "title": rejected.get("title"),
+        "description": rejected.get("description"),
+        "documents": (rejected.get("documents") or []),
+        "supplier_codes": sorted(str((supplier.get("identifier") or {}).get("id") or "")
+                                 for supplier in rejected.get("suppliers") or []),
+        "lot_id": rejected.get("lotID"),
+        "contract_ids": sorted(str(contract.get("id") or "")
+                               for contract in tender.get("contracts") or []
+                               if str(contract.get("awardID") or "") == str(rejected.get("id") or "")),
+    } if rejected else None)
     rejection_protocol_document = winner_decisions.protocol_document(rejected or {})
     rejection_electronic_url = winner_decisions.electronic_protocol_url(
         tender_id, (rejected or {}).get("id"),
@@ -7022,6 +7047,15 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         "active_winner": current_winner["active_winner"],
         "winner_award_status": (winner or {}).get("status"),
         "rejection_present": bool(rejected), "rejection_award_id": (rejected or {}).get("id"),
+        "rejection_ambiguous": rejection_selection["ambiguous"],
+        "rejection_ambiguity_reason": rejection_selection["reason"],
+        "rejection_candidate_ids": rejection_selection["candidate_ids"],
+        "rejection_status": (rejected or {}).get("status"),
+        "rejection_qualified": (rejected or {}).get("qualified"),
+        "rejection_datetime": (rejected or {}).get("date"),
+        "rejection_date_display": (_display_legal_date(rejected.get("date")) if rejected
+                                   else None if rejection_selection["ambiguous"] else "—"),
+        "rejection_provenance": rejection_provenance,
         "rejection_date": (rejected or {}).get("date"), "rejection_title": (rejected or {}).get("title"),
         "rejection_description": (rejected or {}).get("description"),
         "rejection_documents": _documents_without_signature((rejected or {}).get("documents") or []),
@@ -7606,6 +7640,8 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
     if not date:
         reasons.append("Не введено дату протоколу")
     context = item.get("procurement_context") or {}
+    if context.get("rejection_ambiguous"):
+        reasons.append("Неоднозначне рішення про відхилення: потрібна перевірка provenance")
     rejected = violation_has_complete_rejection(context)
     if not context.get("available"):
         reasons.append("Не отримано актуальні відомості закупівлі")

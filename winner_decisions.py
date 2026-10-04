@@ -166,32 +166,38 @@ def current_winner_state(tender, report):
 
 
 def relevant_rejection(tender, report):
-    """Never bind a protocol to an arbitrary later/latest rejection award."""
-    candidates = [award for award in relevant_awards(tender, report)
+    """Return only a uniquely evidenced review-time rejection award."""
+    return rejection_selection(tender, report)["award"]
+
+
+def rejection_selection(tender, report):
+    """Distinguish absent, selected, and ambiguous current rejection evidence."""
+    if tender.get("id") and report.get("tender_id") and str(tender["id"]) != str(report["tender_id"]):
+        return {"award": None, "ambiguous": True, "candidate_ids": [],
+                "reason": "tender_identity_mismatch"}
+    scoped_awards = relevant_awards(tender, report)
+    candidates = [award for award in scoped_awards
                   if award.get("status") == "unsuccessful" and award.get("qualified") is False]
+    supplier = re.sub(r"\D", "", str(report.get("defendant_code") or ""))
+    supplier_awards = [award for award in tender.get("awards") or []
+                       if supplier and supplier in _supplier_codes(award)]
+    if not scoped_awards and len({str(award.get("lotID") or "")
+                                  for award in supplier_awards}) > 1:
+        unresolved = [award for award in supplier_awards
+                      if award.get("status") == "unsuccessful" and award.get("qualified") is False]
+        return {"award": None, "ambiguous": bool(unresolved),
+                "candidate_ids": sorted(str(award.get("id") or "") for award in unresolved),
+                "reason": "lot_identity_unresolved"}
     explicit = str(report.get("rejection_award_id") or "")
     if explicit:
-        return next((award for award in candidates
-                     if str(award.get("id") or "") == explicit), None)
-    report_at_raw = report.get("date_created") or report.get("date_published")
-    if report_at_raw:
-        try:
-            report_at = datetime.fromisoformat(str(report_at_raw).replace("Z", "+00:00"))
-            candidates = [award for award in candidates
-                          if not award.get("date") or _not_after(award["date"], report_at)]
-        except (TypeError, ValueError):
-            pass
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _not_after(value, boundary):
-    try:
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if moment.date() > boundary.date():
-            return False
-        return not (moment.tzinfo and boundary.tzinfo and moment > boundary)
-    except (TypeError, ValueError):
-        return False
+        candidates = [award for award in candidates if str(award.get("id") or "") == explicit]
+        if not candidates:
+            return {"award": None, "ambiguous": True, "candidate_ids": [explicit],
+                    "reason": "explicit_award_not_verified"}
+    return {"award": candidates[0] if len(candidates) == 1 else None,
+            "ambiguous": len(candidates) > 1,
+            "candidate_ids": sorted(str(award.get("id") or "") for award in candidates),
+            "reason": "multiple_matching_awards" if len(candidates) > 1 else ""}
 
 
 def _strictly_before(first, second):
