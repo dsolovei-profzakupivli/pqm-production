@@ -1512,7 +1512,7 @@ class ViolationReportTests(unittest.TestCase):
         report = {"reason": "goodsNonCompliance", "defendant_statements": []}
         recommendation = {"recommended_decision": "decline"}
         draft = server.build_violation_decision_justification(
-            report, {}, {"internal_decision": "", "court_decision_final_present": False})
+            report, {}, {"internal_decision": "decline", "court_decision_final_present": False})
         item = {**report, "recommendation": recommendation,
                 "procurement_context": {"available": True},
                 "deadline_control": {"supplier_ready": True},
