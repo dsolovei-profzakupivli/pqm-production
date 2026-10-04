@@ -34,6 +34,7 @@ def main():
         ["node", "validation/sandbox_prozorro_ui.cjs"],
         ["node", "validation/sandbox_appeals_refresh_ui.cjs"],
         ["node", "validation/sandbox_appeals_declension_ui.cjs"],
+        ["node", "validation/sandbox_appeals_contract_controls_ui.cjs"],
         [sys.executable, "-m", "unittest", "discover", "-s",
          "validation/local_release_20260911", "-p", "test_sandbox_*.py"],
         ["node", "validation/sandbox_google_docs_picker_ui.cjs"],

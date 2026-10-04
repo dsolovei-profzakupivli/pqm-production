@@ -384,7 +384,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertNotIn("getDay(", renderer)
         self.assertNotIn("new Date(c.day_5", renderer)
 
-    def test_contract_checkbox_visibility_uses_complete_rejection_facts(self):
+    def test_contract_checkbox_visibility_uses_backend_business_flag(self):
         self.assertFalse(server.violation_has_complete_rejection({}))
         self.assertFalse(server.violation_has_complete_rejection({
             "rejection_date": "2026-09-01", "rejection_title": ""}))
@@ -395,7 +395,8 @@ class ViolationReportTests(unittest.TestCase):
         source = (server.ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("function violationHasCompleteRejection(context={})", source)
         self.assertIn("context.rejection_date&&String(context.rejection_reason||context.rejection_title||context.rejection_description||'').trim()", source)
-        self.assertIn("const contractState=violationHasCompleteRejection(c)?'':", source)
+        self.assertIn("const contract=c.contract_info_required===true?", source)
+        self.assertIn("const extension=item.reason==='contractBreach'?", source)
 
     # These four tests isolate review/persistence, not the separately tested name gate.
     @patch.object(server, "violation_protocol_declensions", lambda _: [])
@@ -1492,6 +1493,8 @@ class ViolationReportTests(unittest.TestCase):
         self.assertIn("Дата укладення договору", p1)
         self.assertIn("Забезпечення виконання договору", p1)
         self.assertIn("violationContractSigned", p1)
+        self.assertIn("violationContractSigned", source)
+        self.assertIn("c.contract_info_required===true", source)
         self.assertNotIn("Письмова відмова", p1)
         self.assertNotIn("Рішення суду", p1)
 
