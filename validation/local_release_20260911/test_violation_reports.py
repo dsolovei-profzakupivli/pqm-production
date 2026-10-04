@@ -2115,7 +2115,8 @@ class ViolationReportTests(unittest.TestCase):
         self.assertNotIn("Дата звернення замовника</small>", p2)
         self.assertIn("rejectionDate", p2)
         self.assertIn("rejectionGround", p2)
-        self.assertIn("c.contract_info_required===true", source)
+        self.assertIn("context.contract_info_required!==true", source)
+        self.assertIn("context.rejection_present===true", source)
         self.assertNotIn("Письмова відмова", p1)
         self.assertNotIn("Рішення суду", p1)
 
