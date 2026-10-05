@@ -21,10 +21,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: d3242603646b1b169b666ef8f30d4574aa4f6252
       - name: Record tested revision
         run: |
           mkdir -p ci-evidence
           git rev-parse HEAD > ci-evidence/tested-sha.txt
+          test "$(git rev-parse HEAD)" = "d3242603646b1b169b666ef8f30d4574aa4f6252"
           printf 'PR checks test the merge revision; promotion requires the final deployed SHA.\n' > ci-evidence/scope.txt
       - name: Build release image
         shell: bash
@@ -73,6 +75,23 @@ jobs:
             scripts/pqm-google-writer/sandbox-full-apply.test.cjs \
             scripts/pqm-google-writer/sandbox-expanded-change-audit.test.cjs \
             2>&1 | tee ci-evidence/daily-sync.log
+      - name: Run exact-SHA canonical SANDBOX officer JS contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node \
+            -e PQM_PYTHON=python3 pqm-ci:tested \
+            --test scripts/pqm-google-writer/sandbox-temporal-guard.test.cjs \
+            scripts/pqm-google-writer/sandbox-result-ui.test.cjs \
+            2>&1 | tee ci-evidence/canonical-officer-js.log
+      - name: Run exact-SHA canonical SANDBOX officer round-trip contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python pqm-ci:tested \
+            -B -m unittest discover -s validation/local_release_20260911 \
+            -p test_sandbox_canonical_officer.py -v \
+            2>&1 | tee ci-evidence/canonical-officer-round-trip.log
       - name: Run delivered regression suite
         shell: bash
         run: |
