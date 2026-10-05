@@ -238,6 +238,21 @@ test('blank PQM C/H are preserved by the controlled request builder', () => {
   assert.deepEqual(Array.from(selected.planned_columns), ['F']);
   assert.equal(f.writes, 0);
 });
+test('SANDBOX canonical sandbox officer can be physically written to mock L without changing historical date', () => {
+  const f = fixture();
+  f.body.items[0].verification_date = '2026-07-22';
+  f.body.items[0].verification_officer = '';
+  const preview = f.context.pqmSandboxControlledPreview();
+  f.setPrompts([response(preview.selected.map(x => x.supplier_code).join(',')), response(preview.plan_digest)]);
+  f.setConfirmation('YES');
+  const report = f.context.pqmSandboxControlledApply();
+  assert.equal(report.verification_passed, true);
+  const officerWrites = f.requests.filter(r => r.updateCells.range.startColumnIndex === 11);
+  assert.ok(officerWrites.some(r => r.updateCells.rows[0].values[0].userEnteredValue.stringValue === 'Тестова УО SANDBOX'));
+  const dates = f.requests.filter(r => r.updateCells.range.startColumnIndex === 8);
+  assert.ok(dates.some(r => r.updateCells.rows[0].values[0].userEnteredValue.numberValue === f.context.pqmGoogleDate_('2026-07-22')));
+  assert.equal(f.body.items[0].verification_officer, '');
+});
 
 test('AFTER verification detects a changed unowned cell', () => {
   const f = fixture();

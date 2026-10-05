@@ -223,8 +223,9 @@ test('I/L move only as a valid chronological pair, never from H', () => {
   assert.equal(plan.changes.length, 0);
   plan = context.pqmGooglePlan_(body([item({last_application_date: '2026-09-22',
     verification_date: '2026-09-23', verification_officer: null})]), fixture);
-  assert.equal(plan.counts.conflicts, 1);
-  assert.equal(plan.changes.length, 0);
+  assert.equal(plan.counts.conflicts, 0);
+  assert.equal(plan.changes[0].cells[8], context.pqmGoogleDate_('2026-09-23'));
+  assert.equal(plan.changes[0].cells[11], 'Тестова УО SANDBOX');
   plan = context.pqmGooglePlan_(body([item({verification_date: '2026-09-23',
     verification_officer: 'new officer'})]), fixture);
   assert.deepEqual(Object.keys(plan.changes[0].cells), ['8', '11']);

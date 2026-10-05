@@ -596,7 +596,20 @@ def _protected_factual_at_or_after(ledger: list[dict], day: str) -> str:
     return max(protected)[2] if protected else ""
 
 
-def build_preview(con, snapshot: dict) -> dict:
+def canonical_sandbox_officer(con) -> str:
+    """Read an existing active SANDBOX identity; never create an officer/user."""
+    if not _table_exists(con, "auth_users") or not _table_exists(con, "authorized_officers"):
+        return ""
+    rows = con.execute("""SELECT o.full_name FROM auth_users u
+      JOIN authorized_officers o ON o.id=u.officer_id
+      WHERE u.username='sandbox.officer' AND u.active=1 AND u.role='officer'
+        AND o.active=1 AND o.role='УО'""").fetchall()
+    if len(rows) != 1 or normalize_person(rows[0][0]) != normalize_person("Тестова УО SANDBOX"):
+        return ""
+    return rows[0][0]
+
+
+def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
     """Return a factual field-level diff without issuing any SQL write."""
     rows = snapshot["rows"]
     eligible = _eligible_codes(con)
@@ -634,6 +647,9 @@ def build_preview(con, snapshot: dict) -> dict:
         "google_mirror_updates", "google_mirror_clears",
     )}
     summary["total_rows"] = len(rows)
+    sandbox_officer = canonical_sandbox_officer(con) if sandbox_mode else ""
+    if sandbox_mode:
+        summary["sandbox_historical_officer_normalizations"] = 0
     items, conflicts = [], []
     for raw in rows:
         incoming = source_item(raw); code = incoming["supplier_code"]
@@ -652,6 +668,18 @@ def build_preview(con, snapshot: dict) -> dict:
         incoming_day = incoming["edr_checked_at"]
         current_day = current.get("verification_date", "")
         current_officer = current.get("verification_officer_raw", "")
+        sandbox_officer_incoming = bool(sandbox_mode and
+            normalize_person(incoming["edr_officer"]) == normalize_person("Тестова УО SANDBOX"))
+        if sandbox_officer_incoming and not sandbox_officer:
+            row_conflicts.append("sandbox_officer_identity_unavailable")
+        historical_normalization = bool(sandbox_officer_incoming and sandbox_officer
+            and incoming_day and incoming_day == current_day and not clean(current_officer))
+        if historical_normalization:
+            summary["sandbox_historical_officer_normalizations"] += 1
+            # The date is the SAME existing observation. Google L normalization
+            # does not turn it into a new check or retroactively assign its author.
+            incoming["historical_normalization_officer"] = sandbox_officer
+            incoming["edr_officer"] = current_officer
         if not incoming_day:
             verification_decision = "blank_verification_preserved"
         elif current_day and incoming_day < current_day:
@@ -720,12 +748,14 @@ def build_preview(con, snapshot: dict) -> dict:
             and not protected_status and incoming["edr_status"]
             and (not _same("edr_status", old.get("edr_status"), incoming["edr_status"])
                  or incoming["edr_status"] in LEGACY_GOOGLE_FACTUAL_STATUSES))
-        event_changed = bool((pair_accepted or same_day_status_evidence)
+        event_changed = bool(not historical_normalization and (pair_accepted or same_day_status_evidence)
                              and incoming["edr_checked_at"] and incoming["edr_officer"]
                              and not _event_exists(con, code, snapshot_hash))
         if event_changed:
             summary["verification_event_changes"] += 1
         evidence_changes = any(field not in (*termination_fields, "edr_notes") for field in changes) or event_changed
+        if historical_normalization and evidence_changes:
+            row_conflicts.append("historical_normalization_cannot_attest_factual_changes")
         if evidence_changes and not incoming["edr_checked_at"]:
             row_conflicts.append("changed_values_without_verification_date")
         if evidence_changes and not incoming["edr_officer"]:
@@ -750,6 +780,7 @@ def build_preview(con, snapshot: dict) -> dict:
                       "manager_conflicting_evidence": manager_classification["conflicting_evidence"],
                       "termination_explicit_clear": explicit_clear, "snapshot_hash": snapshot_hash,
                       "verification_decision": verification_decision,
+                      "sandbox_historical_officer_normalization": historical_normalization,
                       "current_verification_date": current_day,
                       "current_verification_officer": current_officer,
                       "current_profile": old, "current_manager_name": current_manager,
@@ -1282,7 +1313,8 @@ def preview_state_digest(preview: dict) -> str:
 def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, actor: str,
           synced_at: str, sync_manager=None, enrich_manager=None, establish_manager=None,
           reestablish_manager=None,
-          refresh_manager_controls=None, expected_state_digest: str | None = None) -> dict:
+          refresh_manager_controls=None, expected_state_digest: str | None = None,
+          sandbox_mode: bool = False) -> dict:
     """Apply only a confirmed, unchanged snapshot; caller owns the transaction."""
     if not confirmed:
         raise PermissionError("Потрібне явне підтвердження застосування preview")
@@ -1290,7 +1322,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
         raise ValueError("Некоректний source fingerprint")
     if snapshot["source_fingerprint"] != expected_fingerprint:
         raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
-    preview = build_preview(con, snapshot)
+    preview = build_preview(con, snapshot, sandbox_mode=sandbox_mode)
     if expected_state_digest is not None and preview_state_digest(preview) != expected_state_digest:
         raise RuntimeError("PQM state changed after reviewed preview")
     if preview["conflicts"]:

@@ -4614,7 +4614,7 @@ def supplier_edr_sync_preview() -> dict:
     """Return every planned change for explicit, mutation-free operator review."""
     snapshot = supplier_edr_source_snapshot()
     with db() as con:
-        preview = edr_sync_v2.build_preview(con, snapshot)
+        preview = edr_sync_v2.build_preview(con, snapshot, sandbox_mode=SANDBOX_MODE)
         changes = con.total_changes
     if SANDBOX_MODE:
         details = sandbox_edr_review.details(preview)
@@ -4677,6 +4677,7 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                 reestablish_manager=reestablish_current_supplier_manager,
                 refresh_manager_controls=refresh_current_submission_nazk_controls,
                 expected_state_digest=expected_state_digest,
+                sandbox_mode=SANDBOX_MODE,
             )
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,
               inserted=?,updated=?,source_fingerprint=?,unchanged=?,details_json=? WHERE id=?""",
@@ -11340,7 +11341,7 @@ class Handler(BaseHTTPRequestHandler):
                 if current_source["source_fingerprint"] != fingerprint:
                     return self.send_json({"error": "Google source змінився; виконайте новий Preview"}, 409)
                 with db() as con:
-                    current_plan = edr_sync_v2.build_preview(con, current_source)
+                    current_plan = edr_sync_v2.build_preview(con, current_source, sandbox_mode=SANDBOX_MODE)
                 if (edr_sync_v2.preview_state_digest(current_plan) != state_digest
                         or current_plan["conflicts"]):
                     return self.send_json({"error": "Стан PQM змінився або є конфлікти; виконайте новий Preview"}, 409)
