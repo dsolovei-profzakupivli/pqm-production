@@ -14,6 +14,7 @@ import legacy_google_factual_edr_preview
 import legacy_google_termination_audit
 import legacy_google_termination_import
 import edr_sync_v2
+import supplier_evidence_shadow_hooks_v3 as evidence_shadow
 import sandbox_edr_review
 import prod_google_baseline
 import edr_sync_review
@@ -1742,6 +1743,7 @@ def save_framework(item: dict) -> bool:
     if organizer != ORGANIZER_EDRPOU:
         return False
     with db() as con:
+        shadow_previous = evidence_shadow.capture_framework(con, item["id"])
         con.execute("""INSERT INTO frameworks
           (id,pretty_id,title,dk_code,status,organizer_edrpou,agreement_id,date_modified,raw_json,synced_at)
           VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -1758,6 +1760,8 @@ def save_framework(item: dict) -> bool:
         con.execute("""UPDATE framework_service_directory SET framework_id=?
           WHERE pretty_id=? AND framework_id IS NULL""",
           (item["id"], item.get("prettyID", "")))
+        evidence_shadow.framework_written(con, item=item, previous=shadow_previous,
+            recorded_at=now_iso())
     return True
 
 
@@ -1808,6 +1812,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
     submission_count = qualification_count = contract_count = 0
     experience_submission_ids = []
     newly_active_qualification_ids = set()
+    shadow_application_decisions = []
     with db() as con:
         submissions_cursor = resource_cursor(framework_id, "submissions") if incremental else None
         for batch in scoped_pages(framework_id, "submissions", submissions_cursor):
@@ -1904,6 +1909,11 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                 if (item.get("status") == "active" and
                         (previous_qualification is None or previous_qualification[0] != "active")):
                     newly_active_qualification_ids.add(item["id"])
+                if (item.get("status") in {"active", "unsuccessful"}
+                        and (previous_qualification is None or previous_qualification[0] != item.get("status"))):
+                    if evidence_shadow.enabled():
+                        shadow_application_decisions.append((item.get("submissionID", ""),
+                            "admit" if item["status"] == "active" else "reject"))
                 qualification_count += 1
         agreement_id = framework.get("agreementID", "")
         if agreement_id:
@@ -1911,6 +1921,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
             for batch in paginated_pages(f"{API_ROOT}/agreements/{agreement_id}/contracts", contracts_cursor):
                 for item in batch:
                     supplier = (item.get("suppliers") or [{}])[0]
+                    shadow_previous = evidence_shadow.capture_contract(con, item, now_iso())
                     previous_contract = con.execute(
                         "SELECT status,qualification_id FROM registry_contracts WHERE id=?",
                         (item["id"],)).fetchone()
@@ -1929,12 +1940,18 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                             (previous_contract is None or previous_contract[0] != "active" or
                              previous_contract[1] != item.get("qualificationID", ""))):
                         edr_sync_v2.materialize_effective_admission(con, item["id"], now_iso())
+                    evidence_shadow.contract_written(con, item=item,
+                        previous=shadow_previous, recorded_at=now_iso())
                     contract_count += 1
         for qualification_id in newly_active_qualification_ids:
             for contract in con.execute(
                     "SELECT id FROM registry_contracts WHERE qualification_id=? AND status='active'",
                     (qualification_id,)).fetchall():
                 edr_sync_v2.materialize_effective_admission(con, contract[0], now_iso())
+        # Project admissions only after all source contracts have been persisted;
+        # an intermediate qualification-only snapshot is not a lifecycle gap.
+        for submission_id, outcome in shadow_application_decisions:
+            evidence_shadow.application_decision(con, submission_id, outcome, now_iso())
     enqueue_contract_experience_search(experience_submission_ids)
     return {"framework": framework.get("prettyID"), "submissions": submission_count, "qualifications": qualification_count, "contracts": contract_count}
 

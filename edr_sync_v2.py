@@ -15,6 +15,7 @@ import unicodedata
 from datetime import date, datetime
 
 import supplier_activity
+import supplier_evidence_shadow_hooks_v3 as evidence_shadow
 
 
 SHEETS = ("ФОП", "ЮО")
@@ -1159,6 +1160,10 @@ def _insert_event(con, *, item: dict, event_type: str, occurred_at: str, officer
        item.get("source_submission_id", ""),
        item.get("source_sheet", ""), int(item.get("source_row") or 0),
        json.dumps(changed_fields, ensure_ascii=False), digest, payload, created_at))
+    if cursor.rowcount:
+        evidence_shadow.verification(con, source_id=cursor.lastrowid, item=item,
+            event_type=event_type, occurred_at=occurred_at, officer=officer,
+            recorded_at=created_at, snapshot=snapshot)
     return bool(cursor.rowcount)
 
 

@@ -163,6 +163,11 @@ def create(con,items,document_payload,directory,builder,user):
         con.execute('''UPDATE application_fields SET generated_protocol_number=?,generated_protocol_date=?,
           generated_protocol_decision=protocol_decision,protocol_generated_at=? WHERE submission_id=?''',(number,date,created,item['id']))
         audit(con,item['id'],user,'formed_protocol_created','',pid)
+    # Shadow is default OFF; uses the same caller-owned transaction after all
+    # legacy members/markers have succeeded. No source dates come from protocol.
+    import supplier_evidence_shadow_hooks_v3 as evidence_shadow
+    for item in items:
+        evidence_shadow.application_decision(con,item['id'],item['protocol_decision'],created)
     return {'generated':True,'protocol_id':pid,'protocol_number':number,'protocol_date':date,'total':len(items),
             'admitted':admitted,'rejected':rejected,'filename':filename,'download_url':'/api/protocol/formed/'+pid+'/download'}
 
