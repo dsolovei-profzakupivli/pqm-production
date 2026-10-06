@@ -2,7 +2,12 @@
 import copy
 import sqlite3
 import unittest
+import json
+import inspect
+import tracemalloc
+from unittest.mock import patch
 from tools import supplier_evidence_shadow_v3 as shadow
+from tools import supplier_evidence_shadow_v3_stage2b as stage2b
 import supplier_evidence_v3 as v3
 
 
@@ -16,6 +21,65 @@ def bundle():
 
 
 class ShadowTests(unittest.TestCase):
+    def test_stage2a_cohort_and_sample_limits_fail_before_reads(self):
+        with patch.object(shadow,"read_bundle",side_effect=AssertionError("must not read")):
+            with self.assertRaisesRegex(ValueError,"cohort_limit"):
+                shadow.stage_2a(None,{"too_many":[str(n) for n in range(38)]},"2026-10-05")
+            with self.assertRaisesRegex(ValueError,"sample_limit"):
+                shadow.stage_2a(None,{"suspended":[str(n) for n in range(6)]},"2026-10-05")
+
+    def test_stage2a_no_old_population_projection_and_one_code_at_a_time(self):
+        calls=[]
+        def read(con,codes):
+            calls.append(codes)
+            data=bundle(); data["codes"]=codes
+            for key in ("applications","contracts","profiles"):
+                data[key][0]["supplier_code"]=codes[0]
+            return data
+        with patch.object(shadow,"read_bundle",side_effect=read), patch.object(
+                shadow.old,"current_verification_projections",side_effect=AssertionError("old projection forbidden")):
+            output=shadow.stage_2a(None,{"twelve":shadow.CONTROLS,"nine":shadow.NINE},"2026-10-05")
+        self.assertTrue(all(len(c)==1 for c in calls))
+        self.assertEqual(len(calls),21)
+        self.assertNotIn("verification_history",json.dumps(output))
+        self.assertNotIn("factual_snapshot",json.dumps(output))
+        source=inspect.getsource(shadow.main)
+        self.assertNotIn("population=",source)
+        self.assertNotIn("_edr_monitoring_rows",source)
+        self.assertNotIn("current_verification_projections",source)
+
+    def test_source_budget_rejects_oversized_snapshot_before_fetch(self):
+        con=memory_fixture(1)
+        con.execute("UPDATE supplier_edr_verification_events SET snapshot_json=?",("x"*(shadow.MAX_SOURCE_BYTES+1),))
+        with self.assertRaisesRegex(ValueError,"source_budget_exceeded"):
+            shadow.read_bundle(con,["synthetic-0"])
+        con.close()
+
+    def test_stage2b_rejects_any_render_environment_before_opening_db(self):
+        with patch.dict("os.environ",{"RENDER_SERVICE_ID":shadow.SANDBOX_ID}), patch.object(stage2b.sqlite3,"connect",side_effect=AssertionError("must not open")):
+            with self.assertRaisesRegex(SystemExit,"offline only"):
+                stage2b.main()
+
+    def test_local_memory_profile_bounded_by_cohort_not_population(self):
+        con=memory_fixture(500)
+        peaks={}
+        for count in (1,12,37):
+            tracemalloc.start()
+            result=shadow.stage_2a(con,{"synthetic":["synthetic-"+str(i) for i in range(count)]},"2026-10-05")
+            _,peak=tracemalloc.get_traced_memory(); tracemalloc.stop()
+            peaks[str(count)]=peak
+            self.assertEqual(len(result["rows"]),count)
+            self.assertLess(peak,8*1024*1024)
+            del result
+        tracemalloc.start()
+        result=stage2b.benchmark(con,("synthetic-"+str(i) for i in range(500)),"2026-10-05")
+        _,peak=tracemalloc.get_traced_memory();tracemalloc.stop()
+        peaks["full_500_streamed_stage2b"]=peak
+        self.assertEqual(result["suppliers"],500)
+        self.assertLess(peak,8*1024*1024)
+        print("LOCAL_PYTHON_PEAK_BYTES="+json.dumps(peaks,sort_keys=True))
+        con.close()
+
     def test_stale_profile_does_not_win_and_submission_date_used(self):
         data=bundle(); before=copy.deepcopy(data)
         r=shadow.evaluate(data,"2026-10-05")["rows"][0]
@@ -56,15 +120,38 @@ class ShadowTests(unittest.TestCase):
         con.executescript('''CREATE TABLE submissions(id,supplier_code,date_published,supplier_name,qualification_id);
         CREATE TABLE application_fields(submission_id,protocol_officer,protocol_date);
         CREATE TABLE qualifications(id,submission_id,status,decision_date,synced_at);
-        CREATE TABLE registry_contracts(id,supplier_code,framework_id,qualification_id,status);
+        CREATE TABLE registry_contracts(id,supplier_code,framework_id,qualification_id,status,milestones_json);
         CREATE TABLE frameworks(id,status,raw_json);
-        CREATE TABLE supplier_edr_verification_events(supplier_code);
+        CREATE TABLE supplier_edr_verification_events(id,supplier_code,event_type,occurred_at,officer,source,snapshot_json,source_sheet,source_row,snapshot_hash);
         CREATE TABLE supplier_edr_profiles(supplier_code,edr_status);
         INSERT INTO supplier_edr_profiles VALUES('wanted','Зареєстровано'),('other','Неактуально');''')
         data=shadow.read_bundle(con,["wanted"])
         self.assertEqual([r["supplier_code"] for r in data["profiles"]],["wanted"])
         self.assertEqual(data["codes"],["wanted"])
         con.close()
+
+
+def memory_fixture(count):
+    con=sqlite3.connect(":memory:");con.row_factory=sqlite3.Row
+    con.executescript('''CREATE TABLE submissions(id,supplier_code,date_published,supplier_name,qualification_id);
+    CREATE TABLE application_fields(submission_id,protocol_officer,protocol_date);
+    CREATE TABLE qualifications(id,submission_id,status,decision_date,synced_at);
+    CREATE TABLE registry_contracts(id,supplier_code,framework_id,qualification_id,status,milestones_json,raw_json);
+    CREATE TABLE frameworks(id,status,raw_json);
+    CREATE TABLE supplier_edr_verification_events(id,supplier_code,event_type,occurred_at,officer,source,snapshot_json,source_sheet,source_row,snapshot_hash);
+    CREATE TABLE supplier_edr_profiles(supplier_code,edr_status);''')
+    for i in range(count):
+        code="synthetic-"+str(i)
+        con.execute("INSERT INTO submissions VALUES(?,?,?,?,?)",(code,code,"2026-09-18",code,code))
+        con.execute("INSERT INTO qualifications VALUES(?,?,?,?,?)",(code,code,"active","2026-09-18","2026-09-18"))
+        con.execute("INSERT INTO application_fields VALUES(?,?,?)",(code,"Тетяна ФЕДЧЕНКО",""))
+        con.execute("INSERT INTO registry_contracts VALUES(?,?,?,?,?,?,?)",(code,code,code,code,"active","[]","unused"*1000))
+        con.execute("INSERT INTO frameworks VALUES(?,?,?)",(code,"active",json.dumps({"unneeded":"z"*4000})))
+        con.execute("INSERT INTO supplier_edr_profiles VALUES(?,?)",(code,"Неактуально"))
+        for n in range(5):
+            snap=json.dumps({"edr_status":"Зареєстровано","notes":"n"*512})
+            con.execute("INSERT INTO supplier_edr_verification_events VALUES(?,?,?,?,?,?,?,?,?,?)",(i*5+n,code,"manual_edr","2026-09-"+str(20+n),"Тетяна ФЕДЧЕНКО","manual",snap,None,None,"hash"))
+    return con
 
 
 if __name__=="__main__":unittest.main()

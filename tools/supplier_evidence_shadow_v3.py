@@ -23,6 +23,9 @@ import edr_sync_v2 as old
 CONTROLS = "2077003493 2886810864 2981518432 3385014935 3602006515 3618208369 3624813159 30795712 39984849 41141768 45547692 46120124".split()
 NINE = "45054758 45088216 45101776 32800996 33860155 23098585 01756131 38229721 45431261".split()
 SANDBOX_ID = "srv-dalfd77f3r2c7392uub0"
+MAX_COHORT_CODES = 37  # 12 + 1 + 9 + 3*5; duplicates only reduce this.
+MAX_SOURCE_ROWS = 2000
+MAX_SOURCE_BYTES = 2 * 1024 * 1024  # per supplier; fail, NEVER truncate evidence.
 
 
 def decoded(value):
@@ -36,6 +39,8 @@ def read_bundle(con, codes):
     """All business reads are restricted to the requested literal codes."""
     started = perf_counter()
     codes = list(dict.fromkeys(codes))
+    if len(codes) > MAX_COHORT_CODES:
+        raise ValueError("cohort_limit_exceeded: full population is Stage 2B only")
     if not codes:
         return {"codes": [], "applications": [], "contracts": [], "ledger": [],
                 "profiles": [], "db_read_ms": 0}
@@ -54,15 +59,24 @@ def read_bundle(con, codes):
                 CASE qx.status WHEN 'active' THEN 3 WHEN 'unsuccessful' THEN 2 ELSE 1 END DESC,
                 COALESCE(NULLIF(qx.decision_date,''),qx.synced_at) DESC,qx.id DESC LIMIT 1),s.qualification_id)
               WHERE s.supplier_code IN ({marks})""",
-            "contracts": f"""SELECT rc.*,f.status framework_status,f.raw_json framework_raw_json,
+            "contracts": f"""SELECT rc.id,rc.supplier_code,rc.status,rc.milestones_json,
+              f.status framework_status,
+              json_object('qualificationPeriod',json_object('endDate',
+                json_extract(f.raw_json,'$.qualificationPeriod.endDate'))) framework_raw_json,
               q.decision_date qualification_date
               FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
               LEFT JOIN qualifications q ON q.id=rc.qualification_id
               WHERE rc.supplier_code IN ({marks})""",
-            "ledger": f"SELECT * FROM supplier_edr_verification_events WHERE supplier_code IN ({marks})",
-            "profiles": f"SELECT * FROM supplier_edr_profiles WHERE supplier_code IN ({marks})",
+            "ledger": f"SELECT id,supplier_code,event_type,occurred_at,officer,source,snapshot_json,source_sheet,source_row,snapshot_hash FROM supplier_edr_verification_events WHERE supplier_code IN ({marks})",
+            "profiles": f"SELECT supplier_code,edr_status FROM supplier_edr_profiles WHERE supplier_code IN ({marks})",
         }
         for key, sql in statements.items():
+            # Check projected byte sizes IN SQLite before fetching any large JSON.
+            sizes = [r[0] for r in con.execute("SELECT * FROM ("+sql+") LIMIT 0", batch).description]
+            size_expr = "+".join('COALESCE(length(CAST("'+name+'" AS BLOB)),0)' for name in sizes)
+            count, size = con.execute("SELECT COUNT(*),COALESCE(SUM("+size_expr+"),0) FROM ("+sql+")", batch).fetchone()
+            if count > MAX_SOURCE_ROWS or size > MAX_SOURCE_BYTES:
+                raise ValueError("source_budget_exceeded:"+key+"; evidence not truncated")
             result[key].extend(dict(r) for r in con.execute(sql, batch))
     result["db_read_ms"] = round((perf_counter()-started)*1000, 3)
     return result
@@ -186,6 +200,46 @@ def evaluate(bundle, as_of, canonical_officer="", lifecycle_officers=None):
     return {"rows":result,"resolver_ms":round((perf_counter()-started)*1000,3),"db_read_ms":bundle["db_read_ms"]}
 
 
+def stage_2a(con, cohorts, as_of, canonical=""):
+    """Bounded control-only run. Source and full projection live for ONE code."""
+    codes = list(dict.fromkeys(code for values in cohorts.values() for code in values))
+    if len(codes) > MAX_COHORT_CODES:
+        raise ValueError("cohort_limit_exceeded")
+    for name in ("suspended", "never_admitted", "multi_inclusion"):
+        if len(cohorts.get(name, [])) > 5:
+            raise ValueError("sample_limit_exceeded:"+name)
+    rows, db_ms, resolver_ms = [], 0.0, 0.0
+    for code in codes:
+        bundle = read_bundle(con, [code])
+        result = evaluate(bundle, as_of, canonical)
+        db_ms += result["db_read_ms"]; resolver_ms += result["resolver_ms"]
+        row = result["rows"][0]; projection = row["v3"]
+        history = projection.pop("verification_history")
+        row["verification_count"] = len(history)
+        row["ledger_8627_preserved"] = any(e["provenance"].get("legacy_event_id")==8627 for e in history)
+        row["clarity_20261005_present"] = any(e["event_kind"]=="edr_check" and e["effective_date"]=="2026-10-05" and e["actor"]["actor_display"]=="Світлана НАМЯСЕНКО" for e in history)
+        admissions = row.pop("reconstructed_admissions")
+        row["admission_count"] = len(admissions)
+        row["latest_admission"] = max(admissions,key=lambda e:e["effective_date"],default=None)
+        # No full factual payload/history/old projection retained in output.
+        row["v3"] = {k: projection[k] for k in (
+            "prozorro_status", "monitoring_eligible", "edr_status_current", "visible_date",
+            "visible_actor", "current_event", "last_verification_event",
+            "last_verification_date", "last_verification_officer", "freshness", "gaps")}
+        row["gap_counts"] = {"adapter":len(row["adapter_gaps"]),"resolver":len(row["v3"]["gaps"])}
+        row["adapter_gaps"] = row["adapter_gaps"][:10]
+        row["v3"]["gaps"] = row["v3"]["gaps"][:10]
+        for event in (row["latest_admission"],row["v3"]["current_event"],row["v3"]["last_verification_event"]):
+            if event:
+                event["provenance"] = {k:v for k,v in event["provenance"].items() if k != "milestone"}
+        rows.append(row)
+        del history, admissions, projection, result, bundle
+    return {"stage":"2A", "codes":codes, "cohorts":cohorts, "rows":rows,
+        "aggregates":{"suppliers":len(rows),"with_gaps":sum(any(r["gap_counts"].values()) for r in rows)},
+        "timing_ms":{"db_read":round(db_ms,3),"resolver":round(resolver_ms,3)},
+        "old_projection_calls":0,"full_population_run":False}
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--db",required=True)
@@ -207,47 +261,22 @@ def main():
     # Lookup account without old.canonical_sandbox_officer(), which uses PRAGMA.
     account=c.execute("SELECT o.full_name FROM auth_users u JOIN authorized_officers o ON o.id=u.officer_id WHERE u.username='sandbox.officer' AND u.active=1 AND u.role='officer' AND o.active=1 AND o.role='УО'").fetchone()
     canonical=account[0] if account and account[0]==v3.SANDBOX_OFFICER else ""
-    cohorts={"single":[CONTROLS[0]],"twelve":CONTROLS,"33345054":["33345054"],"nine":NINE}
+    cohorts={"twelve":CONTROLS,"33345054":["33345054"],"nine":NINE}
     cohorts["suspended"]= [r[0] for r in c.execute("SELECT DISTINCT supplier_code FROM registry_contracts WHERE status='suspended' ORDER BY supplier_code LIMIT 5")]
     cohorts["never_admitted"]=[r[0] for r in c.execute("SELECT s.supplier_code FROM submissions s JOIN qualifications q ON q.id=s.qualification_id GROUP BY s.supplier_code HAVING SUM(q.status='active')=0 AND SUM(q.status='unsuccessful')>0 ORDER BY s.supplier_code LIMIT 5")]
     cohorts["multi_inclusion"]=[r[0] for r in c.execute("SELECT supplier_code FROM registry_contracts GROUP BY supplier_code HAVING COUNT(*)>1 ORDER BY (SUM(status='active')>0 AND SUM(status='terminated')>0) DESC,supplier_code LIMIT 5")]
-    output={"read_only":True,"as_of":args.as_of,"cohorts":{},"DB_WRITES":0,"SYNC_RUN":"NO","APPLY_RUN":"NO"}
+    output={"read_only":True,"as_of":args.as_of,"DB_WRITES":0,"SYNC_RUN":"NO","APPLY_RUN":"NO"}
     output["targeted_query_plans"]={t:[list(r) for r in c.execute(
         "EXPLAIN QUERY PLAN SELECT * FROM "+t+" WHERE supplier_code=?",(CONTROLS[0],))]
         for t in ("submissions","registry_contracts","supplier_edr_verification_events","supplier_edr_profiles")}
-    for name,codes in cohorts.items():
-        bundle=read_bundle(c,codes)
-        comparison=evaluate(bundle,args.as_of,canonical)
-        began=perf_counter()
-        legacy=old.current_verification_projections(c,codes)
-        for row in comparison["rows"]:
-            code=row["supplier_code"]
-            rc=[r for r in bundle["contracts"] if r["supplier_code"]==code]
-            active_dates=[old.normalized_date(r.get("qualification_date")) for r in rc
-                if r["status"]=="active" and r["framework_status"]=="active" and
-                ((decoded(r["framework_raw_json"]).get("qualificationPeriod") or {}).get("endDate","")[:10]>=args.as_of
-                or not (decoded(r["framework_raw_json"]).get("qualificationPeriod") or {}).get("endDate"))]
-            old_status="Призупинений" if row["v3"]["prozorro_status"]=="Припинений" else row["v3"]["prozorro_status"]
-            row["old_projection"]={"edr_status":old.operational_edr_status(old_status,max(active_dates,default=""),
-                [r for r in bundle["ledger"] if r["supplier_code"]==code],row["stored_profile_status"] or ""),
-                "verification":legacy.get(code),"status":old_status,
-                "source":"production current_verification_projections/operational_edr_status; targeted status inputs"}
-        comparison["old_projection_ms"]=round((perf_counter()-began)*1000,3)
-        output["cohorts"][name]=comparison
-    population=[r[0] for r in c.execute("SELECT DISTINCT s.supplier_code FROM submissions s JOIN qualifications q ON q.id=s.qualification_id WHERE q.status IN ('active','unsuccessful')")]
-    full=evaluate(read_bundle(c,population),args.as_of,canonical)
-    output["full_population"]={"count":len(population),"db_read_ms":full["db_read_ms"],"resolver_ms":full["resolver_ms"],
-        "gaps_count":sum(bool(r["adapter_gaps"] or r["v3"]["gaps"]) for r in full["rows"])}
+    output.update(stage_2a(c,cohorts,args.as_of,canonical))
     expected={"2077003493":("2026-09-18","Тетяна ФЕДЧЕНКО"),"2886810864":("2026-09-16","Дмитро САВВА"),"2981518432":("2026-09-22","Дмитро САВВА")}
     output["manual_controls"]=[{"supplier_code":r["supplier_code"],"expected":expected[r["supplier_code"]],
-        "pass":bool(r["reconstructed_admissions"]) and
-            (max(e["effective_date"] for e in r["reconstructed_admissions"]),
-             max(r["reconstructed_admissions"],key=lambda e:e["effective_date"])["actor"]["actor_display"])==expected[r["supplier_code"]]}
-        for r in output["cohorts"]["twelve"]["rows"] if r["supplier_code"] in expected]
-    output["nine_clarity_checks"]=[{"supplier_code":r["supplier_code"],"found":any(
-        e["event_kind"]=="edr_check" and e["effective_date"]=="2026-10-05" and
-        e["actor"]["actor_display"]=="Світлана НАМЯСЕНКО" for e in r["v3"]["verification_history"])}
-        for r in output["cohorts"]["nine"]["rows"]]
+        "pass":bool(r["latest_admission"]) and
+            (r["latest_admission"]["effective_date"],r["latest_admission"]["actor"]["actor_display"])==expected[r["supplier_code"]]}
+        for r in output["rows"] if r["supplier_code"] in expected]
+    output["nine_clarity_checks"]=[{"supplier_code":r["supplier_code"],"found":r["clarity_20261005_present"]}
+        for r in output["rows"] if r["supplier_code"] in NINE]
     final_version=c.execute("PRAGMA data_version").fetchone()[0]
     output["consistent_read_observation"]={"start_data_version":initial_version,
         "end_data_version":final_version,"pass":initial_version==final_version,
