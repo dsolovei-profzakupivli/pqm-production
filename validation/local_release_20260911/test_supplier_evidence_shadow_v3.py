@@ -4,6 +4,7 @@ import sqlite3
 import unittest
 import json
 import inspect
+import itertools
 import tracemalloc
 from unittest.mock import patch
 from tools import supplier_evidence_shadow_v3 as shadow
@@ -21,6 +22,42 @@ def bundle():
 
 
 class ShadowTests(unittest.TestCase):
+    def test_2077003493_same_day_exact_source_chronology_and_replay(self):
+        data=bundle()
+        stamps=[("e3edb5e958144b61b9d3320d23d2a120","2026-09-18T17:04:21.589075+03:00"),
+            ("c1939b79afce43cfbef0eadf3a0566ff","2026-09-18T15:59:34.798180+03:00"),
+            ("d27925ea7ed24af7bb4c1ec5deff4eb0","2026-09-18T17:19:52.579134+03:00")]
+        apps=[dict(data["applications"][0],id=identity,date_published=stamp) for identity,stamp in stamps]
+        for order in itertools.permutations(apps):
+            for replay in (False,True):
+                data["applications"]=list(order)*(2 if replay else 1)
+                full=shadow.evaluate(data,"2026-10-05")["rows"][0]["v3"]
+                self.assertEqual(len(full["verification_history"]),3)
+                self.assertEqual(len({e["source_event_id"] for e in full["verification_history"]}),3)
+                with patch.object(shadow,"read_bundle",return_value=data):
+                    row=shadow.stage_2a(None,{"manual_controls":["2077003493"]},"2026-10-05")["rows"][0]
+                latest=row["latest_admission"]
+                self.assertEqual(latest["source_event_id"],stamps[2][0])
+                self.assertEqual(latest["source_event_at"],stamps[2][1])
+                self.assertEqual(latest["event_id"],row["v3"]["current_event"]["event_id"])
+                self.assertEqual(row["v3"]["visible_date"],"2026-09-18")
+                self.assertIsNone(row["latest_admission_ambiguity"])
+                self.assertEqual(row["verification_count"],3)
+
+    def test_diagnostic_admission_ambiguous_without_exact_order_not_id_wins(self):
+        for stamps,expected in ((["2026-09-18"]*2,"ambiguous_same_day_events"),
+                (["2026-09-18T17:00:00+03:00"]*2,"ambiguous_same_timestamp")):
+            data=bundle()
+            data["applications"]=[dict(data["applications"][0],id=identity,date_published=stamp)
+                for identity,stamp in zip(("zzz","aaa"),stamps)]
+            for order in (data["applications"],list(reversed(data["applications"]))):
+                fixture=dict(data,applications=order)
+                with patch.object(shadow,"read_bundle",return_value=fixture):
+                    row=shadow.stage_2a(None,{"manual_controls":["2077003493"]},"2026-10-05")["rows"][0]
+                self.assertIsNone(row["latest_admission"])
+                self.assertIsNone(row["v3"]["current_event"])
+                self.assertEqual(row["latest_admission_ambiguity"],expected)
+
     def test_stage2a_cohort_and_sample_limits_fail_before_reads(self):
         with patch.object(shadow,"read_bundle",side_effect=AssertionError("must not read")):
             with self.assertRaisesRegex(ValueError,"cohort_limit"):

@@ -190,7 +190,8 @@ def evaluate(bundle, as_of, canonical_officer="", lifecycle_officers=None):
             last_application={"id":last_app["id"],"date":last_app["date_published"][:10]} if last_app else None)
         # Strip repeated factual snapshots in presentation, retain history provenance.
         def summary(e):
-            return {k:e[k] for k in ("event_id","event_kind","effective_date","actor","provenance")} if e else None
+            return {k:e[k] for k in ("event_id","event_kind","effective_date",
+                "source_event_at","source_event_id","actor","provenance")} if e else None
         projected["current_event"]=summary(projected["current_event"])
         projected["last_verification_event"]=summary(projected["last_verification_event"])
         projected["verification_history"]=[summary(e) for e in projected["verification_history"]]
@@ -220,7 +221,12 @@ def stage_2a(con, cohorts, as_of, canonical=""):
         row["clarity_20261005_present"] = any(e["event_kind"]=="edr_check" and e["effective_date"]=="2026-10-05" and e["actor"]["actor_display"]=="Світлана НАМЯСЕНКО" for e in history)
         admissions = row.pop("reconstructed_admissions")
         row["admission_count"] = len(admissions)
-        row["latest_admission"] = max(admissions,key=lambda e:e["effective_date"],default=None)
+        # Stable identity deduplicates replay; NEVER breaks chronology ties.
+        unique_admissions = {e["event_id"]:e for e in admissions}
+        row["latest_admission"], ambiguity = v3._latest(list(unique_admissions.values()))
+        row["latest_admission_ambiguity"] = ambiguity
+        if ambiguity:
+            row["adapter_gaps"].append({"gap":ambiguity,"selection":"latest_admission"})
         # No full factual payload/history/old projection retained in output.
         row["v3"] = {k: projection[k] for k in (
             "prozorro_status", "monitoring_eligible", "edr_status_current", "visible_date",
