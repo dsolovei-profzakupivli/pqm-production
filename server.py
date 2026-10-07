@@ -10888,7 +10888,7 @@ class Handler(BaseHTTPRequestHandler):
                                            else "Конфлікт облікового запису або УО"}, 400)
             username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or ""); role = str(payload.get("role") or "officer").casefold()
-            officer_id = payload.get("officer_id") or None
+            officer_id = payload.get("officer_id")
             if not re.fullmatch(r"[A-Za-z0-9._-]{3,50}", username):
                 return self.send_json({"error": "Логін: 3–50 латинських літер, цифр або . _ -"}, 400)
             if username in configured_auth_accounts():
@@ -10899,8 +10899,12 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
             try:
                 with db() as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    officer_id = auth_access.validated_officer_link(con, username, role, officer_id)
                     con.execute("""INSERT INTO auth_users(username,password_hash,role,officer_id,active,created_at,updated_at,created_by)
                       VALUES (?,?,?,?,1,?,?,?)""", (username,password_hash,role,officer_id,now_iso(),now_iso(),self.auth_user))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
             except sqlite3.IntegrityError:
                 return self.send_json({"error": "Логін або акаунт цієї УО вже існує"}, 409)
             return self.send_json({"saved": True, "username": username}, 201)
@@ -11585,10 +11589,11 @@ class Handler(BaseHTTPRequestHandler):
         if user_match:
             username = urllib.parse.unquote(user_match.group(1)); payload = self.read_json()
             with db() as con:
+                con.execute("BEGIN IMMEDIATE")
                 current = con.execute("SELECT * FROM auth_users WHERE username=?", (username,)).fetchone()
                 if not current: return self.send_json({"error": "Користувача не знайдено"}, 404)
                 role = str(payload.get("role", current["role"])).casefold()
-                officer_id = payload.get("officer_id", current["officer_id"]) or None
+                officer_id = payload.get("officer_id", current["officer_id"])
                 active = 1 if payload.get("active", bool(current["active"])) else 0
                 if username == self.auth_user and not active:
                     return self.send_json({"error": "Не можна призупинити власний акаунт"}, 409)
@@ -11604,8 +11609,11 @@ class Handler(BaseHTTPRequestHandler):
                     if managed_admins + configured_admins == 0:
                         return self.send_json({"error": "Не можна вимкнути останнього активного адміністратора"}, 409)
                 try:
+                    officer_id = auth_access.validated_officer_link(con, username, role, officer_id, active)
                     con.execute("UPDATE auth_users SET password_hash=?,role=?,officer_id=?,active=?,updated_at=? WHERE username=?",
                                 (password_hash,role,officer_id,active,now_iso(),username))
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
                 except sqlite3.IntegrityError:
                     return self.send_json({"error": "Ця УО вже має активний акаунт"}, 409)
             with AUTH_SESSIONS_LOCK:
