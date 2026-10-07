@@ -5,7 +5,9 @@ function mergeHistoryColumns(stored){
   for(const raw of Array.isArray(stored)?stored:[]){
     const base=historyColumnDefaults.find(c=>c.key===raw?.key);
     if(!base||seen.has(base.key))continue;
-    seen.add(base.key);columns.push({...base,visible:typeof raw.visible==='boolean'?raw.visible:base.visible,width:Number.isInteger(raw.width)&&raw.width>=60&&raw.width<=1200?raw.width:base.width,pin:raw.pin==='left'?'left':''});
+    const column={...base,visible:typeof raw.visible==='boolean'?raw.visible:base.visible,width:Number.isInteger(raw.width)&&raw.width>=60&&raw.width<=1200?raw.width:base.width};
+    if(Object.hasOwn(raw,'pin'))column.pin=raw.pin==='left'?'left':'';else delete column.pin;
+    seen.add(base.key);columns.push(column);
   }
   for(const base of historyColumnDefaults){
     if(seen.has(base.key))continue;
@@ -58,7 +60,7 @@ historyColumnList.ondragstart=e=>{if(document.querySelector('#historyColumnSearc
 historyColumnList.ondragover=e=>e.preventDefault();
 historyColumnList.ondrop=e=>{e.preventDefault();const target=e.target.closest('[data-key]');if(!target||document.querySelector('#historyColumnSearch').value.trim())return;moveHistoryColumn(historyDraft.findIndex(c=>c.key===e.dataTransfer.getData('text/plain')),historyDraft.findIndex(c=>c.key===target.dataset.key))};
 async function saveHistoryColumns(columns){
-  try{await request('/api/history-columns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({columns:columns.map((c,order)=>({key:c.key,visible:c.visible,width:c.width,order,pin:c.pin||''}))})});historyColumns=columns.map((c,order)=>({...c,order}));renderHistoryTable();return true}catch(e){document.querySelector('#historyColumnMessage').textContent=e.message;return false}
+  try{await request('/api/history-columns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({columns:columns.map((c,order)=>({key:c.key,visible:c.visible,width:c.width,order,...(Object.hasOwn(c,'pin')?{pin:c.pin}: {})}))})});historyColumns=columns.map((c,order)=>({...c,order}));renderHistoryTable();return true}catch(e){document.querySelector('#historyColumnMessage').textContent=e.message;return false}
 }
 document.querySelector('#historyColumnSave').onclick=async()=>{if(await saveHistoryColumns(historyDraft))document.querySelector('#historyColumnsDialog').close()};
 document.querySelector('#historyColumnReset').onclick=()=>{historyDraft=structuredClone(historyColumnDefaults);drawHistoryColumnSettings();document.querySelector('#historyColumnMessage').textContent='Стандартні налаштування в чернетці. Натисніть Зберегти для застосування.'};

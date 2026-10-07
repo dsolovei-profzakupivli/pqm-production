@@ -844,7 +844,9 @@ def history_column_settings(user, columns=None):
                 if not isinstance(width,int) or not 60<=width<=1200:raise ValueError('Ширина має бути від 60 до 1200 px')
                 pin=c.get('pin','')
                 if pin not in ('','left'):raise ValueError('Некоректне закріплення колонки')
-                result.append({'key':c['key'],'visible':c['visible'],'width':width,'order':index,'pin':pin})
+                item={'key':c['key'],'visible':c['visible'],'width':width,'order':index}
+                if 'pin' in c:item['pin']=pin
+                result.append(item)
             keys={c['key'] for c in result}
             if len(keys)!=len(result) or keys not in (legacy_keys,set(HISTORY_COLUMN_KEYS)):raise ValueError('Повтор або відсутність колонки')
             con.execute('''INSERT INTO application_view_profiles

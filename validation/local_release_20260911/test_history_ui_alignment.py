@@ -66,6 +66,19 @@ class HistoryAlignmentApiTests(unittest.TestCase):
         self.assertEqual(server.history_column_settings('first')['columns'][0]['pin'], 'left')
         self.assertEqual(server.history_column_settings('second')['columns'], [])
 
+    def test_legacy_eleven_exact_roundtrip_without_pin(self):
+        columns = [dict(key=k, visible=True, width=160, order=i)
+                   for i,k in enumerate(k for k in server.HISTORY_COLUMN_KEYS if k != 'review_officer')]
+        server.history_column_settings('first', columns)
+        self.assertEqual(server.history_column_settings('first')['columns'], columns)
+        server.history_column_settings('first', server.history_column_settings('first')['columns'])
+        self.assertEqual(server.history_column_settings('first')['columns'], columns)
+
+    def test_explicit_empty_pin_roundtrip(self):
+        columns = self.columns()
+        server.history_column_settings('first', columns)
+        self.assertEqual(server.history_column_settings('first')['columns'][0]['pin'], '')
+
     def test_right_pin_invalid_without_write(self):
         columns = self.columns()
         columns[0]['pin'] = 'right'
@@ -96,6 +109,16 @@ assert.equal(run('merged.length'),12);
 assert.deepEqual(JSON.parse(run("JSON.stringify(merged.filter(c=>c.key!=='review_officer').map(c=>c.key))")),JSON.parse(run('JSON.stringify(old.map(c=>c.key))')));
 assert.equal(run('merged[0].width'),444);assert.equal(run('merged[1].visible'),false);
 assert.equal(run("merged.findIndex(c=>c.key==='review_officer')"),run("merged.findIndex(c=>c.key==='decision')")+1);
+run("var legacy=old.map(c=>{const {pin,...rest}=c;return rest});var legacyMerged=mergeHistoryColumns(legacy)");
+assert.equal(run("legacyMerged.filter(c=>c.key!=='review_officer').some(c=>Object.hasOwn(c,'pin'))"),false);
+assert.equal(run("legacyMerged.find(c=>c.key==='review_officer').pin"),'');
+run('historySettingsAvailable=true;historyColumns=legacyMerged');
+node('#historyColumnSearch').value='';await node('#historyColumnsButton').onclick();assert.equal(writes,0);
+node('#historyColumnCancel').onclick();assert.equal(writes,0);
+await run('saveHistoryColumns(legacyMerged)');
+assert.equal(savedPayload.columns.filter(c=>c.key!=='review_officer').some(c=>Object.hasOwn(c,'pin')),false);
+assert.equal(savedPayload.columns.find(c=>c.key==='review_officer').pin,'');
+writes=0;run('historyColumns=structuredClone(historyColumnDefaults)');
 await node('#historyColumnsButton').onclick();assert.equal(writes,0);
 run("historyDraft[0].visible=false;historyDraft[0].width=222;historyDraft[0].pin='left'");
 node('#historyColumnCancel').onclick();assert.equal(writes,0);assert.equal(run('historyColumns[0].visible'),true);
