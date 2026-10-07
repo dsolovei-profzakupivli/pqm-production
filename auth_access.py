@@ -170,9 +170,17 @@ def validated_officer_link(con, username, role, officer_id, active=True):
         if role == 'officer':
             raise ValueError('Оберіть активну УО')
         return None
-    if isinstance(officer_id, bool) or not re.fullmatch(r'[0-9]+', str(officer_id)):
+    if type(officer_id) is int:
+        value = officer_id
+    elif type(officer_id) is str and re.fullmatch(r'[0-9]+', officer_id):
+        value = int(officer_id)
+    else:
         raise ValueError('Некоректний ID УО')
-    officer_id = int(officer_id)
+    # Check SQLite's binding range before querying. Retain the existing
+    # unsigned-ID input semantics separately; no clamp or lossy conversion.
+    if not -(1 << 63) <= value <= (1 << 63) - 1 or value < 0:
+        raise ValueError('Некоректний ID УО')
+    officer_id = value
     if not con.execute('SELECT 1 FROM authorized_officers WHERE id=? AND active=1', (officer_id,)).fetchone():
         raise ValueError('Оберіть активну УО')
     if active and con.execute('SELECT 1 FROM auth_users WHERE officer_id=? AND active=1 AND username<>?', (officer_id, username)).fetchone():

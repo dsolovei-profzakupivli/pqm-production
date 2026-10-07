@@ -54,6 +54,38 @@ class AdminOfficerLinkageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.save(officer_id=1)
 
+    def test_int64_upper_boundary_reaches_existing_not_found_validation(self):
+        for value in ((1 << 63) - 1, str((1 << 63) - 1)):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'Оберіть активну УО'):
+                self.save(officer_id=value)
+
+    def test_int64_out_of_range_rejected_before_db_binding(self):
+        for value in (1 << 63, str(1 << 63), -(1 << 63) - 1, str(-(1 << 63) - 1), 10**100, str(10**100)):
+            reads = []
+            self.c.set_trace_callback(reads.append)
+            try:
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'Некоректний ID УО'):
+                    a.validated_officer_link(self.c, 'fixture', 'admin', value)
+                self.assertEqual(reads, [])
+            finally:
+                self.c.set_trace_callback(None)
+
+    def test_invalid_values_cause_zero_writes_and_preserve_existing_link(self):
+        self.save(officer_id=1)
+        tables = ('auth_users','auth_user_roles','user_preferences')
+        before = {t:[tuple(r) for r in self.c.execute('SELECT * FROM '+t)] for t in tables}
+        writes = self.c.total_changes
+        for value in (1 << 63, -(1 << 63) - 1, 'bad', True, False, 1.0, b'1', [], {}, object()):
+            with self.subTest(value=repr(value)), self.assertRaises(ValueError):
+                self.save(officer_id=value)
+            self.assertEqual(self.c.total_changes, writes)
+            self.assertEqual({t:[tuple(r) for r in self.c.execute('SELECT * FROM '+t)] for t in tables}, before)
+
+    def test_signed_lower_boundary_and_negative_ids_remain_invalid(self):
+        for value in (-(1 << 63), -1, '-1'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'Некоректний ID УО'):
+                self.save(officer_id=value)
+
     def test_inactive_account_does_not_occupy_link(self):
         self.save(username='other', officer_id=1, active=False)
         self.assertEqual(self.save(officer_id=1)['officer_id'], 1)
@@ -145,7 +177,7 @@ class AdminAttributionTests(unittest.TestCase):
         self.assertNotIn('error', h.send_json.call_args.args[0])
         with server.db() as con:
             self.assertEqual(con.execute("SELECT officer_id FROM auth_users WHERE username='s.namiasenko'").fetchone()[0], 901)
-        for bad in (99999, True, False, 0, 'not-an-id'):
+        for bad in (99999, True, False, 0, 'not-an-id', 1 << 63, -(1 << 63) - 1):
             h = self.account_action('/api/admin/users/s.namiasenko', {'officer_id':bad})
             self.assertEqual(h.send_json.call_args.args[1], 400)
 
@@ -154,6 +186,16 @@ class AdminAttributionTests(unittest.TestCase):
         self.assertEqual(h.send_json.call_args.args[1], 201)
         h = self.account_action('/api/admin/users', {'username':'busy.admin','password':'synthetic-password-only','role':'admin','officer_id':901}, 'POST')
         self.assertEqual(h.send_json.call_args.args[1], 400)
+
+    def test_modern_editor_bounds_error_returns_400_without_mutation(self):
+        with server.db() as con:
+            before = tuple(con.execute("SELECT * FROM auth_users WHERE username='s.namiasenko'").fetchone())
+        for value in (1 << 63, str(1 << 63), -(1 << 63) - 1):
+            h = self.account_action('/api/admin/users', {'username':'s.namiasenko','role_code':'admin','officer_id':value}, 'POST')
+            self.assertEqual(h.send_json.call_args.args[1], 400)
+            self.assertEqual(h.send_json.call_args.args[0]['error'], 'Некоректний ID УО')
+            with server.db() as con:
+                self.assertEqual(tuple(con.execute("SELECT * FROM auth_users WHERE username='s.namiasenko'").fetchone()), before)
 
     def test_modern_editor_endpoint_preserves_admin_link(self):
         h = self.account_action('/api/admin/users', {'username':'s.namiasenko','role_code':'admin','display_name':'Світлана НАМЯСЕНКО'}, 'POST')
