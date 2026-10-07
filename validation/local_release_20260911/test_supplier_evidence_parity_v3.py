@@ -185,6 +185,13 @@ class ParityTests(unittest.TestCase):
         self.assertIn("missing_lifecycle_evidence", row["unresolved_evidence_gaps"])
         self.assertIsNone(row["v3"]["current_event_actor"])
         self.assertIn("NOT_materialized_event", row["frozen_audit_context"][0]["source"])
+        p = row["v3"]
+        # An archived gap with the same name does not prove the missing current event.
+        p["provenance_gaps"] = [{"gap_type": "missing_lifecycle_evidence", "review_scope": "history_only"}]
+        result = runner.compare("33345054", row["legacy"], p)
+        self.assertIn("MISSING_PROVENANCE", result["classifications"])
+        self.assertNotIn("TRUE_PARITY", result["classifications"])
+        self.assertFalse(result["current_event_evidence_known"])
 
     def test_history_only_gap_keeps_independent_known_parity(self):
         self.c2()

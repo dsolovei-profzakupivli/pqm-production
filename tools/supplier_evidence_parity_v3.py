@@ -205,12 +205,16 @@ def compare(code, old, new):
     if code == "33345054":
         frozen.append({"source": "approved_policy_NOT_materialized_event", "expected_lifecycle_date": "2026-10-05",
             "actor_policy": "decision officer, canonical SANDBOX fallback only if absent"})
-    if not differences and compared and not unresolved:
+    current_known = new["current_event"] is not None or new["prozorro_status"] == "Ще не в реєстрі"
+    if not current_known:
+        labels.append("MISSING_PROVENANCE")
+    if not differences and compared and not unresolved and current_known:
         labels.append("TRUE_PARITY")  # Known overlapping fields ONLY, never a UI parity claim.
     return {"classifications": sorted(set(labels)), "differences": differences,
         "comparison_scope": "known_overlap_only_NOT_UI_cutover_acceptance", "compared_fields": compared,
         "known_equal_fields": [f for f in compared if not any(d["field"] == f for d in differences)],
         "unresolved_evidence_gaps": unresolved, "history_only_gaps": history_only,
+        "current_event_evidence_known": current_known,
         "frozen_audit_context": frozen}
 
 
