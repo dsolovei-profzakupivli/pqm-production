@@ -16,6 +16,16 @@ NOW = "2026-10-07T12:00:00+03:00"
 OFFICER = "Світлана НАМЯСЕНКО"
 ENV = {"PQM_SANDBOX": "1", "RENDER_SERVICE_ID": adapter.SANDBOX_ID}
 TWELVE = "2077003493 2886810864 2981518432 3385014935 3602006515 3618208369 3624813159 30795712 39984849 41141768 45547692 46120124".split()
+FIFTEEN = [
+    ("33345054", 8627, "2026-09-17", OFFICER),
+    ("44368854", 4178, "2026-09-11", OFFICER),
+    *[(code, identity, "2026-09-09", OFFICER) for code, identity in
+      zip("00377213 00379413 00380497 00381381 00445883".split(), (5038, 5043, 5047, 5050, 5053))],
+    *[(code, identity, "2026-07-23", OFFICER) for code, identity in
+      zip("45088216 45101776 32800996 33860155 23098585".split(), range(118, 123))],
+    ("01756131", 123, "2026-07-22", OFFICER),
+    ("38229721", 124, "2026-07-22", OFFICER),
+    ("45431261", 125, "2026-07-14", "Тетяна ФЕДЧЕНКО")]
 
 
 class ProjectionTests(unittest.TestCase):
@@ -63,6 +73,15 @@ class ProjectionTests(unittest.TestCase):
             environment="sandbox", actor=actor, source_system=system,
             source_event_id=identity, snapshot=snapshot or {},
             provenance=provenance)
+
+    def legacy_google(self, code="1", identity=1, day="2026-09-17", officer=OFFICER, changes=None):
+        snapshot = {"verification_date": day, "verification_officer": officer,
+            "source": "legacy_google_registry", "source_tab": "ЮО", "source_row": 2,
+            "spreadsheet_id": "1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww", "source_digest": "a" * 64}
+        snapshot.update(changes or {})
+        self.con.execute("INSERT INTO supplier_edr_verification_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (identity, code, "legacy_google_registry", day, officer, "legacy_google_registry", "",
+             "ЮО", 2, '["verification_date","verification_officer"]', str(identity), json.dumps(snapshot), NOW))
 
     def read(self, code):
         return adapter.project_supplier(self.con, code, as_of_at=NOW)
@@ -410,6 +429,109 @@ class ProjectionTests(unittest.TestCase):
         for code, stamp in ((45054758, NOW), ("45054758", "2026-10-07"), ("4 OR 1=1", NOW)):
             with self.subTest(code=code), self.assertRaises(ValueError):
                 adapter.project_supplier(self.con, code, as_of_at=stamp)
+
+    def test_fifteen_live_legacy_google_regressions(self):
+        for code, identity, day, officer in FIFTEEN:
+            with self.subTest(code=code):
+                state = "terminated" if code == "33345054" else "suspended" if code == "44368854" else "active"
+                self.inclusion(code, "c" + code, state)
+                self.application(code, "s" + code, "2026-01-01T10:00:00+02:00")
+                self.legacy_google(code, identity, day, officer)
+                before = self.con.total_changes
+                p = self.read(code)
+                self.assertEqual((p["last_verification_date"], p["last_verification_officer"]), (day, officer))
+                self.assertEqual(p["last_verification_event"]["source_event_id"], recording._json(["edr_check", str(identity)]))
+                self.assertEqual(p["logical_verification_count"], 2)
+                self.assertEqual(self.con.total_changes, before)
+                self.assertFalse(p["last_verification_event"]["provenance"]["factual_context"]["verified_by_this_event"])
+                self.assertEqual(p["factual_snapshot"]["edr_status"], "Зареєстровано")
+                if code in {"33345054", "44368854"}:
+                    self.assertIsNone(p["current_event_date"])
+                    self.assertIsNone(p["current_event_actor"])
+                    self.assertIn("missing_lifecycle_evidence" if code == "33345054" else "suspension_date_unproven", p["gaps"])
+
+    def test_legacy_google_malformed_provenance_is_explicit_gap(self):
+        variants = [{"verification_date": "2026-09-18"}, {"verification_officer": "Other"},
+            {"source": "migration"}, {"spreadsheet_id": "PROD"}, {"source_digest": "bad"},
+            {"source_tab": "Other"}, {"source_row": 1}, {"source_row": "2"},
+            {"semantic_type": "lifecycle"}, {"event_kind": "admission"},
+            {"sandbox_historical_officer_normalization": True}, {"attribution_only": True},
+            {"synthetic": True}, {"migration_timestamp": True}, {"lifecycle_mirror": True},
+            {"application_decision": "reject"}, {"edr_status": "Припинено"}]
+        self.inclusion("1")
+        self.application("1", stamp="2025-01-01T10:00:00+02:00")
+        for i, changes in enumerate(variants):
+            with self.subTest(changes=changes):
+                self.con.execute("DELETE FROM supplier_edr_verification_events")
+                self.legacy_google(changes=changes)
+                p = self.read("1")
+                self.assertEqual(p["last_verification_date"], "2025-01-01")
+                self.assertEqual(p["logical_verification_count"], 1)
+                self.assertIn("legacy_verification_provenance_unproven:1", p["gaps"])
+
+    def test_legacy_google_invalid_date_officer_and_json(self):
+        self.inclusion("1")
+        self.application("1", stamp="2025-01-01T10:00:00+02:00")
+        for day, officer in [("2026-02-30", OFFICER), ("2026-09-17", ""), ("2026-09-17", "—"), ("2026-09-17", "ЕСЗ")]:
+            with self.subTest(day=day, officer=officer):
+                self.con.execute("DELETE FROM supplier_edr_verification_events")
+                self.legacy_google(day=day, officer=officer)
+                self.assertEqual(self.read("1")["last_verification_date"], "2025-01-01")
+        self.con.execute("UPDATE supplier_edr_verification_events SET snapshot_json='not json'")
+        self.assertEqual(self.read("1")["last_verification_date"], "2025-01-01")
+
+    def test_legacy_google_stored_source_and_application_identity_rejected(self):
+        self.inclusion("1")
+        self.application("1", stamp="2025-01-01T10:00:00+02:00")
+        for field, value in (("source", "migration"), ("source_submission_id", "application")):
+            with self.subTest(field=field):
+                self.con.execute("DELETE FROM supplier_edr_verification_events")
+                self.legacy_google()
+                self.con.execute("UPDATE supplier_edr_verification_events SET " + field + "=?", (value,))
+                p = self.read("1")
+                self.assertEqual(p["last_verification_date"], "2025-01-01")
+                self.assertIn("legacy_verification_provenance_unproven:1", p["gaps"])
+
+    def test_legacy_google_without_separate_factual_evidence_fails_closed(self):
+        self.inclusion("1")
+        self.legacy_google()
+        p = self.read("1")
+        self.assertIsNone(p["last_verification_event"])
+        self.assertIn("legacy_verification_provenance_unproven:1", p["gaps"])
+
+    def test_older_legacy_google_cannot_downgrade_c2_or_new_admission(self):
+        self.inclusion("45054758")
+        self.application("45054758", stamp="2023-01-01T10:00:00+02:00")
+        self.legacy_google("45054758", 117, "2026-07-23")
+        self.check()
+        p = self.read("45054758")
+        self.assertEqual(p["last_verification_date"], "2026-10-06")
+        self.assertEqual(sorted(p["legacy_native_links"].values()), [[117], [8699]])
+        self.assertEqual(p["logical_verification_count"], 3)
+        self.assertEqual(p["factual_snapshot"]["short_name"], "—")
+        self.inclusion("1", "c2")
+        self.legacy_google("1", 2, "2026-07-23")
+        self.application("1", "newer")
+        self.assertEqual(self.read("1")["last_verification_event"]["event_kind"], "admission")
+
+    def test_same_day_legacy_google_is_not_ordered_by_id_or_import_time(self):
+        self.inclusion("1")
+        self.application("1", stamp="2025-01-01T10:00:00+02:00")
+        self.legacy_google("1", 999)
+        self.legacy_google("1", 1)
+        self.con.execute("UPDATE supplier_edr_verification_events SET created_at='2099-01-01' WHERE id=999")
+        p = self.read("1")
+        self.assertIsNone(p["last_verification_event"])
+        self.assertEqual(p["logical_verification_count"], 3)
+        self.assertIn("verification:ambiguous_same_day_events", p["gaps"])
+        self.assertTrue(all(e["source_event_at"] is None for e in p["verification_history"] if e["event_kind"] == "edr_check"))
+
+    def test_same_day_timestamped_admission_and_day_only_google_ambiguous(self):
+        self.inclusion("1")
+        self.application("1", identity="older", stamp="2025-01-01T10:00:00+02:00")
+        self.application("1", stamp="2026-09-17T23:00:00+03:00")
+        self.legacy_google()
+        self.assertIn("verification:ambiguous_same_day_events", self.read("1")["gaps"])
 
 
 if __name__ == "__main__":

@@ -59,6 +59,32 @@ class ParityTests(unittest.TestCase):
         self.assertIn("TRUE_PARITY", row["classifications"])
         self.assertNotIn("UNEXPECTED_MISMATCH", row["classifications"])
 
+    def test_fifteen_legacy_google_regressions_preserve_classifications(self):
+        for code, identity, day, officer in fixtures.FIFTEEN:
+            self.fixture.inclusion(code, "c" + code,
+                "terminated" if code == "33345054" else "suspended" if code == "44368854" else "active")
+            self.fixture.application(code, "s" + code, "2026-01-01T10:00:00+02:00")
+            self.fixture.legacy_google(code, identity, day, officer)
+            self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status) VALUES (?,?)", (code, "Зареєстровано"))
+            self.con.execute("UPDATE registry_contracts SET qualification_id=? WHERE supplier_code=?", ("qs" + code, code))
+        self.legacy_schema()
+        self.con.execute("UPDATE application_fields SET protocol_decision='admit',protocol_date='01.01.2026'")
+        self.con.execute("UPDATE qualifications SET decision_date='2026-01-01'")
+        result = self.run_case([x[0] for x in fixtures.FIFTEEN])
+        for row in result["rows"]:
+            with self.subTest(code=row["supplier_code"]):
+                self.assertNotIn("UNEXPECTED_MISMATCH", row["classifications"])
+                self.assertEqual(row["legacy"]["last_verification_date"], row["v3"]["last_verification_date"])
+                self.assertEqual(row["legacy"]["last_verification_officer"], row["v3"]["last_verification_officer"])
+                self.assertEqual(row["failed_contract_checks"], [])
+                if row["supplier_code"] in {"33345054", "44368854"}:
+                    self.assertIn("MISSING_PROVENANCE", row["classifications"])
+                    self.assertNotIn("TRUE_PARITY", row["classifications"])
+                    self.assertIsNone(row["v3"]["current_event_date"])
+                if row["supplier_code"] in runner.COHORTS["google_pending"]:
+                    self.assertIn("GOOGLE_ONLY_NOT_IMPORTED", row["classifications"])
+                    self.assertLess(row["v3"]["last_verification_date"], "2026-10-05")
+
     def test_empty_unknown_overlap_not_true_parity(self):
         row = self.run_case(["45088216"])["rows"][0]
         self.assertNotIn("TRUE_PARITY", row["classifications"])

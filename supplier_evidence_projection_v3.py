@@ -11,10 +11,12 @@ from copy import deepcopy
 from datetime import datetime
 import json
 import os
+import re
 from zoneinfo import ZoneInfo
 
 import supplier_evidence_recording_v3 as recording
 import supplier_evidence_v3 as resolver
+import edr_sync_v2 as legacy
 
 READ_FLAG = "PQM_SANDBOX_EVIDENCE_V3_READ"
 SANDBOX_ID = "srv-dalfd77f3r2c7392uub0"
@@ -97,6 +99,42 @@ def _reconcile(events, gaps):
     return [event for key, event in unique.items() if key not in conflicting], {k: sorted(v) for k, v in refs.items()}
 
 
+def _legacy_google_verification(row, snapshot):
+    """Validate the historical verification import contract, not its type label.
+
+    The importer stores I/L evidence separately from controlled factual evidence.
+    created_at is import time and MUST NOT become verification chronology.
+    """
+    day = resolver.calendar_date(row["occurred_at"])
+    officer = " ".join(str(row["officer"] or "").split())
+    if (not officer or officer.casefold() in
+            {"-", "—", "не визначено", "не призначено", "невідомо", "n/a", "null", "есз"}
+        or row.get("source") != "legacy_google_registry"
+        or snapshot.get("source") != "legacy_google_registry"
+        or snapshot.get("verification_date") != day
+        or " ".join(str(snapshot.get("verification_officer") or "").split()) != officer
+        or snapshot.get("spreadsheet_id") != "1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww"
+        or row.get("source_sheet") not in {"ЮО", "ФОП"}
+        or snapshot.get("source_tab") != row.get("source_sheet")
+        or type(snapshot.get("source_row")) is not int or snapshot["source_row"] < 2
+        or snapshot["source_row"] != row.get("source_row")
+        or not re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("source_digest") or ""))
+        or row.get("source_submission_id")
+        or snapshot.get("semantic_type", "verification") != "verification"
+        or snapshot.get("event_kind", "edr_check") != "edr_check"
+        or any(snapshot.get(k) for k in ("sandbox_historical_officer_normalization",
+            "attribution_only", "lifecycle_mirror", "synthetic", "migration_timestamp",
+            "submission_id", "application_decision"))):
+        raise ValueError("Unproven legacy Google verification")
+    facts = {}
+    if any(k in snapshot for k in ("edr_status", "factual_edr_status", "full_name", "short_name", "manager_name")):
+        status = legacy._legacy_google_factual_status(row, snapshot, day)
+        if not status:
+            raise ValueError("Unproven legacy Google factual snapshot")
+        facts["edr_status"] = status
+    return facts
+
+
 def project_supplier(con, supplier_code, *, as_of_at):
     """Diagnostic callable; gated dispatch is read_or_legacy, not runtime wiring.
 
@@ -146,17 +184,36 @@ def project_supplier(con, supplier_code, *, as_of_at):
                 "date_source": "submission.date_published", "projection_only": True}))
 
     if _columns(con, "supplier_edr_verification_events"):
-        ledger = _rows(con, """SELECT id,event_type,occurred_at,officer,snapshot_json,
+        ledger = _rows(con, """SELECT id,event_type,occurred_at,officer,snapshot_json,source,source_sheet,source_row,
             created_at,source_submission_id FROM supplier_edr_verification_events
             WHERE supplier_code=?""", (supplier_code,))
-        for row in ledger:
-            if row["event_type"] not in {"manual_edr", "google_clarity", "google_clarity_profile", "admission"}:
+        # Convert ordinary complete checks before I/L-only legacy observations.
+        # This is classification order, NOT event chronology or an ID tie-break.
+        for row in sorted(ledger, key=lambda r: r["event_type"] == "legacy_google_registry"):
+            if row["event_type"] not in {"manual_edr", "google_clarity", "google_clarity_profile", "admission", "legacy_google_registry"}:
                 continue
             try:
                 snapshot = json.loads(row["snapshot_json"] or "{}")
                 if not isinstance(snapshot, dict):
                     raise ValueError("Invalid snapshot")
-                if snapshot.get("sandbox_historical_officer_normalization"):
+                provenance = {"legacy_ledger_id": row["id"], "projection_only": True}
+                if row["event_type"] == "legacy_google_registry":
+                    facts = _legacy_google_verification(row, snapshot)
+                    provenance.update(legacy_event_type=row["event_type"],
+                        google_verification_evidence=deepcopy(snapshot),
+                        date_source="snapshot.verification_date", factual_snapshot_present=bool(facts))
+                    if not facts:
+                        factual, ambiguity = resolver._latest([e for e in events + reconstructed
+                            if e["semantic_type"] == "verification" and e["snapshot"].get("edr_status")
+                            and e["effective_date"] < row["occurred_at"]])
+                        if not factual or ambiguity:
+                            raise ValueError("Unproven separate factual context")
+                        facts = deepcopy(factual["snapshot"])
+                        provenance["factual_context"] = {"source_event_id": factual["source_event_id"],
+                            "effective_date": factual["effective_date"], "carried_forward": True,
+                            "verified_by_this_event": False}
+                    snapshot = facts
+                elif snapshot.get("sandbox_historical_officer_normalization"):
                     continue
                 kind = "admission" if row["event_type"] == "admission" else "edr_check"
                 app = app_by_id.get(row["source_submission_id"])
@@ -171,7 +228,7 @@ def project_supplier(con, supplier_code, *, as_of_at):
                     recorded_at=row["created_at"] or "", actor=_actor(kind, row["officer"]),
                     source_system="application" if kind == "admission" else "legacy_edr_ledger",
                     source_event_id=recording._json([kind, identity]), environment="sandbox",
-                    snapshot=snapshot, provenance={"legacy_ledger_id": row["id"], "projection_only": True}))
+                    snapshot=snapshot, provenance=provenance))
             except (ValueError, TypeError, KeyError):
                 gaps.append("legacy_verification_provenance_unproven:" + str(row["id"]))
 
@@ -240,6 +297,21 @@ def project_supplier(con, supplier_code, *, as_of_at):
             gaps.append("future_evidence:" + event["source_event_id"])
     result = resolver.resolve(supplier_code=supplier_code, events=logical,
         inclusions=inclusions, as_of=day, ever_admitted=bool(admitted or contracts), last_application=last)
+    verification = result["last_verification_event"]
+    if verification and verification["provenance"].get("factual_snapshot_present") is False:
+        # I/L-only verification updates freshness, NOT ownership of factual EDR.
+        # Keep separately proven older facts without copying them into that event.
+        factual, ambiguity = resolver._latest([e for e in logical
+            if e["semantic_type"] == "verification" and e["snapshot"].get("edr_status")
+            and e["provenance"].get("factual_snapshot_present") is not False
+            and e["effective_date"] <= verification["effective_date"]])
+        result["factual_snapshot"] = deepcopy(factual["snapshot"]) if factual else {}
+        result["factual_snapshot_provenance"] = {"source_event_id": factual["source_event_id"],
+            "effective_date": factual["effective_date"], "carried_forward": True} if factual else None
+        if ambiguity:
+            gaps.append("factual_snapshot:" + ambiguity)
+        if result["monitoring_eligible"]:
+            result["edr_status_current"] = result["factual_snapshot"].get("edr_status")
     unproven_suspension = (result["prozorro_status"] == "Припинений" and not any(
         e["event_kind"] == "suspension" and e["effective_date"] <= day
         and e["provenance"].get("supplier_level") for e in logical))
