@@ -280,7 +280,17 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 @media(max-width:900px){#historyView{padding:8px 15px}#historyView .history-heading{gap:8px;flex-wrap:wrap}#historyView .history-heading p{display:none}}
 #historyColumnsDialog{width:min(720px,90vw);max-height:85vh;overflow:auto}
 #historyColumnSearch{width:100%;margin:8px 0}
-#historyColumnList .column-item{grid-template-columns:20px 24px minmax(120px,1fr) 80px 32px 32px}
+#historyColumnList .column-item{grid-template-columns:20px 24px minmax(100px,1fr) 76px 100px 32px 32px}
+#historyColumnsDialog{padding:0}
+#historyColumnsDialog form{display:flex;flex-direction:column;max-height:85vh}
+#historyColumnsDialog header,#historyColumnsDialog footer{flex-shrink:0}
+#historyColumnSearch{margin:10px 24px;width:calc(100% - 48px)}
+#historyColumnList{overflow:auto;min-height:0}
+#historyColumnMessage{margin:0 24px}
+#historyColumnsDialog form>footer{padding:16px 24px}
+#historyView .history-table td{overflow-wrap:anywhere;min-width:0}
+.history-table th.history-pinned{z-index:4}
+.history-table td.history-pinned{z-index:1;background:var(--card,#fff)}
 #historyColumnsDialog footer{display:flex;gap:8px;justify-content:flex-end;position:sticky;bottom:0;background:white;padding:12px 0}
 .history-filters{display:flex;flex-wrap:wrap;gap:8px;padding:12px}.history-filters>input{min-width:150px;flex:1}.history-table{overflow:auto;max-height:65vh}.history-table table{min-width:1250px;width:100%;border-collapse:collapse}.history-table th{position:sticky;top:0;z-index:2;background:#edf4f8}.history-table th,.history-table td{padding:9px;border:1px solid #dce5ef;text-align:left;vertical-align:top}.history-table td{white-space:pre-wrap;user-select:text}.history-table small,.history-table a{display:block}.history-table td:nth-last-child(2){min-width:260px}.col-drag{cursor:grab}.col-drag[draggable="false"]{cursor:default;opacity:.35}#columnSettingsSearch{margin:10px 18px;width:calc(100% - 36px)}.column-item{grid-template-columns:20px 24px minmax(100px,1fr) 76px 100px 32px 32px}
 #historyView .history-table tr.history-inactive-admitted>td{background:#edf3f8}

@@ -826,14 +826,15 @@ def list_application_view_profiles(user: str) -> dict:
     return {"items": items}
 
 
-HISTORY_COLUMN_KEYS = ('supplier','code','manager','date','cpv','framework','decision','officer','contract','remarks','documents')
+HISTORY_COLUMN_KEYS = ('supplier','code','manager','date','cpv','framework','decision','review_officer','officer','contract','remarks','documents')
 
 def history_column_settings(user, columns=None):
     owner = _profile_owner(user)
     identity = 'history-columns:' + hashlib.sha256(owner.encode()).hexdigest()
     with db() as con:
         if columns is not None:
-            if not isinstance(columns,list) or len(columns)!=len(HISTORY_COLUMN_KEYS):
+            legacy_keys = set(HISTORY_COLUMN_KEYS) - {'review_officer'}
+            if not isinstance(columns,list) or len(columns) not in (len(legacy_keys),len(HISTORY_COLUMN_KEYS)):
                 raise ValueError('Передайте налаштування всіх колонок історії')
             result=[]
             for index,c in enumerate(columns):
@@ -841,8 +842,11 @@ def history_column_settings(user, columns=None):
                     raise ValueError('Некоректні налаштування колонок')
                 width=c.get('width')
                 if not isinstance(width,int) or not 60<=width<=1200:raise ValueError('Ширина має бути від 60 до 1200 px')
-                result.append({'key':c['key'],'visible':c['visible'],'width':width,'order':index})
-            if len({c['key'] for c in result})!=len(HISTORY_COLUMN_KEYS):raise ValueError('Повтор колонки')
+                pin=c.get('pin','')
+                if pin not in ('','left'):raise ValueError('Некоректне закріплення колонки')
+                result.append({'key':c['key'],'visible':c['visible'],'width':width,'order':index,'pin':pin})
+            keys={c['key'] for c in result}
+            if len(keys)!=len(result) or keys not in (legacy_keys,set(HISTORY_COLUMN_KEYS)):raise ValueError('Повтор або відсутність колонки')
             con.execute('''INSERT INTO application_view_profiles
               (id,owner_key,name,is_system,columns_json,created_at,updated_at,created_by,updated_by)
               VALUES (?,?,?,0,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET columns_json=excluded.columns_json,
@@ -2900,7 +2904,7 @@ HISTORY_SORT_FIELDS = {
     'cpv': 'f.dk_code', 'framework': 'f.title',
     'decision': "CASE COALESCE(q.status,'pending') WHEN 'active' THEN 'Допущено' WHEN 'unsuccessful' THEN 'Відхилено' ELSE 'Очікує рішення' END",
     'contract': 'af.contract_details', 'manager': 'af.manager_name',
-    'officer': 'af.protocol_officer', 'protocol': 'af.protocol_number',
+    'officer': 'af.protocol_officer', 'review_officer': 'af.review_officer', 'protocol': 'af.protocol_number',
     'protocol_date': 'af.protocol_date', 'remarks': HISTORY_REMARKS_SQL,
 }
 
@@ -2960,7 +2964,7 @@ def application_history(params: dict) -> dict:
         total = con.execute('SELECT COUNT(*)'+source, args).fetchone()[0]
         items = [dict(row) for row in con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,
           s.date_published,s.framework_id,f.pretty_id,f.title framework_title,f.dk_code,
-          COALESCE(q.status,'pending') status,af.protocol_decision,af.protocol_officer,
+          COALESCE(q.status,'pending') status,af.protocol_decision,af.protocol_officer,af.review_officer,
           af.protocol_number,af.protocol_date,af.protocol_remarks,af.compliance_comments,
           af.contract_details,af.manager_name,s.documents_json,q.documents_json decision_documents,
           q.status qualification_status,
