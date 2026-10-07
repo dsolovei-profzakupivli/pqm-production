@@ -135,21 +135,14 @@ def _legacy_google_verification(row, snapshot):
     return facts
 
 
-def project_supplier(con, supplier_code, *, as_of_at):
-    """Diagnostic callable; gated dispatch is read_or_legacy, not runtime wiring.
-
-    Only SANDBOX is supported in this stage. No guessed admission/profile facts.
-    SQL datasets are supplier-filtered and bounded, including histories and gaps.
-    """
+def verification_evidence(con, supplier_code, *, as_of):
+    """Shared bounded, read-only evidence classification; never persists history."""
     if not (os.getenv("PQM_SANDBOX", "").lower() in {"1", "true"}
             and os.getenv("RENDER_SERVICE_ID", "") == SANDBOX_ID):
-        raise PermissionError("Projection v3 requires exact SANDBOX service")
+        raise PermissionError("Verification evidence requires exact SANDBOX service")
     if not isinstance(supplier_code, str) or not supplier_code.isascii() or not supplier_code.isdigit():
         raise ValueError("Literal supplier code required")
-    assessment = datetime.fromisoformat(as_of_at)
-    if assessment.tzinfo is None:
-        raise ValueError("Explicit zoned assessment time required")
-    day = assessment.astimezone(ZoneInfo("Europe/Kyiv")).date().isoformat()
+    day = resolver.calendar_date(as_of)
     gaps, events = [], []
     native_columns = _columns(con, "supplier_evidence_events_v3")
     if native_columns:
@@ -215,6 +208,10 @@ def project_supplier(con, supplier_code, *, as_of_at):
                     snapshot = facts
                 elif snapshot.get("sandbox_historical_officer_normalization"):
                     continue
+                elif (snapshot.get("semantic_type", "verification") != "verification"
+                      or any(snapshot.get(k) for k in ("attribution_only", "lifecycle_mirror",
+                          "synthetic", "migration_timestamp", "application_decision"))):
+                    raise ValueError("Not actual verification evidence")
                 kind = "admission" if row["event_type"] == "admission" else "edr_check"
                 app = app_by_id.get(row["source_submission_id"])
                 stamp = app["date_published"] if kind == "admission" and app else row["occurred_at"]
@@ -242,6 +239,29 @@ def project_supplier(con, supplier_code, *, as_of_at):
             for actual in events:
                 if _key(actual) == _key(event) and _business(actual)[:5] != _business(event)[:5]:
                     gaps.append("conflicting_source_event_identity:" + event["source_event_id"])
+
+    logical, links = _reconcile(events, gaps)
+    return logical, applications, gaps, links
+
+
+def project_supplier(con, supplier_code, *, as_of_at):
+    """Diagnostic callable; gated dispatch is read_or_legacy, not runtime wiring.
+
+    Only SANDBOX is supported in this stage. No guessed admission/profile facts.
+    SQL datasets are supplier-filtered and bounded, including histories and gaps.
+    """
+    if not (os.getenv("PQM_SANDBOX", "").lower() in {"1", "true"}
+            and os.getenv("RENDER_SERVICE_ID", "") == SANDBOX_ID):
+        raise PermissionError("Projection v3 requires exact SANDBOX service")
+    if not isinstance(supplier_code, str) or not supplier_code.isascii() or not supplier_code.isdigit():
+        raise ValueError("Literal supplier code required")
+    assessment = datetime.fromisoformat(as_of_at)
+    if assessment.tzinfo is None:
+        raise ValueError("Explicit zoned assessment time required")
+    day = assessment.astimezone(ZoneInfo("Europe/Kyiv")).date().isoformat()
+    events, applications, gaps, evidence_links = verification_evidence(con, supplier_code, as_of=day)
+    admitted = [r for r in applications if (r["status"] == "active" or r["decision"] == "admit")
+        and r["date_published"] and r["date_published"][:10] <= day]
 
     contracts = _rows(con, """SELECT r.id,r.status,f.status framework_status,
         json_extract(r.raw_json,'$.expiryDate') expiry_at,
@@ -329,7 +349,7 @@ def project_supplier(con, supplier_code, *, as_of_at):
             AND (r.gap_id IS NULL OR r.disposition='history_only')""", ("sandbox", supplier_code))
     result["gaps"] = sorted(set(result["gaps"] + gaps + [g["gap_type"] for g in persisted_gaps]))
     result["provenance_gaps"] = persisted_gaps
-    result["legacy_native_links"] = links
+    result["legacy_native_links"] = evidence_links
     result["last_application_decision"] = last_decision
     if unproven_suspension or any(g.startswith(("conflicting_source_event_identity:", "latest_application:")) for g in gaps):
         for name in ("current_event", "current_event_type", "current_event_date", "current_event_actor", "current_event_provenance", "visible_date", "visible_actor"):

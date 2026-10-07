@@ -154,7 +154,7 @@ def _project(con, code, recorded_at):
             last_application=ctx["last_application"])
         cached = {k:v for k,v in projection.items() if k!="verification_history"}
         # Foreign keys remain native-v3 only. External identities/provenance
-        # live in projection JSON, backed by immutable existing ledger rows.
+        # live in projection JSON, backed by canonical source records.
         current, last = projection["current_event"],projection["last_verification_event"]
         cached["legacy_baseline_refs"] = dict(current=(current or {}).get("provenance",{}).get("legacy_ledger_id"),
             last_verification=(last or {}).get("provenance",{}).get("legacy_ledger_id"))
@@ -188,68 +188,47 @@ def _project(con, code, recorded_at):
             recorder.reassess_verification_gaps(con,environment="sandbox",supplier_code=code,
                 event_id=projection["last_verification_event"]["event_id"],assessed_at=recorded_at,
                 assessments={r[0]:dict(closed=True,reason="Complete attributable factual verification recorded") for r in gaps})
+    elif projection["last_verification_event"]:
+        _reassess_baseline_gaps(con, code, projection["last_verification_event"], recorded_at)
     return projection
 
 
 def _legacy_verification_baseline(con, code, native_ids, as_of):
-    """Actual legacy verification rows only; never profile/date/officer guesses.
+    """Use exactly the read adapter's canonical, bounded evidence semantics."""
+    # Lazy import avoids the adapter -> recording -> hooks runtime import cycle.
+    import supplier_evidence_projection_v3 as evidence
+    events, _, gaps, _ = evidence.verification_evidence(con, code, as_of=as_of)
+    if any(g.startswith("conflicting_source_event_identity:") for g in gaps):
+        raise ValueError("Conflicting canonical verification identity")
+    return [event for event in events
+            if event["semantic_type"] == "verification"
+            and event["effective_date"] <= as_of
+            and event["event_id"] not in native_ids]
 
-    No events, profile updates, migration or history copying. Admission uses the
-    referenced source submission timestamp, never old qualification/protocol day.
-    """
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supplier_edr_verification_events'").fetchone():
-        return []
-    cur = con.execute("""SELECT e.id,e.event_type,e.occurred_at,e.officer,e.snapshot_json,
-      e.created_at,e.source_sheet,e.source_row,e.source_submission_id,s.date_published
-      FROM supplier_edr_verification_events e LEFT JOIN submissions s ON s.id=e.source_submission_id
-      WHERE e.supplier_code=? AND e.event_type IN ('manual_edr','google_clarity','google_clarity_profile','admission')""",(code,))
-    result = []
-    for raw in cur:
-        row = _dict(raw,cur)
-        try:
-            snapshot = json.loads(row["snapshot_json"] or "{}")
-            if not isinstance(snapshot,dict) or not str(row["officer"] or "").strip():
-                continue
-            if snapshot.get("sandbox_historical_officer_normalization"):
-                continue  # A technical normalization is not a check event.
-            admission = row["event_type"]=="admission"
-            stamp = row["date_published"] if admission else row["occurred_at"]
-            if admission and (not _stamp(stamp) or not row["source_submission_id"]):
-                continue
-            if not stamp or stamp[:10]>as_of:
-                continue
-            if not admission and snapshot.get("edr_status") in {None,"","Неактуально"}:
-                continue
-            identity = row["source_submission_id"] if admission else str(row["id"])
-            kind = "admission" if admission else "edr_check"
-            actor = _actor(kind,row["officer"])
-            event = recorder.v3.make_event(supplier_code=code,kind=kind,effective_date=stamp[:10],
-                source_event_at=_stamp(stamp),recorded_at=row["created_at"] or "",environment="sandbox",
-                source_system="application" if admission else "legacy_edr_ledger",
-                source_event_id=recorder._json([kind,identity]),actor=actor,snapshot=snapshot,
-                provenance=dict(legacy_ledger_id=row["id"],legacy_event_type=row["event_type"],
-                    source_sheet=row["source_sheet"],source_row=row["source_row"],
-                    submission_id=row["source_submission_id"] or "",projection_only=True))
-            if event["event_id"] not in native_ids:
-                result.append(event)
-        except (ValueError,TypeError):
-            continue  # Insufficient historical evidence is never fabricated.
-    # One actual referenced application may have repeated legacy observations.
-    unique = {}
-    for event in result:
-        if event["event_id"] in unique:
-            previous = unique[event["event_id"]]
-            left, right = recorder._event_payload(previous), recorder._event_payload(event)
-            left.pop("provenance",None)
-            right.pop("provenance",None)
-            if left != right:
-                raise recorder.SourceIdentityConflict(event["event_id"])
-            refs = previous["provenance"].setdefault("legacy_ledger_ids",[previous["provenance"]["legacy_ledger_id"]])
-            refs.append(event["provenance"]["legacy_ledger_id"])
-            previous["provenance"]["legacy_ledger_ids"] = sorted(set(refs))
+
+def _reassess_baseline_gaps(con, code, event, recorded_at):
+    """External source proof stays in assessment JSON; no fake native FK/event."""
+    gaps = con.execute("""SELECT g.gap_id,g.known_event_date FROM supplier_evidence_gaps_v3 g
+      JOIN supplier_evidence_observations_v3 o ON o.observation_id=g.observation_id
+      LEFT JOIN supplier_evidence_gap_resolutions_v3 r ON r.gap_id=g.gap_id
+      WHERE o.environment='sandbox' AND o.supplier_code=? AND r.gap_id IS NULL
+        AND g.gap_type='missing_verification_evidence' AND g.review_scope='active'
+        AND g.remediation='factual_verification'""", (code,)).fetchall()
+    if (event["semantic_type"] != "verification" or event["environment"] != "sandbox"
+            or event["supplier_code"] != code):
+        raise ValueError("Complete canonical verification required")
+    for gap_id, known_at in gaps:
+        if known_at and event["effective_date"] < known_at:
             continue
-        unique[event["event_id"]] = event
-    return list(unique.values())
+        proof = dict(closed=True, reason="Existing canonical verification evidence recognized",
+            evidence_reference=dict(environment=event["environment"],
+                supplier_code=code, event_id=event["event_id"],
+                source_system=event["source_system"], source_event_id=event["source_event_id"],
+                effective_date=event["effective_date"], source_event_at=event["source_event_at"],
+                actor=event["actor"], snapshot_hash=event["snapshot_hash"],
+                provenance=event["provenance"]))
+        con.execute("INSERT INTO supplier_evidence_gap_resolutions_v3 VALUES (?,?,?,?,?)",
+            (gap_id,"resolved",None,recorded_at,recorder._json(proof)))
 
 
 def _record_gap(con, code, source, identity, recorded_at, payload, gap_type, reason, **known):
