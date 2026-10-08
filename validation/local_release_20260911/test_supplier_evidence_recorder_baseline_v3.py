@@ -89,6 +89,32 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(self.count("supplier_evidence_gap_resolutions_v3"), 6)
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM supplier_evidence_gaps_v3 g JOIN supplier_evidence_gap_resolutions_v3 r ON r.gap_id=g.gap_id WHERE g.review_scope='history_only'").fetchone()[0], 0)
 
+    def test_unauthorized_facts_shared_baseline_resolution_not_backfill(self):
+        with patch.dict(os.environ, {"PQM_GOOGLE_REGISTRY_SPREADSHEET_ID": ""}):
+            code = "45088216"
+            self.fx.inclusion(code)
+            self.fx.application(code, stamp="2023-01-01T10:00:00+02:00")
+            self.fx.factual_google(code, 118, "2026-07-23")
+            self.gap(code)
+            self.gap(code, history=True)
+            before = self.con.total_changes
+            read = self.fx.read(code)
+            self.assertEqual(self.con.total_changes, before)
+            self.assertEqual(self.count("supplier_evidence_gap_resolutions_v3"), 0)
+            self.fx.application(code, identity="reject-new", stamp="2026-10-07T09:00:00+03:00", status="unsuccessful")
+            hooks.application_decision(self.con, "reject-new", "reject", NOW)
+            row = self.con.execute("SELECT evidence_event_id,assessment_json FROM supplier_evidence_gap_resolutions_v3").fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNone(row[0])
+            proof = json.loads(row[1])["evidence_reference"]
+            self.assertEqual(proof["effective_date"], read["last_verification_date"])
+            self.assertFalse(proof["provenance"]["factual_evidence_accepted"])
+            self.assertTrue(proof["provenance"]["factual_context"]["carried_forward"])
+            self.assertEqual(self.count("supplier_evidence_events_v3"), 0)
+            hooks.application_decision(self.con, "reject-new", "reject", NOW)
+            self.assertEqual(self.count("supplier_evidence_gap_resolutions_v3"), 1)
+            self.assertEqual(self.con.execute("SELECT COUNT(*) FROM supplier_evidence_gaps_v3 g JOIN supplier_evidence_gap_resolutions_v3 r ON r.gap_id=g.gap_id WHERE g.review_scope='history_only'").fetchone()[0], 0)
+
     def test_get_never_resolves_persisted_gap(self):
         self.seed(SIX[0])
         self.gap(SIX[0][0])

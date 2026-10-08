@@ -129,9 +129,11 @@ def _legacy_google_verification(row, snapshot):
     facts = {}
     if any(k in snapshot for k in ("edr_status", "factual_edr_status", "full_name", "short_name", "manager_name")):
         status = legacy._legacy_google_factual_status(row, snapshot, day)
-        if not status:
-            raise ValueError("Unproven legacy Google factual snapshot")
-        facts["edr_status"] = status
+        # Verification provenance above is independent of factual-source
+        # authorization. Unaccepted facts must not erase a proven check;
+        # the caller may use separately proven, explicitly carried facts.
+        if status:
+            facts["edr_status"] = status
     return facts
 
 
@@ -194,7 +196,8 @@ def verification_evidence(con, supplier_code, *, as_of):
                     facts = _legacy_google_verification(row, snapshot)
                     provenance.update(legacy_event_type=row["event_type"],
                         google_verification_evidence=deepcopy(snapshot),
-                        date_source="snapshot.verification_date", factual_snapshot_present=bool(facts))
+                        date_source="snapshot.verification_date", factual_snapshot_present=bool(facts),
+                        factual_evidence_accepted=bool(facts))
                     if not facts:
                         factual, ambiguity = resolver._latest([e for e in events + reconstructed
                             if e["semantic_type"] == "verification" and e["snapshot"].get("edr_status")

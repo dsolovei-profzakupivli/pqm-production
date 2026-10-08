@@ -86,6 +86,65 @@ class ProjectionTests(unittest.TestCase):
     def read(self, code):
         return adapter.project_supplier(self.con, code, as_of_at=NOW)
 
+    def factual_google(self, code, identity, day, officer=OFFICER):
+        """Live 117-125 shape: date/officer and separately authorized status."""
+        self.legacy_google(code, identity, day, officer, changes={
+            "factual_edr_status": "Припинено", "factual_provenance_version": 1,
+            "factual_source_digest": "a" * 64, "factual_source_row": 2,
+            "factual_source_tab": "ЮО",
+            "factual_spreadsheet_id": "1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww"})
+
+    def test_live_117_to_125_without_factual_authorization(self):
+        cases = [("45054758", 117, "2026-07-23", OFFICER)] + [
+            (code, identity, day, "ТЕТЯНА ФЕДЧЕНКО" if identity == 125 else officer)
+            for code, identity, day, officer in FIFTEEN[7:]]
+        with patch.dict(os.environ, {"PQM_GOOGLE_REGISTRY_SPREADSHEET_ID": ""}):
+            for code, identity, day, officer in cases:
+                with self.subTest(event=identity):
+                    self.inclusion(code, "c" + code)
+                    self.application(code, "s" + code, stamp="2023-01-01T10:00:00+02:00")
+                    self.factual_google(code, identity, day, officer)
+                    before = self.con.total_changes
+                    p = self.read(code)
+                    self.assertEqual((p["last_verification_date"], p["last_verification_officer"]), (day, officer))
+                    self.assertEqual(p["factual_snapshot"]["edr_status"], "Зареєстровано")
+                    prov = p["last_verification_event"]["provenance"]
+                    self.assertFalse(prov["factual_evidence_accepted"])
+                    self.assertTrue(prov["factual_context"]["carried_forward"])
+                    self.assertFalse(prov["factual_context"]["verified_by_this_event"])
+                    self.assertNotIn("legacy_verification_provenance_unproven:" + str(identity), p["gaps"])
+                    self.assertEqual(self.con.total_changes, before)
+                    self.assertEqual(self.con.execute("SELECT COUNT(*) FROM supplier_evidence_events_v3").fetchone()[0], 0)
+
+    def test_factual_authorization_is_separate_and_explicit(self):
+        self.inclusion("1")
+        self.application("1", stamp="2023-01-01T10:00:00+02:00")
+        self.factual_google("1", 1, "2026-09-17")
+        for authorization, accepted in (("", False), ("wrong-source", False),
+                ("1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww", True)):
+            with self.subTest(authorization=authorization), patch.dict(os.environ,
+                    {"PQM_GOOGLE_REGISTRY_SPREADSHEET_ID": authorization}):
+                p = self.read("1")
+                self.assertEqual(p["last_verification_date"], "2026-09-17")
+                self.assertEqual(p["last_verification_event"]["provenance"]["factual_evidence_accepted"], accepted)
+                self.assertEqual(p["factual_snapshot"]["edr_status"], "Припинено" if accepted else "Зареєстровано")
+
+    def test_live_117_does_not_duplicate_or_downgrade_c2(self):
+        with patch.dict(os.environ, {"PQM_GOOGLE_REGISTRY_SPREADSHEET_ID": ""}):
+            self.inclusion("45054758")
+            self.application("45054758", stamp="2023-03-08T15:49:05+02:00")
+            self.factual_google("45054758", 117, "2026-07-23")
+            self.check()
+            before = self.con.total_changes
+            p = self.read("45054758")
+            self.assertEqual(p["logical_verification_count"], 3)  # admission, 117, C2 once
+            self.assertEqual(p["last_verification_date"], "2026-10-06")
+            self.assertEqual(p["current_event"]["event_id"], p["last_verification_event"]["event_id"])
+            self.assertEqual(p["legacy_native_links"][p["current_event"]["event_id"]], [8699])
+            self.assertEqual(p["factual_snapshot"]["short_name"], "—")
+            self.assertEqual(p["freshness"]["age_days"], 1)
+            self.assertEqual(self.con.total_changes, before)
+
     def test_45054758_mirror_is_one_check(self):
         self.inclusion("45054758")
         self.check()
@@ -457,7 +516,7 @@ class ProjectionTests(unittest.TestCase):
             {"semantic_type": "lifecycle"}, {"event_kind": "admission"},
             {"sandbox_historical_officer_normalization": True}, {"attribution_only": True},
             {"synthetic": True}, {"migration_timestamp": True}, {"lifecycle_mirror": True},
-            {"application_decision": "reject"}, {"edr_status": "Припинено"}]
+            {"application_decision": "reject"}]
         self.inclusion("1")
         self.application("1", stamp="2025-01-01T10:00:00+02:00")
         for i, changes in enumerate(variants):
@@ -468,6 +527,19 @@ class ProjectionTests(unittest.TestCase):
                 self.assertEqual(p["last_verification_date"], "2025-01-01")
                 self.assertEqual(p["logical_verification_count"], 1)
                 self.assertIn("legacy_verification_provenance_unproven:1", p["gaps"])
+
+    def test_unproven_raw_facts_do_not_invalidate_valid_check_provenance(self):
+        self.inclusion("1")
+        self.application("1", stamp="2025-01-01T10:00:00+02:00")
+        self.legacy_google(changes={"edr_status": "Припинено", "full_name": "UNTRUSTED",
+            "manager_name": "UNTRUSTED", "short_name": "UNTRUSTED"})
+        p = self.read("1")
+        self.assertEqual(p["last_verification_date"], "2026-09-17")
+        self.assertEqual(p["factual_snapshot"]["edr_status"], "Зареєстровано")
+        self.assertEqual(p["factual_snapshot"]["full_name"], "Supplier")
+        self.assertEqual(p["factual_snapshot"]["manager_name"], "Manager")
+        self.assertNotIn("short_name", p["factual_snapshot"])
+        self.assertFalse(p["last_verification_event"]["provenance"]["factual_context"]["verified_by_this_event"])
 
     def test_legacy_google_invalid_date_officer_and_json(self):
         self.inclusion("1")
