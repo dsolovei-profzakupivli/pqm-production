@@ -57,6 +57,9 @@ let profiles=[{id:'local-default',name:'Основний реєстр',columns:s
 let activeProfileId=localStorage.getItem(activeKey)||'local-default', rows=[], selected=new Set(), activeRow=null, activeDocsRow=null, lastDocumentCheck=null, lastProtocolPayload=null;
 let page=1,pages=1,total=0,loading=false,searchTimer,loadRowsGeneration=0;
 let statsSignature='';
+let statsGeneration=0,profilesGeneration=0,registryReloadPromise=null;
+let statsPending=null;
+function invalidateRegistryStats(){statsSignature='';statsGeneration++}
 let officerFilter='';
 let categoryFilter='';
 let sortKey='receivedDate',sortDirection='desc';
@@ -156,7 +159,7 @@ function toast(text,type=''){const stack=$('#toast'),kind=type||toastType(text),
 async function copyText(value,message='Скопійовано'){try{await navigator.clipboard.writeText(value)}catch{const area=document.createElement('textarea');area.value=value;area.style.position='fixed';area.style.opacity='0';document.body.append(area);area.select();document.execCommand('copy');area.remove()}toast(message)}
 function profile(){return profiles.find(p=>p.id===activeProfileId)||profiles[0]}
 function saveProfiles(){localStorage.setItem(activeKey,activeProfileId)}
-async function loadProfiles(){const data=await request(`${API}/application-profiles`);profiles=(data.items||[]).map(p=>({...p,kpis:Array.isArray(p.kpis)?p.kpis:defaultKpis(p.name),columns:(p.columns?.length?p.columns:structuredClone(columns))}));if(!profiles.length)profiles=[{id:'local-default',name:'Основний реєстр',columns:structuredClone(columns),kpis:defaultKpis('Основний реєстр'),is_system:true}];if(!profiles.some(p=>p.id===activeProfileId))activeProfileId=profiles[0].id;saveProfiles();renderProfiles();applyProfileSort()}
+async function loadProfiles(){const generation=++profilesGeneration,preserveLayout=applicationsRegistryInitialized,data=await request(`${API}/application-profiles`);if(generation!==profilesGeneration)return;profiles=(data.items||[]).map(p=>{const local=preserveLayout&&profiles.find(item=>item.id===p.id);return {...p,kpis:local?structuredClone(local.kpis):Array.isArray(p.kpis)?p.kpis:defaultKpis(p.name),columns:local?structuredClone(local.columns):(p.columns?.length?p.columns:structuredClone(columns)),sorts:local?structuredClone(local.sorts||[]):p.sorts}});if(!profiles.length)profiles=[{id:'local-default',name:'Основний реєстр',columns:structuredClone(columns),kpis:defaultKpis('Основний реєстр'),is_system:true}];if(!profiles.some(p=>p.id===activeProfileId))activeProfileId=profiles[0].id;saveProfiles();renderProfiles();if(!preserveLayout)applyProfileSort()}
 function normalizeProfiles(){profiles.forEach(p=>{columns.forEach((base,i)=>{let c=p.columns.find(x=>x.key===base.key);if(!c)p.columns.push({...base,order:i});else{c.label=base.label;c.system=base.system;if(c.pin!=='left')c.pin='';if(!Number.isFinite(Number(c.width)))c.width=base.width}});if(!Array.isArray(p.kpis))p.kpis=defaultKpis(p.name);['decision_yes','decision_no','decision_undefined'].forEach(key=>{if(!p.kpis.includes(key))p.kpis.push(key)})})}
 function applyKpiVisibility(){const order=profile().kpis||[],enabled=new Set(order),cards=$('#kpiCards');order.filter(key=>key!=='officers').forEach(key=>{const card=$(`[data-kpi-card="${key}"]`);if(card)cards.append(card)});$$('[data-kpi-card]').forEach(card=>card.hidden=!enabled.has(card.dataset.kpiCard));cards.hidden=!$$('[data-kpi-card]').some(card=>!card.hidden);$('#officerCards').hidden=!enabled.has('officers')}
 async function loadSearchFields(){try{const data=await request(`${API}/applications/search-fields`),labels=(data.items||[]).map(item=>item.label).filter(Boolean),input=$('#searchInput');if(labels.length)input.title=`Глобальний пошук: ${labels.join(', ')}`}catch(error){console.warn('Search fields metadata unavailable',error)}}
@@ -239,9 +242,11 @@ function updateApplicationFilterStyles(){
   details?.classList.toggle('filter-active',count>0);if(summary)summary.textContent=count?`Фільтри · ${count}`:'Фільтри';
   syncSharedFilterPresentation($('#applicationsView'));
 }
-async function loadStats(){const q=new URLSearchParams(currentFilterParams()),signature=q.toString();if(signature===statsSignature)return true;statsSignature=signature;try{const data=await request(`${API}/stats?${q}`);$$('[data-kpi]').forEach(el=>el.textContent=Number(data[el.dataset.kpi]||0).toLocaleString('uk-UA'));$('#officerCards').innerHTML=(data.officers||[]).map(item=>`<button type="button" class="officer-card ${item.officer==='Не визначено'?'unassigned':''} ${item.officer===officerFilter?'active':''}" data-officer="${esc(item.officer)}"><span title="${esc(formatOfficerName(item.officer))}">${esc(formatOfficerName(item.officer))}</span><strong>${Number(item.applications||0).toLocaleString('uk-UA')}</strong></button>`).join('');$$('#officerCards [data-officer]').forEach(card=>card.onclick=()=>{officerFilter=officerFilter===card.dataset.officer?'':card.dataset.officer;page=1;statsSignature='';loadRows()});return true}catch(e){statsSignature='';toast(e.message);return false}}
+async function loadStats(){const signature=new URLSearchParams(currentFilterParams()).toString();if(statsPending&&statsPending.signature===signature&&statsPending.generation===statsGeneration)return statsPending.promise;const promise=loadStatsData();const pending={signature,generation:statsGeneration,promise};statsPending=pending;try{return await promise}finally{if(statsPending===pending)statsPending=null}}
+async function loadStatsData(){const q=new URLSearchParams(currentFilterParams()),signature=q.toString();if(signature===statsSignature)return true;const generation=++statsGeneration;try{const data=await request(`${API}/stats?${q}`);if(generation!==statsGeneration||signature!==new URLSearchParams(currentFilterParams()).toString())return false;statsSignature=signature;$$('[data-kpi]').forEach(el=>el.textContent=Number(data[el.dataset.kpi]||0).toLocaleString('uk-UA'));$('#officerCards').innerHTML=(data.officers||[]).map(item=>`<button type="button" class="officer-card ${item.officer==='Не визначено'?'unassigned':''} ${item.officer===officerFilter?'active':''}" data-officer="${esc(item.officer)}"><span title="${esc(formatOfficerName(item.officer))}">${esc(formatOfficerName(item.officer))}</span><strong>${Number(item.applications||0).toLocaleString('uk-UA')}</strong></button>`).join('');$$('#officerCards [data-officer]').forEach(card=>card.onclick=()=>{officerFilter=officerFilter===card.dataset.officer?'':card.dataset.officer;page=1;statsSignature='';loadRows()});return true}catch(e){if(generation===statsGeneration){statsSignature='';toast(e.message)}return false}}
 async function loadRows(){
   const generation=++loadRowsGeneration;
+  invalidateRegistryStats();
   let refreshStats=false,succeeded=false;
   updateApplicationFilterStyles();saveFilterState();loading=true;render();
   try{
@@ -331,7 +336,7 @@ function openSupplierNote(row){supplierNoteRow=row;$('#supplierNoteSubtitle').te
 async function saveSupplierNote(note,successMessage){if(!supplierNoteRow)return;try{const data=await request(`${API}/suppliers/${encodeURIComponent(supplierNoteRow.edrpou)}/note`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})});rows.filter(row=>row.edrpou===supplierNoteRow.edrpou).forEach(row=>{row.supplierNote=data.note;row.supplierNoteUpdatedAt=data.updated_at;row.supplierNoteUpdatedBy=data.updated_by});$('#supplierNoteDialog').close();renderInPlace();toast(successMessage)}catch(error){toast(error.message)}}
 $('#supplierNoteSave').onclick=e=>{e.preventDefault();saveSupplierNote($('#supplierNoteText').value,'Спільну примітку збережено')};
 $('#supplierNoteClear').onclick=()=>saveSupplierNote('','Спільну примітку очищено');
-async function saveField(row,key,value){await request(`${API}/applications/${row.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:role(),user:$('#roleSelect').selectedOptions[0].text,[fieldMap[key]]:value})})}
+async function saveField(row,key,value){await request(`${API}/applications/${row.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:role(),user:$('#roleSelect').selectedOptions[0].text,[fieldMap[key]]:value})});invalidateRegistryStats();void loadStats()}
 function buildRemarksText(){
   const chosen=remarksItems.filter(item=>remarksSelected.has(String(item.id)));if(!chosen.length)return '';
   const points=[];chosen.forEach(item=>{if(!points.includes(item.point))points.push(item.point)});
@@ -339,7 +344,7 @@ function buildRemarksText(){
   return `Не виконано вимоги ${points.join(', ')} «Кваліфікаційних та інших вимог до учасника» (${bodies.join('; ')}).`;
 }
 function renderInPlace(){const scroller=$('#tableScroll'),top=scroller?.scrollTop||0,left=scroller?.scrollLeft||0;render();if(scroller){scroller.scrollTop=top;scroller.scrollLeft=left}}
-async function refreshOneRow(row){const data=await request(`${API}/applications?submission_id=${encodeURIComponent(row.id)}&page=1&size=1&t=${Date.now()}`),fresh=data.items?.[0];if(fresh)Object.assign(row,mapRow(fresh));renderInPlace()}
+async function refreshOneRow(row){const scroller=$('#tableScroll'),top=scroller?.scrollTop||0,left=scroller?.scrollLeft||0,generation=loadRowsGeneration+1;const ok=await loadRows();if(generation===loadRowsGeneration&&scroller){scroller.scrollTop=top;scroller.scrollLeft=left;syncTableScroll()}return ok}
 function renderRemarksCatalog(){
   const query=$('#remarksSearch').value.trim().toLocaleLowerCase('uk-UA');
   const shown=remarksItems.filter(item=>!query||`${item.point} ${item.text} ${item.tag} ${item.category}`.toLocaleLowerCase('uk-UA').includes(query));
@@ -410,7 +415,7 @@ async function openSavedDocumentCheck(row){activeDocsRow=row;if(!row.documentChe
 async function verifyDocuments(){if(!activeDocsRow)return;const selection=$('#docsDialog').open?saveDocumentSelection(activeDocsRow):getDocumentSelection(activeDocsRow),selectionParam=Object.keys(selection).length?`&selection=${encodeURIComponent(JSON.stringify(selection))}`:'';if($('#docsDialog').open)$('#docsDialog').close();$('#documentCheckBody').innerHTML='<p class="check-loading">Перевірка вибраних КЕП/МВС…</p>';$('#documentCheckSubtitle').textContent=`${activeDocsRow.participant} · ${activeDocsRow.edrpou}`;if(!$('#documentCheckDialog').open)$('#documentCheckDialog').showModal();try{const started=await request(`${API}/applications/${encodeURIComponent(activeDocsRow.id)}/verify-documents/start?t=${Date.now()}${selectionParam}`);let job=started;let attempt=0;while(job.status==='running'){await new Promise(resolve=>setTimeout(resolve,750));job=await request(`${API}/document-check-jobs/${encodeURIComponent(started.job_id)}?t=${Date.now()}`);attempt++;if(attempt%8===0)$('#documentCheckBody').innerHTML=`<p class="check-loading">Перевірка триває… ${Math.round(attempt*0.75)} с</p>`}if(job.status==='error')throw new Error(job.error||'Не вдалося перевірити документи');if(job.status!=='complete')throw new Error('Не вдалося отримати результат перевірки');renderDocumentCheck(job.result);activeDocsRow.documentCheckStatus=job.result.counts.error?'error':job.result.counts.warning?'warning':job.result.counts.ok?'ok':'neutral';activeDocsRow.documentCheckCategories=Object.fromEntries(Object.entries(job.result.category_results||{}).map(([key,value])=>[key,value.status]));activeDocsRow.documentCheckedAt=displayDate(job.result.checked_at||new Date().toISOString());renderInPlace()}catch(error){$('#documentCheckBody').innerHTML=`<div class="check-notice error">${esc(error.message)}</div>`}}
 async function saveDocumentReview(){if(!activeDocsRow)return;const authority=$('#authorityReviewSelect')?.value||'',mvsSeal=$('#mvsSealReviewSelect')?.value||'';try{await saveField(activeDocsRow,'authorityReview',authority);await saveField(activeDocsRow,'mvsSealReview',mvsSeal);activeDocsRow.authorityReview=authority;activeDocsRow.mvsSealReview=mvsSeal;if(lastDocumentCheck){lastDocumentCheck.authority_review=authority;lastDocumentCheck.mvs_seal_review=mvsSeal}toast('Ручні підтвердження збережено');await loadRows()}catch(error){toast(error.message)}}
 function renderProfiles(){normalizeProfiles();$('#profileSelect').innerHTML=profiles.map(p=>`<option value="${p.id}" ${p.id===activeProfileId?'selected':''}>${p.is_system?'Системний':'Мій'}: ${esc(p.name)}</option>`).join('');const p=profile(),admin=currentMe?.role==='admin';$('#createSystemProfileBtn').hidden=!admin;$('#renameProfileBtn').disabled=p.is_system&&!admin;$('#deleteProfileBtn').disabled=p.is_system&&!admin;$('#restoreProfileBtn').disabled=!(p.source_system_profile_id||p.is_system)}
-let profileSaveTimer;function persistProfileLayout(){const p=profile();if(!p||p.id==='local-default'||(p.is_system&&currentMe?.role!=='admin'))return;clearTimeout(profileSaveTimer);profileSaveTimer=setTimeout(()=>request(`${API}/application-profiles/${encodeURIComponent(p.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({columns:p.columns,kpis:p.kpis,sorts:p.sorts||multiSort})}).catch(error=>toast(error.message)),250)}
+let profileSaveTimer;function persistProfileLayout(){profilesGeneration++;const p=profile();if(!p||p.id==='local-default'||(p.is_system&&currentMe?.role!=='admin'))return;clearTimeout(profileSaveTimer);profileSaveTimer=setTimeout(()=>request(`${API}/application-profiles/${encodeURIComponent(p.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({columns:p.columns,kpis:p.kpis,sorts:p.sorts||multiSort})}).catch(error=>toast(error.message)),250)}
 const persistProfileColumns=persistProfileLayout;
 function columnsDialog(){
   const p=profile(),box=$('#columnsList');let search=$('#columnSettingsSearch');
@@ -468,6 +473,11 @@ function renderProfileFallback(){
   renderProfiles();
 }
 async function reloadApplicationsRegistry({reloadMetadata=true}={}){
+  if(registryReloadPromise)return registryReloadPromise;
+  registryReloadPromise=reloadApplicationsRegistryData({reloadMetadata}).finally(()=>{registryReloadPromise=null});
+  return registryReloadPromise;
+}
+async function reloadApplicationsRegistryData({reloadMetadata=true}={}){
   const failures=[];
   if(reloadMetadata){
     const primary=await Promise.allSettled([loadProfiles(),loadAuthorizedOfficers(),loadSearchFields()]);
@@ -476,7 +486,7 @@ async function reloadApplicationsRegistry({reloadMetadata=true}={}){
     const secondary=await Promise.allSettled([loadPrimaryFilterOptions(),loadFrameworks(),loadSupplierOptions()]);
     secondary.forEach((result,index)=>{if(result.status==='rejected')failures.push(['filter options','frameworks','supplier options'][index])});
   }
-  statsSignature='';
+  invalidateRegistryStats();
   const [rowsOk,statsOk]=await Promise.all([loadRows(),loadStats()]);
   if(!rowsOk)failures.push('applications');
   if(!statsOk)failures.push('stats');
@@ -1937,7 +1947,7 @@ loadAdminOfficers=async function(){
 const storedLocalRole=localStorage.getItem(localRoleKey);if(storedLocalRole&&$('#roleSelect').querySelector(`option[value="${storedLocalRole}"]`))$('#roleSelect').value=storedLocalRole;
 $('#resetBtn').textContent='Оновити з Prozorro';
 let applicationsRegistryInitialization=null,applicationsRegistryInitialized=false;
-const initializeApplicationsRegistry=()=>{if(applicationsRegistryInitialized)return Promise.resolve();if(applicationsRegistryInitialization)return applicationsRegistryInitialization;applicationsRegistryInitialization=(async()=>{for(let attempt=0;attempt<3;attempt++){try{const result=await reloadApplicationsRegistry({reloadMetadata:true});if(result.ok){applicationsRegistryInitialized=true;return}if(attempt===2)throw new Error(`Не завантажено: ${result.failures.join(', ')}`)}catch(error){if(attempt===2){renderProfileFallback();loading=false;render();toast(`Не вдалося ініціалізувати реєстр: ${error.message}`,'error');return}}await new Promise(resolve=>setTimeout(resolve,350*(attempt+1)))}})().finally(()=>{applicationsRegistryInitialization=null});return applicationsRegistryInitialization};
+const initializeApplicationsRegistry=()=>{if(applicationsRegistryInitialization)return applicationsRegistryInitialization;if(applicationsRegistryInitialized)return reloadApplicationsRegistry({reloadMetadata:false});applicationsRegistryInitialization=(async()=>{for(let attempt=0;attempt<3;attempt++){try{const result=await reloadApplicationsRegistry({reloadMetadata:true});if(result.ok){applicationsRegistryInitialized=true;return}if(attempt===2)throw new Error(`Не завантажено: ${result.failures.join(', ')}`)}catch(error){if(attempt===2){renderProfileFallback();loading=false;render();toast(`Не вдалося ініціалізувати реєстр: ${error.message}`,'error');return}}await new Promise(resolve=>setTimeout(resolve,350*(attempt+1)))}})().finally(()=>{applicationsRegistryInitialization=null});return applicationsRegistryInitialization};
 $('#applicationsNav').onclick=()=>{showModule('applications');initializeApplicationsRegistry()};
 authReady.then(()=>{if(activeModule==='applications')return initializeApplicationsRegistry()},()=>{if(activeModule==='applications')return initializeApplicationsRegistry()});
 refreshSyncStatus();setInterval(refreshSyncStatus,30000);
