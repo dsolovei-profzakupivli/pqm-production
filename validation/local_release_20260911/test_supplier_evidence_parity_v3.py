@@ -43,6 +43,57 @@ class ParityTests(unittest.TestCase):
         self.con.execute("ALTER TABLE application_fields ADD COLUMN protocol_date TEXT")
         self.con.execute("ALTER TABLE qualifications ADD COLUMN decision_date TEXT")
 
+    def officer_comparison(self, left, right, records):
+        self.con.execute("CREATE TABLE authorized_officers(id INTEGER PRIMARY KEY,full_name TEXT,active INTEGER)")
+        self.con.executemany("INSERT INTO authorized_officers VALUES (?,?,?)", records)
+        self.c2()
+        p = runner.compact_projection(runner.adapter.project_supplier(self.con, "45054758", as_of_at=fixtures.NOW))
+        p["last_verification_officer"] = right
+        old = {"last_verification_officer": left, "last_verification_date": p["last_verification_date"], "verification_source": "fixture"}
+        before = self.con.total_changes
+        self.con.execute("PRAGMA query_only=ON")
+        result = runner.compare("45431261", old, p, con=self.con)
+        self.assertEqual(self.con.total_changes, before)
+        self.assertEqual(old["last_verification_officer"], left)
+        self.assertEqual(p["last_verification_officer"], right)
+        return result
+
+    def test_event_125_canonical_officer_6_raw_preserved(self):
+        result = self.officer_comparison("Тетяна ФЕДЧЕНКО", "ТЕТЯНА ФЕДЧЕНКО", [(6,"ТЕТЯНА ФЕДЧЕНКО",1)])
+        self.assertIn("TRUE_PARITY", result["classifications"])
+        self.assertNotIn("UNEXPECTED_MISMATCH", result["classifications"])
+        self.assertEqual(result["officer_presentation_differences"][0]["canonical_officer_id"], 6)
+
+    def test_case_spacing_same_active_officer_identity(self):
+        result = self.officer_comparison("  Тетяна   ФЕДЧЕНКО ", "ТЕТЯНА ФЕДЧЕНКО", [(6,"ТЕТЯНА ФЕДЧЕНКО",1)])
+        self.assertIn("TRUE_PARITY", result["classifications"])
+
+    def test_different_canonical_officers_remain_mismatch(self):
+        result = self.officer_comparison("Тетяна ФЕДЧЕНКО", "Світлана НАМЯСЕНКО", [(6,"ТЕТЯНА ФЕДЧЕНКО",1),(1,"СВІТЛАНА НАМЯСЕНКО",1)])
+        self.assertIn("UNEXPECTED_MISMATCH", result["classifications"])
+        self.assertNotIn("TRUE_PARITY", result["classifications"])
+
+    def test_ambiguous_officer_never_parity(self):
+        result = self.officer_comparison("Тетяна ФЕДЧЕНКО", "ТЕТЯНА ФЕДЧЕНКО", [(6,"ТЕТЯНА ФЕДЧЕНКО",1),(9,"Тетяна ФЕДЧЕНКО",1)])
+        self.assertIn("MISSING_PROVENANCE", result["classifications"])
+        self.assertIn("UNEXPECTED_MISMATCH", result["classifications"])
+        self.assertNotIn("TRUE_PARITY", result["classifications"])
+
+    def test_missing_attribution_has_no_fallback(self):
+        result = self.officer_comparison(None, "ТЕТЯНА ФЕДЧЕНКО", [(6,"ТЕТЯНА ФЕДЧЕНКО",1)])
+        self.assertIn("UNEXPECTED_MISMATCH", result["classifications"])
+        self.assertEqual(result["officer_identity_gaps"][0]["legacy"]["id"], None)
+
+    def test_inactive_officer_not_identity_match(self):
+        result = self.officer_comparison("Тетяна ФЕДЧЕНКО", "ТЕТЯНА ФЕДЧЕНКО", [(6,"ТЕТЯНА ФЕДЧЕНКО",0)])
+        self.assertNotIn("TRUE_PARITY", result["classifications"])
+        self.assertIn("MISSING_PROVENANCE", result["classifications"])
+
+    def test_equal_raw_names_do_not_hide_ambiguous_identity(self):
+        result = self.officer_comparison("ТЕТЯНА ФЕДЧЕНКО", "ТЕТЯНА ФЕДЧЕНКО", [(6,"ТЕТЯНА ФЕДЧЕНКО",1),(9,"ТЕТЯНА ФЕДЧЕНКО",1)])
+        self.assertNotIn("TRUE_PARITY", result["classifications"])
+        self.assertIn("MISSING_PROVENANCE", result["classifications"])
+
     def test_actual_targeted_legacy_reader_c2_parity(self):
         self.c2()
         self.fixture.application("45054758", "s1", "2023-03-08T15:49:05+02:00")

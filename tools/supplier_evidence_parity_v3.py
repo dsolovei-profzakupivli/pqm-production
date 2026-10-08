@@ -149,9 +149,23 @@ def compact_projection(p):
         "legacy_native_links": p["legacy_native_links"]}
 
 
-def compare(code, old, new):
+def officer_identity(con, value):
+    """Diagnostic-only, bounded lookup; never infer an officer from assignment."""
+    if not str(value or "").strip():
+        return {"status": "missing", "id": None}
+    if con is None or not adapter._columns(con, "authorized_officers"):
+        return {"status": "unavailable", "id": None}
+    legacy.register_verification_sql_functions(con)
+    rows = adapter._rows(con, """SELECT id FROM authorized_officers
+        WHERE active=1 AND NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?)""", (value,))
+    return {"status": "unique" if len(rows) == 1 else "ambiguous" if rows else "missing",
+        "id": rows[0]["id"] if len(rows) == 1 else None}
+
+
+def compare(code, old, new, *, con=None):
     labels, differences = [], []
     compared = []
+    presentation, identity_gaps = [], []
     for field in ("edr_status", "prozorro_status", "monitoring_eligible", "last_verification_date", "last_verification_officer", "last_application_date"):
         # Unknown is not equality or a mismatch; retain it explicitly in source coverage.
         known_absence = field.startswith("last_verification_") and bool(old.get("verification_source"))
@@ -159,6 +173,26 @@ def compare(code, old, new):
             continue
         compared.append(field)
         value = "Припинений" if field == "prozorro_status" and old[field] == "Призупинений" else old[field]
+        reconstructed = ((new.get("last_verification") or {}).get("event_kind") == "admission"
+            and (old.get("verification_identity", {}).get("event_type") == "admission"
+                or code in COHORTS["stale_active"] and old.get(field) is None))
+        identity_check = (value != new.get(field) or
+            bool(str(value or "").strip()) and con is not None and bool(adapter._columns(con, "authorized_officers")))
+        if field == "last_verification_officer" and identity_check and not reconstructed:
+            left, right = officer_identity(con, value), officer_identity(con, new.get(field))
+            identity = {"legacy": left, "v3": right}
+            if left["status"] == right["status"] == "unique" and left["id"] == right["id"]:
+                if value != new.get(field):
+                    presentation.append({"field": field, "legacy": value, "v3": new.get(field),
+                        "canonical_officer_id": left["id"], "identity_match": True})
+                continue
+            if left["status"] != "unique" or right["status"] != "unique":
+                identity_gaps.append({"field": field, "gap_type": "officer_identity_unproven", **identity})
+                labels.append("MISSING_PROVENANCE")
+            differences.append({"field": field, "legacy": value, "v3": new.get(field),
+                "classification": "UNEXPECTED_MISMATCH", "canonical_identity": identity})
+            labels.append("UNEXPECTED_MISMATCH")
+            continue
         if value == new.get(field):
             continue
         expected = (field == "edr_status" and old[field] == "Неактуально"
@@ -208,9 +242,10 @@ def compare(code, old, new):
     current_known = new["current_event"] is not None or new["prozorro_status"] == "Ще не в реєстрі"
     if not current_known:
         labels.append("MISSING_PROVENANCE")
-    if not differences and compared and not unresolved and current_known:
+    if not differences and compared and not unresolved and not identity_gaps and current_known:
         labels.append("TRUE_PARITY")  # Known overlapping fields ONLY, never a UI parity claim.
     return {"classifications": sorted(set(labels)), "differences": differences,
+        "officer_presentation_differences": presentation, "officer_identity_gaps": identity_gaps,
         "comparison_scope": "known_overlap_only_NOT_UI_cutover_acceptance", "compared_fields": compared,
         "known_equal_fields": [f for f in compared if not any(d["field"] == f for d in differences)],
         "unresolved_evidence_gaps": unresolved, "history_only_gaps": history_only,
@@ -272,7 +307,7 @@ def run(con, codes, *, as_of_at):
         new = compact_projection(adapter.project_supplier(con, code, as_of_at=as_of_at))
         t3 = time.perf_counter()
         row = {"supplier_code": code, "cohorts": [n for n, cs in COHORTS.items() if code in cs],
-            "legacy": old, "v3": new, **compare(code, old, new), "source_budgets": budgets,
+            "legacy": old, "v3": new, **compare(code, old, new, con=con), "source_budgets": budgets,
             "timing_ms": {"budget": (t1-t)*1000, "legacy": (t2-t1)*1000, "v3": (t3-t2)*1000, "total": (t3-t)*1000}}
         row["contract_checks"] = contract_checks(code, new)
         failed = [k for k, value in row["contract_checks"].items() if not value]
