@@ -196,7 +196,7 @@ class OperationalUiJsTests(unittest.TestCase):
         script=r'''
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const src=fs.readFileSync('app.js','utf8');
-const names=['operationalSummaryLink','operationalBasisHtml','operationalDecisionHtml','operationalQualificationHtml','operationalTerminalHtml','operationalTaskHumanState'];
+const names=['operationalSummaryLink','operationalBasisHtml','operationalDecisionHtml','operationalQualificationHtml','operationalResultHtml','operationalTerminalHtml','operationalTaskHumanState'];
 const c={esc:x=>String(x??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),displayDateOnly:x=>x||''};vm.createContext(c);
 for(const name of names){const line=src.split('\n').find(x=>x.startsWith('function '+name+'('));assert(line,name);vm.runInContext(line,c)}
 const value={task_type:'nazk_check',status:'completed',result_summary:{label:'Спростовано'},officer_decision:{number:'P1',date:'2026-10-01',documents:[]},supplier_requests:[{filename:'Request',download_url:'/api/operational-tasks/t/documents/1/download'}]};
@@ -211,6 +211,131 @@ assert(src.includes("confirmed=!terminal&&result==='confirmed'"));
 assert(src.includes("operationalTerminalHtml(item)+operationalNazkWorkspace(item)"));
 assert(src.includes("hidden=['completed','cancelled'].includes(item.status)"));
 console.log('Operational UI interactions PASS');
+'''
+        result=subprocess.run([node,'-e',script],cwd=ROOT,capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
+
+class OperationalV2TargetTests(unittest.TestCase):
+    def setUp(self):
+        self.con=sqlite3.connect(':memory:');self.con.row_factory=sqlite3.Row
+        self.con.executescript('''
+          CREATE TABLE operational_task_qualifications(task_id,qualification_id,registry_contract_id,relation_type);
+          CREATE TABLE qualifications(id,submission_id,framework_id,status);
+          CREATE TABLE submissions(id,supplier_code,framework_id);
+          CREATE TABLE frameworks(id,dk_code,title);
+          CREATE TABLE registry_contracts(id,qualification_id,supplier_code,status,milestones_json,framework_id);
+          INSERT INTO qualifications VALUES('q','s','f','active');
+          INSERT INTO submissions VALUES('s','123','f');
+          INSERT INTO frameworks VALUES('f','12300000','Selection');
+          INSERT INTO operational_task_qualifications VALUES('t','q','exact','targeted_exclusion');
+          INSERT INTO registry_contracts VALUES('exact','q','123','terminated','[]','f'),
+            ('latest','q','123','active','[]','f');
+        ''')
+    def tearDown(self): self.con.close()
+    def rows(self,events=None):
+        return tasks.amcu_target_ui_rows(self.con,item(events=events or []))
+    def test_exact_target_not_latest_contract_and_inactivity_not_proof(self):
+        row=self.rows()[0]
+        self.assertEqual(row['registry_contract_id'],'exact')
+        self.assertEqual(row['registry_status'],'terminated')
+        self.assertEqual(row['submission_id'],'s')
+        self.assertEqual(row['sync_evidence'],[])
+        self.assertIn('DECISION_SPECIFIC_EXCLUSION_NOT_PROVEN',row['limitations'])
+    def test_sync_requires_both_exact_identities(self):
+        event={'id':9,'event_type':'amcu_exclusion_confirmed_by_sync','created_at':'2026-09-16',
+               'metadata':{'qualification_ids':['q'],'registry_contract_ids':['latest']}}
+        self.assertFalse(self.rows([event])[0]['sync_evidence'])
+        event['metadata']['registry_contract_ids']=['exact']
+        self.assertEqual(self.rows([event])[0]['sync_evidence'][0]['event_id'],9)
+    def test_document_resource_identity_not_filename_protocol_proof(self):
+        payload=[{'id':'m','type':'activation','documents':[{'id':'doc','url':'https://example.test/signed',
+                                                         'title':'706.pdf.asice.zip'}]}]
+        self.con.execute('UPDATE registry_contracts SET milestones_json=? WHERE id=?',(json.dumps(payload),'exact'))
+        doc=self.rows()[0]['registry_documents'][0]
+        self.assertEqual(doc['registry_contract_id'],'exact')
+        self.assertEqual(doc['document_id'],'doc')
+        self.assertEqual(doc['protocol_identity'],'NOT_PROVEN')
+        self.assertFalse(doc['exclusion_proof'])
+    def test_conflicting_source_and_malformed_documents_fail_closed(self):
+        self.con.execute("UPDATE registry_contracts SET qualification_id='other',milestones_json='invalid' WHERE id='exact'")
+        row=self.rows()[0]
+        self.assertFalse(row['source_identity_proven'])
+        self.assertFalse(row['registry_documents'])
+        self.assertIn('SOURCE_IDENTITY_NOT_PROVEN',row['limitations'])
+    def test_target_model_query_only(self):
+        self.con.commit();self.con.execute('PRAGMA query_only=ON')
+        allowed={sqlite3.SQLITE_SELECT,sqlite3.SQLITE_READ,sqlite3.SQLITE_FUNCTION}
+        self.con.set_authorizer(lambda a,*rest:sqlite3.SQLITE_OK if a in allowed else sqlite3.SQLITE_DENY)
+        before=self.con.total_changes
+        self.assertEqual(self.rows(),self.rows())
+        self.assertEqual(self.con.total_changes,before)
+
+    def test_minimal_source_without_document_metadata_is_explicit_not_proven(self):
+        self.con.execute('ALTER TABLE registry_contracts DROP COLUMN milestones_json')
+        row=self.rows()[0]
+        self.assertEqual(row['registry_documents'],[])
+        self.assertIn('REGISTRY_DOCUMENT_METADATA_NOT_AVAILABLE',row['limitations'])
+
+    def test_multiple_contracts_explicit_ambiguity_and_malformed_receipt(self):
+        self.con.execute("INSERT INTO operational_task_qualifications VALUES('t','q','latest','targeted_exclusion')")
+        event={'event_type':'amcu_exclusion_confirmed_by_sync','created_at':'2026-09-16',
+               'metadata':{'qualification_ids':'q','registry_contract_ids':'exact'}}
+        rows=self.rows([event])
+        self.assertEqual(len(rows),2)
+        for row in rows:
+            self.assertFalse(row['sync_evidence'])
+            self.assertIn('MULTIPLE_LINKED_CONTRACTS_DISPLAYED_SEPARATELY',row['limitations'])
+
+
+class OperationalV2JsTests(unittest.TestCase):
+    def test_v2_identity_formatting_visibility_and_safe_documents(self):
+        node=shutil.which('node') or 'C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe'
+        script=r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),src=fs.readFileSync('app.js','utf8');
+const c={esc:v=>String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),displayDateOnly:x=>x||'',displayDate:x=>x||'',operationalListTrigger:()=> 'Виявлено запис у Реєстрі НАЗК',operationalListAction:x=>x.status==='completed'?'':'Перевірити'};vm.createContext(c);
+for(const name of ['operationalCapturedPerson','operationalPersonHtml','operationalTriggerHtml','operationalResultHtml','operationalActionColumnVisible','operationalSummaryLink','operationalBasisHtml','operationalDecisionHtml','operationalTerminalHtml','operationalAmcuTargetsHtml'])vm.runInContext(src.split('\n').find(x=>x.startsWith('function '+name+'(')),c);
+const item={task_type:'nazk_check',status:'completed',source_context:{person_name:'CAPTURED <PERSON>'},current_manager:{manager_name:'CHANGED'},result_summary:{label:null}};
+assert(c.operationalTriggerHtml(item).includes('CAPTURED &lt;PERSON>'));assert(!c.operationalTriggerHtml(item).includes('CHANGED'));
+assert(c.operationalPersonHtml({...item,source_context:{}}).includes('data-person-defect'));
+assert(c.operationalPersonHtml({...item,source_context:{person_name:['ONE','TWO']}}).includes('data-person-defect'));
+assert.equal(c.operationalResultHtml(item),'');assert.equal(c.operationalDecisionHtml(item),'');
+assert.equal(c.operationalDecisionHtml({officer_decision:{number:'706'}}),'№ 706');
+assert.equal(c.operationalDecisionHtml({officer_decision:{date:'2026-09-16'}}),'від 2026-09-16');
+assert(!c.operationalTerminalHtml(item).includes('Рішення УО'));
+assert(!c.operationalActionColumnVisible([item]));assert(c.operationalActionColumnVisible([item,{status:'new'}]));
+assert.equal(c.operationalBasisHtml({basis_items:[{kind:'nazk_sentence'}]}),'Запис у Реєстрі НАЗК');
+assert(c.operationalBasisHtml({basis_items:[{kind:'nazk_sentence',number:'706'},{kind:'nazk_sentence',date:'2026-09-16'}]}).includes('Інші підстави (1)'));
+const table=c.operationalAmcuTargetsHtml({amcu_target_rows:[{qualification_id:'q',registry_contract_id:'exact',submission_id:'s',registry_status:'terminated',registry_documents:[{document_id:'d',url:'javascript:evil',title:'706.pdf.asice.zip'}]}]});
+assert(table.includes('NOT_PROVEN'));assert(!table.includes('href="javascript:'));assert(table.includes('exact'));
+vm.runInContext(src.slice(src.indexOf('function operationalV2Layout('),src.indexOf('const openOperationalTaskPolished=')),c);
+class Element{
+ constructor(kind){this.kind=kind;this.children=[];this.parentNode=null;this.innerHTML='';this.textContent=''}
+ append(...nodes){for(const n of nodes){if(n.parentNode)n.parentNode.children=n.parentNode.children.filter(x=>x!==n);this.children.push(n);n.parentNode=this}}
+ prepend(n){this.append(n);this.children.unshift(this.children.pop())}
+ insertBefore(n,before){this.append(n);this.children.pop();this.children.splice(this.children.indexOf(before),0,n)}
+ remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(x=>x!==this);this.parentNode=null}
+ querySelector(s){if(s==='h3'&&this.kind==='coverage')return {textContent:'Кваліфікації, яких стосується рішення'};if(s==='.operational-history-details')return this.children.find(x=>x.kind==='history');return null}
+ querySelectorAll(){return []}
+ get firstElementChild(){return new Element('targets')}
+}
+c.document={createElement:kind=>new Element(kind)};
+for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_exclusion'])for(const status of ['new','completed']){
+ const workspace=new Element('workspace'),history=new Element('history'),coverage=new Element('coverage'),person=new Element('person');workspace.append(history,coverage);
+ const body={querySelector:s=>s==='.operational-workspace'?workspace:person};
+ c.operationalV2Layout({task_type:type,status,source_context:{person_name:'CAPTURED'},nazk_current_state:{result:'refuted'},qualification_summary:{coverage:{linked:0},residual:{linked_active:0,outside_linked_active:0}},amcu_target_rows:type==='amcu_exclusion'?[{}]:[],events:[]},body);
+ assert.equal(workspace.children.at(-1),history,type+' '+status+' history last');
+ if(type==='nazk_check'||type==='warning_block')assert(!workspace.children.includes(coverage));
+ if(type==='nazk_check')assert(person.innerHTML.includes('CAPTURED'));
+}
+{
+ const workspace=new Element('workspace'),history=new Element('history'),coverage=new Element('coverage');workspace.append(history,coverage);
+ c.operationalV2Layout({task_type:'nazk_check',status:'in_progress',source_context:{person_name:'CAPTURED'},nazk_current_state:{result:'confirmed'},qualification_summary:{coverage:{linked:1},residual:{}}},{querySelector:s=>s==='.operational-workspace'?workspace:null});
+ assert(workspace.children.includes(coverage));assert.equal(workspace.children.at(-1),history);
+}
+assert(src.includes("confirmed=!terminal&&result==='confirmed'"));
+assert(src.includes("generation.can_manage"));assert(src.includes('installSharedDetailWindow'));
+console.log('Operational v2 JS assertions PASS');
 '''
         result=subprocess.run([node,'-e',script],cwd=ROOT,capture_output=True,text=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)

@@ -946,6 +946,75 @@ def qualification_ui_summary(con,item):
                         'limitation':'Поточна активність не доводить історичне виключення або поширення конкретного рішення на всі кваліфікації.'}}
 
 
+def amcu_target_ui_rows(con, item):
+    """Exact linked resources; neither current inactivity nor a document proves exclusion."""
+    rows=[]
+    columns={column[0] for column in con.execute('SELECT * FROM registry_contracts WHERE 0').description}
+    milestones_column='rc.milestones_json' if 'milestones_json' in columns else 'NULL'
+    for link in con.execute(f'''SELECT l.qualification_id,l.registry_contract_id,l.relation_type,
+      q.submission_id,q.status qualification_status,s.supplier_code,s.framework_id submission_framework_id,
+      f.dk_code,f.title framework_title,rc.status registry_status,rc.qualification_id contract_qualification_id,
+      rc.supplier_code contract_supplier_code,rc.framework_id contract_framework_id,{milestones_column} milestones_json
+      FROM operational_task_qualifications l
+      LEFT JOIN qualifications q ON q.id=l.qualification_id
+      LEFT JOIN submissions s ON s.id=q.submission_id
+      LEFT JOIN registry_contracts rc ON rc.id=l.registry_contract_id
+      LEFT JOIN frameworks f ON f.id=rc.framework_id
+      WHERE l.task_id=? AND l.relation_type='targeted_exclusion'
+      ORDER BY l.qualification_id,l.registry_contract_id''',(item['id'],)):
+        target=dict(link); limitations=[]; receipts=[]; documents=[]
+        if 'milestones_json' not in columns:
+            limitations.append('REGISTRY_DOCUMENT_METADATA_NOT_AVAILABLE')
+        identity_ok=(bool(target['submission_id'])
+          and _digits(target['supplier_code'])==_digits(item['supplier_code'])
+          and target['contract_qualification_id']==target['qualification_id']
+          and _digits(target['contract_supplier_code'])==_digits(item['supplier_code'])
+          and bool(target['contract_framework_id'])
+          and target['submission_framework_id']==target['contract_framework_id'])
+        if not identity_ok: limitations.append('SOURCE_IDENTITY_NOT_PROVEN')
+        for event in item.get('events',[]):
+            proof=event.get('metadata') or {}
+            if (identity_ok and event.get('event_type')=='amcu_exclusion_confirmed_by_sync'
+                and _basis_date(event.get('created_at'))
+                and isinstance(proof.get('qualification_ids'),list)
+                and isinstance(proof.get('registry_contract_ids'),list)
+                and target['qualification_id'] in proof['qualification_ids']
+                and target['registry_contract_id'] in proof['registry_contract_ids']):
+                receipts.append({'event_id':event.get('id'),'at':event['created_at'],
+                                 'provenance':'task-scoped qualification + contract sync receipt'})
+        try:
+            milestones=json.loads(target.pop('milestones_json') or '[]')
+            if not isinstance(milestones,list): raise ValueError('milestones')
+            seen=set()
+            for milestone in milestones if identity_ok else []:
+                raw=milestone.get('documents') or []
+                if isinstance(raw,dict): raw=[d for versions in raw.values() for d in versions]
+                for doc in raw:
+                    if not isinstance(doc,dict): raise ValueError('document')
+                    identity=doc.get('id')
+                    if not identity or not doc.get('url'):
+                        limitations.append('DOCUMENT_IDENTITY_NOT_PROVEN'); continue
+                    key=(identity,doc['url'])
+                    if key in seen: continue
+                    seen.add(key)
+                    documents.append({'document_id':identity,'url':doc['url'],'title':doc.get('title'),
+                      'date':doc.get('dateModified') or doc.get('datePublished'),
+                      'qualification_id':target['qualification_id'],'registry_contract_id':target['registry_contract_id'],
+                      'milestone_id':milestone.get('id'),'milestone_type':milestone.get('type'),
+                      'provenance':'exact linked registry_contract.milestones_json',
+                      'protocol_identity':'NOT_PROVEN', 'exclusion_proof':False})
+        except (ValueError,TypeError,AttributeError):
+            limitations.append('DOCUMENT_METADATA_MALFORMED'); documents=[]
+        if not receipts: limitations.append('DECISION_SPECIFIC_EXCLUSION_NOT_PROVEN')
+        target.update(sync_evidence=receipts,registry_documents=documents,
+                      source_identity_proven=identity_ok,limitations=sorted(set(limitations)))
+        rows.append(target)
+    for target in rows:
+        if sum(row['qualification_id']==target['qualification_id'] for row in rows)>1:
+            target['limitations'].append('MULTIPLE_LINKED_CONTRACTS_DISPLAYED_SEPARATELY')
+    return rows
+
+
 def _task(con,row,detail=False):
     item=dict(row); item["source_context"]=_loads(item["source_context"]); item["document_context"]=_loads(item["document_context"]); item["metadata"]=_loads(item["metadata"])
     item["overdue"]=bool(item.get("due_at") and item["due_at"]<now_iso() and item["status"] not in TERMINAL)
@@ -1047,6 +1116,8 @@ def _task(con,row,detail=False):
             item["highlighting_active"]=bool(item.get("blocking_decision",{}).get("used_for_blocking") and end>=date.today().isoformat())
         item["document_context"]=build_document_context(item)
         item['qualification_summary']=qualification_ui_summary(con,item)
+        if item['task_type']=='amcu_exclusion':
+            item['amcu_target_rows']=amcu_target_ui_rows(con,item)
     ui_tables=item.pop('_ui_tables',None)
     item.update(task_ui_summary(con,item,set(ui_tables.split(',')) if ui_tables is not None else None))
     return item

@@ -384,6 +384,13 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 #operationalTaskDialog>form{height:min(880px,calc(100vh - 30px));display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden}
 #operationalTaskDialog .request-details-body{max-height:none;min-height:0;width:100%;padding:0;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);background:#edf2f6}
 .operational-workspace .operational-channels{display:block}
+#operationalTaskDialog .operational-workspace{padding:8px 12px 12px}
+#operationalTaskDialog .operational-workspace>section{padding:8px 10px;margin-bottom:8px}
+#operationalTaskDialog .operational-targets td small{display:block;overflow-wrap:anywhere}
+#operationalTaskDialog .operational-targets table{min-width:640px}
+#operationalTaskDialog .operational-targets p{margin:3px 0}
+#operationalTaskDialog .operational-context-card{max-height:35vh;overflow:auto}
+@media(max-width:650px){#operationalTaskDialog .operational-summary .operational-compact-facts{grid-template-columns:1fr 1fr}#operationalTaskDialog .operational-workspace{padding:6px}}
 .operational-workspace .operational-channel-card{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0;background:transparent}
 .operational-channel-card>h4{flex:0 0 140px}.operational-channel-card>.violation-inline-actions{margin-left:auto}
 .operational-channel-card>.operational-inline-form,.operational-responses>.operational-inline-form{flex-basis:100%;width:100%}
