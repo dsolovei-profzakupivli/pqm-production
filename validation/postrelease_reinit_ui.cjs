@@ -10,7 +10,7 @@ assert.ok(profileInitializer,'application profile initializer exists');
 
 function profileScenario(outcomes){
   let calls=0;const notices=[];
-  const context={Promise,Error,setTimeout:fn=>fn(),loading:false,
+  const context={Promise,Error,authReady:Promise.resolve(),profilesMetadataReady:true,setTimeout:fn=>fn(),loading:false,
     reloadApplicationsRegistry:async()=>{calls++;const result=outcomes.shift();return result instanceof Error?Promise.reject(result):result},
     renderProfileFallback:()=>{},render:()=>{},toast:(...args)=>notices.push(args)};
   vm.runInNewContext(`let applicationsRegistryInitialization=null,applicationsRegistryInitialized=false;${profileInitializer}\n`+

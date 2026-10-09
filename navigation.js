@@ -19,7 +19,7 @@
   function values(){const root=view();return [...(root?.querySelectorAll('input[id],select[id],textarea[id]')||[])].filter(e=>!e.closest('tbody,dialog')&&!['password','file','hidden'].includes(e.type)&&(activeModule!=='administration'||e.closest('#adminSchemaPanel'))).map(e=>({id:e.id,value:e.value,checked:e.checked,selected:e.multiple?[...e.selectedOptions].map(o=>o.value):null}))}
   function restoreValues(items){for(const x of items||[]){const e=document.getElementById(x.id);if(!e)continue;e.value=x.value;if('checked'in e)e.checked=x.checked;if(x.selected)for(const o of e.options)o.selected=x.selected.includes(o.value)}}
   const models={
-    applications:{get:()=>({page,sortKey,sortDirection,multiSort,officerFilter,categoryFilter,activeProfileId,activeRow,selected:[...selected],layout:profile().columns,kpis:profile().kpis,deepLinkSubmissionId,selections:Object.fromEntries(Object.entries(filterSelections).map(([k,v])=>[k,[...v]]))}),set:s=>{({page,sortKey,sortDirection,multiSort,officerFilter,categoryFilter,activeProfileId,activeRow,deepLinkSubmissionId}=s);selected.clear();(s.selected||[]).forEach(x=>selected.add(x));profile().columns=s.layout;profile().kpis=s.kpis;for(const [k,v]of Object.entries(s.selections)){filterSelections[k].clear();v.forEach(x=>filterSelections[k].add(x))}syncPrimaryFilters();renderProfiles()},load:()=>loadRows()},
+    applications:{get:()=>({page,sortKey,sortDirection,multiSort,officerFilter,categoryFilter,activeProfileId,activeRow,selected:[...selected],layout:profile().columns,kpis:profile().kpis,deepLinkSubmissionId,selections:Object.fromEntries(Object.entries(filterSelections).map(([k,v])=>[k,[...v]]))}),set:s=>{({page,sortKey,sortDirection,multiSort,officerFilter,categoryFilter,activeProfileId,activeRow,deepLinkSubmissionId}=s);selected.clear();(s.selected||[]).forEach(x=>selected.add(x));profile().columns=s.layout;profile().kpis=s.kpis;for(const [k,v]of Object.entries(s.selections)){filterSelections[k].clear();v.forEach(x=>filterSelections[k].add(x))}syncPrimaryFilters();renderProfiles()},load:()=>initializeApplicationsRegistry()},
     history:{get:()=>({historyPage,historySorts,historyColumns}),set:s=>{({historyPage,historySorts,historyColumns}=s);drawHistorySort()},load:()=>loadApplicationHistory()},
     suppliers:{get:()=>({supplierRegistryPage,supplierRegistryRisk}),set:s=>{({supplierRegistryPage,supplierRegistryRisk}=s)},load:()=>loadQualifiedSuppliersFiltered()},
     frameworks:{get:()=>({frameworkPage,frameworkSort,frameworkDirection}),set:s=>{({frameworkPage,frameworkSort,frameworkDirection}=s)},load:()=>loadFrameworkAnalytics()},
@@ -53,7 +53,7 @@
     }
     if(entry.route.module==='history')syncHistorySupplierCardButton();
     if(entry.route.reference)originalReference(entry.route.reference);
-    if(entry.model)await models[entry.route.module]?.load();
+    if(entry.model||entry.route.module==='applications')await models[entry.route.module]?.load();
     if(entry.route.module==='applications'&&entry.model){models.applications.set(clone(entry.model));render()}
     if(entry.route.supplier)await originalSupplier(entry.route.supplier,entry.route.context);
     if(entry.route.request)await originalRequestById(entry.route.request);
