@@ -840,6 +840,112 @@ def build(con, actor="PQM task builder", *, include_nazk=False):
     return counts
 
 
+def _basis_date(value):
+    """Sort only proven calendar dates; absent/invalid dates stay absent."""
+    try:
+        return date.fromisoformat(str(value or '')[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def task_ui_summary(con, item, tables=None):
+    """Additive, task-scoped read model. No materialization or readiness writes."""
+    if tables is None:
+        tables={r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    task_id=item['id']; kind=item['task_type']; source=item.get('source_context') or {}
+    basis=[]
+    if kind=='amcu_exclusion' and {'operational_task_amcu_decisions','amcu_registry'} <= tables:
+        for r in con.execute('''SELECT a.*,l.extract_url FROM operational_task_amcu_decisions l
+          JOIN amcu_registry a ON a.row_key=l.amcu_decision_id WHERE l.task_id=?''',(task_id,)):
+            basis.append({'source_id':r['row_key'],'kind':'amcu_decision','number':r['decision_no'],
+                          'date':r['decision_date'],'reference':r['extract_url'],
+                          'date_provenance':'amcu_registry.decision_date'})
+    elif kind=='nazk_check' and {'supplier_nazk_check_matches','nazk_registry'} <= tables and source.get('nazk_check_id'):
+        import nazk_registry_evidence
+        for r in nazk_registry_evidence.registry_records(con,source['nazk_check_id']):
+            basis.append({'source_id':r['source_id'],'kind':'nazk_sentence','number':r.get('sentence_number'),
+                          'date':r.get('sentence_date'),'reference':r.get('decision_url'),
+                          'date_provenance':r.get('registry_source'), 'match_status':r.get('match_status')})
+    elif kind=='warning_block' and {'operational_task_warnings','violation_reports'} <= tables:
+        for r in con.execute('''SELECT v.report_id,v.decision_date FROM operational_task_warnings w
+          JOIN violation_reports v ON v.id=w.violation_report_id WHERE w.task_id=?''',(task_id,)):
+            basis.append({'source_id':r['report_id'],'kind':'warning','number':r['report_id'],
+                          'date':r['decision_date'],'reference':None,'date_provenance':'violation_reports.decision_date'})
+    elif kind=='termination_exclusion':
+        proof=source.get('termination') or {}
+        basis.append({'source_id':source.get('termination_event_key'),'kind':'edr_record',
+                      'number':proof.get('record_number'),'date':proof.get('record_date'),
+                      'reference':None,'date_provenance':'source_context.termination.record_date'})
+    for entry in basis:
+        entry['sort_date']=_basis_date(entry.get('date'))
+    basis.sort(key=lambda entry:(entry['sort_date'] or '',str(entry.get('source_id') or '')),reverse=True)
+    state=item.get('nazk_current_state') or {}
+    code=(('not_current' if item.get('resolution_code')=='nazk_not_current' else state.get('result'))
+          if kind=='nazk_check' else item.get('resolution_code'))
+    labels={'confirmed':'НАЗК · Збіг підтверджено','refuted':'НАЗК · Збіг спростовано',
+            'insufficient':'НАЗК · Недостатньо інформації','not_current':'НАЗК · Не актуально',
+            'nazk_refuted':'НАЗК · Збіг спростовано','nazk_not_current':'НАЗК · Не актуально',
+            'amcu_excluded':'Виключення підтверджено Prozorro',
+            'termination_excluded':'Виключення підтверджено Prozorro',
+            'no_active_qualifications':'Немає активних кваліфікацій','not_applicable':'Не застосовується',
+            'legacy_blocking_confirmed':'Блокування підтверджено'}
+    result={'code':code or None,'label':labels.get(code) or item.get('resolution_text') or None,
+            'at':state.get('result_at') if kind=='nazk_check' else item.get('resolved_at')}
+    decision={'number':item.get('protocol_number'),'date':item.get('protocol_date'),
+              'reference':item.get('protocol_reference') or item.get('published_reference'), 'documents':[]}
+    if kind=='warning_block' and 'operational_task_blocking_decisions' in tables:
+        row=con.execute('SELECT * FROM operational_task_blocking_decisions WHERE task_id=?',(task_id,)).fetchone()
+        if row:
+            decision.update(number=row['protocol_number'],date=row['decision_date'],reference=row['document_url'] or row['prozorro_url'])
+    requests=[]
+    if 'generated_documents' in tables:
+        # Local import avoids the document module's dependency on operational_tasks.
+        import task_documents
+        for doc in task_documents.documents(con,task_id):
+            if doc.get('status')!='generated':
+                continue
+            if doc.get('document_type')=='nazk_supplier_request':
+                requests.append(doc)
+            elif doc.get('document_type') in {'amcu_exclusion_protocol','termination_exclusion_protocol'}:
+                decision['documents'].append(doc)
+    return {'basis_items':basis,'latest_basis_date':next((x['sort_date'] for x in basis if x['sort_date']),None),
+            'result_summary':result,'officer_decision':decision,'supplier_requests':requests}
+
+
+def qualification_ui_summary(con,item):
+    """Distinct current qualifications and separately labelled captured coverage."""
+    code=_digits(item['supplier_code'])
+    current={r['id']:bool(r['active']) for r in con.execute(f'''SELECT q.id,
+      MAX(CASE WHEN {supplier_activity.effective_active_sql('rc','f')} THEN 1 ELSE 0 END) active
+      FROM qualifications q JOIN submissions s ON s.id=q.submission_id
+      LEFT JOIN registry_contracts rc ON rc.qualification_id=q.id AND DIGITS(rc.supplier_code)=?
+      LEFT JOIN frameworks f ON f.id=rc.framework_id
+      WHERE DIGITS(s.supplier_code)=? GROUP BY q.id''',(code,code))}
+    linked={r[0] for r in con.execute('SELECT DISTINCT qualification_id FROM operational_task_qualifications WHERE task_id=?',(item['id'],))}
+    source=item.get('source_context') or {}
+    snapshot=source.get('affected_qualifications')
+    proven=item['task_type']=='termination_exclusion' and isinstance(snapshot,list) and bool(source.get('snapshot_created_at'))
+    captured={x.get('qualification_id') for x in snapshot or [] if isinstance(x,dict) and x.get('qualification_id')} if proven else set()
+    active={key for key,value in current.items() if value}
+    confirmations=[event for event in item.get('events',[]) if event.get('event_type') in {
+      'amcu_exclusion_confirmed_by_sync','termination_exclusion_confirmed_by_sync'}
+      and _basis_date(event.get('created_at')) and isinstance((event.get('metadata') or {}).get('qualification_ids'),list)]
+    excluded={key for event in confirmations for key in event['metadata']['qualification_ids'] if isinstance(key,str) and key}
+    return {'current':{'total':len(current),'active':len(active),'inactive':len(current)-len(active),
+                       'provenance':'current qualifications + effective registry/framework predicate'},
+            'coverage':{'linked':len(linked),'captured_active':len(captured) if proven else None,
+                        'captured_at':source.get('snapshot_created_at') if proven else None,
+                        'historically_excluded':len(excluded) if excluded else None,'historically_remaining':None,
+                        'exclusion_provenance':[{'event_type':event['event_type'],'at':event['created_at']} for event in confirmations],
+                        'current_linked_active':len(linked & active),
+                        'current_linked_inactive':len(linked & current.keys())-len(linked & active),
+                        'missing_current':len(linked-current.keys()),
+                        'provenance':'creation snapshot' if proven else 'linkage only; historical counts not proven'},
+            'residual':{'linked_active':len(linked & active),'outside_linked_active':len(active-linked),
+                        'coverage_complete':False,
+                        'limitation':'Поточна активність не доводить історичне виключення або поширення конкретного рішення на всі кваліфікації.'}}
+
+
 def _task(con,row,detail=False):
     item=dict(row); item["source_context"]=_loads(item["source_context"]); item["document_context"]=_loads(item["document_context"]); item["metadata"]=_loads(item["metadata"])
     item["overdue"]=bool(item.get("due_at") and item["due_at"]<now_iso() and item["status"] not in TERMINAL)
@@ -940,6 +1046,9 @@ def _task(con,row,detail=False):
             end=(item.get("source_context") or {}).get("blocking_end_date") or ""
             item["highlighting_active"]=bool(item.get("blocking_decision",{}).get("used_for_blocking") and end>=date.today().isoformat())
         item["document_context"]=build_document_context(item)
+        item['qualification_summary']=qualification_ui_summary(con,item)
+    ui_tables=item.pop('_ui_tables',None)
+    item.update(task_ui_summary(con,item,set(ui_tables.split(',')) if ui_tables is not None else None))
     return item
 
 
@@ -995,7 +1104,8 @@ def list_tasks(con,params):
         args.extend(search_args)
     if value("date_from"): where.append("SUBSTR(created_at,1,10)>=?"); args.append(value("date_from"))
     clause=" WHERE "+" AND ".join(where) if where else ""
-    projection="""SELECT t.*,COALESCE(nuo.full_name,c.responsible_officer_name,o.full_name) _assigned_officer_name,
+    projection="""SELECT t.*,(SELECT group_concat(name) FROM sqlite_master WHERE type='table') _ui_tables,
+      COALESCE(nuo.full_name,c.responsible_officer_name,o.full_name) _assigned_officer_name,
       c.responsible_officer_id _nazk_responsible_officer_id,
       c.id _nazk_id,c.workflow_status _nazk_workflow_status,c.result _nazk_result,
       c.manager_name _nazk_manager_name,c.completed_at _nazk_completed_at,c.updated_at _nazk_updated_at
@@ -1011,6 +1121,11 @@ def list_tasks(con,params):
         qualified_clause+=" AND t.task_type=?"; args.append(value("type"))
     rows=con.execute(projection+qualified_clause+" ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,t.created_at DESC",args).fetchall()
     items=[_task(con,row) for row in rows]
+    if value('sort')=='latest_basis_date':
+        direction=value('direction') or 'desc'
+        if direction not in {'asc','desc'}: raise ValueError('Невідомий напрям сортування')
+        dated=sorted((x for x in items if x['latest_basis_date']),key=lambda x:(x['latest_basis_date'],x['id']),reverse=direction=='desc')
+        items=dated+sorted((x for x in items if not x['latest_basis_date']),key=lambda x:x['id'])
     all_rows=con.execute("SELECT status FROM operational_tasks").fetchall()
     kpis={key:sum(r[0] in statuses for r in all_rows) for key,statuses in STATUS_GROUPS.items()}
     return {"items":items,"total":len(items),"kpis":kpis,"type_counts":type_counts,"status_group":group}
