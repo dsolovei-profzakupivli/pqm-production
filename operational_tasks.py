@@ -951,8 +951,11 @@ def amcu_target_ui_rows(con, item):
     rows=[]
     columns={column[0] for column in con.execute('SELECT * FROM registry_contracts WHERE 0').description}
     milestones_column='rc.milestones_json' if 'milestones_json' in columns else 'NULL'
+    submission_columns={column[0] for column in con.execute('SELECT * FROM submissions WHERE 0').description}
+    submission_status='s.status' if 'status' in submission_columns else 'NULL'
     for link in con.execute(f'''SELECT l.qualification_id,l.registry_contract_id,l.relation_type,
-      q.submission_id,q.status qualification_status,s.supplier_code,s.framework_id submission_framework_id,
+      q.submission_id,q.status qualification_status,{submission_status} submission_status,
+      s.supplier_code,s.framework_id submission_framework_id,f.id framework_id,
       f.dk_code,f.title framework_title,rc.status registry_status,rc.qualification_id contract_qualification_id,
       rc.supplier_code contract_supplier_code,rc.framework_id contract_framework_id,{milestones_column} milestones_json
       FROM operational_task_qualifications l
@@ -972,6 +975,8 @@ def amcu_target_ui_rows(con, item):
           and bool(target['contract_framework_id'])
           and target['submission_framework_id']==target['contract_framework_id'])
         if not identity_ok: limitations.append('SOURCE_IDENTITY_NOT_PROVEN')
+        if not target['framework_id'] or target['submission_framework_id']!=target['framework_id']:
+            limitations.append('FRAMEWORK_IDENTITY_NOT_PROVEN')
         for event in item.get('events',[]):
             proof=event.get('metadata') or {}
             if (identity_ok and event.get('event_type')=='amcu_exclusion_confirmed_by_sync'

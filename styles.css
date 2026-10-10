@@ -389,6 +389,13 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 #operationalTaskDialog .operational-targets td small{display:block;overflow-wrap:anywhere}
 #operationalTaskDialog .operational-targets table{min-width:640px}
 #operationalTaskDialog .operational-targets p{margin:3px 0}
+#operationalTaskDialog .operational-amcu-overview{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:8px}
+#operationalTaskDialog .operational-amcu-overview>section{min-width:0;padding:8px 10px;border:1px solid #cbd6e1;border-radius:8px;background:#fff}
+#operationalTaskDialog .operational-targets td{vertical-align:top;padding:7px 9px}
+#operationalTaskDialog .operational-targets td:first-child{width:46%}
+#operationalTaskDialog .operational-target-document-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;text-decoration:none}
+#operationalTaskDialog .operational-targets details{margin-top:5px;font-size:11px}
+@media(max-width:750px){#operationalTaskDialog .operational-amcu-overview{grid-template-columns:1fr}}
 #operationalTaskDialog .operational-context-card{max-height:35vh;overflow:auto}
 @media(max-width:650px){#operationalTaskDialog .operational-summary .operational-compact-facts{grid-template-columns:1fr 1fr}#operationalTaskDialog .operational-workspace{padding:6px}}
 .operational-workspace .operational-channel-card{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0;background:transparent}

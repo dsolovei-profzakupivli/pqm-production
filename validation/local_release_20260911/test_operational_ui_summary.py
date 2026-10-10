@@ -241,6 +241,20 @@ class OperationalV2TargetTests(unittest.TestCase):
         self.assertEqual(row['registry_status'],'terminated')
         self.assertEqual(row['submission_id'],'s')
         self.assertEqual(row['sync_evidence'],[])
+
+    def test_exact_submission_status_and_framework_limitation(self):
+        self.con.execute('ALTER TABLE submissions ADD COLUMN status')
+        self.con.execute("UPDATE submissions SET status='pending' WHERE id='s'")
+        self.con.execute("INSERT INTO submissions VALUES('unrelated','123','f','active')")
+        row=self.rows()[0]
+        self.assertEqual(row['submission_status'],'pending')
+        self.assertEqual(row['qualification_status'],'active')
+        self.assertEqual(row['registry_status'],'terminated')
+        self.assertEqual(row['framework_id'],'f')
+        self.con.execute("UPDATE submissions SET framework_id='other' WHERE id='s'")
+        row=self.rows()[0]
+        self.assertFalse(row['source_identity_proven'])
+        self.assertIn('FRAMEWORK_IDENTITY_NOT_PROVEN',row['limitations'])
         self.assertIn('DECISION_SPECIFIC_EXCLUSION_NOT_PROVEN',row['limitations'])
     def test_sync_requires_both_exact_identities(self):
         event={'id':9,'event_type':'amcu_exclusion_confirmed_by_sync','created_at':'2026-09-16',
@@ -289,12 +303,37 @@ class OperationalV2TargetTests(unittest.TestCase):
 
 
 class OperationalV2JsTests(unittest.TestCase):
+    def test_filter_loading_error_empty_rows_and_stale_response(self):
+        node=shutil.which('node') or 'C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe'
+        script=r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),src=fs.readFileSync('app.js','utf8');
+const elements={};for(const id of ['#operationalTasksBody','#operationalActionHeader','#operationalTaskStatus','#operationalTasksCount'])elements[id]={innerHTML:'',value:'active',hidden:false};
+const pending=[];const c={API:'/api',$:s=>elements[s],$$:()=>[],request:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),URLSearchParams,operationalTaskParams:()=>({}),renderOperationalTaskTypes:()=>{},esc:x=>String(x),operationalTaskEmptyMessage:()=> 'Порожньо',operationalTaskTypeMarker:()=>'',operationalTriggerHtml:()=>'',operationalListAction:()=>'',operationalTaskStatusLabel:()=>'',displayDate:()=>'',operationalBasisHtml:()=>'',operationalResultHtml:()=>'',operationalDecisionHtml:()=>''};vm.createContext(c);
+vm.runInContext(src.split('\n').find(x=>x.startsWith('function operationalActionColumnVisible(')),c);
+vm.runInContext(src.slice(src.indexOf('let operationalListGeneration='),src.indexOf("$('#operationalTasksNav').onclick=")),c);
+(async()=>{
+ for(const status of ['completed','active','historical','']){
+  elements['#operationalTaskStatus'].value=status;const promise=c.loadOperationalTasks();
+  assert.equal(elements['#operationalActionHeader'].hidden,status==='completed');assert(elements['#operationalTasksBody'].innerHTML.includes(`colspan="${status==='completed'?9:10}"`));
+  pending.shift().resolve({items:[{id:'one',status:'completed'}]});await promise;
+  assert.equal(elements['#operationalTasksBody'].innerHTML.includes('<td hidden>'),status==='completed');
+  const empty=c.loadOperationalTasks();pending.shift().resolve({items:[]});await empty;assert(elements['#operationalTasksBody'].innerHTML.includes(`colspan="${status==='completed'?9:10}"`));
+  const failed=c.loadOperationalTasks();pending.shift().reject(Error('test'));await failed;assert(elements['#operationalTasksBody'].innerHTML.includes(`colspan="${status==='completed'?9:10}"`));
+ }
+ elements['#operationalTaskStatus'].value='completed';const old=c.loadOperationalTasks();elements['#operationalTaskStatus'].value='active';const fresh=c.loadOperationalTasks();
+ pending[1].resolve({items:[]});await fresh;pending[0].resolve({items:[{id:'stale'}]});await old;
+ assert(!elements['#operationalTasksBody'].innerHTML.includes('stale'));assert(!elements['#operationalActionHeader'].hidden);
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+        result=subprocess.run([node,'-e',script],cwd=ROOT,capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_v2_identity_formatting_visibility_and_safe_documents(self):
         node=shutil.which('node') or 'C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe'
         script=r'''
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),src=fs.readFileSync('app.js','utf8');
 const c={esc:v=>String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),displayDateOnly:x=>x||'',displayDate:x=>x||'',operationalListTrigger:()=> 'Виявлено запис у Реєстрі НАЗК',operationalListAction:x=>x.status==='completed'?'':'Перевірити'};vm.createContext(c);
-for(const name of ['operationalCapturedPerson','operationalPersonHtml','operationalTriggerHtml','operationalResultHtml','operationalActionColumnVisible','operationalSummaryLink','operationalBasisHtml','operationalDecisionHtml','operationalTerminalHtml','operationalAmcuTargetsHtml'])vm.runInContext(src.split('\n').find(x=>x.startsWith('function '+name+'(')),c);
+for(const name of ['operationalCapturedPerson','operationalPersonHtml','operationalTriggerHtml','operationalResultHtml','operationalActionColumnVisible','operationalSummaryLink','operationalBasisHtml','operationalDecisionHtml','operationalTerminalHtml','operationalSubmissionStatus','operationalTargetDocumentIcon','operationalAmcuTargetsHtml'])vm.runInContext(src.split('\n').find(x=>x.startsWith('function '+name+'(')),c);
 const item={task_type:'nazk_check',status:'completed',source_context:{person_name:'CAPTURED <PERSON>'},current_manager:{manager_name:'CHANGED'},result_summary:{label:null}};
 assert(c.operationalTriggerHtml(item).includes('CAPTURED &lt;PERSON>'));assert(!c.operationalTriggerHtml(item).includes('CHANGED'));
 assert(c.operationalPersonHtml({...item,source_context:{}}).includes('data-person-defect'));
@@ -303,11 +342,18 @@ assert.equal(c.operationalResultHtml(item),'');assert.equal(c.operationalDecisio
 assert.equal(c.operationalDecisionHtml({officer_decision:{number:'706'}}),'№ 706');
 assert.equal(c.operationalDecisionHtml({officer_decision:{date:'2026-09-16'}}),'від 2026-09-16');
 assert(!c.operationalTerminalHtml(item).includes('Рішення УО'));
-assert(!c.operationalActionColumnVisible([item]));assert(c.operationalActionColumnVisible([item,{status:'new'}]));
+assert(!c.operationalActionColumnVisible('completed'));for(const filter of ['active','historical','cancelled','needs_action',''])assert(c.operationalActionColumnVisible(filter));
 assert.equal(c.operationalBasisHtml({basis_items:[{kind:'nazk_sentence'}]}),'Запис у Реєстрі НАЗК');
 assert(c.operationalBasisHtml({basis_items:[{kind:'nazk_sentence',number:'706'},{kind:'nazk_sentence',date:'2026-09-16'}]}).includes('Інші підстави (1)'));
 const table=c.operationalAmcuTargetsHtml({amcu_target_rows:[{qualification_id:'q',registry_contract_id:'exact',submission_id:'s',registry_status:'terminated',registry_documents:[{document_id:'d',url:'javascript:evil',title:'706.pdf.asice.zip'}]}]});
-assert(table.includes('NOT_PROVEN'));assert(!table.includes('href="javascript:'));assert(table.includes('exact'));
+assert(table.includes('Немає доказового підтвердження'));assert(!table.includes('href="javascript:'));assert(table.includes('exact'));
+assert.equal((table.match(/<th>/g)||[]).length,4);assert(table.includes('Статус заявки'));
+c.URL=URL;
+const target={source_identity_proven:true,framework_id:'f',submission_framework_id:'f',dk_code:'123',framework_title:'Full <title>',submission_status:'pending',qualification_id:'q',registry_contract_id:'exact',registry_documents:[{document_id:'d',qualification_id:'q',registry_contract_id:'exact',provenance:'linked',url:'https://example.test/doc',title:'"706.pdf.asice.zip'}]};
+const icon=c.operationalTargetDocumentIcon(target);assert(icon.includes('title="&quot;706'));assert(icon.includes('href="https://example.test/doc"'));assert(!icon.includes('>"706'));
+for(const bad of [{source_identity_proven:false},{registry_documents:[]},{limitations:['MULTIPLE_LINKED_CONTRACTS_DISPLAYED_SEPARATELY']},{registry_documents:[...target.registry_documents,...target.registry_documents]},{registry_documents:[{...target.registry_documents[0],qualification_id:'wrong'}]},{registry_documents:[{...target.registry_documents[0],url:'https://user:pass@example.test'}]}])assert.equal(c.operationalTargetDocumentIcon({...target,...bad}),'—');
+const rendered=c.operationalAmcuTargetsHtml({amcu_target_rows:[target]});assert(rendered.includes('<strong>123</strong>'));assert(rendered.includes('Full &lt;title>'));assert(rendered.includes('Очікує розгляду'));assert(rendered.includes('Немає доказового підтвердження'));
+assert(!c.operationalAmcuTargetsHtml({amcu_target_rows:[{...target,submission_framework_id:'wrong'}]}).includes('<strong>123</strong>'));
 vm.runInContext(src.slice(src.indexOf('function operationalV2Layout('),src.indexOf('const openOperationalTaskPolished=')),c);
 class Element{
  constructor(kind){this.kind=kind;this.children=[];this.parentNode=null;this.innerHTML='';this.textContent=''}
@@ -315,11 +361,17 @@ class Element{
  prepend(n){this.append(n);this.children.unshift(this.children.pop())}
  insertBefore(n,before){this.append(n);this.children.pop();this.children.splice(this.children.indexOf(before),0,n)}
  remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(x=>x!==this);this.parentNode=null}
- querySelector(s){if(s==='h3'&&this.kind==='coverage')return {textContent:'Кваліфікації, яких стосується рішення'};if(s==='.operational-history-details')return this.children.find(x=>x.kind==='history');return null}
+ querySelector(s){if(s==='h3'&&this.kind==='coverage')return {textContent:'Кваліфікації, яких стосується рішення'};if(s==='h3'&&this.kind==='basis')return {textContent:'Підстава'};if(s==='h3'&&this.kind==='result')return {textContent:'Результат'};if(s==='.operational-history-details')return this.children.find(x=>x.kind==='history');return null}
  querySelectorAll(){return []}
  get firstElementChild(){return new Element('targets')}
 }
 c.document={createElement:kind=>new Element(kind)};
+{
+ const workspace=new Element('workspace'),basis=new Element('basis'),result=new Element('result'),history=new Element('history');const handler=()=>{};result.onclick=handler;workspace.append(basis,result,history);
+ c.operationalV2Layout({task_type:'amcu_exclusion',status:'new'}, {querySelector:s=>s==='.operational-workspace'?workspace:null});
+ const group=workspace.children.find(x=>x.className==='operational-amcu-overview');assert(group);assert.equal(group.children[0],basis);assert.equal(group.children[1],result);assert.equal(result.onclick,handler);assert.equal(workspace.children.at(-1),history);
+ const css=fs.readFileSync('styles.css','utf8');assert(css.includes('@media(max-width:750px)'));assert(css.includes('.operational-amcu-overview{grid-template-columns:1fr}'));
+}
 for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_exclusion'])for(const status of ['new','completed']){
  const workspace=new Element('workspace'),history=new Element('history'),coverage=new Element('coverage'),person=new Element('person');workspace.append(history,coverage);
  const body={querySelector:s=>s==='.operational-workspace'?workspace:person};
