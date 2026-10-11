@@ -20,8 +20,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "5620d267020de9a31b3325e81947f18df08c48de"
           git rev-parse HEAD > ci-evidence/tested-sha.txt
           sha256sum validation/sandbox_prozorro_fixture.py validation/sandbox_scheduler_smoke.py > ci-evidence/fixture-hashes.txt
-          echo '1b3f03908cb2974efac68b2b29efec6ee69204d10f463b2e1095c7cd4f24c7cb  validation/sandbox_prozorro_fixture.py' | sha256sum --check
-          echo '127c8cba3e023499793ccd09d72a623f4a6ab4213a2aa3d65d0eac6e23df5e91  validation/sandbox_scheduler_smoke.py' | sha256sum --check
+          echo '47de3d53657a6e397405950e79cce3f07c37eeb57499bc56e4511e27eaf74c78  validation/sandbox_prozorro_fixture.py' | sha256sum --check
+          echo '5aa3ec0a3314e28fa3d3b35f696e71c0d39573601b9f68e2716c1858e64e61f0  validation/sandbox_scheduler_smoke.py' | sha256sum --check
       - name: Build isolated test image
         run: |
           set -euo pipefail
