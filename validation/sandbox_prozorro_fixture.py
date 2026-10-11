@@ -36,5 +36,9 @@ if sandbox.prozorro_scheduler_enabled():
     with sqlite3.connect(db) as con:
         con.execute("UPDATE frameworks SET status='active' WHERE id='sandbox-framework'")
     # Accelerated clock is confined to this synthetic fixture, never runtime.
-    server.next_hourly_run=lambda moment=None: datetime.now(timezone.utc)+timedelta(seconds=25)
+    # Patch the shared resolver, including wait_schedule's deadline re-read.
+    # This process is attested synthetic-only above; production is untouched.
+    server.scheduler_runtime.next_run=lambda spec, moment=None: (
+        (moment or datetime.now(timezone.utc))+timedelta(seconds=25)
+    )
 server.main()
