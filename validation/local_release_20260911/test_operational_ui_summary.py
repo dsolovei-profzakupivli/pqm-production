@@ -347,12 +347,17 @@ assert.equal(c.operationalBasisHtml({basis_items:[{kind:'nazk_sentence'}]}),'З�
 assert(c.operationalBasisHtml({basis_items:[{kind:'nazk_sentence',number:'706'},{kind:'nazk_sentence',date:'2026-09-16'}]}).includes('Інші підстави (1)'));
 const table=c.operationalAmcuTargetsHtml({amcu_target_rows:[{qualification_id:'q',registry_contract_id:'exact',submission_id:'s',registry_status:'terminated',registry_documents:[{document_id:'d',url:'javascript:evil',title:'706.pdf.asice.zip'}]}]});
 assert(table.includes('Немає доказового підтвердження'));assert(!table.includes('href="javascript:'));assert(table.includes('exact'));
-assert.equal((table.match(/<th>/g)||[]).length,4);assert(table.includes('Статус заявки'));
+assert.equal((table.match(/<th>/g)||[]).length,3);assert(!table.includes('<th>Статус заявки</th>'));assert(table.includes('Статус заявки:'));
 c.URL=URL;
 const target={source_identity_proven:true,framework_id:'f',submission_framework_id:'f',dk_code:'123',framework_title:'Full <title>',submission_status:'pending',qualification_id:'q',registry_contract_id:'exact',registry_documents:[{document_id:'d',qualification_id:'q',registry_contract_id:'exact',provenance:'linked',url:'https://example.test/doc',title:'"706.pdf.asice.zip'}]};
 const icon=c.operationalTargetDocumentIcon(target);assert(icon.includes('title="&quot;706'));assert(icon.includes('href="https://example.test/doc"'));assert(!icon.includes('>"706'));
+assert(icon.includes('>📎</a>'));assert(!icon.includes('>↗</a>'));
 for(const bad of [{source_identity_proven:false},{registry_documents:[]},{limitations:['MULTIPLE_LINKED_CONTRACTS_DISPLAYED_SEPARATELY']},{registry_documents:[...target.registry_documents,...target.registry_documents]},{registry_documents:[{...target.registry_documents[0],qualification_id:'wrong'}]},{registry_documents:[{...target.registry_documents[0],url:'https://user:pass@example.test'}]}])assert.equal(c.operationalTargetDocumentIcon({...target,...bad}),'—');
 const rendered=c.operationalAmcuTargetsHtml({amcu_target_rows:[target]});assert(rendered.includes('<strong>123</strong>'));assert(rendered.includes('Full &lt;title>'));assert(rendered.includes('Очікує розгляду'));assert(rendered.includes('Немає доказового підтвердження'));
+const repeated=c.operationalAmcuTargetsHtml({amcu_target_rows:[target,{...target,framework_id:'f2',submission_framework_id:'f2',framework_title:'Different framework',sync_evidence:[{at:'2026-09-16'}]}]});assert.equal((repeated.match(/<strong>123<\/strong>/g)||[]).length,2);assert(repeated.includes('Different framework'));assert(repeated.includes('Підтверджено синхронізацією'));assert(rendered.includes('source: pending'));
+vm.runInContext(src.split('\n').find(x=>x.startsWith('const titleCaseWord=')),c);
+vm.runInContext(src.split('\n').find(x=>x.startsWith('const formatOfficerName='))+';globalThis.officerFormat=formatOfficerName',c);
+assert.equal(c.officerFormat('СВІТЛАНА НАМЯСЕНКО'),'Світлана НАМЯСЕНКО');assert(src.includes('esc(formatOfficerName(item.assigned_officer_name))'));
 assert(!c.operationalAmcuTargetsHtml({amcu_target_rows:[{...target,submission_framework_id:'wrong'}]}).includes('<strong>123</strong>'));
 vm.runInContext(src.slice(src.indexOf('function operationalV2Layout('),src.indexOf('const openOperationalTaskPolished=')),c);
 class Element{
@@ -361,8 +366,8 @@ class Element{
  prepend(n){this.append(n);this.children.unshift(this.children.pop())}
  insertBefore(n,before){this.append(n);this.children.pop();this.children.splice(this.children.indexOf(before),0,n)}
  remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(x=>x!==this);this.parentNode=null}
- querySelector(s){if(s==='h3'&&this.kind==='coverage')return {textContent:'Кваліфікації, яких стосується рішення'};if(s==='h3'&&this.kind==='basis')return {textContent:'Підстава'};if(s==='h3'&&this.kind==='result')return {textContent:'Результат'};if(s==='.operational-history-details')return this.children.find(x=>x.kind==='history');return null}
- querySelectorAll(){return []}
+ querySelector(s){if(s===':scope > .operational-targets')return this.children.find(x=>x.kind==='targets');if(s==='h3'&&['coverage','targets'].includes(this.kind))return {textContent:'Кваліфікації, яких стосується рішення'};if(s==='h3'&&this.kind==='basis')return {textContent:'Підстава'};if(s==='h3'&&this.kind==='result')return {textContent:'Результат'};if(s==='.operational-history-details')return this.children.find(x=>x.kind==='history');return null}
+ querySelectorAll(s){return s===':scope > .operational-targets'?this.children.filter(x=>x.kind==='targets'):[]}
  get firstElementChild(){return new Element('targets')}
 }
 c.document={createElement:kind=>new Element(kind)};
@@ -387,6 +392,14 @@ for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_ex
 }
 assert(src.includes("confirmed=!terminal&&result==='confirmed'"));
 assert(src.includes("generation.can_manage"));assert(src.includes('installSharedDetailWindow'));
+{
+ const workspace=new Element('workspace'),coverage=new Element('coverage'),history=new Element('history'),proof=new Element('proof');coverage.append(proof);workspace.append(coverage,history);
+ const item={task_type:'amcu_exclusion',status:'new',amcu_target_rows:[target],qualification_summary:{coverage:{linked:1},residual:{}}},body={querySelector:()=>workspace};
+ c.operationalV2Layout(item,body);assert.equal(workspace.children.filter(x=>['coverage','targets'].includes(x.kind)).length,1);const targets=workspace.children.find(x=>x.kind==='targets');assert(targets.children[0].children.includes(proof));
+ c.operationalV2Layout(item,body);assert.equal(workspace.children.filter(x=>x.kind==='targets').length,1);assert.equal(workspace.children.at(-1),history);assert.equal(history.open,false);
+ item.status='completed';c.operationalV2Layout(item,body);assert.equal(workspace.children.filter(x=>x.kind==='targets').length,1);assert.equal(workspace.children.at(-1),history);
+ const css=fs.readFileSync('styles.css','utf8');assert(css.includes('table-layout:fixed'));assert(css.includes('width:60%'));assert(css.includes('width:33%'));assert(css.includes('width:7%'));assert(css.includes('align-items:start'));
+}
 console.log('Operational v2 JS assertions PASS');
 '''
         result=subprocess.run([node,'-e',script],cwd=ROOT,capture_output=True,text=True,timeout=30)

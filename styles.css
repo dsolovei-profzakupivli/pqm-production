@@ -387,14 +387,19 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 #operationalTaskDialog .operational-workspace{padding:8px 12px 12px}
 #operationalTaskDialog .operational-workspace>section{padding:8px 10px;margin-bottom:8px}
 #operationalTaskDialog .operational-targets td small{display:block;overflow-wrap:anywhere}
-#operationalTaskDialog .operational-targets table{min-width:640px}
+#operationalTaskDialog .operational-targets table{min-width:0;width:100%;table-layout:fixed}
 #operationalTaskDialog .operational-targets p{margin:3px 0}
-#operationalTaskDialog .operational-amcu-overview{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:8px}
+#operationalTaskDialog .operational-amcu-overview{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start;gap:8px;margin-bottom:8px}
 #operationalTaskDialog .operational-amcu-overview>section{min-width:0;padding:8px 10px;border:1px solid #cbd6e1;border-radius:8px;background:#fff}
 #operationalTaskDialog .operational-targets td{vertical-align:top;padding:7px 9px}
-#operationalTaskDialog .operational-targets td:first-child{width:46%}
+#operationalTaskDialog .operational-targets :is(th,td):first-child{width:60%;overflow-wrap:anywhere;white-space:normal}
+#operationalTaskDialog .operational-targets :is(th,td):nth-child(2){width:33%;overflow-wrap:anywhere;white-space:normal}
+#operationalTaskDialog .operational-targets :is(th,td):last-child{width:7%;text-align:center;padding-left:2px;padding-right:2px}
 #operationalTaskDialog .operational-target-document-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;text-decoration:none}
 #operationalTaskDialog .operational-targets details{margin-top:5px;font-size:11px}
+#operationalTaskDialog .operational-amcu-overview :is(h3,p){margin-top:3px;margin-bottom:5px}
+#operationalTaskDialog .operational-summary{padding:7px 12px!important;gap:8px}
+#operationalTaskDialog .operational-targets .operational-table{min-width:0;max-width:100%}
 @media(max-width:750px){#operationalTaskDialog .operational-amcu-overview{grid-template-columns:1fr}}
 #operationalTaskDialog .operational-context-card{max-height:35vh;overflow:auto}
 @media(max-width:650px){#operationalTaskDialog .operational-summary .operational-compact-facts{grid-template-columns:1fr 1fr}#operationalTaskDialog .operational-workspace{padding:6px}}
