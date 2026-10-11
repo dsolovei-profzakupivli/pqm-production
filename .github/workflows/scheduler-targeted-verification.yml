@@ -1,6 +1,8 @@
 name: Scheduler targeted verification
 on:
-  workflow_dispatch:
+  push:
+    branches: [sandbox/scheduler-targeted-linux-verification]
+    paths: [.github/workflows/scheduler-targeted-verification.yml]
 permissions:
   contents: read
 jobs:
@@ -10,10 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: 5620d267020de9a31b3325e81947f18df08c48de
           persist-credentials: false
       - name: Record exact snapshot
         run: |
           mkdir -p ci-evidence
+          test "$(git rev-parse HEAD)" = "5620d267020de9a31b3325e81947f18df08c48de"
           git rev-parse HEAD > ci-evidence/tested-sha.txt
           sha256sum validation/sandbox_prozorro_fixture.py validation/sandbox_scheduler_smoke.py > ci-evidence/fixture-hashes.txt
           echo '1b3f03908cb2974efac68b2b29efec6ee69204d10f463b2e1095c7cd4f24c7cb  validation/sandbox_prozorro_fixture.py' | sha256sum --check
