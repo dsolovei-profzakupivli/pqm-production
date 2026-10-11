@@ -310,12 +310,16 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),src=fs.readFile
 const elements={};for(const id of ['#operationalTasksBody','#operationalActionHeader','#operationalTaskStatus','#operationalTasksCount'])elements[id]={innerHTML:'',value:'active',hidden:false};
 const pending=[];const c={API:'/api',$:s=>elements[s],$$:()=>[],request:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),URLSearchParams,operationalTaskParams:()=>({}),renderOperationalTaskTypes:()=>{},esc:x=>String(x),operationalTaskEmptyMessage:()=> 'Порожньо',operationalTaskTypeMarker:()=>'',operationalTriggerHtml:()=>'',operationalListAction:()=>'',operationalTaskStatusLabel:()=>'',displayDate:()=>'',operationalBasisHtml:()=>'',operationalResultHtml:()=>'',operationalDecisionHtml:()=>''};vm.createContext(c);
 vm.runInContext(src.split('\n').find(x=>x.startsWith('function operationalActionColumnVisible(')),c);
+vm.runInContext(src.split('\n').find(x=>x.startsWith('const titleCaseWord=')),c);
+vm.runInContext(src.split('\n').find(x=>x.startsWith('const formatOfficerName=')),c);
 vm.runInContext(src.slice(src.indexOf('let operationalListGeneration='),src.indexOf("$('#operationalTasksNav').onclick=")),c);
 (async()=>{
  for(const status of ['completed','active','historical','']){
   elements['#operationalTaskStatus'].value=status;const promise=c.loadOperationalTasks();
   assert.equal(elements['#operationalActionHeader'].hidden,status==='completed');assert(elements['#operationalTasksBody'].innerHTML.includes(`colspan="${status==='completed'?9:10}"`));
-  pending.shift().resolve({items:[{id:'one',status:'completed'}]});await promise;
+  const row={id:'one',status:'completed',assigned_officer_name:'СВІТЛАНА НАМЯСЕНКО'};
+  pending.shift().resolve({items:[row]});await promise;
+  assert(elements['#operationalTasksBody'].innerHTML.includes('Світлана НАМЯСЕНКО'));assert.equal(row.assigned_officer_name,'СВІТЛАНА НАМЯСЕНКО');
   assert.equal(elements['#operationalTasksBody'].innerHTML.includes('<td hidden>'),status==='completed');
   const empty=c.loadOperationalTasks();pending.shift().resolve({items:[]});await empty;assert(elements['#operationalTasksBody'].innerHTML.includes(`colspan="${status==='completed'?9:10}"`));
   const failed=c.loadOperationalTasks();pending.shift().reject(Error('test'));await failed;assert(elements['#operationalTasksBody'].innerHTML.includes(`colspan="${status==='completed'?9:10}"`));
@@ -377,7 +381,9 @@ c.document={createElement:kind=>new Element(kind)};
  const workspace=new Element('workspace'),basis=new Element('basis'),result=new Element('result'),history=new Element('history');const handler=()=>{};result.onclick=handler;workspace.append(basis,result,history);
  c.operationalV2Layout({task_type:'amcu_exclusion',status:'new'}, {querySelector:s=>s==='.operational-workspace'?workspace:null});
  const group=workspace.children.find(x=>x.className==='operational-amcu-overview');assert(group);assert.equal(group.children[0],basis);assert.equal(group.children[1],result);assert.equal(result.onclick,handler);assert.equal(workspace.children.at(-1),history);
- const css=fs.readFileSync('styles.css','utf8');assert(css.includes('@media(max-width:750px)'));assert(css.includes('.operational-amcu-overview{grid-template-columns:1fr}'));
+ const css=fs.readFileSync('styles.css','utf8');assert(css.includes('@media(max-width:750px)'));assert(css.includes('.operational-amcu-overview{flex-direction:column}'));
+ assert(css.includes('container-name:amcu-overview'));assert(css.includes('@container amcu-overview (max-width:600px)'));assert(css.includes('width:max-content'));assert(css.includes('max-width:45%'));assert(css.includes('flex:1 1 20rem'));assert(css.includes('min-width:min(100%,20rem)'));
+ assert(!css.includes('.operational-amcu-overview{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)'));
 }
 for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_exclusion'])for(const status of ['new','completed']){
  const workspace=new Element('workspace'),history=new Element('history'),coverage=new Element('coverage'),person=new Element('person');workspace.append(history,coverage);

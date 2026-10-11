@@ -389,8 +389,13 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 #operationalTaskDialog .operational-targets td small{display:block;overflow-wrap:anywhere}
 #operationalTaskDialog .operational-targets table{min-width:0;width:100%;table-layout:fixed}
 #operationalTaskDialog .operational-targets p{margin:3px 0}
-#operationalTaskDialog .operational-amcu-overview{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start;gap:8px;margin-bottom:8px}
+#operationalTaskDialog .operational-amcu-overview{display:flex;flex-wrap:wrap;align-items:start;gap:8px;margin-bottom:8px;container-type:inline-size;container-name:amcu-overview}
 #operationalTaskDialog .operational-amcu-overview>section{min-width:0;padding:8px 10px;border:1px solid #cbd6e1;border-radius:8px;background:#fff}
+#operationalTaskDialog .operational-amcu-overview>section:first-child{flex:0 1 auto;width:max-content;min-width:min(100%,14rem);max-width:45%}
+#operationalTaskDialog .operational-amcu-overview>section:last-child{flex:1 1 20rem;min-width:min(100%,20rem);max-width:100%}
+#operationalTaskDialog .operational-amcu-overview>section :is(p,a,dd,strong){overflow-wrap:anywhere;white-space:normal}
+#operationalTaskDialog .operational-amcu-overview>section :is(input,select,textarea,button){max-width:100%;min-width:0;box-sizing:border-box}
+@container amcu-overview (max-width:600px){#operationalTaskDialog .operational-amcu-overview>section{flex:1 1 100%;width:100%;min-width:0;max-width:100%;box-sizing:border-box}}
 #operationalTaskDialog .operational-targets td{vertical-align:top;padding:7px 9px}
 #operationalTaskDialog .operational-targets :is(th,td):first-child{width:16%;white-space:nowrap}
 #operationalTaskDialog .operational-targets :is(th,td):nth-child(2){width:48%;overflow-wrap:anywhere;white-space:normal}
@@ -409,7 +414,7 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 #operationalTaskDialog .operational-target-source-body{margin-top:4px;overflow-wrap:anywhere;white-space:normal}
 #operationalTaskDialog .operational-amcu-overview+.operational-targets{margin-top:0;padding-top:5px}
 #operationalTaskDialog .operational-amcu-overview+.operational-targets>h3{margin:0 0 5px}
-@media(max-width:750px){#operationalTaskDialog .operational-amcu-overview{grid-template-columns:1fr}}
+@media(max-width:750px){#operationalTaskDialog .operational-amcu-overview{flex-direction:column}#operationalTaskDialog .operational-amcu-overview>section{flex:0 1 auto;width:100%;min-width:0;max-width:100%;box-sizing:border-box}}
 #operationalTaskDialog .operational-context-card{max-height:35vh;overflow:auto}
 @media(max-width:650px){#operationalTaskDialog .operational-summary .operational-compact-facts{grid-template-columns:1fr 1fr}#operationalTaskDialog .operational-workspace{padding:6px}}
 .operational-workspace .operational-channel-card{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0;background:transparent}
