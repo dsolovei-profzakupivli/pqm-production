@@ -1937,6 +1937,58 @@ async function toggleSchedulerJob(button){
 function environmentBannerText(features){
   return 'PQM';
 }
+const schedulerScheduleDrafts=new Map();
+let schedulerEditorsGeneration=0;
+function schedulerEditorMarkup(job){
+  const spec=job.spec,weekly=spec.kind==='weekly',days=['Пн','Вт','Ср','Чт','Пт','Сб','Нд'];
+  return `<article class="scheduler-job scheduler-editor" data-job="${esc(job.job)}"><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong>
+    <p>Налаштовано: ${esc(job.schedule)} · ${esc(job.timezone)} · revision ${job.revision}</p>
+    <p>Фактично: ${job.effective_enabled?'увімкнено':'вимкнено'}${job.safety_block_reason?` · ${esc(job.safety_block_reason)}`:''}</p>
+    <p>Останній старт: ${esc(job.last_started_at?displayDate(job.last_started_at):'—')} · ${esc(job.last_status)} · ${job.duration_seconds==null?'—':esc(job.duration_seconds)+' с'}</p>
+    <p>Наступний за розкладом: ${esc(job.next_run?displayDate(job.next_run):'—')} · scheduler ${job.registered?'зареєстровано':'не зареєстровано'}</p>
+    <label><input type="checkbox" name="enabled" ${job.enabled?'checked':''}> Увімкнено</label>
+    ${weekly?`<label>Година <input type="number" name="hour" min="0" max="23" value="${spec.hour}"></label>`:''}
+    <label>Хвилина <input type="number" name="minute" min="0" max="59" value="${spec.minute}"></label>
+    ${weekly?`<div>${days.map((day,i)=>`<label><input type="checkbox" name="weekday" value="${i}" ${spec.weekdays.includes(i)?'checked':''}>${day}</label>`).join('')}</div>`:''}
+    <footer><button type="button" data-schedule-action="preview">Preview</button><button type="button" data-schedule-action="apply" disabled>Apply</button><button type="button" data-schedule-action="rollback" ${job.history.some(h=>h.revision===job.revision)?'':'disabled'}>Preview rollback</button></footer>
+    <p class="scheduler-preview" aria-live="polite"></p></article>`;
+}
+async function loadSchedulerEditors(){
+  const root=$('#schedulerScheduleEditors');if(!root||role()!=='admin')return;
+  const generation=++schedulerEditorsGeneration;
+  try{
+    const response=await request(`${API}/admin/scheduler-schedules`);
+    if(generation!==schedulerEditorsGeneration)return;
+    schedulerScheduleDrafts.clear();
+    root.innerHTML=response.items.map(schedulerEditorMarkup).join('');
+    const models=new Map(response.items.map(item=>[item.job,item]));
+    root.oninput=event=>{const card=event.target.closest('[data-job]');if(!card)return;card.dataset.editRevision=String(Number(card.dataset.editRevision||0)+1);schedulerScheduleDrafts.delete(card.dataset.job);card.querySelector('[data-schedule-action="apply"]').disabled=true;card.querySelector('.scheduler-preview').textContent='Зміни потребують нового Preview'};
+    root.onclick=async event=>{
+      const button=event.target.closest('[data-schedule-action]');if(!button||button.disabled)return;
+      const card=button.closest('[data-job]'),job=models.get(card.dataset.job),action=button.dataset.scheduleAction,output=card.querySelector('.scheduler-preview');
+      const editRevision=card.dataset.editRevision||'0';
+      button.disabled=true;
+      try{
+        if(action==='apply'){
+          const draft=schedulerScheduleDrafts.get(job.job);if(!draft)throw new Error('Спочатку Preview');
+          if(!confirm('Зберегти розклад? Негайний запуск синхронізації не виконується.'))return;
+          await request(`${API}/admin/scheduler-schedules/${job.job}/apply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(draft)});
+          await loadRuntimeFeatures();return;
+        }
+        const settings={enabled:card.querySelector('[name="enabled"]').checked,timezone:'Europe/Kyiv',spec:{kind:job.spec.kind,minute:Number(card.querySelector('[name="minute"]').value)}};
+        if(job.spec.kind==='weekly'){settings.spec.hour=Number(card.querySelector('[name="hour"]').value);settings.spec.weekdays=[...card.querySelectorAll('[name="weekday"]:checked')].map(input=>Number(input.value))}
+        for(const input of card.querySelectorAll('input[type="number"]'))if(input.value.trim()===''||!input.checkValidity())throw new Error('Перевірте час запуску');
+        const payload=action==='rollback'?{rollback:job.revision,expected_revision:job.revision}:{settings,expected_revision:job.revision};
+        const preview=await request(`${API}/admin/scheduler-schedules/${job.job}/preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if(generation!==schedulerEditorsGeneration||(card.dataset.editRevision||'0')!==editRevision)return;
+        schedulerScheduleDrafts.set(job.job,payload);
+        output.textContent=`Preview: ${JSON.stringify(preview.before.spec)} → ${JSON.stringify(preview.after.spec)}; enabled ${preview.before.enabled} → ${preview.after.enabled}. Наступний: ${preview.next_run||'—'}. ${preview.warnings.join('; ')}. Негайний запуск: ні.`;
+        card.querySelector('[data-schedule-action="apply"]').disabled=false;
+      }catch(error){schedulerScheduleDrafts.delete(job.job);card.querySelector('[data-schedule-action="apply"]').disabled=true;output.textContent=error.message}
+      finally{button.disabled=action==='apply'&&!schedulerScheduleDrafts.has(job.job)}
+    };
+  }catch(error){root.textContent=`Редактор розкладу недоступний: ${error.message}`}
+}
 async function loadRuntimeFeatures(){
   try{
     const features=await request(`${API}/runtime-features`);
@@ -1951,6 +2003,7 @@ async function loadRuntimeFeatures(){
       schedulerRoot.innerHTML=(features.scheduler_jobs||[]).map(job=>{const showAction=isAdmin;const manageable=job.manageable===true;return`<article class="scheduler-job ${job.enabled?'enabled':'disabled'}"><header><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong><span>${job.enabled?'Увімкнено':'Вимкнено'}</span></header><dl><div><dt>Розклад</dt><dd>${esc(job.schedule)}</dd></div><div><dt>Timezone</dt><dd>${esc(job.timezone)}</dd></div><div><dt>Останній запуск</dt><dd>${esc(job.last_finished_at?displayDate(job.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(job.enabled&&job.next_run?displayDate(job.next_run):'—')}</dd></div><div><dt>Джерело налаштування</dt><dd>${job.configuration_source==='runtime'?'Адміністратор':'Середовище'}</dd></div></dl>${showAction?`<footer><button type="button" class="ghost scheduler-toggle" data-scheduler-job="${esc(job.job)}" data-sandbox="${features.sandbox_mode?'true':'false'}" data-enabled="${job.enabled?'false':'true'}" ${features.sandbox_mode&&!manageable?'disabled title="SANDBOX destination не підтверджено"':''}>${job.enabled?'Вимкнути':'Увімкнути'}</button></footer>`:''}</article>`}).join('');
       schedulerRoot.onclick=event=>{const button=event.target.closest('.scheduler-toggle');if(button)toggleSchedulerJob(button)};
     }
+    await loadSchedulerEditors();
     renderGoogleRuntimeState(features.google_integration||{enabled:Boolean(features.google),configuration_source:'environment'});
     renderManualBidsUpdateState(features.manual_bids_update||{enabled:Boolean(features.bids_update),configuration_source:'environment',mode_supported:features.bids_mode!=='disabled'});
     const disable=(selector,message)=>{const element=$(selector);if(!element)return;element.dataset.runtimeDisabled='1';element.disabled=true;element.title=message};

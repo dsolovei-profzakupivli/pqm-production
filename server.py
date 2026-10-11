@@ -2204,14 +2204,14 @@ def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error:
 
 
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
-                        trigger: str = "manual") -> bool:
+                        trigger: str = "manual", expected_revision=None) -> bool:
     """Claim process and SQLite job locks before starting any Prozorro refresh."""
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with SYNC_STATE_LOCK:
         if SYNC_STATE.get("running"):
             return False
-        owner = scheduler_runtime.claim(DB_PATH, "prozorro", trigger=trigger)
+        owner = scheduler_runtime.claim(DB_PATH, "prozorro", trigger=trigger, expected_revision=expected_revision)
         if not owner:
             return False
         SYNC_STATE.update(running=True, mode=mode, started_at=now_iso(), message=message)
@@ -2291,14 +2291,131 @@ def _wait_until(target: datetime, stop_event: threading.Event | None = None,
             return True
 
 
+SCHEDULE_WAKEUPS: dict[str, threading.Event] = {}
+
+
+def scheduler_schedule_model(job_key: str) -> dict:
+    # Schedule reads must not invoke db()/migration helpers.
+    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as con:
+        con.execute("PRAGMA query_only=ON")
+        defaults = {key: False for key in SCHEDULER_TARGETS} if SANDBOX_MODE else scheduler_environment_defaults()
+        return scheduler_runtime.schedule_model(con, job_key, defaults.get(job_key, False))
+
+
+def scheduler_admin_model(job_key):
+    model = scheduler_schedule_model(job_key)
+    blocked = bool(SAFE_MODE and not SANDBOX_MODE)
+    if SANDBOX_MODE:
+        blocked = not sandbox_runtime.scheduler_job_allowed(job_key)
+    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        row = con.execute("SELECT * FROM scheduler_job_state WHERE job_key=?", (job_key,)).fetchone()
+        has_audit = con.execute("SELECT 1 FROM sqlite_master WHERE name='scheduler_schedule_audit'").fetchone()
+        history = [dict(r) for r in con.execute("SELECT revision,actor,changed_at FROM scheduler_schedule_audit WHERE job_key=? ORDER BY revision DESC LIMIT 10", (job_key,))] if has_audit else []
+    duration = None
+    if row and row['last_status'] != 'running':
+        try:
+            seconds = (datetime.fromisoformat(row['last_finished_at']) - datetime.fromisoformat(row['last_started_at'])).total_seconds()
+            if seconds >= 0:
+                duration = round(seconds, 3)
+        except (TypeError, ValueError):
+            pass
+    return {**model, "effective_enabled": model['enabled'] and not blocked,
+            "safety_block_reason": "Environment safety guard" if blocked else None,
+            "schedule": scheduler_runtime.schedule_label(model['spec']),
+            "next_run": scheduler_runtime.next_run(model['spec']).isoformat() if model['enabled'] and not blocked else None,
+            "registered": job_key in REGISTERED_SCHEDULER_JOBS,
+            "heartbeat_at": SCHEDULER_HEARTBEATS.get(job_key),
+            "last_started_at": row['last_started_at'] if row else None,
+            "last_finished_at": row['last_finished_at'] if row else None,
+            "last_status": row['last_status'] if row else 'never',
+            "duration_seconds": duration, "history": history}
+
+
+def scheduler_admin_change(job_key, payload, *, apply=False, actor=''):
+    if SAFE_MODE and not SANDBOX_MODE:
+        raise ValueError('Environment safety guard blocks scheduler changes')
+    if SANDBOX_MODE and not sandbox_runtime.scheduler_job_allowed(job_key):
+        raise ValueError('SANDBOX scheduler guard blocks this job')
+    if not isinstance(payload, dict) or set(payload) not in ({'settings', 'expected_revision'}, {'rollback', 'expected_revision'}):
+        raise ValueError('Invalid schedule request')
+    if type(payload['expected_revision']) is not int:
+        raise ValueError('Expected revision required')
+    defaults = {key: False for key in SCHEDULER_TARGETS} if SANDBOX_MODE else scheduler_environment_defaults()
+    if apply and SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
+    uri = str(DB_PATH) if apply else f'file:{DB_PATH}?mode=ro'
+    with SCHEDULE_APPLY_LOCK, sqlite3.connect(uri, uri=not apply, timeout=30) as con:
+        if apply:
+            con.execute('BEGIN IMMEDIATE')
+        else:
+            con.execute('PRAGMA query_only=ON')
+            con.execute('BEGIN')
+        model = scheduler_runtime.schedule_model(con, job_key, defaults.get(job_key, False))
+        if model['revision'] != payload['expected_revision']:
+            raise scheduler_runtime.RevisionConflict('Schedule changed; preview again')
+        settings = (scheduler_runtime.rollback_payload(con, job_key, payload['rollback'])
+                    if 'rollback' in payload else payload['settings'])
+        if 'rollback' in payload and payload['rollback'] != model['revision']:
+            raise ValueError('Rollback must use the current revision')
+        if apply:
+            result = scheduler_runtime.apply_schedule(con, job_key, settings, payload['expected_revision'], actor, defaults=defaults)
+        else:
+            result = scheduler_runtime.preview_schedule(con, job_key, settings, defaults)
+    if apply:
+        SCHEDULE_WAKEUPS.setdefault(job_key, threading.Event()).set()
+        apply_scheduler_settings(catch_up=False)
+    return result
+
+
+def schedule_next(job_key: str) -> datetime:
+    model = scheduler_schedule_model(job_key)
+    return scheduler_runtime.next_run(model["spec"])
+
+
+def wait_schedule(target, stop_event, job_key):
+    model = scheduler_schedule_model(job_key)
+    # Recalculate if Apply happened between target calculation and this read.
+    target = scheduler_runtime.next_run(model["spec"])
+    wake = SCHEDULE_WAKEUPS.setdefault(job_key, threading.Event())
+    while not stop_event.is_set():
+        SCHEDULER_HEARTBEATS[job_key] = now_iso()
+        latest = scheduler_schedule_model(job_key)
+        if not _scheduler_is_configured(job_key):
+            return True
+        if latest["revision"] != model["revision"]:
+            model = latest
+            target = scheduler_runtime.next_run(model["spec"])
+        if job_key == 'prozorro':
+            SYNC_STATE['next_run_at'] = target.isoformat()
+        elif job_key == 'violation_reports':
+            VIOLATION_SYNC_STATE['next_run_at'] = target.isoformat()
+        remaining = (target.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            # Recheck revision inside the SQLite lease-claim transaction.
+            SCHEDULE_EXPECTED_REVISIONS[job_key] = model["revision"]
+            return False
+        wake.wait(min(1, remaining))
+        wake.clear()
+    return True
+
+
+SCHEDULE_EXPECTED_REVISIONS: dict[str, int] = {}
+SCHEDULE_APPLY_LOCK = threading.RLock()
+
+
 def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
     """A failed/busy launch must not terminate either independent hourly loop."""
     try:
+        revision = SCHEDULE_EXPECTED_REVISIONS.get(job_key) if trigger == 'scheduled' else None
+        revision_args = {'expected_revision': revision} if revision is not None else {}
         if job_key == 'prozorro':
             started = start_prozorro_sync(sync_incremental_worker, mode='incremental',
-                                         message='Підготовка щогодинного оновлення…', trigger=trigger)
+                                         message='Підготовка щогодинного оновлення…', trigger=trigger,
+                                         **revision_args)
         elif job_key == 'violation_reports':
-            started = start_violation_reports_sync(trigger=trigger)
+            started = start_violation_reports_sync(trigger=trigger, **revision_args)
         else:
             raise ValueError('Unknown hourly job')
         SERVER_LOG.info('Scheduled sync trigger job=%s reason=%s started=%s', job_key, trigger, started)
@@ -2310,7 +2427,7 @@ def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
 
 def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Independent Europe/Kyiv hourly scheduler with safe startup catch-up."""
-    SYNC_STATE["next_run_at"] = next_hourly_run().isoformat()
+    SYNC_STATE["next_run_at"] = schedule_next('prozorro').isoformat()
     if stop_event.wait(10):
         SYNC_STATE["next_run_at"] = None
         return
@@ -2324,7 +2441,11 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
     except ValueError:
         last_sync = None
     SYNC_STATE['last_data_sync_at'] = last_value
-    if catch_up and SANDBOX_MODE:
+    schedule = scheduler_schedule_model('prozorro')
+    if catch_up and schedule['spec'] != scheduler_runtime.default_spec('prozorro'):
+        if scheduler_runtime.catchup_due(schedule['spec'], datetime.now(timezone.utc), last_value):
+            _trigger_scheduler_job('prozorro', 'startup_catchup')
+    elif catch_up and SANDBOX_MODE:
         while not stop_event.is_set() and _scheduler_is_configured('prozorro'):
             SCHEDULER_HEARTBEATS['prozorro'] = now_iso()
             delay = sandbox_runtime.prozorro_catchup_delay(DB_PATH, datetime.now(timezone.utc))
@@ -2338,9 +2459,9 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
             datetime.now(timezone.utc), last_sync.isoformat() if last_sync else None):
         _trigger_scheduler_job('prozorro', 'startup_catchup')
     while not stop_event.is_set():
-        target = next_hourly_run()
+        target = schedule_next('prozorro')
         SYNC_STATE["next_run_at"] = target.isoformat()
-        if _wait_until(target, stop_event, "prozorro"):
+        if wait_schedule(target, stop_event, "prozorro"):
             break
         if not _scheduler_is_configured("prozorro"):
             break
@@ -2362,13 +2483,15 @@ def violation_reports_scheduler(stop_event: threading.Event, *, catch_up: bool =
         last = datetime.fromisoformat(str(state.get("last_finished_at") or "").replace("Z", "+00:00"))
     except ValueError:
         last = None
-    if catch_up and scheduler_runtime.hourly_catchup_due(
-            datetime.now(timezone.utc), last.isoformat() if last else None):
+    schedule = scheduler_schedule_model('violation_reports')
+    if catch_up and (scheduler_runtime.catchup_due(schedule['spec'], datetime.now(timezone.utc), last.isoformat() if last else None)
+                    if schedule['spec'] != scheduler_runtime.default_spec('violation_reports') else
+                    scheduler_runtime.hourly_catchup_due(datetime.now(timezone.utc), last.isoformat() if last else None)):
         _trigger_scheduler_job('violation_reports', 'startup_catchup')
     while not stop_event.is_set():
-        target = next_hourly_run()
+        target = schedule_next('violation_reports')
         VIOLATION_SYNC_STATE["next_run_at"] = target.isoformat()
-        if _wait_until(target, stop_event, "violation_reports"):
+        if wait_schedule(target, stop_event, "violation_reports"):
             break
         if not _scheduler_is_configured("violation_reports"):
             break
@@ -2386,17 +2509,17 @@ def nazk_registry_scheduler(stop_event: threading.Event, *, catch_up: bool = Tru
         persisted = next(row for row in jobs if row["job"] == "nazk_registry")
         source_day = str(reference_status(DB_PATH).get("nazk", {}).get("source_updated_at") or "")[:10]
         kyiv_day = scheduler_runtime.as_kyiv(current).date().isoformat()
-        if (scheduler_runtime.nazk_due_today(current, persisted.get("last_finished_at"))
+        if (scheduler_runtime.catchup_due(scheduler_schedule_model('nazk_registry')['spec'], current, persisted.get("last_finished_at"))
                 and source_day != kyiv_day):
             start_nazk_registry_refresh(trigger="scheduled_catchup")
     while not stop_event.is_set():
         current = datetime.now(timezone.utc)
-        target = scheduler_runtime.next_nazk_run(current)
-        if _wait_until(target, stop_event, "nazk_registry"):
+        target = schedule_next('nazk_registry')
+        if wait_schedule(target, stop_event, "nazk_registry"):
             break
         if not _scheduler_is_configured("nazk_registry"):
             break
-        start_nazk_registry_refresh(trigger="scheduled")
+        start_nazk_registry_refresh(trigger="scheduled", expected_revision=SCHEDULE_EXPECTED_REVISIONS.get('nazk_registry'))
 
 
 def register_scheduler_job(job_key: str, target, *, catch_up: bool = True) -> bool:
@@ -2506,7 +2629,7 @@ def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
     if SANDBOX_MODE:
         if old_enabled != bool(enabled):
             with db() as con:
-                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor)
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor, default_enabled=old_enabled)
                 con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
                   VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
                   "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
@@ -2525,7 +2648,7 @@ def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
     try:
         if old_enabled != bool(enabled):
             with db() as con:
-                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor)
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor, default_enabled=old_enabled)
                 con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
                   VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
                   "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
@@ -6180,14 +6303,14 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
                         VIOLATION_SYNC_STATE['errors'], VIOLATION_SYNC_STATE['message'].startswith('Помилка'))
 
 
-def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
+def start_violation_reports_sync(*, trigger: str = "manual", expected_revision=None) -> bool:
     """Share process and SQLite locks between manual and scheduled refreshes."""
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
     with VIOLATION_SYNC_LOCK:
         if VIOLATION_SYNC_STATE["running"]:
             return False
-        owner = scheduler_runtime.claim(DB_PATH, "violation_reports", trigger=trigger)
+        owner = scheduler_runtime.claim(DB_PATH, "violation_reports", trigger=trigger, expected_revision=expected_revision)
         if not owner:
             return False
         VIOLATION_SYNC_STATE.update(running=True, message="Отримання переліку звернень…",
@@ -6214,10 +6337,10 @@ def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
         return True
 
 
-def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
+def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=None) -> bool:
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
-    owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger)
+    owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger, expected_revision=expected_revision)
     if not owner:
         return False
     heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner)
@@ -10207,6 +10330,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'error':str(exc)}, 400)
         if parsed.path == '/api/admin/schema':
             return self.send_json(pqm_schema_metadata())
+        if parsed.path == '/api/admin/scheduler-schedules':
+            return self.send_json({'items': [scheduler_admin_model(key) for key in SCHEDULER_TARGETS]})
         if parsed.path == "/api/applications/search-fields":
             return self.send_json({"items": [{"key": field["key"], "label": field["label"]}
                                              for field in APPLICATION_SEARCH_FIELDS]})
@@ -10985,6 +11110,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"saved": True, "feature": feature})
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        schedule_change = re.fullmatch(r"/api/admin/scheduler-schedules/([a-z_]+)/(preview|apply)", parsed.path)
+        if schedule_change:
+            try:
+                result = scheduler_admin_change(schedule_change.group(1), self.read_json(),
+                    apply=schedule_change.group(2) == 'apply', actor=self.auth_user)
+                return self.send_json(result)
+            except scheduler_runtime.RevisionConflict as exc:
+                return self.send_json({'error': str(exc)}, 409)
+            except ValueError as exc:
+                return self.send_json({'error': str(exc)}, 400)
         scheduler_toggle = re.fullmatch(r"/api/admin/scheduler-jobs/([a-z_]+)", parsed.path)
         if scheduler_toggle:
             payload = self.read_json()

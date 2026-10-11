@@ -543,3 +543,23 @@ tbody tr.application-review-completed .status.admit{color:var(--green);backgroun
 @media(max-width:1200px){.operational-task-heading{flex-direction:column;align-items:stretch}.operational-type-kpis{justify-content:flex-start}}
 .application-amcu-blocked{display:block;color:#a61b27;font-weight:700;margin-top:2px}
 tr.registry-risk-amcu td{background:#fff1f1}
+/* Schedule editor only: existing administration controls remain unchanged. */
+#schedulerScheduleEditors .scheduler-editor { min-width:0; overflow-wrap:anywhere; }
+#schedulerScheduleEditors label { display:inline-flex; align-items:center; gap:6px; margin:4px 8px 4px 0; }
+#schedulerScheduleEditors input[type="number"] { width:5rem; max-width:100%; }
+#schedulerScheduleEditors footer { display:flex; flex-wrap:wrap; gap:6px; }
+#schedulerScheduleEditors .scheduler-preview { white-space:pre-wrap; }
+/* Admin Google/EDR presentation only; no OAuth or action behavior changes. */
+#adminSyncPanel .google-runtime-panel { min-width:0; padding:12px 16px; }
+#adminSyncPanel .google-runtime-panel > header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 16px; padding:0; margin:0 0 8px; }
+#adminSyncPanel .google-runtime-panel > header > div { min-width:0; max-width:100%; }
+#adminSyncPanel .google-runtime-panel h2 { margin:0; }
+#adminSyncPanel .google-runtime-panel p { margin:4px 0 0; overflow-wrap:anywhere; }
+#adminSyncPanel .google-runtime-panel .section-actions { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+#adminSyncPanel .google-runtime-panel :is(button,.runtime-feature-state) { max-width:100%; white-space:normal; overflow-wrap:anywhere; }
+#adminSyncPanel .google-runtime-panel dl { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px 16px; margin:0; }
+#adminSyncPanel .google-runtime-panel dl > div { min-width:0; padding:0; }
+#adminSyncPanel .google-runtime-panel dt { font-size:12px; }
+#adminSyncPanel .google-runtime-panel dd { margin:3px 0 0; overflow-wrap:anywhere; }
+@media(max-width:900px) { #adminSyncPanel .google-runtime-panel dl { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:480px) { #adminSyncPanel .google-runtime-panel dl { grid-template-columns:minmax(0,1fr); } }
