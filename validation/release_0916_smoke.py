@@ -13,7 +13,9 @@ class NextAcceptance(web.WebAcceptance):
 
     def test_21_safe_mode_overrides_persisted_enable_without_rewriting_it(self):
         with s.db() as con:
-            original=[tuple(r) for r in con.execute('SELECT * FROM scheduler_job_settings')]
+            cursor=con.execute('SELECT * FROM scheduler_job_settings')
+            original_columns=[column[0] for column in cursor.description]
+            original=[tuple(r) for r in cursor]
             for key in s.SCHEDULER_TARGETS:s.scheduler_runtime.save_enabled(con,key,True,'synthetic')
             before=[tuple(r) for r in con.execute('SELECT * FROM scheduler_job_settings')]
         try:
@@ -31,7 +33,9 @@ class NextAcceptance(web.WebAcceptance):
         finally:
             with s.db() as con:
                 con.execute('DELETE FROM scheduler_job_settings')
-                con.executemany('INSERT INTO scheduler_job_settings VALUES (?,?,?,?)',original)
+                columns=','.join('"'+name.replace('"','""')+'"' for name in original_columns)
+                placeholders=','.join('?' for _ in original_columns)
+                con.executemany('INSERT INTO scheduler_job_settings ('+columns+') VALUES ('+placeholders+')',original)
 
     def test_22_safe_nazk_control_read_does_not_materialize_missing_control(self):
         with s.db() as con:
