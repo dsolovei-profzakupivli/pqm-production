@@ -82,6 +82,19 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         )
         return output
 
+    def test_publication_date_in_all_three_synthetic_protocols(self):
+        for kind in ("warning", "decline_p49_1_2", "decline_p49_3"):
+            with self.subTest(kind=kind):
+                output = self.build(kind, values={**BASE_VALUES,
+                    "procurement_date": "28.09.2026", "report_date": "06.10.2026",
+                    "rejection_date": "05.10.2026", "winner_date": "01.10.2026"})
+                text = all_text(output)
+                self.assertIn("28.09.2026 оголосив", text)
+                self.assertNotIn("06.10.2026 оголосив", text)
+                self.assertNotIn("05.10.2026 оголосив", text)
+                with self.assertRaises(generator.ProtocolContextValidationError):
+                    self.build(kind, values={**BASE_VALUES, "procurement_date": ""})
+
     def test_decision_links_are_real_docx_relationships(self):
         urls = {
             "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
