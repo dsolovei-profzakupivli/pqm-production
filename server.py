@@ -6774,6 +6774,17 @@ def violation_decision_template_key(report: dict, context: dict, review: dict | 
     return ""
 
 
+def violation_civil_code_required(report: dict, context: dict, review: dict) -> bool:
+    """Approved late-rejection warnings do not require an extra Civil Code block."""
+    scenario = violation_decision_template_key(report, context, review)
+    if scenario in {"p49_1_warning", "p49_1_warning_guarantee_no_documents_no_explanation"}:
+        return False
+    # Preserve every other scenario, including all refusal protocols.
+    return bool(context.get("day_5_shifted") if report.get("reason") == "contractBreach"
+                else context.get("day_3_shifted") if report.get("reason") == "signingRefusal"
+                else False)
+
+
 def build_violation_decision_justification(report: dict, context: dict, review: dict | None = None) -> str:
     """Render an approved template only; never invent or persist additional legal reasoning."""
     review = review or {}
@@ -8328,10 +8339,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "has_written_refusal": bool(review.get("written_refusal_date") or review.get("written_refusal_number") or review.get("written_refusal_url")),
         "has_contract": bool(review.get("actual_contract_signed")) and not rejected,
         "has_contract_security": bool(context.get("contract_guarantee_required")),
-        "has_civil_code_basis": bool(
-            context.get("day_5_shifted") if item.get("reason") == "contractBreach"
-            else context.get("day_3_shifted") if item.get("reason") == "signingRefusal"
-            else False),
+        "has_civil_code_basis": violation_civil_code_required(item, context, review),
         "has_court_decision": item.get("reason") == "goodsNonCompliance",
         "has_customer_documents": bool(item.get("evidence_documents")),
         "has_supplier_response": bool(supplier_text),

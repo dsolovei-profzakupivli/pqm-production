@@ -95,6 +95,49 @@ class ViolationProtocolDocxTests(unittest.TestCase):
                 with self.assertRaises(generator.ProtocolContextValidationError):
                     self.build(kind, values={**BASE_VALUES, "procurement_date": ""})
 
+    def test_late_rejection_warning_missing_civil_block_is_allowed_only_when_not_required(self):
+        import server
+        supplied = os.environ.get("PQM_WARNING_TEMPLATE_FIXTURE")
+        if supplied:
+            runtime = Path(supplied)
+            self.assertEqual(sha256(runtime), "a7d3ca6977d3247dc7962fae23156bf3ccded214c51f94fee8d0c45f47d1915a")
+        else:
+            # Portable regression fixture; no runtime/packaged template is modified.
+            source = Document(generator.TEMPLATES["warning"])
+            paragraphs = list(source.paragraphs)
+            start = next(i for i, p in enumerate(paragraphs) if "{{#if decision.civil_code_basis" in p.text)
+            end = next(i for i in range(start + 1, len(paragraphs)) if "{{/if}}" in paragraphs[i].text)
+            for p in paragraphs[start:end + 1]:
+                p._p.getparent().remove(p._p)
+            runtime = Path(self.temp.name) / "warning-without-civil-fixture.docx"
+            source.save(runtime)
+        original_hash = sha256(runtime)
+        self.assertNotIn("Цивільного кодексу України", all_text(runtime))
+        context = {"rejection_present": True, "rejected_before_deadline": False, "day_5_shifted": True}
+        required = server.violation_civil_code_required(
+            {"reason": "contractBreach", "defendant_statements": []}, context, {"internal_decision": "warning"})
+        self.assertFalse(required)
+        justification = "Обґрунтування УО збережене дослівно"
+        values = {**BASE_VALUES, "report_id": "UA-D-2026-10-06-000002",
+                  "protocol_number": "769-2", "protocol_date": "12.10.2026"}
+        with patch.dict(generator.TEMPLATES, {"warning": runtime}), \
+                patch.object(generator, "ensure_runtime_templates"):
+            output = Path(self.temp.name) / "769-2-fixture.docx"
+            generator.build_violation_protocol_docx("warning", output, values, justification, [], [],
+                {"has_civil_code_basis": required, "has_written_refusal": True, "has_contract": True})
+            text = all_text(output)
+            self.assertIn(justification, text)
+            self.assertIn(values["violation_description"], text)
+            self.assertIn("769-2", text)
+            self.assertIn("UA-D-2026-10-06-000002", text)
+            self.assertNotIn("Цивільного кодексу України", text)
+            mandatory_output = Path(self.temp.name) / "required-civil-fixture.docx"
+            with self.assertRaisesRegex(ValueError, "відсутній фрагмент ЦКУ"):
+                generator.build_violation_protocol_docx("warning", mandatory_output, values, justification,
+                    [], [], {"has_civil_code_basis": True})
+            self.assertFalse(mandatory_output.exists())
+        self.assertEqual(sha256(runtime), original_hash)
+
     def test_decision_links_are_real_docx_relationships(self):
         urls = {
             "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",

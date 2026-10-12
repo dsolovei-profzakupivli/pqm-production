@@ -2172,6 +2172,68 @@ class ViolationReportTests(unittest.TestCase):
         self.assertIn(".request-details-dialog.request-details-dialog-wide{width:min(1500px,96vw)", module_css)
 
 
+class WarningCivilCodeScenarioTests(unittest.TestCase):
+    def test_late_rejection_warning_does_not_require_extra_civil_code(self):
+        report = {"reason": "contractBreach", "defendant_statements": []}
+        for shifted in (False, True):
+            for guarantee in (False, True):
+                context = {"rejection_present": True, "rejected_before_deadline": False,
+                           "day_5_shifted": shifted, "contract_guarantee_required": guarantee}
+                review = {"internal_decision": "warning", "guarantee_documents_visible": 0,
+                          "decision_template_key": "p49_1_decline_before_deadline_civil_shift"}
+                with self.subTest(shifted=shifted, guarantee=guarantee):
+                    self.assertFalse(server.violation_civil_code_required(report, context, review))
+
+    def test_refusals_and_other_warning_scenarios_preserve_existing_rules(self):
+        for reason in ("contractBreach", "signingRefusal", "goodsNonCompliance"):
+            for shifted in (False, True):
+                context = {"day_5_shifted": shifted, "day_3_shifted": shifted,
+                           "rejection_present": True, "rejected_before_deadline": True}
+                report = {"reason": reason, "defendant_statements": []}
+                expected = shifted if reason != "goodsNonCompliance" else False
+                self.assertEqual(server.violation_civil_code_required(
+                    report, context, {"internal_decision": "decline"}), expected)
+                self.assertEqual(server.violation_civil_code_required(
+                    report, context, {"internal_decision": "warning"}), expected)
+        report = {"reason": "contractBreach", "defendant_statements": [{"description": "Пояснення"}]}
+        context = {"rejection_present": True, "rejected_before_deadline": False, "day_5_shifted": True}
+        self.assertTrue(server.violation_civil_code_required(report, context, {"internal_decision": "warning"}))
+        self.assertTrue(server.violation_civil_code_required(
+            {**report, "defendant_statements": []}, {**context, "rejection_ambiguous": True},
+            {"internal_decision": "warning"}))
+
+    def test_769_2_preparation_preserves_saved_text_and_other_requisites(self):
+        item = {"id": "fixture-report", "report_id": "UA-D-2026-10-06-000002",
+            "reason": "contractBreach", "author_name": "Замовник", "author_code": "11111111",
+            "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "Опис порушення без автоматичних доповнень", "defendant_statements": [],
+            "deadline_control": {"supplier_ready": True},
+            "procurement_context": {"available": True, "winner_selected_at": "2026-09-28",
+                "tender_date_published": "2026-09-28", "day_5_shifted": True,
+                "rejection_present": True, "rejection_date": "2026-10-06",
+                "rejection_title": "Непідписання договору", "rejected_before_deadline": False},
+            "review": {"internal_decision": "warning", "assigned_officer": "УО",
+                "protocol_number": "769-2", "protocol_date": "2026-10-12",
+                "decision_justification": "Обґрунтування УО збережене дослівно"}}
+        before = json.loads(json.dumps(item))
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "violation_protocol_declensions", return_value=[]), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}), \
+                patch.object(server, "decline_name", side_effect=lambda value, entity, case:
+                    DeclensionResult(value, "resolved", "automatic", value, entity)):
+            prepared = server.generate_violation_protocol(item["id"], {}, prepare_only=True)
+        self.assertFalse(prepared["flags"]["has_civil_code_basis"])
+        for key, expected in (("protocol_number", "769-2"), ("protocol_date", "12.10.2026"),
+                ("report_id", "UA-D-2026-10-06-000002"),
+                ("violation_description", item["description"]),
+                ("decision_justification", item["review"]["decision_justification"]),
+                ("rejection_date", "06.10.2026")):
+            self.assertEqual(prepared["values"][key], expected)
+        self.assertEqual(item, before)
+
+
 class ViolationProtocolFilenameTests(unittest.TestCase):
     def item(self):
         return {"report_id": "UA-D-2026-10-06-000001", "defendant_code": "45727617",
