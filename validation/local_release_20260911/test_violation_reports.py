@@ -1,4 +1,5 @@
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,9 +61,10 @@ class ViolationReportTests(unittest.TestCase):
         item = {
             "id": "7733b223a90f4770b39d35082bbcb9cd",
             "report_id": "UA-D-2026-09-25-000001", "reason": "signingRefusal",
+            "author_name": "Замовник", "defendant_name": "Постачальник", "defendant_code": "22222222",
             "description": "", "has_official_decision": False,
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-09-21",
+            "procurement_context": {"available": True, "tender_date_published": "2026-09-20", "winner_selected_at": "2026-09-21",
                 "winner_state": "confirmed", "rejection_present": False,
                 "rejection_ambiguous": False},
             "review": {"assigned_officer": "УО", "internal_decision": "decline",
@@ -77,6 +79,7 @@ class ViolationReportTests(unittest.TestCase):
                 patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
             prepared = server.generate_violation_protocol(item["id"], {}, prepare_only=True)
         self.assertEqual(prepared["values"]["violation_description"], "")
+        self.assertEqual(prepared["values"]["procurement_date"], "20.09.2026")
 
     def test_justification_plain_text_normalization(self):
         raw = "\tПерший абзац.\r\n\r\n  Другий абзац.\rТретій абзац.\n\n"
@@ -732,7 +735,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_name": "Постачальник", "defendant_code": "22222222", "description": "Порушення",
             "evidence_documents": [], "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-08-01T10:00:00+03:00"},
+            "procurement_context": {"available": True, "tender_date_published": "2026-07-30", "winner_selected_at": "2026-08-01T10:00:00+03:00"},
             "review": {"review_status": "in_review", "assigned_officer": "Тестова УО",
                        "customer_verified_short_name": "Замовник",
                        "internal_decision": "warning", "decision_justification": "Остаточне ручне обґрунтування",
@@ -764,6 +767,9 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(review["generated_protocol_filename"], result["filename"])
         metadata = json.loads(review["generated_protocol_metadata_json"])
         self.assertEqual(metadata, result["metadata"])
+        self.assertEqual(server._violation_protocol_download_filename(result["filename"]), result["download_filename"])
+        self.assertEqual(metadata["protocol_download"]["filename"], result["download_filename"])
+        self.assertEqual(server._violation_protocol_download_filename("other-generator.docx"), "other-generator.docx")
         self.assertEqual(metadata["protocol_subject"]["label"], "Тема протоколу / короткий зміст")
         self.assertIn("UA-D-TEST", metadata["protocol_subject"]["value"])
         self.assertEqual(result["resolved_metadata"], [{
@@ -797,7 +803,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "contract_date": "2020-01-01",
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-01", "contract_date": "2020-01-01",
                                     "contract_pretty_id": "UA-AUTO-a1",
                                     "winner_selected_at": "2026-08-01T10:00:00+03:00"},
             "review": {"review_status": "in_review", "assigned_officer": "Тестова УО",
@@ -840,7 +846,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_name": "Постачальник", "defendant_code": "22222222",
             "description": "Порушення", "evidence_documents": [], "defendant_statements": [],
             "supplier_verified": None, "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True,
+            "procurement_context": {"available": True, "tender_date_published": "2026-07-30",
                                     "winner_selected_at": "2026-08-01T10:00:00+03:00"},
             "review": {**review, "review_status": "in_review", "assigned_officer": "УО",
                        "customer_verified_short_name": "Замовник", "internal_decision": "decline",
@@ -875,7 +881,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": {"full_name": supplier, "short_name": 'ТОВ "ОХТИРКА М\'ЯСОПРОДУКТ"'},
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-09-01"},
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-30", "winner_selected_at": "2026-09-01"},
             "review": {"assigned_officer": "Тестова УО", "internal_decision": "warning",
                        "customer_verified_short_name": "ДП «ЗАМОВНИК»",
                        "decision_justification": "Погоджений текст", "protocol_number": "TEST-QUOTES",
@@ -925,7 +931,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-09-01",
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-30", "winner_selected_at": "2026-09-01",
                                     "day_5_shifted": False, "day_3_shifted": True},
             "review": {"assigned_officer": "Тестова УО", "internal_decision": "warning",
                        "customer_verified_short_name": "Замовник",
@@ -1054,7 +1060,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True, "supplier_deadline": "2026-09-05"},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-09-01", "dk_code": "44110000-4"},
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-30", "winner_selected_at": "2026-09-01", "dk_code": "44110000-4"},
             "review": {"assigned_officer": "Тестова УО", "internal_decision": "warning",
                        "customer_verified_short_name": "Замовник",
                        "decision_justification": "Останній збережений текст УО — без змін.",
@@ -2070,7 +2076,7 @@ class ViolationReportTests(unittest.TestCase):
                 "date_created": "2026-09-25T12:00:00+03:00",
                 "deadline_control": {"supplier_ready": True, "supplier_deadline": "2026-09-28"},
                 "has_official_decision": False,
-                "procurement_context": {"available": True, "winner_present": False,
+                "procurement_context": {"available": True, "tender_date_published": "2026-09-20", "winner_present": False,
                                         "winner_state": "absent_confirmed",
                                         "winner_ambiguous": False, "rejection_present": False,
                                         "rejection_ambiguous": False},
@@ -2164,6 +2170,221 @@ class ViolationReportTests(unittest.TestCase):
         wide_override = module_css.rfind(".request-details-dialog-wide .request-details-body{display:block")
         self.assertGreater(wide_override, legacy_grid)
         self.assertIn(".request-details-dialog.request-details-dialog-wide{width:min(1500px,96vw)", module_css)
+
+
+class WarningCivilCodeScenarioTests(unittest.TestCase):
+    def test_late_rejection_warning_does_not_require_extra_civil_code(self):
+        report = {"reason": "contractBreach", "defendant_statements": []}
+        for shifted in (False, True):
+            for guarantee in (False, True):
+                context = {"rejection_present": True, "rejected_before_deadline": False,
+                           "day_5_shifted": shifted, "contract_guarantee_required": guarantee}
+                review = {"internal_decision": "warning", "guarantee_documents_visible": 0,
+                          "decision_template_key": "p49_1_decline_before_deadline_civil_shift"}
+                with self.subTest(shifted=shifted, guarantee=guarantee):
+                    self.assertFalse(server.violation_civil_code_required(report, context, review))
+
+    def test_refusals_and_other_warning_scenarios_preserve_existing_rules(self):
+        for reason in ("contractBreach", "signingRefusal", "goodsNonCompliance"):
+            for shifted in (False, True):
+                context = {"day_5_shifted": shifted, "day_3_shifted": shifted,
+                           "rejection_present": True, "rejected_before_deadline": True}
+                report = {"reason": reason, "defendant_statements": []}
+                expected = shifted if reason != "goodsNonCompliance" else False
+                self.assertEqual(server.violation_civil_code_required(
+                    report, context, {"internal_decision": "decline"}), expected)
+                self.assertEqual(server.violation_civil_code_required(
+                    report, context, {"internal_decision": "warning"}), expected)
+        report = {"reason": "contractBreach", "defendant_statements": [{"description": "Пояснення"}]}
+        context = {"rejection_present": True, "rejected_before_deadline": False, "day_5_shifted": True}
+        self.assertTrue(server.violation_civil_code_required(report, context, {"internal_decision": "warning"}))
+        self.assertTrue(server.violation_civil_code_required(
+            {**report, "defendant_statements": []}, {**context, "rejection_ambiguous": True},
+            {"internal_decision": "warning"}))
+
+    def test_769_2_preparation_preserves_saved_text_and_other_requisites(self):
+        item = {"id": "fixture-report", "report_id": "UA-D-2026-10-06-000002",
+            "reason": "contractBreach", "author_name": "Замовник", "author_code": "11111111",
+            "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "Опис порушення без автоматичних доповнень", "defendant_statements": [],
+            "deadline_control": {"supplier_ready": True},
+            "procurement_context": {"available": True, "winner_selected_at": "2026-09-28",
+                "tender_date_published": "2026-09-28", "day_5_shifted": True,
+                "rejection_present": True, "rejection_date": "2026-10-06",
+                "rejection_title": "Непідписання договору", "rejected_before_deadline": False},
+            "review": {"internal_decision": "warning", "assigned_officer": "УО",
+                "protocol_number": "769-2", "protocol_date": "2026-10-12",
+                "decision_justification": "Обґрунтування УО збережене дослівно"}}
+        before = json.loads(json.dumps(item))
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "violation_protocol_declensions", return_value=[]), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}), \
+                patch.object(server, "decline_name", side_effect=lambda value, entity, case:
+                    DeclensionResult(value, "resolved", "automatic", value, entity)):
+            prepared = server.generate_violation_protocol(item["id"], {}, prepare_only=True)
+        self.assertFalse(prepared["flags"]["has_civil_code_basis"])
+        for key, expected in (("protocol_number", "769-2"), ("protocol_date", "12.10.2026"),
+                ("report_id", "UA-D-2026-10-06-000002"),
+                ("violation_description", item["description"]),
+                ("decision_justification", item["review"]["decision_justification"]),
+                ("rejection_date", "06.10.2026")):
+            self.assertEqual(prepared["values"][key], expected)
+        self.assertEqual(item, before)
+
+
+class ViolationProtocolFilenameTests(unittest.TestCase):
+    def item(self):
+        return {"report_id": "UA-D-2026-10-06-000001", "defendant_code": "45727617",
+                "author_name": "ТЕРИТОРІАЛЬНЕ УПРАВЛІННЯ ДЕРЖАВНОЇ СУДОВОЇ АДМІНІСТРАЦІЇ УКРАЇНИ В КІРОВОГРАДСЬКІЙ ОБЛАСТІ",
+                "defendant_name": "ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ «СІСТО»",
+                "review": {"customer_verified_short_name": "ТУДСА УКРАЇНИ В КІРОВОГРАДСЬКІЙ ОБЛАСТІ"},
+                "supplier_verified": {"short_name": "ТОВ «СІСТО»"}}
+
+    def gate(self, kind="decline_p49_1_2"):
+        return {"protocol_number": "769-1", "protocol_type": kind}
+
+    def test_exact_format_both_decisions_and_hyphen(self):
+        for kind, marker in (("warning", "П"), ("decline_p49_1_2", "В"), ("decline_p49_3", "В")):
+            self.assertEqual(server._violation_protocol_filename(self.item(), self.gate(kind)),
+                f"UA-D-2026-10-06-000001_769-1_{marker}_ТУДСА УКРАЇНИ В КІРОВОГРАДСЬКІЙ ОБЛАСТІ (на ТОВ «СІСТО»; 45727617).docx")
+
+    def test_missing_customer_short_uses_exact_report_name(self):
+        item = self.item()
+        item["review"] = {"customer_verified_short_name": "  ", "customer_verified_full_name": "ІНША НАЗВА"}
+        name = server._violation_protocol_filename(item, self.gate())
+        self.assertIn(item["author_name"], name)
+        self.assertNotIn("ІНША НАЗВА", name)
+        self.assertEqual(name, f"UA-D-2026-10-06-000001_769-1_В_{item['author_name']} (на ТОВ «СІСТО»; 45727617).docx")
+
+    def test_long_unicode_full_names_are_preserved_not_linux_components(self):
+        item = self.item(); item["review"] = {}; item["supplier_verified"] = {}
+        name = server._violation_protocol_filename(item, self.gate())
+        self.assertGreater(len(name.encode('utf-8')), 255)
+        self.assertLessEqual(len(name.encode('utf-16-le')) // 2, 240)
+        self.assertIn(item["author_name"], name)
+        self.assertIn(item["defendant_name"], name)
+
+    def test_missing_supplier_short_uses_exact_report_full_name(self):
+        item = self.item()
+        item["supplier_verified"] = {"full_name": "ІНША НАЗВА"}
+        self.assertIn(item["defendant_name"], server._violation_protocol_filename(item, self.gate()))
+
+    def test_sanitization_preserves_unicode_punctuation_and_blocks_traversal(self):
+        item = self.item()
+        item["review"]["customer_verified_short_name"] = '  ../Назва<>:"/\\|?*\n  «тест»  '
+        filename = server._violation_protocol_filename(item, self.gate())
+        self.assertNotRegex(filename, r'[<>:"/\\|?*\x00-\x1f]')
+        self.assertIn('«тест» (на ТОВ «СІСТО»; 45727617)', filename)
+        self.assertIn('_769-1_В_', filename)
+        self.assertEqual(Path(filename).name, filename)
+
+    def test_missing_requisites_and_long_names_fail_without_truncation(self):
+        for field in ("report_id", "defendant_code"):
+            item = self.item(); item[field] = ""
+            with self.assertRaisesRegex(ValueError, "реквізит"):
+                server._violation_protocol_filename(item, self.gate())
+        for party in ("customer", "supplier"):
+            item = self.item()
+            if party == "customer": item["review"] = {}; item["author_name"] = ""
+            else: item["supplier_verified"] = {}; item["defendant_name"] = ""
+            with self.assertRaisesRegex(ValueError, "назва"):
+                server._violation_protocol_filename(item, self.gate())
+        item = self.item(); item["review"]["customer_verified_short_name"] = "Назва" * 100
+        with self.assertRaisesRegex(ValueError, "240"):
+            server._violation_protocol_filename(item, self.gate())
+        with self.assertRaisesRegex(ValueError, "номер протоколу"):
+            server._violation_protocol_filename(self.item(), {**self.gate(), "protocol_number": ""})
+
+    def test_download_header_and_docx_bytes_are_unchanged(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp).resolve() / "violation-physical.docx"
+            original = b"synthetic-docx-bytes"
+            path.write_bytes(original)
+            headers = {}
+            request = SimpleNamespace(path="/api/protocol/files/violation-physical.docx",
+                send_response=lambda status: self.assertEqual(status, 200),
+                send_header=lambda key, value: headers.update({key: value}),
+                end_headers=lambda: None, wfile=io.BytesIO())
+            name = server._violation_protocol_filename(self.item(), self.gate())
+            with patch.object(server, "PROTOCOLS_DIR", path.parent), \
+                    patch.object(server, "_violation_protocol_download_filename", return_value=name):
+                server.Handler._do_GET(request)
+            encoded = headers["Content-Disposition"].split("filename*=UTF-8''", 1)[1]
+            self.assertEqual(server.urllib.parse.unquote(encoded), name)
+            self.assertEqual(request.wfile.getvalue(), original)
+            self.assertEqual(path.read_bytes(), original)
+
+
+class ProcurementPublicationDateTests(unittest.TestCase):
+    def test_source_is_exact_tender_notice_not_report_or_other_events(self):
+        tender = {"id": "exact-tender", "tenderID": "UA-2026-09-28-004953-a",
+                  "noticePublicationDate": "2026-09-27T22:30:00Z",
+                  "dateCreated": "2026-09-20T10:00:00+03:00",
+                  "dateModified": "2026-10-07T10:00:00+03:00", "awards": []}
+        original = json.loads(json.dumps(tender))
+        report = {"tender_id": "exact-tender", "report_id": "UA-D-2026-10-06-000001",
+                  "date_created": "2026-10-06T10:00:00+03:00", "defendant_code": "22222222"}
+        with patch.object(server, "api_get", return_value={"data": tender}) as api, \
+                patch.object(server, "_report_winner_decision", return_value=None):
+            context = server.build_procurement_context(report)
+        api.assert_called_once_with(f"{server.API_ROOT}/tenders/exact-tender")
+        self.assertEqual(context["tender_date_published"], "2026-09-28")
+        self.assertEqual(context["tender_date_published_source"], "tender.noticePublicationDate")
+        self.assertEqual(tender, original)
+        for raw in (None, "not-a-date"):
+            with self.subTest(raw=raw), \
+                    patch.object(server, "api_get", return_value={"data": {**tender, "noticePublicationDate": raw}}), \
+                    patch.object(server, "_report_winner_decision", return_value=None):
+                missing = server.build_procurement_context(report)
+                self.assertEqual(missing["tender_date_published"], "2026-09-28")
+                self.assertEqual(missing["tender_date_published_source"], "tender_id_date")
+
+    def test_missing_invalid_publication_fails_before_document_write(self):
+        for value in (None, "", "invalid", "2026-02-30", "2026-09-28T10:00:00"):
+            with self.subTest(value=value):
+                item = {"date_created": "2026-10-06", "tender_pretty_id": "UA-2026-09-28-004953-a",
+                        "procurement_context": {"tender_date_published": value}}
+                with patch.object(server, "require_local_violation_report_owned"), \
+                        patch.object(server, "require_owned_violation_report"), \
+                        patch.object(server, "violation_report_detail", return_value=item), \
+                        patch.object(server, "violation_protocol_readiness", return_value={"ready": True}), \
+                        patch.object(server, "build_violation_protocol_docx") as renderer:
+                    with self.assertRaisesRegex(ValueError, "Не вказано дату оголошення закупівлі"):
+                        server.generate_violation_protocol("test", {}, prepare_only=True)
+                    renderer.assert_not_called()
+
+    def test_publication_timezone_calendar_bounds(self):
+        self.assertEqual(server._procurement_publication_date("2026-09-27T22:30:00Z"), "2026-09-28")
+        self.assertEqual(server._procurement_publication_date("2026-09-28T00:30:00+03:00"), "2026-09-28")
+        self.assertEqual(server._procurement_publication_date("2026-09-28"), "2026-09-28")
+
+    def test_fallback_requires_valid_calendar_and_exact_identity(self):
+        report = {"tender_id": "exact", "tender_pretty_id": "UA-2026-09-28-004953-a"}
+        tender = {"id": "exact", "tenderID": report["tender_pretty_id"],
+                  "noticePublicationDate": None}
+        fields = server._procurement_publication_fields(tender, report)
+        self.assertEqual(fields["tender_date_published"], "2026-09-28")
+        self.assertEqual(server._violation_publication_document_metadata(fields),
+                         {"date": "2026-09-28", "source": "tender_id_date"})
+        for invalid in (None, 123, "UA-2026-02-30-004953-a", "UA-2026-09-28-4953-a",
+                        "UA-D-2026-09-28-000001", "UA-2026-09-28-004953-a-extra"):
+            with self.subTest(invalid=invalid):
+                fields = server._procurement_publication_fields({**tender, "tenderID": invalid},
+                                                               {"tender_id": "exact"})
+                self.assertEqual(fields["tender_date_published"], "")
+        for changed in ({**tender, "id": "other"}, {**tender, "id": None},
+                        {**tender, "tenderID": "UA-2026-09-29-004953-a"}):
+            self.assertEqual(server._procurement_publication_fields(changed, report)["tender_date_published"], "")
+
+    def test_api_date_wins_over_different_id_date(self):
+        fields = server._procurement_publication_fields(
+            {"id": "exact", "tenderID": "UA-2026-09-28-004953-a",
+             "noticePublicationDate": "2026-09-29T00:30:00+03:00"}, {"tender_id": "exact"})
+        self.assertEqual(fields["tender_date_published"], "2026-09-29")
+        self.assertEqual(fields["tender_date_published_source"], "tender.noticePublicationDate")
+        self.assertTrue(fields["tender_date_published_id_mismatch"])
 
 
 if __name__ == "__main__":

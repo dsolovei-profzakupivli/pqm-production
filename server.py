@@ -49,6 +49,7 @@ import zipfile
 from xml.etree import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -6626,6 +6627,17 @@ def violation_decision_template_key(report: dict, context: dict, review: dict | 
     return ""
 
 
+def violation_civil_code_required(report: dict, context: dict, review: dict) -> bool:
+    """Approved late-rejection warnings do not require an extra Civil Code block."""
+    scenario = violation_decision_template_key(report, context, review)
+    if scenario in {"p49_1_warning", "p49_1_warning_guarantee_no_documents_no_explanation"}:
+        return False
+    # Preserve every other scenario, including all refusal protocols.
+    return bool(context.get("day_5_shifted") if report.get("reason") == "contractBreach"
+                else context.get("day_3_shifted") if report.get("reason") == "signingRefusal"
+                else False)
+
+
 def build_violation_decision_justification(report: dict, context: dict, review: dict | None = None) -> str:
     """Render an approved template only; never invent or persist additional legal reasoning."""
     review = review or {}
@@ -7004,6 +7016,38 @@ def violation_review_ready(item: dict) -> bool:
     return True
 
 
+def _procurement_publication_date(value) -> str:
+    """Announcement calendar date in Kyiv; never infer it from another event."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    raw = value.strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return ""
+        return parsed.astimezone(ZoneInfo("Europe/Kyiv")).date().isoformat()
+    except (ValueError, OverflowError):
+        return ""
+
+
+def _procurement_publication_fields(tender: dict, report: dict) -> dict:
+    api_date = _procurement_publication_date(tender.get("noticePublicationDate"))
+    pretty_id = tender.get("tenderID")
+    match = re.fullmatch(r"UA-(\d{4}-\d{2}-\d{2})-\d{6}-[a-z]", pretty_id) if isinstance(pretty_id, str) else None
+    id_date = _procurement_publication_date(match.group(1)) if match else ""
+    linked = (bool(report.get("tender_id"))
+              and str(tender.get("id") or "") == str(report["tender_id"])
+              and (not report.get("tender_pretty_id") or report["tender_pretty_id"] == pretty_id))
+    date = api_date or (id_date if linked else "")
+    return {"tender_date_published": date,
+            "tender_date_published_source": ("tender.noticePublicationDate" if api_date
+                else "tender_id_date" if date else ""),
+            "tender_date_published_issue": ("" if date else "Не вказано дату оголошення закупівлі"),
+            "tender_date_published_id_mismatch": bool(api_date and id_date and api_date != id_date)}
+
+
 def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     tender_id = str(report.get("tender_id") or "")
     if not tender_id:
@@ -7099,6 +7143,7 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     guarantee_unit = next((((item.get("unit") or {}).get("name")) for item in guarantee if item.get("unit")), None)
     context = {
         "available": True, "tender_id": tender_id, "tender_pretty_id": tender.get("tenderID") or report.get("tender_pretty_id"),
+        **_procurement_publication_fields(tender, report),
         "defendant_code": defendant_code, "supplier_awards_count": len(supplier_awards),
         "winner_award_id": (historical or {}).get("award_id"),
         "winner_selected_at": winner_display_date,
@@ -7994,6 +8039,62 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
     return {"review_status": "reviewed", "completed_at": now, "completed_by": completed_by}
 
 
+def _violation_publication_document_metadata(context: dict) -> dict:
+    publication_date = _procurement_publication_date(context.get("tender_date_published"))
+    if publication_date:
+        return {"date": publication_date,
+                "source": context.get("tender_date_published_source") or "tender.noticePublicationDate"}
+    raise ValueError("Не вказано дату оголошення закупівлі: дата Prozorro та ідентифікатор закупівлі відсутні або некоректні.")
+
+
+def _violation_protocol_filename(item: dict, gate: dict) -> str:
+    review = item.get("review") or {}
+    supplier = item.get("supplier_verified") or {}
+    def first_name(*values):
+        return next((str(value).strip() for value in values if value is not None and str(value).strip()), "")
+    fields = {
+        "ідентифікатор звернення": item.get("report_id"),
+        "номер протоколу": gate.get("protocol_number"),
+        "назва замовника": first_name(review.get("customer_verified_short_name"), item.get("author_name")),
+        "назва постачальника": first_name(supplier.get("short_name"), item.get("defendant_name")),
+        "код постачальника": item.get("defendant_code"),
+    }
+    cleaned = {}
+    for label, raw in fields.items():
+        value = re.sub(r'\s+', ' ', str(raw or '')).strip()
+        value = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', '-', value).strip(' .')
+        if not value or not value.strip('- '):
+            raise ValueError("Не вказано обов’язковий реквізит назви DOCX: " + label)
+        cleaned[label] = value
+    kind = gate.get("protocol_type")
+    if kind not in {"warning", "decline_p49_1_2", "decline_p49_3"}:
+        raise ValueError("Не визначено вид протокольного рішення для назви DOCX")
+    marker = "П" if kind == "warning" else "В"
+    filename = (f"{cleaned['ідентифікатор звернення']}_{cleaned['номер протоколу']}_{marker}_"
+                f"{cleaned['назва замовника']} (на {cleaned['назва постачальника']}; "
+                f"{cleaned['код постачальника']}).docx")
+    # Download name follows Windows limits; physical storage uses an ASCII UUID.
+    if len(filename.encode('utf-16-le')) // 2 > 240:
+        raise ValueError("Назва DOCX перевищує безпечну довжину 240 символів; перевірте доказові скорочені назви")
+    return filename
+
+
+def _violation_protocol_download_filename(stored_filename: str) -> str:
+    with db() as con:
+        row = con.execute("SELECT generated_protocol_metadata_json FROM violation_report_reviews "
+                          "WHERE generated_protocol_filename=?", (stored_filename,)).fetchone()
+    if row:
+        try:
+            name = json.loads(row[0] or '{}').get('protocol_download', {}).get('filename')
+            if (isinstance(name, str) and name.endswith('.docx') and
+                    len(name.encode('utf-16-le')) // 2 <= 240 and
+                    not re.search(r'[<>:"/\\|?*\x00-\x1f\x7f]', name)):
+                return name
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return stored_filename  # Historical documents and other generators are unchanged.
+
+
 def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER,
                                 *, prepare_only: bool = False) -> dict:
     # violation_report_detail performs the mandatory fail-closed fresh Prozorro read.
@@ -8004,6 +8105,9 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     if not gate["ready"]:
         raise ValueError("; ".join(gate["reasons"]))
     review, context = item.get("review") or {}, item.get("procurement_context") or {}
+    publication_metadata = _violation_publication_document_metadata(context)
+    publication_date = publication_metadata["date"]
+    download_filename = _violation_protocol_filename(item, gate)
     statements = item.get("defendant_statements") or []
     supplier_documents = [doc for statement in statements for doc in statement.get("documents") or []]
     supplier_text = "\n\n".join(str(statement.get("description") or statement.get("title") or "").strip()
@@ -8051,7 +8155,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
             str(item.get("report_id") or "")),
         "winner_notice_url": str(context.get("winner_notice_url") or ""),
         "rejection_decision_url": str(context.get("rejection_decision_url") or ""),
-        "procurement_date": _protocol_date(context.get("tender_date_published") or item.get("date_created")),
+        "procurement_date": _protocol_date(publication_date),
         "cpv_category": str(context.get("dk_code") or ""),
         "customer_name": customer_name, "customer_name_genitive": normalize_document_name(declined_names["customer_name_genitive"].value),
         "customer_name_accusative": normalize_document_name(declined_names["customer_name_accusative"].value), "customer_code": customer_code,
@@ -8082,27 +8186,23 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
             review.get("decision_justification")),
     }
     protocol_metadata = _resolve_violation_protocol_metadata(item, values)
+    protocol_metadata["procurement_publication"] = publication_metadata
+    protocol_metadata["protocol_download"] = {"filename": download_filename}
     flags = {
         "has_written_refusal": bool(review.get("written_refusal_date") or review.get("written_refusal_number") or review.get("written_refusal_url")),
         "has_contract": bool(review.get("actual_contract_signed")) and not rejected,
         "has_contract_security": bool(context.get("contract_guarantee_required")),
-        "has_civil_code_basis": bool(
-            context.get("day_5_shifted") if item.get("reason") == "contractBreach"
-            else context.get("day_3_shifted") if item.get("reason") == "signingRefusal"
-            else False),
+        "has_civil_code_basis": violation_civil_code_required(item, context, review),
         "has_court_decision": item.get("reason") == "goodsNonCompliance",
         "has_customer_documents": bool(item.get("evidence_documents")),
         "has_supplier_response": bool(supplier_text),
         "has_supplier_documents": bool(supplier_documents),
     }
     if prepare_only:
-        return {"item": item, "gate": gate, "values": values, "flags": flags}
+        return {"item": item, "gate": gate, "values": values, "flags": flags,
+                "metadata": protocol_metadata}
     safe_report = safe_archive_name(str(item.get("report_id") or item.get("id")), "report")
-    decision_name = "Попередження" if gate["protocol_type"] == "warning" else "Відмова"
-    safe_customer = safe_archive_name(customer_name, "Замовник")[:48]
-    safe_supplier = safe_archive_name(supplier_name, "Постачальник")[:48]
-    safe_date = str(gate["protocol_date"] or "").replace(".", "-")
-    filename = f"{safe_report}_{decision_name}_{safe_customer}_{safe_supplier}_{safe_date}.docx"
+    filename = f"violation-{uuid.uuid4().hex}.docx"
     PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
     output = PROTOCOLS_DIR / filename
     # Regeneration can happen while the current file is open in desktop Word.
@@ -8182,6 +8282,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
             SERVER_LOG.warning("Previous generated protocol remains locked report=%s file=%s",
                                safe_report, previous_path.name)
     return {**gate, "filename": filename,
+            "download_filename": download_filename,
             "download_url": "/api/protocol/files/" + urllib.parse.quote(filename),
             "pdf_download_url": f"/api/violation-reports/{urllib.parse.quote(str(item['id']))}/protocol/pdf",
             "metadata": protocol_metadata,
@@ -10533,7 +10634,8 @@ class Handler(BaseHTTPRequestHandler):
             raw = target.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            self.send_header("Content-Disposition", "attachment; filename=protocol.docx; filename*=UTF-8''" + urllib.parse.quote(target.name))
+            download_name = _violation_protocol_download_filename(target.name)
+            self.send_header("Content-Disposition", "attachment; filename=protocol.docx; filename*=UTF-8''" + urllib.parse.quote(download_name, safe=''))
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -11198,6 +11300,8 @@ class Handler(BaseHTTPRequestHandler):
             except ProtocolContextValidationError as exc:
                 return self.send_json({"error": str(exc), "missing": sorted(exc.missing),
                                        "unknown": sorted(exc.unknown)}, 422)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 422)
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)
             except ConnectionError as exc:
