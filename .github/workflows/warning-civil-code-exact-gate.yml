@@ -1,0 +1,87 @@
+name: Warning Civil Code combined exact-SHA gate
+
+on:
+  push:
+    branches: [sandbox/warning-civil-code-verification]
+    paths: [.github/workflows/warning-civil-code-exact-gate.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  exact-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 9a253417c270c6b589e7e57940c0d42b7cdc0ced
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact source and Git blob hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 9a253417c270c6b589e7e57940c0d42b7cdc0ced
+          git merge-base --is-ancestor 9a14e2acc740db9d910f91061083aa21b883dffc HEAD
+          test -z "$(git status --porcelain)"
+          test ! -e .github/workflows/warning-civil-code-exact-gate.yml
+          python - <<'PY'
+          import hashlib, subprocess
+          expected = {
+              'server.py': '088123a3016fc39700789eff528eb18b9133ec684b08ffcc031a93ca3fa2882e',
+              'validation/local_release_20260911/test_violation_reports.py': '3790efa3918060e586ca365d8e7d1f5da3f1ae9ba5ca54c114894e933bc8e0f5',
+              'validation/local_release_20260911/test_violation_protocol_docx.py': 'aed17c094622d87db5ddc2c1275de46edc034525afe1a949adc7d68ddb29cb6c',
+          }
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only', '9a14e2acc740db9d910f91061083aa21b883dffc', 'HEAD'], text=True).splitlines())
+          assert changed == set(expected), 'STOP: unexpected candidate scope'
+          for name, digest in expected.items():
+              blob = subprocess.check_output(['git', 'show', 'HEAD:' + name])
+              assert hashlib.sha256(blob).hexdigest() == digest, 'STOP: Git blob mismatch'
+              with open(name, 'rb') as file:
+                  assert hashlib.sha256(file.read()).hexdigest() == digest, 'STOP: checkout mismatch'
+          PY
+          mkdir -p ci-evidence
+          git rev-parse HEAD > ci-evidence/tested-sha.txt
+          git diff --name-only 9a14e2acc740db9d910f91061083aa21b883dffc HEAD > ci-evidence/files-in-candidate.txt
+          sha256sum server.py validation/local_release_20260911/test_violation_reports.py validation/local_release_20260911/test_violation_protocol_docx.py > ci-evidence/snapshot-hashes.txt
+      - name: Build exact candidate image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag pqm-violation-gate:tested . 2>&1 | tee ci-evidence/build.log
+          docker image inspect pqm-violation-gate:tested --format '{{.Id}}' > ci-evidence/image-id.txt
+      - name: Container release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python pqm-violation-gate:tested -B validation/docker_release_gate.py 2>&1 | tee ci-evidence/container-gate.log
+      - name: AMCU and contrast regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node pqm-violation-gate:tested validation/amcu_poll_smoke.cjs 2>&1 | tee ci-evidence/amcu.log
+          docker run --rm --network none --entrypoint node pqm-violation-gate:tested validation/sandbox_contrast_smoke.cjs 2>&1 | tee ci-evidence/contrast.log
+      - name: OAuth regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python -e PYTHONPATH=/app/validation/test_runtime:/app -e PQM_TEST_NETWORK_ISOLATION=1 -e PQM_ENV=local -e HOST=127.0.0.1 -e PORT=8080 -e PQM_AUTH_ENABLED=0 -e PQM_ENABLE_SCHEDULER=0 pqm-violation-gate:tested -B -m unittest test_google_oauth_hotfix -v 2>&1 | tee ci-evidence/oauth.log
+      - name: Permanent writer regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node -e PQM_PYTHON=python3 pqm-violation-gate:tested --test scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs scripts/pqm-google-writer/sandbox-controlled-apply.test.cjs scripts/pqm-google-writer/sandbox-guard-profiler.test.cjs scripts/pqm-google-writer/sandbox-preview-audit.test.cjs scripts/pqm-google-writer/sandbox-full-apply.test.cjs scripts/pqm-google-writer/sandbox-expanded-change-audit.test.cjs 2>&1 | tee ci-evidence/writer.log
+      - name: Full delivered regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python pqm-violation-gate:tested -B validation/run_local_release.py 2>&1 | tee ci-evidence/full-regression.log
+      - name: Save tested SHA and full logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: warning-civil-code-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/
+          retention-days: 14
+          if-no-files-found: error
