@@ -1,0 +1,77 @@
+name: PROD Google writer exact-SHA isolated gate
+on:
+  push:
+    branches: [codex/prod-google-writer-verification]
+    paths: [.github/workflows/prod-google-writer-exact-gate.yml]
+permissions:
+  contents: read
+jobs:
+  exact-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: d7cb5fcc18f0f04db7b07c980315754bf6719118
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact source scope ancestry hashes and clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = d7cb5fcc18f0f04db7b07c980315754bf6719118
+          git merge-base --is-ancestor ec1147a26bdbe264e65cd31d8960e8980a1872af HEAD
+          test -z "$(git status --porcelain)"
+          test ! -e .github/workflows/prod-google-writer-exact-gate.yml
+          git diff --check ec1147a26bdbe264e65cd31d8960e8980a1872af HEAD
+          python - <<'PY'
+          import hashlib, json, subprocess
+          expected = {"scripts/pqm-google-writer/prod-contract/PqmProdAppendApply.gs":"e02fcf5b1e37c12227a3e5f91f294dae890e34f080563d73a45fa37f3d4e2649","scripts/pqm-google-writer/prod-contract/PqmProdControlledApply.gs":"1c9f865d9cfbb4a75df143ffe7120260c5a22644379a05a5b44cd05f84d019d3","scripts/pqm-google-writer/prod-contract/PqmProdExpandedChangeAudit.gs":"3e4244d32fe4e4a4ef1268796ce44cb0ffa73395ba3553514bdd1f5ba8fcff33","scripts/pqm-google-writer/prod-contract/PqmProdFullApply.gs":"008b3fb37fba343a04718f3a5266e13c50e0dd0d70f139b29d7f3bd11ab748cf","scripts/pqm-google-writer/prod-contract/PqmProdPreview.gs":"bdecb97fb9018ad5c83c8ef3781ea3b77f4d3beff3074b328e10dc77536493da","scripts/pqm-google-writer/prod-contract/PqmProdPreviewDependencies.gs":"1880782ace7b7ff56444d44d6eb09fd273d5813225c8ec4a983efa632f496a01","scripts/pqm-google-writer/prod-contract/PqmProdResultUi.gs":"ed08588552ea31d0a3f4a4fc45217f3622d4d1b0a2278d476364c5751b770793","scripts/pqm-google-writer/prod-contract/README.md":"100e8712e95e61d65ff0e5b0a2dc316944714e47bcffd5bf5f9d0ddb89e326a4","scripts/pqm-google-writer/prod-contract/prod-contract.test.cjs":"02c90a1023cd339845298b45396f80b6bbbb4343e9057ad23da42b623205530a","scripts/pqm-google-writer/prod-contract/prod-full-apply.test.cjs":"bc911be3305aee4291cead68cd1b5f9aef42b3b9087295c75853b515f72404a2","scripts/pqm-google-writer/prod-contract/runtime-readonly.sh":"b184a4a573a511ebae0f14106cd076e7089dd7b4e39d0e14a481a7164784c887"}
+          changed = set(subprocess.check_output(['git','diff','--name-only','ec1147a26bdbe264e65cd31d8960e8980a1872af','HEAD'],text=True).splitlines())
+          assert changed == set(expected) and len(changed) == 11, 'STOP: scope'
+          for name, digest in expected.items():
+              assert hashlib.sha256(subprocess.check_output(['git','show','HEAD:'+name])).hexdigest() == digest, 'STOP: blob'
+              with open(name,'rb') as f:
+                  assert hashlib.sha256(f.read()).hexdigest() == digest, 'STOP: checkout'
+          PY
+          mkdir -p ci-evidence
+          git rev-parse HEAD > ci-evidence/tested-sha.txt
+          printf '%s\n' ec1147a26bdbe264e65cd31d8960e8980a1872af > ci-evidence/base-sha.txt
+          git diff --name-only ec1147a26bdbe264e65cd31d8960e8980a1872af HEAD > ci-evidence/files-in-candidate.txt
+          sha256sum scripts/pqm-google-writer/prod-contract/* > ci-evidence/snapshot-hashes.txt
+      - name: Build and run isolated writer and full regression runners
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'runner\texit_code\tlog_exit_code\n' > ci-evidence/runner-exit-codes.tsv
+          run_check() {
+            local label="$1"
+            shift
+            set +e
+            "$@" 2>&1 | tee "ci-evidence/$label.log"
+            local -a codes=("${PIPESTATUS[@]}")
+            set -e
+            printf '%s\t%s\t%s\n' "$label" "${codes[0]}" "${codes[1]}" >> ci-evidence/runner-exit-codes.tsv
+            test "${codes[0]}" -eq 0
+            test "${codes[1]}" -eq 0
+          }
+          run_check build docker build --tag pqm-prod-writer-gate:tested .
+          docker image inspect pqm-prod-writer-gate:tested --format '{{.Id}}' > ci-evidence/image-id.txt
+          run_check new-writer docker run --rm --network none --entrypoint node pqm-prod-writer-gate:tested --test scripts/pqm-google-writer/prod-contract/prod-contract.test.cjs scripts/pqm-google-writer/prod-contract/prod-full-apply.test.cjs
+          mapfile -t writer_tests < <(find scripts/pqm-google-writer -maxdepth 1 -name '*.test.cjs' -type f | sort)
+          test "${#writer_tests[@]}" -gt 0
+          run_check existing-writer docker run --rm --network none --entrypoint node -e PQM_PYTHON=python3 pqm-prod-writer-gate:tested --test "${writer_tests[@]}"
+          run_check container-gate docker run --rm --network none --entrypoint python pqm-prod-writer-gate:tested -B validation/docker_release_gate.py
+          run_check amcu docker run --rm --network none --entrypoint node pqm-prod-writer-gate:tested validation/amcu_poll_smoke.cjs
+          run_check contrast docker run --rm --network none --entrypoint node pqm-prod-writer-gate:tested validation/sandbox_contrast_smoke.cjs
+          run_check oauth docker run --rm --network none --entrypoint python -e PYTHONPATH=/app/validation/test_runtime:/app -e PQM_TEST_NETWORK_ISOLATION=1 -e PQM_ENV=local -e HOST=127.0.0.1 -e PORT=8080 -e PQM_AUTH_ENABLED=0 -e PQM_ENABLE_SCHEDULER=0 pqm-prod-writer-gate:tested -B -m unittest test_google_oauth_hotfix -v
+          run_check full-regression docker run --rm --network none --entrypoint python pqm-prod-writer-gate:tested -B validation/run_local_release.py
+          printf '%s\n' PASS > ci-evidence/gate-result.txt
+      - name: Save SHA hashes exit codes and full logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: prod-google-writer-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/
+          retention-days: 14
+          if-no-files-found: error
