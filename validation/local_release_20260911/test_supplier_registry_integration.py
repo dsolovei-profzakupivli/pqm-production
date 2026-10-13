@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from unittest.mock import patch
 
 import supplier_registry_integration as integration
+from google_verification_contract import verification_timestamp
 
 
 class FullSupplierRegistryTests(unittest.TestCase):
@@ -126,7 +127,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.add('00000081', 'FOLLOWUP', '2026-09-25', source='ЮО')
         followup = self.items()['00000081']
         self.assertTrue(followup['google_sync_eligible'])
-        self.assertEqual(followup['last_application_date'], '2026-09-25')
+        self.assertEqual(followup['last_application_date'], '2026-09-20')
         self.assertEqual(followup['google_sync_last_decided_application_date'], '2026-09-20')
         self.assertEqual(followup['prozorro_status_google'], decided['prozorro_status_google'])
         later = self.add('00000081', 'SECOND DECISION', '2026-09-27', source='ЮО')
@@ -187,7 +188,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
         item=self.items()[code]
         self.assertEqual(item['edr_status_current'],'Зареєстровано')
         self.assertEqual(item['last_application_date'],'2026-09-22')
-        self.assertEqual(item['verification_date'],'2026-09-01')
+        self.assertEqual(item['verification_date'],verification_timestamp('2026-09-01'))
         self.assertEqual(item['verification_officer'],'')
         self.con.execute("""INSERT INTO supplier_edr_verification_events
           (supplier_code,event_type,occurred_at,snapshot_json) VALUES(?,?,?,?)""",
@@ -269,7 +270,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertEqual(api[code]['verification_date'],ui[code]['verification_date'])
                 self.assertEqual(api[code]['verification_officer'],ui[code]['verification_officer'])
-        self.assertEqual(api[meddata_code]['verification_date'],'2026-02-02')
+        self.assertEqual(api[meddata_code]['verification_date'],verification_timestamp('2026-02-02'))
         self.assertEqual(api[meddata_code]['verification_officer'],'MedData UO')
         self.assertEqual(api[event_code]['verification_officer'],'Manual UO')
 
@@ -286,17 +287,17 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(projected[blank]['verification_officer'],'')
         self.assertEqual(projected[foreign]['verification_date'],'')
         self.assertEqual(projected[foreign]['verification_officer'],'')
-        self.assertEqual(projected[domestic]['verification_date'],'2026-02-01')
+        self.assertEqual(projected[domestic]['verification_date'],verification_timestamp('2026-02-01'))
 
-    def test_google_supplier_name_requires_verified_edr_full_name(self):
+    def test_google_supplier_name_prefers_verified_edr_and_ignores_pending_name(self):
         self.con.execute("ALTER TABLE supplier_edr_profiles ADD COLUMN full_name TEXT DEFAULT ''")
         self.add('00000001', 'LATEST APPLICATION NAME', '2026-01-01', source='ЮО')
         self.assertEqual(self.items()['00000001']['supplier_name'], '')
-        self.assertEqual(self.items()['00000001']['latest_submission_name'], 'LATEST APPLICATION NAME')
+        self.assertEqual(self.items()['00000001']['latest_submission_name'], '')
         self.con.execute("UPDATE supplier_edr_profiles SET full_name='VERIFIED EDR FULL NAME' WHERE supplier_code='00000001'")
         integration.reset_full_registry_cache()
         self.assertEqual(self.items()['00000001']['supplier_name'], 'VERIFIED EDR FULL NAME')
-        self.assertEqual(self.items()['00000001']['latest_submission_name'], 'LATEST APPLICATION NAME')
+        self.assertEqual(self.items()['00000001']['latest_submission_name'], '')
 
     def test_latest_submission_name_is_separate_literal_application_data(self):
         for code in ('2981209581 ', 'СР 918414', '00123456', 'AB-008'):
@@ -305,8 +306,8 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.add('EMPTY-ID', '', '2026-02-01', qualification='unsuccessful')
         items = self.items()
         for code in ('2981209581', 'СР 918414', '00123456', 'AB-008'):
-            self.assertEqual(items[code]['supplier_name'], '')
-            self.assertEqual(items[code]['latest_submission_name'], 'LATEST NAME')
+            self.assertEqual(items[code]['supplier_name'], 'OLDER')
+            self.assertEqual(items[code]['latest_submission_name'], 'OLDER')
         self.assertEqual(items['EMPTY-ID']['latest_submission_name'], '')
         self.assertEqual(items['СР 918414']['supplier_code'], 'СР 918414')
         self.assertEqual(items['00123456']['supplier_code'], '00123456')
@@ -335,7 +336,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.add('00000004','RETURNED','2026-03-01',qualification='active',officer='УО NEW',source='ЮО',contract='active')
         got=self.items()
         self.assertEqual(got['00000001']['prozorro_status'],'🟢 Активний')
-        self.assertEqual(got['00000002']['prozorro_status'],'🔴 Неактивний')
+        self.assertEqual(got['00000002']['prozorro_status'],'Ще не в реєстрі')
         self.assertIsNone(got['00000002']['last_approved_application_date'])
         self.assertEqual(got['00000003']['last_application_date'],'2026-02-01')
         self.assertEqual(got['00000003']['last_approved_application_date'],'2026-01-01')

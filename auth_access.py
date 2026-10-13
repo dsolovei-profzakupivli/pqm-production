@@ -10,6 +10,7 @@ def stamp():
 
 # key, module, label, officer default, GET/non-mutating or mutation, route pattern
 PERMISSIONS = [
+ ('google.writer.execute','Перевірка ЄДР','Ручний PQM → Google Sheets',True,True,r'/api/google-writer/(?:preview|apply)'),
  ('applications.read','Реєстр заявок','Перегляд заявок',True,False,r'/api/(?:applications(?:/.*)?|document-check-jobs/.*|protocol/files/.*|stats|application-history|application-profiles(?:/.*)?|frameworks|supplier-options)'),
  ('applications.edit','Реєстр заявок','Редагування заявки та зауважень',True,True,r'/api/applications/[^/]+(?:/remark-selections)?'),
  ('applications.check','Реєстр заявок','Перевірка документів / НАЗК',True,True,r'/api/applications/[^/]+/(?:verify-documents(?:/start)?|nazk-control)'),
@@ -105,7 +106,7 @@ def effective(con, username, base):
     return {'code':code,'base_role':base,'active':True,'permissions':rights}
 
 def permission_key(method,path):
-    if method=='GET' and path in {'/api/edr-monitoring','/api/suppliers-registry-risk-counts'}:
+    if method=='GET' and path in {'/api/edr-monitoring','/api/suppliers-registry-risk-counts','/api/google-writer/status'}:
         return 'suppliers.read'
     if method=='POST' and path=='/api/edr-monitoring/termination-exclusions/preview':
         return 'tasks.read'

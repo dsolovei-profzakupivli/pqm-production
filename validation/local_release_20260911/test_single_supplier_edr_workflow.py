@@ -40,9 +40,9 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
         self.temp.cleanup()
 
     @staticmethod
-    def source(full, short, status='✅ Зареєстровано'):
+    def source(full, short, status='✅ Зареєстровано', checked='27.09.2026 12:00:00'):
         values = ['', '46130719', 'ІСТОРИЧНА НАЗВА', 'КЕРІВНИК', status,
-                  'Активний', '', '', '27.09.2026', '', '', 'УО', '', full, short]
+                  'Активний', '', '', checked, '', '', 'УО', '', full, short]
         return edr_sync_v2.source_snapshot({'ФОП': [list(edr_sync_v2.HEADERS)],
                                             'ЮО': [list(edr_sync_v2.HEADERS), values]})
 
@@ -164,7 +164,7 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
     def test_existing_profile_preview_apply_card_and_noop(self):
         first = self.source('ПЕРША ПОВНА', 'ПЕРША КОРОТКА', 'Зареєстровано')
         self.apply(first)
-        second = self.source('ОНОВЛЕНА ПОВНА', 'ОНОВЛЕНА КОРОТКА')
+        second = self.source('ОНОВЛЕНА ПОВНА', 'ОНОВЛЕНА КОРОТКА', checked='27.09.2026 12:00:01')
         with server.db() as con:
             preview = edr_sync_v2.build_preview(con, second)
         item = preview['items'][0]

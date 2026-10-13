@@ -131,32 +131,39 @@ function setGoogleCell(f, column, value) {
   if (column === 8) cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
 }
 
-test('eight complete daily cycles converge across real morning and evening code', () => {
+for (const environment of ['prod', 'sandbox']) test(environment + ': eight complete merged daily cycles converge across real morning and evening code', () => {
   const python = process.env.PQM_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   const repo = process.env.PQM_PERMANENT_REPO || path.resolve(__dirname, '../..');
   const bridge = path.join(repo, 'validation/local_release_20260911/daily_cycle_evening_fixture.py');
   const scenarios = [
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A', final: ['2026-09-20', 'Officer A']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-25', go: 'Officer B', final: ['2026-09-25', 'Officer B']},
-    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer B', final: ['2026-09-20', 'Officer B']},
+    // Equal instants preserve the PQM officer; they are not a new verification.
+    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer B', final: ['2026-09-20', 'Officer A']},
     {pqm: '2026-09-25', po: 'Officer B', google: '2026-06-05', go: 'Officer A', final: ['2026-09-25', 'Officer B']},
     {pqm: '2026-09-25', po: 'Officer B', google: '2026-09-25', go: 'Officer B',
       daytime: {i: '2026-06-05', l: 'Officer A'}, final: ['2026-09-25', 'Officer B']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
       startingGjkm: ['Old G', '2026-09-20', 'Old K', 'Old M'],
-      daytime: {g: 'Changed G', j: '', k: 'Changed K', m: ''},
-      final: ['2026-09-20', 'Officer A']},
+      // Business-field imports require a newer verification, not equal I.
+      daytime: {i: '2026-09-21', g: 'Changed G', j: '', k: 'Changed K', m: ''},
+      final: ['2026-09-21', 'Officer A']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
       e: 'Немає інформації', final: ['2026-09-20', 'Officer A']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer B',
-      e: 'Зареєстровано', factual: 'Припинено', final: ['2026-09-20', 'Officer B']}
+      e: 'Зареєстровано', factual: 'Припинено', final: ['2026-09-20', 'Officer A']}
   ];
   for (const [index, s] of scenarios.entries()) {
-    const f = fixture(), item = f.body.items[0];
+    // Round trips use the current merged writer, never the legacy date-only writer.
+    const f = require('./mirror-alignment/engine-fixture.cjs')(environment), item = f.body.items[0];
+    // Test-call aliases only. PROD functions still execute their own pinned guards and helpers.
+    if (environment === 'prod') for (const name of ['FullApplyPreview','FullApply'])
+      f.context['pqmSandbox'+name] = f.context['pqmProd'+name];
     f.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 6;
-    item.verification_date = s.pqm; item.verification_officer = s.po;
+    f.context.PQM_PROD_FULL_CHUNK_MAX_CELLS = 6;
+    item.verification_date = s.pqm + 'T17:03:19+03:00'; item.verification_officer = s.po;
     item.edr_status_current = s.factual || 'Зареєстровано';
-    setGoogleCell(f, 8, f.context.pqmGoogleDate_(s.google));
+    setGoogleCell(f, 8, f.context.pqmVerificationSerial_(Date.parse(s.google + 'T17:03:19+03:00')));
     setGoogleCell(f, 11, s.go);
     if (s.startingGjkm) for (const [position, column] of [6, 9, 10, 12].entries()) {
       setGoogleCell(f, column, s.startingGjkm[position]);
@@ -168,20 +175,21 @@ test('eight complete daily cycles converge across real morning and evening code'
     if (index === 6) assert.equal(f.raw.get('1:2')[4].effectiveValue.stringValue, s.e);
     if (s.daytime) for (const [key, value] of Object.entries(s.daytime)) {
       const column = {i: 8, l: 11, g: 6, j: 9, k: 10, m: 12}[key];
-      setGoogleCell(f, column, key === 'i' ? f.context.pqmGoogleDate_(value) : value);
+      setGoogleCell(f, column, key === 'i' ? f.context.pqmVerificationSerial_(Date.parse(value + 'T17:03:19+03:00')) : value);
     }
     const cell = column => f.raw.get('1:2')[column].effectiveValue;
     const value = column => cell(column).stringValue ?? cell(column).numberValue ?? '';
-    const google = {i: f.context.pqmGoogleCalendarDate_(value(8)).value, l: value(11),
+    const google = {i: new Date(f.context.pqmVerificationDatetime_(value(8)).value).toISOString(), l: value(11),
       e: value(4), g: value(6), j: value(9), k: value(10), m: value(12)};
     const run = spawnSync(python, [bridge], {cwd: repo, encoding: 'utf8',
       env: {...process.env, PYTHONIOENCODING: 'utf-8',
         PQM_GOOGLE_REGISTRY_SPREADSHEET_ID: 'SYNTHETIC_AUTHORIZED'},
-      input: JSON.stringify({pqm_date: s.pqm, pqm_officer: s.po, pqm_status: s.factual || 'Зареєстровано',
+      input: JSON.stringify({pqm_date: item.verification_date, pqm_officer: s.po, pqm_status: s.factual || 'Зареєстровано',
         factual: s.factual, pqm_gjkm: s.startingGjkm, google})});
     assert.equal(run.status, 0, `scenario ${index + 1}: ${run.stderr}`);
     const evening = JSON.parse(run.stdout);
-    assert.deepEqual([evening.date, evening.officer], s.final, `scenario ${index + 1}`);
+    assert.deepEqual([evening.date, evening.officer],
+      [s.final[0] + 'T17:03:19.000+03:00', s.final[1]], `scenario ${index + 1}`);
     assert.equal(evening.second.verification_event_changes, 0, `scenario ${index + 1}: repeat evening`);
     if (index === 5) assert.deepEqual(evening.gjkm, ['Changed G', '', 'Changed K', '']);
     if (index === 7) assert.equal(evening.status, 'Припинено');
