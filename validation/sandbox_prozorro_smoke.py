@@ -1,5 +1,6 @@
 """Manual sandbox Prozorro exception: narrow egress, RBAC and stable guards."""
 import io,os,re,socket,sqlite3,threading,time,unittest
+from contextlib import closing
 from unittest.mock import patch
 import sandbox_smoke as base
 sandbox=base.sandbox
@@ -151,9 +152,20 @@ class ManualHTTP(base.SandboxHTTP):
             deadline=time.monotonic()+20
             while time.monotonic()<deadline:
                 state=self.request('/api/health',None)[1]['sync']
-                if not state['running']:break
+                # The inner worker clears running before its owner wrapper
+                # commits finish(). Observe both phases; never delete a lease.
+                with closing(sqlite3.connect(
+                        (self.data/'pqm_sandbox.sqlite3').resolve().as_uri()+'?mode=ro',
+                        uri=True,timeout=5)) as check:
+                    check.execute('PRAGMA query_only=ON')
+                    leases=check.execute('SELECT COUNT(*) FROM scheduler_job_leases').fetchone()[0]
+                    job=check.execute("SELECT last_status FROM scheduler_job_state WHERE job_key='prozorro'").fetchone()
+                if not state['running'] and leases==0 and job and job[0]!='running':break
                 time.sleep(.05)
             self.assertFalse(state['running'])
+            self.assertEqual(0,leases,'Manual worker owner has not finished lease cleanup')
+            self.assertIsNotNone(job)
+            self.assertNotEqual('running',job[0])
             self.assertNotEqual('failed',state['last_result'].get('status'),
                                 safe_sync_diagnostic(state))
             self.assertEqual(1,state['last_result']['submissions'])

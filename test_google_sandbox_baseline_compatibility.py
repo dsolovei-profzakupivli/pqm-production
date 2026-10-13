@@ -1,5 +1,6 @@
 """SANDBOX baseline + fourth-job integration; disposable fixtures only."""
-import ast, hashlib, json, sqlite3, tempfile, unittest
+import ast, hashlib, json, sqlite3, tempfile, threading, unittest
+from unittest.mock import patch
 from pathlib import Path
 from contextlib import closing
 import server
@@ -11,6 +12,72 @@ EXPECTED = {"_finish_scheduler_lease":"0aeb3eb6c26131fad08e167d601162b178061709d
 ROOT = Path(__file__).resolve().parent
 
 class SandboxMirrorBaselineCompatibility(unittest.TestCase):
+    def test_manual_thread_start_failure_releases_owned_lease(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db=Path(tmp)/'fixture.sqlite3'
+            with closing(sqlite3.connect(db)) as con:
+                runtime.migrate(con);con.commit()
+            class CannotStart:
+                def __init__(self,**kwargs):pass
+                def start(self):raise RuntimeError('synthetic start failure')
+            with patch.object(server,'DB_PATH',db),patch.object(server,'SANDBOX_MODE',False), \
+                 patch.object(server,'SYNC_STATE',{'running':False}), \
+                 patch.object(server.threading,'Thread',CannotStart):
+                with self.assertRaisesRegex(RuntimeError,'synthetic start failure'):
+                    server.start_prozorro_sync(lambda:None,mode='single',message='fixture')
+                self.assertFalse(server.SYNC_STATE['running'])
+            with closing(sqlite3.connect(db)) as con:
+                self.assertEqual(0,con.execute('SELECT COUNT(*) FROM scheduler_job_leases').fetchone()[0])
+
+    def test_manual_running_false_does_not_mean_owner_lease_finished(self):
+        for outcome in ('ok','failed','raised'):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                db=Path(tmp)/'fixture.sqlite3'
+                with closing(sqlite3.connect(db)) as con:
+                    runtime.migrate(con);con.commit()
+                waiting,allow_finish,finished=threading.Event(),threading.Event(),threading.Event()
+                def target():
+                    server.SYNC_STATE.update(running=False,last_result={'status':outcome})
+                    if outcome=='raised':raise RuntimeError('synthetic worker failure')
+                def finish(job,owner,status='ok',error=''):
+                    waiting.set()
+                    if not allow_finish.wait(5):raise AssertionError('fixture finish not released')
+                    try:runtime.finish(db,job,owner,status=status,error=error)
+                    finally:finished.set()
+                errors=[]
+                real_thread=threading.Thread
+                workers=[]
+                class Worker:
+                    def __init__(self,target,**kwargs):self.target=target
+                    def start(self):
+                        def run():
+                            try:self.target()
+                            except RuntimeError as exc:errors.append(str(exc))
+                        self.thread=real_thread(target=run)
+                        workers.append(self.thread)
+                        self.thread.start()
+                with patch.object(server,'DB_PATH',db),patch.object(server,'SANDBOX_MODE',False), \
+                     patch.object(server,'SYNC_STATE',{'running':False}), \
+                     patch.object(server,'_finish_scheduler_lease',finish), \
+                     patch.object(server.threading,'Thread',Worker), \
+                     patch.object(runtime,'keepalive',lambda *args: __import__('contextlib').nullcontext()):
+                    # Worker uses the real Thread captured before the patch.
+                    self.assertTrue(server.start_prozorro_sync(target,mode='single',message='fixture'))
+                    try:
+                        self.assertTrue(waiting.wait(5))
+                        self.assertFalse(server.SYNC_STATE['running'])
+                        with closing(sqlite3.connect(db)) as con:
+                            self.assertEqual(1,con.execute('SELECT COUNT(*) FROM scheduler_job_leases').fetchone()[0])
+                        self.assertIsNone(runtime.claim(db,'prozorro',trigger='scheduled'))
+                    finally:allow_finish.set()
+                    self.assertTrue(finished.wait(5))
+                    workers[0].join(5)
+                    self.assertFalse(workers[0].is_alive())
+                    with closing(sqlite3.connect(db)) as con:
+                        self.assertEqual(0,con.execute('SELECT COUNT(*) FROM scheduler_job_leases').fetchone()[0])
+                        self.assertEqual('ok' if outcome=='ok' else 'error',con.execute("SELECT last_status FROM scheduler_job_state WHERE job_key='prozorro'").fetchone()[0])
+                    self.assertEqual(['synthetic worker failure'] if outcome=='raised' else [],errors)
+
     def fixture(self, con):
         runtime.migrate(con)
         for job in ('prozorro','nazk_registry'):
