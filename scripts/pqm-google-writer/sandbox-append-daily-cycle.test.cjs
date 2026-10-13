@@ -182,7 +182,7 @@ test('append, daytime Google correction, evening real sync, next morning converg
     input: JSON.stringify({pqm_date: '2026-09-20', pqm_officer: 'Officer A', google})});
   assert.equal(result.status, 0, result.stderr);
   const evening = JSON.parse(result.stdout);
-  assert.deepEqual([evening.date, evening.officer], ['2026-09-25', 'Officer B']);
+  assert.deepEqual([evening.date, evening.officer], ['2026-09-25T00:00:00.000+03:00', 'Officer B']);
   assert.deepEqual(evening.gjkm, ['New G', '2026-09-25', 'New K', 'New M']);
   f.supplier.verification_date = evening.date;
   f.supplier.verification_officer = evening.officer;

@@ -104,11 +104,27 @@ class ParityTests(unittest.TestCase):
         self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status) VALUES ('45054758','Припинено')")
         row = self.run_case(["45054758"])["rows"][0]
         self.assertEqual(row["legacy"]["last_verification_date"], "2026-10-06")
+        self.assertEqual(row["legacy"]["last_verification_datetime"], "2026-10-06T00:00:00.000+03:00")
+        self.assertEqual(row["legacy"]["last_verification_datetime_precision"], "day")
         self.assertEqual(row["legacy"]["verification_identity"]["id"], 8699)
         self.assertEqual(row["legacy"]["freshness"]["bucket"], "lt30")
         self.assertEqual(row["legacy"]["edr_status"], "Припинено")
         self.assertIn("TRUE_PARITY", row["classifications"])
         self.assertNotIn("UNEXPECTED_MISMATCH", row["classifications"])
+
+    def test_calendar_diagnostic_retains_exact_datetime_seconds_and_timezone(self):
+        self.c2()
+        self.legacy_schema()
+        stamp='2026-10-05T21:03:19Z'
+        self.con.execute('UPDATE supplier_edr_verification_events SET occurred_at=? WHERE id=8699',(stamp,))
+        self.con.execute('PRAGMA query_only=ON')
+        before=self.con.total_changes
+        row=runner.legacy_read(self.con,'45054758','2026-10-13')
+        self.assertEqual(row['last_verification_date'],'2026-10-06')
+        self.assertEqual(row['last_verification_datetime'],'2026-10-06T00:03:19.000+03:00')
+        self.assertEqual(row['last_verification_datetime_precision'],'instant')
+        self.assertEqual(self.con.execute('SELECT occurred_at FROM supplier_edr_verification_events WHERE id=8699').fetchone()[0],stamp)
+        self.assertEqual(self.con.total_changes,before)
 
     def test_fifteen_legacy_google_regressions_preserve_classifications(self):
         for code, identity, day, officer in fixtures.FIFTEEN:

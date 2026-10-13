@@ -118,7 +118,11 @@ def legacy_read(con, code, day):
         legacy.register_verification_sql_functions(con)
         verification = legacy.current_verification_projections(con, [code])[code]
         selected = verification["selected_event"]
-        result.update(last_verification_date=verification["verification_date"] or None,
+        # This diagnostic compares the v3 calendar projection, not the writer's
+        # strict datetime gate. Keep the precise source instant separately.
+        result.update(last_verification_date=legacy.normalized_date(verification["verification_date"]) or None,
+            last_verification_datetime=verification["verification_date"] or None,
+            last_verification_datetime_precision=verification["verification_datetime_precision"],
             last_verification_officer=verification["verification_officer"] or None,
             verification_identity={k: selected.get(k) for k in ("id", "event_type", "source", "source_submission_id")},
             verification_source="current_verification_projections([literal_code])")

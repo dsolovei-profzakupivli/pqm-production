@@ -59,7 +59,13 @@ class SandboxCanonicalOfficerTests(unittest.TestCase):
         self.assertNotIn('sandbox_historical_officer_normalizations', plan['summary'])
         self.assertFalse(plan['items'][0]['sandbox_historical_officer_normalization'])
         self.assertEqual(plan['items'][0]['incoming']['edr_officer'], OFFICER)
-        self.assertEqual(plan['summary']['verification_event_changes'], 1)
+        # Equal instants cannot create a verification, even when L differs.
+        # PROD must also retain its lack of SANDBOX normalization.
+        self.assertEqual(plan['summary']['verification_event_changes'], 0)
+        self.assertEqual(plan['summary']['same_date_officer_update_accepted'], 0)
+        self.assertEqual(plan['items'][0]['verification_decision'], 'same_datetime_officer_preserved')
+        self.assertEqual(con.execute('SELECT edr_officer FROM supplier_edr_profiles').fetchone()[0], '')
+        self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_edr_verification_events').fetchone()[0], 0)
 
     def test_historical_normalization_cannot_assert_new_factual_status(self):
         con, source = self.fixture()

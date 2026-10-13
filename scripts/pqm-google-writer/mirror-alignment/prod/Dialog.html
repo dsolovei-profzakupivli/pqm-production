@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    :root {
+      --blue: #2563eb;
+      --blue-soft: #eff6ff;
+      --border: #dbe2ea;
+      --text: #172033;
+      --muted: #64748b;
+      --danger: #b91c1c;
+      --success: #047857;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font: 14px/1.45 Arial, sans-serif;
+      background: #f8fafc;
+    }
+    .app { padding: 20px 22px 90px; }
+    h2 { margin: 0 0 4px; font-size: 20px; }
+    .sub { margin: 0 0 18px; color: var(--muted); }
+    .search {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    input, textarea, select, button {
+      font: inherit;
+    }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 9px 10px;
+      background: white;
+      color: var(--text);
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: 2px solid #bfdbfe;
+      border-color: var(--blue);
+    }
+    textarea { min-height: 82px; resize: vertical; }
+    button {
+      border: 0;
+      border-radius: 7px;
+      padding: 9px 15px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button:disabled { opacity: .55; cursor: wait; }
+    .primary { background: var(--blue); color: white; }
+    .secondary { background: #e2e8f0; color: #334155; }
+    .results {
+      max-height: 180px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+      display: none;
+      margin-bottom: 18px;
+    }
+    .result {
+      display: grid;
+      grid-template-columns: 130px 1fr;
+      gap: 12px;
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 0;
+      border-bottom: 1px solid #edf2f7;
+      background: white;
+      text-align: left;
+      font-weight: 400;
+    }
+    .result:last-child { border-bottom: 0; }
+    .result:hover { background: var(--blue-soft); }
+    .code { font-weight: 700; color: var(--blue); }
+    .form {
+      display: none;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 16px;
+    }
+    .field.wide { grid-column: 1 / -1; }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: #334155;
+      font-weight: 700;
+    }
+    .formula {
+      margin-left: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 400;
+    }
+    [readonly] { background: #f1f5f9; color: #64748b; }
+    .status {
+      min-height: 22px;
+      margin: 6px 0 10px;
+      color: var(--muted);
+    }
+    .status.error { color: var(--danger); }
+    .status.success { color: var(--success); }
+    .actions {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: none;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 14px 22px;
+      border-top: 1px solid var(--border);
+      background: rgba(255,255,255,.96);
+    }
+    @media (max-width: 760px) {
+      .form { grid-template-columns: 1fr; }
+      .field.wide { grid-column: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h2>Редактор юридичних осіб</h2>
+    <p class="sub">Пошук у вкладці «ЮО» за назвою або кодом ЄДРПОУ.</p>
+
+    <div class="search">
+      <input id="query" autocomplete="off"
+        placeholder="Наприклад: 38402792 або частина назви">
+      <button id="searchButton" class="primary" type="button">Знайти</button>
+    </div>
+    <div id="status" class="status"></div>
+    <div id="results" class="results"></div>
+    <form id="editor" class="form"></form>
+  </main>
+
+  <footer id="actions" class="actions">
+    <button class="secondary" type="button" onclick="google.script.host.close()">Закрити</button>
+    <button id="saveButton" class="primary" type="button">Зберегти зміни</button>
+  </footer>
+
+  <script>
+    const state = { row: null, revisionToken: null, fields: [] };
+    const query = document.getElementById('query');
+    const searchButton = document.getElementById('searchButton');
+    const saveButton = document.getElementById('saveButton');
+    const statusBox = document.getElementById('status');
+    const resultsBox = document.getElementById('results');
+    const editor = document.getElementById('editor');
+    const actions = document.getElementById('actions');
+
+    query.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        search();
+      }
+    });
+    searchButton.addEventListener('click', search);
+    saveButton.addEventListener('click', save);
+
+    function search() {
+      const text = query.value.trim();
+      setBusy(searchButton, true, 'Пошук…');
+      setStatus('Шукаю…');
+      editor.style.display = 'none';
+      actions.style.display = 'none';
+      resultsBox.style.display = 'none';
+
+      google.script.run
+        .withSuccessHandler(showResults)
+        .withFailureHandler(showError)
+        .organizationEditorSearch(text);
+    }
+
+    function showResults(rows) {
+      setBusy(searchButton, false, 'Знайти');
+      resultsBox.replaceChildren();
+      if (!rows.length) {
+        setStatus('Збігів не знайдено.');
+        return;
+      }
+      setStatus(`Знайдено: ${rows.length}. Виберіть запис.`);
+      rows.forEach(item => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'result';
+        const code = document.createElement('span');
+        code.className = 'code';
+        code.textContent = item.code || 'Без коду';
+        const name = document.createElement('span');
+        name.textContent = item.name || 'Без назви';
+        button.append(code, name);
+        button.addEventListener('click', () => loadRow(item.row));
+        resultsBox.appendChild(button);
+      });
+      resultsBox.style.display = 'block';
+    }
+
+    function loadRow(row) {
+      setStatus('Завантажую рядок ' + row + '…');
+      google.script.run
+        .withSuccessHandler(renderForm)
+        .withFailureHandler(showError)
+        .organizationEditorGetRow(row);
+    }
+
+    function renderForm(data) {
+      state.row = data.row;
+      state.revisionToken = data.revisionToken;
+      state.fields = data.fields;
+      editor.replaceChildren();
+
+      data.fields.forEach(field => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field' +
+          (field.type === 'textarea' ? ' wide' : '');
+
+        const label = document.createElement('label');
+        label.htmlFor = 'field-' + field.index;
+        label.textContent = field.header;
+        if (field.hasFormula) {
+          const note = document.createElement('span');
+          note.className = 'formula';
+          note.textContent = '(формула — лише перегляд)';
+          label.appendChild(note);
+        }
+
+        let control;
+        if (field.type === 'select') {
+          control = document.createElement('select');
+          const empty = document.createElement('option');
+          empty.value = '';
+          empty.textContent = '— не вибрано —';
+          control.appendChild(empty);
+          field.options.forEach(optionValue => {
+            const option = document.createElement('option');
+            option.value = optionValue;
+            option.textContent = optionValue;
+            control.appendChild(option);
+          });
+          if (field.value &&
+              !field.options.includes(field.value)) {
+            const current = document.createElement('option');
+            current.value = field.value;
+            current.textContent = field.value + ' (поточне значення)';
+            control.appendChild(current);
+          }
+        } else if (field.type === 'textarea') {
+          control = document.createElement('textarea');
+        } else {
+          control = document.createElement('input');
+          control.type = field.type === 'date' ? 'date' : 'text';
+        }
+
+        control.id = 'field-' + field.index;
+        control.dataset.index = field.index;
+        control.value = field.value || '';
+        control.readOnly = field.readOnly;
+        if (field.readOnly && control.tagName === 'SELECT') control.disabled = true;
+        wrapper.append(label, control);
+        editor.appendChild(wrapper);
+      });
+
+      resultsBox.style.display = 'none';
+      editor.style.display = 'grid';
+      actions.style.display = 'flex';
+      setStatus('Відкрито рядок ' + data.row + '.');
+    }
+
+    function save() {
+      if (!state.row) return;
+      const values = state.fields.map(field => {
+        const control = document.getElementById('field-' + field.index);
+        return control ? control.value : field.value;
+      });
+      setBusy(saveButton, true, 'Збереження…');
+      setStatus('Зберігаю зміни…');
+
+      google.script.run
+        .withSuccessHandler(result => {
+          setBusy(saveButton, false, 'Зберегти зміни');
+          state.revisionToken = result.revisionToken;
+          setStatus(result.message, 'success');
+          loadRowAfterSave(state.row, result.message);
+        })
+        .withFailureHandler(error => {
+          setBusy(saveButton, false, 'Зберегти зміни');
+          showError(error);
+        })
+        .organizationEditorSaveRow({
+          row: state.row,
+          revisionToken: state.revisionToken,
+          values: values
+        });
+    }
+
+    function loadRowAfterSave(row, successMessage) {
+      google.script.run
+        .withSuccessHandler(data => {
+          renderForm(data);
+          setStatus(successMessage, 'success');
+        })
+        .withFailureHandler(showError)
+        .organizationEditorGetRow(row);
+    }
+
+    function showError(error) {
+      setBusy(searchButton, false, 'Знайти');
+      setBusy(saveButton, false, 'Зберегти зміни');
+      setStatus(error && error.message ? error.message : String(error), 'error');
+    }
+
+    function setStatus(message, type) {
+      statusBox.textContent = message || '';
+      statusBox.className = 'status' + (type ? ' ' + type : '');
+    }
+
+    function setBusy(button, busy, text) {
+      button.disabled = busy;
+      button.textContent = text;
+    }
+  </script>
+</body>
+</html>

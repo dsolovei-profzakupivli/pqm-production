@@ -54,6 +54,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('application-1', code, 'Заявка', '2026-09-01'))
         con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
                     ('application-1', 'admit', '2026-09-02', 'УО'))
+        con.execute("INSERT INTO qualifications VALUES ('q1','active','application-1')")
         google_row = row(code=code, checked='15.09.2026')
         source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)],
                                        'ЮО': [list(sync.HEADERS), google_row]})
@@ -87,6 +88,7 @@ class EdrSyncV2Tests(unittest.TestCase):
                 con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('s1', '46130719', 'Заявка', '2026-09-01'))
                 con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
                             ('s1', 'admit', '2026-09-02', 'УО'))
+                con.execute("INSERT INTO qualifications VALUES ('q1','active','s1')")
                 values = row(code='46130719', status=incoming)
                 source = snapshot(values)
                 self.assertEqual(source['rows'][0]['Статус в реєстрі (ЄДР)'], incoming)
@@ -115,7 +117,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.apply_observation(con, source)
         profile = con.execute('SELECT edr_status,source_row FROM supplier_edr_profiles WHERE supplier_code=?',
                               ('12345678',)).fetchone()
-        self.assertEqual(tuple(profile), ('✅ Зареєстровано', 99))
+        self.assertEqual(tuple(profile), ('✅ Зареєстровано', 12))
 
     def test_google_status_is_canonical_on_existing_profile_update(self):
         con = database()
@@ -152,7 +154,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]['source_row'], 100)
         self.assertIn('"source_row": 100', events[0]['snapshot_json'])
-        self.assertEqual(con.execute('SELECT source_row FROM supplier_edr_profiles').fetchone()[0], 500)
+        self.assertEqual(con.execute('SELECT source_row FROM supplier_edr_profiles').fetchone()[0], 100)
 
     def test_same_row_new_verification_or_business_snapshot_creates_event(self):
         con = database()
@@ -161,7 +163,10 @@ class EdrSyncV2Tests(unittest.TestCase):
         new_date = snapshot(row(checked='16.09.2026'))
         self.assertEqual(self.apply_observation(con, new_date)['verification_events'], 1)
         new_business = snapshot(row(checked='16.09.2026', status='Припинено'))
-        self.assertEqual(self.apply_observation(con, new_business)['verification_events'], 1)
+        self.assertEqual(self.apply_observation(con, new_business)['verification_events'], 0)
+        self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_edr_verification_events').fetchone()[0], 2)
+        newer_business = snapshot(row(checked='16.09.2026 12:00:01', status='Припинено'))
+        self.assertEqual(self.apply_observation(con, newer_business)['verification_events'], 1)
         self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_edr_verification_events').fetchone()[0], 3)
 
     def test_empty_ledger_bootstraps_once_and_duplicate_import_is_idempotent(self):
@@ -200,7 +205,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         state = sync.canonical_supplier_edr_states(
             con, {'0013500191'}, today=date(2026, 9, 16))['0013500191']
         self.assertEqual(state['prozorro_status'], 'Активний')
-        self.assertEqual(state['verification_date'], '2026-08-17')
+        self.assertEqual(state['verification_date'], '2026-08-17T00:00:00.000+03:00')
         self.assertEqual(state['verification_officer'], 'Олена ЄРЬОМІНА')
         self.assertEqual(state['verification_event']['event_type'], 'google_clarity_profile')
         self.assertEqual(state['bucket'], 'gt30')
@@ -504,6 +509,8 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertFalse(denied["apply_allowed"])
         con.execute("INSERT INTO submissions VALUES ('s1','12345678','OLD','2026-09-01')")
         con.execute("INSERT INTO application_fields VALUES ('s1','reject','2026-09-02','УО','')")
+        self.assertFalse(sync.build_preview(con, snapshot(row()))["items"][0]["apply_allowed"])
+        con.execute("INSERT INTO qualifications VALUES ('q1','unsuccessful','s1')")
         allowed = sync.build_preview(con, snapshot(row()))["items"][0]
         self.assertTrue(allowed["apply_allowed"])
 
@@ -557,6 +564,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con = database()
         con.execute("INSERT INTO submissions VALUES ('s1','11111111','A','2026-09-01')")
         con.execute("INSERT INTO application_fields VALUES ('s1','reject','2026-09-02','УО','')")
+        con.execute("INSERT INTO qualifications VALUES ('q1','unsuccessful','s1')")
         con.execute("INSERT INTO frameworks VALUES ('f1','active','{}')")
         con.executemany("INSERT INTO registry_contracts VALUES (?,?,?)", [('22222222','active','f1'),('33333333','suspended','f1'),('44444444','cancelled','f1')])
         statuses = sync.prozorro_statuses(con)
@@ -578,6 +586,8 @@ class EdrSyncV2Tests(unittest.TestCase):
             state = sync.freshness_state('Активний', (today - timedelta(days=age)).isoformat(), today)
             self.assertEqual((state['bucket'], state['marker']), pair)
             self.assertTrue(state['monitored'])
+            suspended = sync.freshness_state('Призупинений', (today - timedelta(days=age)).isoformat(), today)
+            self.assertEqual(suspended, state)
         self.assertEqual(sync.freshness_state('Неактивний', '2020-01-01', today)['marker'], '🟣 Неактуально')
         self.assertEqual(sync.freshness_state('Ще не в реєстрі', '2026-09-15', today)['marker'], '🟣 Неактуально')
         self.assertEqual(sync.freshness_state('Призупинений', '', today)['marker'], '⚪ Не перевірено')

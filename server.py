@@ -15,6 +15,7 @@ import legacy_google_termination_audit
 import legacy_google_termination_import
 import edr_sync_v2
 import supplier_evidence_shadow_hooks_v3 as evidence_shadow
+import google_writer_execution
 import sandbox_edr_review
 import prod_google_baseline
 import edr_sync_review
@@ -1626,6 +1627,7 @@ def init_db() -> None:
         task_documents.migrate(con)
         navigation_settings.migrate(con)
         scheduler_runtime.migrate(con)
+        google_writer_execution.migrate(con)
         ensure_runtime_feature_settings(con)
         ensure_google_oauth_transactions(con)
 
@@ -1751,6 +1753,7 @@ def save_framework(item: dict) -> bool:
         return False
     with db() as con:
         shadow_previous = evidence_shadow.capture_framework(con, item["id"])
+        previous_framework = con.execute('SELECT id,status,raw_json FROM frameworks WHERE id=?', (item['id'],)).fetchone()
         con.execute("""INSERT INTO frameworks
           (id,pretty_id,title,dk_code,status,organizer_edrpou,agreement_id,date_modified,raw_json,synced_at)
           VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -1761,6 +1764,10 @@ def save_framework(item: dict) -> bool:
            item.get("classification", {}).get("id", ""), item.get("status", ""), organizer,
            item.get("agreementID", ""), item.get("dateModified", ""),
            json.dumps(item, ensure_ascii=False), now_iso()))
+        status_event = edr_sync_v2.record_prozorro_framework_status_event(
+            con, dict(previous_framework) if previous_framework else None, item, now_iso())
+        if status_event['reason'] == 'missing_or_invalid_status_timestamp':
+            print('PQM verification status event skipped: framework status timestamp not verified')
         # A manually registered directory row is the canonical source of the
         # tracked selection before Prozorro exposes its factual payload. Link
         # it additively as soon as the matching framework becomes available.
@@ -1930,7 +1937,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                     supplier = (item.get("suppliers") or [{}])[0]
                     shadow_previous = evidence_shadow.capture_contract(con, item, now_iso())
                     previous_contract = con.execute(
-                        "SELECT status,qualification_id FROM registry_contracts WHERE id=?",
+                        "SELECT status,qualification_id,id,framework_id,supplier_code,raw_json FROM registry_contracts WHERE id=?",
                         (item["id"],)).fetchone()
                     con.execute("""INSERT INTO registry_contracts
                       (id,framework_id,qualification_id,supplier_code,status,milestones_json,raw_json,synced_at)
@@ -1943,6 +1950,10 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                        supplier.get("identifier", {}).get("id", ""), item.get("status", ""),
                        json.dumps(item.get("milestones", []), ensure_ascii=False),
                        json.dumps(item, ensure_ascii=False), now_iso()))
+                    status_event = edr_sync_v2.record_prozorro_contract_status_event(
+                        con, framework_id, agreement_id, dict(previous_contract) if previous_contract else None, item, now_iso())
+                    if status_event['reason'] in {'missing_or_invalid_status_timestamp', 'status_timestamp_not_proven_by_milestone'}:
+                        print('PQM verification status event skipped: contract status timestamp not verified')
                     if (item.get("status") == "active" and
                             (previous_contract is None or previous_contract[0] != "active" or
                              previous_contract[1] != item.get("qualificationID", ""))):
@@ -2685,6 +2696,60 @@ def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
         row["configuration_source"] = sources[key]
         row["manageable"] = (not SANDBOX_MODE or sandbox_runtime.scheduler_job_allowed(key))
     return rows
+
+
+GOOGLE_WRITER_SCHEDULER = None
+GOOGLE_WRITER_REGISTRATION_LOCK = threading.Lock()
+
+
+def google_writer_environment():
+    return 'SANDBOX' if SANDBOX_MODE else 'PROD'
+
+
+def google_writer_client():
+    environment = google_writer_environment()
+    prefix = 'PQM_' + environment + '_EXECUTION_'
+    credentials = os.getenv(prefix + 'CREDENTIALS_FILE', '')
+    other = os.getenv('PQM_' + ('PROD' if SANDBOX_MODE else 'SANDBOX') + '_EXECUTION_CREDENTIALS_FILE', '')
+    if credentials and other and Path(credentials).resolve() == Path(other).resolve():
+        raise google_writer_execution.ExecutionConfigurationError('Execution credentials must be independent')
+    provider = google_writer_execution.DedicatedTokenProvider(environment,credentials,os.getenv(prefix+'GCP_PROJECT_ID',''))
+    client = google_writer_execution.ExecutionClient(environment,os.getenv(prefix+'DEPLOYMENT_ID',''),
+        os.getenv(prefix+'SHARED_SECRET',''),provider,configured=env_flag(prefix+'READY',False))
+    client.validate()
+    if not credentials or not Path(credentials).is_file() or not os.getenv(prefix+'GCP_PROJECT_ID'):
+        raise google_writer_execution.ExecutionConfigurationError('Dedicated execution credential configuration absent')
+    return client
+
+
+def google_writer_available():
+    if not google_edr_effective_enabled() or (SAFE_MODE and not SANDBOX_MODE): return False
+    expected_service = 'srv-dalfd77f3r2c7392uub0' if SANDBOX_MODE else 'srv-da7vmitg1s2s73fim0p0'
+    if os.getenv('RENDER_SERVICE_ID') != expected_service: return False
+    try:
+        if SANDBOX_MODE: sandbox_runtime.attest_internal_target(DB_PATH)
+        elif DB_PATH.resolve() != Path('/var/data/pqm_test_20260831.sqlite3'): return False
+        google_writer_client()
+        return True
+    except (ValueError,OSError): return False
+
+
+def google_writer_service():
+    global GOOGLE_WRITER_SCHEDULER
+    with GOOGLE_WRITER_REGISTRATION_LOCK:
+        if GOOGLE_WRITER_SCHEDULER is None:
+            GOOGLE_WRITER_SCHEDULER = google_writer_execution.Scheduler(DB_PATH,google_writer_environment(),
+                google_writer_client,google_writer_available)
+        elif GOOGLE_WRITER_SCHEDULER.path != DB_PATH:
+            raise RuntimeError('Writer scheduler database identity changed')
+        return GOOGLE_WRITER_SCHEDULER
+
+
+def google_writer_status():
+    service = GOOGLE_WRITER_SCHEDULER
+    return google_writer_execution.status(DB_PATH,google_writer_environment(),available=google_writer_available(),
+        running=bool(service and service.thread and service.thread.is_alive()),
+        heartbeat=service.heartbeat if service else None)
 
 
 def decision_label(status: str | None) -> str:
@@ -4720,10 +4785,56 @@ def _supplier_edr_rows(sheet_name: str, gid: str) -> list[dict]:
     return rows
 
 
+def _google_edr_sheet_values(sheet_name: str) -> list[list]:
+    """One grid read: literal displayed B and full numeric verification I together."""
+    if sheet_name not in {"ФОП", "ЮО"}:
+        raise PermissionError("Unknown EDR source tab")
+    if SANDBOX_MODE and SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID:
+        raise PermissionError("SANDBOX EDR source identity mismatch")
+    if not google_edr_effective_enabled():
+        raise PermissionError("Google integration вимкнено адміністратором")
+    params = urllib.parse.urlencode({
+        "ranges": f"'{sheet_name}'!A:O", "includeGridData": "true",
+        "fields": "sheets(properties(title),data(startRow,startColumn,rowData(values(effectiveValue,formattedValue))))",
+    })
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{params}"
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
+    try:
+        opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+        with opener(request, timeout=120) as response:
+            body = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        _raise_google_phase_error("edr_grid_read", exc)
+    sheets = body.get("sheets", [])
+    if len(sheets) != 1 or sheets[0].get("properties", {}).get("title") != sheet_name:
+        raise ValueError("Google EDR source tab identity mismatch")
+    rows = {}
+    for data in sheets[0].get("data", []):
+        if data.get("startColumn", 0) != 0:
+            raise ValueError("Google EDR source column mismatch")
+        for offset, raw in enumerate(data.get("rowData", [])):
+            number = data.get("startRow", 0) + offset
+            if number in rows:
+                raise ValueError("Google EDR overlapping grid rows")
+            cells = raw.get("values", [])
+            values = []
+            for column in range(15):
+                cell = cells[column] if column < len(cells) else {}
+                effective = cell.get("effectiveValue", {})
+                if "errorValue" in effective:
+                    raise ValueError("Google EDR source contains a cell error")
+                if column == 8 and number > 0 and "numberValue" in effective:
+                    values.append(effective["numberValue"])
+                else:
+                    values.append(cell.get("formattedValue", effective.get("stringValue", "")))
+            rows[number] = values
+    return [rows.get(index, [""] * 15) for index in range(max(rows, default=-1) + 1)]
+
+
 def supplier_edr_source_snapshot() -> dict:
     """Read both canonical tabs and fingerprint their exact values as one revision."""
     return edr_sync_v2.source_snapshot({
-        sheet_name: _google_sheet_values(sheet_name)
+        sheet_name: _google_edr_sheet_values(sheet_name)
         for sheet_name in SUPPLIER_EDR_SHEETS
     }, spreadsheet_id=SUPPLIER_EDR_SHEET_ID)
 
@@ -5010,12 +5121,10 @@ def _edr_monitoring_source_sql() -> str:
       ), latest_admission AS MATERIALIZED (
         SELECT supplier_code,occurred_at,officer,submission_id FROM (
           SELECT s.supplier_code,
-            NORMALIZED_DATE(COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),
-              NULLIF(s.date_published,''))) occurred_at,
+            NORMALIZED_DATE(NULLIF(af.protocol_date,'')) occurred_at,
             COALESCE(af.protocol_officer,'') officer,s.id submission_id,
             ROW_NUMBER() OVER (PARTITION BY s.supplier_code ORDER BY
-              NORMALIZED_DATE(COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),
-                NULLIF(s.date_published,''))) DESC,s.id DESC) rank
+              NORMALIZED_DATE(NULLIF(af.protocol_date,'')) DESC,s.id DESC) rank
           FROM submissions s JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           JOIN population p ON p.supplier_code=s.supplier_code
@@ -5114,11 +5223,12 @@ def _edr_monitoring_rows() -> list[dict]:
                 "SELECT * FROM supplier_registry_summary WHERE supplier_code<>''")}
             latest_app = {row["supplier_code"]: dict(row) for row in con.execute("""SELECT * FROM (
               SELECT s.supplier_code,s.supplier_name,COALESCE(af.manager_name,'') manager_name,
-                COALESCE(NULLIF(s.date_published,''),s.synced_at) latest_application_date,
+                COALESCE(s.date_published,'') latest_application_date,
                 ROW_NUMBER() OVER(PARTITION BY s.supplier_code ORDER BY
-                  COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC) rank
+                  COALESCE(s.date_published,'') DESC,s.id DESC) rank
               FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
-              WHERE s.supplier_code<>'') WHERE rank=1""")}
+              JOIN qualifications q ON q.id=s.qualification_id
+              WHERE s.supplier_code<>'' AND q.status IN ('active','unsuccessful')) WHERE rank=1""")}
             active_qualification_dates = edr_sync_v2.active_qualification_dates(con)
             managers = {row["supplier_code"]: row["manager_name"] for row in con.execute("""SELECT supplier_code,manager_name FROM (
               SELECT supplier_code,manager_name,ROW_NUMBER() OVER(PARTITION BY supplier_code ORDER BY
@@ -5445,7 +5555,9 @@ def list_qualified_suppliers(params: dict) -> dict:
                             or admission_from or admission_to else {})
         if canonical_states:
             con.create_function("CANONICAL_FRESHNESS", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("bucket", "not_checked"), deterministic=True)
-            con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("verification_date", ""), deterministic=True)
+            # Calendar-range filters include the entire Kyiv day. Preserve the
+            # full verification instant in storage, API output and sync gates.
+            con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: edr_sync_v2.normalized_date((canonical_states.get(_digits(code)) or {}).get("verification_date", "")), deterministic=True)
             con.create_function("CANONICAL_LAST_ADMISSION", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("last_admission_date", ""), deterministic=True)
         edr_statuses = sorted({_edr_monitoring_status(r[0]) for r in con.execute(
             "SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>''")})
@@ -5507,9 +5619,11 @@ def list_qualified_suppliers(params: dict) -> dict:
               ORDER BY event_date DESC""", supplier_codes):
                 if event["supplier_code"] not in latest_registry_events:
                     latest_registry_events[event["supplier_code"]] = {"status": event["status"], "date": event["event_date"]}
-            for profile in con.execute(f"""SELECT supplier_code,full_name,short_name,manager_name,
-              edr_status,edr_checked_at,source_sheet,source_row,synced_at
-              FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", supplier_codes):
+            for profile in con.execute(f"""SELECT ep.supplier_code,full_name,short_name,manager_name,
+              edr_status,edr_checked_at,ep.source_sheet,ep.source_row,synced_at,
+              COALESCE(gr.received_at,ep.last_google_received_at,'') last_google_received_at
+              FROM supplier_edr_profiles ep LEFT JOIN supplier_google_receipts gr ON gr.supplier_code=ep.supplier_code
+              WHERE ep.supplier_code IN ({placeholders})""", supplier_codes):
                 edr_profiles[profile["supplier_code"]] = dict(profile)
                 normalized = " ".join(re.sub(r"[’'`\-]+", " ", (profile["manager_name"] or "").casefold()).split())
                 if normalized and normalized in nazk_names:
@@ -5679,6 +5793,8 @@ def list_qualified_suppliers(params: dict) -> dict:
 
 
 def latest_supplier_submission_name(con, code):
+    # Historical/card identity is the literal latest submitted name. Google
+    # eligibility and latest decided names are separate registry projections.
     row=con.execute('''SELECT supplier_name FROM submissions WHERE DIGITS(supplier_code)=?
       ORDER BY julianday(date_published) DESC,id DESC LIMIT 1''',(code,)).fetchone()
     return row[0] if row else ''
@@ -5692,6 +5808,7 @@ def supplier_profile(supplier_code: str) -> dict:
         latest_submission_name = latest_supplier_submission_name(con,code)
         summary = con.execute("SELECT * FROM supplier_registry_summary WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         profile = con.execute("SELECT * FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
+        google_receipt = con.execute('SELECT received_at FROM supplier_google_receipts WHERE supplier_code=?',(code,)).fetchone()
         supplier_note = con.execute("SELECT * FROM supplier_notes WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         current_manager_row = edr_sync_v2.resolve_known_manager(con, code)
         nazk_review = con.execute("SELECT * FROM supplier_nazk_reviews WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
@@ -5911,6 +6028,7 @@ def supplier_profile(supplier_code: str) -> dict:
         registry_record_no_longer_present=record_no_longer_present,
     )
     profile_data = dict(profile) if profile else {}
+    if google_receipt: profile_data['last_google_received_at'] = google_receipt[0]
     if profile_data:
         profile_data["edr_status"] = edr_sync_v2.compatible_edr_status(
             profile_data.get("edr_status"))
@@ -10811,6 +10929,12 @@ class Handler(BaseHTTPRequestHandler):
                 include_inactive=self.auth_role == 'admin' and query.get('all') == ['1']))
         if parsed.path == "/api/reference-status":
             return self.send_json(reference_status(DB_PATH))
+        if parsed.path == '/api/google-writer/status':
+            data=google_writer_status()
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            data.update(can_execute=bool(permissions.get('google.writer.execute')),
+                        can_manage=bool(permissions.get('admin.manage')))
+            return self.send_json(data)
         if parsed.path == "/api/supplier-edr-sync-status":
             return self.send_json(supplier_edr_sync_status())
         if parsed.path == "/api/supplier-edr-export":
@@ -11222,6 +11346,51 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'error': str(exc)}, 409)
             except ValueError as exc:
                 return self.send_json({'error': str(exc)}, 400)
+        if parsed.path in {'/api/admin/google-writer/schedule/preview','/api/admin/google-writer/schedule/apply'}:
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('admin.manage'):
+                return self.send_json({'error':'Лише адміністратор може змінювати розклад'},403)
+            payload = self.read_json()
+            try:
+                if set(payload) - {'specification','expected_revision'}: raise ValueError('Unexpected schedule fields')
+                with db() as con:
+                    if parsed.path.endswith('/preview'):
+                        result = google_writer_execution.preview_settings(con,payload.get('specification',{}))
+                    else:
+                        if payload.get('specification',{}).get('enabled') and not google_writer_available():
+                            raise ValueError('Execution channel is not ready; enable is blocked')
+                        con.execute('BEGIN IMMEDIATE')
+                        result = google_writer_execution.save_settings(con,payload.get('specification',{}),payload.get('expected_revision'),self.auth_user)
+                if parsed.path.endswith('/apply'): google_writer_service().reschedule()
+                return self.send_json(result)
+            except (ValueError,RuntimeError) as exc: return self.send_json({'error':str(exc)},409)
+        if parsed.path in {'/api/google-writer/preview','/api/google-writer/apply'}:
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            payload = self.read_json()
+            try:
+                if not google_writer_available(): raise ValueError('Захищений Execution API канал ще не підготовлено')
+                client = google_writer_client()
+                if parsed.path.endswith('/preview'):
+                    if set(payload) != {'request_id'}: raise ValueError('Unexpected Preview fields')
+                    result = client.invoke('preview',payload['request_id'],self.auth_user)
+                    return self.send_json({'status':result['status'],'counts':result['counts'],
+                        'ticket':google_writer_execution.preview_ticket(client,payload['request_id'],self.auth_user,result['digest'])})
+                if set(payload) != {'ticket','confirmed'} or payload['confirmed'] is not True:
+                    raise ValueError('Потрібне явне підтвердження переглянутого Preview')
+                ticket = google_writer_execution.verify_ticket(client,payload['ticket'],self.auth_user)
+                claimed = google_writer_execution.claim_run(DB_PATH,google_writer_environment(),ticket['request_id'],self.auth_user,'manual')
+                if not claimed['claimed']:
+                    return self.send_json(claimed,200 if claimed['status'] in {'complete','partial','failed_safe'} else 409)
+                try:
+                    threading.Thread(target=google_writer_execution.execute_claimed,
+                        args=(DB_PATH,client,ticket['request_id'],self.auth_user),kwargs={'digest':ticket['digest'],'guard':google_writer_available},
+                        name='pqm-google-writer-worker',daemon=True).start()
+                except Exception:
+                    google_writer_execution.finish_run(DB_PATH,ticket['request_id'],'failed_safe',{'status':'WORKER_START_FAILED'})
+                    raise ValueError('Не вдалося створити worker; Google не викликався') from None
+                return self.send_json({'started':True,'request_id':ticket['request_id']},202)
+            except (ValueError,google_writer_execution.ExecutionOutcomeUnknown) as exc:
+                return self.send_json({'error':str(exc)},409)
         scheduler_toggle = re.fullmatch(r"/api/admin/scheduler-jobs/([a-z_]+)", parsed.path)
         if scheduler_toggle:
             payload = self.read_json()
@@ -12365,6 +12534,7 @@ def main():
         SERVER_LOG.exception("Operational task builder failed during startup")
 
     scheduler_enabled = apply_scheduler_settings(catch_up=True)
+    google_writer_service().start()  # Fourth job only: disabled by default, no startup catch-up.
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
     print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
     print(f"Features: prozorro_scheduler={scheduler_enabled['prozorro']}, "

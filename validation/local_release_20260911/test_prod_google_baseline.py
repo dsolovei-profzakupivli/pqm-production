@@ -16,6 +16,19 @@ import server
 
 class ProdGoogleBaselineTests(unittest.TestCase):
     def test_read_only_connection_runs_real_verification_officer_projection(self):
+        self.assert_read_only_projection('2026-09-04','2026-09-04T00:00:00.000+03:00','day')
+
+    def test_read_only_projection_keeps_seconds_and_kyiv_timezone_boundary(self):
+        cases=(
+            ('2026-09-04T17:03:19+03:00','2026-09-04T17:03:19.000+03:00'),
+            ('2026-09-04T21:03:19Z','2026-09-05T00:03:19.000+03:00'),
+            ('2026-12-04T22:03:19Z','2026-12-05T00:03:19.000+02:00'),
+        )
+        for raw,expected in cases:
+            with self.subTest(raw=raw):
+                self.assert_read_only_projection(raw,expected,'instant')
+
+    def assert_read_only_projection(self, raw, expected, precision):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "projection.sqlite3"
             with closing(sqlite3.connect(path)) as setup:
@@ -32,10 +45,10 @@ class ProdGoogleBaselineTests(unittest.TestCase):
                     protocol_decision TEXT);
                   CREATE TABLE authorized_officers(full_name TEXT);
                   INSERT INTO authorized_officers VALUES ('Sample OFFICER');
-                  INSERT INTO supplier_edr_verification_events
-                    (supplier_code,event_type,occurred_at,officer)
-                    VALUES ('001','legacy_google_registry','2026-09-04','sample officer');
                 """)
+                setup.execute('''INSERT INTO supplier_edr_verification_events
+                  (supplier_code,event_type,occurred_at,officer) VALUES (?,?,?,?)''',
+                  ('001','legacy_google_registry',raw,'sample officer'))
                 setup.commit()
             with closing(baseline.open_read_only(path)) as readonly:
                 self.assertEqual(readonly.execute("PRAGMA query_only").fetchone()[0], 1)
@@ -44,7 +57,9 @@ class ProdGoogleBaselineTests(unittest.TestCase):
                     "SELECT NORMALIZE_NAME('Sample OFFICER')").fetchone()[0],
                     "sample officer")
                 projection = edr_sync_v2.current_verification_projections(readonly, ["001"])
-                self.assertEqual(projection["001"]["verification_date"], "2026-09-04")
+                self.assertEqual(projection["001"]["verification_date"], expected)
+                self.assertEqual(projection["001"]["verification_datetime_precision"], precision)
+                self.assertEqual(readonly.execute('SELECT occurred_at FROM supplier_edr_verification_events').fetchone()[0],raw)
                 self.assertEqual(projection["001"]["verification_officer"], "Sample OFFICER")
                 self.assertEqual(readonly.total_changes, 0)
 

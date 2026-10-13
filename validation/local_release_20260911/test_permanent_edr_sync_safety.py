@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import edr_sync_v2 as sync
-from test_edr_sync_v2 import database, row, snapshot
+from validation.local_release_20260911.test_edr_sync_v2 import database, row, snapshot
 
 
 CODE = "12345678"
@@ -30,7 +30,7 @@ def observe(con, day, officer, status="Зареєстровано", **fields):
 
 def current(con):
     state = sync.current_verification_projections(con, [CODE])[CODE]
-    return state["verification_date"], state["verification_officer"]
+    return sync.normalized_date(state["verification_date"]), state["verification_officer"]
 
 
 def legacy_event(con, day="2026-09-20", officer="Officer A", status=""):
@@ -95,16 +95,19 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         self.assertEqual(result["verification_events"], 0)
         self.assertEqual(preview["summary"]["same_date_same_officer_equivalent"], 1)
 
-    def test_same_day_google_officer_wins(self):
+    def test_same_instant_preserves_officer_then_newer_second_wins(self):
         profile(self.con)
         legacy_event(self.con)
         sync._insert_event(self.con, item={"supplier_code": CODE}, event_type="manual_edr",
           occurred_at="2026-09-20", officer="Officer A", source="PQM manual",
           changed_fields=[], snapshot={"edr_status": "Зареєстровано"}, created_at="old")
         preview, result = observe(self.con, "20.09.2026", "Officer B")
+        self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
+        self.assertEqual(result["verification_events"], 0)
+        self.assertEqual(preview["summary"]["same_datetime_officer_preserved"], 1)
+        preview, result = observe(self.con, "20.09.2026 00:00:01", "Officer B")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer B"))
         self.assertEqual(result["verification_events"], 1)
-        self.assertEqual(preview["summary"]["same_date_officer_update_accepted"], 1)
 
     def test_older_larger_id_does_not_win(self):
         profile(self.con)
@@ -127,7 +130,7 @@ class PermanentSyncSafetyTests(unittest.TestCase):
                     self.assertEqual(sync.active_edr_status("2026-01-01", ledger), "Припинено")
                     self.assertEqual(preview["summary"]["factual_status_protected"], 1)
                     if day == "20.09.2026":
-                        self.assertEqual(current(con), ("2026-09-20", "Officer B"))
+                        self.assertEqual(current(con), ("2026-09-20", "Officer A"))
                 finally:
                     con.close()
 
@@ -151,7 +154,7 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         profile(self.con)
         preview, _ = observe(self.con, "", "", **{"12": "New M", "13": "", "14": ""})
         self.assertEqual(preview["conflicts"], [])
-        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "New M")
+        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
 
     def test_malformed_date_blocks_without_writes(self):
