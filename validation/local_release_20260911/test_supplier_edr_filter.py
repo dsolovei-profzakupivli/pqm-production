@@ -61,17 +61,24 @@ class SupplierEdrFilterTests(unittest.TestCase):
                               'Дата перевірки':'07.09.2026','УО':'Тестова УО'}.items():values[headers.index(key)]=value
             sheet=[headers,values]
             sheet_read=lambda name: sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
-            with patch.object(server,'_google_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
+            with patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read) as reader,patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')
+                self.assertEqual({call.args[0] for call in reader.call_args_list},{'ФОП','ЮО'})
             self.assertEqual(self.listing(search=code,edr_status='✅ Зареєстровано')['total'],0)
             self.assertEqual(self.listing(search=code,edr_status='Припинено')['total'],1)
             data=self.listing(search=code,edr_status='🔴 Припинено')
             self.assertEqual(data['total'],1)
             self.assertEqual(data['items'][0]['edr_profile']['edr_status'],'Припинено')
-            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],'2026-09-07')
+            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],'2026-09-07T00:00:00.000+03:00')
         self.assertEqual(self.listing()['edr_statuses'],['Припинено'])
+    def test_disabled_google_reader_still_blocks_before_token_or_network(self):
+        with patch.object(server,'google_edr_effective_enabled',return_value=False),patch.object(server,'_google_access_token') as token:
+            with self.assertRaises(PermissionError):
+                server._google_edr_sheet_values('ЮО')
+            token.assert_not_called()
+
     def test_and_filters_empty_and_injection(self):
         self.assertEqual(self.listing(edr_status='Зареєстровано')['total'],2)
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано',status='active')['total'],2)
@@ -116,6 +123,20 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.assertEqual(recent['items'][0]['edr_freshness_marker'],'🟢 <30 днів')
         self.assertEqual(recent['items'][0]['edr_verification_officer'],'Тестова УО')
         self.assertEqual(self.listing(freshness='not_checked')['total'],0)
+
+    def test_calendar_verification_range_includes_seconds_without_truncating_data(self):
+        stamps={'30067771':'2026-10-13T23:59:59.123+03:00',
+                '3038301896':'2026-10-14T00:00:01.000+03:00'}
+        for code,stamp in stamps.items():
+            self.con.execute('UPDATE supplier_edr_profiles SET edr_checked_at=? WHERE supplier_code=?',(stamp,code))
+        self.con.commit()
+        current=self.listing(verification_from='2026-10-13',verification_to='2026-10-13')
+        self.assertEqual([row['code'] for row in current['items']],['30067771'])
+        self.assertEqual(current['items'][0]['edr_profile']['edr_checked_at'],stamps['30067771'])
+        following=self.listing(verification_from='2026-10-14',verification_to='2026-10-14')
+        self.assertEqual([row['code'] for row in following['items']],['3038301896'])
+        self.assertEqual(following['items'][0]['edr_profile']['edr_checked_at'],stamps['3038301896'])
+        self.assertEqual(dict(self.con.execute('SELECT supplier_code,edr_checked_at FROM supplier_edr_profiles')),stamps)
 
     def test_entity_type_shared_semantics_and_intersection(self):
         self.assertEqual(self.listing(entity_type='')['total'],2)

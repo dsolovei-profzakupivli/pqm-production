@@ -5408,7 +5408,9 @@ def list_qualified_suppliers(params: dict) -> dict:
                             or admission_from or admission_to else {})
         if canonical_states:
             con.create_function("CANONICAL_FRESHNESS", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("bucket", "not_checked"), deterministic=True)
-            con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("verification_date", ""), deterministic=True)
+            # Calendar-range filters include the entire Kyiv day. Preserve the
+            # full verification instant in storage, API output and sync gates.
+            con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: edr_sync_v2.normalized_date((canonical_states.get(_digits(code)) or {}).get("verification_date", "")), deterministic=True)
             con.create_function("CANONICAL_LAST_ADMISSION", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("last_admission_date", ""), deterministic=True)
         edr_statuses = sorted({_edr_monitoring_status(r[0]) for r in con.execute(
             "SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>''")})
@@ -5644,10 +5646,10 @@ def list_qualified_suppliers(params: dict) -> dict:
 
 
 def latest_supplier_submission_name(con, code):
-    row=con.execute('''SELECT s.supplier_name FROM submissions s
-      JOIN qualifications q ON q.id=s.qualification_id
-      WHERE DIGITS(s.supplier_code)=? AND q.status IN ('active','unsuccessful')
-      ORDER BY julianday(s.date_published) DESC,s.id DESC LIMIT 1''',(code,)).fetchone()
+    # Historical/card identity is the literal latest submitted name. Google
+    # eligibility and latest decided names are separate registry projections.
+    row=con.execute('''SELECT supplier_name FROM submissions WHERE DIGITS(supplier_code)=?
+      ORDER BY julianday(date_published) DESC,id DESC LIMIT 1''',(code,)).fetchone()
     return row[0] if row else ''
 
 def supplier_profile(supplier_code: str) -> dict:
