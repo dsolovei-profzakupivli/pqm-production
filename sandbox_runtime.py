@@ -229,6 +229,7 @@ def validate_prozorro_url(url):
 def _restricted_getaddrinfo(host, port, *args, **kwargs):
     if getattr(_egress, 'active', False):
         permitted_host = (getattr(_egress, 'google_host', None) or
+                          getattr(_egress, 'execution_host', None) or
                           getattr(_egress, 'reference_host', None) or PROZORRO_HOST)
         if host != permitted_host or port not in (443, '443'):
             raise RuntimeError('Sandbox DNS destination is not approved')
@@ -393,6 +394,74 @@ def google_open(request, timeout=60):
         _egress.addresses = set()
 
 
+def validate_execution_request(request, environment, script_id, spreadsheet_id, deployment_id):
+    """Only attested OAuth refresh or one pinned API-executable invocation."""
+    expected_script = '1Ht0jL2xQc3hsd6uWKui4uA6o1z2Oe_BAUbZq8HTXcw6C1Kpyi7JxNtmQ'
+    if (os.getenv('PQM_SANDBOX', '').lower() not in ('1', 'true') or
+            os.getenv('RENDER_SERVICE_ID') != 'srv-dalfd77f3r2c7392uub0' or
+            os.getenv('PQM_SANDBOX_EXECUTION_READY', '').lower() not in ('1', 'true') or
+            not edr_google_enabled() or environment != 'SANDBOX' or
+            script_id != expected_script or spreadsheet_id != SANDBOX_EDR_SPREADSHEET_ID or
+            not re.fullmatch(r'[A-Za-z0-9_-]{20,256}', str(deployment_id or '')) or
+            deployment_id != os.getenv('PQM_SANDBOX_EXECUTION_DEPLOYMENT_ID')):
+        raise RuntimeError('Sandbox execution identity or configuration is not approved')
+    url = request.full_url
+    if request.get_method() != 'POST' or not isinstance(request.data, bytes):
+        raise RuntimeError('Sandbox execution method is not approved')
+    if url == 'https://oauth2.googleapis.com/token':
+        try:
+            fields = urllib.parse.parse_qs(request.data.decode('ascii'), strict_parsing=True)
+            if (set(fields) != {'client_id', 'client_secret', 'refresh_token', 'grant_type'} or
+                    any(len(v) != 1 or not v[0] for v in fields.values()) or
+                    fields['grant_type'] != ['refresh_token']):
+                raise ValueError()
+        except (ValueError, UnicodeError):
+            raise RuntimeError('Sandbox execution OAuth request is not approved') from None
+        return GOOGLE_TOKEN_HOST
+    if url != 'https://script.googleapis.com/v1/scripts/' + deployment_id + ':run':
+        raise RuntimeError('Sandbox execution endpoint is not approved')
+    try:
+        body = json.loads(request.data)
+        envelope = body['parameters'][0]
+        payload = json.loads(envelope['payload'])
+        if (set(body) != {'function', 'devMode', 'parameters'} or
+                body['function'] != 'pqmSandboxExecution' or body['devMode'] is not False or
+                len(body['parameters']) != 1 or
+                set(envelope) != {'payload', 'signature'} or
+                not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or
+                payload['environment'] != environment or payload['scriptId'] != script_id or
+                payload['spreadsheetId'] != spreadsheet_id or
+                payload['contract'] != 'pqm-mirror-datetime-v1' or
+                payload['action'] not in ('preview', 'apply') or
+                (payload['action'] == 'apply' and not re.fullmatch(r'[a-f0-9]{64}', str(payload.get('expectedDigest', '')))) or
+                not re.fullmatch(r'Bearer [A-Za-z0-9._~+/-]+=*', request.get_header('Authorization', ''))):
+            raise ValueError()
+    except (ValueError, KeyError, TypeError, IndexError):
+        raise RuntimeError('Sandbox execution envelope is not approved') from None
+    return 'script.googleapis.com'
+
+
+@contextmanager
+def execution_open(request, timeout, *, environment, script_id, spreadsheet_id, deployment_id):
+    identity = (environment, script_id, spreadsheet_id, deployment_id)
+    host = validate_execution_request(request, *identity)
+    if getattr(_egress, 'active', False):
+        raise RuntimeError('Nested sandbox network scope is not supported')
+    _egress.active = True
+    _egress.execution_host = host
+    _egress.execution_identity = identity
+    _egress.addresses = set()
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoGoogleRedirect())
+        with opener.open(request, timeout=timeout) as response:
+            yield response
+    finally:
+        _egress.active = False
+        _egress.execution_host = None
+        _egress.execution_identity = None
+        _egress.addresses = set()
+
+
 def fetch_prozorro_json(url):
     """One bounded credential-free HTTPS GET, never a generic egress exception."""
     if not prozorro_read_enabled():
@@ -463,10 +532,14 @@ def outbound_audit(event, args):
         if not (event == 'socket.getaddrinfo' and getattr(_egress, 'active', False)
                 and ((prozorro_read_enabled() and args[0] == PROZORRO_HOST)
                      or (edr_google_enabled() and args[0] == getattr(_egress, 'google_host', None))
+                     or (edr_google_enabled() and args[0] == getattr(_egress, 'execution_host', None))
                      or (nazk_read_enabled() and args[0] == getattr(_egress, 'reference_host', None)))):
             raise RuntimeError('Sandbox external DNS is disabled')
     if event == 'urllib.Request' and getattr(_egress, 'active', False):
-        if getattr(_egress, 'google_host', None):
+        if getattr(_egress, 'execution_host', None):
+            request = urllib.request.Request(args[0], data=args[1], headers=args[2], method=args[3])
+            validate_execution_request(request, *_egress.execution_identity)
+        elif getattr(_egress, 'google_host', None):
             validate_google_request(args[0], args[3])
         elif getattr(_egress, 'public_read', False):
             validate_public_read_request(args[0], args[3])

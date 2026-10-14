@@ -48,11 +48,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ExecutionOutcomeUnknown('Execution redirect rejected; reconcile before another Apply')
 
 
+def transport_open(request, timeout, environment, deployment_id=None):
+    """SANDBOX requests use the existing process guard, never a generic bypass."""
+    sandbox = os.getenv('PQM_SANDBOX', '').lower() in ('1', 'true')
+    if environment == 'SANDBOX' or sandbox:
+        if environment != 'SANDBOX':
+            raise ExecutionConfigurationError('Execution environment isolation rejected')
+        import sandbox_runtime
+        script, sheet, _ = IDENTITIES['SANDBOX']
+        return sandbox_runtime.execution_open(request, timeout=timeout,
+            environment=environment, script_id=script, spreadsheet_id=sheet,
+            deployment_id=deployment_id or os.getenv('PQM_SANDBOX_EXECUTION_DEPLOYMENT_ID', ''))
+    return urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout)
+
+
 class DedicatedTokenProvider:
     """One environment-specific user OAuth credential. No authorization flow or service account."""
     def __init__(self, environment, path, project_id, *, opener=None, clock=None):
         self.environment, self.path, self.project_id = environment, path, project_id
-        self.opener = opener or urllib.request.build_opener(NoRedirect()).open
+        self.opener = opener or (lambda request, timeout: transport_open(request, timeout, self.environment))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.cached = None
 
@@ -99,7 +113,7 @@ class ExecutionClient:
         self.shared_secret = shared_secret
         self.token_provider = token_provider
         self.configured = configured
-        self.opener = opener or urllib.request.build_opener(NoRedirect()).open
+        self.opener = opener or (lambda request, timeout: transport_open(request, timeout, self.environment, self.deployment_id))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def validate(self):
