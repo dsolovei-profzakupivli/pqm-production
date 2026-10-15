@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import threading
 import unittest
 from unittest.mock import Mock, patch
@@ -153,6 +155,19 @@ class BackgroundJobsKillSwitchTests(unittest.TestCase):
             with patch.dict(os.environ,{'PQM_DISABLE_BACKGROUND_JOBS':value}):self.assertFalse(background_jobs.disabled())
         for value in ('1','true','yes','on'):
             with patch.dict(os.environ,{'PQM_DISABLE_BACKGROUND_JOBS':value}):self.assertTrue(background_jobs.disabled())
+
+    def test_persistent_configuration_survives_fresh_process_restarts(self):
+        for _ in range(2):
+            result=subprocess.run([sys.executable,'-B','-c',
+                'import background_jobs; assert background_jobs.disabled()'],
+                env={**os.environ,'PQM_DISABLE_BACKGROUND_JOBS':'1'},capture_output=True,timeout=10)
+            self.assertEqual(result.returncode,0)
+
+    def test_explicit_off_allows_isolated_scheduler_test_without_code_bypass(self):
+        with patch.dict(os.environ,{'PQM_DISABLE_BACKGROUND_JOBS':'0'}),patch.object(server,'SANDBOX_MODE',True),patch.object(server,'sandbox_runtime',sandbox_runtime,create=True),patch.object(server,'db',return_value=self.con),patch.object(server,'register_scheduler_job') as register:
+            self.assertTrue(all(server.apply_scheduler_settings(catch_up=False).values()))
+            self.assertEqual(register.call_count,3)
+            for call in register.call_args_list:self.assertFalse(call.kwargs['catch_up'])
 
 
 if __name__=='__main__':unittest.main()

@@ -51,6 +51,71 @@ Canceling superseded checks limits duplicate runner usage. Each run is capped at
 - Branch protection availability and required-check settings must be verified on
   the actual GitHub plan. A workflow file alone does not enforce merge protection.
 
+## Permanent sandbox background job interlock
+
+Keep `PQM_DISABLE_BACKGROUND_JOBS=1` in the sandbox service configuration across
+all updates. `background_jobs.disabled()` is the shared execution interlock:
+it is evaluated at startup and before subsequent automatic dispatches, not stored
+in SQLite. Persisted enabled overrides and `catch_up=True` cannot bypass it.
+Do not change `PQM_SANDBOX=1`, environment identity, saved schedules, enabled
+settings or revision numbers to obtain this protection. Production behavior is
+unchanged when the variable is absent; do not change production configuration.
+
+The interlock blocks jobs 1–3, their startup catch-up and lease acquisition, the
+Google writer scheduler/claim/execution channel, deferred reference refreshes,
+automatic Bids status refresh, contract-experience queue/retries and Power BI
+background export. The startup operational-task rebuild is also skipped. Manual
+starts through the same sync entrypoints are blocked. Explicit HTTP document
+checks and other manual application edits are not an automatic scheduler bypass
+and are not disabled by this interlock; deploy smoke must remain read-only.
+This is not an outbound firewall, read-only database mode or cancellation of work
+already running before activation. Keep the Google job configured OFF and retain
+Google authorization, destination and environment guards independently.
+
+### Standard sandbox update procedure
+
+1. With separate approval for configuration changes, install the persistent
+   sandbox-only `PQM_DISABLE_BACKGROUND_JOBS=1` setting. Retain it on every
+   restart, deployment and rollback. Saving configuration may restart the service;
+   treat that as a deployment requiring its own preflight and approval.
+2. Immediately before each deploy, verify live service identity, current SHA,
+   resolved sandbox DB path and isolation attestation, health, runtime errors,
+   recorded running jobs/leases, recovery point availability and rollback SHA.
+   STOP for active critical work, unknown isolation or unverified configuration.
+3. Verify the exact candidate includes this interlock and has passed its
+   regressions, the full container suite and Docker Release Gate. A rollback to
+   older code without this interlock does not become safe merely because the
+   environment variable exists; STOP and prepare a separately approved safe
+   rollback procedure in that case.
+4. Review startup initialization and migration effects against the actual schema
+   on a private disposable DB copy. The interlock does not skip schema setup,
+   reference-date normalization or other ordinary startup database initialization.
+   STOP for unapproved destructive or unexpected changes. Do not run manual
+   migrations, historical backfill, imports or sync as part of deployment.
+5. After explicit deploy approval, deploy only the exact tested SHA. Verify the
+   runtime still has `PQM_DISABLE_BACKGROUND_JOBS=1`, the expected SHA and DB
+   identity, healthy startup, no registered schedulers/automatic executions,
+   jobs 1–3 effectively blocked and Google job OFF. Confirm saved schedules,
+   revision 2 and the requests minute `:50` remain unchanged; perform read-only
+   UI acceptance. Do not press sync, Preview or Apply.
+
+### Separately approved scheduler testing
+
+Test scheduler behavior without changing code or adding bypass flags. Prefer the
+offline regression fixtures or a separate disposable sandbox instance/database
+with isolated destinations, credentials and network restrictions. Only after
+separate approval, use `PQM_DISABLE_BACKGROUND_JOBS=0` in that test process and
+explicitly control its schedule, clock and jobs. Saved enabled settings and
+startup catch-up become effective again when the switch is off; this is not a
+safe way to enable just one job in the shared sandbox service. Keep Google OFF
+unless separately authorized. After testing, restore the persistent value `1`,
+restart under approval and repeat the no-jobs/leases check. No scheduler test or
+configuration change is authorized by the presence of this runbook.
+
+Future changes must retain `test_background_jobs_kill_switch.py` in the normal
+regression suite, covering persisted overrides, repeated startup, catch-up,
+lease/Google guards, no settings writes and unchanged behavior with the flag off.
+
 ## Release acceptance record
 
 Copy this section for each candidate and fill every item before production approval:
