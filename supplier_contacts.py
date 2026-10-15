@@ -3,6 +3,18 @@ import json
 import re
 
 
+def contact_from_submission(raw_json):
+    """Extract contacts from this exact submission, never a different framework."""
+    try:
+        payload=json.loads(raw_json or '{}')
+    except (TypeError,ValueError):
+        payload={}
+    tenderers=payload.get('tenderers') or [] if isinstance(payload,dict) else []
+    contact=tenderers[0].get('contactPoint') if tenderers and isinstance(tenderers[0],dict) else {}
+    contact=contact if isinstance(contact,dict) else {}
+    return {key:' '.join(str(contact.get(key) or '').split()) for key in ('name','email','telephone','fax','url')}
+
+
 def supplier_contacts(con, supplier_code):
     current = None
     history = []
@@ -13,15 +25,8 @@ def supplier_contacts(con, supplier_code):
       WHERE DIGITS(s.supplier_code)=?
       ORDER BY COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC""",
       (re.sub(r'\D', '', str(supplier_code or '')),))):
-        try:
-            payload = json.loads(row['raw_json'] or '{}')
-        except (TypeError, json.JSONDecodeError):
-            payload = {}
-        tenderers = payload.get('tenderers') or [] if isinstance(payload, dict) else []
-        contact = tenderers[0].get('contactPoint') if tenderers and isinstance(tenderers[0], dict) else {}
-        contact = contact if isinstance(contact, dict) else {}
-        values = tuple(' '.join(str(contact.get(field) or '').split())
-                       for field in ('name', 'email', 'telephone', 'fax', 'url'))
+        contact = contact_from_submission(row['raw_json'])
+        values = tuple(contact[field] for field in ('name','email','telephone','fax','url'))
         item = dict(zip(('name', 'email', 'telephone', 'fax', 'url'), values))
         item.update(submission_id=row['id'], submission_date=row['date_published'], framework_id=row['framework_id'])
         key = tuple(value.casefold() for value in values)

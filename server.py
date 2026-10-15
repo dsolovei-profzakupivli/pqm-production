@@ -24,6 +24,7 @@ import csv
 import hashlib
 import html
 import io
+from contextlib import nullcontext, closing
 import itertools
 import hmac
 import logging
@@ -3347,6 +3348,35 @@ def pending_directory_framework_rows(con: sqlite3.Connection) -> list[dict]:
       WHERE framework_id IS NULL AND source='PQM' ORDER BY pretty_id""")]
 
 
+def framework_registry(params, con):
+    """Operational agreement cache only: no Bids connection, sync or writes."""
+    import supplier_selection
+    counts=supplier_selection.registry_counts(con)
+    get=lambda k:params.get(k,[''])[0].strip()
+    items=[]
+    framework_rows=[dict(r) for r in con.execute('SELECT * FROM frameworks')]
+    framework_rows.extend(pending_directory_framework_rows(con))
+    for raw in framework_rows:
+        f=dict(raw);body=json.loads(f.pop('raw_json') or '{}')
+        state=effective_framework_status(f['status'] or '',body)
+        if get('search').casefold() not in ' '.join(str(f.get(k) or '') for k in ('id','pretty_id','title','dk_code','agreement_id')).casefold():continue
+        if get('dk_code').casefold() not in (f.get('dk_code') or '').casefold():continue
+        if get('status') and get('status') not in {state,'active' if state=='active' else 'inactive'}:continue
+        published=str(body.get('date') or body.get('dateCreated') or '')[:10]
+        if get('date_from') and (not published or published<get('date_from')):continue
+        if get('date_to') and (not published or published>get('date_to')):continue
+        c=counts.get(f['id'],dict(total=0,active=0,suspended=0,terminated=0,other=0,issues=[]))
+        items.append({'framework':f,'framework_id':f['id'],'agreement_id':f.get('agreement_id') or '',
+          'cpv_code':f.get('dk_code') or '', 'source_status':state,'counts':c})
+    sort=get('sort');direction=get('direction')=='desc'
+    key=(lambda x:x['counts']['total']) if sort=='supplier_count' else ((lambda x:x['source_status']) if sort=='status' else (lambda x:x['cpv_code']))
+    items.sort(key=lambda x:x['framework_id']);items.sort(key=key,reverse=direction)
+    total=len(items);page=max(1,int(get('page') or 1));size=min(100,max(1,int(get('size') or 10)))
+    issues=[{'framework_id':x['framework_id'],**issue} for x in items for issue in x['counts']['issues']]
+    return {'items':items[(page-1)*size:page*size],'total':total,'pages':max(1,(total+size-1)//size),
+      'bids_available':BIDS_MODE!='disabled','status_issues':issues,'source':'registry_contracts.raw_json; frameworks.raw_json'}
+
+
 def base_framework_analytics(params: dict) -> dict:
     """Serve authoritative framework metadata when ProzorroBids is intentionally disabled."""
     page = max(1, int(params.get("page", [1])[0]))
@@ -5430,12 +5460,21 @@ def list_edr_monitoring(params: dict) -> dict:
             "edr_statuses": statuses, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1)}
 
 
-def list_qualified_suppliers(params: dict) -> dict:
+def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     """Return registered suppliers and applicants that have not entered a register yet."""
     search = params.get("search", [""])[0].strip().casefold()
     status = params.get("status", [""])[0].strip()
     risk = params.get("risk", [""])[0].strip()
     dk_code = params.get("dk_code", [""])[0].strip()
+    framework_id = params.get("framework_id", [""])[0].strip()
+    import supplier_selection
+    selection_sql, selection_args = supplier_selection.selection_sql(params)
+    scoped_selection = bool(dk_code or framework_id or status)
+    applicant_scope = ("EXISTS (SELECT 1 FROM selected_scope x WHERE x.framework_id=s.framework_id "
+                       "AND x.supplier_code=s.supplier_code)" if scoped_selection else "1=1")
+    registry_scope = ("EXISTS (SELECT 1 FROM selected_scope x WHERE x.framework_id=rc.framework_id "
+                      "AND x.supplier_code=rc.supplier_code" +
+                      (" AND x.contract_id=rc.id" if status else "") + ")" if scoped_selection else "1=1")
     edr_status = params.get("edr_status", [""])[0].strip()
     # Accept known presentation-only legacy rows until their DB normalization.
     canonical_edr_status = _edr_monitoring_status(edr_status) if edr_status else ""
@@ -5455,7 +5494,7 @@ def list_qualified_suppliers(params: dict) -> dict:
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
     if risk in {"amcu", "nazk"}:
-        with db() as risk_con:
+        with (nullcontext(connection) if connection is not None else db()) as risk_con:
             risk_projection = supplier_risk_projection(risk_con)
     else:
         risk_projection = {"amcu_codes": set(), "nazk_codes": set()}
@@ -5511,13 +5550,13 @@ def list_qualified_suppliers(params: dict) -> dict:
     # materialized supplier summary would mix a CPV from one qualification
     # with a status from another qualification of the same supplier.
     source = f"""
-      WITH applicants AS (
+      WITH selected_scope AS ({selection_sql}), applicants AS (
         SELECT s.supplier_code,
           MAX(COALESCE(NULLIF(s.supplier_name,''),'Назву не отримано')) supplier_name,
           COUNT(*) applications_count, MAX(s.date_published) last_application,
           GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
         FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
-        WHERE COALESCE(s.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) GROUP BY s.supplier_code
+        WHERE COALESCE(s.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) AND {applicant_scope} GROUP BY s.supplier_code
       ), scoped_registry AS (
         SELECT rc.supplier_code,
           MAX(COALESCE(NULLIF(r.supplier_name,''),'Назву не отримано')) supplier_name,
@@ -5532,7 +5571,7 @@ def list_qualified_suppliers(params: dict) -> dict:
         FROM registry_contracts rc
         LEFT JOIN frameworks f ON f.id=rc.framework_id
         LEFT JOIN supplier_registry_summary r ON r.supplier_code=rc.supplier_code
-        WHERE COALESCE(rc.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) GROUP BY rc.supplier_code
+        WHERE COALESCE(rc.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) AND {registry_scope} GROUP BY rc.supplier_code
       ), combined AS (
         SELECT r.supplier_code,r.supplier_name,r.qualifications_count,r.active_count,
           r.inactive_count,r.suspended_count,r.frameworks_count,r.dk_codes,r.last_qualification,
@@ -5546,9 +5585,9 @@ def list_qualified_suppliers(params: dict) -> dict:
         WHERE r.supplier_code IS NULL
       )
     """
-    source_args = [dk_code, dk_code, dk_code, dk_code]
+    source_args = [*selection_args, dk_code, dk_code, dk_code, dk_code]
     query_args = source_args + args
-    with db() as con:
+    with (nullcontext(connection) if connection is not None else db()) as con:
         con.create_function("SUPPLIER_ENTITY_TYPE", 1, lambda code: supplier_entity_type(str(code or "")), deterministic=True)
         canonical_states = (edr_sync_v2.canonical_supplier_edr_states(con)
                             if freshness or verification_from or verification_to
@@ -5597,12 +5636,13 @@ def list_qualified_suppliers(params: dict) -> dict:
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
             dk_clause = " AND f.dk_code=?" if dk_code else ""
-            stats_args = [*supplier_codes, *([dk_code] if dk_code else [])]
+            stats_args = [*selection_args, *supplier_codes, *([dk_code] if dk_code else [])]
             page_application_stats = {row["supplier_code"]: dict(row) for row in con.execute(f"""
+              WITH selected_scope AS ({selection_sql})
               SELECT s.supplier_code,COUNT(*) applications_count,MAX(s.date_published) last_application,
                 GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
               FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
-              WHERE s.supplier_code IN ({placeholders}){dk_clause}
+              WHERE s.supplier_code IN ({placeholders}){dk_clause} AND {applicant_scope}
               GROUP BY s.supplier_code""", stats_args)}
         if not canonical_states:
             canonical_states = edr_sync_v2.canonical_supplier_edr_states(con, supplier_codes)
@@ -5612,11 +5652,12 @@ def list_qualified_suppliers(params: dict) -> dict:
         latest_registry_events = {}
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
-            for event in con.execute(f"""SELECT supplier_code,status,
+            event_scope = " AND id IN (SELECT contract_id FROM selected_scope)" if scoped_selection else ""
+            for event in con.execute(f"""WITH selected_scope AS ({selection_sql}) SELECT supplier_code,status,
               COALESCE(NULLIF(json_extract(raw_json,'$.dateModified'),''),
                        NULLIF(json_extract(raw_json,'$.date'),''),synced_at) event_date
-              FROM registry_contracts WHERE supplier_code IN ({placeholders})
-              ORDER BY event_date DESC""", supplier_codes):
+              FROM registry_contracts WHERE supplier_code IN ({placeholders}) {event_scope}
+              ORDER BY event_date DESC""", [*selection_args,*supplier_codes]):
                 if event["supplier_code"] not in latest_registry_events:
                     latest_registry_events[event["supplier_code"]] = {"status": event["status"], "date": event["event_date"]}
             for profile in con.execute(f"""SELECT ep.supplier_code,full_name,short_name,manager_name,
@@ -5746,6 +5787,10 @@ def list_qualified_suppliers(params: dict) -> dict:
         item["current_manager"] = (known_managers.get(code) or {}).get("manager_name", "")
         item["current_manager_source"] = (known_managers.get(code) or {}).get("resolution_source", "")
         item["prozorro_status"] = canonical_state.get("prozorro_status", "Ще не в реєстрі")
+        if dk_code or framework_id:
+            item["prozorro_status"] = ("Активний" if item["active_count"] else
+              "Призупинений" if item["suspended_count"] else
+              "Неактивний" if item["qualifications_count"] else "Ще не в реєстрі")
         item["edr_freshness_marker"] = canonical_state.get("marker", "⚪ Не перевірено")
         item["edr_freshness_bucket"] = canonical_state.get("bucket", "not_checked")
         item["edr_verification_date"] = canonical_state.get("verification_date", "")
@@ -5790,6 +5835,48 @@ def list_qualified_suppliers(params: dict) -> dict:
             "edr_statuses": edr_statuses,
             "registered_total": registered_total, "not_registered": not_registered, "active": active_total,
             "page": page, "size": size, "pages": (total + size - 1) // size}
+
+
+def supplier_registry_excel(params, *, connection=None):
+    """Complete filtered export in one read-only snapshot, independent of page."""
+    import supplier_selection
+    import supplier_xlsx
+    def build(con):
+        scope={**params,'_include_codes':['1'],'page':['1'],'size':['10']}
+        if params.get('registry_only')==['1']:
+            ids=[v for v in params.get('framework_id',[]) if v]
+            if not ids:raise ValueError('Оберіть конкретний відбір для експорту реєстру')
+            known={r[0] for r in con.execute('SELECT id FROM frameworks WHERE id IN ('+','.join('?' for _ in ids)+')',ids)}
+            if known!=set(ids):raise ValueError('Вибраний відбір відсутній у локальному кеші')
+            members=supplier_selection.registry_members(con,ids)
+            rows=supplier_selection.export_rows(con,scope,{r['supplier_code'] for r in members})
+            expected={r['supplier_code'] for r in members}
+            if {r['values'][0] for r in rows}!=expected:raise ValueError('Неповний експорт реєстру')
+            return supplier_xlsx.workbook(rows)
+        listing=list_qualified_suppliers({**scope,'status':['']},connection=con)
+        if listing.get('building'):
+            raise ValueError('База постачальників ще не підготовлена; експорт зупинено')
+        codes=set(listing['filtered_codes'])
+        if len(codes)!=listing['total']:
+            raise ValueError('Не підтверджено повноту вибірки експорту')
+        rows=supplier_selection.export_rows(con,scope,codes)
+        exported_codes=[row['values'][0] for row in rows]
+        if len(set(exported_codes))!=len(exported_codes) or not set(exported_codes)<=codes:
+            raise ValueError('Порушено унікальність або scope вибірки експорту')
+        return supplier_xlsx.workbook(rows)
+    if connection is not None:
+        return build(connection)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+        con.row_factory=sqlite3.Row
+        con.create_function('CASEFOLD',1,unicode_casefold,deterministic=True)
+        con.create_function('DIGITS',1,lambda value:re.sub(r'\D','',str(value or '')),deterministic=True)
+        con.create_function('NORMALIZE_NAME',1,edr_sync_v2.normalize_person,deterministic=True)
+        edr_sync_v2.register_verification_sql_functions(con)
+        con.execute('PRAGMA query_only=ON')
+        con.execute('BEGIN')
+        deadline=time.monotonic()+120
+        con.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
+        return build(con)
 
 
 def latest_supplier_submission_name(con, code):
@@ -10667,6 +10754,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(list_applications(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/suppliers-registry":
             return self.send_json(list_qualified_suppliers(urllib.parse.parse_qs(parsed.query)))
+        if parsed.path == "/api/suppliers-registry/export.xlsx":
+            raw=supplier_registry_excel(urllib.parse.parse_qs(parsed.query))
+            self.send_response(200)
+            self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            self.send_header('Content-Disposition','attachment; filename="pqm-suppliers.xlsx"')
+            self.send_header('Content-Length',str(len(raw)))
+            self.send_header('Cache-Control','no-store')
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if parsed.path == "/api/suppliers-registry-risk-counts":
             return self.send_json(supplier_risk_counts())
         if parsed.path == "/api/edr-monitoring":
@@ -10911,6 +11008,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(list_frameworks())
         if parsed.path == "/api/framework-analytics":
             return self.send_json(framework_analytics(urllib.parse.parse_qs(parsed.query)))
+        if parsed.path == "/api/framework-registry":
+            with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+                con.row_factory=sqlite3.Row
+                con.execute('PRAGMA query_only=ON');con.execute('BEGIN')
+                return self.send_json(framework_registry(urllib.parse.parse_qs(parsed.query),con))
         if parsed.path == "/api/bids-sync-status":
             query = urllib.parse.parse_qs(parsed.query)
             return self.send_json(bids_sync_status(force=query.get("refresh") == ["1"]))

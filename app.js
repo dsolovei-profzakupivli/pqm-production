@@ -213,6 +213,8 @@ async function loadFrameworks(){
     const dkOptions=[...new Set(frameworkOptions.map(item=>item.dk_code).filter(Boolean))].sort().map(code=>({code}));
     const supplierDkOptions=$('#supplierRegistryDkOptions');
     if(supplierDkOptions)supplierDkOptions.innerHTML=dkOptions.map(item=>`<option value="${esc(item.code)}"></option>`).join('');
+    const supplierFramework=$('#supplierRegistryFramework');
+    if(supplierFramework){const selected=new Set(Array.from(supplierFramework.selectedOptions,option=>option.value));supplierFramework.innerHTML='<option value="">Усі відбори</option>'+frameworkOptions.map(item=>`<option value="${esc(item.id)}">${esc(item.pretty_id||item.id)} · ${esc(item.title||'')} · ${esc(item.dk_code||'')}</option>`).join('');for(const option of supplierFramework.options)option.selected=selected.has(option.value);}
     renderDynamicFilter('dkFilter',dkOptions,filterSelections.dk,item=>item.code,item=>item.code,'Усі коди ДК');
   } catch(e) { toast(e.message) }
 }
@@ -556,7 +558,14 @@ function showModule(name){if(!moduleNames.includes(name)||(name==='administratio
 async function loadQualifiedSuppliers(){const body=$('#supplierRegistryBody');body.innerHTML='<tr><td colspan="7">Завантаження…</td></tr>';try{const q=new URLSearchParams({search:$('#supplierRegistrySearch').value.trim(),status:$('#supplierRegistryStatus').value,page:'1',size:'100'}),data=await request(`${API}/suppliers-registry?${q}`);$('#supplierRegistryTotal').textContent=Number(data.total||0).toLocaleString('uk-UA');$('#supplierRegistryActive').textContent=Number(data.active||0).toLocaleString('uk-UA');body.innerHTML=data.items.length?data.items.map(item=>`<tr data-supplier-code="${esc(item.code)}"><td><strong>${esc(item.name||'Назву не отримано')}</strong><small>Картка: кваліфікації · Bids (буде додано)</small></td><td>${esc(item.code)}</td><td>${Number(item.qualifications_count||0).toLocaleString('uk-UA')}</td><td><span class="supplier-status-count">${Number(item.active_count||0).toLocaleString('uk-UA')}</span></td><td><span class="supplier-status-count inactive">${Number(item.inactive_count||0).toLocaleString('uk-UA')}</span>${item.suspended_count?` <small>Призупинено: ${Number(item.suspended_count).toLocaleString('uk-UA')}</small>`:''}</td><td>${esc((item.dk_codes||'').split(',').filter(Boolean).sort().join(', '))||'—'}</td><td>${esc(displayDate(item.last_qualification))||'—'}</td></tr>`).join(''):'<tr><td colspan="7">У синхронізованих реєстрах постачальників записів не знайдено</td></tr>';$('#supplierRegistryFooter').textContent=`Показано ${data.items.length} із ${Number(data.total||0).toLocaleString('uk-UA')} постачальників`}catch(error){body.innerHTML=`<tr><td colspan="7">${esc(error.message)}</td></tr>`}}
 async function refreshSupplierRegistry(){try{$('#supplierRegistryRefresh').disabled=true;await request(`${API}/sync`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});toast('Синхронізацію реєстрів розпочато');const timer=setInterval(async()=>{const health=await request(`${API}/health?t=${Date.now()}`);if(!health.sync.running){clearInterval(timer);$('#supplierRegistryRefresh').disabled=false;await loadQualifiedSuppliers();toast(health.sync.message)}},2000)}catch(error){$('#supplierRegistryRefresh').disabled=false;toast(error.message)}}
 let supplierRegistryReloadPending=false;
+function supplierRegistryFilterParams(){
+  const params=new URLSearchParams({search:$('#supplierRegistrySearch').value.trim(),entity_type:$('#supplierRegistryType').value,status:$('#supplierRegistryStatus').value,edr_status:$('#supplierRegistryEdrStatus').value,freshness:$('#supplierRegistryFreshness').value,verification_from:$('#supplierRegistryVerifiedFrom').value,verification_to:$('#supplierRegistryVerifiedTo').value,admission_from:$('#supplierRegistryAdmittedFrom').value,admission_to:$('#supplierRegistryAdmittedTo').value,dk_code:$('#supplierRegistryDk').value.trim(),risk:supplierRegistryRisk});
+  for(const option of $('#supplierRegistryFramework').selectedOptions)if(option.value)params.append('framework_id',option.value);
+  return params;
+}
+$('#supplierRegistryFramework').onchange=()=>{supplierRegistryPage=1;loadQualifiedSuppliersFiltered()};
 function updateSupplierEdrExportLinks(){
+  if($('#supplierRegistryExcel'))$('#supplierRegistryExcel').href=`${API}/suppliers-registry/export.xlsx?${supplierRegistryFilterParams()}`;
   {
     const params=new URLSearchParams({type:'ALL',mode:'filtered'});
     if($('#supplierRegistrySearch').value.trim())params.set('search',$('#supplierRegistrySearch').value.trim());
@@ -614,7 +623,7 @@ async function loadQualifiedSuppliersFiltered(){
   const body=$('#supplierRegistryBody');
   body.innerHTML='<tr><td colspan="9">Завантаження…</td></tr>';
   try {
-    const q=new URLSearchParams({search:$('#supplierRegistrySearch').value.trim(),entity_type:$('#supplierRegistryType').value,status:$('#supplierRegistryStatus').value,edr_status:$('#supplierRegistryEdrStatus').value,freshness:$('#supplierRegistryFreshness').value,verification_from:$('#supplierRegistryVerifiedFrom').value,verification_to:$('#supplierRegistryVerifiedTo').value,admission_from:$('#supplierRegistryAdmittedFrom').value,admission_to:$('#supplierRegistryAdmittedTo').value,dk_code:$('#supplierRegistryDk').value.trim(),risk:supplierRegistryRisk,page:String(supplierRegistryPage),size:'100'});
+    const q=supplierRegistryFilterParams();q.set('page',String(supplierRegistryPage));q.set('size','100');
     const data=await request(`${API}/suppliers-registry?${q}`);
     const edrSelect=$('#supplierRegistryEdrStatus'),selectedEdr=edrSelect.value;
     const edrOptions=[...new Set([...(data.edr_statuses||[]),...(selectedEdr?[selectedEdr]:[])])];
@@ -1199,28 +1208,38 @@ function frameworkStatus(raw){
 async function refreshFrameworksFromProzorro(){const button=$('#frameworksRefresh'),old=button.textContent;button.disabled=true;button.textContent='Оновлення…';try{await request(`${API}/frameworks/refresh`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const timer=setInterval(async()=>{try{const health=await request(`${API}/health?t=${Date.now()}`),state=health.sync||{};button.textContent=state.running?(state.message||'Оновлення…'):'Оновити з Prozorro';if(!state.running){clearInterval(timer);button.disabled=false;frameworkPage=1;await loadFrameworkAnalytics();toast(state.message||'Відбори оновлено')}}catch(error){clearInterval(timer);button.disabled=false;button.textContent='Оновити з Prozorro';toast(error.message)}},1500)}catch(error){button.disabled=false;button.textContent=old;toast(error.message)}}
 const frameworkDate=value=>value?displayDate(value):'—';
 function frameworkParams(){return new URLSearchParams({page:String(frameworkPage),size:'10',search:$('#frameworksSearch').value.trim(),status:$('#frameworksStatus').value,dk_code:$('#frameworksDk').value.trim(),date_from:$('#frameworksDateFrom').value,date_to:$('#frameworksDateTo').value,sort:frameworkSort,direction:frameworkDirection})}
+const selectedRegistryFrameworks=new Set();
+function registryExportUrl(ids){const q=new URLSearchParams({registry_only:'1'});for(const id of ids)q.append('framework_id',id);return `${API}/suppliers-registry/export.xlsx?${q}`}
+function updateFrameworkRegistryExport(){const link=$('#frameworksExportSelected');link.hidden=!selectedRegistryFrameworks.size;link.href=registryExportUrl(selectedRegistryFrameworks);link.textContent=`Експорт вибраних (${selectedRegistryFrameworks.size})`}
 async function loadFrameworkAnalytics(){
-  const requestSequence=++frameworkRequestSequence;
-  const body=$('#frameworksBody');body.innerHTML='<tr><td colspan="13">Завантаження аналітики…</td></tr>';
+  const seq=++frameworkRequestSequence,body=$('#frameworksBody');
+  body.innerHTML='<tr><td colspan="10">Завантаження реєстрів…</td></tr>';
   try{
-    const data=await request(`${API}/framework-analytics?${frameworkParams()}`);
-    if(requestSequence!==frameworkRequestSequence)return;
-    frameworkPages=Math.max(1,Number(data.pages||1));
+    const data=await request(`${API}/framework-registry?${frameworkParams()}`);
+    if(seq!==frameworkRequestSequence)return;
+    frameworkPages=Math.max(1,data.pages||1);
     if(frameworkPage>frameworkPages){frameworkPage=frameworkPages;return loadFrameworkAnalytics()}
-    const items=data.items||[];
     $('#frameworksTotal').textContent=frameworkNumber(data.total);
-    $('#frameworksTenders').textContent=frameworkNumber(data.summary?.tenders);
-    $('#frameworksBids').textContent=frameworkNumber(data.summary?.bids);
-    body.innerHTML=items.length?items.map(item=>{
-      const local=item.framework||{},pretty=local.pretty_id||'',title=local.title||local.dk_code||item.cpv_code||'Категорія',status=frameworkStatus(item.source_status),pending=Boolean(item.agreement_pending);
-      return `<tr ${pending?'':`data-framework-id="${esc(item.agreement_id)}"`} class="${pending?'framework-agreement-pending':''}"><td><strong>${esc(item.cpv_code||local.dk_code||'—')}</strong></td><td><strong>${esc(pretty||item.agreement_id)}</strong><small>${pending?'Agreement ще не створено':pretty?esc(item.agreement_id):''}</small></td><td>${pretty?`<a href="https://prozorro.gov.ua/uk/framework/${encodeURIComponent(pretty)}" target="_blank" rel="noopener">${esc(title)}</a>`:esc(title)}</td><td><span class="framework-status ${status.key}">${esc(status.label)}</span></td><td>${frameworkNumber(item.qualified_supplier_count)}</td><td>${frameworkNumber(item.supplier_count)}</td><td>${frameworkNumber(item.suppliers_current_year)}</td><td>${frameworkNumber(item.suppliers_without_bids)}</td><td>${frameworkNumber(item.tender_count)}</td><td>${frameworkNumber(item.complete_count)}</td><td>${frameworkNumber(item.unsuccessful_count)}</td><td>${pending?'Очікує agreement':frameworkDate(item.last_tender)}</td><td>${frameworkNumber(item.bids_count)}</td></tr>`
-    }).join(''):'<tr><td colspan="13">За вибраними умовами відборів не знайдено</td></tr>';
-    if(data.bids_available!==false)body.querySelectorAll('tr[data-framework-id]').forEach(row=>row.onclick=e=>{if(!e.target.closest('a'))openFrameworkDetails(row.dataset.frameworkId)});
-    const total=Number(data.total||0),from=total?(frameworkPage-1)*10+1:0,to=Math.min(frameworkPage*10,total);
-    $('#frameworksPageInfo').textContent=`${from}–${to} із ${frameworkNumber(total)} · сторінка ${frameworkPage} із ${frameworkPages}`;
+    $('#frameworkBidsSection').hidden=!data.bids_available;
+    body.innerHTML=(data.items||[]).map(item=>{
+      const f=item.framework,c=item.counts,status=frameworkStatus(item.source_status);
+      return `<tr><td><input type="checkbox" data-registry-framework="${esc(f.id)}" aria-label="Вибрати відбір ${esc(f.pretty_id||f.id)}" ${selectedRegistryFrameworks.has(f.id)?'checked':''}></td><td>${esc(item.cpv_code)}</td><td>${esc(f.pretty_id||f.id)}<small>${esc(item.agreement_id||'Agreement ще не створено')}</small></td><td>${esc(f.title||'—')}</td><td>${esc(status.label)}</td><td>${frameworkNumber(c.total)}</td><td>${frameworkNumber(c.active)}</td><td>${frameworkNumber(c.suspended)}</td><td>${frameworkNumber(c.terminated)}${c.other?`<small>Некласифіковані: ${frameworkNumber(c.other)}</small>`:''}</td><td><a class="ghost" href="${registryExportUrl([f.id])}">Завантажити реєстр</a></td></tr>`
+    }).join('')||'<tr><td colspan="10">Відборів не знайдено</td></tr>';
+    body.querySelectorAll('[data-registry-framework]').forEach(box=>box.onchange=()=>{if(box.checked)selectedRegistryFrameworks.add(box.dataset.registryFramework);else selectedRegistryFrameworks.delete(box.dataset.registryFramework);updateFrameworkRegistryExport()});
+    body.querySelectorAll('[data-registry-framework=""]').forEach(box=>{box.disabled=true;const link=box.closest('tr').querySelector('a');link.removeAttribute('href');link.textContent='Очікує agreement'});
+    $('#frameworksPageInfo').textContent=`Сторінка ${frameworkPage} із ${frameworkPages} · відборів ${frameworkNumber(data.total)}`;
     $('#frameworksPrev').disabled=frameworkPage<=1;$('#frameworksNext').disabled=frameworkPage>=frameworkPages;
-    $('#frameworksSyncStatus').textContent=data.bids_available===false?(data.message||'Аналітика ProzorroBids доступна лише в LOCAL'):`Закупівлі та Bids у картках вище — для всього набору за поточними фільтрами. Дані Bids: ${data.updated_at?frameworkDate(data.updated_at):'час оновлення не визначено'}.`;
-  }catch(error){if(requestSequence!==frameworkRequestSequence)return;body.innerHTML=`<tr><td colspan="13">${esc(error.message)}</td></tr>`;$('#frameworksSyncStatus').textContent='Не вдалося прочитати локальну базу ProzorroBids.'}
+    $('#frameworksSyncStatus').textContent=data.status_issues?.length?'У реєстрі є невідомі або неоднозначні статуси. Експорт таких записів заблоковано.':'Локальний кеш Prozorro. Відкриття та експорт не запускають синхронізацію.';
+    updateFrameworkRegistryExport();
+  }catch(error){if(seq===frameworkRequestSequence)body.innerHTML=`<tr><td colspan="10">${esc(error.message)}</td></tr>`}
+}
+async function loadFrameworkBidsSection(){
+  const body=$('#frameworkBidsBody');body.textContent='Завантаження…';
+  try{const data=await request(`${API}/framework-analytics?${frameworkParams()}`);
+    if(data.bids_available===false){body.textContent='Дані ProzorroBids недоступні в цьому середовищі.';return}
+    body.innerHTML='<table><thead><tr><th>Agreement</th><th>З пропозиціціями</th><th>Без участі</th><th>Закупівлі</th><th>Успішні</th><th>Неуспішні</th><th>Остання закупівля</th><th>Bids</th></tr></thead><tbody>'+(data.items||[]).map(x=>`<tr><td><button type="button" data-bids-agreement="${esc(x.agreement_id)}">${esc(x.agreement_id)}</button></td>${[x.supplier_count,x.suppliers_without_bids,x.tender_count,x.complete_count,x.unsuccessful_count].map(v=>`<td>${v==null?'—':frameworkNumber(v)}</td>`).join('')}<td>${frameworkDate(x.last_tender)}</td><td>${x.bids_count==null?'—':frameworkNumber(x.bids_count)}</td></tr>`).join('')+'</tbody></table>';
+    body.querySelectorAll('[data-bids-agreement]').forEach(button=>button.onclick=()=>openFrameworkDetails(button.dataset.bidsAgreement));
+  }catch(error){body.textContent=error.message}
 }
 async function openFrameworkDetails(agreementId){
   const dialog=$('#frameworkDetailsDialog'),body=$('#frameworkDetailsBody');$('#frameworkDetailsTitle').textContent='Відбір';$('#frameworkDetailsSubtitle').textContent=agreementId;body.innerHTML='<p>Завантаження…</p>';dialog.showModal();
