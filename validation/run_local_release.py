@@ -4,6 +4,9 @@ The delivered tests expect source and tests side-by-side, unlike ZIP layout.
 No production/local database or credential is read. Outbound network is denied.
 """
 import os
+import gc
+import logging
+from contextlib import closing
 from pathlib import Path
 import shutil
 import socket
@@ -21,6 +24,11 @@ def main():
             else:shutil.copy2(source,root/source.name)
         for source in (ROOT/'validation/local_release_20260911').glob('test_*.py'):
             shutil.copy2(source,root/source.name)
+        # Preserve namespace imports used by root-level regressions. The flat
+        # copies above remain the discovery layout expected by delivered tests.
+        shutil.copytree(ROOT/'validation/local_release_20260911',
+                        root/'validation/local_release_20260911',
+                        ignore=shutil.ignore_patterns('__pycache__'))
         # Delivered tests assume runtime DOCX copies have already been installed.
         shutil.copytree(root/'templates', root/'data/templates', dirs_exist_ok=True)
         os.environ.update(HOST='127.0.0.1',PORT='8080',PQM_ENV='local',PQM_DATA_DIR=str(root/'data'),PQM_DB_PATH=str(root/'data/pqm.sqlite3'),
@@ -44,7 +52,8 @@ def main():
             server.init_db()
             server.init_reference_tables(server.DB_PATH)
             import scheduler_runtime
-            with server.db() as con:scheduler_runtime.migrate(con)
+            with closing(server.db()) as con:
+                with con:scheduler_runtime.migrate(con)
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             return 0 if result.wasSuccessful() else 1
@@ -52,5 +61,7 @@ def main():
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
             os.chdir(old_cwd)
+            gc.collect()  # Release cyclic SQLite handles before Windows cleanup.
+            logging.shutdown()
 
 if __name__=='__main__':raise SystemExit(main())

@@ -68,6 +68,24 @@ class SupplierFilterExcelTests(unittest.TestCase):
         self.assertEqual(self.listing(framework_id='f1',status='terminated')['total'],0)
         self.assertEqual(self.listing(dk_code='03110000-1',status='active')['total'],1)
 
+    def test_registry_filter_does_not_require_application_backlink(self):
+        self.add('a')
+        self.con.execute("UPDATE submissions SET qualification_id=NULL WHERE id='a'")
+        row=self.listing(framework_id='f1',status='active')['items'][0]
+        self.assertEqual(row['code'],'0000000123')
+        self.assertEqual(row['active_count'],1)
+        self.assertEqual(self.listing(framework_id='f2',status='active')['total'],0)
+
+    def test_registry_only_membership_keeps_dk_framework_status_intersection(self):
+        self.con.execute("INSERT INTO registry_contracts(id,framework_id,supplier_code,status,raw_json,synced_at) VALUES('orphan','f1','0000000456','active','{}','fixture')")
+        # The registry endpoint remains fail-closed until its summary is built.
+        self.con.execute("INSERT INTO supplier_registry_summary(supplier_code,supplier_name,refreshed_at) VALUES('0000000456','Registry-only supplier','fixture')")
+        self.assertEqual(self.listing(framework_id='f1',dk_code='03110000-1',status='active')['total'],1)
+        self.assertEqual(self.listing(framework_id='f1',dk_code='03220000-2',status='active')['total'],0)
+        self.assertEqual(self.listing(framework_id='f2',status='active')['total'],0)
+        self.assertEqual(self.listing(framework_id='f1',status='terminated')['total'],0)
+        self.assertEqual(self.listing(framework_id='f1',status='not_registered')['total'],0)
+
     def test_current_admission_wins_newer_pending_and_contacts_stay_linked(self):
         self.add('admit',day=1);self.add('pending',day=2,q='pending',contract=None)
         result=self.values(self.export(framework_id='f1'))

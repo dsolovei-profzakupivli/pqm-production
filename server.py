@@ -5472,9 +5472,11 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     scoped_selection = bool(dk_code or framework_id or status)
     applicant_scope = ("EXISTS (SELECT 1 FROM selected_scope x WHERE x.framework_id=s.framework_id "
                        "AND x.supplier_code=s.supplier_code)" if scoped_selection else "1=1")
-    registry_scope = ("EXISTS (SELECT 1 FROM selected_scope x WHERE x.framework_id=rc.framework_id "
-                      "AND x.supplier_code=rc.supplier_code" +
-                      (" AND x.contract_id=rc.id" if status else "") + ")" if scoped_selection else "1=1")
+    # Registry membership does not require a complete application backlink.
+    # Scope memberships before aggregation; apply supplier status to the counts.
+    framework_ids = sorted({str(v).strip() for v in params.get("framework_id", []) if str(v).strip()})
+    registry_scope = ("rc.framework_id IN (" + ",".join("?" for _ in framework_ids) + ")"
+                      if framework_ids else "1=1")
     edr_status = params.get("edr_status", [""])[0].strip()
     # Accept known presentation-only legacy rows until their DB normalization.
     canonical_edr_status = _edr_monitoring_status(edr_status) if edr_status else ""
@@ -5585,7 +5587,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
         WHERE r.supplier_code IS NULL
       )
     """
-    source_args = [*selection_args, dk_code, dk_code, dk_code, dk_code]
+    source_args = [*selection_args, dk_code, dk_code, dk_code, dk_code, *framework_ids]
     query_args = source_args + args
     with (nullcontext(connection) if connection is not None else db()) as con:
         con.create_function("SUPPLIER_ENTITY_TYPE", 1, lambda code: supplier_entity_type(str(code or "")), deterministic=True)
