@@ -93,12 +93,38 @@ class SandboxMirrorBaselineCompatibility(unittest.TestCase):
                 con.execute('SELECT * FROM scheduler_job_leases ORDER BY job_key').fetchall())
 
     def test_first_three_scheduler_runtime_and_admin_functions_exact_baseline(self):
-        self.assertEqual(hashlib.sha256((ROOT/'scheduler_runtime.py').read_bytes().replace(b'\r\n',b'\n')).hexdigest(),'813f53364896364ac29e731c8631d3eb495995804da0fe8fce547a872d62e914')
-        tree=ast.parse((ROOT/'server.py').read_text(encoding='utf-8-sig'))
+        # The approved interlock is additive. Require its exact insertion, then
+        # retain the original hashes for every byte/AST node underneath it.
+        runtime_source=(ROOT/'scheduler_runtime.py').read_bytes().replace(b'\r\n',b'\n')
+        for insertion in (b'import background_jobs\n',b'    if background_jobs.disabled():\n        return None\n'):
+            self.assertEqual(runtime_source.count(insertion),1)
+            runtime_source=runtime_source.replace(insertion,b'',1)
+        self.assertEqual(hashlib.sha256(runtime_source).hexdigest(),'813f53364896364ac29e731c8631d3eb495995804da0fe8fce547a872d62e914')
+        server_source=(ROOT/'server.py').read_text(encoding='utf-8-sig')
+        tree=ast.parse(server_source)
         functions={n.name:n for n in tree.body if isinstance(n,ast.FunctionDef)}
+        additions={
+            '_wait_until':['        if background_jobs.disabled():\n            return True\n'],
+            'scheduler_admin_model':['    blocked = blocked or background_jobs.disabled()\n'],
+            '_trigger_scheduler_job':['    if background_jobs.disabled():\n        return False\n'],
+            'prozorro_scheduler':['    if background_jobs.disabled():\n        return\n'],
+            'violation_reports_scheduler':['    if background_jobs.disabled():\n        return\n'],
+            'nazk_registry_scheduler':['    if background_jobs.disabled():\n        return\n'],
+            'register_scheduler_job':['    if background_jobs.disabled():\n        return False\n'],
+            'effective_scheduler_settings':["    if background_jobs.disabled():\n        return ({key: False for key in SCHEDULER_TARGETS},\n                {key: 'background_jobs_disabled' for key in SCHEDULER_TARGETS})\n"],
+        }
         for name,digest in EXPECTED.items():
             with self.subTest(function=name):
-                self.assertEqual(hashlib.sha256(ast.dump(functions[name],include_attributes=False).encode()).hexdigest(),digest)
+                source=ast.get_source_segment(server_source,functions[name])+'\n'
+                for insertion in additions.get(name,[]):
+                    self.assertEqual(source.count(insertion),1)
+                    source=source.replace(insertion,'',1)
+                if name=='register_scheduler_job':
+                    guarded='while not stop_event.is_set() and not background_jobs.disabled():'
+                    self.assertEqual(source.count(guarded),1)
+                    source=source.replace(guarded,'while not stop_event.is_set():',1)
+                normalized=ast.parse(source).body[0]
+                self.assertEqual(hashlib.sha256(ast.dump(normalized,include_attributes=False).encode()).hexdigest(),digest)
         self.assertEqual(set(server.SCHEDULER_TARGETS),{'prozorro','violation_reports','nazk_registry'})
 
     def test_existing_scheduler_admin_ui_exact_baseline_with_fourth_separate_card(self):
