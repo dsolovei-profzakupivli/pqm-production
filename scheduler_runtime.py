@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import background_jobs
 import uuid
 import logging
 import threading
@@ -312,6 +313,8 @@ def rollback_payload(con, job_key, revision):
 def claim(db_path, job_key: str, *, trigger: str, now: datetime | None = None,
           lease_seconds: int = 180, owner_id: str | None = None,
           expected_revision: int | None = None) -> str | None:
+    if background_jobs.disabled():
+        return None
     if job_key not in SCHEDULES:
         raise ValueError(f"Unknown scheduler job: {job_key}")
     stamp = (now or utc_now()).astimezone(timezone.utc)

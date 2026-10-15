@@ -2,6 +2,7 @@
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import base64
+import background_jobs
 import hashlib
 import hmac
 import json
@@ -123,6 +124,8 @@ class ExecutionClient:
             raise ExecutionConfigurationError('Execution channel not independently configured and attested')
 
     def invoke(self, action, request_id, actor, *, trigger='manual', digest=None):
+        if background_jobs.disabled():
+            raise ExecutionConfigurationError('Background jobs disabled')
         self.validate()
         if action not in {'preview', 'apply'} or trigger not in {'manual', 'scheduled'}:
             raise ValueError('Unsupported execution action')
@@ -245,6 +248,8 @@ def save_settings(con, payload, expected_revision, actor, now=None):
 
 
 def claim_run(path, environment, request_id, actor, trigger, revision=None, now=None):
+    if background_jobs.disabled():
+        return {'claimed': False, 'status': 'background_jobs_disabled'}
     if environment not in IDENTITIES or trigger not in {'manual','scheduled'} or not re.fullmatch('[0-9a-f]{32}',request_id):
         raise ValueError('Invalid run identity')
     if not Path(path).is_file(): raise ValueError('Existing execution database required')
@@ -274,11 +279,13 @@ def finish_run(path, request_id, status, result):
 
 def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest=None, guard=lambda:True):
     """One common writer for manual and scheduled calls, no automatic retry."""
+    if background_jobs.disabled():
+        return {'status': 'BACKGROUND_JOBS_DISABLED'}
     try:
         if not guard(): raise ExecutionConfigurationError('Execution guard changed before preview')
         if digest is None:
             digest = client.invoke('preview',request_id,actor,trigger=trigger)['digest']
-        if not guard(): raise ExecutionConfigurationError('Execution guard changed before Apply')
+        if background_jobs.disabled() or not guard(): raise ExecutionConfigurationError('Execution guard changed before Apply')
         result = client.invoke('apply',request_id,actor,trigger=trigger,digest=digest)
         status = 'complete' if result['status']=='COMPLETE' else 'partial' if result['status'] in {'COMPLETE_WITH_CONFLICTS','PARTIAL_SAFE_OPERATIONS_REMAIN'} else 'outcome_unknown'
         finish_run(path,request_id,status,result)
@@ -330,6 +337,8 @@ class Scheduler:
         self.thread=None;self.heartbeat=None
 
     def start(self):
+        if background_jobs.disabled():
+            return False
         with self.mutex:
             if self.thread and self.thread.is_alive():
                 self.wakeup.set();return False
@@ -345,7 +354,7 @@ class Scheduler:
 
     def loop(self):
         target=None;revision=None
-        while not self.stop.is_set():
+        while not self.stop.is_set() and not background_jobs.disabled():
             self.heartbeat=self.clock().isoformat()
             try:
                 with closing(sqlite3.connect(self.path,timeout=5)) as con: config=settings(con)
@@ -362,7 +371,7 @@ class Scheduler:
                     def current_guard():
                         with closing(sqlite3.connect(self.path,timeout=5)) as check:
                             latest=settings(check)
-                        return self.guard() and bool(latest['enabled']) and latest['revision']==revision
+                        return not background_jobs.disabled() and self.guard() and bool(latest['enabled']) and latest['revision']==revision
                     execute_claimed(self.path,self.client_factory(),run_id,'scheduler',trigger='scheduled',guard=current_guard)
                 elif claimed['claimed']:
                     finish_run(self.path,run_id,'failed_safe',{'status':'SAFETY_GUARD_CHANGED'})

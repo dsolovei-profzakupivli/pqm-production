@@ -190,6 +190,9 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
 
 def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=None, on_error=None):
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
+    import background_jobs
+    if background_jobs.disabled():
+        return False
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")
     if os.environ.get('PQM_SANDBOX') == '1':
@@ -222,6 +225,9 @@ def _amcu_error(db_path, exc):
 
 
 def _start_amcu_refresh(db_path, raw, filename, on_complete=None):
+    import background_jobs
+    if background_jobs.disabled():
+        return False
     if os.environ.get('PQM_SANDBOX') == '1':
         import sandbox_runtime
         sandbox_runtime.attest_internal_target(db_path)

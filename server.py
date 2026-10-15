@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import background_jobs
 import auth_access
 import table_widths
 import navigation_settings
@@ -1649,6 +1650,8 @@ def start_amcu_registry_refresh(raw=None, filename="") -> bool:
     A failed task rebuild raises into the AMCU refresh worker, which records an
     error instead of presenting the source refresh as fully successful.
     """
+    if background_jobs.disabled():
+        return False
     return start_reference_refresh(
         DB_PATH, "amcu", raw, filename,
         on_complete=lambda: rebuild_operational_tasks("PQM AMCU refresh"))
@@ -2219,6 +2222,8 @@ def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error:
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
                         trigger: str = "manual", expected_revision=None) -> bool:
     """Claim process and SQLite job locks before starting any Prozorro refresh."""
+    if background_jobs.disabled():
+        return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with SYNC_STATE_LOCK:
@@ -2291,6 +2296,8 @@ def _scheduler_is_configured(job_key: str) -> bool:
 def _wait_until(target: datetime, stop_event: threading.Event | None = None,
                 job_key: str | None = None) -> bool:
     while True:
+        if background_jobs.disabled():
+            return True
         SCHEDULER_HEARTBEATS[job_key] = now_iso()
         remaining = (target.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
         if remaining <= 0:
@@ -2320,6 +2327,7 @@ def scheduler_admin_model(job_key):
     blocked = bool(SAFE_MODE and not SANDBOX_MODE)
     if SANDBOX_MODE:
         blocked = not sandbox_runtime.scheduler_job_allowed(job_key)
+    blocked = blocked or background_jobs.disabled()
     with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
@@ -2420,6 +2428,8 @@ SCHEDULE_APPLY_LOCK = threading.RLock()
 
 def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
     """A failed/busy launch must not terminate either independent hourly loop."""
+    if background_jobs.disabled():
+        return False
     try:
         revision = SCHEDULE_EXPECTED_REVISIONS.get(job_key) if trigger == 'scheduled' else None
         revision_args = {'expected_revision': revision} if revision is not None else {}
@@ -2440,6 +2450,8 @@ def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
 
 def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Independent Europe/Kyiv hourly scheduler with safe startup catch-up."""
+    if background_jobs.disabled():
+        return
     SYNC_STATE["next_run_at"] = schedule_next('prozorro').isoformat()
     if stop_event.wait(10):
         SYNC_STATE["next_run_at"] = None
@@ -2484,6 +2496,8 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
 
 def violation_reports_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Independent Europe/Kyiv hourly scheduler and persistent startup catch-up."""
+    if background_jobs.disabled():
+        return
     if stop_event.wait(10):
         VIOLATION_SYNC_STATE["next_run_at"] = None
         return
@@ -2514,6 +2528,8 @@ def violation_reports_scheduler(stop_event: threading.Event, *, catch_up: bool =
 
 def nazk_registry_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Run once per Kyiv working day, with restart-safe persisted protection."""
+    if background_jobs.disabled():
+        return
     if not _scheduler_is_configured("nazk_registry"):
         return
     if catch_up and not stop_event.is_set():
@@ -2537,13 +2553,15 @@ def nazk_registry_scheduler(stop_event: threading.Event, *, catch_up: bool = Tru
 
 def register_scheduler_job(job_key: str, target, *, catch_up: bool = True) -> bool:
     """Register one scheduler thread per process; SQLite lease protects instances."""
+    if background_jobs.disabled():
+        return False
     with SCHEDULER_REGISTRATION_LOCK:
         if job_key in REGISTERED_SCHEDULER_JOBS:
             return False
         stop_event = threading.Event()
         def run():
             try:
-                while not stop_event.is_set():
+                while not stop_event.is_set() and not background_jobs.disabled():
                     try:
                         target(stop_event, catch_up=catch_up)
                         return
@@ -2603,6 +2621,9 @@ def scheduler_environment_defaults() -> dict[str, bool]:
 
 
 def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
+    if background_jobs.disabled():
+        return ({key: False for key in SCHEDULER_TARGETS},
+                {key: 'background_jobs_disabled' for key in SCHEDULER_TARGETS})
     if SANDBOX_MODE:
         with db() as con:
             overrides = scheduler_runtime.effective_enabled(
@@ -2724,6 +2745,7 @@ def google_writer_client():
 
 
 def google_writer_available():
+    if background_jobs.disabled(): return False
     if not google_edr_effective_enabled() or (SAFE_MODE and not SANDBOX_MODE): return False
     expected_service = 'srv-dalfd77f3r2c7392uub0' if SANDBOX_MODE else 'srv-da7vmitg1s2s73fim0p0'
     if os.getenv('RENDER_SERVICE_ID') != expected_service: return False
@@ -3841,7 +3863,7 @@ def bids_sync_status(force: bool = False) -> dict:
     """Return cached status immediately; refresh heavy counts once in background."""
     cached = BIDS_STATUS_CACHE.get("value")
     fresh = cached is not None and time.time() - float(BIDS_STATUS_CACHE.get("at") or 0) < 600
-    if (force or not fresh) and BIDS_STATUS_LOCK.acquire(blocking=False):
+    if not background_jobs.disabled() and (force or not fresh) and BIDS_STATUS_LOCK.acquire(blocking=False):
         threading.Thread(target=_refresh_bids_status_cache, daemon=True).start()
     if cached is not None:
         return {**cached, "refreshing": BIDS_STATUS_LOCK.locked(), "update": bids_run_snapshot()}
@@ -4033,6 +4055,8 @@ def powerbi_export_worker() -> None:
 
 
 def start_powerbi_export():
+    if background_jobs.disabled():
+        return {'error': 'Background jobs disabled', 'error_code': 'background_jobs_disabled'}, 503
     with POWERBI_START_LOCK:
         if POWERBI_EXPORT_STATE.get('running'):
             return {'error': 'Експорт Power BI вже триває', 'error_code': 'already_running', 'state': dict(POWERBI_EXPORT_STATE)}, 409
@@ -6513,6 +6537,8 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
 
 def start_violation_reports_sync(*, trigger: str = "manual", expected_revision=None) -> bool:
     """Share process and SQLite locks between manual and scheduled refreshes."""
+    if background_jobs.disabled():
+        return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
     with VIOLATION_SYNC_LOCK:
@@ -6546,6 +6572,8 @@ def start_violation_reports_sync(*, trigger: str = "manual", expected_revision=N
 
 
 def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=None) -> bool:
+    if background_jobs.disabled():
+        return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
     owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger, expected_revision=expected_revision)
@@ -10119,6 +10147,8 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
 
 
 def _schedule_contract_experience_retry(submission_id: str) -> bool:
+    if background_jobs.disabled():
+        return False
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         attempts = CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(submission_id, 0)
         if attempts >= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES or submission_id in CONTRACT_EXPERIENCE_RETRY_PENDING:
@@ -10185,6 +10215,8 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
 
 
 def enqueue_contract_experience_search(submission_ids) -> int:
+    if background_jobs.disabled():
+        return 0
     if SANDBOX_MODE:
         # Separate document/tender integration is not part of the approved
         # framework API scope; do not queue failing retries or overwrite checks.
@@ -12632,13 +12664,14 @@ def main():
     with db() as con:
         scheduler_runtime.migrate(con)
     try:
-        counts = {} if env_flag("PQM_RELEASE_SCHEMA_ONLY", IS_WEB_ENV) else rebuild_operational_tasks()
+        counts = {} if background_jobs.disabled() or env_flag("PQM_RELEASE_SCHEMA_ONLY", IS_WEB_ENV) else rebuild_operational_tasks()
         SERVER_LOG.info("Operational task builder completed counts=%s", counts)
     except Exception:
         SERVER_LOG.exception("Operational task builder failed during startup")
 
     scheduler_enabled = apply_scheduler_settings(catch_up=True)
-    google_writer_service().start()  # Fourth job only: disabled by default, no startup catch-up.
+    if not background_jobs.disabled():
+        google_writer_service().start()  # Fourth job only: disabled by default, no startup catch-up.
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
     print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
     print(f"Features: prozorro_scheduler={scheduler_enabled['prozorro']}, "
