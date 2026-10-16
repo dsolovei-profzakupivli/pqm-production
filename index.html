@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="filters.css">
   <link rel="stylesheet" href="modules.css">
   <link rel="stylesheet" href="schema_ui.css">
+  <link rel="stylesheet" href="ui_improvements.css">
 </head>
 <body>
   <section id="loginGate" class="login-gate" aria-labelledby="loginTitle">
@@ -92,7 +93,7 @@
         </section>
         <section id="officerCards" class="officer-cards" aria-label="Кількість заявок за УО"></section>
       </div>
-      <div class="heading-actions"><span id="syncStatus" class="sync-status">Графік: щогодини о :05</span><button id="protocolBtn" class="ghost">Перевірити протокол</button><button id="resetBtn" class="ghost">Оновити з Prozorro</button><button id="shareApplicationBtn" type="button" class="ghost" disabled>Надіслати в чат</button><button id="selectApplicationsPage" type="button" class="ghost">Вибрати всі на сторінці</button><button id="selectApplicationsAll" type="button" class="ghost">Вибрати всі результати</button><button id="bulkBtn" class="primary" disabled>Масове заповнення <span id="selectedCount"></span></button></div>
+      <div class="heading-actions"><span id="syncStatus" class="sync-status">Графік: щогодини о :05</span><button id="protocolBtn" class="ghost" title="Перевірити протокол" aria-label="Перевірити протокол">▤ Протокол</button><button id="resetBtn" class="ghost" title="Оновити з Prozorro" aria-label="Оновити з Prozorro">↻ Prozorro</button><button id="shareApplicationBtn" type="button" class="ghost" disabled>Надіслати в чат</button><button id="selectApplicationsPage" type="button" class="ghost" title="Вибрати всі на сторінці" aria-label="Вибрати всі на сторінці">☑ Сторінка</button><button id="selectApplicationsAll" type="button" class="ghost" title="Вибрати всі результати" aria-label="Вибрати всі результати">☑ Усі результати</button><button id="bulkBtn" class="primary" disabled title="Масове заповнення" aria-label="Масове заповнення">✎ Заповнити <span id="selectedCount"></span></button></div>
     </section>
 
     <section class="toolbar card applications-toolbar">
@@ -343,6 +344,7 @@
   <dialog id="shareApplicationDialog" class="chat-dialog"><form id="shareApplicationForm"><header><div><p class="eyebrow">Пересилання заявки</p><h2>Надіслати в чат</h2><p id="shareApplicationSummary" class="muted"></p></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></header><label>Чат<select id="shareApplicationChat" required></select></label><label>Коментар<textarea id="shareApplicationComment" rows="3" maxlength="10000" placeholder="Необов’язково"></textarea></label><footer><button type="button" class="ghost" onclick="this.closest('dialog').close()">Скасувати</button><button class="primary" type="submit">Надіслати</button></footer></form></dialog>
   <script src="application_selection.js"></script>
   <script src="bulk_application_save.js"></script>
+  <script src="ui_improvements.js"></script>
   <script src="app.js"></script>
   <script src="google_writer_ui.js"></script>
   <script src="navigation_admin.js"></script>
@@ -355,6 +357,6 @@
   <script src="navigation.js"></script>
   <script src="chat_ui.js"></script>
   <script src="table_widths_ui.js"></script>
+  <script src="ui_improvements_boot.js"></script>
   </div>
 </body>
-</html>

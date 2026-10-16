@@ -55,6 +55,7 @@ from xml.etree import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+import ui_action_summary
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -6670,6 +6671,9 @@ def list_violation_reports(params: dict) -> dict:
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
     where, args = ["1=1"], []
+    response_expired = params.get('response_expired', [''])[0] == '1'
+    if response_expired:
+        where.append(ui_action_summary.EXPIRED_REPORT_SQL)
     if search:
         where.append("(INSTR(CASEFOLD(report_id),?)>0 OR INSTR(CASEFOLD(author_name),?)>0 OR INSTR(CASEFOLD(author_code),?)>0 OR INSTR(CASEFOLD(defendant_name),?)>0 OR INSTR(CASEFOLD(defendant_code),?)>0 OR INSTR(CASEFOLD(tender_pretty_id),?)>0 OR INSTR(CASEFOLD(description),?)>0)")
         args.extend([search] * 7)
@@ -6689,6 +6693,9 @@ def list_violation_reports(params: dict) -> dict:
         where.append("authority_code=?"); args.append(authority_code)
     clause = " AND ".join(where)
     with db() as con:
+        if response_expired:
+            ui_action_summary.install_deadline_function(con, violation_deadline_control,
+                                                       datetime.now(ZoneInfo('Europe/Kyiv')))
         total = con.execute(f"SELECT COUNT(*) FROM violation_reports WHERE {clause}", args).fetchone()[0]
         order_sql = "date_published ASC,report_id ASC" if status == "pending" else "date_published DESC,report_id DESC"
         rows = con.execute(f"""SELECT id,report_id,status,date_published,date_modified,tender_pretty_id,contract_pretty_id,
@@ -10575,6 +10582,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in {'/api/operational-tasks/summary', '/api/violation-reports/summary'}:
+            result = ui_action_summary.summary(DB_PATH,
+                'tasks' if parsed.path.startswith('/api/operational-tasks/') else 'appeals',
+                operational_tasks.STATUS_GROUPS['needs_action'], violation_deadline_control,
+                datetime.now(ZoneInfo('Europe/Kyiv')))
+            self.send_response(200)
+            raw=json.dumps(result).encode('utf-8')
+            self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Length',str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
         if parsed.path == '/api/applications/selection':
             result = application_selection(urllib.parse.parse_qs(parsed.query))
             raw = json.dumps(result,ensure_ascii=False).encode('utf-8')
@@ -10733,6 +10752,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "counts": counts, "sync": sync_status_payload()})
         if parsed.path == "/api/auth/me":
             return self.send_json({"username": self.auth_user, "role": self.auth_role,
+                                   "ui_features": {"supplier_bids_ready": BIDS_MODE != 'disabled' and
+                                       os.getenv('PQM_SUPPLIER_BIDS_READY', '0').lower() in {'1','true'}},
                                    "managed_role": self.auth_access['code'],
                                    "permissions": self.auth_access['permissions'],
                                    "officer_id": self.auth_officer_id,

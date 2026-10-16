@@ -47,6 +47,14 @@ function initialize(){
         const schedule=()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;install()})};
         install();
         new MutationObserver(schedule).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden','class','data-auth-role']});
+        // Hidden tables measure zero. Reapply saved widths after their real
+        // container is laid out, not only after DOM mutations or a manual F5.
+        if(typeof ResizeObserver!=='undefined'){
+          const observer=new ResizeObserver(schedule);
+          document.querySelectorAll('main').forEach(view=>observer.observe(view));
+        }
+        window.addEventListener('resize',schedule);
+        document.fonts?.ready.then(schedule);
         initialized=true;
         return;
       }catch(e){
