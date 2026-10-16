@@ -48,14 +48,14 @@ def styles_xml():
     borders=SubElement(root,'borders',count='2');SubElement(borders,'border')
     border=SubElement(borders,'border')
     for edge in ('left','right','top','bottom'):
-        SubElement(SubElement(border,edge,style='thin'),'color',rgb='FF666666')
+        SubElement(SubElement(border,edge,style='thin'),'color',rgb='FFD0DAE3')
     base=SubElement(root,'cellStyleXfs',count='1')
     SubElement(base,'xf',numFmtId='0',fontId='0',fillId='0',borderId='0')
     xfs=SubElement(root,'cellXfs',count='5')
     # default, literal text, wrapped literal text, Excel date, heading
-    for fmt,wrap,header in ((0,False,False),(49,False,False),(49,True,False),(164,False,False),(0,True,True)):
+    for index,(fmt,wrap,header) in enumerate(((0,False,False),(49,False,False),(49,True,False),(164,False,False),(0,True,True))):
         xf=SubElement(xfs,'xf',numFmtId=str(fmt),fontId='1' if header else '0',fillId='2' if header else '0',
-                      borderId='1',xfId='0',applyAlignment='1',applyNumberFormat='1',applyFont='1',applyBorder='1',applyFill='1' if header else '0')
+                      borderId='0' if index==0 else '1',xfId='0',applyAlignment='1',applyNumberFormat='1',applyFont='1',applyBorder='1',applyFill='1' if header else '0')
         SubElement(xf,'alignment',vertical='top',horizontal='left',wrapText='1' if wrap else '0')
     cs=SubElement(root,'cellStyles',count='1');SubElement(cs,'cellStyle',name='Normal',xfId='0',builtinId='0')
     # Custom differential table style: dynamic row bands survive Excel sorting,
@@ -71,7 +71,7 @@ def styles_xml():
         SubElement(p,'fgColor',rgb=color);SubElement(p,'bgColor',rgb=color)
         border=SubElement(dxf,'border')
         for edge in ('left','right','top','bottom','vertical','horizontal'):
-            SubElement(SubElement(border,edge,style='thin'),'color',rgb='FF666666')
+            SubElement(SubElement(border,edge,style='thin'),'color',rgb='FFD0DAE3')
     table_styles=SubElement(root,'tableStyles',count='1',defaultTableStyle=TABLE_STYLE)
     style=SubElement(table_styles,'tableStyle',name=TABLE_STYLE,pivot='0',table='1',count='4')
     for kind,index in (('wholeTable',0),('headerRow',1),('firstRowStripe',2),('secondRowStripe',3)):
@@ -85,7 +85,7 @@ def workbook(rows):
     if len(rows)>1048575:
         raise ValueError('Вибірка перевищує максимальну кількість рядків Excel')
     root=Element('worksheet',xmlns=NS)
-    views=SubElement(root,'sheetViews');view=SubElement(views,'sheetView',workbookViewId='0')
+    views=SubElement(root,'sheetViews');view=SubElement(views,'sheetView',workbookViewId='0',showGridLines='0')
     SubElement(view,'pane',ySplit='1',topLeftCell='A2',activePane='bottomLeft',state='frozen')
     cols=SubElement(root,'cols')
     for i,width in enumerate(WIDTHS,1):

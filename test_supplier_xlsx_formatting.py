@@ -106,7 +106,7 @@ class XlsxFormattingTests(unittest.TestCase):
                 self.assertEqual(cell.alignment.vertical,'top')
                 for edge in ('left','right','top','bottom'):
                     side=getattr(cell.border,edge)
-                    self.assertEqual(side.style,'thin');self.assertEqual(side.color.rgb,'FF666666')
+                    self.assertEqual(side.style,'thin');self.assertEqual(side.color.rgb,'FFD0DAE3')
         self.assertEqual(ws['A1'].fill.fgColor.rgb,'FFDCE6F1')
 
     def test_dynamic_table_style_has_exact_stripes_and_no_white_font(self):
@@ -127,8 +127,30 @@ class XlsxFormattingTests(unittest.TestCase):
                 self.assertEqual(dxf.find('s:font/s:b',ns).get('val'),'1' if kind=='headerRow' else '0')
                 for edge in ('left','right','top','bottom','vertical','horizontal'):
                     side=dxf.find('s:border/s:'+edge,ns)
-                    self.assertEqual(side.get('style'),'thin');self.assertEqual(side[0].get('rgb'),'FF666666')
+                    self.assertEqual(side.get('style'),'thin');self.assertEqual(side[0].get('rgb'),'FFD0DAE3')
                 if kind.endswith('Stripe'):self.assertEqual(element.get('size'),'1')
+
+    def test_borders_only_in_table_and_gridlines_hidden(self):
+        ws=self.sheet()
+        self.assertFalse(ws.sheet_view.showGridLines)
+        for coordinate in ('G1','G2','A8','A100','Z100'):
+            cell=ws[coordinate]
+            for edge in ('left','right','top','bottom'):
+                side=getattr(cell.border,edge)
+                self.assertTrue(side is None or side.style is None,coordinate)
+        with ZipFile(io.BytesIO(supplier_xlsx.workbook(self.rows()))) as z:
+            ns={'s':supplier_xlsx.NS}
+            styles=ET.fromstring(z.read('xl/styles.xml'))
+            sheet=ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+            self.assertEqual(styles.find('s:cellXfs/s:xf',ns).get('borderId'),'0')
+            self.assertEqual(styles.find('s:cellStyleXfs/s:xf',ns).get('borderId'),'0')
+            self.assertEqual(len(styles.find('s:borders/s:border',ns)),0)
+            self.assertEqual(sheet.find('s:sheetViews/s:sheetView',ns).get('showGridLines'),'0')
+            self.assertFalse(sheet.findall('s:cols/s:col[@style]',ns))
+            self.assertFalse(sheet.findall('s:sheetData/s:row[@s]',ns))
+            cells=sheet.findall('s:sheetData/s:row/s:c',ns)
+            self.assertEqual(len(cells),36)
+            self.assertTrue(all(c.get('s') in {'1','2','3','4'} for c in cells))
 
     def test_table_dxf_fill_channels_are_explicit_identical_and_never_black(self):
         """Catches the actual Excel regression missed by fgColor-only checks."""
