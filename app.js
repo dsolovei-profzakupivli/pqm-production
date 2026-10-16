@@ -437,7 +437,10 @@ function cardsDialog(){const p=profile(),box=$('#cardsList');const draw=()=>{con
 function openProtocolDialog(){lastProtocolPayload=null;const selectedRows=rows.filter(row=>selected.has(row.id));$('#checkProtocolNumber').value=selectedRows.find(row=>row.protocolNumber)?.protocolNumber||rows.find(row=>row.protocolNumber)?.protocolNumber||'';$('#checkDateFrom').value=$('#dateFromFilter').value;$('#checkDateTo').value=$('#dateToFilter').value;$('#protocolSummary').className='protocol-summary muted';$('#protocolSummary').textContent=`Буде перевірено поточну відбірку: ${total} заявок.`;$('#protocolIssues').innerHTML='';$('#generateProtocolBtn').disabled=true;$('#protocolDialog').showModal()}
 async function checkProtocol(e){e.preventDefault();try{const payload={protocol_number:$('#checkProtocolNumber').value.trim(),date_from:$('#checkDateFrom').value,date_to:$('#checkDateTo').value,filters:currentFilterParams(),submission_ids:selected.size?[...selected]:undefined};const data=await request(`${API}/protocol/readiness`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});lastProtocolPayload=data.ready?payload:null;const summary=$('#protocolSummary');summary.className=`protocol-summary ${data.ready?'ready':'blocked'}`;summary.textContent=data.ready?`Перевірку пройдено: ${data.total} заявок · Рішення УО «Так» — ${data.admitted} · «Ні» — ${data.rejected}${data.warning_count?` · попереджень ${data.warning_count}`:''}`:`Не готово: ${data.total} заявок · Рішення УО не визначено — ${data.unresolved} · помилок ${data.error_count}`;const issues=data.items.filter(item=>item.errors.length||item.warnings.length);$('#protocolIssues').innerHTML=issues.map(item=>`<div class="protocol-issue"><strong>${esc(item.supplier_name)} · ${esc(item.supplier_code)} · ${esc(item.pretty_id)}</strong>${item.errors.map(error=>`<span>${esc(error)}</span>`).join('')}${item.warnings.map(warning=>`<span class="muted">${esc(warning)}</span>`).join('')}</div>`).join('')||(data.ready?'<p class="muted">Контрольних зауважень немає. Протокол можна формувати.</p>':'<p class="muted">Заявок для протоколу не знайдено.</p>');$('#generateProtocolBtn').disabled=!data.ready}catch(error){lastProtocolPayload=null;$('#generateProtocolBtn').disabled=true;toast(error.message)}}
 async function generateProtocol(){if(!lastProtocolPayload)return;const button=$('#generateProtocolBtn'),old=button.textContent;button.disabled=true;button.textContent='Формування…';try{const data=await request(`${API}/protocol/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lastProtocolPayload)});const link=document.createElement('a');link.href=data.download_url;link.download=data.filename;document.body.appendChild(link);link.click();link.remove();$('#protocolSummary').className='protocol-summary ready';$('#protocolSummary').textContent=`Протокол № ${data.protocol_number} сформовано: ${data.total} заявок · допущено ${data.admitted} · відхилено ${data.rejected}`;toast('Протокол сформовано та завантажено');await loadRows()}catch(error){toast(error.message);button.disabled=false}finally{button.textContent=old}}
+let bulkInFlight=false,bulkOperation=null;
 function openBulk(){
+  if(bulkInFlight)return;
+  bulkOperation=null;$('#bulkSummary').textContent='';$('#bulkResults').textContent='';$('#bulkRetryBtn').hidden=true;$('#bulkRetryBtn').onclick=()=>runBulkOperation(true);
   if(rows.some(row=>selected.has(row.id)&&row.historicalReadOnly)){toast('Історичні заявки MedData доступні лише для перегляду та передачі в Chat');return}
   $('#bulkDialog header p').textContent=`Вибрано заявок: ${selected.size}. Позначте лише поля, які потрібно змінити.`;
   const labels={protocolNumber:'Номер протоколу',protocolDate:'Дата протоколу / публікації рішення',protocolOfficer:'УО протоколу',protocolDecision:'Рішення УО',complianceStatus:'Комплаєнс',complianceComments:'Коментарі комплаєнс',managerName:'Прізвище, ім’я, по батькові керівника',protocolRemarks:'Зауваження до протоколу'};
@@ -450,7 +453,7 @@ function openBulk(){
   $('#bulkDialog').showModal();
 }
 async function applyBulk(e){
-  e.preventDefault();if(rows.some(row=>selected.has(row.id)&&row.historicalReadOnly)){toast('Масові зміни historical MedData applications заборонені');return}const changes={},cleared=new Set();
+  e.preventDefault();if(bulkInFlight||bulkOperation)return;if(rows.some(row=>selected.has(row.id)&&row.historicalReadOnly)){toast('Масові зміни historical MedData applications заборонені');return}const changes={},cleared=new Set();
   $$('[data-enable]:checked').forEach(x=>{const key=x.dataset.enable;if($(`[data-clear="${key}"]`)?.checked){changes[fieldMap[key]]='';cleared.add(fieldMap[key]);return}changes[fieldMap[key]]=key==='protocolRemarks'&&$('[name="bulkRemarksMode"]:checked').value==='none'?'Без зауважень':$(`[data-bulk="${key}"]`).value.trim()});
   if(!Object.keys(changes).length)return toast('Оберіть поля');
   if(Object.entries(changes).some(([key,value])=>!cleared.has(key)&&!String(value||'').trim()))return toast('Вкажіть значення для кожного вибраного поля');
@@ -465,7 +468,44 @@ async function applyBulk(e){
   const missingCompliance=chosen.some(row=>effective(row,'protocol_decision','protocolDecision')&&!effective(row,'compliance_status','complianceStatus'));if(missingCompliance)return toast('Спочатку визначте рішення комплаєнс');
   const changesLockedCompliance=Object.hasOwn(changes,'compliance_status')&&chosen.some(row=>changes.compliance_status!==row.complianceStatus&&row.protocolDecision);if(changesLockedCompliance)return toast('Щоб змінити комплаєнс, спочатку встановіть Рішення УО «Не визначено»');
   const conflict=chosen.some(row=>effective(row,'protocol_decision','protocolDecision')==='admit'&&effective(row,'compliance_status','complianceStatus')==='rejected');if(conflict)return toast('Рішення УО «Так» неможливе, коли комплаєнс не погоджено');
-  try{await Promise.all([...selected].map(id=>request(`${API}/applications/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({...changes,role:role(),user:$('#roleSelect').selectedOptions[0].text})})));$('#bulkDialog').close();selected.clear();await loadRows();toast('Масові зміни застосовано')}catch(e2){toast(e2.message)}
+  const reverse=Object.fromEntries(Object.entries(fieldMap).map(([rowKey,key])=>[key,rowKey]));
+  bulkOperation=PqmBulkSave.create([...selected].map(id=>{
+    const row=rows.find(item=>item.id===id);
+    const expected=row?Object.fromEntries(Object.keys(changes).map(key=>[key,String(row[reverse[key]]??'')])):null;
+    return {id,expected};
+  }),changes);
+  await runBulkOperation(false);
+}
+async function bulkRequest(url,options={}){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
+  try{return await request(url,{...options,cache:'no-store',signal:controller.signal})}finally{clearTimeout(timer)}
+}
+async function runBulkOperation(retry){
+  if(bulkInFlight||!bulkOperation)return;
+  bulkInFlight=true;
+  const dialog=$('#bulkDialog'),controls=[...dialog.querySelectorAll('input,select,textarea,button')].map(control=>[control,control.disabled]);
+  controls.forEach(([control])=>control.disabled=true);
+  dialog.oncancel=event=>event.preventDefault();
+  $('#bulkSummary').textContent='Збереження та звірка… Не закривайте сторінку.';
+  try{
+    const counts=await PqmBulkSave.run(bulkOperation,{
+      read:async(id,fields)=>(await bulkRequest(`${API}/applications/${encodeURIComponent(id)}/bulk-state?fields=${encodeURIComponent(fields.join(','))}`)).values,
+      write:(id,desired,expected)=>bulkRequest(`${API}/applications/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({...desired,_expected_values:expected})})
+    },{retry});
+    for(const item of bulkOperation)if(item.status==='confirmed')selected.delete(item.id);
+    $('#bulkSummary').textContent=`Опрацьовано ${counts.total} заявок. Збереження підтверджено: ${counts.confirmed}. Не підтверджено: ${counts.unconfirmed}. Конфлікти: ${counts.conflict}. Помилки: ${counts.error}.`;
+    $('#bulkResults').innerHTML=bulkOperation.filter(item=>item.status!=='confirmed').map(item=>`<p>${esc(item.id)} — ${esc(item.detail)}${item.attempts>=2?' · Ліміт двох спроб вичерпано':''}</p>`).join('');
+    try{await loadRows()}catch(error){toast('Підсумок збережено на екрані; не вдалося оновити таблицю')}
+  }catch(error){
+    $('#bulkSummary').textContent='Операцію перервано. Не вважайте непідтверджені записи незбереженими. Потрібна звірка.';
+    for(const item of bulkOperation)if(item.status==='pending')item.status='unconfirmed';
+  }finally{
+    controls.forEach(([control,disabled])=>control.disabled=disabled);
+    $('#applyBulkBtn').disabled=true;
+    $('#bulkRetryBtn').hidden=!bulkOperation.some(item=>item.status==='unconfirmed'&&item.attempts<2);
+    $('#bulkRetryBtn').disabled=false;
+    dialog.oncancel=null;bulkInFlight=false;
+  }
 }
 let auditPage=1,auditPages=1;
 async function loadAudit(){const data=await request(`${API}/audit?page=${auditPage}&size=100`);auditPages=Math.max(1,Number(data.pages||1));if(auditPage>auditPages){auditPage=auditPages;return loadAudit()}$('#auditBody').innerHTML=data.items.length?data.items.map(a=>`<tr><td>${esc(displayDate(a.changed_at))}</td><td>${esc(a.changed_by)}</td><td>${esc(a.submission_id)}</td><td>${esc(a.field_name)}</td><td>${esc(a.old_value)||'—'}</td><td>${esc(a.new_value)||'—'}</td></tr>`).join(''):'<tr><td colspan="6">Змін поки немає</td></tr>';const total=Number(data.total||0),from=total?(auditPage-1)*100+1:0,to=Math.min(auditPage*100,total);$('#auditPageInfo').textContent=`${from}–${to} із ${total.toLocaleString('uk-UA')} · сторінка ${auditPage} із ${auditPages}`;$('#auditPrev').disabled=auditPage<=1;$('#auditNext').disabled=auditPage>=auditPages}
