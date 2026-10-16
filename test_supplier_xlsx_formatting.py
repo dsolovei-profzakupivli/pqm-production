@@ -130,6 +130,26 @@ class XlsxFormattingTests(unittest.TestCase):
                     self.assertEqual(side.get('style'),'thin');self.assertEqual(side[0].get('rgb'),'FF666666')
                 if kind.endswith('Stripe'):self.assertEqual(element.get('size'),'1')
 
+    def test_table_dxf_fill_channels_are_explicit_identical_and_never_black(self):
+        """Catches the actual Excel regression missed by fgColor-only checks."""
+        with ZipFile(io.BytesIO(supplier_xlsx.workbook(self.rows()))) as z:
+            ns={'s':supplier_xlsx.NS}
+            styles=ET.fromstring(z.read('xl/styles.xml'))
+            fills=styles.findall('s:dxfs/s:dxf/s:fill/s:patternFill',ns)
+            self.assertEqual(len(fills),4)
+            expected=['FFFFFFFF','FFDCE6F1','FFFFFFFF','FFEDF3F8']
+            for fill,color in zip(fills,expected):
+                self.assertEqual(fill.attrib,{'patternType':'solid'})
+                for channel in ('fgColor','bgColor'):
+                    node=fill.find('s:'+channel,ns)
+                    self.assertIsNotNone(node)
+                    self.assertEqual(node.attrib,{'rgb':color})
+                    self.assertNotEqual(node.get('rgb'),'FF000000')
+                    self.assertEqual(node.get('rgb')[:2],'FF')
+            # Body XFs must not introduce an overriding solid fill.
+            xfs=styles.findall('s:cellXfs/s:xf',ns)
+            for xf in xfs[:4]:self.assertEqual(xf.get('fillId'),'0')
+
     def test_formula_prefixes_are_unchanged_literal_text(self):
         for prefix in '=+-@':
             value=prefix+'literal'

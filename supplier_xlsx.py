@@ -65,7 +65,10 @@ def styles_xml():
         dxf=SubElement(dxfs,'dxf')
         font=SubElement(dxf,'font');SubElement(font,'b',val='1' if i==1 else '0');SubElement(font,'color',rgb='FF000000')
         p=SubElement(SubElement(dxf,'fill'),'patternFill',patternType='solid')
-        SubElement(p,'fgColor',rgb=color);SubElement(p,'bgColor',indexed='64')
+        # Excel table DXFs consume the background colour too, unlike ordinary
+        # solid cell fills. Indexed 64 here produced black row bands in Excel.
+        # Set both channels explicitly; never rely on automatic/theme colours.
+        SubElement(p,'fgColor',rgb=color);SubElement(p,'bgColor',rgb=color)
         border=SubElement(dxf,'border')
         for edge in ('left','right','top','bottom','vertical','horizontal'):
             SubElement(SubElement(border,edge,style='thin'),'color',rgb='FF666666')
