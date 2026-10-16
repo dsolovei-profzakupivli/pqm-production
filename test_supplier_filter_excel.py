@@ -16,6 +16,7 @@ import reference_directories
 import supplier_selection
 import supplier_xlsx
 import auth_access
+from datetime import datetime
 
 
 class SupplierFilterExcelTests(unittest.TestCase):
@@ -56,7 +57,9 @@ class SupplierFilterExcelTests(unittest.TestCase):
             root=ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
         ns={'s':supplier_xlsx.NS}
         self.assertEqual(root.findall('.//s:f',ns),[])
-        return [[c.find('s:is/s:t',ns).text or '' for c in row] for row in root.findall('s:sheetData/s:row',ns)]
+        from openpyxl import load_workbook
+        sheet=load_workbook(io.BytesIO(raw),read_only=True).active
+        return [[cell.value if cell.value is not None else '' for cell in row] for row in sheet]
 
     def test_intersection_filters_before_aggregation(self):
         self.add('a',fid='f1');self.add('b',fid='f2',contract='terminated')
@@ -90,20 +93,20 @@ class SupplierFilterExcelTests(unittest.TestCase):
         self.add('admit',day=1);self.add('pending',day=2,q='pending',contract=None)
         result=self.values(self.export(framework_id='f1'))
         self.assertEqual(len(result),2)
-        self.assertEqual(result[1][2],'2026-10-01T12:00:00+03:00')
+        self.assertEqual(result[1][2],datetime(2026,10,1))
         self.assertEqual(result[1][3],'Активний')
         self.assertEqual(result[1][4],'admit@example.invalid')
 
     def test_terminated_admission_not_replaced_by_pending(self):
         self.add('old',contract='terminated');self.add('new',day=2,q='pending',contract=None,email='',phone='')
         result=self.values(self.export(framework_id='f1'))[1]
-        self.assertEqual(result[2],'2026-10-01T12:00:00+03:00');self.assertEqual(result[3],'Неактивний')
+        self.assertEqual(result[2],datetime(2026,10,1));self.assertEqual(result[3],'Неактивний')
         self.assertEqual(result[4],'old@example.invalid')
 
     def test_admission_not_replaced_by_rejected(self):
         self.add('old',contract='terminated');self.add('rejected',day=3,q='unsuccessful',contract=None)
         result=self.values(self.export(framework_id='f1'))[1]
-        self.assertEqual(result[2],'2026-10-01T12:00:00+03:00')
+        self.assertEqual(result[2],datetime(2026,10,1))
         self.assertEqual(result[3],'Неактивний');self.assertEqual(result[4],'old@example.invalid')
 
     def test_one_row_per_supplier_latest_admission_across_frameworks(self):
@@ -183,7 +186,9 @@ class SupplierFilterExcelTests(unittest.TestCase):
             raw['date']=stamp
             self.con.execute('UPDATE qualifications SET raw_json=? WHERE id=?',(json.dumps(raw),'q'+sid))
         row=self.values(self.export())[1]
-        self.assertEqual(row[2],'2026-10-01T09:00:00.004492Z')
+        self.assertEqual(row[2],datetime(2026,10,1))
+        selected=supplier_selection.export_rows(self.con,{}, {'0000000123'})
+        self.assertEqual(selected[0]['values'][2],'2026-10-01T09:00:00.004492Z')
         self.assertEqual(row[4],'b@example.invalid')
 
     def test_invalid_admission_timestamp_cannot_fall_back_to_submission(self):
@@ -217,7 +222,7 @@ class SupplierFilterExcelTests(unittest.TestCase):
         self.assertEqual((c['total'],c['active'],c['suspended'],c['terminated']),(2,1,1,0))
         rows=self.registry_export(['f1'])
         self.assertEqual({r[0]:r[3] for r in rows[1:]},{'1':'Активний','44368854':'Призупинений'})
-        self.assertEqual(rows[2][2],'2026-10-01T12:00:00+03:00')
+        self.assertEqual(rows[2][2],datetime(2026,10,1))
 
     def test_registry_single_multiple_and_pagination_complete(self):
         self.add('old',fid='f1',day=1);self.add('new',fid='f2',day=2,contract='terminated')

@@ -3378,10 +3378,14 @@ def framework_registry(params, con):
     items=[]
     framework_rows=[dict(r) for r in con.execute('SELECT * FROM frameworks')]
     framework_rows.extend(pending_directory_framework_rows(con))
+    categories={}
+    for fid,pretty_id,category in con.execute('SELECT framework_id,pretty_id,category FROM framework_service_directory'):
+        if category:categories.setdefault(fid or pretty_id,[]).append(str(category))
     for raw in framework_rows:
         f=dict(raw);body=json.loads(f.pop('raw_json') or '{}')
         state=effective_framework_status(f['status'] or '',body)
-        if get('search').casefold() not in ' '.join(str(f.get(k) or '') for k in ('id','pretty_id','title','dk_code','agreement_id')).casefold():continue
+        haystack=' '.join([*(str(f.get(k) or '') for k in ('id','pretty_id','title','dk_code','agreement_id')), *categories.get(f['id'] or f['pretty_id'],[])])
+        if get('search').casefold() not in haystack.casefold():continue
         if get('dk_code').casefold() not in (f.get('dk_code') or '').casefold():continue
         if get('status') and get('status') not in {state,'active' if state=='active' else 'inactive'}:continue
         published=str(body.get('date') or body.get('dateCreated') or '')[:10]
@@ -5861,6 +5865,20 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
             "edr_statuses": edr_statuses,
             "registered_total": registered_total, "not_registered": not_registered, "active": active_total,
             "page": page, "size": size, "pages": (total + size - 1) // size}
+
+
+def supplier_registry_excel_filename(params, *, connection=None):
+    """Single-framework download identity comes only from its cached record."""
+    ids=list(dict.fromkeys(v for v in params.get('framework_id',[]) if v))
+    if params.get('registry_only')!=['1'] or len(ids)!=1:
+        return 'pqm-suppliers.xlsx'
+    def name(con):
+        row=con.execute('SELECT dk_code FROM frameworks WHERE id=?',(ids[0],)).fetchone()
+        code=str(row[0] or '') if row else ''
+        return code+'_pqm-suppliers.xlsx' if re.fullmatch(r'[0-9]{8}-[0-9]',code) else 'pqm-suppliers.xlsx'
+    if connection is not None:return name(connection)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+        return name(con)
 
 
 def supplier_registry_excel(params, *, connection=None):
@@ -10794,10 +10812,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/suppliers-registry":
             return self.send_json(list_qualified_suppliers(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/suppliers-registry/export.xlsx":
-            raw=supplier_registry_excel(urllib.parse.parse_qs(parsed.query))
+            params=urllib.parse.parse_qs(parsed.query)
+            raw=supplier_registry_excel(params)
+            filename=supplier_registry_excel_filename(params)
             self.send_response(200)
             self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            self.send_header('Content-Disposition','attachment; filename="pqm-suppliers.xlsx"')
+            self.send_header('Content-Disposition','attachment; filename="'+filename+'"')
             self.send_header('Content-Length',str(len(raw)))
             self.send_header('Cache-Control','no-store')
             self.end_headers()

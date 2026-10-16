@@ -17,7 +17,7 @@ function toolbarFor(table){
   const card=table.closest('.card'),header=card?.querySelector(':scope>header');
   if(header&&isVisible(header))return header;
   const view=table.closest('.module-view');
-  return [...(view?.querySelectorAll('.edr-monitoring-toolbar,.supplier-toolbar,.reference-toolbar,.requests-toolbar,.heading-actions')||[])].find(isVisible)||null;
+  return [...(view?.querySelectorAll('.edr-monitoring-toolbar,.supplier-toolbar,.reference-toolbar,.requests-toolbar,.frameworks-toolbar,.heading-actions')||[])].find(isVisible)||null;
 }
 function install(){
   document.querySelectorAll('table[data-width-control]').forEach(table=>delete table.dataset.widthControl);
