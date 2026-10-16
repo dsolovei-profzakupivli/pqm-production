@@ -2,6 +2,8 @@
 import io
 import unittest
 from datetime import datetime
+from xml.etree import ElementTree as ET
+from zipfile import ZipFile
 from openpyxl import load_workbook
 import supplier_xlsx
 import test_supplier_filter_excel as fixtures
@@ -48,7 +50,8 @@ class XlsxFormattingTests(unittest.TestCase):
         ws=self.sheet();self.assertEqual(ws.max_column,6)
         self.assertEqual([c.value for c in ws[1]],list(supplier_xlsx.HEADERS))
         self.assertEqual(ws.tables['PqmSuppliers'].ref,'A1:F6')
-        self.assertEqual(ws.auto_filter.ref,'A1:F6');self.assertEqual(ws.freeze_panes,'A2')
+        self.assertEqual(ws.tables['PqmSuppliers'].autoFilter.ref,'A1:F6')
+        self.assertIsNone(ws.auto_filter.ref);self.assertEqual(ws.freeze_panes,'A2')
         self.assertFalse(ws.protection.sheet);self.assertEqual(ws['A2'].border.bottom.style,'thin')
 
     def test_top_alignment_wrapping_and_height(self):
@@ -62,9 +65,77 @@ class XlsxFormattingTests(unittest.TestCase):
     def test_empty_table_and_missing_fields(self):
         ws=self.sheet([]);self.assertEqual(ws.max_row,1);self.assertEqual(ws.tables['PqmSuppliers'].ref,'A1:F1')
 
+    def test_ooxml_single_filter_owner_and_consistent_table_relationship(self):
+        ns={'s':supplier_xlsx.NS,'r':'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+        for rows in ([],self.rows()[:1],self.rows()):
+            with self.subTest(count=len(rows)),ZipFile(io.BytesIO(supplier_xlsx.workbook(rows))) as z:
+                sheet=ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+                table=ET.fromstring(z.read('xl/tables/table1.xml'))
+                self.assertIsNone(sheet.find('s:autoFilter',ns),'Worksheet filter must not overlap table filter')
+                filters=table.findall('s:autoFilter',ns)
+                self.assertEqual(len(filters),1)
+                self.assertEqual(filters[0].get('ref'),table.get('ref'))
+                self.assertEqual(table.get('ref'),'A1:F'+str(len(rows)+1))
+                columns=table.findall('s:tableColumns/s:tableColumn',ns)
+                self.assertEqual([c.get('name') for c in columns],list(supplier_xlsx.HEADERS))
+                self.assertEqual([c.get('id') for c in columns],['1','2','3','4','5','6'])
+                parts=sheet.findall('s:tableParts/s:tablePart',ns);self.assertEqual(len(parts),1)
+                rel=ET.fromstring(z.read('xl/worksheets/_rels/sheet1.xml.rels'))[0]
+                self.assertEqual(parts[0].get('{'+ns['r']+'}id'),rel.get('Id'))
+                self.assertEqual(rel.get('Target'),'../tables/table1.xml')
+
     def test_no_silent_row_height_clipping(self):
         with self.assertRaisesRegex(ValueError,'висоту'):
             self.sheet([{'values':['1','X'*32767,'','','','']}])
+
+    def test_black_text_grid_widths_and_compact_height(self):
+        ws=self.sheet()
+        self.assertEqual(ws.row_dimensions[1].height,34)
+        self.assertEqual(ws.row_dimensions[2].height,22)
+        self.assertEqual(ws.row_dimensions[4].height,34)
+        self.assertEqual(supplier_xlsx.row_height(['1','a\nb\nc','','','','']),49)
+        for col,width in zip('ABCDEF',(21,55,20,22,38,28)):
+            self.assertEqual(ws.column_dimensions[col].width,width)
+        for row in ws:
+            for cell in row:
+                self.assertEqual(cell.font.color.rgb,'FF000000')
+                self.assertEqual(cell.font.sz,11)
+                self.assertEqual(cell.font.name,'Arial')
+                self.assertEqual(cell.font.b,cell.row==1)
+                self.assertEqual(cell.alignment.horizontal,'left')
+                self.assertEqual(cell.alignment.vertical,'top')
+                for edge in ('left','right','top','bottom'):
+                    side=getattr(cell.border,edge)
+                    self.assertEqual(side.style,'thin');self.assertEqual(side.color.rgb,'FF666666')
+        self.assertEqual(ws['A1'].fill.fgColor.rgb,'FFDCE6F1')
+
+    def test_dynamic_table_style_has_exact_stripes_and_no_white_font(self):
+        with ZipFile(io.BytesIO(supplier_xlsx.workbook(self.rows()))) as z:
+            ns={'s':supplier_xlsx.NS}
+            styles=ET.fromstring(z.read('xl/styles.xml'))
+            table=ET.fromstring(z.read('xl/tables/table1.xml'))
+            self.assertEqual(table.find('s:tableStyleInfo',ns).get('name'),supplier_xlsx.TABLE_STYLE)
+            self.assertEqual(table.find('s:tableStyleInfo',ns).get('showRowStripes'),'1')
+            custom=styles.find('s:tableStyles/s:tableStyle',ns)
+            self.assertEqual(custom.get('name'),supplier_xlsx.TABLE_STYLE)
+            dxfs=styles.findall('s:dxfs/s:dxf',ns)
+            expected={'wholeTable':'FFFFFFFF','headerRow':'FFDCE6F1','firstRowStripe':'FFFFFFFF','secondRowStripe':'FFEDF3F8'}
+            for element in custom:
+                kind=element.get('type');dxf=dxfs[int(element.get('dxfId'))]
+                self.assertEqual(dxf.find('s:fill/s:patternFill/s:fgColor',ns).get('rgb'),expected[kind])
+                self.assertEqual(dxf.find('s:font/s:color',ns).get('rgb'),'FF000000')
+                self.assertEqual(dxf.find('s:font/s:b',ns).get('val'),'1' if kind=='headerRow' else '0')
+                for edge in ('left','right','top','bottom','vertical','horizontal'):
+                    side=dxf.find('s:border/s:'+edge,ns)
+                    self.assertEqual(side.get('style'),'thin');self.assertEqual(side[0].get('rgb'),'FF666666')
+                if kind.endswith('Stripe'):self.assertEqual(element.get('size'),'1')
+
+    def test_formula_prefixes_are_unchanged_literal_text(self):
+        for prefix in '=+-@':
+            value=prefix+'literal'
+            ws=self.sheet([{'values':[value,value,'2026-10-14T12:00:00+03:00',value,value,value]}])
+            for col in 'ABDEF':
+                self.assertEqual(ws[col+'2'].value,value);self.assertEqual(ws[col+'2'].data_type,'s')
 
 
 class FilenameTests(unittest.TestCase):
