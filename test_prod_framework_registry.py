@@ -1,5 +1,5 @@
 """Isolated production-baseline schema; synthetic rows only, no runtime DB."""
-import io,json,sqlite3,unittest
+import io,json,sqlite3,unittest,subprocess
 from pathlib import Path
 from unittest.mock import patch
 from openpyxl import load_workbook
@@ -37,6 +37,11 @@ class SupplierFilterExcelTests(unittest.TestCase):
 
 
 class ProductionFrameworkTests(SupplierFilterExcelTests):
+    def test_late_search_response_and_error_cannot_replace_new_results(self):
+        result=subprocess.run(['node','validation/framework_registry_race_ui.cjs'],
+          cwd=Path(__file__).parent,capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_counts_statuses_and_complete_export(self):
         self.add('active',code='1');self.add('suspended',code='2',contract='suspended');self.add('terminated',code='3',contract='terminated')
         data=server.framework_registry({'search':['f1']},self.con);c=data['items'][0]['counts']
