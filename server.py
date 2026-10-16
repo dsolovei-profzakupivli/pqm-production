@@ -2721,6 +2721,34 @@ def application_stats(params: dict) -> dict:
     return result
 
 
+def application_selection(params: dict) -> dict:
+    """One read-only filtered snapshot, without LIMIT/OFFSET or external refresh."""
+    clause, args = application_filter(params)
+    fields = sorted(EDITABLE_FIELDS)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro', uri=True, timeout=5)) as con:
+        con.row_factory = sqlite3.Row
+        con.create_function('CASEFOLD', 1, unicode_casefold, deterministic=True)
+        con.create_function('DIGITS', 1, lambda value: re.sub(r'\D', '', str(value or '')), deterministic=True)
+        con.execute('PRAGMA query_only=ON');con.execute('BEGIN')
+        deadline = time.monotonic()+30
+        con.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
+        records = [dict(row) for row in con.execute(
+            'SELECT s.id,s.supplier_name,'+','.join(f"COALESCE(af.{field},'') AS {field}" for field in fields)+
+            ' FROM submissions s JOIN frameworks f ON f.id=s.framework_id'
+            ' LEFT JOIN qualifications q ON q.id=s.qualification_id'
+            ' LEFT JOIN application_fields af ON af.submission_id=s.id'
+            ' LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE '+clause+' ORDER BY s.id', args)]
+        names = {' '.join(re.sub(r"[’'`\-]+", ' ', (row[0] or '').casefold()).split())
+                 for row in con.execute("SELECT DISTINCT full_name FROM nazk_registry WHERE full_name<>''")}
+        states = {}
+        for start in range(0,len(records),400):
+            states.update(get_submission_nazk_states(con,[row['id'] for row in records[start:start+400]],names))
+        items = [{'id':row['id'], 'supplier_name':row['supplier_name'] or '', 'values':{field:str(row[field]) for field in fields},
+                  'historical_read_only':historical_applications.is_read_only(row['id']),
+                  'nazk_can_approve':bool(states.get(row['id'],{}).get('can_approve',True))} for row in records]
+    return {'items':items,'total':len(items)}
+
+
 def list_applications(params: dict) -> dict:
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["50"])[0] or 50)))
@@ -10215,6 +10243,34 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/applications/selection':
+            result = application_selection(urllib.parse.parse_qs(parsed.query))
+            raw = json.dumps(result,ensure_ascii=False).encode('utf-8')
+            self.send_response(200);self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
+        bulk_state = re.fullmatch(r"/api/applications/([^/]+)/bulk-state", parsed.path)
+        if bulk_state:
+            fields = urllib.parse.parse_qs(parsed.query).get('fields', [''])[0].split(',')
+            if not fields or any(field not in EDITABLE_FIELDS for field in fields):
+                return self.send_json({'error': 'Некоректні поля звірки'}, 400)
+            # Authorization/permissions are enforced by _dispatch. No cache,
+            # init_db, sync or business writes are performed by this read path.
+            with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro', uri=True, timeout=5)) as con:
+                con.row_factory = sqlite3.Row
+                con.execute('PRAGMA query_only=ON')
+                row = con.execute('SELECT '+','.join(f"COALESCE({field},'') AS {field}" for field in fields)+
+                                  ' FROM application_fields WHERE submission_id=?',
+                                  (urllib.parse.unquote(bulk_state[1]),)).fetchone()
+            if row is None:return self.send_json({'error': 'Заявку не знайдено'}, 404)
+            raw = json.dumps({'values': dict(row)}, ensure_ascii=False).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
         if parsed.path == "/api/account":
             with db() as con:
                 row = con.execute("SELECT display_name,start_view,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
@@ -12070,6 +12126,14 @@ class Handler(BaseHTTPRequestHandler):
         # impersonation header; in authenticated mode it comes from the account.
         payload.pop("role", None)
         payload.pop("user", None)
+        guarded_bulk = '_expected_values' in payload
+        expected_values = payload.pop('_expected_values', None)
+        if guarded_bulk and (
+                not isinstance(expected_values, dict) or not expected_values
+                or set(expected_values) != set(payload)
+                or any(key not in EDITABLE_FIELDS or not isinstance(value, str)
+                       or not isinstance(payload[key], str) for key, value in expected_values.items())):
+            return self.send_json({'error': 'Некоректні очікувані значення'}, 400)
         role = self.auth_role
         user = self.auth_user
         if "protocol_officer" in payload and not valid_active_officer(payload["protocol_officer"]):
@@ -12087,9 +12151,25 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             decision = con.execute("SELECT COALESCE(q.status,'pending') FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE s.id=?", (submission_id,)).fetchone()
             if not decision: return self.send_json({"error": "Заявку не знайдено"}, 404)
-            con.execute('BEGIN IMMEDIATE')
+            try:
+                con.execute('BEGIN IMMEDIATE')
+            except sqlite3.OperationalError as exc:
+                if guarded_bulk and 'locked' in str(exc).lower():
+                    return self.send_json({'error': 'БД зайнята; потрібна звірка збереження',
+                                           'code': 'bulk_database_busy'}, 503)
+                raise
             try: formed_protocols.guard_edit(con,submission_id,payload)
             except ValueError as exc: return self.send_json({'error':str(exc)},409)
+            if expected_values is not None:
+                previous = con.execute('SELECT '+','.join(expected_values)+
+                                       ' FROM application_fields WHERE submission_id=?', (submission_id,)).fetchone()
+                if previous is None:return self.send_json({'error': 'Заявку не знайдено'}, 404)
+                current = {key: str(previous[key] or '') for key in expected_values}
+                if all(current[key] == payload[key] for key in current):
+                    return self.send_json({'saved': True, 'unchanged': True})
+                if any(current[key] != expected_values[key] and current[key] != payload[key] for key in current):
+                    return self.send_json({'error': 'Дані змінилися. Перезапис заблоковано.',
+                                           'code': 'bulk_value_conflict'}, 409)
             current_controls = con.execute("""SELECT protocol_decision,compliance_status,marketplace_decision,
               protocol_number,protocol_date,manager_name,compliance_comments,
               generated_protocol_number,generated_protocol_date,generated_protocol_decision,protocol_generated_at,protocol_remarks
