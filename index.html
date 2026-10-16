@@ -69,7 +69,7 @@
       <select id="queueMine"><option value="">Усі</option><option value="1">Мої</option><option value="unassigned">Не призначено</option></select>
       <input id="queueResponsible" placeholder="Відповідальна особа…">
       <select id="queueCategory"><option value="">Усі категорії</option></select>
-      <button id="queueReset" type="button" class="ghost icon-button" title="Скинути всі фільтри" aria-label="Скинути всі фільтри"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6M5.3 16.5A8 8 0 1 0 6 7.3L4 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button id="queueReset" type="button" class="ghost icon-button pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button>
     </section>
     <div id="queueFilterChips" class="filter-chips"></div>
     <details class="card work-queue-details"><summary>Детальні операційні задачі НАЗК, звернень та очікування відповідей</summary><section class="work-queue-table-card"><div class="table-scroll"><table class="work-queue-table"><colgroup><col class="queue-col-type"><col class="queue-col-action"><col class="queue-col-supplier"><col class="queue-col-code"><col class="queue-col-customer"><col class="queue-col-object"><col class="queue-col-date"><col class="queue-col-deadline"><col class="queue-col-status"><col class="queue-col-officer"><col class="queue-col-open"></colgroup><thead><tr><th>Тип</th><th>Що потрібно зробити</th><th>Постачальник</th><th>Код</th><th>Замовник</th><th>Об’єкт</th><th>Дата</th><th>Строк</th><th>Статус</th><th>Відповідальна особа</th><th>Дія</th></tr></thead><tbody id="workQueueBody"></tbody></table></div><footer><span id="workQueuePageInfo"></span><div><button id="workQueuePrev" class="ghost">←</button><button id="workQueueNext" class="ghost">→</button></div></footer></section></details>
@@ -78,7 +78,7 @@
   <main id="applicationsView">
     <section class="page-heading">
       <div><p class="eyebrow">Кваліфікація постачальників</p><h1>Реєстр заявок</h1><p id="resultInfo" class="muted"></p></div>
-      <div class="heading-metrics">
+      <div class="heading-metrics" role="region" aria-label="Вибрані KPI" tabindex="0">
         <section id="kpiCards" class="kpi-cards" aria-label="Коротка статистика">
           <article class="kpi-card" data-kpi-card="applications"><span>Заявки</span><strong data-kpi="applications">—</strong></article>
           <article class="kpi-card" data-kpi-card="suppliers"><span>Постачальники</span><strong data-kpi="suppliers">—</strong></article>
@@ -93,7 +93,11 @@
         </section>
         <section id="officerCards" class="officer-cards" aria-label="Кількість заявок за УО"></section>
       </div>
-      <div class="heading-actions"><span id="syncStatus" class="sync-status">Графік: щогодини о :05</span><button id="protocolBtn" class="ghost" title="Перевірити протокол" aria-label="Перевірити протокол">▤ Протокол</button><button id="resetBtn" class="ghost" title="Оновити з Prozorro" aria-label="Оновити з Prozorro">↻ Prozorro</button><button id="shareApplicationBtn" type="button" class="ghost" disabled>Надіслати в чат</button><button id="selectApplicationsPage" type="button" class="ghost" title="Вибрати всі на сторінці" aria-label="Вибрати всі на сторінці">☑ Сторінка</button><button id="selectApplicationsAll" type="button" class="ghost" title="Вибрати всі результати" aria-label="Вибрати всі результати">☑ Усі результати</button><button id="bulkBtn" class="primary" disabled title="Масове заповнення" aria-label="Масове заповнення">✎ Заповнити <span id="selectedCount"></span></button></div>
+      <div class="heading-actions" role="group" aria-label="Керування заявками">
+        <div class="heading-action-row"><button id="protocolBtn" class="ghost" title="Перевірити протокол" aria-label="Перевірити протокол">▤ Протокол</button><button id="resetBtn" class="ghost pqm-prozorro-refresh" title="Оновити дані з Prozorro" aria-label="Оновити дані з Prozorro">↻ Prozorro</button><button id="shareApplicationBtn" type="button" class="ghost" disabled title="Надіслати в чат" aria-label="Надіслати в чат">В чат</button></div>
+        <div class="heading-action-row"><button id="selectApplicationsPage" type="button" class="ghost" title="Вибрати всі на сторінці" aria-label="Вибрати всі на сторінці">☑ Сторінка</button><button id="selectApplicationsAll" type="button" class="ghost" title="Вибрати всі результати" aria-label="Вибрати всі результати">☑ Все</button><button id="bulkBtn" class="primary" disabled title="Масове заповнення" aria-label="Масове заповнення">✎ Заповнити <span id="selectedCount"></span></button></div>
+      </div>
+      <span id="syncStatus" class="sync-status">Графік: щогодини о :05</span>
     </section>
 
     <section class="toolbar card applications-toolbar">
@@ -115,7 +119,7 @@
       </div></details>
       <select id="profileSelect" aria-label="Профіль"></select>
       <button id="saveProfileBtn" class="ghost toolbar-save-profile">Зберегти</button>
-      <button id="clearFiltersBtn" class="icon-btn toolbar-icon-action" title="Очистити фільтри" aria-label="Очистити фільтри">↺</button>
+      <button id="clearFiltersBtn" class="icon-btn toolbar-icon-action pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button>
       <details class="toolbar-settings"><summary class="icon-btn" title="Налаштування" aria-label="Налаштування">⚙</summary><div class="toolbar-settings-panel"><button id="renameProfileBtn" class="ghost">Перейменувати профіль</button><button id="deleteProfileBtn" class="ghost">Видалити профіль</button><button id="restoreProfileBtn" class="ghost">Відновити системний</button><button id="createSystemProfileBtn" class="ghost">+ Системний профіль</button><button id="cardsBtn" class="ghost">KPI-картки</button><button id="columnsBtn" class="ghost">Колонки</button></div></details>
       <span id="saveState" class="save-state"><i></i> Усі зміни збережено</span>
     </section>
@@ -130,13 +134,17 @@
   <main id="historyView" class="module-view" hidden>
       <header class="history-heading"><div><h1>Історія заявок</h1><p class="muted">Усі заявки · один рядок — одна заявка · перегляд без зміни даних</p></div><article class="history-total"><span>Заявки</span><strong id="historyTotal" aria-live="polite">—</strong></article><div id="historyHeadingActions"></div></header>
     <section class="card history-filters" id="historyFilters">
+      <div class="history-filter-row history-filter-primary">
       <input data-history="search" placeholder="Пошук у всіх полях…"><input data-history="code" placeholder="ЄДРПОУ / РНОКПП (точно)">
       <input data-history="supplier" placeholder="Постачальник"><input data-history="cpv" placeholder="Код ДК"><input data-history="framework" placeholder="Назва відбору">
       <input data-history="contract" placeholder="Реквізити договору"><input data-history="manager" placeholder="ПІБ керівника"><input data-history="officer" placeholder="УО протоколу">
+      </div>
+      <div class="history-filter-row history-filter-secondary">
       <input data-history="remarks" placeholder="Зауваження — пошук за фрагментом тексту" aria-label="Зауваження">
       <label>Від <input type="date" data-history="from"></label><label>До <input type="date" data-history="to"></label>
-      <select data-history="status"><option value="">Усі рішення</option value="pending">Очікує рішення</option><option value="active">Допущено</option><option value="unsuccessful">Відхилено</option></select>
-      <button type="button" id="historyReset">Очистити</button>
+      <select data-history="status"><option value="">Усі рішення</option><option value="pending">Очікує рішення</option><option value="active">Допущено</option><option value="unsuccessful">Відхилено</option></select>
+      <button type="button" id="historyReset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">Очистити</button>
+      </div>
     </section>
     <div class="card history-table"><table><thead><tr><th>Постачальник</th><th>Код ЄДРПОУ / РНОКПП</th><th>Керівник</th><th>Дата заявки</th><th>Код ДК</th><th>Назва відбору</th><th>Рішення</th><th>УО протоколу</th><th>Реквізити договору</th><th>Зауваження</th><th>Заявка / документи</th></tr></thead><tbody id="historyRows"></tbody></table></div>
     <footer class="pagination"><span id="historyCount"></span><button id="historyPrev" type="button">←</button><button id="historyNext" type="button">→</button></footer>
@@ -147,12 +155,11 @@
       <div class="module-kpis"><article><span>Постачальники</span><strong id="supplierRegistryTotal">—</strong></article><article><span>Активні кваліфікації</span><strong id="supplierRegistryActive">—</strong></article><article class="candidate-kpi"><span>Ще не в реєстрі</span><strong id="supplierRegistryCandidates">—</strong></article><article class="supplier-filter-kpi" data-risk="amcu"><span>АМКУ</span><strong id="supplierRegistryAmcu">—</strong></article><article class="supplier-filter-kpi" data-risk="nazk"><span>НАЗК</span><strong id="supplierRegistryNazk">—</strong></article></div>
     </section>
     <section class="supplier-toolbar supplier-toolbar-compact card">
-      <div class="supplier-filter-field supplier-filter-search"><label for="supplierRegistrySearch">Пошук</label><div class="search-wrap"><span>⌕</span><input id="supplierRegistrySearch" placeholder="Пошук за назвою або кодом ЄДРПОУ/РНОКПП…"></div></div>
+      <div class="supplier-filter-field supplier-filter-search"><label for="supplierRegistrySearch">Пошук</label><div class="search-wrap"><span>⌕</span><input id="supplierRegistrySearch" placeholder="Назва / ЄДРПОУ / РНОКПП / повний або частковий код ДК…"></div></div>
       <div class="supplier-filter-field"><label for="supplierRegistryType">Тип постачальника</label><select id="supplierRegistryType"><option value="">Усі типи</option><option value="individual_entrepreneur">ФОП</option><option value="legal_entity">ЮО</option></select></div>
       <div class="supplier-filter-field"><label for="supplierRegistryStatus">Статус постачальника</label><select id="supplierRegistryStatus"><option value="">Усі статуси</option><option value="active">Активний</option><option value="terminated">Неактивний</option><option value="suspended">Призупинений</option><option value="not_registered">Ще не в реєстрі</option></select></div>
-      <div class="supplier-filter-field"><label for="supplierRegistryDk">Код ДК</label><input id="supplierRegistryDk" list="supplierRegistryDkOptions" placeholder="Код ДК…" aria-label="Фільтр за кодом ДК"></div><datalist id="supplierRegistryDkOptions"></datalist>
-      <div class="supplier-filter-field"><label for="supplierRegistryFramework">Відбори</label><select id="supplierRegistryFramework" multiple size="3" aria-label="Один або кілька відборів"><option value="">Усі відбори</option></select></div>
-      <a id="supplierRegistryExcel" class="ghost" href="/api/suppliers-registry/export.xlsx">Експорт Excel</a>
+      <div class="supplier-filter-field"><label for="supplierRegistryDkFilter">Код ДК</label><input id="supplierRegistryDk" hidden><details id="supplierRegistryDkFilter" class="multi-filter"><summary>Усі коди ДК</summary><div class="multi-panel"><input class="multi-search" placeholder="Знайти код ДК" aria-label="Пошук кодів ДК"><button type="button" data-clear-scope>Очистити вибір</button><div class="multi-options"></div></div></details></div><datalist id="supplierRegistryDkOptions"></datalist>
+      <div class="supplier-filter-field"><label for="supplierRegistryFrameworkFilter">Відбори</label><select id="supplierRegistryFramework" multiple hidden aria-label="Один або кілька відборів"></select><details id="supplierRegistryFrameworkFilter" class="multi-filter"><summary>Усі відбори</summary><div class="multi-panel"><input class="multi-search" placeholder="UA-F / назва / категорія / ДК" aria-label="Пошук відборів"><button type="button" data-clear-scope>Очистити вибір</button><div class="multi-options"></div></div></details></div>
       <div hidden aria-hidden="true"><details class="supplier-advanced-filters"><summary>Розширені фільтри</summary><div class="supplier-advanced-filter-grid">
         <div class="supplier-filter-field"><label for="supplierRegistryEdrStatus">Статус у ЄДР</label><select id="supplierRegistryEdrStatus" aria-label="Статус у реєстрі (ЄДР)"><option value="">Усі статуси ЄДР</option></select></div>
         <div class="supplier-filter-field"><label for="supplierRegistryFreshness">Актуальність ЄДР</label><select id="supplierRegistryFreshness"><option value="">Усі маркери</option><option value="not_checked">⚪ Не перевірено</option><option value="lt30">🟢 &lt;30 днів</option><option value="gt30">🟡 &gt;30 днів</option><option value="gt60">🟠 &gt;60 днів</option><option value="gt90">🔴 &gt;90 днів</option><option value="not_current">🟣 Неактуально</option></select></div>
@@ -160,9 +167,9 @@
         <div class="supplier-filter-field"><label for="supplierRegistryVerifiedTo">Перевірено до</label><input id="supplierRegistryVerifiedTo" type="date"></div>
         <div class="supplier-filter-field"><label for="supplierRegistryAdmittedFrom">Останній допуск від</label><input id="supplierRegistryAdmittedFrom" type="date"></div>
         <div class="supplier-filter-field"><label for="supplierRegistryAdmittedTo">Останній допуск до</label><input id="supplierRegistryAdmittedTo" type="date"></div>
-      </div></details><button id="supplierRegistryReset" type="button" disabled>Скинути фільтри</button>
+      </div></details><button id="supplierRegistryReset" type="button" disabled class="pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button>
       <div class="supplier-toolbar-actions">
-      <button id="supplierRegistryRefresh" class="ghost">Оновити з Prozorro</button>
+      <button id="supplierRegistryRefresh" class="ghost pqm-prozorro-refresh" title="Оновити дані з Prozorro" aria-label="Оновити дані з Prozorro">↻ Prozorro</button>
       <span hidden><a id="supplierEdrExportFiltered" href="/api/supplier-edr-export?type=ALL&amp;mode=filtered">Експортувати відфільтровані</a><button id="supplierEdrExportSelected" type="button" disabled>Експортувати вибрані</button><button id="supplierEdrSync" disabled>ЄДР</button><button id="supplierNazkReviewSync" disabled>НАЗК</button></span>
       </div>
     </section>
@@ -195,7 +202,7 @@
         <label>Актуальність<select id="edrMonitoringFreshness"><option value="">Усі</option><option value="not_current">Неактуально</option><option value="lt30">&lt;30 днів</option><option value="gt30">&gt;30 днів</option><option value="gt60">&gt;60 днів</option><option value="gt90">&gt;90 днів</option><option value="not_checked">Не перевірено</option></select></label>
         <label>Перевірено від<input id="edrMonitoringVerifiedFrom" type="date"></label><label>Перевірено до<input id="edrMonitoringVerifiedTo" type="date"></label>
         <label>Остання заявка від<input id="edrMonitoringApplicationFrom" type="date"></label><label>Остання заявка до<input id="edrMonitoringApplicationTo" type="date"></label>
-        <div class="edr-monitoring-filter-actions"><button id="edrMonitoringReset" type="button" class="ghost" hidden>Очистити</button></div>
+        <div class="edr-monitoring-filter-actions"><button id="edrMonitoringReset" type="button" class="ghost pqm-filter-reset" hidden title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button></div>
       </div></details>
       <button id="edrMonitoringSync" type="button" class="primary">Синхронізувати дані ЄДР</button>
       <button id="edrMonitoringCreateTermination" type="button" class="ghost" hidden>Створити задачі на виключення</button>
@@ -208,7 +215,7 @@
 
   <main id="frameworkAnalyticsView" class="module-view" hidden>
     <section class="module-heading"><div><p class="eyebrow">КВАЛІФІКАЦІЙНІ ВІДБОРИ PROZORRO MARKET</p><h1>Відбори</h1><p>Актуальний стан відборів та реєстри постачальників</p></div><div class="kpi-row"><article class="kpi"><span>Відбори</span><strong id="frameworksTotal">0</strong></article></div></section>
-    <section class="card frameworks-toolbar"><input id="frameworksSearch" type="search" aria-label="Пошук відборів" placeholder="Пошук за ID, кодом ДК, назвою / категорією…"><select id="frameworksStatus" aria-label="Статус відбору"><option value="">Усі статуси</option><option value="active">Активні</option><option value="inactive">Неактивні</option></select><input id="frameworksDk" aria-label="Код ДК" placeholder="Код ДК..."><label>Від <input id="frameworksDateFrom" type="date"></label><label>До <input id="frameworksDateTo" type="date"></label><button id="frameworksRefresh" class="secondary">Оновити з Prozorro</button></section>
+    <section class="card frameworks-toolbar"><input id="frameworksSearch" type="search" aria-label="Пошук відборів" placeholder="Пошук за ID, кодом ДК, назвою / категорією…"><select id="frameworksStatus" aria-label="Статус відбору"><option value="">Усі статуси</option><option value="active">Активні</option><option value="inactive">Неактивні</option></select><input id="frameworksDk" aria-label="Код ДК" placeholder="Код ДК..."><label>Від <input id="frameworksDateFrom" type="date"></label><label>До <input id="frameworksDateTo" type="date"></label><button id="frameworksRefresh" class="secondary pqm-prozorro-refresh" title="Оновити дані з Prozorro" aria-label="Оновити дані з Prozorro">↻ Prozorro</button></section>
     <p id="frameworksSyncStatus" class="sync-note"></p>
     <a id="frameworksExportSelected" class="ghost" hidden>Експорт вибраних</a>
     <section class="card table-card"><div class="table-scroll"><table class="frameworks-table"><thead><tr><th>Вибір</th><th data-framework-sort="cpv_code">КОД ДК</th><th>ВІДБІР / AGREEMENT ID</th><th>НАЗВА / КАТЕГОРІЯ</th><th data-framework-sort="status">СТАТУС</th><th data-framework-sort="supplier_count">ПОСТАЧАЛЬНИКИ — ВСЬОГО</th><th>АКТИВНІ</th><th>ЗАБЛОКОВАНІ</th><th>НЕАКТИВНІ</th><th>ЕКСПОРТ EXCEL</th></tr></thead><tbody id="frameworksBody"></tbody></table></div><footer class="table-footer"><span id="frameworksPageInfo"></span><div><button id="frameworksPrev" class="secondary">←</button><button id="frameworksNext" class="secondary">→</button></div></footer></section>
@@ -250,7 +257,7 @@
     <section class="module-heading"><div><p class="eyebrow">Службові налаштування PQM</p><h1>Адміністрування</h1><p class="muted">Налаштування, що не належать до щоденного розгляду заявок</p></div></section>
     <div class="reference-tabs card"><button type="button" data-admin-tab="frameworks" class="active">Відбори</button><button type="button" data-admin-tab="remarks">Конструктор зауважень</button><button type="button" data-admin-tab="templates">Шаблони документів</button><button type="button" data-admin-tab="sync">Синхронізація / Дані</button><button type="button" data-admin-tab="officers">Уповноважені особи / ролі</button><button type="button" data-admin-tab="navigation">Навігація</button></div>
     <section id="adminFrameworksPanel" class="admin-panel">
-      <div class="card admin-framework-toolbar"><input id="adminFrameworkSearch" type="search" placeholder="Пошук за ID, назвою або кодом ДК…"><select id="adminFrameworkStatus"><option value="">Усі статуси</option><option>Активний</option><option>Закритий</option><option>Не відбувся</option><option>Статус не визначено</option></select><select id="adminFrameworkCategory"><option value="">Усі категорії</option></select><select id="adminFrameworkOfficer"><option value="">Усі УО</option><option value="__unassigned__">Не призначено</option></select><span class="admin-framework-actions"><button id="adminFrameworkReset" class="ghost">Скинути</button><button id="adminFrameworkAdd" class="primary">+ Додати відбір</button></span><button id="adminFrameworkImportNew" class="ghost">Імпортувати нові відбори</button><span id="adminFrameworkCount" class="muted"></span></div>
+      <div class="card admin-framework-toolbar"><input id="adminFrameworkSearch" type="search" placeholder="Пошук за ID, назвою або кодом ДК…"><select id="adminFrameworkStatus"><option value="">Усі статуси</option><option>Активний</option><option>Закритий</option><option>Не відбувся</option><option>Статус не визначено</option></select><select id="adminFrameworkCategory"><option value="">Усі категорії</option></select><select id="adminFrameworkOfficer"><option value="">Усі УО</option><option value="__unassigned__">Не призначено</option></select><span class="admin-framework-actions"><button id="adminFrameworkReset" class="ghost pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button><button id="adminFrameworkAdd" class="primary">+ Додати відбір</button></span><button id="adminFrameworkImportNew" class="ghost">Імпортувати нові відбори</button><span id="adminFrameworkCount" class="muted"></span></div>
       <datalist id="adminFrameworkCategoryOptions"></datalist>
       <section class="card"><div class="supplier-table-scroll"><table class="supplier-table admin-framework-table"><thead><tr><th data-admin-sort="pretty_id">ID відбору</th><th data-admin-sort="dk_code">Код ДК</th><th data-admin-sort="category">Категорія</th><th>Посилання на майданчик</th><th data-admin-sort="responsible_officer">Відповідальна УО</th><th data-admin-sort="status">Статус / кінцева дата</th><th>Prozorro</th><th></th></tr></thead><tbody id="adminFrameworksBody"></tbody></table></div></section>
     </section>
@@ -298,7 +305,7 @@
       <label class="compact-date">До <input id="requestsDateTo" type="date"></label>
       <button id="requestsDeclension" type="button" class="ghost">Відмінювання</button>
       <button id="requestsTemplates" type="button" class="ghost" hidden>Шаблони</button>
-      <button id="requestsRefresh" class="ghost">Оновити з Prozorro</button>
+      <button id="requestsRefresh" class="ghost pqm-prozorro-refresh" title="Оновити дані з Prozorro" aria-label="Оновити дані з Prozorro">↻ Prozorro</button>
     </section>
     <p id="requestsSyncStatus" class="module-sync muted"></p>
     <section class="supplier-table-card card"><div class="supplier-table-scroll"><table class="supplier-table requests-table"><thead><tr><th>Звернення</th><th>Дата</th><th>Замовник</th><th>Постачальник</th><th>Підстава</th><th>Пояснення до</th><th>Закупівля / договір / звернення</th><th>Статус</th><th>Рішення</th><th>Документи</th></tr></thead><tbody id="requestsBody"></tbody></table></div><footer id="requestsFooter" class="supplier-pagination"><span id="requestsPageInfo"></span><div><button id="requestsPrev" type="button" class="ghost" aria-label="Попередня сторінка">←</button><button id="requestsNext" type="button" class="ghost" aria-label="Наступна сторінка">→</button></div></footer></section>

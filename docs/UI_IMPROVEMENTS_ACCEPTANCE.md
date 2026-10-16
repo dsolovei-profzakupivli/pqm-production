@@ -60,3 +60,39 @@ delta (there is none). Do not restore disk snapshots merely to roll code back.
 
 Production promotion is a separate candidate on its actual deployed baseline,
 only after sandbox acceptance; do not transfer sandbox configuration or data.
+
+## Consolidated sandbox UI follow-up (2026-10-16)
+
+Parent / manual rollback: `fc31efbbf817da84e1418fce13d9d4d7e0b29b62`.
+The fresh metadata-only sandbox check confirmed that Live SHA and the enabled
+background-jobs kill-switch. No runtime database was opened for that check.
+
+- Applications: selected KPI stay in one horizontal strip; dynamic officers
+  remain the single `officers` preference group. No individual officer keys.
+  Actions occupy two compact rows, independent of KPI scrolling.
+- Work Queue: content-sized KPI, officer, category and publication cards retain
+  their original heights, text sizes, callbacks and counts.
+- Frameworks: copy full UA-F number, aligned to the cell right edge. Existing
+  export and personal table widths are untouched.
+- Supplier Registry: no visible XLSX action here (Frameworks export remains).
+  Universal CPV search checks related qualifications/memberships before paging.
+  Existing read endpoint accepts repeated or comma-separated string CPV codes;
+  selected codes/framework IDs use OR internally and AND between groups. CPV,
+  framework and status are scoped together before supplier aggregation.
+  Dropdown searches do not discard checked values. No schema or write API.
+- External Work Queue KPI navigation replaces old application filters and clears
+  selection snapshots/revision before applying the card's compound conditions.
+  A late select-all response is rejected even if selection was previously empty.
+  Local application KPI and manual filter combination are unchanged.
+- History: first row contains search/code/supplier/CPV/framework/contract/manager/
+  officer; second row has wide remarks, dates, compact status and `Очистити`.
+  Text-field clears and existing filter handlers remain. Narrow screens wrap.
+  Both themes must have the same compact row geometry (no stretched dark rows).
+
+Offline checks: `validation/application_header_browser.cjs`,
+`validation/consolidated_ui_browser.cjs`, `validation/ui_improvements_browser.cjs`,
+`validation/external_kpi_filters.cjs`, plus Python regression suites.
+Browser fixtures block outbound requests; profile/selection tests use synthetic
+state only. Do not exercise live refresh, importer or sync for UI acceptance.
+The final exact SHA still requires Linux regression and Docker gate evidence.
+No deploy, restart, rollback, production or Google operation is performed here.

@@ -25,12 +25,16 @@ function profileHarness(){
   return h;
 }
 function queueHarness(){
-  const h=profileHarness();h.c.activeModule='workQueue';h.c.filterSelections={status:new Set()};
+  const h=profileHarness();h.c.activeModule='workQueue';h.c.filterSelections={status:new Set(),marketplace:new Set(),registry:new Set(),framework:new Set(),dk:new Set(),supplier:new Set()};
+  h.c.selected=new Set();h.c.applicationSelection={clear:()=>h.c.selected.clear()};
+  h.c.clearApplicationDeepLinkFilter=()=>{h.c.deepLinkSubmissionId=''};h.c.$$=()=>[];
+  h.c.loadRowsGeneration=0;h.c.invalidateRegistryStats=()=>{};h.c.syncPrimaryFilters=()=>{};
+  h.c.saveFilterState=()=>{};h.c.updateMultiSummary=()=>{};h.c.updateApplicationFilterStyles=()=>{};h.c.marketplaceFilterLabels={};
   h.response.items[0].columns=structuredClone(h.c.profiles[0].columns);
   h.c.addCalendarDays=()=> '2026-10-09';h.c.showModule=name=>{h.c.activeModule=name};
   h.c.loadRows=async()=>{h.rowLoads=(h.rowLoads||0)+1;h.c.rows=[{id:'registry-row'}];return true};
   h.c.$('#queueProtocolFrom').value='2026-10-01';h.c.$('#queueProtocolTo').value='2026-10-08';
-  vm.runInContext(src.match(/^function openApplicationsFromQueue\(.*$/m)[0]+'\n'+src.match(/^\$\('#queueQualificationCards'\).*$/m)[0],h.c);
+  vm.runInContext(chunk('function resetApplicationsForExternalKpi(){','function openApplicationsFromQueue(')+src.match(/^function openApplicationsFromQueue\(.*$/m)[0]+'\n'+src.match(/^\$\('#queueQualificationCards'\).*$/m)[0],h.c);
   h.click=officer=>h.c.$('#queueQualificationCards').onclick({target:{closest:()=>({dataset:{qualificationOfficer:officer}})}});
   return h;
 }

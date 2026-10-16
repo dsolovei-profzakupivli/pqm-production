@@ -318,10 +318,13 @@ class SupplierFilterExcelTests(unittest.TestCase):
         html=(root/'index.html').read_text(encoding='utf-8')
         supplier_view=re.search(r'<main id="suppliersView".*?</main>',html,re.S).group()
         parser=Visibility();parser.feed(supplier_view)
-        for key in ['supplierRegistryDk','supplierRegistryFramework','supplierRegistryExcel']:
+        for key in ['supplierRegistryDkFilter','supplierRegistryFrameworkFilter']:
             self.assertEqual(parser.found[key],[False],key)
+        self.assertEqual(parser.found['supplierRegistryFramework'],[True])
+        self.assertNotIn('supplierRegistryExcel',parser.found)
         self.assertEqual(parser.found['supplierRegistryEdrStatus'],[True])
         js=(root/'app.js').read_text(encoding='utf-8')
+        self.assertIn('/suppliers-registry/export.xlsx?',js)
         function=re.search(r'function supplierRegistryFilterParams\(\)\{.*?\n\}',js,re.S).group()
         script="const $=id=>({value:id.includes('Dk')?'03110000-1':' Проба ',selectedOptions:[{value:'f1'},{value:'f2'}]});const supplierRegistryRisk='';"+function+";const q=supplierRegistryFilterParams();if(q.getAll('framework_id').join(',')!=='f1,f2'||q.get('dk_code')!=='03110000-1'||q.has('page')||q.has('size'))process.exit(1);"
         result=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=10)

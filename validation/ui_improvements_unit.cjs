@@ -1,5 +1,13 @@
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const ui=require('../ui_improvements.js');
+const buttons=new Map();let syncCalls=0;
+for(const id of [...ui.resetIds,...ui.prozorroIds])buttons.set('#'+id,{textContent:ui.resetIds.includes(id)?'↺':'Оновити з Prozorro',title:'',disabled:true,onclick:()=>syncCalls++,classList:{add(){}},setAttribute(key,value){this[key]=value}});
+const root={querySelector:key=>buttons.get(key)};
+ui.formatActionButtons(root);
+for(const id of ui.resetIds){assert.equal(buttons.get('#'+id).textContent,'×');assert.equal(buttons.get('#'+id).title,'Скинути всі фільтри');assert(buttons.get('#'+id).disabled)}
+for(const id of ui.prozorroIds){assert.equal(buttons.get('#'+id).textContent,'↻ Prozorro');assert.equal(buttons.get('#'+id).title,'Оновити дані з Prozorro');assert(buttons.get('#'+id).disabled)}
+const busy=buttons.get('#requestsRefresh'),handler=busy.onclick;busy.textContent='Оновлення…';busy.title='Оновлення вже триває';ui.formatActionButtons(root);
+assert.equal(busy.textContent,'Оновлення…');assert.equal(busy.title,'Оновлення вже триває');assert.equal(busy.onclick,handler);assert.equal(syncCalls,0);
 assert.equal(ui.compactOfficer('Дмитро САВВА'),'Д. Савва');
 assert.equal(ui.compactOfficer('Олена ЄРЬОМІНА'),'О. Єрьоміна');
 assert.equal(ui.compactOfficer('Не визначено'),'Не визначено');
@@ -16,7 +24,9 @@ assert(boot.includes("['appeals.read','requestsNav'"));
 assert(boot.includes('if(refreshing||document.hidden||!currentMe)return'));
 assert(boot.includes('setInterval(refresh,60000)'));
 assert(css.includes('#frameworkAnalyticsView .frameworks-table td{font-size:13px'));
-assert(css.includes('#applicationsView #officerCards{order:-1'));
+assert(css.includes('#applicationsView #officerCards,#applicationsView #kpiCards{display:contents}'));
+assert(css.includes('overflow-x:auto;overflow-y:auto'));
+assert(!css.includes('>[data-kpi-card]:not('));
 assert(css.includes('.pqm-clear-wrap>input{box-sizing:border-box;width:100%;min-width:0!important;max-width:100%;'));
 assert(app.includes("ui_features?.supplier_bids_ready===true?''"));
 console.log('UI helper/contracts PASS');

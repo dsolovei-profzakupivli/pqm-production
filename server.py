@@ -5523,11 +5523,10 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     search = params.get("search", [""])[0].strip().casefold()
     status = params.get("status", [""])[0].strip()
     risk = params.get("risk", [""])[0].strip()
-    dk_code = params.get("dk_code", [""])[0].strip()
-    framework_id = params.get("framework_id", [""])[0].strip()
-    import supplier_selection
-    selection_sql, selection_args = supplier_selection.selection_sql(params)
-    scoped_selection = bool(dk_code or framework_id or status)
+    import supplier_registry_filters
+    selection_sql, selection_args = supplier_registry_filters.selection(params)
+    dk_predicate, dk_args = supplier_registry_filters.dk_scope(params)
+    scoped_selection = bool(dk_args or any(params.get('framework_id', [])) or status)
     applicant_scope = ("EXISTS (SELECT 1 FROM selected_scope x WHERE x.framework_id=s.framework_id "
                        "AND x.supplier_code=s.supplier_code)" if scoped_selection else "1=1")
     # Registry membership does not require a complete application backlink.
@@ -5564,8 +5563,13 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     if search:
         where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR EXISTS "
           "(SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=combined.supplier_code "
-          "AND INSTR(CASEFOLD(ep.full_name),?)>0))")
-        args.extend([search, search, search])
+          "AND INSTR(CASEFOLD(ep.full_name),?)>0) OR EXISTS "
+          "(SELECT 1 FROM submissions ss JOIN qualifications qq ON qq.submission_id=ss.id "
+          "JOIN frameworks ff ON ff.id=ss.framework_id WHERE ss.supplier_code=combined.supplier_code "
+          "AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
+          "(SELECT 1 FROM registry_contracts rr JOIN frameworks ff ON ff.id=rr.framework_id "
+          "WHERE rr.supplier_code=combined.supplier_code AND INSTR(CASEFOLD(ff.dk_code),?)>0))")
+        args.extend([search] * 5)
     if status == "active":
         where.append("active_count>0")
     elif status == "suspended":
@@ -5616,7 +5620,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
           COUNT(*) applications_count, MAX(s.date_published) last_application,
           GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
         FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
-        WHERE COALESCE(s.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) AND {applicant_scope} GROUP BY s.supplier_code
+        WHERE COALESCE(s.supplier_code,'')<>'' AND {dk_predicate} AND {applicant_scope} GROUP BY s.supplier_code
       ), scoped_registry AS (
         SELECT rc.supplier_code,
           MAX(COALESCE(NULLIF(r.supplier_name,''),'Назву не отримано')) supplier_name,
@@ -5631,7 +5635,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
         FROM registry_contracts rc
         LEFT JOIN frameworks f ON f.id=rc.framework_id
         LEFT JOIN supplier_registry_summary r ON r.supplier_code=rc.supplier_code
-        WHERE COALESCE(rc.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) AND {registry_scope} GROUP BY rc.supplier_code
+        WHERE COALESCE(rc.supplier_code,'')<>'' AND {dk_predicate} AND {registry_scope} GROUP BY rc.supplier_code
       ), combined AS (
         SELECT r.supplier_code,r.supplier_name,r.qualifications_count,r.active_count,
           r.inactive_count,r.suspended_count,r.frameworks_count,r.dk_codes,r.last_qualification,
@@ -5645,7 +5649,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
         WHERE r.supplier_code IS NULL
       )
     """
-    source_args = [*selection_args, dk_code, dk_code, dk_code, dk_code, *framework_ids]
+    source_args = [*selection_args, *dk_args, *dk_args, *framework_ids]
     query_args = source_args + args
     with (nullcontext(connection) if connection is not None else db()) as con:
         con.create_function("SUPPLIER_ENTITY_TYPE", 1, lambda code: supplier_entity_type(str(code or "")), deterministic=True)
@@ -5695,8 +5699,8 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
         page_application_stats = {}
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
-            dk_clause = " AND f.dk_code=?" if dk_code else ""
-            stats_args = [*selection_args, *supplier_codes, *([dk_code] if dk_code else [])]
+            dk_clause = " AND " + dk_predicate if dk_args else ""
+            stats_args = [*selection_args, *supplier_codes, *dk_args]
             page_application_stats = {row["supplier_code"]: dict(row) for row in con.execute(f"""
               WITH selected_scope AS ({selection_sql})
               SELECT s.supplier_code,COUNT(*) applications_count,MAX(s.date_published) last_application,
@@ -5847,7 +5851,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
         item["current_manager"] = (known_managers.get(code) or {}).get("manager_name", "")
         item["current_manager_source"] = (known_managers.get(code) or {}).get("resolution_source", "")
         item["prozorro_status"] = canonical_state.get("prozorro_status", "Ще не в реєстрі")
-        if dk_code or framework_id:
+        if dk_args or framework_ids:
             item["prozorro_status"] = ("Активний" if item["active_count"] else
               "Призупинений" if item["suspended_count"] else
               "Неактивний" if item["qualifications_count"] else "Ще не в реєстрі")

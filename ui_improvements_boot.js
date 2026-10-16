@@ -15,9 +15,10 @@
   const clearState=()=>{
     document.querySelectorAll('.pqm-clear-wrap').forEach(w=>{w.querySelector('button').hidden=!w.querySelector('input').value});
     const bulk=document.getElementById('bulkBtn');if(bulk&&!bulk.title)bulk.title='Масове заповнення вибраних заявок';
-    const reset=document.getElementById('resetBtn');if(reset?.textContent==='Оновити з Prozorro')reset.textContent='↻ Prozorro';
+    PqmUi.formatActionButtons(document);
   };
   document.addEventListener('change',clearState);document.addEventListener('click',()=>requestAnimationFrame(clearState));
+  clearState();
   let clearQueued=false;
   new MutationObserver(()=>{if(clearQueued)return;clearQueued=true;requestAnimationFrame(()=>{clearQueued=false;clearState()})})
     .observe(document.getElementById('applicationShell'),{childList:true,subtree:true});

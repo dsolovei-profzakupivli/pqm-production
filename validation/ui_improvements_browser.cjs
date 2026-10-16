@@ -58,7 +58,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
     await page.setViewportSize({width,height:1000});
     await page.evaluate(()=>showFixture('applicationsView'));await page.waitForTimeout(80);
     const metrics=await page.locator('#applicationsView .heading-metrics').boundingBox(),actions=await page.locator('#applicationsView .heading-actions').boundingBox();
-    assert(metrics&&actions);assert(actions.y>=metrics.y+metrics.height-1||actions.x>=metrics.x+metrics.width-1,'KPI/actions overlap');
+    assert(metrics&&actions);assert(actions.y>=metrics.y+metrics.height-1||metrics.y>=actions.y+actions.height-1||actions.x>=metrics.x+metrics.width-1||metrics.x>=actions.x+actions.width-1,'KPI/actions overlap');
     if(width===1440||width===390)await page.screenshot({path:path.join(OUT,`applications-${dark?'dark':'light'}-${width}.png`)});
     await page.evaluate(()=>showFixture('frameworkAnalyticsView'));await page.waitForTimeout(80);
     assert.equal(await page.locator('#frameworksBody td').first().evaluate(n=>getComputedStyle(n).fontSize),'13px');

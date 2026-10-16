@@ -11,6 +11,7 @@
     const clone=row=>JSON.parse(JSON.stringify(row));
     return {
       selected,get scope(){return scope},get revision(){return revision},
+      clear(){selected.clear();snapshots.clear();revision++},
       sync(filters){const next=signature(filters);if(next===scope)return 0;
         const count=selected.size;selected.clear();snapshots.clear();scope=next;revision++;return count},
       toggle(row,on){if(on){if(!selected.has(row.id))snapshots.set(row.id,clone(row));selected.add(row.id)}
