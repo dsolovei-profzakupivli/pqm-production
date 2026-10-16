@@ -10528,6 +10528,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/admin/background-jobs':
+            if not SANDBOX_MODE:return self.send_json({'error':'SANDBOX only'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('admin.manage'):
+                return self.send_json({'error':'Недостатньо прав'},403)
+            return self.send_json(background_jobs.status())
         if parsed.path == "/api/account":
             with db() as con:
                 row = con.execute("SELECT display_name,start_view,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
@@ -11196,6 +11201,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/admin/background-jobs':
+            if not SANDBOX_MODE:return self.send_json({'error':'SANDBOX only'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('admin.manage'):
+                return self.send_json({'error':'Недостатньо прав'},403)
+            try:
+                if not 0 < int(self.headers.get('Content-Length','0')) <= 128:
+                    return self.send_json({'error':'Invalid body length'},400)
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'confirm'} or payload['confirm'] is not True:
+                    return self.send_json({'error':'Потрібне підтвердження'},400)
+                return self.send_json(background_jobs.disable_sandbox())
+            except (OSError,RuntimeError,ValueError,KeyError):
+                return self.send_json({'error':'Не вдалося підтвердити й зберегти SANDBOX блокування'},503)
         if parsed.path == prod_google_baseline.PATH:
             try:
                 length = int(self.headers.get("Content-Length", "0"))

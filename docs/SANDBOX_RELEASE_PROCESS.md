@@ -74,6 +74,28 @@ Google authorization, destination and environment guards independently.
 
 ### Standard sandbox update procedure
 
+The sandbox administration page also provides one confirmed action, “Вимкнути
+всю автоматику”, for users with `admin.manage`. It creates the fixed marker
+`.pqm-background-jobs-disabled` inside the attested sandbox persistent data
+directory. Every process checks its presence through the same interlock, including
+after restart. The endpoint does not migrate SQLite, edit schedules or delete data.
+There is no UI enable/bypass operation; the environment value `1` always wins.
+The displayed state is “Автоматику вимкнено” or “Автоматика активна”; it describes
+the execution interlock, not cancellation of already-running operations.
+Removing a persisted marker requires a separately approved operator action and
+cannot bypass an environment lock. For controlled scheduler tests prefer a fresh
+disposable fixture without the marker; setting the environment flag to `0` alone
+does not clear a button-created block.
+
+For the next controlled deploy, retain the accepted service/disk/DB identities
+unless a concrete change is detected. Recheck only mutable startup-critical facts:
+live SHA, health, running jobs/leases, recent blocking errors, rollback availability
+and the sandbox-only flag `1`. Deploy the newly tested SHA only after approval,
+then check health, effective blocking, unchanged schedules and a read-only UI smoke.
+No new schema change is required for the button; ordinary existing startup
+initialization still requires its normal review. Do not repeat a full infrastructure
+audit without a new risk.
+
 1. With separate approval for configuration changes, install the persistent
    sandbox-only `PQM_DISABLE_BACKGROUND_JOBS=1` setting. Retain it on every
    restart, deployment and rollback. Saving configuration may restart the service;

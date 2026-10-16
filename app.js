@@ -1941,6 +1941,27 @@ async function toggleManualBidsUpdate(){
   button.disabled=true;
   try{const result=await request(`${API}/admin/runtime-features/manual-bids-update`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});renderManualBidsUpdateState(result.feature);toast(`Ручне оновлення Bids ${enabled?'увімкнено':'вимкнено'}`,'success');await loadRuntimeFeatures()}catch(error){button.disabled=false;toast(error.message,'error')}
 }
+async function loadSandboxAutomationControl(sandbox){
+  const root=$('#sandboxAutomationControl'),button=$('#disableSandboxAutomation'),label=$('#sandboxAutomationState');
+  if(!root||!button||!label)return;
+  root.hidden=!(sandbox&&role()==='admin'&&currentMe?.permissions?.['admin.manage']===true);
+  if(root.hidden)return;
+  button.disabled=true;
+  try{
+    const state=await request(`${API}/admin/background-jobs`);
+    label.textContent=state.disabled?'Автоматику вимкнено':'Автоматика активна';
+    button.disabled=!state.can_disable;
+    button.title=state.environment_locked?'Захист PQM_DISABLE_BACKGROUND_JOBS=1 не можна обійти з інтерфейсу':'';
+    button.onclick=async()=>{
+      if(!confirm('Вимкнути нові автоматичні запуски? Розклади збережуться. Уже запущені операції не скасовуються.'))return;
+      button.disabled=true;
+      try{
+        await request(`${API}/admin/background-jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true})});
+        await loadRuntimeFeatures();
+      }catch(error){label.textContent='Стан блокування не підтверджено';toast(error.message,'error')}
+    };
+  }catch(error){label.textContent='Стан автоматики не підтверджено';button.disabled=true}
+}
 async function toggleSchedulerJob(button){
   const job=button.dataset.schedulerJob,enabled=button.dataset.enabled==='true';
   const confirmation=button.dataset.sandbox==='true'
@@ -2012,6 +2033,7 @@ async function loadSchedulerEditors(){
 async function loadRuntimeFeatures(){
   try{
     const features=await request(`${API}/runtime-features`);
+    await loadSandboxAutomationControl(features.sandbox_mode===true);
     const banner=$('#environmentBanner');
     if(banner){
       banner.textContent=environmentBannerText(features);
