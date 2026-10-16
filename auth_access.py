@@ -105,6 +105,8 @@ def effective(con, username, base):
     return {'code':code,'base_role':base,'active':True,'permissions':rights}
 
 def permission_key(method,path):
+    if method=='GET' and path=='/api/framework-registry':return 'frameworks.read'
+    if method=='GET' and path=='/api/suppliers-registry/export.xlsx':return 'suppliers.read'
     if method=='GET' and path in {'/api/edr-monitoring','/api/suppliers-registry-risk-counts'}:
         return 'suppliers.read'
     if method=='POST' and path=='/api/edr-monitoring/termination-exclusions/preview':

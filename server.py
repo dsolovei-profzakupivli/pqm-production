@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import auth_access
 import table_widths
+import protocol_supplier_names
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
@@ -3136,6 +3137,39 @@ def pending_directory_framework_rows(con: sqlite3.Connection) -> list[dict]:
       WHERE framework_id IS NULL AND source='PQM' ORDER BY pretty_id""")]
 
 
+def framework_registry(params, con):
+    """Operational agreement cache only: no Bids connection, sync or writes."""
+    import supplier_selection
+    counts=supplier_selection.registry_counts(con)
+    get=lambda k:params.get(k,[''])[0].strip()
+    items=[]
+    framework_rows=[dict(r) for r in con.execute('SELECT * FROM frameworks')]
+    framework_rows.extend(pending_directory_framework_rows(con))
+    categories={}
+    for fid,pretty_id,category in con.execute('SELECT framework_id,pretty_id,category FROM framework_service_directory'):
+        if category:categories.setdefault(fid or pretty_id,[]).append(str(category))
+    for raw in framework_rows:
+        f=dict(raw);body=json.loads(f.pop('raw_json') or '{}')
+        state=effective_framework_status(f['status'] or '',body)
+        haystack=' '.join([*(str(f.get(k) or '') for k in ('id','pretty_id','title','dk_code','agreement_id')), *categories.get(f['id'] or f['pretty_id'],[])])
+        if get('search').casefold() not in haystack.casefold():continue
+        if get('dk_code').casefold() not in (f.get('dk_code') or '').casefold():continue
+        if get('status') and get('status') not in {state,'active' if state=='active' else 'inactive'}:continue
+        published=str(body.get('date') or body.get('dateCreated') or '')[:10]
+        if get('date_from') and (not published or published<get('date_from')):continue
+        if get('date_to') and (not published or published>get('date_to')):continue
+        c=counts.get(f['id'],dict(total=0,active=0,suspended=0,terminated=0,other=0,issues=[]))
+        items.append({'framework':f,'framework_id':f['id'],'agreement_id':f.get('agreement_id') or '',
+          'cpv_code':f.get('dk_code') or '', 'source_status':state,'counts':c})
+    sort=get('sort');direction=get('direction')=='desc'
+    key=(lambda x:x['counts']['total']) if sort=='supplier_count' else ((lambda x:x['source_status']) if sort=='status' else (lambda x:x['cpv_code']))
+    items.sort(key=lambda x:x['framework_id']);items.sort(key=key,reverse=direction)
+    total=len(items);page=max(1,int(get('page') or 1));size=min(100,max(1,int(get('size') or 10)))
+    issues=[{'framework_id':x['framework_id'],**issue} for x in items for issue in x['counts']['issues']]
+    return {'items':items[(page-1)*size:page*size],'total':total,'pages':max(1,(total+size-1)//size),
+      'bids_available':BIDS_MODE!='disabled','status_issues':issues,'source':'registry_contracts.raw_json; frameworks.raw_json'}
+
+
 def base_framework_analytics(params: dict) -> dict:
     """Serve authoritative framework metadata when ProzorroBids is intentionally disabled."""
     page = max(1, int(params.get("page", [1])[0]))
@@ -5531,6 +5565,44 @@ def list_qualified_suppliers(params: dict) -> dict:
             "page": page, "size": size, "pages": (total + size - 1) // size}
 
 
+def supplier_registry_excel_filename(params, *, connection=None):
+    ids=list(dict.fromkeys(v for v in params.get('framework_id',[]) if v))
+    if len(ids)!=1:return 'pqm-suppliers.xlsx'
+    def name(con):
+        row=con.execute('SELECT dk_code FROM frameworks WHERE id=?',(ids[0],)).fetchone()
+        code=str(row[0] or '') if row else ''
+        return code+'_pqm-suppliers.xlsx' if re.fullmatch(r'[0-9]{8}-[0-9]',code) else 'pqm-suppliers.xlsx'
+    if connection is not None:return name(connection)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+        return name(con)
+
+
+def supplier_registry_excel(params, *, connection=None):
+    """Complete selected framework registers; read-only, no cache rebuild/sync."""
+    import supplier_selection
+    import supplier_xlsx
+    ids=list(dict.fromkeys(v for v in params.get('framework_id',[]) if v))
+    if params.get('registry_only')!=['1'] or not ids:
+        raise ValueError('Оберіть конкретний відбір для експорту реєстру')
+    def build(con):
+        known={r[0] for r in con.execute('SELECT id FROM frameworks WHERE id IN ('+','.join('?' for _ in ids)+')',ids)}
+        if known!=set(ids):raise ValueError('Вибраний відбір відсутній у локальному кеші')
+        members=supplier_selection.registry_members(con,ids)
+        expected={r['supplier_code'] for r in members}
+        rows=supplier_selection.export_rows(con,{**params,'framework_id':ids},expected)
+        codes=[r['values'][0] for r in rows]
+        if set(codes)!=expected or len(set(codes))!=len(codes):raise ValueError('Неповний або неунікальний експорт реєстру')
+        return supplier_xlsx.workbook(rows)
+    if connection is not None:return build(connection)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+        con.row_factory=sqlite3.Row
+        con.create_function('DIGITS',1,lambda value:re.sub(r'\D','',str(value or '')),deterministic=True)
+        con.execute('PRAGMA query_only=ON');con.execute('BEGIN')
+        deadline=time.monotonic()+120
+        con.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
+        return build(con)
+
+
 def latest_supplier_submission_name(con, code):
     row=con.execute('''SELECT supplier_name FROM submissions WHERE DIGITS(supplier_code)=?
       ORDER BY julianday(date_published) DESC,id DESC LIMIT 1''',(code,)).fetchone()
@@ -7370,6 +7442,7 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     elif item["review"].get("review_status") == "completed":
         item["review"]["review_status"] = "reviewed"
     item["supplier_verified"] = dict(supplier) if supplier else None
+    item["protocol_supplier_names"] = protocol_supplier_names.resolve(item,normalize_document_name)
     item["warning_summary"] = violation_threshold_summary(warning_dates)
     item["warning_summary"]["month"] = item["warning_summary"]["current_month"]
     item["warning_summary"]["three_months"] = item["warning_summary"]["three_calendar_months"]
@@ -7875,7 +7948,7 @@ def violation_protocol_declensions(item: dict) -> list[dict]:
                     text=''.join(node.text or '' for node in paragraph.iter(word+'t'))
                     tokens.update(re.findall(r'\{\{\s*([a-z_]+)\s*\}\}',text))
     customer=normalize_document_name((item.get('review') or {}).get('customer_verified_full_name') or item.get('author_name') or '')
-    supplier=normalize_document_name((item.get('supplier_verified') or {}).get('full_name') or item.get('defendant_name') or '')
+    supplier=protocol_supplier_names.resolve(item,normalize_document_name)['full_name']['value']
     specs={'customer_name_genitive':(customer,infer_entity_type(customer,item.get('author_code')),'genitive','Замовник'),
            'customer_name_accusative':(customer,infer_entity_type(customer,item.get('author_code')),'accusative','Замовник'),
            'supplier_name_genitive':(supplier,infer_entity_type(supplier,item.get('defendant_code')),'genitive','Постачальник'),
@@ -8056,7 +8129,7 @@ def _violation_protocol_filename(item: dict, gate: dict) -> str:
         "ідентифікатор звернення": item.get("report_id"),
         "номер протоколу": gate.get("protocol_number"),
         "назва замовника": first_name(review.get("customer_verified_short_name"), item.get("author_name")),
-        "назва постачальника": first_name(supplier.get("short_name"), item.get("defendant_name")),
+        "назва постачальника": protocol_supplier_names.resolve(item,normalize_document_name)['filename_name']['value'],
         "код постачальника": item.get("defendant_code"),
     }
     cleaned = {}
@@ -8117,10 +8190,9 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     reason_number = reason_metadata.get("number", "")
     customer_name = normalize_document_name(
         review.get("customer_verified_full_name") or item.get("author_name") or "")
-    supplier_name = normalize_document_name(
-        (item.get("supplier_verified") or {}).get("full_name") or item.get("defendant_name") or "")
-    supplier_short_name = normalize_document_name(
-        (item.get("supplier_verified") or {}).get("short_name") or supplier_name)
+    names = protocol_supplier_names.resolve(item,normalize_document_name)
+    supplier_name = names['full_name']['value']
+    supplier_short_name = names['short_name']['value']
     supplier_code = str(item.get("defendant_code") or "").strip()
     customer_code = str(item.get("author_code") or "").strip()
     customer_entity_type = infer_entity_type(customer_name, customer_code)
@@ -10644,6 +10716,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(list_frameworks())
         if parsed.path == "/api/framework-analytics":
             return self.send_json(framework_analytics(urllib.parse.parse_qs(parsed.query)))
+        if parsed.path == '/api/framework-registry':
+            with db() as con:return self.send_json(framework_registry(urllib.parse.parse_qs(parsed.query),con))
+        if parsed.path == '/api/suppliers-registry/export.xlsx':
+            params=urllib.parse.parse_qs(parsed.query)
+            raw=supplier_registry_excel(params)
+            filename=supplier_registry_excel_filename(params)
+            self.send_response(200)
+            self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            self.send_header('Content-Disposition','attachment; filename="'+filename+'"')
+            self.send_header('Content-Length',str(len(raw)))
+            self.send_header('Cache-Control','no-store');self.end_headers();self.wfile.write(raw)
+            return
         if parsed.path == "/api/bids-sync-status":
             query = urllib.parse.parse_qs(parsed.query)
             return self.send_json(bids_sync_status(force=query.get("refresh") == ["1"]))
