@@ -5,6 +5,7 @@ import json
 import background_jobs
 import auth_access
 import table_widths
+import protocol_supplier_names
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
@@ -3378,10 +3379,14 @@ def framework_registry(params, con):
     items=[]
     framework_rows=[dict(r) for r in con.execute('SELECT * FROM frameworks')]
     framework_rows.extend(pending_directory_framework_rows(con))
+    categories={}
+    for fid,pretty_id,category in con.execute('SELECT framework_id,pretty_id,category FROM framework_service_directory'):
+        if category:categories.setdefault(fid or pretty_id,[]).append(str(category))
     for raw in framework_rows:
         f=dict(raw);body=json.loads(f.pop('raw_json') or '{}')
         state=effective_framework_status(f['status'] or '',body)
-        if get('search').casefold() not in ' '.join(str(f.get(k) or '') for k in ('id','pretty_id','title','dk_code','agreement_id')).casefold():continue
+        haystack=' '.join([*(str(f.get(k) or '') for k in ('id','pretty_id','title','dk_code','agreement_id')), *categories.get(f['id'] or f['pretty_id'],[])])
+        if get('search').casefold() not in haystack.casefold():continue
         if get('dk_code').casefold() not in (f.get('dk_code') or '').casefold():continue
         if get('status') and get('status') not in {state,'active' if state=='active' else 'inactive'}:continue
         published=str(body.get('date') or body.get('dateCreated') or '')[:10]
@@ -5863,6 +5868,20 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
             "page": page, "size": size, "pages": (total + size - 1) // size}
 
 
+def supplier_registry_excel_filename(params, *, connection=None):
+    """Single-framework download identity comes only from its cached record."""
+    ids=list(dict.fromkeys(v for v in params.get('framework_id',[]) if v))
+    if params.get('registry_only')!=['1'] or len(ids)!=1:
+        return 'pqm-suppliers.xlsx'
+    def name(con):
+        row=con.execute('SELECT dk_code FROM frameworks WHERE id=?',(ids[0],)).fetchone()
+        code=str(row[0] or '') if row else ''
+        return code+'_pqm-suppliers.xlsx' if re.fullmatch(r'[0-9]{8}-[0-9]',code) else 'pqm-suppliers.xlsx'
+    if connection is not None:return name(connection)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+        return name(con)
+
+
 def supplier_registry_excel(params, *, connection=None):
     """Complete filtered export in one read-only snapshot, independent of page."""
     import supplier_selection
@@ -7752,6 +7771,7 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     elif item["review"].get("review_status") == "completed":
         item["review"]["review_status"] = "reviewed"
     item["supplier_verified"] = dict(supplier) if supplier else None
+    item["protocol_supplier_names"] = protocol_supplier_names.resolve(item,normalize_document_name)
     item["warning_summary"] = violation_threshold_summary(warning_dates)
     item["warning_summary"]["month"] = item["warning_summary"]["current_month"]
     item["warning_summary"]["three_months"] = item["warning_summary"]["three_calendar_months"]
@@ -8257,7 +8277,7 @@ def violation_protocol_declensions(item: dict) -> list[dict]:
                     text=''.join(node.text or '' for node in paragraph.iter(word+'t'))
                     tokens.update(re.findall(r'\{\{\s*([a-z_]+)\s*\}\}',text))
     customer=normalize_document_name((item.get('review') or {}).get('customer_verified_full_name') or item.get('author_name') or '')
-    supplier=normalize_document_name((item.get('supplier_verified') or {}).get('full_name') or item.get('defendant_name') or '')
+    supplier=protocol_supplier_names.resolve(item,normalize_document_name)['full_name']['value']
     specs={'customer_name_genitive':(customer,infer_entity_type(customer,item.get('author_code')),'genitive','Замовник'),
            'customer_name_accusative':(customer,infer_entity_type(customer,item.get('author_code')),'accusative','Замовник'),
            'supplier_name_genitive':(supplier,infer_entity_type(supplier,item.get('defendant_code')),'genitive','Постачальник'),
@@ -8438,7 +8458,7 @@ def _violation_protocol_filename(item: dict, gate: dict) -> str:
         "ідентифікатор звернення": item.get("report_id"),
         "номер протоколу": gate.get("protocol_number"),
         "назва замовника": first_name(review.get("customer_verified_short_name"), item.get("author_name")),
-        "назва постачальника": first_name(supplier.get("short_name"), item.get("defendant_name")),
+        "назва постачальника": protocol_supplier_names.resolve(item,normalize_document_name)['filename_name']['value'],
         "код постачальника": item.get("defendant_code"),
     }
     cleaned = {}
@@ -8499,10 +8519,9 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     reason_number = reason_metadata.get("number", "")
     customer_name = normalize_document_name(
         review.get("customer_verified_full_name") or item.get("author_name") or "")
-    supplier_name = normalize_document_name(
-        (item.get("supplier_verified") or {}).get("full_name") or item.get("defendant_name") or "")
-    supplier_short_name = normalize_document_name(
-        (item.get("supplier_verified") or {}).get("short_name") or supplier_name)
+    names = protocol_supplier_names.resolve(item,normalize_document_name)
+    supplier_name = names['full_name']['value']
+    supplier_short_name = names['short_name']['value']
     supplier_code = str(item.get("defendant_code") or "").strip()
     customer_code = str(item.get("author_code") or "").strip()
     customer_entity_type = infer_entity_type(customer_name, customer_code)
@@ -10794,10 +10813,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/suppliers-registry":
             return self.send_json(list_qualified_suppliers(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/suppliers-registry/export.xlsx":
-            raw=supplier_registry_excel(urllib.parse.parse_qs(parsed.query))
+            params=urllib.parse.parse_qs(parsed.query)
+            raw=supplier_registry_excel(params)
+            filename=supplier_registry_excel_filename(params)
             self.send_response(200)
             self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            self.send_header('Content-Disposition','attachment; filename="pqm-suppliers.xlsx"')
+            self.send_header('Content-Disposition','attachment; filename="'+filename+'"')
             self.send_header('Content-Length',str(len(raw)))
             self.send_header('Cache-Control','no-store')
             self.end_headers()

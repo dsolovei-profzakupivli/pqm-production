@@ -57,6 +57,9 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 #referenceAmcu tr.amcu-applicant td{background:#fffaf0}
 #referenceAmcu tr.amcu-applicant td:first-child{box-shadow:inset 4px 0 #d9a514}
 .frameworks-table tr.framework-agreement-pending td{background:#fffaf0}
+/* Saved system widths override the legacy responsive minimum only here. */
+#frameworkAnalyticsView .frameworks-table{min-width:100%!important}
+#frameworkAnalyticsView .frameworks-table .ghost{display:inline-block;white-space:normal;overflow-wrap:anywhere;max-width:100%;box-sizing:border-box}
 .frameworks-table tr.framework-agreement-pending td:first-child{box-shadow:inset 4px 0 #d9a514}
 .frameworks-table{width:100%;min-width:0!important;table-layout:fixed}.frameworks-table th,.frameworks-table td{padding:8px 7px;font-size:11px;overflow-wrap:anywhere;white-space:normal}.frameworks-table thead th{font-size:9px;line-height:1.15;text-align:center;vertical-align:middle}.frameworks-table .frameworks-head-groups th{background:#e8f0f6;border-bottom:1px solid #9fb2c2}.frameworks-table .frameworks-head-details th{background:#f2f6f9}.frameworks-table th:nth-child(1),.frameworks-table td:nth-child(1){width:6%}.frameworks-table th:nth-child(2),.frameworks-table td:nth-child(2){width:13%}.frameworks-table th:nth-child(3),.frameworks-table td:nth-child(3){width:29%;text-align:left}.frameworks-table th:nth-child(4),.frameworks-table td:nth-child(4){width:6%}.frameworks-table tbody td:nth-child(n+5):nth-child(-n+11){text-align:center}.frameworks-table th:nth-child(12),.frameworks-table td:nth-child(12){width:8%}.frameworks-table th:nth-child(13),.frameworks-table td:nth-child(13){width:5%}.frameworks-table small{display:block;margin-top:3px;font-size:9px}.frameworks-table a{white-space:normal}.frameworks-table+.table-footer{min-width:0}
 @media(max-width:760px){.supplier-profile-grid{grid-template-columns:1fr}.supplier-profile-grid>div:nth-child(odd){border-right:0}}

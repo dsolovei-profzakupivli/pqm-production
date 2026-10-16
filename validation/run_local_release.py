@@ -29,6 +29,9 @@ def main():
         shutil.copytree(ROOT/'validation/local_release_20260911',
                         root/'validation/local_release_20260911',
                         ignore=shutil.ignore_patterns('__pycache__'))
+        # Node regressions run against this same disposable source fixture.
+        for source in (ROOT/'validation').glob('*.cjs'):
+            shutil.copy2(source,root/'validation'/source.name)
         # Delivered tests assume runtime DOCX copies have already been installed.
         shutil.copytree(root/'templates', root/'data/templates', dirs_exist_ok=True)
         os.environ.update(HOST='127.0.0.1',PORT='8080',PQM_ENV='local',PQM_DATA_DIR=str(root/'data'),PQM_DB_PATH=str(root/'data/pqm.sqlite3'),
