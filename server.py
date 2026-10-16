@@ -2954,6 +2954,34 @@ def application_stats(params: dict) -> dict:
     return result
 
 
+def application_selection(params: dict) -> dict:
+    """One read-only filtered snapshot, without LIMIT/OFFSET or external refresh."""
+    clause, args = application_filter(params)
+    fields = sorted(EDITABLE_FIELDS)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro', uri=True, timeout=5)) as con:
+        con.row_factory = sqlite3.Row
+        con.create_function('CASEFOLD', 1, unicode_casefold, deterministic=True)
+        con.create_function('DIGITS', 1, lambda value: re.sub(r'\D', '', str(value or '')), deterministic=True)
+        con.execute('PRAGMA query_only=ON');con.execute('BEGIN')
+        deadline = time.monotonic()+30
+        con.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
+        records = [dict(row) for row in con.execute(
+            'SELECT s.id,s.supplier_name,'+','.join(f"COALESCE(af.{field},'') AS {field}" for field in fields)+
+            ' FROM submissions s JOIN frameworks f ON f.id=s.framework_id'
+            ' LEFT JOIN qualifications q ON q.id=s.qualification_id'
+            ' LEFT JOIN application_fields af ON af.submission_id=s.id'
+            ' LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE '+clause+' ORDER BY s.id', args)]
+        names = {' '.join(re.sub(r"[’'`\-]+", ' ', (row[0] or '').casefold()).split())
+                 for row in con.execute("SELECT DISTINCT full_name FROM nazk_registry WHERE full_name<>''")}
+        states = {}
+        for start in range(0,len(records),400):
+            states.update(get_submission_nazk_states(con,[row['id'] for row in records[start:start+400]],names))
+        items = [{'id':row['id'], 'supplier_name':row['supplier_name'] or '', 'values':{field:str(row[field]) for field in fields},
+                  'historical_read_only':historical_applications.is_read_only(row['id']),
+                  'nazk_can_approve':bool(states.get(row['id'],{}).get('can_approve',True))} for row in records]
+    return {'items':items,'total':len(items)}
+
+
 def list_applications(params: dict) -> dict:
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["50"])[0] or 50)))
@@ -10547,6 +10575,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/applications/selection':
+            result = application_selection(urllib.parse.parse_qs(parsed.query))
+            raw = json.dumps(result,ensure_ascii=False).encode('utf-8')
+            self.send_response(200);self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
         bulk_state = re.fullmatch(r"/api/applications/([^/]+)/bulk-state", parsed.path)
         if bulk_state:
             fields = urllib.parse.parse_qs(parsed.query).get('fields', [''])[0].split(',')

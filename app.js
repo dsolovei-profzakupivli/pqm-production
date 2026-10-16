@@ -55,6 +55,8 @@ const activeKey='pqm.server.activeProfile.v2',localRoleKey='pqm.local.role.v1';
 const filterStateKey='pqm.server.filters.v1';
 let profiles=[{id:'local-default',name:'Основний реєстр',columns:structuredClone(columns),kpis:defaultKpis('Основний реєстр'),is_system:true}],currentMe=null;
 let activeProfileId=localStorage.getItem(activeKey)||'local-default', rows=[], selected=new Set(), activeRow=null, activeDocsRow=null, lastDocumentCheck=null, lastProtocolPayload=null;
+const applicationSelection=PqmApplicationSelection.create(selected);
+let rowsFilterSignature=null,selectAllResultsPending=false;
 let page=1,pages=1,total=0,loading=false,searchTimer,loadRowsGeneration=0;
 let statsSignature='';
 let statsGeneration=0,profilesGeneration=0,registryReloadPromise=null;
@@ -247,7 +249,45 @@ function updateApplicationFilterStyles(){
 }
 async function loadStats(){const signature=new URLSearchParams(currentFilterParams()).toString();if(statsPending&&statsPending.signature===signature&&statsPending.generation===statsGeneration)return statsPending.promise;const promise=loadStatsData();const pending={signature,generation:statsGeneration,promise};statsPending=pending;try{return await promise}finally{if(statsPending===pending)statsPending=null}}
 async function loadStatsData(){const q=new URLSearchParams(currentFilterParams()),signature=q.toString();if(signature===statsSignature)return true;const generation=++statsGeneration;try{const data=await request(`${API}/stats?${q}`);if(generation!==statsGeneration||signature!==new URLSearchParams(currentFilterParams()).toString())return false;statsSignature=signature;$$('[data-kpi]').forEach(el=>el.textContent=Number(data[el.dataset.kpi]||0).toLocaleString('uk-UA'));$('#officerCards').innerHTML=(data.officers||[]).map(item=>`<button type="button" class="officer-card ${item.officer==='Не визначено'?'unassigned':''} ${item.officer===officerFilter?'active':''}" data-officer="${esc(item.officer)}"><span title="${esc(formatOfficerName(item.officer))}">${esc(formatOfficerName(item.officer))}</span><strong>${Number(item.applications||0).toLocaleString('uk-UA')}</strong></button>`).join('');$$('#officerCards [data-officer]').forEach(card=>card.onclick=()=>{officerFilter=officerFilter===card.dataset.officer?'':card.dataset.officer;page=1;statsSignature='';loadRows()});return true}catch(e){if(generation===statsGeneration){statsSignature='';toast(e.message)}return false}}
+function syncApplicationSelection(){
+  const cleared=applicationSelection.sync(currentFilterParams());
+  if(cleared)toast(`Фільтри змінено: попередній вибір ${cleared} заявок очищено. Виберіть потрібні результати знову.`);
+  return applicationSelection.scope;
+}
+function applicationRowsCurrent(){
+  return !loading&&rowsFilterSignature===PqmApplicationSelection.signature(currentFilterParams());
+}
+function selectApplicationPage(on=true){
+  syncApplicationSelection();if(!applicationRowsCurrent()||selectAllResultsPending)return;
+  applicationSelection.page(rows,on);render();
+}
+function updateApplicationSelectionControls(){
+  const ready=applicationRowsCurrent()&&!selectAllResultsPending;
+  const pageButton=$('#selectApplicationsPage'),allButton=$('#selectApplicationsAll');
+  pageButton.disabled=!ready||!rows.length;allButton.disabled=!ready||!total;
+  pageButton.onclick=()=>selectApplicationPage();allButton.onclick=selectAllApplicationResults;
+  const header=$('#selectAll'),count=rows.filter(row=>selected.has(row.id)).length;
+  if(header){header.disabled=!ready;header.checked=Boolean(rows.length)&&count===rows.length;header.indeterminate=count>0&&count<rows.length;header.title='Вибрати всі на сторінці'}
+}
+function bulkSelectionRow(item){
+  const row={id:item.id,participant:item.supplier_name||'',historicalReadOnly:Boolean(item.historical_read_only),nazkCanApprove:item.nazk_can_approve!==false,bulkValues:{...item.values}};
+  for(const [key,field]of Object.entries(fieldMap))row[key]=item.values[field]??'';
+  return row;
+}
+async function selectAllApplicationResults(){
+  if(selectAllResultsPending||bulkInFlight||!applicationRowsCurrent())return;
+  const scope=syncApplicationSelection(),revision=applicationSelection.revision,filters={...currentFilterParams()};
+  selectAllResultsPending=true;render();
+  try{
+    const data=await bulkRequest(`${API}/applications/selection?${new URLSearchParams(filters)}`);
+    if(scope!==PqmApplicationSelection.signature(currentFilterParams()))return;
+    if(!Array.isArray(data.items)||data.total!==data.items.length||data.items.some(item=>typeof item.id!=='string'||!item.values))throw new Error('Неповна вибірка заявок');
+    if(applicationSelection.all(data.items.map(bulkSelectionRow),scope,revision))toast(`Вибрано всі результати: ${selected.size}. Склад вибірки зафіксовано.`);
+  }catch(error){toast(`Не вдалося вибрати всі результати: ${error.message}`)}
+  finally{selectAllResultsPending=false;render()}
+}
 async function loadRows(){
+  const filterSignature=syncApplicationSelection();
   const generation=++loadRowsGeneration;
   invalidateRegistryStats();
   let refreshStats=false,succeeded=false;
@@ -255,8 +295,8 @@ async function loadRows(){
   try{
     const q=new URLSearchParams({...currentFilterParams(),page,size:'50',sort:sortKey,direction:sortDirection,sorts:JSON.stringify(multiSort)});
     const data=await request(`${API}/applications?${q}`);
-    if(generation!==loadRowsGeneration)return false;
-    rows=data.items.map(mapRow);page=data.page;pages=data.pages||1;total=data.total;selected.clear();
+    if(generation!==loadRowsGeneration||filterSignature!==PqmApplicationSelection.signature(currentFilterParams()))return false;
+    rows=data.items.map(mapRow);page=data.page;pages=data.pages||1;total=data.total;rowsFilterSignature=filterSignature;applicationSelection.remember(rows);
     refreshStats=true;succeeded=true;
   }catch(e){
     if(generation===loadRowsGeneration)toast(`Не вдалося оновити реєстр: ${e.message}. Показано останні доступні дані.`,'error')
@@ -288,7 +328,7 @@ function applicationNazkMarker(row){
   return '';
 }
 function cell(row,col,n,left){const attrs=(extra='')=>`class="${[col.pin==='left'?'sticky':'',extra].filter(Boolean).join(' ')}" data-column-key="${col.key}" style="width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;${col.pin==='left'?`left:${left}px`:''}"`;
-  if(col.key==='select')return `<td ${attrs()}><input class="row-check" type="checkbox" ${selected.has(row.id)?'checked':''} ${row.historicalReadOnly?'title="Історичну заявку можна вибрати для перегляду або Chat; business-зміни заблоковані"':''}>${historicalApplicationMarker(row)}</td>`;
+  if(col.key==='select')return `<td ${attrs()}><input class="row-check" type="checkbox" ${!applicationRowsCurrent()||selectAllResultsPending?'disabled':''} ${selected.has(row.id)?'checked':''} ${row.historicalReadOnly?'title="Історичну заявку можна вибрати для перегляду або Chat; business-зміни заблоковані"':''}>${historicalApplicationMarker(row)}</td>`;
   if(col.key==='protocolNumber'&&row.formedProtocolId)return `<td ${attrs()}><button type="button" class="protocol-number-link" data-formed-protocol="${esc(row.formedProtocolId)}">${esc(row.protocolNumber)}</button></td>`;
   if(col.key==='protocolNumber'&&row.legacyProtocol)return `<td ${attrs()}><span title="Legacy: сформований раніше">${esc(row.protocolNumber)||'—'} <span class="legacy-protocol-marker" aria-label="Legacy: сформований раніше">ⓘ</span></span>${row.decision==='Очікує рішення'&&role()!=='viewer'&&!row.historicalReadOnly?`<button type="button" class="ghost compact-row-action" data-release-legacy="${esc(row.id)}">Скасувати позначку</button>`:''}</td>`;
   if(col.key==='number')return `<td ${attrs()}>${(page-1)*50+n}</td>`;
@@ -310,7 +350,7 @@ function cell(row,col,n,left){const attrs=(extra='')=>`class="${[col.pin==='left
 function render(){const cols=getCols(),left=offsets(cols),shown=rows,table=$('#applicationsTable'),tableWidth=cols.reduce((sum,c)=>sum+c.width,0);table.style.width=`${tableWidth}px`;table.style.minWidth=`${tableWidth}px`;$('#applicationsTable thead').innerHTML=`<tr>${cols.map(c=>{const sortable=sortableColumns.has(c.key),arrow=sortKey===c.key?(sortDirection==='asc'?' ↑':' ↓'):'',heading=c.key==='marketplaceLink'?'<img class="marketplace-header-mark" src="/assets/zakupivli-pro-mark.svg" alt="" aria-hidden="true">':`${c.label}<span class="sort-arrow">${arrow}</span>`;return `<th class="${c.pin==='left'?'sticky':''} ${sortable?'sortable':''} ${c.key==='marketplaceLink'?'marketplace-header':''}" data-column-key="${c.key}" data-sort="${sortable?c.key:''}" title="${c.key==='marketplaceLink'?'Майданчик Zakupivli.Pro':''}" style="width:${c.width}px;min-width:${c.width}px;max-width:${c.width}px;${c.pin==='left'?`left:${left[c.key]}px`:''}">${c.key==='select'?'<input id="selectAll" type="checkbox">':heading}</th>`}).join('')}</tr>`;
   $('#applicationsTable tbody').innerHTML=loading?`<tr><td colspan="${cols.length}">Завантаження…</td></tr>`:shown.map((r,i)=>{const pending=r.decision==='Очікує рішення',applicationNazk=r.nazkPresentationState,submissionNazk=pending&&applicationNazk==='needs_check',risk=pending&&r.amcuMatch?'registry-risk-amcu':submissionNazk?'registry-risk-nazk':pending&&applicationNazk==='confirmed'?'registry-risk-amcu':pending&&applicationNazk==='possible'?'registry-risk-nazk':'',rowTitle=pending&&r.amcuMatch?'Постачальник є у чинному реєстрі АМКУ — рішення «Так» заблоковано; доступне лише «Ні»':submissionNazk?'НАЗК · перевірити довідку цієї заявки':risk==='registry-risk-amcu'?'Наявність у реєстрі НАЗК підтверджено перевіркою цієї заявки':risk==='registry-risk-nazk'?'Знайдено збіг ПІБ керівника з реєстром НАЗК — потрібна ручна перевірка':'';return `<tr data-id="${r.id}" class="${activeRow===r.id?'active':''} ${risk} ${r.reviewCompleted?'application-review-completed':''} ${r.historicalReadOnly?'historical-read-only':''}" title="${rowTitle}">${cols.map(c=>cell(r,c,i+1,left[c.key])).join('')}</tr>`}).join('');
   $('#resultInfo').textContent=`${total} заявок у базі`;$('#footerInfo').innerHTML=`Сторінка ${page} із ${pages} · ${total} записів &nbsp; <button id="prevPage" class="ghost" ${page<=1?'disabled':''}>←</button> <button id="nextPage" class="ghost" ${page>=pages?'disabled':''}>→</button>`;
-  const historicalSelected=rows.some(row=>selected.has(row.id)&&row.historicalReadOnly);$('#selectedCount').textContent=selected.size?`(${selected.size})`:'';$('#bulkBtn').disabled=!selected.size||role()==='viewer'||historicalSelected;$('#bulkBtn').title=historicalSelected?'Історичні заявки MedData можна передавати в Chat, але не змінювати масово':'';applyKpiVisibility();bindTable();requestAnimationFrame(syncTableScroll)}
+  const historicalSelected=applicationSelection.entries().some(row=>row.historicalReadOnly);$('#selectedCount').textContent=selected.size?`(${selected.size})`:'';$('#bulkBtn').disabled=!selected.size||role()==='viewer'||historicalSelected||!applicationRowsCurrent()||selectAllResultsPending;$('#bulkBtn').title=historicalSelected?'Історичні заявки MedData можна передавати в Chat, але не змінювати масово':'';applyKpiVisibility();bindTable();requestAnimationFrame(syncTableScroll)}
 const renderBeforeAmcuPendingMarker=render;
 render=function(){
   renderBeforeAmcuPendingMarker();
@@ -330,9 +370,9 @@ editCell=function(td,row){
     td.querySelectorAll('option[value="admit"]').forEach(option=>option.remove());
   }
 };
-function bindTable(){$('#prevPage')?.addEventListener('click',()=>{page--;loadRows()});$('#nextPage')?.addEventListener('click',()=>{page++;loadRows()});$('#selectAll')?.addEventListener('change',e=>{rows.forEach(r=>{if(!e.target.checked)selected.delete(r.id);else selected.add(r.id)});render()});
+function bindTable(){updateApplicationSelectionControls();$('#prevPage')?.addEventListener('click',()=>{page--;loadRows()});$('#nextPage')?.addEventListener('click',()=>{page++;loadRows()});$('#selectAll')?.addEventListener('change',e=>{selectApplicationPage(e.target.checked)});
   $$('#applicationsTable th[data-sort]:not([data-sort=""])').forEach(th=>{const indicator=th.querySelector('.sort-arrow');if(indicator)indicator.textContent=sortIndicator(th.dataset.sort);th.onclick=e=>{const key=th.dataset.sort;if(e.shiftKey){if(!multiSort.length)multiSort=[{key:sortKey,direction:sortDirection}];const i=multiSort.findIndex(x=>x.key===key);if(i<0)multiSort.push({key,direction:'asc'});else if(multiSort[i].direction==='asc')multiSort[i].direction='desc';else multiSort.splice(i,1)}else{const previous=multiSort.find(x=>x.key===key);multiSort=[{key,direction:(previous?.direction||(sortKey===key?sortDirection:''))==='asc'?'desc':'asc'}]}if(multiSort.length){sortKey=multiSort[0].key;sortDirection=multiSort[0].direction}profile().sorts=structuredClone(multiSort);if(!profile().is_system)persistProfileLayout();page=1;loadRows()}});
-  $$('#applicationsTable tbody tr[data-id]').forEach(tr=>{const row=rows.find(r=>r.id===tr.dataset.id);tr.onclick=()=>{activeRow=row.id;render()};tr.querySelector('.supplier-history-open')?.addEventListener('click',e=>{e.stopPropagation();activeRow=row.id;openSupplierHistory(row.edrpou)});tr.querySelector('.supplier-note-open')?.addEventListener('click',e=>{e.stopPropagation();openSupplierNote(row)});tr.querySelector('.nazk-control-open')?.addEventListener('click',e=>{e.stopPropagation();openSubmissionNazkControl(row)});tr.querySelector('.row-check')?.addEventListener('click',e=>e.stopPropagation());tr.querySelector('.row-check')?.addEventListener('change',e=>{e.target.checked?selected.add(row.id):selected.delete(row.id);render()});tr.querySelectorAll('.copy-btn').forEach(button=>button.onclick=e=>{e.stopPropagation();copyText(row[button.dataset.copyKey])});tr.querySelectorAll('.external-link').forEach(link=>link.onclick=e=>e.stopPropagation());tr.querySelector('.check-result-card')?.addEventListener('click',e=>{e.stopPropagation();openSavedDocumentCheck(row)});tr.querySelector('.paperclip:not(.registry-paperclip)')?.addEventListener('click',e=>{e.stopPropagation();openDocs(row,row.documents,'Документи заявки та кваліфікації')});tr.querySelector('.registry-paperclip')?.addEventListener('click',e=>{e.stopPropagation();openDocs(row,row.registryDocuments,'Документи рішення у реєстрі')});tr.querySelectorAll('td[data-key]:not([data-key=""])').forEach(td=>td.onclick=e=>{e.stopPropagation();editCell(td,row)})})}
+  $$('#applicationsTable tbody tr[data-id]').forEach(tr=>{const row=rows.find(r=>r.id===tr.dataset.id);tr.onclick=()=>{activeRow=row.id;render()};tr.querySelector('.supplier-history-open')?.addEventListener('click',e=>{e.stopPropagation();activeRow=row.id;openSupplierHistory(row.edrpou)});tr.querySelector('.supplier-note-open')?.addEventListener('click',e=>{e.stopPropagation();openSupplierNote(row)});tr.querySelector('.nazk-control-open')?.addEventListener('click',e=>{e.stopPropagation();openSubmissionNazkControl(row)});tr.querySelector('.row-check')?.addEventListener('click',e=>e.stopPropagation());tr.querySelector('.row-check')?.addEventListener('change',e=>{if(applicationRowsCurrent()&&!selectAllResultsPending){applicationSelection.toggle(row,e.target.checked);render()}});tr.querySelectorAll('.copy-btn').forEach(button=>button.onclick=e=>{e.stopPropagation();copyText(row[button.dataset.copyKey])});tr.querySelectorAll('.external-link').forEach(link=>link.onclick=e=>e.stopPropagation());tr.querySelector('.check-result-card')?.addEventListener('click',e=>{e.stopPropagation();openSavedDocumentCheck(row)});tr.querySelector('.paperclip:not(.registry-paperclip)')?.addEventListener('click',e=>{e.stopPropagation();openDocs(row,row.documents,'Документи заявки та кваліфікації')});tr.querySelector('.registry-paperclip')?.addEventListener('click',e=>{e.stopPropagation();openDocs(row,row.registryDocuments,'Документи рішення у реєстрі')});tr.querySelectorAll('td[data-key]:not([data-key=""])').forEach(td=>td.onclick=e=>{e.stopPropagation();editCell(td,row)})})}
 
 let supplierNoteRow=null;
 function openSupplierNote(row){supplierNoteRow=row;$('#supplierNoteSubtitle').textContent=`${row.participant} · ${row.edrpou}`;$('#supplierNoteText').value=row.supplierNote||'';const viewer=role()==='viewer';$('#supplierNoteText').disabled=viewer;$('#supplierNoteSave').hidden=viewer;$('#supplierNoteClear').hidden=viewer||!row.supplierNote;$('#supplierNoteMeta').textContent=row.supplierNoteUpdatedAt?`Оновлено ${displayDate(row.supplierNoteUpdatedAt)} · ${row.supplierNoteUpdatedBy||'—'}`:'Примітку ще не додано';$('#supplierNoteDialog').showModal()}
@@ -434,14 +474,15 @@ function columnsDialog(){
   $('#columnsDialog').showModal()
 }
 function cardsDialog(){const p=profile(),box=$('#cardsList');const draw=()=>{const ordered=[...(p.kpis||[]),...kpiDefinitions.map(([key])=>key).filter(key=>!(p.kpis||[]).includes(key))];box.innerHTML=ordered.map((key,index)=>{const label=kpiDefinitions.find(item=>item[0]===key)?.[1]||key,enabled=(p.kpis||[]).includes(key);return`<div class="card-profile-item" data-key="${key}"><label><input type="checkbox" ${enabled?'checked':''}> <span>${label}</span></label><button type="button" class="icon-btn card-up" ${index===0?'disabled':''}>↑</button><button type="button" class="icon-btn card-down" ${index===ordered.length-1?'disabled':''}>↓</button></div>`}).join('')};draw();box.onchange=e=>{const item=e.target.closest('.card-profile-item');if(!item||!e.target.matches('input[type="checkbox"]'))return;const key=item.dataset.key,current=p.kpis||[];p.kpis=e.target.checked?[...current.filter(x=>x!==key),key]:current.filter(x=>x!==key);persistProfileLayout();draw();applyKpiVisibility()};box.onclick=e=>{const button=e.target.closest('.card-up,.card-down'),item=e.target.closest('.card-profile-item');if(!button||!item)return;const all=[...box.querySelectorAll('.card-profile-item')].map(node=>node.dataset.key),from=all.indexOf(item.dataset.key),to=button.classList.contains('card-up')?from-1:from+1;if(to<0||to>=all.length)return;[all[from],all[to]]=[all[to],all[from]];const enabled=new Set(p.kpis||[]);p.kpis=all.filter(key=>enabled.has(key));persistProfileLayout();draw();applyKpiVisibility()};$('#cardsDialog').showModal()}
-function openProtocolDialog(){lastProtocolPayload=null;const selectedRows=rows.filter(row=>selected.has(row.id));$('#checkProtocolNumber').value=selectedRows.find(row=>row.protocolNumber)?.protocolNumber||rows.find(row=>row.protocolNumber)?.protocolNumber||'';$('#checkDateFrom').value=$('#dateFromFilter').value;$('#checkDateTo').value=$('#dateToFilter').value;$('#protocolSummary').className='protocol-summary muted';$('#protocolSummary').textContent=`Буде перевірено поточну відбірку: ${total} заявок.`;$('#protocolIssues').innerHTML='';$('#generateProtocolBtn').disabled=true;$('#protocolDialog').showModal()}
+function openProtocolDialog(){lastProtocolPayload=null;const selectedRows=applicationSelection.entries();$('#checkProtocolNumber').value=selectedRows.find(row=>row.protocolNumber)?.protocolNumber||rows.find(row=>row.protocolNumber)?.protocolNumber||'';$('#checkDateFrom').value=$('#dateFromFilter').value;$('#checkDateTo').value=$('#dateToFilter').value;$('#protocolSummary').className='protocol-summary muted';$('#protocolSummary').textContent=`Буде перевірено поточну відбірку: ${total} заявок.`;$('#protocolIssues').innerHTML='';$('#generateProtocolBtn').disabled=true;$('#protocolDialog').showModal()}
 async function checkProtocol(e){e.preventDefault();try{const payload={protocol_number:$('#checkProtocolNumber').value.trim(),date_from:$('#checkDateFrom').value,date_to:$('#checkDateTo').value,filters:currentFilterParams(),submission_ids:selected.size?[...selected]:undefined};const data=await request(`${API}/protocol/readiness`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});lastProtocolPayload=data.ready?payload:null;const summary=$('#protocolSummary');summary.className=`protocol-summary ${data.ready?'ready':'blocked'}`;summary.textContent=data.ready?`Перевірку пройдено: ${data.total} заявок · Рішення УО «Так» — ${data.admitted} · «Ні» — ${data.rejected}${data.warning_count?` · попереджень ${data.warning_count}`:''}`:`Не готово: ${data.total} заявок · Рішення УО не визначено — ${data.unresolved} · помилок ${data.error_count}`;const issues=data.items.filter(item=>item.errors.length||item.warnings.length);$('#protocolIssues').innerHTML=issues.map(item=>`<div class="protocol-issue"><strong>${esc(item.supplier_name)} · ${esc(item.supplier_code)} · ${esc(item.pretty_id)}</strong>${item.errors.map(error=>`<span>${esc(error)}</span>`).join('')}${item.warnings.map(warning=>`<span class="muted">${esc(warning)}</span>`).join('')}</div>`).join('')||(data.ready?'<p class="muted">Контрольних зауважень немає. Протокол можна формувати.</p>':'<p class="muted">Заявок для протоколу не знайдено.</p>');$('#generateProtocolBtn').disabled=!data.ready}catch(error){lastProtocolPayload=null;$('#generateProtocolBtn').disabled=true;toast(error.message)}}
 async function generateProtocol(){if(!lastProtocolPayload)return;const button=$('#generateProtocolBtn'),old=button.textContent;button.disabled=true;button.textContent='Формування…';try{const data=await request(`${API}/protocol/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lastProtocolPayload)});const link=document.createElement('a');link.href=data.download_url;link.download=data.filename;document.body.appendChild(link);link.click();link.remove();$('#protocolSummary').className='protocol-summary ready';$('#protocolSummary').textContent=`Протокол № ${data.protocol_number} сформовано: ${data.total} заявок · допущено ${data.admitted} · відхилено ${data.rejected}`;toast('Протокол сформовано та завантажено');await loadRows()}catch(error){toast(error.message);button.disabled=false}finally{button.textContent=old}}
-let bulkInFlight=false,bulkOperation=null;
+let bulkInFlight=false,bulkOperation=null,bulkOperationScope=null;
 function openBulk(){
   if(bulkInFlight)return;
-  bulkOperation=null;$('#bulkSummary').textContent='';$('#bulkResults').textContent='';$('#bulkRetryBtn').hidden=true;$('#bulkRetryBtn').onclick=()=>runBulkOperation(true);
-  if(rows.some(row=>selected.has(row.id)&&row.historicalReadOnly)){toast('Історичні заявки MedData доступні лише для перегляду та передачі в Chat');return}
+  syncApplicationSelection();if(!selected.size||!applicationRowsCurrent()||selectAllResultsPending)return;
+  bulkOperation=null;bulkOperationScope=null;$('#bulkSummary').textContent='';$('#bulkResults').textContent='';$('#bulkRetryBtn').hidden=true;$('#bulkRetryBtn').onclick=()=>runBulkOperation(true);
+  if(applicationSelection.entries().some(row=>row.historicalReadOnly)){toast('Історичні заявки MedData доступні лише для перегляду та передачі в Chat');return}
   $('#bulkDialog header p').textContent=`Вибрано заявок: ${selected.size}. Позначте лише поля, які потрібно змінити.`;
   const labels={protocolNumber:'Номер протоколу',protocolDate:'Дата протоколу / публікації рішення',protocolOfficer:'УО протоколу',protocolDecision:'Рішення УО',complianceStatus:'Комплаєнс',complianceComments:'Коментарі комплаєнс',managerName:'Прізвище, ім’я, по батькові керівника',protocolRemarks:'Зауваження до протоколу'};
   const control=key=>key==='protocolRemarks'?`<div class="bulk-remarks"><label><input type="radio" name="bulkRemarksMode" value="none" checked> Без зауважень</label><label><input type="radio" name="bulkRemarksMode" value="text"> Однаковий текст</label><textarea data-bulk="${key}" rows="3" hidden></textarea></div>`:key==='protocolOfficer'?`<select data-bulk="${key}"><option value="">Не вибрано</option>${protocolOfficers.map(value=>`<option value="${esc(value)}">${esc(formatOfficerName(value))}</option>`).join('')}</select>`:key==='protocolDecision'?`<select data-bulk="${key}">${protocolDecisions.map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select>`:key==='complianceStatus'?`<select data-bulk="${key}">${complianceStatuses.map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select>`:`<input data-bulk="${key}">`;
@@ -453,12 +494,13 @@ function openBulk(){
   $('#bulkDialog').showModal();
 }
 async function applyBulk(e){
-  e.preventDefault();if(bulkInFlight||bulkOperation)return;if(rows.some(row=>selected.has(row.id)&&row.historicalReadOnly)){toast('Масові зміни historical MedData applications заборонені');return}const changes={},cleared=new Set();
+  e.preventDefault();if(bulkInFlight||bulkOperation)return;syncApplicationSelection();if(!selected.size||!applicationRowsCurrent()||selectAllResultsPending)return;if(applicationSelection.entries().some(row=>row.historicalReadOnly)){toast('Масові зміни historical MedData applications заборонені');return}const changes={},cleared=new Set();
   $$('[data-enable]:checked').forEach(x=>{const key=x.dataset.enable;if($(`[data-clear="${key}"]`)?.checked){changes[fieldMap[key]]='';cleared.add(fieldMap[key]);return}changes[fieldMap[key]]=key==='protocolRemarks'&&$('[name="bulkRemarksMode"]:checked').value==='none'?'Без зауважень':$(`[data-bulk="${key}"]`).value.trim()});
   if(!Object.keys(changes).length)return toast('Оберіть поля');
   if(Object.entries(changes).some(([key,value])=>!cleared.has(key)&&!String(value||'').trim()))return toast('Вкажіть значення для кожного вибраного поля');
   if(Object.hasOwn(changes,'protocol_date'))changes.publication_date=changes.protocol_date;
-  const chosen=rows.filter(row=>selected.has(row.id));
+  const chosen=applicationSelection.entries();
+  if(chosen.length!==selected.size)return toast('Не підтверджено склад вибірки. Виберіть заявки знову.');
   const effective=(row,key,rowKey)=>Object.hasOwn(changes,key)?changes[key]:row[rowKey];
   const admitWithRemarks=chosen.filter(row=>effective(row,'protocol_decision','protocolDecision')==='admit'&&String(effective(row,'protocol_remarks','protocolRemarks')||'').trim()!=='Без зауважень');
   if(admitWithRemarks.length)return toast(`Рішення УО «Так» неможливе: ${admitWithRemarks.length} заявок мають зауваження до протоколу`);
@@ -469,10 +511,12 @@ async function applyBulk(e){
   const changesLockedCompliance=Object.hasOwn(changes,'compliance_status')&&chosen.some(row=>changes.compliance_status!==row.complianceStatus&&row.protocolDecision);if(changesLockedCompliance)return toast('Щоб змінити комплаєнс, спочатку встановіть Рішення УО «Не визначено»');
   const conflict=chosen.some(row=>effective(row,'protocol_decision','protocolDecision')==='admit'&&effective(row,'compliance_status','complianceStatus')==='rejected');if(conflict)return toast('Рішення УО «Так» неможливе, коли комплаєнс не погоджено');
   const reverse=Object.fromEntries(Object.entries(fieldMap).map(([rowKey,key])=>[key,rowKey]));
-  bulkOperation=PqmBulkSave.create([...selected].map(id=>{
-    const row=rows.find(item=>item.id===id);
-    const expected=row?Object.fromEntries(Object.keys(changes).map(key=>[key,String(row[reverse[key]]??'')])):null;
-    return {id,expected};
+  const labels={protocol_number:'Номер протоколу',protocol_date:'Дата протоколу',publication_date:'Дата публікації',protocol_officer:'УО протоколу',protocol_decision:'Рішення УО',protocol_remarks:'Зауваження',compliance_status:'Комплаєнс',compliance_comments:'Коментарі комплаєнс',manager_name:'ПІБ керівника'};
+  if(!window.confirm(`Змінити ${chosen.length} заявок у зафіксованій вибірці?\n${Object.entries(changes).map(([key,value])=>`${labels[key]||key}: ${JSON.stringify(value)}`).join('\n')}\nЗаявки поза цією вибіркою не змінюватимуться.`))return;
+  bulkOperationScope=PqmApplicationSelection.signature(currentFilterParams());
+  bulkOperation=PqmBulkSave.create(chosen.map(row=>{
+    const expected=Object.fromEntries(Object.keys(changes).map(key=>[key,String(row.bulkValues?.[key]??row[reverse[key]]??'')]));
+    return {id:row.id,expected};
   }),changes);
   await runBulkOperation(false);
 }
@@ -482,6 +526,7 @@ async function bulkRequest(url,options={}){
 }
 async function runBulkOperation(retry){
   if(bulkInFlight||!bulkOperation)return;
+  if(retry&&bulkOperationScope!==PqmApplicationSelection.signature(currentFilterParams()))return toast('Фільтри змінено: повтор старої вибірки заблоковано. Поверніть початкові фільтри або створіть новий вибір.');
   bulkInFlight=true;
   const dialog=$('#bulkDialog'),controls=[...dialog.querySelectorAll('input,select,textarea,button')].map(control=>[control,control.disabled]);
   controls.forEach(([control])=>control.disabled=true);
@@ -491,8 +536,8 @@ async function runBulkOperation(retry){
     const counts=await PqmBulkSave.run(bulkOperation,{
       read:async(id,fields)=>(await bulkRequest(`${API}/applications/${encodeURIComponent(id)}/bulk-state?fields=${encodeURIComponent(fields.join(','))}`)).values,
       write:(id,desired,expected)=>bulkRequest(`${API}/applications/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({...desired,_expected_values:expected})})
-    },{retry});
-    for(const item of bulkOperation)if(item.status==='confirmed')selected.delete(item.id);
+    },{retry,onProgress:(processed,count)=>{$('#bulkSummary').textContent=`Опрацьовано ${processed} із ${count}. Загальна вибірка: ${bulkOperation.length}.`;}});
+    for(const item of bulkOperation)if(item.status==='confirmed')applicationSelection.remove(item.id);
     $('#bulkSummary').textContent=`Опрацьовано ${counts.total} заявок. Збереження підтверджено: ${counts.confirmed}. Не підтверджено: ${counts.unconfirmed}. Конфлікти: ${counts.conflict}. Помилки: ${counts.error}.`;
     $('#bulkResults').innerHTML=bulkOperation.filter(item=>item.status!=='confirmed').map(item=>`<p>${esc(item.id)} — ${esc(item.detail)}${item.attempts>=2?' · Ліміт двох спроб вичерпано':''}</p>`).join('');
     try{await loadRows()}catch(error){toast('Підсумок збережено на екрані; не вдалося оновити таблицю')}

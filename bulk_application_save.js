@@ -23,14 +23,16 @@
       item.status='unconfirmed';item.detail='Звірено: потрібне значення ще не збережено';return 'retryable';
     }catch(error){item.status='unconfirmed';item.detail='Не вдалося звірити з БД; повторний запис не виконано';return 'unknown'}
   }
-  async function run(items,transport,{retry=false}={}){
+  async function run(items,transport,{retry=false,onProgress=()=>{}}={}){
+    let processed=0;
+    const eligible=items.filter(item=>retry?item.status==='unconfirmed'&&item.attempts<2:item.status==='pending').length;
     for(const item of items){
       if(retry){
         if(item.status!=='unconfirmed'||item.attempts>=2)continue;
-        if(await reconcile(item,transport.read)!=='retryable')continue;
+        if(await reconcile(item,transport.read)!=='retryable'){onProgress(++processed,eligible,summary(items));continue}
       }else{
         if(item.status!=='pending')continue;
-        if(!item.expected&&await reconcile(item,transport.read)!=='retryable')continue;
+        if(!item.expected&&await reconcile(item,transport.read)!=='retryable'){onProgress(++processed,eligible,summary(items));continue}
       }
       item.attempts++;
       try{
@@ -44,6 +46,7 @@
           item.status='error';item.detail=error.message||'Запис відхилено';
         }else await reconcile(item,transport.read);
       }
+      onProgress(++processed,eligible,summary(items));
     }
     return summary(items);
   }

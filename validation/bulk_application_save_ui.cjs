@@ -78,6 +78,7 @@ test('repeated click is blocked in real UI controller; selection/values snapshot
   const f=fixture(1);const context={bulkInFlight:false,bulkOperation:f.items,selected:new Set(['0']),
     $:s=>s==='#bulkDialog'?dialog:(elements[s]??=node()),PqmBulkSave:bulk,API:'/api',esc:s=>s,toast:()=>{},loadRows:async()=>{},
     bulkRequest:async()=>{calls++;await new Promise(resolve=>release=resolve);return {saved:true}}};
+  context.applicationSelection={remove:id=>context.selected.delete(id)};
   vm.createContext(context);vm.runInContext(controller,context);
   const first=context.runBulkOperation(false);await context.runBulkOperation(false);
   assert.equal(calls,1);assert.equal(context.bulkInFlight,true);release();await first;

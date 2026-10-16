@@ -15,7 +15,7 @@ function harness(){
   let filter='A';const pending=[],kpi={dataset:{kpi:'applications'},textContent:''},cards={innerHTML:''},scroll={scrollTop:70,scrollLeft:140},renders=[];
   const c={API:'/api',URLSearchParams,structuredClone,setTimeout,clearTimeout,statsSignature:'',statsGeneration:0,statsPending:null,
     profilesGeneration:0,profileLayoutGeneration:0,profilesMetadataReady:true,authReady:Promise.resolve(),registryReloadPromise:null,applicationsRegistryInitialized:false,applicationsRegistryInitialization:null,
-    loadRowsGeneration:0,rows:[{id:'old'}],page:3,pages:5,total:250,loading:false,selected:new Set(),officerFilter:'',
+    loadRowsGeneration:0,rows:[{id:'old'}],page:3,pages:5,total:250,loading:false,selected:new Set(),officerFilter:'',rowsFilterSignature:null,
     sortKey:'receivedDate',sortDirection:'desc',multiSort:[{key:'participant',direction:'asc'}],
     profiles:[{id:'personal',columns:[{key:'participant',width:321,pin:'left',visible:true}],kpis:['applications'],sorts:[]}],activeProfileId:'personal',columns:[],
     currentFilterParams:()=>({search:filter}),request:(url)=>{const d=deferred();pending.push({url,...d});return d.promise},
@@ -25,6 +25,8 @@ function harness(){
     defaultKpis:()=>[],saveProfiles:()=>{},renderProfiles:()=>{},applyProfileSort:()=>{c.sortApplied=true},
     loadAuthorizedOfficers:async()=>{},loadSearchFields:async()=>{},loadPrimaryFilterOptions:async()=>{},loadFrameworks:async()=>{},loadSupplierOptions:async()=>{},renderProfileFallback:()=>{},
   };
+  c.PqmApplicationSelection=require(path.join(process.cwd(),'application_selection.js'));
+  c.applicationSelection=c.PqmApplicationSelection.create(c.selected);
   vm.createContext(c);
   vm.runInContext(chunk('function invalidateRegistryStats()','let officerFilter='),c);
   vm.runInContext(chunk('async function loadStats()','function bindStaticMulti'),c);
