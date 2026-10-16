@@ -1,7 +1,8 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const src=fs.readFileSync('app.js','utf8');
 const availability=src.slice(src.indexOf('const requestsRefreshState='),src.indexOf('function applyRoleCapabilities(me){'));
-const fn=availability+src.slice(src.indexOf('function environmentBannerText(features){'),src.indexOf("document.addEventListener('click',event=>{",src.indexOf('async function loadRuntimeFeatures(){')));
+const automation=src.slice(src.indexOf('async function loadSandboxAutomationControl('),src.indexOf('async function toggleSchedulerJob('));
+const fn=availability+automation+src.slice(src.indexOf('function environmentBannerText(features){'),src.indexOf("document.addEventListener('click',event=>{",src.indexOf('async function loadRuntimeFeatures(){')));
 (async()=>{
  for(const automatic of [false,true])for(const readable of [false,true])for(const allowed of [false,true]){
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,{dataset:{roleDisabled:allowed?'0':'1'},disabled:!allowed});return nodes.get(id)};
