@@ -17,5 +17,6 @@ assert(boot.includes('if(refreshing||document.hidden||!currentMe)return'));
 assert(boot.includes('setInterval(refresh,60000)'));
 assert(css.includes('#frameworkAnalyticsView .frameworks-table td{font-size:13px'));
 assert(css.includes('#applicationsView #officerCards{order:-1'));
+assert(css.includes('.pqm-clear-wrap>input{box-sizing:border-box;width:100%;min-width:0!important;max-width:100%;'));
 assert(app.includes("ui_features?.supplier_bids_ready===true?''"));
 console.log('UI helper/contracts PASS');

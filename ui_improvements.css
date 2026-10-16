@@ -11,7 +11,7 @@
 #applicationsView .heading-actions button{min-height:34px;padding:6px 9px;white-space:nowrap}
 #applicationsView .heading-actions #syncStatus{width:100%;font-size:11px}
 .pqm-clear-wrap{position:relative;display:inline-flex;min-width:0;align-items:center}
-.pqm-clear-wrap>input{box-sizing:border-box;width:100%;padding-right:29px!important}
+.pqm-clear-wrap>input{box-sizing:border-box;width:100%;min-width:0!important;max-width:100%;padding-right:29px!important}
 .pqm-clear-wrap>.pqm-search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:23px;min-height:23px;height:23px;padding:0;border:0;background:transparent;color:inherit;font-size:19px;line-height:1;cursor:pointer}
 .search-wrap>.pqm-clear-wrap{flex:1;min-width:0}
 #frameworkAnalyticsView .frameworks-toolbar>.pqm-clear-wrap{flex:1 1 260px;min-width:180px}
