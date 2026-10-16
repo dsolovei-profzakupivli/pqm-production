@@ -30,6 +30,7 @@ function queueHarness(){
   h.c.clearApplicationDeepLinkFilter=()=>{h.c.deepLinkSubmissionId=''};h.c.$$=()=>[];
   h.c.loadRowsGeneration=0;h.c.invalidateRegistryStats=()=>{};h.c.syncPrimaryFilters=()=>{};
   h.c.saveFilterState=()=>{};h.c.updateMultiSummary=()=>{};h.c.updateApplicationFilterStyles=()=>{};h.c.marketplaceFilterLabels={};
+  h.c.applicationRowsCurrent=()=>true;
   h.response.items[0].columns=structuredClone(h.c.profiles[0].columns);
   h.c.addCalendarDays=()=> '2026-10-09';h.c.showModule=name=>{h.c.activeModule=name};
   h.c.loadRows=async()=>{h.rowLoads=(h.rowLoads||0)+1;h.c.rows=[{id:'registry-row'}];return true};

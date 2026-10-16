@@ -8,6 +8,7 @@ const c={URL,URLSearchParams,Set,selected,applicationSelection:snapshots,activeR
   $:node,$$:()=>[],clearApplicationDeepLinkFilter:()=>{c.deepLinkSubmissionId=''},invalidateRegistryStats:()=>{c.invalidated=(c.invalidated||0)+1},
   syncPrimaryFilters:()=>{},saveFilterState:()=>{c.saved=true},updateApplicationFilterStyles:()=>{},marketplaceFilterLabels:{},
   updateMultiSummary:(id,label,set)=>{summaries[id]=[...set]},showModule:name=>{c.activeModule=name},addCalendarDays:()=> '2026-10-09',
+  profilesMetadataReady:true,applicationRowsCurrent:()=>true,
   initializeApplicationsRegistry:()=>{c.loaded=(c.loaded||0)+1;return true}};
 vm.createContext(c);
 const start=src.indexOf('function resetApplicationsForExternalKpi(){'),end=src.indexOf("$('#queueSearch')",start);
@@ -39,4 +40,12 @@ assert.equal(snapshots.all([{id:'late-response'}],pendingScope,pendingRevision),
 const local=src.slice(src.indexOf('const decisionKpiValues='),src.indexOf("$('#clearFiltersBtn').onclick="));
 assert(local.includes('protocolDecisionFilter'));assert(!local.includes('resetApplicationsForExternalKpi'));
 assert.equal((src.match(/resetApplicationsForExternalKpi\(\)/g)||[]).length,2);
-console.log('EXTERNAL_KPI_FILTERS=PASS (five actual KPI entry points, repeat navigation, IDs/count, selection, profile invariance)');
+(async()=>{
+ // A second navigation while metadata/rows are pending must load its own scope.
+ let resolve;const pending=new Promise(done=>{resolve=done}),loaded=[];
+ c.initializeApplicationsRegistry=()=>pending;c.applicationRowsCurrent=()=>false;
+ c.loadRows=async()=>{loaded.push(c.officerFilter);return true};
+ const first=c.openApplicationsFromQueue({officer:'First'}),second=c.openApplicationsFromQueue({officer:'Last'});
+ resolve();await Promise.all([first,second]);assert.deepEqual(loaded,['Last']);assert.equal(selected.size,0);
+ console.log('EXTERNAL_KPI_FILTERS=PASS (five entry points, rapid pending navigation, IDs/count, selection, profile invariance)');
+})().catch(error=>{console.error(error);process.exitCode=1});
