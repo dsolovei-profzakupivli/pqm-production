@@ -31,6 +31,12 @@
     spider.innerHTML='<svg viewBox="0 0 12 12" focusable="false"><g fill="#101116" stroke="#8996a8" stroke-width=".65" stroke-linecap="round"><path d="M4 4L1 1M4 6L1 5M4 8L1 11M8 4L11 1M8 6L11 5M8 8L11 11"/><ellipse cx="6" cy="7" rx="3" ry="4"/><circle cx="6" cy="3" r="2.4"/></g><g fill="#ff9b32"><circle cx="5" cy="3" r=".65"/><circle cx="7" cy="3" r=".65"/></g></svg>';
     document.body.append(spider);
     refreshSpider=()=>{
+      // Scale only the live digits' paint, retaining the original badge layout.
+      for(const badge of nav.querySelectorAll('.action-count-badge')){
+        if(!/^\d+$/.test(badge.textContent)||badge.firstElementChild?.classList.contains('halloween-count-number'))continue;
+        const number=document.createElement('span');number.className='halloween-count-number';
+        number.textContent=badge.textContent;badge.replaceChildren(number);
+      }
       const button=nav.querySelector('button.nav-active');
       if(!enabled||!button){spider.hidden=true;return}
       const b=button.getBoundingClientRect(),n=nav.getBoundingClientRect();

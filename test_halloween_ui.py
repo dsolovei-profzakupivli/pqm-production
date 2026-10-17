@@ -13,7 +13,13 @@ class HalloweenUiTests(unittest.TestCase):
         self.assertIn('background:transparent!important;color:#fff!important',css)
         self.assertIn('.action-count-badge[hidden]::before{content:none}',css)
         source=Path('halloween.js').read_text(encoding='utf-8')
-        self.assertNotIn('action-count-badge',source)
+        self.assertIn('number.textContent=badge.textContent;badge.replaceChildren(number)',source)
+
+    def test_digit_scale_is_paint_only_and_outline_is_scoped(self):
+        css=Path('halloween.css').read_text(encoding='utf-8')
+        self.assertIn('transform:scale(1.18);transform-origin:center',css)
+        self.assertIn('-webkit-text-stroke:.3px #592600',css)
+        self.assertIn('html[data-halloween="on"] .topbar #mainNav .halloween-count-number',css)
 
     def test_hat_is_avatar_bound_and_uses_shared_switch(self):
         source=Path('halloween.js').read_text(encoding='utf-8')
