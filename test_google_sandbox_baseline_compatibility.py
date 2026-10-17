@@ -127,10 +127,16 @@ class SandboxMirrorBaselineCompatibility(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(ast.dump(normalized,include_attributes=False).encode()).hexdigest(),digest)
         self.assertEqual(set(server.SCHEDULER_TARGETS),{'prozorro','violation_reports','nazk_registry'})
 
-    def test_existing_scheduler_admin_ui_exact_baseline_with_fourth_separate_card(self):
+    def test_existing_scheduler_actions_exact_baseline_with_four_combined_cards(self):
         app=(ROOT/'app.js').read_text(encoding='utf-8-sig')
         section=app[app.index('let schedulerEditorsGeneration=0;'):app.index('async function loadRuntimeFeatures(){')]
-        self.assertEqual(hashlib.sha256(section.encode()).hexdigest(),'5a00d0a8928125ebf9368004aedaf4c8f07ce0ee96cbd24eb501dd768e71ae67')
+        # The approved UI combines each status card with its schedule editor.
+        # Keep the original input/preview/apply/rollback behavior byte-exact.
+        start=section.index('    root.oninput=event=>')
+        end=section.index('\n  }catch(error){',start)
+        self.assertEqual(hashlib.sha256(section[start:end].encode()).hexdigest(),'66f5813d7f2872704e3558cbaa540346d1646f0813538d1ff8d3219ab22d3fe2')
+        self.assertIn("$$('#schedulerJobs>[data-runtime-job]')",section)
+        self.assertIn("card.insertAdjacentHTML('beforeend',schedulerEditorMarkup(job))",section)
         self.assertIn('await loadSchedulerEditors();',app)
         self.assertIn('await loadGoogleWriterJob();',app)
         self.assertIn('googleWriterJobCard',(ROOT/'google_writer_ui.js').read_text(encoding='utf-8'))
