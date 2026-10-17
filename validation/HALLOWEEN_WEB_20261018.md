@@ -7,6 +7,16 @@ conditions. SVG uses preserveAspectRatio=none to fill the measured web area.
 Four additional wide/compact × light/dark comparisons passed; screenshots and
 adaptive-checks.json saved in the evidence folder. Spider and cat unchanged.
 
+Final visibility revision: web opacity .96, thicker silver-grey strokes and
+dark-theme brightness adjustment. Compact range includes real icon+badge
+buttons up to72px; wider geometry scales smoothly to44px, without label keys.
+Local real-navigation.cjs runs actual nav_icons.js and the shipped badge()
+renderer from ui_improvements_boot.js; no placeholder square SVGs. Counts7/14
+are explicit isolated fixture values, NOT live runtime counts. Eight real-renderer
+comparisons pass (two themes, compact/wide, 100%/125%): no empty icon slots,
+all five built-in SVGs retained, button HTML/geometry unchanged by Halloween.
+Targeted tests6/6 PASS. Spider geometry/thread and cat SVG unchanged.
+
 Parent a619e1d preserves the approved cat refinements. Cat SVG SHA256 is pinned
 by regression test; its dimensions, position, animations and silhouette rules
 are unchanged in this stage. No Production, backend, database or API changes.

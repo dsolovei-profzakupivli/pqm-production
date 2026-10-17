@@ -36,7 +36,7 @@
       const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
       const width=button.clientWidth;
       // Geometry, never tab names: 38px icon button → 22px web; wide → 44px.
-      button.style.setProperty('--halloween-web-width',Math.min(width-2,Math.max(20,Math.min(44,22+(width-38)*.32)))+'px');
+      button.style.setProperty('--halloween-web-width',Math.min(width-2,Math.max(20,Math.min(44,22+Math.max(0,width-72)*.5)))+'px');
       const content=document.createRange();content.selectNodeContents(button);
       const bounds=content.getBoundingClientRect();
       const topGap=Math.max(2,(bounds.top-b.top)/zoom-1);
