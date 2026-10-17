@@ -12,7 +12,7 @@
     button.onclick=()=>{PqmUi.clearInput(input);update()};wrapper.append(button);update();
   }
   const isSearch=input=>!input.hidden&&['text','search'].includes(input.type)&&
-    (input.type==='search'||input.classList.contains('multi-search')||/search/i.test(input.id)||input.matches('.registry-toolbar input,.edr-monitoring-toolbar input,.work-queue-toolbar input')||/пошук|знайти|search/i.test(input.placeholder+' '+input.getAttribute('aria-label')));
+    (input.type==='search'||input.classList.contains('multi-search')||/search/i.test(input.id)||input.matches('[data-history],.registry-toolbar input,.edr-monitoring-toolbar input,.work-queue-toolbar input')||/пошук|знайти|search/i.test(input.placeholder+' '+input.getAttribute('aria-label')));
   function scanSearch(root){root.querySelectorAll('input').forEach(input=>{if(isSearch(input))installClear(input)})}
   selectors.forEach(selector=>document.querySelectorAll(selector).forEach(installClear));
   scanSearch(document);
@@ -22,6 +22,10 @@
     PqmUi.formatActionButtons(document);
   };
   document.addEventListener('change',clearState);document.addEventListener('click',()=>requestAnimationFrame(clearState));
+  document.addEventListener('input',clearState,true);
+  document.addEventListener('focusin',()=>{scanSearch(document);clearState()});
+  // Navigation restoration and autofill can set .value without dispatching input.
+  setInterval(()=>{if(!document.hidden)clearState()},500);
   clearState();
   let clearQueued=false;
   new MutationObserver(()=>{if(clearQueued)return;clearQueued=true;requestAnimationFrame(()=>{clearQueued=false;scanSearch(document);clearState()})})
@@ -42,7 +46,8 @@
     let node=target.querySelector('.action-count-badge');
     if(!node){node=document.createElement('b');node.className='action-count-badge';target.append(node)}
     const ready=Number.isInteger(count)&&count>0;node.hidden=!ready;
-    node.textContent=ready?String(count):'';node.setAttribute('aria-label',ready?`Потребують дії: ${count}`:'');
+    const label=ready?String(count):'';if(node.textContent!==label)node.textContent=label;
+    node.setAttribute('aria-label',ready?`Потребують дії: ${count}`:'');
   }
   function paint(){for(const [id,value] of counts){const permission=id==='operationalTasksNav'?'tasks.read':'appeals.read';badge(id,currentMe?.permissions?.[permission]?value:0)}}
   async function refresh(){
@@ -58,18 +63,13 @@
       catch{counts.set(id,null);badge(id,null)}
     }))}finally{refreshing=false}
   }
-  new MutationObserver(paint).observe(document.getElementById('mainNav'),{childList:true});
+  new MutationObserver(paint).observe(document.getElementById('mainNav'),{childList:true,subtree:true});
   // Keep viewing separate from completion: only server state determines counts.
   authReady.then(()=>{clearState();refresh();setInterval(refresh,60000)});
   window.addEventListener('focus',()=>{clearState();refresh()});
   document.addEventListener('visibilitychange',refresh);
   document.getElementById('mainNav').addEventListener('click',event=>{
     if(event.target.closest('#operationalTasksNav')){if(typeof resetOperationalKpiFilters==='function')resetOperationalKpiFilters();document.getElementById('operationalTaskStatus').value='needs_action'}
-    if(event.target.closest('#requestsNav .action-count-badge')){
-      PqmUi.responseExpired=true;requestsPage=1;selectedRequestAuthority='40996564';
-      for(const id of ['requestsSearch','requestsStatus','requestsReason','requestsDateFrom','requestsDateTo'])document.getElementById(id).value='';
-      expired.classList.add('active');expired.setAttribute('aria-pressed','true');
-    }
     refresh();
   },true);
 })();

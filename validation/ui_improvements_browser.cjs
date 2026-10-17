@@ -8,7 +8,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
  const errors=[];page.on('pageerror',e=>errors.push(String(e)));await page.route('**/*',route=>route.abort());
  try{
   await page.setContent(read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,''));
-  for(const name of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css'])await page.addStyleTag({content:read(name)});
+  for(const name of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css','ui_tz2.css'])await page.addStyleTag({content:read(name)});
   await page.evaluate(()=>{
    document.querySelector('#loginGate').hidden=true;document.querySelector('#applicationShell').hidden=false;
    document.body.dataset.authRole='admin';
@@ -34,6 +34,14 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
   await page.locator('#requestsNav .action-count-badge').waitFor();
   assert.equal(await page.locator('#operationalTasksNav .action-count-badge').textContent(),'27');
   assert.equal(await page.locator('#requestsNav .action-count-badge').textContent(),'4');
+  for(const dark of [false,true])for(const mode of ['icon','icon-text'])for(const count of [1,9,27,137]){
+    await page.evaluate(({dark,mode,count})=>{document.documentElement.dataset.pqmEnvironment=dark?'sandbox':'';const button=document.getElementById('requestsNav');button.className=mode==='icon'?'main-nav-icon':'main-nav-icon-text';button.innerHTML='<svg width="19" height="19"></svg>'+(mode==='icon-text'?'<span>Звернення замовників</span>':'');fixtureCounts.appeals=count;window.dispatchEvent(new Event('focus'))},{dark,mode,count});
+    await page.waitForFunction(count=>document.querySelector('#requestsNav .action-count-badge')?.textContent===String(count),count);
+    const boxes=await page.locator('#requestsNav').evaluate(n=>({width:n.clientWidth,scroll:n.scrollWidth,items:[...n.children].map(c=>{const r=c.getBoundingClientRect();return{x:r.x,right:r.right,y:r.y,height:r.height}})}));
+    assert(boxes.width>=boxes.scroll);assert(boxes.items.at(-1).x>=boxes.items[0].right);assert(Math.abs((boxes.items.at(-1).y+10)-(boxes.items[0].y+boxes.items[0].height/2))<3);
+  }
+  await page.evaluate(()=>{document.getElementById('requestsSearch').value='старий фільтр';PqmUi.responseExpired=false});
+  await page.locator('#requestsNav .action-count-badge').click();assert.equal(await page.locator('#requestsSearch').inputValue(),'старий фільтр');assert.equal(await page.evaluate(()=>PqmUi.responseExpired),false);
   await page.locator('[data-copy-framework-number]').click();
   assert.equal(await page.evaluate(()=>clipboardValue),'UA-F-2020-12-15-000001-a');
   assert.equal(await page.evaluate(()=>toastLog.at(-1)),'Номер відбору скопійовано');
@@ -49,6 +57,14 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
   await page.evaluate(()=>{showFixture('requestsView');document.querySelector('#requestsExpiredFilter').click()});
   assert.equal(await page.evaluate(()=>PqmUi.responseExpired),true);assert.equal(await page.evaluate(()=>requestsPage),1);
   assert.equal(await page.evaluate(()=>reloads),1);
+  await page.evaluate(()=>showFixture('historyView'));
+  const historyFields=await page.locator('#historyFilters input:not([type=date])').count();assert.equal(historyFields,9);
+  for(let i=0;i<9;i++)await page.locator('#historyFilters input:not([type=date])').nth(i).fill('значення '+i);
+  for(let i=0;i<9;i++){
+    const field=page.locator('#historyFilters input:not([type=date])').nth(i);
+    await field.locator('..').locator('.pqm-search-clear').click();assert.equal(await field.inputValue(),'');
+    for(let j=i+1;j<9;j++)assert.equal(await page.locator('#historyFilters input:not([type=date])').nth(j).inputValue(),'значення '+j);
+  }
   await page.evaluate(()=>{fixtureCounts.appeals=0;window.dispatchEvent(new Event('focus'))});
   await page.waitForFunction(()=>document.querySelector('#requestsNav .action-count-badge').hidden);
   await page.evaluate(()=>{currentMe.permissions['tasks.read']=false;window.dispatchEvent(new Event('focus'))});

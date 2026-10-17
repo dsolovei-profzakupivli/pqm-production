@@ -9,7 +9,7 @@ const app=read('app.js'),section=(a,b)=>app.slice(app.indexOf(a),app.indexOf(b,a
  await page.route('**/*',r=>r.request().url()==='https://pqm-ui-fixture.invalid/'?r.fulfill({contentType:'text/html',body:read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'')}):r.abort());
  try{
   await page.goto('https://pqm-ui-fixture.invalid/');
-  for(const f of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css'])await page.addStyleTag({content:read(f)});
+  for(const f of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css','ui_tz2.css'])await page.addStyleTag({content:read(f)});
   await page.evaluate(()=>{
    window.$=s=>document.querySelector(s);window.$$=s=>[...document.querySelectorAll(s)];
    $('#loginGate').hidden=true;$('#applicationShell').hidden=false;document.body.dataset.authRole='admin';
@@ -35,12 +35,14 @@ const app=read('app.js'),section=(a,b)=>app.slice(app.indexOf(a),app.indexOf(b,a
   });
   await page.addScriptTag({content:read('working_modal_drag.js')});
   await page.addScriptTag({content:read('ui_improvements.js')});
-  await page.addScriptTag({content:section('let auditLoadSequence=','function renderProfileFallback(')});
+  await page.addScriptTag({content:read('audit_search.js')});
+  await page.addScriptTag({content:section('let auditRows=','function renderProfileFallback(')});
   await page.addScriptTag({content:section('function schedulerEditorMarkup(','async function loadRuntimeFeatures(')+section('async function loadRuntimeFeatures(){',"\ndocument.addEventListener('click',event=>{\n  const blocked=")});
   await page.addScriptTag({content:read('google_writer_ui.js')});
   await page.addScriptTag({content:read('table_widths_ui.js')});
   await page.addScriptTag({content:read('ui_improvements_boot.js')});
   await page.addScriptTag({content:read('ui_final.js')});
+  await page.addScriptTag({content:read('ui_tz2.js')});
   // Text clears include dynamic modal/multiselect fields but never dates/numbers/editing.
   await page.evaluate(()=>{const box=document.createElement('div');box.innerHTML='<input id="dynamicSearch" type="search"><input id="ordinaryEdit"><input id="numberFixture" type="number">';document.body.append(box)});
   await page.waitForFunction(()=>document.querySelector('#dynamicSearch').closest('.pqm-clear-wrap'));
@@ -82,6 +84,10 @@ const app=read('app.js'),section=(a,b)=>app.slice(app.indexOf(a),app.indexOf(b,a
   await page.evaluate(()=>{window.frameworkOptions=[{id:'f1',pretty_id:'UA-F-1',title:'Їжа',dk_code:'03110000-1'},{id:'f2',pretty_id:'UA-F-2',title:'Інше',dk_code:'03220000-2'}];$('#supplierRegistryFramework').innerHTML=frameworkOptions.map(f=>`<option value="${f.id}">${f.pretty_id}</option>`).join('');window.supplierRegistryPage=5;window.loadQualifiedSuppliersFiltered=()=>{};window.updateMultiSummary=(id,label,set)=>{$('#'+id+' summary').textContent=set.size>1?label+': '+set.size:set.size?[...set][0]:label}});
   await page.addScriptTag({content:section('function renderDynamicFilter(','async function loadFrameworks(')+section('function renderSupplierScopeFilters(){',"$('#supplierRegistryFramework').onchange=")});
   await page.evaluate(()=>renderSupplierScopeFilters());
+  await page.evaluate(()=>{$('#supplierRegistryFrameworkFilter').open=true});
+  const panel=await page.locator('#supplierRegistryFrameworkFilter .multi-panel').boundingBox(),closed=await page.locator('#supplierRegistryFrameworkFilter summary').boundingBox();assert(panel.width>closed.width);assert(panel.x>=0&&panel.x+panel.width<=1920);
+  assert(await page.locator('#supplierRegistryFrameworkFilter .multi-panel').evaluate(n=>n.scrollWidth<=n.clientWidth+1));
+  await page.evaluate(()=>{$('#supplierRegistryFrameworkFilter').open=false});
   await page.locator('#supplierRegistryDkFilter summary').click();await page.locator('#supplierRegistryDkFilter input[type=checkbox]').first().check();await page.locator('#supplierRegistryDkFilter .multi-search').fill('0322');await page.locator('#supplierRegistryDkFilter input[type=checkbox]').check();assert.equal(await page.locator('#supplierRegistryDk').inputValue(),'03110000-1,03220000-2');
   await page.locator('#supplierRegistryDkFilter .multi-search').fill('');assert.equal(await page.locator('#supplierRegistryDkFilter input:checked').count(),2);await page.locator('#supplierRegistryDkFilter [data-clear-scope]').click();assert.equal(await page.locator('#supplierRegistryDk').inputValue(),'');
   await page.evaluate(()=>{$('#supplierRegistryDkFilter').open=false;$('#supplierRegistryFrameworkFilter').open=true});await page.locator('#supplierRegistryFrameworkFilter .multi-search').fill('Їжа');await page.locator('#supplierRegistryFrameworkFilter input[type=checkbox]').check();await page.locator('#supplierRegistryFrameworkFilter .multi-search').fill('UA-F-2');await page.locator('#supplierRegistryFrameworkFilter input[type=checkbox]').check();assert.deepEqual(await page.evaluate(()=>[...$('#supplierRegistryFramework').selectedOptions].map(o=>o.value)),['f1','f2']);
@@ -92,9 +98,14 @@ const app=read('app.js'),section=(a,b)=>app.slice(app.indexOf(a),app.indexOf(b,a
   await page.locator('[data-kpi-card=rejected]').click();assert.deepEqual(await page.evaluate(()=>[...filterSelections.status]),['Відхилено']);
   await page.locator('[data-kpi-card=rejected]').click();assert.deepEqual(await page.evaluate(()=>[...filterSelections.status]),[]);
   await page.evaluate(()=>openAudit());assert.equal(await page.locator('#auditDialog').isVisible(),true);
-  await page.locator('[data-audit-filter=search]').fill('old-page');await page.waitForTimeout(350);
+  await page.locator('[data-audit-filter=search]').fill('old-page');await page.waitForTimeout(550);
   assert(await page.evaluate(()=>calls.some(url=>url.includes('search=old-page')&&url.includes('page=1'))));
   const before=await page.locator('#auditDialog').boundingBox(),header=await page.locator('#auditDialog header h2').boundingBox();
+  await page.evaluate(()=>{window.clipboardValue='';window.copyText=async text=>{clipboardValue=text};renderAudit({items:[{changed_at:'fixture',old_value:'Було\n'.repeat(100),new_value:'Стало\n'.repeat(100)}],total:1,pages:1})});
+  assert((await page.locator('.audit-long-value').first().boundingBox()).height<80);
+  await page.locator('.audit-long-value').first().click();assert.equal(await page.locator('#auditValueDialog pre').count(),2);
+  await page.locator('#auditValueDialog section button').first().click();assert.equal(await page.evaluate(()=>clipboardValue),'Було\n'.repeat(100));
+  await page.locator('#auditValueDialog .dialog-close').click();
   await page.mouse.move(header.x+30,header.y+8);await page.mouse.down();await page.mouse.move(header.x+90,header.y+60,{steps:5});await page.mouse.up();const after=await page.locator('#auditDialog').boundingBox();assert(Math.abs(after.width-before.width)<1);assert(after.y>=0&&after.y<1000-60);
   await page.locator('#historyNav').click();assert.equal(await page.locator('#auditDialog').isVisible(),false);
   assert.deepEqual(errors,[]);console.log('UI_FINAL_BROWSER=PASS; themes=2 widths=4 zooms=2; workQueue=1/2/3/4/5/7; audit/drag/clear/status/4-cards=PASS');

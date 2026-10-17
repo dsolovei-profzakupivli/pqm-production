@@ -3,9 +3,10 @@
   const $=selector=>document.querySelector(selector);
   let auditTimer;
   document.querySelectorAll('[data-audit-filter]').forEach(input=>input.addEventListener('input',()=>{
-    clearTimeout(auditTimer);auditPage=1;auditTimer=setTimeout(()=>loadAudit().catch(error=>{$('#auditPageInfo').textContent=error.message;toast(error.message,'error')}),250);
+    clearTimeout(auditTimer);auditController().invalidate();auditPage=1;auditTimer=setTimeout(loadAudit,400);
   }));
   $('#mainNav').addEventListener('click',event=>{const button=event.target.closest('button');if(button?.id.endsWith('Nav')&&$('#auditDialog').open)$('#auditDialog').close()},true);
+  $('#auditDialog').addEventListener('close',()=>{clearTimeout(auditTimer);auditController().invalidate()});
   const frameworkToolbar=$('#frameworkAnalyticsView .frameworks-toolbar');
   if(frameworkToolbar&&!$('#frameworksReset')){
     const reset=document.createElement('button');reset.id='frameworksReset';reset.type='button';reset.textContent='×';reset.className='ghost pqm-filter-reset';reset.title='Скинути всі фільтри';reset.setAttribute('aria-label',reset.title);

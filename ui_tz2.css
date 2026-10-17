@@ -1,0 +1,33 @@
+/* TZ2: only manually identified presentation defects, no accepted panel redesign. */
+.pqm-clear-wrap>.pqm-search-clear{z-index:2;flex:none;opacity:1;color:var(--ink);background:transparent}
+.pqm-clear-wrap>input{padding-right:32px!important}
+#supplierRegistryFrameworkFilter{position:relative}
+#supplierRegistryFrameworkFilter>.multi-panel{left:auto;right:0;width:min(640px,calc(100vw - 40px));max-width:calc(100vw - 40px);overflow-x:hidden}
+#supplierRegistryFrameworkFilter .multi-options{overflow-x:hidden;overflow-y:auto;max-height:340px}
+#supplierRegistryFrameworkFilter .multi-options label{white-space:normal;overflow-wrap:anywhere;align-items:flex-start;min-width:0}
+#supplierRegistryFrameworkFilter .multi-options input{flex:none}
+.amcu-toolbar{gap:10px;align-items:center}
+.amcu-toolbar>div:first-child{flex:0 0 200px;min-width:200px}
+.amcu-toolbar>div:first-child strong,.amcu-toolbar>div:first-child small{display:block;white-space:normal}
+.amcu-toolbar>.pqm-clear-wrap{flex:1 1 125px;min-width:100px;max-width:170px}
+.amcu-toolbar #refAmcuAuthority{min-width:165px;max-width:200px;flex:0 1 185px}
+.amcu-toolbar #refAmcuSupplierScope{min-width:145px;max-width:190px;flex:0 1 170px}
+.amcu-toolbar #refAmcuRefresh{flex:0 0 auto;width:max-content;min-width:max-content;padding-inline:14px}
+.topbar #mainNav :is(#requestsNav,#operationalTasksNav){display:inline-flex;flex-direction:row;align-items:center;justify-content:center;gap:6px;width:auto;min-width:38px;white-space:nowrap;height:38px}
+.topbar #mainNav .action-count-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;background:#d92d78;color:#fff;min-width:22px;width:auto;margin-left:0;order:5}
+dialog{border:1px solid #7d91a5;box-shadow:0 18px 55px #10243d66}
+html[data-theme=dark] dialog,html[data-pqm-environment=sandbox] dialog{border-color:#7795b7}
+#auditDialog{width:min(1090px,calc(100vw - 40px));max-height:calc(100dvh - 110px)}
+#auditDialog>form{padding-inline:18px;display:flex;flex-direction:column;max-height:inherit;min-height:0}
+#auditDialog>form>:is(header,footer,.audit-filters){flex:0 0 auto}
+#auditDialog .audit-wrap{flex:1 1 auto;min-height:0}
+#auditDialog>form>:is(header,footer,.audit-filters){padding-inline:0}
+#auditDialog .audit-wrap{margin-inline:0}
+body:has(#auditDialog[open])::after{content:'';position:fixed;inset:0;background:#14223566;z-index:990;pointer-events:none}
+.audit-long-value{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-height:4.5em;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;text-align:left;border:0;background:transparent;color:inherit;padding:0;line-height:1.5;width:100%}
+.audit-value-comparison{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px}
+.audit-value-comparison section{min-width:0}
+.audit-value-comparison pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:55vh;overflow-y:auto}
+.request-protocol-cell{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:180px}
+.request-protocol-cell button,.request-protocol-cell a{width:max-content;padding:4px 8px}
+@media(max-width:800px){.audit-value-comparison{grid-template-columns:1fr}.amcu-toolbar>div:first-child{flex-basis:200px}#supplierRegistryFrameworkFilter>.multi-panel{position:fixed;left:20px;right:20px;width:auto;max-height:60vh}}

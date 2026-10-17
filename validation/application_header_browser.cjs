@@ -10,7 +10,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
  await page.route('**/*',route=>route.request().url()==='https://pqm-fixture.invalid/'?route.fulfill({contentType:'text/html',body:read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'')}):route.abort());
  try{
   await page.goto('https://pqm-fixture.invalid/');
-  for(const file of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css'])await page.addStyleTag({content:read(file)});
+  for(const file of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css','ui_tz2.css'])await page.addStyleTag({content:read(file)});
   await page.addScriptTag({content:read('ui_improvements.js')});
   await page.evaluate(()=>PqmUi.formatActionButtons(document));
   assert.equal(await page.locator('#historyReset').textContent(),'×');

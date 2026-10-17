@@ -6724,6 +6724,11 @@ def list_violation_reports(params: dict) -> dict:
           FROM violation_reports WHERE {authority_clause} AND authority_code<>''
           GROUP BY authority_code,authority_name ORDER BY count DESC,authority_name""", authority_args).fetchall()]
         warning_markers = operational_tasks.warning_marker_map(con)
+        # Batch existing review records, no detail refresh/network and no mutations.
+        review_ids=[row['id'] for row in rows]
+        protocol_reviews={row['report_id']:dict(row) for row in con.execute(
+            'SELECT * FROM violation_report_reviews WHERE report_id IN ('+
+            ','.join('?' for _ in review_ids)+')',review_ids)} if review_ids else {}
     items = []
     for row in rows:
         item = dict(row)
@@ -6732,6 +6737,12 @@ def list_violation_reports(params: dict) -> dict:
         raw = json.loads(item.pop("raw_json") or "{}")
         item["defendant_statements"] = raw.get("defendantStatements") or []
         item["blocking_marker"] = warning_markers.get(item["report_id"])
+        import violation_protocol_summary
+        saved_review=protocol_reviews.get(item['id'],{})
+        projected_review=dict(saved_review)
+        if raw.get('decisions'):projected_review['review_status']='completed'
+        item['protocol_summary']=violation_protocol_summary.present(
+            saved_review,PROTOCOLS_DIR,_violation_sheets_json_eligible(projected_review))
         items.append(item)
     return {"items": items, "total": total, "pending": pending, "satisfied": satisfied, "declined": declined, "page": page, "size": size,
             "pages": (total + size - 1) // size, "statuses": statuses, "reasons": reasons,
@@ -11284,7 +11295,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/audit":
             import audit_reader
             try:
-                result=audit_reader.read(DB_PATH,urllib.parse.parse_qs(parsed.query))
+                result=audit_reader.read(DB_PATH,urllib.parse.parse_qs(parsed.query),actor=self.auth_user)
+            except audit_reader.AuditResourceError as exc:
+                return self.send_json({'error':str(exc),'code':exc.code},status=exc.status)
             except ValueError as exc:
                 return self.send_json({'error':str(exc)},status=400)
             return self.send_json(result)

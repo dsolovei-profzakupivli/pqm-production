@@ -149,3 +149,17 @@ startup errors, automation blocked and the UI checklist without sync/import/jobs
 Use isolated data for settings/save scenarios. For code rollback, manually deploy
 the exact baseline above, keeping the kill-switch; no DB restore/migration is
 needed for this schema-free package. Production promotion remains separate.
+
+# TZ № 2 — 17 October 2026, sandbox candidate only
+
+Baseline: `f80796bfaddff1bfba26f168b2c3d327512624de`.
+
+- Audit: retain the 10-second SQLite deadline. Parameterized matching is evaluated once per source row; materialize IDs only, then derive exact total and the requested page in the same read-only snapshot. No indexes/schema changes. Cancellation is scoped to authenticated username plus random browser-window ID, never a global user lock. Newer sequences cancel older searches; late stale requests cannot restart. Resource exhaustion/SQLite busy returns controlled 503; superseded requests return 409, not an unhandled 500. The UI clears stale rows immediately, keeps one active search plus the latest pending query, and reports errors inline without repeated toasts.
+- Protocol column: replace only Decision/Documents with Protocol decision. Batch-read existing review records without detail refresh/network. Resolve the current document from `generated_protocol_filename`; obtain the historic officer from the standalone signature paragraph in that exact DOCX. Never use the current assignment as a historical author. Missing/ambiguous signatures remain undisplayed. Read the existing `protocol_subject` metadata for ASKOD, without inventing a format. Use the existing JSON eligibility predicate independently of generation, including the existing official-decision projection. No generator changes or historical rewrites.
+- Search clears stay field-local, including history's accepted two rows and inner multiselect search. Programmatic navigation restoration is reflected without F5. Framework dropdown expands leftward, wraps full labels, retains vertical scrolling and existing selections. The CPV panel is unchanged.
+- Restore pink navigation badges after navigation re-render in icon and icon/text modes. The appeals count/list use the unchanged shared predicate: authority `40996564` AND pending AND canonical expired supplier deadline AND no reviewed/completed review/completed_at. Tasks retain their canonical needs-action statuses. Clicking the appeals tab/badge does not add or clear filters.
+- AMCU changes are scoped to toolbar proportions, not its data or update paths. Audit has a wider framed/dimmed surface, bounded dragging and a three-line value preview with read-only full-text comparison/copy. Other modal layout/behavior remains intact; only the shared frame/shadow is adjusted.
+
+Acceptance uses synthetic SQLite/DOCX fixtures and offline browser adapters. No live data is modified. Previously accepted applications, automation controls, frameworks and XLSX business logic must retain their regression coverage.
+
+Manual deployment/rollback is exclusively the user's action. After separate approval deploy the exact tested SHA only to pqm-sandbox, keeping `PQM_DISABLE_BACKGROUND_JOBS=1`. Rollback target is the baseline above, with Environment preserved; no DB restore/migrations are required by this package. No production, scheduler, Google execution or kill-switch changes are authorized.

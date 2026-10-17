@@ -3,7 +3,7 @@ window.installViewportDrag=function(dialog,target,header,{enabled=()=>true,reset
   if(!dialog||!target||!header||header.dataset.viewportDrag)return;
   header.dataset.viewportDrag='true';let drag=null,moved=false;
   const original={left:target.style.left,top:target.style.top,right:target.style.right,bottom:target.style.bottom,margin:target.style.margin,position:target.style.position};
-  const position=(x,y)=>{const r=target.getBoundingClientRect();target.style.left=`${Math.max(8,Math.min(x,Math.max(8,innerWidth-r.width-8)))}px`;target.style.top=`${Math.max(8,Math.min(y,Math.max(8,innerHeight-Math.min(r.height,80)-12)))}px`};
+  const position=(x,y)=>{const r=target.getBoundingClientRect();target.style.left=`${Math.max(8,Math.min(x,Math.max(8,innerWidth-r.width-8)))}px`;target.style.top=`${Math.max(8,Math.min(y,Math.max(8,innerHeight-(target.dataset.keepViewport==='true'?r.height:Math.min(r.height,80))-12)))}px`};
   const end=e=>{if(drag&&header.hasPointerCapture(drag.id))header.releasePointerCapture(drag.id);drag=null;header.classList.remove('is-dragging')};
   header.addEventListener('pointerdown',e=>{
     if(!enabled()||e.button!==0||!e.isPrimary||e.target.closest('button,input,select,textarea,a,label,[contenteditable],[role="button"]'))return;
