@@ -1,15 +1,26 @@
-/* Sandbox decoration only. No API calls, profile writes or seasonal timers. */
+/* Sandbox decoration only. One bounded calendar timer, no API/profile writes. */
 (()=>{
   const title=document.querySelector('.prod-brand-copy strong');
   if(!title)return;
   const key='pqm.halloween.cat.enabled.v1';
-  let enabled=true;
-  try{enabled=localStorage.getItem(key)!=='0'}catch{/* Private storage may be unavailable. */}
+  let preferred=true,enabled=false,seasonTimer=null,input=null,hint=null;
+  try{preferred=localStorage.getItem(key)!=='0'}catch{/* Private storage may be unavailable. */}
   let refreshSpider=()=>{};
   let refreshHat=()=>{};
   let refreshQueueBackground=()=>{};
-  const apply=()=>{document.documentElement.dataset.halloween=enabled?'on':'off';refreshSpider();refreshHat();refreshQueueBackground()};
-  apply();
+  const season=()=>globalThis.PqmHalloweenSeason?.state(new Date())||{available:false,nextTransitionAt:null};
+  const synchronize=()=>{
+    if(seasonTimer!==null)clearTimeout(seasonTimer);
+    const current=season();enabled=current.available&&preferred;
+    document.documentElement.dataset.halloween=enabled?'on':'off';
+    if(input){input.disabled=!current.available;input.checked=enabled;input.title=current.available?'':'Доступно лише у жовтні за часом Києва'}
+    if(hint)hint.textContent=current.available?'Декоративне оформлення лише в цьому браузері':'Доступно лише у жовтні · Europe/Kyiv. Ваш вибір збережено.';
+    refreshSpider();refreshHat();refreshQueueBackground();
+    // Minute checks handle clock adjustments; the final callback targets midnight.
+    const delay=Math.max(1,Math.min(60000,(current.nextTransitionAt??(Date.now()+60000))-Date.now()));
+    seasonTimer=setTimeout(synchronize,delay);
+  };
+  synchronize();
   title.classList.add('halloween-title');
   title.insertAdjacentHTML('beforeend',`<svg class="halloween-cat" viewBox="0 0 156 57" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
     <g fill="#101116" stroke="#30323b" stroke-width=".8" stroke-linejoin="round">
@@ -110,7 +121,16 @@
     const label=document.createElement('label');label.className='halloween-preference';
     label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span>Halloween · святкове оформлення<small>Декоративне оформлення лише в цьому браузері</small></span>';
     form.querySelector('footer').before(label);
-    const input=label.querySelector('input');input.checked=enabled;
-    input.addEventListener('change',()=>{enabled=input.checked;apply();try{localStorage.setItem(key,enabled?'1':'0')}catch{}});
+    input=label.querySelector('input');hint=label.querySelector('small');
+    input.addEventListener('change',()=>{
+      if(!season().available){synchronize();return}
+      preferred=input.checked;try{localStorage.setItem(key,preferred?'1':'0')}catch{}
+      synchronize();
+    });
   }
+  document.addEventListener('visibilitychange',synchronize);
+  window.addEventListener('focus',synchronize);
+  window.addEventListener('pageshow',synchronize);
+  window.addEventListener('pagehide',()=>{if(seasonTimer!==null)clearTimeout(seasonTimer);seasonTimer=null});
+  synchronize();
 })();

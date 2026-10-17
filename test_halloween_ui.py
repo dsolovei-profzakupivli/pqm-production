@@ -82,8 +82,9 @@ class HalloweenUiTests(unittest.TestCase):
         source=Path('halloween.js').read_text(encoding='utf-8')
         self.assertIn('aria-hidden="true" focusable="false"',source)
         self.assertIn("document.querySelector('.prod-brand-copy strong')",source)
-        for forbidden in ['fetch(', 'XMLHttpRequest', '/api/', 'setInterval(', 'setTimeout(']:
+        for forbidden in ['fetch(', 'XMLHttpRequest', '/api/', 'setInterval(']:
             self.assertNotIn(forbidden,source)
+        self.assertEqual(source.count('setTimeout('),1)
         self.assertIn('halloween.js',Path('index.html').read_text(encoding='utf-8'))
 
     def test_overlay_and_accessibility_contract(self):
@@ -100,10 +101,11 @@ class HalloweenUiTests(unittest.TestCase):
         const source=fs.readFileSync('halloween.js','utf8');
         for(const stored of [null,'0','1','denied']){
           let svg='',added=false;
-          const document={documentElement:{dataset:{}},querySelector:s=>s.includes('strong')?{
+          const document={addEventListener:()=>{},documentElement:{dataset:{}},querySelector:s=>s.includes('strong')?{
             classList:{add:()=>added=true},insertAdjacentHTML:(_,html)=>svg=html
           }:null};
-          vm.runInNewContext(source,{document,localStorage:{getItem:()=>{if(stored==='denied')throw Error('blocked');return stored}}});
+          class Clock extends Date{constructor(...args){super(...(args.length?args:['2026-10-18T12:00:00Z']))}static now(){return Date.parse('2026-10-18T12:00:00Z')}}
+          vm.runInNewContext(fs.readFileSync('halloween_season.js','utf8')+'\n'+source,{document,Date:Clock,window:{addEventListener:()=>{}},setTimeout:()=>1,clearTimeout:()=>{},localStorage:{getItem:()=>{if(stored==='denied')throw Error('blocked');return stored}}});
           assert.equal(document.documentElement.dataset.halloween,stored==='0'?'off':'on');
           assert(added&&svg.includes('cat-eyes'));
         }
