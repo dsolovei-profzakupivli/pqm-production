@@ -6,6 +6,16 @@ import unittest
 
 
 class HalloweenUiTests(unittest.TestCase):
+    def test_hat_is_avatar_bound_and_uses_shared_switch(self):
+        source=Path('halloween.js').read_text(encoding='utf-8')
+        css=Path('halloween.css').read_text(encoding='utf-8')
+        self.assertIn("document.querySelector('#currentUserAvatar')",source)
+        self.assertIn('avatar.getBoundingClientRect()',source)
+        self.assertIn('avatar.hidden||!avatar.complete||!avatar.naturalWidth',source)
+        self.assertIn('refreshSpider();refreshHat()',source)
+        self.assertIn('width:40px;height:28px;pointer-events:none',css)
+        self.assertIn('html[data-halloween="off"] .halloween-avatar-hat{display:none}',css)
+
     def test_spider_grows_without_changing_thread_anchor(self):
         css=Path('halloween.css').read_text(encoding='utf-8')
         self.assertIn('transform:scale(1.2);transform-origin:50% 25%',css)

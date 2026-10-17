@@ -6,7 +6,8 @@
   let enabled=true;
   try{enabled=localStorage.getItem(key)!=='0'}catch{/* Private storage may be unavailable. */}
   let refreshSpider=()=>{};
-  const apply=()=>{document.documentElement.dataset.halloween=enabled?'on':'off';refreshSpider()};
+  let refreshHat=()=>{};
+  const apply=()=>{document.documentElement.dataset.halloween=enabled?'on':'off';refreshSpider();refreshHat()};
   apply();
   title.classList.add('halloween-title');
   title.insertAdjacentHTML('beforeend',`<svg class="halloween-cat" viewBox="0 0 156 57" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -58,10 +59,32 @@
     document.fonts?.ready.then(schedule);
     refreshSpider();
   }
+  const avatar=document.querySelector('#currentUserAvatar');
+  if(avatar){
+    const hat=document.createElement('span');hat.className='halloween-avatar-hat';
+    hat.setAttribute('aria-hidden','true');hat.hidden=true;
+    hat.innerHTML='<svg viewBox="0 0 56 40" focusable="false"><g stroke="#34313e" stroke-width=".8" stroke-linejoin="round"><path class="hat-silhouette" d="M13 30Q17 17 19 3Q27 9 33 4L31 10Q35 18 43 29Z" fill="#111117"/><path d="M15 23Q27 27 38 22L42 29Q29 34 13 29Z" fill="#7847a6"/><path d="M29 26L36 25L37 30L30 31Z" fill="#e79432" stroke="#be7125"/><path d="M31 27L34 26.7L34.6 28.9L31.6 29.2Z" fill="#352442" stroke="none"/><path class="hat-silhouette" d="M4 30Q26 34 48 26Q53 25 53 29Q35 41 7 36Q1 35 4 30Z" fill="#111117"/></g></svg>';
+    document.body.append(hat);
+    refreshHat=()=>{
+      const b=avatar.getBoundingClientRect();
+      hat.hidden=!enabled||avatar.hidden||!avatar.complete||!avatar.naturalWidth||!b.width||!b.height||b.top<0||b.right>innerWidth;
+      if(hat.hidden)return;
+      const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
+      hat.style.left=(b.left/zoom-8)+'px';hat.style.top=(b.top/zoom-21)+'px';
+    };
+    let queued=false;
+    const schedule=()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;refreshHat()})};
+    new MutationObserver(schedule).observe(avatar,{attributes:true,attributeFilter:['hidden','src','class','style']});
+    const size=new ResizeObserver(schedule);size.observe(avatar);size.observe(avatar.parentElement);
+    avatar.addEventListener('load',schedule);avatar.addEventListener('error',schedule);
+    window.addEventListener('resize',schedule,{passive:true});window.addEventListener('scroll',schedule,{passive:true,capture:true});
+    if(window.visualViewport){visualViewport.addEventListener('resize',schedule,{passive:true});visualViewport.addEventListener('scroll',schedule,{passive:true})}
+    document.fonts?.ready.then(schedule);refreshHat();
+  }
   const form=document.querySelector('#accountSettingsForm');
   if(form){
     const label=document.createElement('label');label.className='halloween-preference';
-    label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span>Halloween · кіт і павутинка<small>Декоративне оформлення лише в цьому браузері</small></span>';
+    label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span>Halloween · святкове оформлення<small>Декоративне оформлення лише в цьому браузері</small></span>';
     form.querySelector('footer').before(label);
     const input=label.querySelector('input');input.checked=enabled;
     input.addEventListener('change',()=>{enabled=input.checked;apply();try{localStorage.setItem(key,enabled?'1':'0')}catch{}});
