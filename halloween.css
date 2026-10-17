@@ -12,15 +12,15 @@ html[data-halloween="off"] .halloween-cat{display:none}
 .halloween-preference small{display:block;color:var(--muted)}
 @media(prefers-reduced-motion:reduce){.halloween-cat .cat-tail,.halloween-cat .cat-eyes{animation:none}}
 
-/* Keep both ornaments INSIDE the button: the scroll viewport can clip safely. */
+/* Web stays on the button; spider lives outside the nav clipping viewport. */
 #mainNav button.nav-active{position:relative}
-html[data-halloween="on"] #mainNav button.nav-active::before,
-html[data-halloween="on"] #mainNav button.nav-active::after{content:"";position:absolute;pointer-events:none;user-select:none;background-repeat:no-repeat;z-index:1}
-html[data-halloween="on"] #mainNav button.nav-active::before{left:0;top:0;width:12px;height:10px;opacity:.65;background-size:100% 100%;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 15'%3E%3Cg fill='none' stroke='%239aa4b2' stroke-width='.7'%3E%3Cpath d='M0 15V0H24M0 0L23 14M0 0L12 15M0 0L5 15M0 4Q5 5 7 0M0 9Q10 11 15 0M0 14Q17 17 23 0'/%3E%3C/g%3E%3C/svg%3E")}
-html[data-halloween="on"] #mainNav button.nav-active::after{left:0;top:0;width:8px;height:min(100%,30px);background-size:100% 100%;transform-origin:50% 0;animation:pqm-spider-sway 9s ease-in-out infinite;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 42'%3E%3Cpath d='M5 0V27' stroke='%239aa4b2' stroke-width='.7'/%3E%3Cg fill='%23101116' stroke='%238996a8' stroke-width='.65' stroke-linecap='round'%3E%3Cpath d='M4 31L1 28M4 33L1 32M4 35L1 38M8 31L11 28M8 33L11 32M8 35L11 38'/%3E%3Cellipse cx='6' cy='34' rx='3' ry='4'/%3E%3Ccircle cx='6' cy='30' r='2.4'/%3E%3C/g%3E%3Cg fill='%23ff9b32'%3E%3Ccircle cx='5' cy='30' r='.65'/%3E%3Ccircle cx='7' cy='30' r='.65'/%3E%3C/g%3E%3C/svg%3E")}
-@keyframes pqm-spider-sway{0%,100%{transform:rotate(-1deg)}50%{transform:rotate(1deg)}}
-html[data-halloween="on"] #mainNav button.nav-active::before{width:8px;height:7px}
-html[data-halloween="on"] #mainNav button.nav-active::after{width:6px;left:1px}
+html[data-halloween="on"] #mainNav button.nav-active::before{content:"";position:absolute;pointer-events:none;user-select:none;background-repeat:no-repeat;z-index:1}
+html[data-halloween="on"] #mainNav button.nav-active::before{left:0;top:0;width:8px;height:7px;opacity:.65;background-size:100% 100%;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 15'%3E%3Cg fill='none' stroke='%239aa4b2' stroke-width='.7'%3E%3Cpath d='M0 15V0H24M0 0L23 14M0 0L12 15M0 0L5 15M0 4Q5 5 7 0M0 9Q10 11 15 0M0 14Q17 17 23 0'/%3E%3C/g%3E%3C/svg%3E")}
 html[data-halloween="on"] #mainNav button.nav-active:is(.main-nav-icon,.main-nav-icon-text)::before{width:18px;height:7px}
 @media(max-width:1320px){html[data-halloween="on"] #mainNav button.nav-active:not(.main-nav-icon):not(.main-nav-icon-text)::before{width:6px}}
-@media(prefers-reduced-motion:reduce){html[data-halloween="on"] #mainNav button.nav-active::after{animation:none}}
+.halloween-spider{position:fixed;width:12px;pointer-events:none;user-select:none;z-index:31;transform-origin:50% 0;animation:pqm-spider-sway 10s ease-in-out infinite}
+.halloween-spider[hidden],html[data-halloween="off"] .halloween-spider{display:none}
+.halloween-spider::before{content:"";position:absolute;left:5.5px;top:0;bottom:9px;width:.7px;background:#9aa4b2;opacity:.7}
+.halloween-spider svg{position:absolute;bottom:0;left:0;width:12px;height:12px;overflow:visible}
+@keyframes pqm-spider-sway{0%,100%{transform:rotate(-.5deg)}50%{transform:rotate(.5deg)}}
+@media(prefers-reduced-motion:reduce){.halloween-spider{animation:none}}

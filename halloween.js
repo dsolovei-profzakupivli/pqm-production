@@ -5,7 +5,8 @@
   const key='pqm.halloween.cat.enabled.v1';
   let enabled=true;
   try{enabled=localStorage.getItem(key)!=='0'}catch{/* Private storage may be unavailable. */}
-  const apply=()=>{document.documentElement.dataset.halloween=enabled?'on':'off'};
+  let refreshSpider=()=>{};
+  const apply=()=>{document.documentElement.dataset.halloween=enabled?'on':'off';refreshSpider()};
   apply();
   title.classList.add('halloween-title');
   title.insertAdjacentHTML('beforeend',`<svg class="halloween-cat" viewBox="0 0 156 57" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -22,6 +23,34 @@
     <path d="M45 32L42 34M45 32L48 34M35 30L23 28M35 32L22 33M55 30L67 28M55 32L68 34M36 48L36 51M39 48L39 51M56 47L57 50M59 47L60 50" fill="none" stroke="#777581" stroke-width=".7" stroke-linecap="round"/>
     <path d="M73 20Q88 14 102 21" fill="none" stroke="#34343e" stroke-width="1.2"/>
   </svg>`);
+  const nav=document.querySelector('#mainNav');
+  if(nav){
+    const spider=document.createElement('span');spider.className='halloween-spider';
+    spider.setAttribute('aria-hidden','true');spider.hidden=true;
+    spider.innerHTML='<svg viewBox="0 0 12 12" focusable="false"><g fill="#101116" stroke="#8996a8" stroke-width=".65" stroke-linecap="round"><path d="M4 4L1 1M4 6L1 5M4 8L1 11M8 4L11 1M8 6L11 5M8 8L11 11"/><ellipse cx="6" cy="7" rx="3" ry="4"/><circle cx="6" cy="3" r="2.4"/></g><g fill="#ff9b32"><circle cx="5" cy="3" r=".65"/><circle cx="7" cy="3" r=".65"/></g></svg>';
+    document.body.append(spider);
+    refreshSpider=()=>{
+      const button=nav.querySelector('button.nav-active');
+      if(!enabled||!button){spider.hidden=true;return}
+      const b=button.getBoundingClientRect(),n=nav.getBoundingClientRect();
+      const x=b.left+4;
+      spider.hidden=!b.width||!b.height||x<n.left+2||x>n.right-8||b.top<0||b.bottom+22>innerHeight;
+      if(spider.hidden)return;
+      const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
+      spider.style.left=(x/zoom-6)+'px';spider.style.top=((b.top+2)/zoom)+'px';
+      spider.style.height=((b.height+19)/zoom)+'px';
+    };
+    let queued=false;
+    const schedule=()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;refreshSpider()})};
+    new MutationObserver(schedule).observe(nav,{attributes:true,attributeFilter:['class'],childList:true,subtree:true});
+    new ResizeObserver(schedule).observe(nav);
+    nav.addEventListener('scroll',schedule,{passive:true});
+    window.addEventListener('resize',schedule,{passive:true});
+    window.addEventListener('scroll',schedule,{passive:true,capture:true});
+    if(window.visualViewport){visualViewport.addEventListener('resize',schedule,{passive:true});visualViewport.addEventListener('scroll',schedule,{passive:true})}
+    document.fonts?.ready.then(schedule);
+    refreshSpider();
+  }
   const form=document.querySelector('#accountSettingsForm');
   if(form){
     const label=document.createElement('label');label.className='halloween-preference';

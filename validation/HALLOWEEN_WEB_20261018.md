@@ -1,20 +1,22 @@
-# Halloween stage 2 — local Sandbox candidate
+# Halloween stage 2 — local Sandbox candidate (lowered spider revision)
 
 Parent a619e1d preserves the approved cat refinements. Cat SVG SHA256 is pinned
 by regression test; its dimensions, position, animations and silhouette rules
 are unchanged in this stage. No Production, backend, database or API changes.
 
-Thin web and hanging spider use CSS SVG pseudo-elements on #mainNav's existing
-button.nav-active. No click handlers, observers or navigation logic added.
-The active marker determines the decorated button, including rebuilt menus.
-Both pseudo-elements have pointer-events:none, stay inside the button geometry
-and use the existing data-halloween on/off preference. Spider motion is disabled
-under prefers-reduced-motion. The spider SVG includes a fine light outline.
+Thin web uses a CSS pseudo-element on the existing button.nav-active. The spider
+is a single fixed, non-interactive decorative SVG outside the nav overflow box,
+with its body center about 15 CSS viewport pixels below the button. A read-only
+MutationObserver/ResizeObserver and coalesced animation-frame positioning track
+active classes, menu rebuilds, scrolling, fonts and viewport resize. A spider
+whose anchor is scrolled out of view is hidden, not pinned to another button.
+No navigation click handlers or business behavior changes. Both use the existing
+data-halloween on/off preference; reduced motion disables animation.
 
 Targeted Python/Node tests 5/5 PASS. Offline Chromium: 60 viewport/theme/zoom/nav
 mode combinations (390–1920px, light/sandbox dark, 100%/125%, text/icon/icon+text),
 four tab switches each; active-only decoration, shared disable, reduced motion,
-unchanged header/logo/nav/scroll dimensions checked. Clicks include navigation
+body offset, unchanged header/logo/nav/scroll dimensions checked. Clicks include navigation
 scrolling on narrow fixtures. No live calls. This is isolated DOM/CSS testing,
 not live Sandbox acceptance. Screenshots use synthetic navigation icons/data.
 

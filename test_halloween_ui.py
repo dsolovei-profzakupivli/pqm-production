@@ -9,11 +9,10 @@ class HalloweenUiTests(unittest.TestCase):
     def test_navigation_decoration_is_active_only_and_uses_shared_toggle(self):
         css=Path('halloween.css').read_text(encoding='utf-8')
         self.assertIn('html[data-halloween="on"] #mainNav button.nav-active::before',css)
-        self.assertIn('html[data-halloween="on"] #mainNav button.nav-active::after',css)
-        self.assertIn('height:min(100%,30px)',css)
+        self.assertIn('.halloween-spider{position:fixed',css)
         self.assertIn('pointer-events:none',css)
         self.assertIn('pqm-spider-sway',css)
-        self.assertIn('button.nav-active::after{animation:none}',css)
+        self.assertIn('.halloween-spider{animation:none}',css)
         self.assertNotIn('overflow:visible!important',css)
 
     def test_cat_svg_is_identical_to_approved_parent(self):
