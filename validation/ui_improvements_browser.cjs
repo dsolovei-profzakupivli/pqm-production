@@ -110,7 +110,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
     await page.locator('.amcu-toolbar .system-width-button').waitFor();
     if(width>=1440)assert(await page.locator('.amcu-toolbar').evaluate(toolbar=>{
       const info=toolbar.firstElementChild.getBoundingClientRect(),search=toolbar.querySelector('.pqm-clear-wrap').getBoundingClientRect();
-      const readable=[...toolbar.querySelectorAll('select')].every(n=>{const s=getComputedStyle(n),c=document.createElement('canvas').getContext('2d');c.font=s.font;return n.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)>=c.measureText(n.selectedOptions[0].textContent).width});
+      const readable=[...toolbar.querySelectorAll('select')].every(n=>{const s=getComputedStyle(n),c=document.createElement('canvas').getContext('2d');c.font=s.font;return n.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)>=c.measureText(n.selectedOptions[0].textContent).width&&n.clientHeight-parseFloat(s.paddingTop)-parseFloat(s.paddingBottom)>=parseFloat(s.fontSize)*1.2});
       return info.width>=220&&search.left-info.right<=9&&readable;
     }),'AMCU info/search gap or default option readability');
     assert(await page.locator('.amcu-toolbar').evaluate(n=>[...n.children].filter(c=>!c.hidden&&getComputedStyle(c).display!=='none').every(c=>{const r=c.getBoundingClientRect();return r.x>=0&&r.right<=window.innerWidth})), 'AMCU control clipped');

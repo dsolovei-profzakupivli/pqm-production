@@ -12,6 +12,7 @@
 .amcu-toolbar>.pqm-clear-wrap{flex:1 1 150px;min-width:100px;max-width:none}
 .amcu-toolbar #refAmcuAuthority{min-width:165px;max-width:200px;flex:0 1 185px}
 .amcu-toolbar #refAmcuSupplierScope{min-width:145px;max-width:190px;flex:0 1 170px}
+.amcu-toolbar select{padding-block:5px;line-height:22px}
 .amcu-toolbar #refAmcuRefresh{flex:0 0 auto;width:max-content;min-width:max-content;padding-inline:14px}
 .topbar #mainNav :is(#requestsNav,#operationalTasksNav){display:inline-flex;flex-direction:row;align-items:center;justify-content:center;gap:6px;width:auto;min-width:38px;white-space:nowrap;height:38px}
 .topbar #mainNav .action-count-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;background:#b42318;color:#fff;min-width:22px;width:auto;margin-left:0;order:5}
