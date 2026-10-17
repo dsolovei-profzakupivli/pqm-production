@@ -96,3 +96,56 @@ Browser fixtures block outbound requests; profile/selection tests use synthetic
 state only. Do not exercise live refresh, importer or sync for UI acceptance.
 The final exact SHA still requires Linux regression and Docker gate evidence.
 No deploy, restart, rollback, production or Google operation is performed here.
+
+## Final consolidated contract (17 October 2026; supersedes older layout notes)
+
+Verified sandbox baseline: `7f7eff195d1424f0a0e379e8ac81016c89c54a47`.
+The 17 October metadata-only runtime check confirmed that exact Live SHA and
+the active background-jobs kill-switch, without opening the runtime database.
+
+Read-model changes:
+- Protocol-officer KPI use the entire current application predicate, including
+  the active officer, not a page or the review-officer field. No source/ranking
+  or protocol business rules are changed.
+- Existing GET `/api/audit` accepts `search`, exact `user` and `field`, and
+  `date_from`/`date_to` calendar bounds in Europe/Kyiv. Filtering/COUNT precede
+  LIMIT/OFFSET. Default page/size and response contract remain compatible.
+  Connections are mode=ro/query_only, parameterized, with a 10-second work limit.
+  No schema, index, migration or task builder. Benchmark uses 450001 synthetic
+  rows; an individual query exceeding 5 seconds fails the performance test and
+  requires a separate design/index approval rather than adding an index.
+- Expired-appeal list and navigation counter share administrator code 40996564,
+  the existing official-deadline predicate and unfinished-review requirement.
+- Supplier universal search additionally matches linked framework UA-F/title.
+
+UI changes:
+- Work Queue shows two qualification panels only; detailed task UI/API remain
+  present but hidden. Comfortable equal card widths adapt/wrap without inner
+  horizontal scrolling; fonts, heights, values and handlers are retained.
+- Application information totals are not filters; officer/decision/status groups
+  remain independent. Operational-task KPI clicks start a fresh filter scope.
+- Search clears cover static/dynamic text searches and multi-select/modal search,
+  not dates, numbers or ordinary editing. Reset is square ×, refresh is ↻ Prozorro.
+- History keeps two filter rows, full status text and banner-safe pagination.
+- Existing viewport dragging is installed on native dialog headers, including
+  dynamically generated column settings. Save handlers/dimensions are untouched.
+  Only the read-only audit window becomes non-modal and closes on module-nav
+  clicks. Editable modal forms are not auto-closed or interrupted on navigation;
+  existing unsaved-change/save guards remain authoritative.
+- Existing runtime-status and schedule controls share four cards. The original
+  delegated preview/apply/toggle handlers, disabled rules and Google run log are
+  retained. Only labels and DOM placement change; tests never invoke live actions.
+
+Acceptance: `validation/ui_final_browser.cjs` (both themes, 1280/1440/1680/1920,
+100%/125%, cards 1/2/3/4/5/7, audit/drag/search/4-card layout) plus the retained
+header/framework/AMCU/browser and bulk/CAS/Excel regressions. Synthetic adapters
+reject writes and outbound requests. Live acceptance remains a user step.
+
+Manual sandbox deploy/rollback (user only): confirm the candidate exact SHA and
+saved `PQM_DISABLE_BACKGROUND_JOBS=1`; in `pqm-sandbox` choose Manual Deploy →
+Deploy a specific commit and enter the tested candidate SHA. Do not deploy branch
+HEAD implicitly or change Auto-Deploy. After success check Live SHA/health,
+startup errors, automation blocked and the UI checklist without sync/import/jobs.
+Use isolated data for settings/save scenarios. For code rollback, manually deploy
+the exact baseline above, keeping the kill-switch; no DB restore/migration is
+needed for this schema-free package. Production promotion remains separate.

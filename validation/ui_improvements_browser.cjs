@@ -8,7 +8,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
  const errors=[];page.on('pageerror',e=>errors.push(String(e)));await page.route('**/*',route=>route.abort());
  try{
   await page.setContent(read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,''));
-  for(const name of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css'])await page.addStyleTag({content:read(name)});
+  for(const name of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css'])await page.addStyleTag({content:read(name)});
   await page.evaluate(()=>{
    document.querySelector('#loginGate').hidden=true;document.querySelector('#applicationShell').hidden=false;
    document.body.dataset.authRole='admin';
@@ -38,7 +38,10 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
   assert.equal(await page.evaluate(()=>clipboardValue),'UA-F-2020-12-15-000001-a');
   assert.equal(await page.evaluate(()=>toastLog.at(-1)),'Номер відбору скопійовано');
   assert.equal(new URL(await page.locator('.framework-number a').getAttribute('href')).pathname,'/uk/framework/UA-F-2020-12-15-000001-a');
-  const count=await page.locator('.pqm-clear-wrap').count();assert.equal(count,12);
+  await page.evaluate(()=>{const row=document.querySelector('#frameworksBody tr').cloneNode(true);row.querySelector('.framework-number a').textContent='UA-F-1';document.querySelector('#frameworksBody').append(row)});
+  const aligned=await page.locator('.copy-framework-number').evaluateAll(nodes=>nodes.map(n=>({right:n.getBoundingClientRect().right,gap:n.closest('td').getBoundingClientRect().right-n.getBoundingClientRect().right})));
+  assert(Math.abs(aligned[0].right-aligned[1].right)<1);assert(aligned.every(n=>n.gap>=6&&n.gap<=9));
+  const count=await page.locator('.pqm-clear-wrap').count();assert(count>=12);
   for(let i=0;i<count;i++)await page.evaluate(i=>{const w=document.querySelectorAll('.pqm-clear-wrap')[i],input=w.querySelector('input'),other=document.querySelector('#frameworksDk');
    other.value='4453';input.value='Текст';input.dispatchEvent(new Event('input',{bubbles:true}));
    if(w.querySelector('button').hidden)throw Error('Clear absent');w.querySelector('button').click();

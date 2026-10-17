@@ -560,8 +560,10 @@ async function runBulkOperation(retry){
   }
 }
 let auditPage=1,auditPages=1;
-async function loadAudit(){const data=await request(`${API}/audit?page=${auditPage}&size=100`);auditPages=Math.max(1,Number(data.pages||1));if(auditPage>auditPages){auditPage=auditPages;return loadAudit()}$('#auditBody').innerHTML=data.items.length?data.items.map(a=>`<tr><td>${esc(displayDate(a.changed_at))}</td><td>${esc(a.changed_by)}</td><td>${esc(a.submission_id)}</td><td>${esc(a.field_name)}</td><td>${esc(a.old_value)||'—'}</td><td>${esc(a.new_value)||'—'}</td></tr>`).join(''):'<tr><td colspan="6">Змін поки немає</td></tr>';const total=Number(data.total||0),from=total?(auditPage-1)*100+1:0,to=Math.min(auditPage*100,total);$('#auditPageInfo').textContent=`${from}–${to} із ${total.toLocaleString('uk-UA')} · сторінка ${auditPage} із ${auditPages}`;$('#auditPrev').disabled=auditPage<=1;$('#auditNext').disabled=auditPage>=auditPages}
-async function openAudit(){auditPage=1;await loadAudit();$('#auditDialog').showModal()}
+let auditLoadSequence=0;
+function auditFilterParams(){const q=new URLSearchParams({page:String(auditPage),size:'100'});$$('#auditDialog [data-audit-filter]').forEach(input=>q.set(input.dataset.auditFilter,input.value.trim()));return q}
+async function loadAudit(){const sequence=++auditLoadSequence;$('#auditPageInfo').textContent='Пошук…';const data=await request(`${API}/audit?${auditFilterParams()}`);if(sequence!==auditLoadSequence)return;auditPages=Math.max(1,Number(data.pages||1));if(auditPage>auditPages){auditPage=auditPages;return loadAudit()}$('#auditBody').innerHTML=data.items.length?data.items.map(a=>`<tr><td>${esc(displayDate(a.changed_at))}</td><td>${esc(a.changed_by)}</td><td>${esc(a.submission_id)}</td><td>${esc(a.field_name)}</td><td>${esc(a.old_value)||'—'}</td><td>${esc(a.new_value)||'—'}</td></tr>`).join(''):'<tr><td colspan="6">Змін за цими фільтрами немає</td></tr>';const total=Number(data.total||0),from=total?(auditPage-1)*100+1:0,to=Math.min(auditPage*100,total);$('#auditPageInfo').textContent=`${from}–${to} із ${total.toLocaleString('uk-UA')} · сторінка ${auditPage} із ${auditPages}`;$('#auditPrev').disabled=auditPage<=1;$('#auditNext').disabled=auditPage>=auditPages}
+async function openAudit(){auditPage=1;await loadAudit();$('#auditDialog').show()}
 function renderProfileFallback(){
   if(!profiles.length)profiles=[{id:'local-default',name:'Основний реєстр',columns:structuredClone(columns),kpis:defaultKpis('Основний реєстр'),is_system:true}];
   if(profilesMetadataReady&&!profiles.some(item=>item.id===activeProfileId))activeProfileId=profiles[0].id;
@@ -665,7 +667,7 @@ function renderSupplierScopeFilters(){
   for(const scope of scopes){
     const details=$('#'+scope.id);if(!details)continue;
     const changed=()=>{scope.save();supplierRegistryPage=1;loadQualifiedSuppliersFiltered()};
-    const draw=()=>renderDynamicFilter(scope.id,scope.items,scope.selection,scope.value,scope.label,scope.placeholder,changed);
+    const draw=()=>{renderDynamicFilter(scope.id,scope.items,scope.selection,scope.value,scope.label,scope.placeholder,changed);if(scope.id==='supplierRegistryFrameworkFilter'&&scope.selection.size){const summary=details.querySelector('summary');summary.textContent=`Відбори · ${scope.selection.size}`;summary.title=scope.items.filter(item=>scope.selection.has(scope.value(item))).map(scope.label).join('\n')}};
     details.querySelector('.multi-search').oninput=draw;
     details.querySelector('[data-clear-scope]').onclick=()=>{scope.selection.clear();changed();draw()};
     draw();
@@ -1580,7 +1582,7 @@ function renderOperationalTaskTypes(counts){
   const selected=$('#operationalTaskType').value;
   $('#operationalTaskTypes').innerHTML=['nazk_check','amcu_exclusion','warning_block','termination_exclusion'].filter(type=>Number(counts[type])>0).map(type=>`<button type="button" class="operational-type-marker operational-type-kpi${selected===type?' active':''}" data-task-type="${type}" aria-pressed="${selected===type}"><span>${esc(operationalTaskTypeLabels[type])}</span><strong>${Number(counts[type]).toLocaleString('uk-UA')}</strong></button>`).join('');
 }
-$('#operationalTaskTypes').onclick=event=>{const chip=event.target.closest('button[data-task-type]');if(!chip)return;const filter=$('#operationalTaskType');filter.value=filter.value===chip.dataset.taskType?'':chip.dataset.taskType;loadOperationalTasks()};
+$('#operationalTaskTypes').onclick=event=>{const chip=event.target.closest('button[data-task-type]');if(!chip)return;resetOperationalKpiFilters();$('#operationalTaskType').value=chip.dataset.taskType;loadOperationalTasks()};
 function operationalTaskEmptyMessage(){const group=$('#operationalTaskStatus').value||'active',type=$('#operationalTaskType').value;if(type==='amcu_exclusion'&&group==='active')return 'Активних задач АМКУ немає';if(group==='active')return 'Активних операційних задач немає';if(group==='completed')return 'Виконаних задач за вибраними умовами немає';if(group==='cancelled')return 'Скасованих задач за вибраними умовами немає';return 'Задач за вибраними умовами немає'}
 let operationalListGeneration=0;
 async function loadOperationalTasks(){
@@ -1921,7 +1923,8 @@ openOperationalTask=async function(taskId){
   return result;
 };
 $('#operationalTaskType').onchange=$('#operationalTaskStatus').onchange=$('#operationalTaskOfficer').onchange=$('#operationalTaskDateFrom').onchange=loadOperationalTasks;
-$('#operationalTaskKpis').onclick=event=>{const card=event.target.closest('[data-task-kpi]');if(!card)return;$('#operationalTaskStatus').value=card.dataset.taskKpi;loadOperationalTasks()};
+function resetOperationalKpiFilters(){for(const id of ['operationalTaskSearch','operationalTaskType','operationalTaskOfficer','operationalTaskDateFrom'])$('#'+id).value='';$('#operationalTaskStatus').value='active';clearTimeout(operationalTaskTimer)}
+$('#operationalTaskKpis').onclick=event=>{const card=event.target.closest('[data-task-kpi]');if(!card)return;resetOperationalKpiFilters();$('#operationalTaskStatus').value=card.dataset.taskKpi;loadOperationalTasks()};
 $('#operationalTasksBody').onclick=event=>{const row=event.target.closest('[data-task-id]');if(row&&!event.target.closest('button,a,input,select,textarea,summary,details'))openOperationalTask(row.dataset.taskId)};
 $('#operationalTasksBody').onkeydown=event=>{if((event.key==='Enter'||event.key===' ')&&event.target.matches('[data-task-id]')){event.preventDefault();openOperationalTask(event.target.dataset.taskId)}};
 $('#operationalTaskBody').addEventListener('click',event=>{
@@ -2116,17 +2119,17 @@ const schedulerScheduleDrafts=new Map();
 let schedulerEditorsGeneration=0;
 function schedulerEditorMarkup(job){
   const spec=job.spec,weekly=spec.kind==='weekly',days=['Пн','Вт','Ср','Чт','Пт','Сб','Нд'];
-  return `<article class="scheduler-job scheduler-editor" data-job="${esc(job.job)}"><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong>
-    <p>Налаштовано: ${esc(job.schedule)} · ${esc(job.timezone)} · revision ${job.revision}</p>
-    <p>Фактично: ${job.effective_enabled?'увімкнено':'вимкнено'}${job.safety_block_reason?` · ${esc(job.safety_block_reason)}`:''}</p>
-    <p>Останній старт: ${esc(job.last_started_at?displayDate(job.last_started_at):'—')} · ${esc(job.last_status)} · ${job.duration_seconds==null?'—':esc(job.duration_seconds)+' с'}</p>
-    <p>Наступний за розкладом: ${esc(job.next_run?displayDate(job.next_run):'—')} · scheduler ${job.registered?'зареєстровано':'не зареєстровано'}</p>
+  return `<section class="scheduler-editor" data-job="${esc(job.job)}">
+    <p>Ревізія ${job.revision} · scheduler ${job.registered?'зареєстровано':'не зареєстровано'}</p>
+    ${job.safety_block_reason?`<p>Виконання заблоковано: ${esc(job.safety_block_reason)}</p>`:''}
+    <p>Старт: ${esc(job.last_started_at?displayDate(job.last_started_at):'—')} · результат ${esc(job.last_status)} · тривалість ${job.duration_seconds==null?'—':esc(job.duration_seconds)+' с'}</p>
+    ${job.last_error?`<p>${esc(job.last_error)}</p>`:''}
     <label><input type="checkbox" name="enabled" ${job.enabled?'checked':''}> Увімкнено</label>
     ${weekly?`<label>Година <input type="number" name="hour" min="0" max="23" value="${spec.hour}"></label>`:''}
     <label>Хвилина <input type="number" name="minute" min="0" max="59" value="${spec.minute}"></label>
     ${weekly?`<div>${days.map((day,i)=>`<label><input type="checkbox" name="weekday" value="${i}" ${spec.weekdays.includes(i)?'checked':''}>${day}</label>`).join('')}</div>`:''}
-    <footer><button type="button" data-schedule-action="preview">Preview</button><button type="button" data-schedule-action="apply" disabled>Apply</button><button type="button" data-schedule-action="rollback" ${job.history.some(h=>h.revision===job.revision)?'':'disabled'}>Preview rollback</button></footer>
-    <p class="scheduler-preview" aria-live="polite"></p></article>`;
+    <footer><button type="button" data-schedule-action="preview">Переглянути розклад</button><button type="button" data-schedule-action="apply" disabled>Застосувати розклад</button><button type="button" data-schedule-action="rollback" ${job.history.some(h=>h.revision===job.revision)?'':'disabled'}>Переглянути відкат</button></footer>
+    <p class="scheduler-preview" aria-live="polite"></p></section>`;
 }
 async function loadSchedulerEditors(){
   const root=$('#schedulerScheduleEditors');if(!root||role()!=='admin')return;
@@ -2135,7 +2138,7 @@ async function loadSchedulerEditors(){
     const response=await request(`${API}/admin/scheduler-schedules`);
     if(generation!==schedulerEditorsGeneration)return;
     schedulerScheduleDrafts.clear();
-    root.innerHTML=response.items.map(schedulerEditorMarkup).join('');
+    for(const job of response.items){const card=$$('#schedulerJobs>[data-runtime-job]').find(node=>node.dataset.runtimeJob===job.job);if(!card)continue;card.querySelectorAll('.scheduler-editor').forEach(node=>node.remove());card.insertAdjacentHTML('beforeend',schedulerEditorMarkup(job))}
     const models=new Map(response.items.map(item=>[item.job,item]));
     root.oninput=event=>{const card=event.target.closest('[data-job]');if(!card)return;card.dataset.editRevision=String(Number(card.dataset.editRevision||0)+1);schedulerScheduleDrafts.delete(card.dataset.job);card.querySelector('[data-schedule-action="apply"]').disabled=true;card.querySelector('.scheduler-preview').textContent='Зміни потребують нового Preview'};
     root.onclick=async event=>{
@@ -2162,7 +2165,7 @@ async function loadSchedulerEditors(){
       }catch(error){schedulerScheduleDrafts.delete(job.job);card.querySelector('[data-schedule-action="apply"]').disabled=true;output.textContent=error.message}
       finally{button.disabled=action==='apply'&&!schedulerScheduleDrafts.has(job.job)}
     };
-  }catch(error){root.textContent=`Редактор розкладу недоступний: ${error.message}`}
+  }catch(error){let notice=root.querySelector('[data-schedule-error]');if(!notice){notice=document.createElement('p');notice.dataset.scheduleError='1';root.append(notice)}notice.textContent=`Редактор розкладу недоступний: ${error.message}`}
 }
 async function loadRuntimeFeatures(){
   try{
@@ -2176,7 +2179,7 @@ async function loadRuntimeFeatures(){
     const schedulerRoot=$('#schedulerJobs');
     if(schedulerRoot){
       const isAdmin=role()==='admin';
-      schedulerRoot.innerHTML=(features.scheduler_jobs||[]).map(job=>{const showAction=isAdmin;const manageable=job.manageable===true;return`<article class="scheduler-job ${job.enabled?'enabled':'disabled'}"><header><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong><span>${job.enabled?'Увімкнено':'Вимкнено'}</span></header><dl><div><dt>Розклад</dt><dd>${esc(job.schedule)}</dd></div><div><dt>Timezone</dt><dd>${esc(job.timezone)}</dd></div><div><dt>Останній запуск</dt><dd>${esc(job.last_finished_at?displayDate(job.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(job.enabled&&job.next_run?displayDate(job.next_run):'—')}</dd></div><div><dt>Джерело налаштування</dt><dd>${job.configuration_source==='runtime'?'Адміністратор':'Середовище'}</dd></div></dl>${showAction?`<footer><button type="button" class="ghost scheduler-toggle" data-scheduler-job="${esc(job.job)}" data-sandbox="${features.sandbox_mode?'true':'false'}" data-enabled="${job.enabled?'false':'true'}" ${features.sandbox_mode&&!manageable?'disabled title="SANDBOX destination не підтверджено"':''}>${job.enabled?'Вимкнути':'Увімкнути'}</button></footer>`:''}</article>`}).join('');
+      schedulerRoot.innerHTML=(features.scheduler_jobs||[]).map(job=>{const showAction=isAdmin;const manageable=job.manageable===true;return`<article data-runtime-job="${esc(job.job)}" class="scheduler-job ${job.enabled?'enabled':'disabled'}"><header><strong>${esc(schedulerJobLabels[job.job]||job.job)}</strong><span>${job.enabled?'Увімкнено':'Вимкнено'}</span></header><dl><div><dt>Розклад</dt><dd>${esc(job.schedule)}</dd></div><div><dt>Timezone</dt><dd>${esc(job.timezone)}</dd></div><div><dt>Останній запуск</dt><dd>${esc(job.last_finished_at?displayDate(job.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(job.enabled&&job.next_run?displayDate(job.next_run):'—')}</dd></div><div><dt>Джерело налаштування</dt><dd>${job.configuration_source==='runtime'?'Адміністратор':'Середовище'}</dd></div></dl>${showAction?`<footer><button type="button" class="ghost scheduler-toggle" data-scheduler-job="${esc(job.job)}" data-sandbox="${features.sandbox_mode?'true':'false'}" data-enabled="${job.enabled?'false':'true'}" ${features.sandbox_mode&&!manageable?'disabled title="SANDBOX destination не підтверджено"':''}>${job.enabled?'Вимкнути':'Увімкнути'}</button></footer>`:''}</article>`}).join('');
       schedulerRoot.onclick=event=>{const button=event.target.closest('.scheduler-toggle');if(button)toggleSchedulerJob(button)};
       if(typeof loadGoogleWriterJob==='function')await loadGoogleWriterJob();
     }

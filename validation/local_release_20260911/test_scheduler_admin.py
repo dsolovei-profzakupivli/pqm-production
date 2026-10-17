@@ -212,7 +212,7 @@ class SchedulerAdminTests(unittest.TestCase):
         self.assertIn('root.onclick=', app)
         self.assertIn("role()!=='admin'", app)
         self.assertIn('expected_revision:job.revision', app)
-        self.assertIn('Preview rollback', app)
+        self.assertIn('Переглянути відкат', app)
 
     def test_js_preview_edit_apply_interactions(self):
         app = Path('app.js').read_text(encoding='utf-8')
@@ -224,13 +224,14 @@ const output={textContent:''},applyButton={disabled:true};
 const fields={'[name="enabled"]':{checked:true},'[name="minute"]':{value:'17'}};
 const card={dataset:{job:'prozorro'},querySelector:s=>s==='.scheduler-preview'?output:s==='[data-schedule-action="apply"]'?applyButton:fields[s],querySelectorAll:s=>[]};
 const root={innerHTML:''},calls=[];let resolvePreview;
-const API='/api',schedulerJobLabels={prozorro:'Prozorro'},role=()=> 'admin',$=()=>root,esc=x=>String(x??'').replaceAll('<','&lt;'),displayDate=x=>x,confirm=()=>true;
+const runtimeCard={dataset:{runtimeJob:'prozorro'},querySelectorAll:()=>[],insertAdjacentHTML:(_,html)=>{root.innerHTML=html}};
+const API='/api',schedulerJobLabels={prozorro:'Prozorro'},role=()=> 'admin',$=()=>root,$$=()=>[runtimeCard],esc=x=>String(x??'').replaceAll('<','&lt;'),displayDate=x=>x,confirm=()=>true;
 const request=async(url,options)=>{calls.push({url,options});if(!options)return {items:[job]};if(url.endsWith('/preview'))return new Promise(r=>resolvePreview=r);return {revision:3}};
 let reloads=0;const loadRuntimeFeatures=async()=>{reloads++};
 __CODE__
 (async()=>{
  await loadSchedulerEditors();
- assert.match(root.innerHTML,/Preview rollback/);
+ assert.match(root.innerHTML,/Переглянути відкат/);
  const click=action=>({target:{closest:()=>({disabled:false,dataset:{scheduleAction:action},closest:()=>card})}});
  const pending=root.onclick(click('preview'));
  assert.equal(calls.filter(c=>c.url.endsWith('/apply')).length,0);

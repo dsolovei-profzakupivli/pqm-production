@@ -18,7 +18,7 @@ async function loadGoogleWriterJob(){
       ${data.can_manage?`<label><input id="googleWriterEnabled" type="checkbox" ${data.configured_enabled?'checked':''} ${!data.channel_ready&&!data.configured_enabled?'disabled':''}> Увімкнено</label>
       <label>Година <input id="googleWriterHour" type="number" min="0" max="23" value="${data.hour}"></label>
       <label>Хвилина <input id="googleWriterMinute" type="number" min="0" max="59" value="${data.minute}"></label>
-      <footer><button id="googleWriterSchedulePreview" class="ghost" type="button">Preview розкладу</button><button id="googleWriterScheduleApply" class="ghost" type="button" disabled>Apply розкладу</button></footer><p id="googleWriterScheduleResult" class="muted"></p>`:''}
+      <footer><button id="googleWriterSchedulePreview" class="ghost" type="button">Переглянути розклад</button><button id="googleWriterScheduleApply" class="ghost" type="button" disabled>Застосувати розклад</button></footer><p id="googleWriterScheduleResult" class="muted"></p>`:''}
       <details><summary>Журнал запусків</summary><ul>${data.runs.map(row=>`<li>${esc(displayDate(row.started_at))} · ${esc(row.trigger)} · ${esc(row.status)} · ${esc(JSON.stringify(row.result?.counts||{}))}</li>`).join('')||'<li>Запусків ще не було</li>'}</ul></details>`;
     googleWriterSchedulePreview=null;
     if(data.can_manage){

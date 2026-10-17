@@ -11,7 +11,11 @@
     const update=()=>{button.hidden=!input.value};input.addEventListener('input',update);
     button.onclick=()=>{PqmUi.clearInput(input);update()};wrapper.append(button);update();
   }
+  const isSearch=input=>!input.hidden&&['text','search'].includes(input.type)&&
+    (input.type==='search'||input.classList.contains('multi-search')||/search/i.test(input.id)||input.matches('.registry-toolbar input,.edr-monitoring-toolbar input,.work-queue-toolbar input')||/пошук|знайти|search/i.test(input.placeholder+' '+input.getAttribute('aria-label')));
+  function scanSearch(root){root.querySelectorAll('input').forEach(input=>{if(isSearch(input))installClear(input)})}
   selectors.forEach(selector=>document.querySelectorAll(selector).forEach(installClear));
+  scanSearch(document);
   const clearState=()=>{
     document.querySelectorAll('.pqm-clear-wrap').forEach(w=>{w.querySelector('button').hidden=!w.querySelector('input').value});
     const bulk=document.getElementById('bulkBtn');if(bulk&&!bulk.title)bulk.title='Масове заповнення вибраних заявок';
@@ -20,8 +24,8 @@
   document.addEventListener('change',clearState);document.addEventListener('click',()=>requestAnimationFrame(clearState));
   clearState();
   let clearQueued=false;
-  new MutationObserver(()=>{if(clearQueued)return;clearQueued=true;requestAnimationFrame(()=>{clearQueued=false;clearState()})})
-    .observe(document.getElementById('applicationShell'),{childList:true,subtree:true});
+  new MutationObserver(()=>{if(clearQueued)return;clearQueued=true;requestAnimationFrame(()=>{clearQueued=false;scanSearch(document);clearState()})})
+    .observe(document.body,{childList:true,subtree:true});
   document.querySelector('#frameworksBody').addEventListener('click',async event=>{
     const button=event.target.closest('[data-copy-framework-number]');if(!button)return;
     event.preventDefault();event.stopPropagation();
@@ -60,7 +64,12 @@
   window.addEventListener('focus',()=>{clearState();refresh()});
   document.addEventListener('visibilitychange',refresh);
   document.getElementById('mainNav').addEventListener('click',event=>{
-    if(event.target.closest('#operationalTasksNav'))document.getElementById('operationalTaskStatus').value='needs_action';
+    if(event.target.closest('#operationalTasksNav')){if(typeof resetOperationalKpiFilters==='function')resetOperationalKpiFilters();document.getElementById('operationalTaskStatus').value='needs_action'}
+    if(event.target.closest('#requestsNav .action-count-badge')){
+      PqmUi.responseExpired=true;requestsPage=1;selectedRequestAuthority='40996564';
+      for(const id of ['requestsSearch','requestsStatus','requestsReason','requestsDateFrom','requestsDateTo'])document.getElementById(id).value='';
+      expired.classList.add('active');expired.setAttribute('aria-pressed','true');
+    }
     refresh();
   },true);
 })();

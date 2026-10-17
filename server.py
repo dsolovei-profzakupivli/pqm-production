@@ -2926,8 +2926,8 @@ def application_filter(params: dict) -> tuple[str, list]:
 
 def application_stats(params: dict) -> dict:
     clause, args = application_filter(params)
-    officer_params = {key: value for key, value in params.items() if key != "officer"}
-    officer_clause, officer_args = application_filter(officer_params)
+    # Officer cards describe the same complete filtered set as the application count.
+    officer_clause, officer_args = clause, args
     with db() as con:
         row = con.execute(f"""SELECT COUNT(*) applications,
           COUNT(DISTINCT NULLIF(s.supplier_code,'')) suppliers,
@@ -5568,8 +5568,14 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
           "JOIN frameworks ff ON ff.id=ss.framework_id WHERE ss.supplier_code=combined.supplier_code "
           "AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
           "(SELECT 1 FROM registry_contracts rr JOIN frameworks ff ON ff.id=rr.framework_id "
-          "WHERE rr.supplier_code=combined.supplier_code AND INSTR(CASEFOLD(ff.dk_code),?)>0))")
-        args.extend([search] * 5)
+          "WHERE rr.supplier_code=combined.supplier_code AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
+          "(SELECT 1 FROM submissions sf JOIN frameworks ff ON ff.id=sf.framework_id "
+          "WHERE sf.supplier_code=combined.supplier_code AND (INSTR(CASEFOLD(ff.pretty_id),?)>0 "
+          "OR INSTR(CASEFOLD(ff.title),?)>0)) OR EXISTS "
+          "(SELECT 1 FROM registry_contracts rf JOIN frameworks ff ON ff.id=rf.framework_id "
+          "WHERE rf.supplier_code=combined.supplier_code AND (INSTR(CASEFOLD(ff.pretty_id),?)>0 "
+          "OR INSTR(CASEFOLD(ff.title),?)>0)))")
+        args.extend([search] * 9)
     if status == "active":
         where.append("active_count>0")
     elif status == "suspended":
@@ -11276,17 +11282,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/supplier-options":
             return self.send_json(supplier_options(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/audit":
-            query = urllib.parse.parse_qs(parsed.query)
-            page = max(1, int(query.get("page", [1])[0]))
-            size = min(200, max(1, int(query.get("size", [100])[0])))
-            with db() as con:
-                total = int(con.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0])
-                rows = [dict(r) for r in con.execute(
-                    "SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?",
-                    (size, (page - 1) * size),
-                )]
-            pages = max(1, (total + size - 1) // size)
-            return self.send_json({"items": rows, "total": total, "page": page, "pages": pages, "size": size})
+            import audit_reader
+            try:
+                result=audit_reader.read(DB_PATH,urllib.parse.parse_qs(parsed.query))
+            except ValueError as exc:
+                return self.send_json({'error':str(exc)},status=400)
+            return self.send_json(result)
         path = parsed.path.lstrip("/") or "index.html"
         target = (ROOT / path).resolve()
         if (ROOT not in target.parents or not target.is_file()

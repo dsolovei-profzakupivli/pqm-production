@@ -22,7 +22,7 @@ class ConsolidatedUiContractTests(unittest.TestCase):
         self.assertEqual(parser.groups['history-filter-primary'],['search','code','supplier','cpv','framework','contract','manager','officer'])
         self.assertEqual(parser.groups['history-filter-secondary'],['remarks','from','to','status'])
         self.assertEqual(parser.options,['','pending','active','unsuccessful'])
-        self.assertIn('>Очистити</button>',(root/'index.html').read_text(encoding='utf-8'))
+        self.assertIn('id="historyReset" class="pqm-filter-reset"',(root/'index.html').read_text(encoding='utf-8'))
 
     def test_dynamic_officers_and_existing_personal_group_only(self):
         root=Path(__file__).parent;js=(root/'app.js').read_text(encoding='utf-8')

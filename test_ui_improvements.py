@@ -26,7 +26,7 @@ class UiImprovementsTests(unittest.TestCase):
                     ('pending','2026-10-15T11:00:00+03:00',True),
                     ('satisfied','2026-10-15',False),('pending','',False),
                     ('pending','2026-10-16',False)]):
-                    con.execute("INSERT INTO violation_reports(id,report_id,status,defendant_period_end,raw_json,synced_at) VALUES(?,?,?,?, '{}','fixture')",(str(i),str(i),status,end))
+                    con.execute("INSERT INTO violation_reports(id,report_id,status,defendant_period_end,authority_code,raw_json,synced_at) VALUES(?,?,?,?,'40996564','{}','fixture')",(str(i),str(i),status,end))
                     if closed:con.execute("INSERT INTO violation_report_reviews(report_id,review_status,completed_at,updated_at) VALUES(?,'reviewed','2026-10-15','fixture')",(str(i),))
                 for i,status in enumerate(['new','in_progress','ready_for_document','awaiting_response','completed','cancelled']):
                     con.execute("INSERT INTO operational_tasks(id,task_key,task_type,supplier_code,status,created_at,updated_at) VALUES(?,?,'manual','1',?,'fixture','fixture')",('t'+str(i),'k'+str(i),status))

@@ -51,3 +51,9 @@ class SupplierScopeTests(unittest.TestCase):
         self.con.set_trace_callback(statements.append)
         self.query(search=['031'],dk_code=['03110000-1'],framework_id=['f1'])
         self.assertFalse(any(s.lstrip().upper().startswith(('INSERT','UPDATE','DELETE','CREATE','ALTER','DROP')) for s in statements))
+
+    def test_universal_framework_name_and_full_or_partial_ua_f(self):
+        self.fixture.add('ua',fid='f1')
+        for term in ['UA-F-f1','ua-f-f','Відбір f1']:
+            self.assertEqual(self.query(search=[term])['total'],1)
+        self.assertEqual(self.query(search=['UA-F-f2'])['total'],0)

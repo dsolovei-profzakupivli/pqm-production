@@ -12,7 +12,7 @@
     input.dispatchEvent(new Event('input',{bubbles:true}));
     input.focus();
   }
-  const resetIds=['queueReset','clearFiltersBtn','supplierRegistryReset','edrMonitoringReset','adminFrameworkReset'];
+  const resetIds=['queueReset','clearFiltersBtn','historyReset','supplierRegistryReset','edrMonitoringReset','adminFrameworkReset'];
   const prozorroIds=['resetBtn','supplierRegistryRefresh','frameworksRefresh','requestsRefresh'];
   function formatActionButtons(documentRoot){
     for(const id of resetIds){

@@ -3,7 +3,7 @@ from contextlib import closing
 from pathlib import Path
 import sqlite3
 
-EXPIRED_REPORT_SQL = """status='pending' AND PQM_RESPONSE_EXPIRED(defendant_period_end)=1
+EXPIRED_REPORT_SQL = """authority_code='40996564' AND status='pending' AND PQM_RESPONSE_EXPIRED(defendant_period_end)=1
 AND NOT EXISTS (SELECT 1 FROM violation_report_reviews r
  WHERE r.report_id=violation_reports.id
  AND (COALESCE(r.completed_at,'')<>'' OR r.review_status IN ('reviewed','completed')))"""
