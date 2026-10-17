@@ -7,7 +7,7 @@ const context={esc:x=>String(x??''),displayDateOnly:x=>String(x??''),
  resolvedDocumentMetadataHtml:()=>'',documentDeclensionAction:()=>'',
  operationalActionIcon:()=>'',operationalQualificationsHtml:()=>'',operationalTerminationHtml:()=>''};
 vm.createContext(context);
-for(const name of ['operationalDecisionHtml','operationalAmcuHtml']){
+for(const name of ['operationalBasisHtml','operationalDecisionHtml','operationalAmcuProtocolMetadataHtml','operationalAmcuDecisionCards','operationalAmcuHtml']){
  const start=source.indexOf('function '+name+'(');assert(start>=0);
  const tail=source.slice(start),end=tail.slice(1).search(/\n(?:async )?function /);
  vm.runInContext(end<0?tail:tail.slice(0,end+1),context);

@@ -435,6 +435,21 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 .operational-summary{padding:10px 18px!important;background:#f8fafc!important;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
 .operational-summary .operational-compact-facts{grid-template-columns:repeat(4,minmax(130px,1fr))}
 .operational-summary-actions{display:flex;align-items:center;gap:12px;white-space:nowrap}.operational-summary-actions>strong{color:#31506e}
+#operationalTaskDialog .operational-summary-actions>strong:empty{display:none}
+#operationalTaskDialog .operational-amcu-supplier-identity{font-weight:400}
+#operationalTaskDialog .operational-amcu-supplier-code{font-weight:700}
+#operationalTaskDialog .operational-amcu-decision-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:0;border:0;background:transparent}
+#operationalTaskDialog .operational-amcu-decision-cards>article{min-width:0;padding:12px;border:1px solid var(--line,#cbd6e1);border-radius:8px;background:var(--soft,#f4f7f9);color:var(--ink,#172b40)}
+#operationalTaskDialog .operational-amcu-decision-cards h3{margin:0 0 8px}
+#operationalTaskDialog .operational-amcu-decision-content{min-width:0;white-space:normal;overflow-wrap:anywhere;word-break:normal}
+#operationalTaskDialog .operational-amcu-decision-content p{margin:6px 0 0}
+#operationalTaskDialog .operational-amcu-decision-inner{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
+#operationalTaskDialog .operational-amcu-decision-inner.is-without-metadata{grid-template-columns:minmax(0,1fr)}
+#operationalTaskDialog .operational-amcu-protocol-metadata{min-width:0;white-space:normal;overflow-wrap:anywhere;word-break:normal}
+#operationalTaskDialog .operational-amcu-protocol-metadata h4{margin:0 0 8px;font-size:inherit}
+#operationalTaskDialog .operational-amcu-protocol-metadata .document-resolved-metadata-row{grid-template-columns:minmax(0,1fr);gap:5px}
+@media(max-width:1000px){#operationalTaskDialog .operational-amcu-decision-inner{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:700px){#operationalTaskDialog .operational-amcu-decision-cards{grid-template-columns:minmax(0,1fr)}}
 .operational-context-card{padding:10px 18px!important;background:#f3f6f9!important}.operational-context-card h3{font-size:13px;margin-bottom:7px!important}
 .operational-compact-facts{display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:8px;margin:0}.operational-compact-facts>div{min-width:0}.operational-compact-facts dt{font-size:10px;color:#64748b}.operational-compact-facts dd{margin:2px 0 0;font-weight:650;overflow-wrap:anywhere}.status-chip{display:inline-block;margin-left:5px;padding:2px 6px;border-radius:999px;background:#e5eef8;color:#315b84;font-size:10px}
 .operational-registry-list{display:flex;gap:8px;overflow-x:auto;margin-top:8px}.operational-registry-list article{min-width:280px;flex:1;padding:7px 9px;border:1px solid #ccd8e3;border-radius:7px;background:#fff}.operational-registry-list article>*{display:block}.operational-registry-list article span{font-size:11px;margin:2px 0}.operational-registry-list article small{font-size:10px;color:#64748b}.operational-registry-list article a{font-size:11px;margin-top:3px}
