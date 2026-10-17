@@ -14,7 +14,8 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
    document.body.dataset.authRole='admin';
    document.querySelector('#mainNav').innerHTML='<button id="requestsNav">Звернення замовників</button><button id="operationalTasksNav">Операційні задачі</button>';
    window.API='/api';window.currentMe={permissions:{'tasks.read':true,'appeals.read':true}};
-   window.authReady=Promise.resolve(currentMe);window.requestsPage=3;window.reloads=0;window.toastLog=[];
+   window.$=s=>document.querySelector(s);window.operationalTaskTimer=undefined;
+   window.authReady=Promise.resolve(currentMe);window.requestsPage=3;window.requestsTimer=undefined;window.selectedRequestAuthority='';window.reloads=0;window.toastLog=[];
    window.toast=s=>toastLog.push(s);window.loadViolationReports=()=>{reloads++};
    window.esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
    window.fixtureCounts={tasks:27,appeals:4};window.fixtureCalls=[];
@@ -24,10 +25,12 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
    document.querySelector('#officerCards').innerHTML=['Т. Федченко','Д. Савва','О. Єрьоміна'].map(n=>`<button class="officer-card"><span>${n}</span><strong>72</strong></button>`).join('');
    window.showFixture=name=>{document.querySelectorAll('main').forEach(n=>n.hidden=n.id!==name)};
    showFixture('frameworkAnalyticsView');
+   document.getElementById('refAmcuStatus').textContent='12 345 записів · 17.10.2026 11:05';
   });
   await page.addScriptTag({content:read('ui_improvements.js')});
   const app=read('app.js'),a=app.indexOf('function frameworkProzorroLink('),b=app.indexOf('function registryExportUrl(',a);
   await page.addScriptTag({content:app.slice(a,b)});
+  await page.addScriptTag({content:app.split(/\r?\n/).find(line=>line.startsWith('function resetOperationalKpiFilters('))});
   await page.evaluate(()=>{document.querySelector('#frameworksBody').innerHTML='<tr><td>☑</td><td>44530000-4</td><td>'+frameworkProzorroLink({id:'technical-id',pretty_id:'UA-F-2020-12-15-000001-a'})+'</td><td>Довга назва категорії</td>'+Array.from({length:6},()=>'<td>12</td>').join('')+'</tr>'});
   await page.addScriptTag({content:read('table_widths_ui.js')});
   await page.addScriptTag({content:read('ui_improvements_boot.js')});
@@ -40,8 +43,26 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
     const boxes=await page.locator('#requestsNav').evaluate(n=>({width:n.clientWidth,scroll:n.scrollWidth,items:[...n.children].map(c=>{const r=c.getBoundingClientRect();return{x:r.x,right:r.right,y:r.y,height:r.height}})}));
     assert(boxes.width>=boxes.scroll);assert(boxes.items.at(-1).x>=boxes.items[0].right);assert(Math.abs((boxes.items.at(-1).y+10)-(boxes.items[0].y+boxes.items[0].height/2))<3);
   }
+  for(const id of ['requestsNav','operationalTasksNav'])for(const mode of ['icon','icon-text'])for(const count of [3,0,null,27]){
+   await page.evaluate(({id,mode,count})=>{const n=document.getElementById(id);n.innerHTML='<svg width="19" height="19"></svg>'+(mode==='icon-text'?'<span>Назва вкладки</span>':'');fixtureCounts[id==='requestsNav'?'appeals':'tasks']=count;window.dispatchEvent(new Event('focus'))},{id,mode,count});
+   await page.waitForFunction(({id,count})=>{const b=document.querySelector('#'+id+' .action-count-badge');return b&&(count>0?b.textContent===String(count):b.hidden)},{id,count});
+   for(const part of ['svg','span','.action-count-badge']){
+    if(part==='span'&&mode==='icon'||part==='.action-count-badge'&&!(count>0))continue;
+    const state=await page.evaluate(({id,part})=>{
+     const ids=id==='requestsNav'?['requestsSearch','requestsReason','requestsDateFrom','requestsDateTo']:['operationalTaskSearch','operationalTaskType','operationalTaskOfficer','operationalTaskDateFrom'];
+     for(const key of ids){const n=document.getElementById(key);if(n.tagName==='SELECT'&&!n.querySelector('[value="old"]'))n.add(new Option('old','old'));n.value=n.type==='date'?'2026-10-01':'old'}
+     document.getElementById('operationalTaskStatus').value='completed';requestsPage=8;selectedRequestAuthority='old';PqmUi.responseExpired=false;
+     let callbacks=0;document.getElementById(id).onclick=()=>callbacks++;
+     document.querySelector('#'+id+' '+part).dispatchEvent(new MouseEvent('click',{bubbles:true}));
+     return {callbacks,values:ids.map(key=>document.getElementById(key).value),status:document.getElementById('operationalTaskStatus').value,page:requestsPage,authority:selectedRequestAuthority,expired:PqmUi.responseExpired};
+    },{id,part});
+    assert.equal(state.callbacks,1);
+    if(count>0){assert(state.values.every(x=>x===''));if(id==='requestsNav'){assert.equal(state.page,1);assert.equal(state.authority,'40996564');assert.equal(state.expired,true)}else assert.equal(state.status,'needs_action')}
+    else{assert(state.values.every(Boolean));assert.equal(state.page,8);assert.equal(state.status,'completed');assert.equal(state.expired,false)}
+   }
+  }
   await page.evaluate(()=>{document.getElementById('requestsSearch').value='старий фільтр';PqmUi.responseExpired=false});
-  await page.locator('#requestsNav .action-count-badge').click();assert.equal(await page.locator('#requestsSearch').inputValue(),'старий фільтр');assert.equal(await page.evaluate(()=>PqmUi.responseExpired),false);
+  await page.locator('#requestsNav .action-count-badge').click();assert.equal(await page.locator('#requestsSearch').inputValue(),'');assert.equal(await page.evaluate(()=>PqmUi.responseExpired),true);assert.equal(await page.evaluate(()=>selectedRequestAuthority),'40996564');assert.equal(await page.evaluate(()=>requestsPage),1);
   await page.locator('[data-copy-framework-number]').click();
   assert.equal(await page.evaluate(()=>clipboardValue),'UA-F-2020-12-15-000001-a');
   assert.equal(await page.evaluate(()=>toastLog.at(-1)),'Номер відбору скопійовано');
@@ -54,7 +75,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
    other.value='4453';input.value='Текст';input.dispatchEvent(new Event('input',{bubbles:true}));
    if(w.querySelector('button').hidden)throw Error('Clear absent');w.querySelector('button').click();
    if(input.value||!w.querySelector('button').hidden||other.value!=='4453')throw Error('Clear changed other filter');},i);
-  await page.evaluate(()=>{showFixture('requestsView');document.querySelector('#requestsExpiredFilter').click()});
+  await page.evaluate(()=>{showFixture('requestsView');PqmUi.responseExpired=false;document.querySelector('#requestsExpiredFilter').click()});
   assert.equal(await page.evaluate(()=>PqmUi.responseExpired),true);assert.equal(await page.evaluate(()=>requestsPage),1);
   assert.equal(await page.evaluate(()=>reloads),1);
   await page.evaluate(()=>showFixture('historyView'));
@@ -87,6 +108,11 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
     await page.screenshot({path:path.join(OUT,`frameworks-${dark?'dark':'light'}-${width}.png`)});
     await page.evaluate(()=>{showFixture('referencesView');document.querySelectorAll('.reference-panel').forEach(n=>n.hidden=n.id!=='referenceAmcu')});await page.waitForTimeout(80);
     await page.locator('.amcu-toolbar .system-width-button').waitFor();
+    if(width>=1440)assert(await page.locator('.amcu-toolbar').evaluate(toolbar=>{
+      const info=toolbar.firstElementChild.getBoundingClientRect(),search=toolbar.querySelector('.pqm-clear-wrap').getBoundingClientRect();
+      const readable=[...toolbar.querySelectorAll('select')].every(n=>{const s=getComputedStyle(n),c=document.createElement('canvas').getContext('2d');c.font=s.font;return n.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)>=c.measureText(n.selectedOptions[0].textContent).width});
+      return info.width>=220&&search.left-info.right<=9&&readable;
+    }),'AMCU info/search gap or default option readability');
     assert(await page.locator('.amcu-toolbar').evaluate(n=>[...n.children].filter(c=>!c.hidden&&getComputedStyle(c).display!=='none').every(c=>{const r=c.getBoundingClientRect();return r.x>=0&&r.right<=window.innerWidth})), 'AMCU control clipped');
     assert(await page.locator('.amcu-toolbar .pqm-clear-wrap').evaluate(n=>{const a=n.getBoundingClientRect(),b=n.querySelector('input').getBoundingClientRect();return b.x>=a.x-1&&b.right<=a.right+1}), 'Search input overlaps adjacent filters');
     if(width>=1440){const rects=await page.locator('.amcu-toolbar').evaluate(n=>[...n.children].filter(c=>!c.hidden&&getComputedStyle(c).display!=='none').map(c=>({id:c.id||c.className,y:c.getBoundingClientRect().y+c.getBoundingClientRect().height/2,w:c.getBoundingClientRect().width})));const ys=rects.map(r=>r.y);assert(Math.max(...ys)-Math.min(...ys)<3,'AMCU toolbar wraps '+JSON.stringify({width,dark,rects}));}

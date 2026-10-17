@@ -4,12 +4,29 @@
     ...['search','code','supplier','cpv','framework','contract','manager','officer','remarks'].map(k=>`input[data-history="${k}"]`)];
   function installClear(input){
     if(input.closest('.pqm-clear-wrap'))return;
-    const wrapper=document.createElement('span');wrapper.className='pqm-clear-wrap';
+    // A span inherits the legacy search-icon positioning and font rules.
+    const wrapper=document.createElement('div');wrapper.className='pqm-clear-wrap';
+    // Preserve the input's role when it was a direct flex child. These are
+    // layout constraints only; the input keeps its own appearance and events.
+    const flexParent=getComputedStyle(input.parentElement).display==='flex';
+    const original=getComputedStyle(input),layout={flex:original.flex,minWidth:original.minWidth};
     input.before(wrapper);wrapper.append(input);
+    // Existing wrapper-specific responsive rules take precedence over the
+    // legacy input rules (e.g. the compact AMCU toolbar).
+    if(flexParent&&getComputedStyle(wrapper).flex==='0 1 auto'){
+      wrapper.style.flex=layout.flex;wrapper.style.minWidth=layout.minWidth;
+    }
     const button=document.createElement('button');button.type='button';button.className='pqm-search-clear';
     button.textContent='×';button.title='Очистити поле';button.setAttribute('aria-label',`Очистити: ${input.getAttribute('aria-label')||input.placeholder}`);
-    const update=()=>{button.hidden=!input.value};input.addEventListener('input',update);
+    const update=()=>{
+      button.hidden=!input.value;
+      // Inputs in column dialogs retain their own margins. Anchor inside the
+      // actual input box, rather than the wrapper's margin-inclusive box.
+      button.style.left=`${input.offsetLeft+input.offsetWidth-27}px`;
+      button.style.top=`${input.offsetTop+input.offsetHeight/2}px`;
+    };input.addEventListener('input',update);
     button.onclick=()=>{PqmUi.clearInput(input);update()};wrapper.append(button);update();
+    new ResizeObserver(update).observe(input);
   }
   const isSearch=input=>!input.hidden&&['text','search'].includes(input.type)&&
     (input.type==='search'||input.classList.contains('multi-search')||/search/i.test(input.id)||input.matches('[data-history],.registry-toolbar input,.edr-monitoring-toolbar input,.work-queue-toolbar input')||/пошук|знайти|search/i.test(input.placeholder+' '+input.getAttribute('aria-label')));
@@ -69,7 +86,20 @@
   window.addEventListener('focus',()=>{clearState();refresh()});
   document.addEventListener('visibilitychange',refresh);
   document.getElementById('mainNav').addEventListener('click',event=>{
-    if(event.target.closest('#operationalTasksNav')){if(typeof resetOperationalKpiFilters==='function')resetOperationalKpiFilters();document.getElementById('operationalTaskStatus').value='needs_action'}
+    const target=event.target.closest('#operationalTasksNav,#requestsNav');
+    const permission=target?.id==='operationalTasksNav'?'tasks.read':'appeals.read';
+    if(target&&counts.get(target.id)>0&&currentMe?.permissions?.[permission]){
+      if(target.id==='operationalTasksNav'){
+        resetOperationalKpiFilters();document.getElementById('operationalTaskStatus').value='needs_action';
+      }else{
+        clearTimeout(requestsTimer);
+        for(const id of ['requestsSearch','requestsStatus','requestsReason','requestsDateFrom','requestsDateTo'])document.getElementById(id).value='';
+        selectedRequestAuthority='40996564';requestsPage=1;PqmUi.responseExpired=true;
+        expired.classList.add('active');expired.setAttribute('aria-pressed','true');
+      }
+      clearState();
+    }
+    // The existing tab callback performs navigation and exactly one list load.
     refresh();
   },true);
 })();

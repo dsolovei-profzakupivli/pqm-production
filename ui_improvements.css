@@ -22,9 +22,12 @@ html[data-pqm-environment="sandbox"] #applicationsView .heading-metrics .officer
 @media(max-width:1000px){#applicationsView .page-heading{grid-template-columns:minmax(0,1fr) max-content}#applicationsView .heading-metrics{grid-column:1/-1;grid-row:2}#applicationsView .heading-actions{grid-column:2;grid-row:1}}
 @media(max-width:480px){#applicationsView .page-heading{grid-template-columns:minmax(0,1fr)}#applicationsView .heading-actions{grid-column:1;grid-row:3;align-items:flex-start}#applicationsView .heading-action-row{justify-content:flex-start}#applicationsView .page-heading h1{font-size:24px}}
 .pqm-clear-wrap{position:relative;display:inline-flex;min-width:0;align-items:center}
+.pqm-clear-wrap>input[type="search"]::-webkit-search-cancel-button,
+.pqm-clear-wrap>input[type="search"]::-webkit-search-decoration{display:none;-webkit-appearance:none}
+.pqm-clear-wrap>input::-ms-clear{display:none}
 .pqm-clear-wrap>input{box-sizing:border-box;width:100%;min-width:0!important;max-width:100%;padding-right:29px!important}
 .pqm-clear-wrap>.pqm-search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:23px;min-height:23px;height:23px;padding:0;border:0;background:transparent;color:inherit;font-size:19px;line-height:1;cursor:pointer}
-.search-wrap>.pqm-clear-wrap{flex:1;min-width:0}
+.search-wrap>.pqm-clear-wrap{display:flex;width:100%;flex:1;min-width:0}
 #frameworkAnalyticsView .frameworks-toolbar>.pqm-clear-wrap{flex:1 1 260px;min-width:180px}
 #frameworkAnalyticsView .frameworks-toolbar>.pqm-clear-wrap>input{min-width:0;width:100%}
 @media(max-width:480px){#frameworkAnalyticsView .frameworks-toolbar>.pqm-clear-wrap{flex-basis:100%;min-width:0}}

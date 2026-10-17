@@ -6,15 +6,15 @@
 #supplierRegistryFrameworkFilter .multi-options{overflow-x:hidden;overflow-y:auto;max-height:340px}
 #supplierRegistryFrameworkFilter .multi-options label{white-space:normal;overflow-wrap:anywhere;align-items:flex-start;min-width:0}
 #supplierRegistryFrameworkFilter .multi-options input{flex:none}
-.amcu-toolbar{gap:10px;align-items:center}
-.amcu-toolbar>div:first-child{flex:0 0 200px;min-width:200px}
+.amcu-toolbar{gap:8px!important;align-items:center}
+.amcu-toolbar>div:first-child{flex:0 0 220px;min-width:220px;margin-right:0}
 .amcu-toolbar>div:first-child strong,.amcu-toolbar>div:first-child small{display:block;white-space:normal}
-.amcu-toolbar>.pqm-clear-wrap{flex:1 1 125px;min-width:100px;max-width:170px}
+.amcu-toolbar>.pqm-clear-wrap{flex:1 1 150px;min-width:100px;max-width:none}
 .amcu-toolbar #refAmcuAuthority{min-width:165px;max-width:200px;flex:0 1 185px}
 .amcu-toolbar #refAmcuSupplierScope{min-width:145px;max-width:190px;flex:0 1 170px}
 .amcu-toolbar #refAmcuRefresh{flex:0 0 auto;width:max-content;min-width:max-content;padding-inline:14px}
 .topbar #mainNav :is(#requestsNav,#operationalTasksNav){display:inline-flex;flex-direction:row;align-items:center;justify-content:center;gap:6px;width:auto;min-width:38px;white-space:nowrap;height:38px}
-.topbar #mainNav .action-count-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;background:#d92d78;color:#fff;min-width:22px;width:auto;margin-left:0;order:5}
+.topbar #mainNav .action-count-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;background:#b42318;color:#fff;min-width:22px;width:auto;margin-left:0;order:5}
 dialog{border:1px solid #7d91a5;box-shadow:0 18px 55px #10243d66}
 html[data-theme=dark] dialog,html[data-pqm-environment=sandbox] dialog{border-color:#7795b7}
 #auditDialog{width:min(1090px,calc(100vw - 40px));max-height:calc(100dvh - 110px)}
@@ -30,7 +30,11 @@ body:has(#auditDialog[open])::after{content:'';position:fixed;inset:0;background
 .audit-value-comparison pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:55vh;overflow-y:auto}
 .request-protocol-cell{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:180px}
 .request-protocol-cell button,.request-protocol-cell a{width:max-content;padding:4px 8px}
+.request-protocol-heading,.request-protocol-copy{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0}
+.request-protocol-heading strong{min-width:0;overflow-wrap:anywhere}
+.request-protocol-heading .supplier-profile-icon{box-sizing:border-box;width:28px;height:28px;flex-basis:28px}
+.request-protocol-copy:empty{display:none}
 #workQueueView #queueProtocolCategoryCards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;overflow:visible}
 #workQueueView #queueProtocolCategoryCards>button{width:100%;min-width:0;max-width:none}
 @media(max-width:650px){#workQueueView #queueProtocolCategoryCards{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:800px){.audit-value-comparison{grid-template-columns:1fr}.amcu-toolbar>div:first-child{flex-basis:200px}#supplierRegistryFrameworkFilter>.multi-panel{position:fixed;left:20px;right:20px;width:auto;max-height:60vh}}
+@media(max-width:800px){.audit-value-comparison{grid-template-columns:1fr}.amcu-toolbar>div:first-child{flex-basis:220px}#supplierRegistryFrameworkFilter>.multi-panel{position:fixed;left:20px;right:20px;width:auto;max-height:60vh}}
