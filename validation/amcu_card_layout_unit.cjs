@@ -43,6 +43,9 @@ assert(withMetadata.includes('Зміст протоколу')&&withMetadata.incl
 assert(withMetadata.includes('Інше змістове поле')&&withMetadata.includes('ІНШИЙ ЗБЕРЕЖЕНИЙ ТЕКСТ'));
 assert(withMetadata.includes('data-metadata-key="subject"')&&withMetadata.includes('data-protocol-metadata-document="v3"'));
 assert(!withMetadata.includes('ТЕКСТ ВЕРСІЇ 2'));
+const activeWithMetadata=context.operationalAmcuHtml({...item,status:'ready_for_document'});
+assert.equal((activeWithMetadata.match(/ТЕКСТ ВЕРСІЇ 3/g)||[]).length,2); // visible text + Copy value, one current block
+assert(activeWithMetadata.includes('ТЕКСТ ВЕРСІЇ 2')); // older metadata stays in version history
 docs[0].resolved_metadata=[];
 const absent=context.operationalAmcuDecisionCards(item);
 assert(!absent.includes('Зміст протоколу')&&!absent.includes('ТЕКСТ ВЕРСІЇ 2'));

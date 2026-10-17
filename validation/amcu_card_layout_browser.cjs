@@ -79,6 +79,7 @@ const out=process.env.PQM_UI_EVIDENCE_DIR;
      links:cards.flatMap(c=>[...c.querySelectorAll('a')].map(a=>a.getAttribute('href'))),
      color:getComputedStyle(cards[0]).color,bg:getComputedStyle(cards[0]).backgroundColor,
      metadataText:metadata?.textContent||'',metadataTop:metadata?.getBoundingClientRect().top,metadataLeft:metadata?.getBoundingClientRect().left,
+     duplicateCurrentMetadata:!!dialog.querySelector('.operational-amcu-generated>.document-resolved-metadata'),
      detailsTop:details.getBoundingClientRect().top,detailsLeft:details.getBoundingClientRect().left,
      codeWeight:getComputedStyle(code).fontWeight,labelWeight:getComputedStyle(identity).fontWeight,
      sameFontSize:getComputedStyle(code).fontSize===getComputedStyle(identity).fontSize,copiedCode,
@@ -87,6 +88,7 @@ const out=process.env.PQM_UI_EVIDENCE_DIR;
    assert.equal(result.cards,2);assert.deepEqual(result.headings,['Підстава','Рішення УО']);
    assert(Math.abs(result.widths[0]-result.widths[1])<1);assert.equal(result.padding[0],result.padding[1]);
    assert(!result.overflow&&!result.label&&result.qual);
+   assert(!result.duplicateCurrentMetadata);
    assert.equal(result.viewport,Math.round(width/zoom));
    assert(result.formRight<=result.viewport+1);
    assert.equal(result.codeWeight,'700');assert.equal(result.labelWeight,'400');assert(result.sameFontSize);assert.equal(result.copiedCode,'00000001');
