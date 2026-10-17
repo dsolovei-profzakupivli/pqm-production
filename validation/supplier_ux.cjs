@@ -103,12 +103,17 @@ for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_ex
 assert.match(renderedTypes.innerHTML,/data-task-type="warning_block" aria-pressed="true"/);
 assert.match(renderedTypes.innerHTML,/data-task-type="nazk_check" aria-pressed="false"/);
 let typeReloads=0;
-const typeSelect={value:''},typeKpiNode={},typeActions=vm.createContext({$:selector=>selector==='#operationalTaskTypes'?typeKpiNode:typeSelect,loadOperationalTasks(){typeReloads++}});
+const typeNodes=new Map(),typeKpiNode={};
+const typeActions=vm.createContext({$:selector=>{if(selector==='#operationalTaskTypes')return typeKpiNode;if(!typeNodes.has(selector))typeNodes.set(selector,{value:'stale'});return typeNodes.get(selector)},operationalTaskTimer:null,clearTimeout(){},loadOperationalTasks(){typeReloads++}});
+vm.runInContext(app.split(/\r?\n/).find(line=>line.startsWith('function resetOperationalKpiFilters(){')),typeActions);
+const typeSelect=typeActions.$('#operationalTaskType');
 vm.runInContext(section(app,"$('#operationalTaskTypes').onclick=","function operationalTaskEmptyMessage"),typeActions);
 for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
   const typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
   typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
-  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,'');
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
+  for(const id of ['operationalTaskSearch','operationalTaskOfficer','operationalTaskDateFrom'])assert.equal(typeActions.$('#'+id).value,'');
+  assert.equal(typeActions.$('#operationalTaskStatus').value,'active');
 }
 assert.equal(typeReloads,8);
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
