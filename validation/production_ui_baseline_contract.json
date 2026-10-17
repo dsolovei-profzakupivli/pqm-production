@@ -1,0 +1,23 @@
+{
+  "baseline": "f2aacf88713a63b2d915d16af137c4133a5f1fd8",
+  "server_protected_ast": "f1530667665ac050da81e720efadc87eeb5d4a86a9d043df87b3d42210543edc",
+  "operational_protected_ast": "27333a1e4ba0527cd003af485dbd54b426fffdf10836da5f5e7b5f6f588950df",
+  "server_excluded_functions": [
+    "Handler._do_GET",
+    "application_stats",
+    "list_qualified_suppliers",
+    "list_violation_reports"
+  ],
+  "protected_file_hashes": {
+    "auth_access.py": "16479958294ac52561c4055c1de68a3a39e4f4336b56801e767dff37049ec8e0",
+    "scheduler_runtime.py": "89e49abc73f89451f5e60a9291800689e99f6a3b78425ef058b10e9e9094abbc",
+    "supplier_selection.py": "9725ccf77c8ab08bf576a2c96390e6dc7a52cfe80d1d59412a42680c8df004b4",
+    "supplier_xlsx.py": "509d4400aee4b92669ee2e2d2804c82ebe2c555db546cd18b95016f1cd0d8b26",
+    "admission_resolver.py": "6e01f1dc54a3e8a973a41d6269f6e10bf6250b340dd0deebf6ad8b346140e782",
+    "task_documents.py": "ebe6030f39b7c844bf0d593903acbdd8cd9120a01edcd87942c61480b5c5839b",
+    "edr_sync_v2.py": "a200ff18969b2b50f3dc8c808a754beeafe97befd5362ad8d4b46c1dfefbbbe0",
+    "Dockerfile": "148df1108a0ee00056599efab3aeb47a538363d342d961d06ec7736374245c62",
+    "bulk_application_save.js": "f7ecef3ac9b542510918d15942d6cb77599688c1cdba8cd453d70c15cf215cc0"
+  },
+  "automation_ui_sha256": "5df5428fe555abcdf4dc3afe66c6019f020a44ccc7af01127bc9a157dc1628f6"
+}

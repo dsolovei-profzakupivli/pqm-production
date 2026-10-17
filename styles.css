@@ -57,6 +57,7 @@ td.auto-filled{background:#edf2f7!important;color:#34465b}tbody tr:hover td.auto
 #referenceAmcu tr.amcu-applicant td{background:#fffaf0}
 #referenceAmcu tr.amcu-applicant td:first-child{box-shadow:inset 4px 0 #d9a514}
 .frameworks-table tr.framework-agreement-pending td{background:#fffaf0}
+/* Saved system widths override the legacy responsive minimum only here. */
 #frameworkAnalyticsView .frameworks-table{min-width:100%!important}
 #frameworkAnalyticsView .frameworks-table .ghost{display:inline-block;white-space:normal;overflow-wrap:anywhere;max-width:100%;box-sizing:border-box}
 .frameworks-table tr.framework-agreement-pending td:first-child{box-shadow:inset 4px 0 #d9a514}
@@ -282,7 +283,17 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 @media(max-width:900px){#historyView{padding:8px 15px}#historyView .history-heading{gap:8px;flex-wrap:wrap}#historyView .history-heading p{display:none}}
 #historyColumnsDialog{width:min(720px,90vw);max-height:85vh;overflow:auto}
 #historyColumnSearch{width:100%;margin:8px 0}
-#historyColumnList .column-item{grid-template-columns:20px 24px minmax(120px,1fr) 80px 32px 32px}
+#historyColumnList .column-item{grid-template-columns:20px 24px minmax(100px,1fr) 76px 100px 32px 32px}
+#historyColumnsDialog{padding:0}
+#historyColumnsDialog form{display:flex;flex-direction:column;max-height:85vh}
+#historyColumnsDialog header,#historyColumnsDialog footer{flex-shrink:0}
+#historyColumnSearch{margin:10px 24px;width:calc(100% - 48px)}
+#historyColumnList{overflow:auto;min-height:0}
+#historyColumnMessage{margin:0 24px}
+#historyColumnsDialog form>footer{padding:16px 24px}
+#historyView .history-table td{overflow-wrap:anywhere;min-width:0}
+.history-table th.history-pinned{z-index:4}
+.history-table td.history-pinned{z-index:1;background:var(--card,#fff)}
 #historyColumnsDialog footer{display:flex;gap:8px;justify-content:flex-end;position:sticky;bottom:0;background:white;padding:12px 0}
 .history-filters{display:flex;flex-wrap:wrap;gap:8px;padding:12px}.history-filters>input{min-width:150px;flex:1}.history-table{overflow:auto;max-height:65vh}.history-table table{min-width:1250px;width:100%;border-collapse:collapse}.history-table th{position:sticky;top:0;z-index:2;background:#edf4f8}.history-table th,.history-table td{padding:9px;border:1px solid #dce5ef;text-align:left;vertical-align:top}.history-table td{white-space:pre-wrap;user-select:text}.history-table small,.history-table a{display:block}.history-table td:nth-last-child(2){min-width:260px}.col-drag{cursor:grab}.col-drag[draggable="false"]{cursor:default;opacity:.35}#columnSettingsSearch{margin:10px 18px;width:calc(100% - 36px)}.column-item{grid-template-columns:20px 24px minmax(100px,1fr) 76px 100px 32px 32px}
 #historyView .history-table tr.history-inactive-admitted>td{background:#edf3f8}
@@ -376,6 +387,39 @@ html[data-pqm-environment="sandbox"] .supplier-edr-metadata dt{color:#b2c3db}
 #operationalTaskDialog>form{height:min(880px,calc(100vh - 30px));display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden}
 #operationalTaskDialog .request-details-body{max-height:none;min-height:0;width:100%;padding:0;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);background:#edf2f6}
 .operational-workspace .operational-channels{display:block}
+#operationalTaskDialog .operational-workspace{padding:8px 12px 12px}
+#operationalTaskDialog .operational-workspace>section{padding:8px 10px;margin-bottom:8px}
+#operationalTaskDialog .operational-targets td small{display:block;overflow-wrap:anywhere}
+#operationalTaskDialog .operational-targets table{min-width:0;width:100%;table-layout:fixed}
+#operationalTaskDialog .operational-targets p{margin:3px 0}
+#operationalTaskDialog .operational-amcu-overview{display:flex;flex-wrap:wrap;align-items:start;gap:8px;margin-bottom:8px;container-type:inline-size;container-name:amcu-overview}
+#operationalTaskDialog .operational-amcu-overview>section{min-width:0;padding:8px 10px;border:1px solid #cbd6e1;border-radius:8px;background:#fff}
+#operationalTaskDialog .operational-amcu-overview>section:first-child{flex:0 1 auto;width:max-content;min-width:min(100%,14rem);max-width:45%}
+#operationalTaskDialog .operational-amcu-overview>section:last-child{flex:1 1 20rem;min-width:min(100%,20rem);max-width:100%}
+#operationalTaskDialog .operational-amcu-overview>section :is(p,a,dd,strong){overflow-wrap:anywhere;white-space:normal}
+#operationalTaskDialog .operational-amcu-overview>section :is(input,select,textarea,button){max-width:100%;min-width:0;box-sizing:border-box}
+@container amcu-overview (max-width:600px){#operationalTaskDialog .operational-amcu-overview>section{flex:1 1 100%;width:100%;min-width:0;max-width:100%;box-sizing:border-box}}
+#operationalTaskDialog .operational-targets td{vertical-align:top;padding:7px 9px}
+#operationalTaskDialog .operational-targets :is(th,td):first-child{width:16%;white-space:nowrap}
+#operationalTaskDialog .operational-targets :is(th,td):nth-child(2){width:48%;overflow-wrap:anywhere;white-space:normal}
+#operationalTaskDialog .operational-targets :is(th,td):nth-child(3){width:29%;overflow-wrap:anywhere;white-space:normal}
+#operationalTaskDialog .operational-targets :is(th,td):last-child{width:7%;text-align:center;padding-left:2px;padding-right:2px}
+#operationalTaskDialog .operational-target-document-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;text-decoration:none}
+#operationalTaskDialog .operational-targets details{margin-top:5px;font-size:11px}
+#operationalTaskDialog .operational-amcu-overview :is(h3,p){margin-top:3px;margin-bottom:5px}
+#operationalTaskDialog .operational-summary{padding:7px 12px!important;gap:8px}
+#operationalTaskDialog .operational-targets .operational-table{min-width:0;max-width:100%}
+#operationalTaskDialog .operational-targets .operational-framework-title{font-weight:400;font-size:inherit;line-height:1.35}
+#operationalTaskDialog .operational-targets .operational-target-source-details{display:inline-block;vertical-align:top;margin:0 0 0 4px}
+#operationalTaskDialog .operational-target-source-details>summary{display:inline;cursor:pointer;list-style:none;font-size:inherit}
+#operationalTaskDialog .operational-target-source-details>summary::-webkit-details-marker{display:none}
+#operationalTaskDialog .operational-target-source-details[open]{display:block;margin-left:0}
+#operationalTaskDialog .operational-target-source-body{margin-top:4px;overflow-wrap:anywhere;white-space:normal}
+#operationalTaskDialog .operational-amcu-overview+.operational-targets{margin-top:0;padding-top:5px}
+#operationalTaskDialog .operational-amcu-overview+.operational-targets>h3{margin:0 0 5px}
+@media(max-width:750px){#operationalTaskDialog .operational-amcu-overview{flex-direction:column}#operationalTaskDialog .operational-amcu-overview>section{flex:0 1 auto;width:100%;min-width:0;max-width:100%;box-sizing:border-box}}
+#operationalTaskDialog .operational-context-card{max-height:35vh;overflow:auto}
+@media(max-width:650px){#operationalTaskDialog .operational-summary .operational-compact-facts{grid-template-columns:1fr 1fr}#operationalTaskDialog .operational-workspace{padding:6px}}
 .operational-workspace .operational-channel-card{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0;background:transparent}
 .operational-channel-card>h4{flex:0 0 140px}.operational-channel-card>.violation-inline-actions{margin-left:auto}
 .operational-channel-card>.operational-inline-form,.operational-responses>.operational-inline-form{flex-basis:100%;width:100%}

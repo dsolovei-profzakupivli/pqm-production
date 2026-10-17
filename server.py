@@ -52,6 +52,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+import ui_action_summary
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -2692,8 +2693,8 @@ def application_filter(params: dict) -> tuple[str, list]:
 
 def application_stats(params: dict) -> dict:
     clause, args = application_filter(params)
-    officer_params = {key: value for key, value in params.items() if key != "officer"}
-    officer_clause, officer_args = application_filter(officer_params)
+    # Officer cards describe the same complete filtered set as the application count.
+    officer_clause, officer_args = clause, args
     with db() as con:
         row = con.execute(f"""SELECT COUNT(*) applications,
           COUNT(DISTINCT NULLIF(s.supplier_code,'')) suppliers,
@@ -5241,7 +5242,8 @@ def list_qualified_suppliers(params: dict) -> dict:
     search = params.get("search", [""])[0].strip().casefold()
     status = params.get("status", [""])[0].strip()
     risk = params.get("risk", [""])[0].strip()
-    dk_code = params.get("dk_code", [""])[0].strip()
+    import supplier_list_scope
+    scope_sql, scope_args = supplier_list_scope.predicate(params)
     edr_status = params.get("edr_status", [""])[0].strip()
     # Accept known presentation-only legacy rows until their DB normalization.
     canonical_edr_status = _edr_monitoring_status(edr_status) if edr_status else ""
@@ -5271,8 +5273,19 @@ def list_qualified_suppliers(params: dict) -> dict:
     if search:
         where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR EXISTS "
           "(SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=combined.supplier_code "
-          "AND INSTR(CASEFOLD(ep.full_name),?)>0))")
-        args.extend([search, search, search])
+          "AND INSTR(CASEFOLD(ep.full_name),?)>0) OR EXISTS "
+          "(SELECT 1 FROM submissions ss JOIN qualifications qq ON qq.submission_id=ss.id "
+          "JOIN frameworks ff ON ff.id=ss.framework_id WHERE ss.supplier_code=combined.supplier_code "
+          "AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
+          "(SELECT 1 FROM registry_contracts rr JOIN frameworks ff ON ff.id=rr.framework_id "
+          "WHERE rr.supplier_code=combined.supplier_code AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
+          "(SELECT 1 FROM submissions sf JOIN frameworks ff ON ff.id=sf.framework_id "
+          "WHERE sf.supplier_code=combined.supplier_code AND (INSTR(CASEFOLD(ff.pretty_id),?)>0 "
+          "OR INSTR(CASEFOLD(ff.title),?)>0)) OR EXISTS "
+          "(SELECT 1 FROM registry_contracts rf JOIN frameworks ff ON ff.id=rf.framework_id "
+          "WHERE rf.supplier_code=combined.supplier_code AND (INSTR(CASEFOLD(ff.pretty_id),?)>0 "
+          "OR INSTR(CASEFOLD(ff.title),?)>0)))")
+        args.extend([search] * 9)
     if status == "active":
         where.append("active_count>0")
     elif status == "suspended":
@@ -5323,7 +5336,7 @@ def list_qualified_suppliers(params: dict) -> dict:
           COUNT(*) applications_count, MAX(s.date_published) last_application,
           GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
         FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
-        WHERE COALESCE(s.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) GROUP BY s.supplier_code
+        WHERE COALESCE(s.supplier_code,'')<>'' AND {scope_sql} GROUP BY s.supplier_code
       ), scoped_registry AS (
         SELECT rc.supplier_code,
           MAX(COALESCE(NULLIF(r.supplier_name,''),'Назву не отримано')) supplier_name,
@@ -5338,7 +5351,7 @@ def list_qualified_suppliers(params: dict) -> dict:
         FROM registry_contracts rc
         LEFT JOIN frameworks f ON f.id=rc.framework_id
         LEFT JOIN supplier_registry_summary r ON r.supplier_code=rc.supplier_code
-        WHERE COALESCE(rc.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) GROUP BY rc.supplier_code
+        WHERE COALESCE(rc.supplier_code,'')<>'' AND {scope_sql} GROUP BY rc.supplier_code
       ), combined AS (
         SELECT r.supplier_code,r.supplier_name,r.qualifications_count,r.active_count,
           r.inactive_count,r.suspended_count,r.frameworks_count,r.dk_codes,r.last_qualification,
@@ -5352,7 +5365,7 @@ def list_qualified_suppliers(params: dict) -> dict:
         WHERE r.supplier_code IS NULL
       )
     """
-    source_args = [dk_code, dk_code, dk_code, dk_code]
+    source_args = [*scope_args, *scope_args]
     query_args = source_args + args
     with db() as con:
         con.create_function("SUPPLIER_ENTITY_TYPE", 1, lambda code: supplier_entity_type(str(code or "")), deterministic=True)
@@ -5389,7 +5402,13 @@ def list_qualified_suppliers(params: dict) -> dict:
             registered_total = int(rows[0]["__registered_total"] or 0)
             not_registered = int(rows[0]["__not_registered"] or 0)
         else:
-            total = active_total = registered_total = not_registered = 0
+            # An empty/out-of-range page must not erase the filtered totals.
+            totals = con.execute(source + f''' SELECT COUNT(*),
+              COALESCE(SUM(active_count),0),
+              COALESCE(SUM(registry_state='registered'),0),
+              COALESCE(SUM(registry_state='not_registered'),0)
+              FROM combined WHERE {clause}''', query_args).fetchone()
+            total, active_total, registered_total, not_registered = map(int, totals)
         amcu_codes = {re.sub(r"\D", "", row[0] or "") for row in con.execute(
             "SELECT DISTINCT offender_code FROM amcu_registry WHERE offender_code<>''"
         )}
@@ -5400,8 +5419,8 @@ def list_qualified_suppliers(params: dict) -> dict:
         page_application_stats = {}
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
-            dk_clause = " AND f.dk_code=?" if dk_code else ""
-            stats_args = [*supplier_codes, *([dk_code] if dk_code else [])]
+            dk_clause = " AND " + scope_sql
+            stats_args = [*supplier_codes, *scope_args]
             page_application_stats = {row["supplier_code"]: dict(row) for row in con.execute(f"""
               SELECT s.supplier_code,COUNT(*) applications_count,MAX(s.date_published) last_application,
                 GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
@@ -6342,6 +6361,9 @@ def list_violation_reports(params: dict) -> dict:
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
     where, args = ["1=1"], []
+    response_expired = params.get('response_expired', [''])[0] == '1'
+    if response_expired:
+        where.append(ui_action_summary.EXPIRED_REPORT_SQL)
     if search:
         where.append("(INSTR(CASEFOLD(report_id),?)>0 OR INSTR(CASEFOLD(author_name),?)>0 OR INSTR(CASEFOLD(author_code),?)>0 OR INSTR(CASEFOLD(defendant_name),?)>0 OR INSTR(CASEFOLD(defendant_code),?)>0 OR INSTR(CASEFOLD(tender_pretty_id),?)>0 OR INSTR(CASEFOLD(description),?)>0)")
         args.extend([search] * 7)
@@ -6361,6 +6383,9 @@ def list_violation_reports(params: dict) -> dict:
         where.append("authority_code=?"); args.append(authority_code)
     clause = " AND ".join(where)
     with db() as con:
+        if response_expired:
+            ui_action_summary.install_deadline_function(con, violation_deadline_control,
+                                                       datetime.now(ZoneInfo('Europe/Kyiv')))
         total = con.execute(f"SELECT COUNT(*) FROM violation_reports WHERE {clause}", args).fetchone()[0]
         order_sql = "date_published ASC,report_id ASC" if status == "pending" else "date_published DESC,report_id DESC"
         rows = con.execute(f"""SELECT id,report_id,status,date_published,date_modified,tender_pretty_id,contract_pretty_id,
@@ -6379,6 +6404,11 @@ def list_violation_reports(params: dict) -> dict:
           FROM violation_reports WHERE {authority_clause} AND authority_code<>''
           GROUP BY authority_code,authority_name ORDER BY count DESC,authority_name""", authority_args).fetchall()]
         warning_markers = operational_tasks.warning_marker_map(con)
+        # Batch existing review records, no detail refresh/network and no mutations.
+        review_ids=[row['id'] for row in rows]
+        protocol_reviews={row['report_id']:dict(row) for row in con.execute(
+            'SELECT * FROM violation_report_reviews WHERE report_id IN ('+
+            ','.join('?' for _ in review_ids)+')',review_ids)} if review_ids else {}
     items = []
     for row in rows:
         item = dict(row)
@@ -6387,6 +6417,12 @@ def list_violation_reports(params: dict) -> dict:
         raw = json.loads(item.pop("raw_json") or "{}")
         item["defendant_statements"] = raw.get("defendantStatements") or []
         item["blocking_marker"] = warning_markers.get(item["report_id"])
+        import violation_protocol_summary
+        saved_review=protocol_reviews.get(item['id'],{})
+        projected_review=dict(saved_review)
+        if raw.get('decisions'):projected_review['review_status']='completed'
+        item['protocol_summary']=violation_protocol_summary.present(
+            saved_review,PROTOCOLS_DIR,_violation_sheets_json_eligible(projected_review))
         items.append(item)
     return {"items": items, "total": total, "pending": pending, "satisfied": satisfied, "declined": declined, "page": page, "size": size,
             "pages": (total + size - 1) // size, "statuses": statuses, "reasons": reasons,
@@ -10243,6 +10279,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in {'/api/operational-tasks/summary', '/api/violation-reports/summary'}:
+            result = ui_action_summary.summary(DB_PATH,
+                'tasks' if parsed.path.startswith('/api/operational-tasks/') else 'appeals',
+                operational_tasks.STATUS_GROUPS['needs_action'], violation_deadline_control,
+                datetime.now(ZoneInfo('Europe/Kyiv')))
+            self.send_response(200)
+            raw=json.dumps(result).encode('utf-8')
+            self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Length',str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
         if parsed.path == '/api/applications/selection':
             result = application_selection(urllib.parse.parse_qs(parsed.query))
             raw = json.dumps(result,ensure_ascii=False).encode('utf-8')
@@ -10396,6 +10444,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "counts": counts, "sync": sync_status_payload()})
         if parsed.path == "/api/auth/me":
             return self.send_json({"username": self.auth_user, "role": self.auth_role,
+                                   "ui_features": {"supplier_bids_ready": BIDS_MODE != 'disabled' and
+                                       os.getenv('PQM_SUPPLIER_BIDS_READY', '0').lower() in {'1','true'}},
                                    "managed_role": self.auth_access['code'],
                                    "permissions": self.auth_access['permissions'],
                                    "officer_id": self.auth_officer_id,
@@ -10901,17 +10951,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/supplier-options":
             return self.send_json(supplier_options(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/audit":
-            query = urllib.parse.parse_qs(parsed.query)
-            page = max(1, int(query.get("page", [1])[0]))
-            size = min(200, max(1, int(query.get("size", [100])[0])))
-            with db() as con:
-                total = int(con.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0])
-                rows = [dict(r) for r in con.execute(
-                    "SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?",
-                    (size, (page - 1) * size),
-                )]
-            pages = max(1, (total + size - 1) // size)
-            return self.send_json({"items": rows, "total": total, "page": page, "pages": pages, "size": size})
+            import audit_reader
+            try:
+                result=audit_reader.read(DB_PATH,urllib.parse.parse_qs(parsed.query),actor=self.auth_user)
+            except audit_reader.AuditResourceError as exc:
+                return self.send_json({'error':str(exc),'code':exc.code},status=exc.status)
+            except ValueError as exc:
+                return self.send_json({'error':str(exc)},status=400)
+            return self.send_json(result)
         path = parsed.path.lstrip("/") or "index.html"
         target = (ROOT / path).resolve()
         if (ROOT not in target.parents or not target.is_file()
