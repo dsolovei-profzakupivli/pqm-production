@@ -1,7 +1,8 @@
 /* Decorative overlay: never participates in header sizing or hit testing. */
 .prod-brand-copy .halloween-title{position:relative;isolation:isolate}
-.halloween-cat{position:absolute;pointer-events:none;user-select:none;width:140px;height:40px;left:21px;bottom:0;z-index:1;overflow:visible;filter:drop-shadow(0 1px 1px #ffffff55)}
-.halloween-cat .cat-tail{transform-origin:128px 32px;animation:pqm-cat-tail 12s ease-in-out infinite}
+.halloween-cat{position:absolute;pointer-events:none;user-select:none;width:140px;height:40px;left:-14px;bottom:0;z-index:1;overflow:visible;filter:drop-shadow(0 1px 1px #ffffff55)}
+.halloween-cat .cat-tail{transform-origin:115px 25px;animation:pqm-cat-tail 12s ease-in-out infinite}
+html[data-pqm-environment="sandbox"] .halloween-cat>g:first-child,html[data-theme="dark"] .halloween-cat>g:first-child{stroke:#8996a8;stroke-width:1.1}
 .halloween-cat .cat-eyes{transform-origin:47px 23px;animation:pqm-cat-blink 11s linear infinite}
 @keyframes pqm-cat-tail{0%,100%{transform:rotate(-3deg)}50%{transform:rotate(5deg)}}
 @keyframes pqm-cat-blink{0%,43%,45%,100%{transform:scaleY(1)}44%{transform:scaleY(.08)}}
