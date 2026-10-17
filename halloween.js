@@ -7,7 +7,8 @@
   try{enabled=localStorage.getItem(key)!=='0'}catch{/* Private storage may be unavailable. */}
   let refreshSpider=()=>{};
   let refreshHat=()=>{};
-  const apply=()=>{document.documentElement.dataset.halloween=enabled?'on':'off';refreshSpider();refreshHat()};
+  let refreshQueueBackground=()=>{};
+  const apply=()=>{document.documentElement.dataset.halloween=enabled?'on':'off';refreshSpider();refreshHat();refreshQueueBackground()};
   apply();
   title.classList.add('halloween-title');
   title.insertAdjacentHTML('beforeend',`<svg class="halloween-cat" viewBox="0 0 156 57" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -86,6 +87,23 @@
     window.addEventListener('resize',schedule,{passive:true});window.addEventListener('scroll',schedule,{passive:true,capture:true});
     if(window.visualViewport){visualViewport.addEventListener('resize',schedule,{passive:true});visualViewport.addEventListener('scroll',schedule,{passive:true})}
     document.fonts?.ready.then(schedule);refreshHat();
+  }
+  const queue=document.querySelector('#workQueueView');
+  if(queue){
+    refreshQueueBackground=()=>{
+      if(!enabled||queue.hidden)return;
+      const box=queue.getBoundingClientRect(),zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
+      // Paint down to the viewport bottom; never add layout height or scrolling.
+      const height=Math.max(box.height,innerHeight-box.top)/zoom;
+      queue.style.setProperty('--halloween-queue-area-height',height+'px');
+    };
+    let queued=false;
+    const schedule=()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;refreshQueueBackground()})};
+    new ResizeObserver(schedule).observe(queue);
+    new MutationObserver(schedule).observe(queue,{attributes:true,attributeFilter:['hidden']});
+    window.addEventListener('resize',schedule,{passive:true});
+    if(window.visualViewport)visualViewport.addEventListener('resize',schedule,{passive:true});
+    document.fonts?.ready.then(schedule);refreshQueueBackground();
   }
   const form=document.querySelector('#accountSettingsForm');
   if(form){
