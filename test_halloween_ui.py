@@ -6,6 +6,23 @@ import unittest
 
 
 class HalloweenUiTests(unittest.TestCase):
+    def test_workqueue_background_is_scoped_and_behind_content(self):
+        css=Path('halloween.css').read_text(encoding='utf-8')
+        layer=css[css.index('/* Work Queue background only.'):]
+        self.assertIn('html[data-halloween="on"] #workQueueView:not([hidden])',layer)
+        self.assertIn('position:absolute;inset:0;z-index:-1;pointer-events:none',layer)
+        self.assertNotIn('animation',layer)
+        for forbidden in ['.card{','button{','input{','height:','min-height:','overflow:']:
+            self.assertNotIn(forbidden,layer)
+
+    def test_workqueue_decorative_assets_are_local_svg(self):
+        import xml.etree.ElementTree as ET
+        for name in ['web','web-right','bat']:
+            source=Path(f'assets/halloween-queue-{name}.svg').read_text(encoding='utf-8')
+            self.assertEqual(ET.fromstring(source).tag,'{http://www.w3.org/2000/svg}svg')
+            self.assertNotIn('<script',source)
+            self.assertNotIn('href=',source)
+
     def test_pumpkins_paint_existing_badges_without_changing_layout_or_values(self):
         css=Path('halloween.css').read_text(encoding='utf-8')
         self.assertIn('html[data-halloween="on"] .topbar #mainNav .action-count-badge',css)
