@@ -22,5 +22,13 @@ const {PqmAuditSearch}=require('../audit_search.js');
   item.protocol_summary.json_ready=true;assert.match(context.violationProtocolCell(item,0),/JSON/);
   item.protocol_summary.officer='';assert.doesNotMatch(context.violationProtocolCell(item,0),/Історична УО/);
   const boot=fs.readFileSync('ui_improvements_boot.js','utf8');assert.doesNotMatch(boot,/#requestsNav \.action-count-badge/);
+  const position=fs.readFileSync('working_modal_drag.js','utf8').split(/\r?\n/).find(line=>line.trim().startsWith('const position='));
+  for(const bounded of [false,true])for(const zoom of [1,1.25])for(const x of [-200,300,2000])for(const y of [-200,300,2000]){
+    const target={style:{},dataset:{keepViewport:String(bounded)},getBoundingClientRect:()=>({width:600,height:500})};
+    const ctx={target,innerWidth:1280,innerHeight:720,document:{body:{}},getComputedStyle:()=>({zoom}),Math,Number};vm.createContext(ctx);vm.runInContext(position+';position('+x+','+y+')',ctx);
+    const scale=bounded?zoom:1;
+    assert.equal(parseFloat(target.style.left)*scale,Math.max(8,Math.min(x,1280-600-8)));
+    assert.equal(parseFloat(target.style.top)*scale,Math.max(8,Math.min(y,720-(bounded?500:80)-12)));
+  }
   console.log('UI_TZ2_UNIT=PASS; single-flight/coalescing/cancel/stale/error/protocol phases');
 })().catch(error=>{console.error(error);process.exit(1)});

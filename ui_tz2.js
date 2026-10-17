@@ -2,6 +2,19 @@
 (()=>{
   const audit=document.getElementById('auditDialog');
   audit.dataset.keepViewport='true';
+  function fitAuditSurfaces(){
+    const scale=Number(getComputedStyle(document.body).zoom)||1;
+    for(const dialog of document.querySelectorAll('#auditDialog[open],#auditValueDialog[open]')){
+      dialog.style.width=Math.min(dialog===audit?1090:1000,(innerWidth-40)/scale)+'px';
+      let rect=dialog.getBoundingClientRect();
+      dialog.style.maxHeight=Math.max(120,(innerHeight-Math.max(8,rect.top)-20)/scale)+'px';
+      rect=dialog.getBoundingClientRect();
+      if(rect.x<8||rect.right>innerWidth-8){dialog.style.margin='0';dialog.style.left=Math.max(8,Math.min(rect.x,innerWidth-rect.width-8))/scale+'px'}
+      if(rect.y<8||rect.bottom>innerHeight-8){dialog.style.margin='0';dialog.style.top=Math.max(8,Math.min(rect.y,innerHeight-rect.height-8))/scale+'px'}
+    }
+  }
+  new MutationObserver(records=>{if(records.some(r=>r.target===document.body||r.attributeName==='open'&&['auditDialog','auditValueDialog'].includes(r.target.id)))fitAuditSurfaces()}).observe(document.body,{subtree:true,attributes:true,attributeFilter:['open','style']});
+  window.addEventListener('resize',fitAuditSurfaces);
   document.getElementById('auditBody').addEventListener('click',event=>{
     const button=event.target.closest('[data-audit-row]');if(!button)return;
     const row=auditRows[Number(button.dataset.auditRow)];if(!row)return;

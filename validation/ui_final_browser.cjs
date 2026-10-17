@@ -108,6 +108,14 @@ const app=read('app.js'),section=(a,b)=>app.slice(app.indexOf(a),app.indexOf(b,a
   await page.locator('#auditValueDialog .dialog-close').click();
   await page.mouse.move(header.x+30,header.y+8);await page.mouse.down();await page.mouse.move(header.x+90,header.y+60,{steps:5});await page.mouse.up();const after=await page.locator('#auditDialog').boundingBox();assert(Math.abs(after.width-before.width)<1);assert(after.y>=0&&after.y<1000-60);
   await page.locator('#historyNav').click();assert.equal(await page.locator('#auditDialog').isVisible(),false);
+  for(const height of [720,900])for(const zoom of [1,1.25]){
+    await page.setViewportSize({width:1280,height});await page.evaluate(zoom=>{document.body.style.zoom=String(zoom)},zoom);
+    await page.evaluate(()=>openAudit());await page.waitForTimeout(50);const r=await page.locator('#auditDialog').boundingBox();
+    assert(r.x>=0&&r.y>=0&&r.x+r.width<=1280&&r.y+r.height<=height,'Audit outside viewport '+JSON.stringify({height,zoom,r}));
+    const handle=await page.locator('#auditDialog header h2').boundingBox();await page.mouse.move(handle.x+10,handle.y+10);await page.mouse.down();await page.mouse.move(1270,height-10,{steps:5});await page.mouse.up();
+    const moved=await page.locator('#auditDialog').boundingBox();assert(moved.x>=0&&moved.y>=0&&moved.x+moved.width<=1280&&moved.y+moved.height<=height,'Zoomed audit dragging outside viewport');
+    await page.evaluate(()=>$('#auditDialog').close());
+  }
   assert.deepEqual(errors,[]);console.log('UI_FINAL_BROWSER=PASS; themes=2 widths=4 zooms=2; workQueue=1/2/3/4/5/7; audit/drag/clear/status/4-cards=PASS');
  }finally{await browser.close()}
 })().catch(error=>{console.error(error);process.exitCode=1});
