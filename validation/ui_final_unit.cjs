@@ -15,8 +15,10 @@ c.$('#operationalTaskSearch').value='крини';c.$('#operationalTaskStatus').v
 c.$('#operationalTaskKpis').onclick({target:{closest:()=>({dataset:{taskKpi:'needs_action'}})}});
 assert.equal(c.$('#operationalTaskSearch').value,'');assert.equal(c.$('#operationalTaskStatus').value,'needs_action');
 c.$('#operationalTaskTypes').onclick({target:{closest:()=>({dataset:{taskType:'amcu_exclusion'}})}});
-assert.equal(c.$('#operationalTaskStatus').value,'active');assert.equal(c.$('#operationalTaskType').value,'amcu_exclusion');
+assert.equal(c.$('#operationalTaskStatus').value,'needs_action');assert.equal(c.$('#operationalTaskType').value,'amcu_exclusion');
+c.$('#operationalTaskTypes').onclick({target:{closest:()=>({dataset:{taskType:'amcu_exclusion'}})}});
+assert.equal(c.$('#operationalTaskStatus').value,'needs_action');assert.equal(c.$('#operationalTaskType').value,'');
 const ui=fs.readFileSync('ui_final.js','utf8');assert(!/method\s*:\s*['"](?:POST|PATCH|DELETE)/.test(ui));
 assert(!ui.includes('schedulerScheduleDrafts'));assert(ui.includes('installViewportDrag(dialog,dialog,header)'));
 assert(!ui.includes('protocolDecisionFilter')); // Protocol decision cards retain their independent handler.
-console.log('UI_FINAL_UNIT=PASS; six KPI groups + special type reset + no writes');
+console.log('UI_FINAL_UNIT=PASS; six KPI groups + additive type toggle + no writes');

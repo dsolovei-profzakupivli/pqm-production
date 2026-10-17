@@ -1588,7 +1588,7 @@ function renderOperationalTaskTypes(counts){
   const selected=$('#operationalTaskType').value;
   $('#operationalTaskTypes').innerHTML=['nazk_check','amcu_exclusion','warning_block','termination_exclusion'].filter(type=>Number(counts[type])>0).map(type=>`<button type="button" class="operational-type-marker operational-type-kpi${selected===type?' active':''}" data-task-type="${type}" aria-pressed="${selected===type}"><span>${esc(operationalTaskTypeLabels[type])}</span><strong>${Number(counts[type]).toLocaleString('uk-UA')}</strong></button>`).join('');
 }
-$('#operationalTaskTypes').onclick=event=>{const chip=event.target.closest('button[data-task-type]');if(!chip)return;resetOperationalKpiFilters();$('#operationalTaskType').value=chip.dataset.taskType;loadOperationalTasks()};
+$('#operationalTaskTypes').onclick=event=>{const chip=event.target.closest('button[data-task-type]');if(!chip)return;const filter=$('#operationalTaskType');filter.value=filter.value===chip.dataset.taskType?'':chip.dataset.taskType;loadOperationalTasks()};
 function operationalTaskEmptyMessage(){const group=$('#operationalTaskStatus').value||'active',type=$('#operationalTaskType').value;if(type==='amcu_exclusion'&&group==='active')return 'Активних задач АМКУ немає';if(group==='active')return 'Активних операційних задач немає';if(group==='completed')return 'Виконаних задач за вибраними умовами немає';if(group==='cancelled')return 'Скасованих задач за вибраними умовами немає';return 'Задач за вибраними умовами немає'}
 let operationalListGeneration=0;
 async function loadOperationalTasks(){

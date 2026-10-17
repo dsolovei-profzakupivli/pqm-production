@@ -144,9 +144,9 @@ vm.runInContext(section(app,"$('#operationalTaskTypes').onclick=","function oper
 for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
   const typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
   typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
-  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
-  for(const id of ['operationalTaskSearch','operationalTaskOfficer','operationalTaskDateFrom'])assert.equal(typeActions.$('#'+id).value,'');
-  assert.equal(typeActions.$('#operationalTaskStatus').value,'active');
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,'');
+  for(const id of ['operationalTaskSearch','operationalTaskOfficer','operationalTaskDateFrom'])assert.equal(typeActions.$('#'+id).value,'stale');
+  assert.equal(typeActions.$('#operationalTaskStatus').value,'stale');
 }
 assert.equal(typeReloads,8);
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
