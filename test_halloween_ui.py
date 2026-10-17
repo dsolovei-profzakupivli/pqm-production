@@ -6,6 +6,11 @@ import unittest
 
 
 class HalloweenUiTests(unittest.TestCase):
+    def test_spider_grows_without_changing_thread_anchor(self):
+        css=Path('halloween.css').read_text(encoding='utf-8')
+        self.assertIn('transform:scale(1.2);transform-origin:50% 25%',css)
+        self.assertIn('left:5.5px;top:0;bottom:9px;width:.7px',css)
+
     def test_web_uses_actual_button_geometry_and_content_clearance(self):
         source=Path('halloween.js').read_text(encoding='utf-8')
         self.assertIn('const width=button.clientWidth',source)
