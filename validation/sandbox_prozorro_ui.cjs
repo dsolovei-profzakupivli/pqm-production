@@ -6,8 +6,8 @@ const fn=availability+automation+src.slice(src.indexOf('function environmentBann
 (async()=>{
  for(const automatic of [false,true])for(const readable of [false,true])for(const allowed of [false,true]){
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,{dataset:{roleDisabled:allowed?'0':'1'},disabled:!allowed});return nodes.get(id)};
-  const context={$,currentMe:{permissions:{'appeals.update':allowed}},role:()=>allowed?'admin':'officer',API:'/api',request:async()=>({sandbox_mode:true,sandbox_prozorro_read:readable,sandbox_prozorro_scheduler:automatic,sandbox_operational:true,scheduler_jobs:[],bids_mode:'disabled'}),
-   renderGoogleRuntimeState:()=>{},renderManualBidsUpdateState:()=>{},esc:s=>s,toast:()=>{},schedulerJobLabels:{}};
+  const context={$,currentMe:{permissions:{'appeals.update':allowed}},role:()=>allowed?'admin':'officer',API:'/api',request:async()=>({sandbox_mode:true,sandbox_prozorro_read:readable,sandbox_prozorro_scheduler:automatic,sandbox_operational:true,scheduler_jobs:[],items:[],bids_mode:'disabled'}),
+   $$:()=>[],renderGoogleRuntimeState:()=>{},renderManualBidsUpdateState:()=>{},esc:s=>s,toast:()=>{},schedulerJobLabels:{}};
   vm.createContext(context);await vm.runInContext(fn+'; loadRuntimeFeatures()',context);
   // Manual Prozorro is role-gated; a scheduler flag or legacy read opt-in
   // must not install the former per-button SANDBOX denial marker.
@@ -28,7 +28,7 @@ const fn=availability+automation+src.slice(src.indexOf('function environmentBann
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,{dataset:{roleDisabled:'0'},disabled:false});return nodes.get(id)};
   const context={$,currentMe:{permissions:{'appeals.update':true}},role:()=> 'admin',API:'/api',request:async()=>({sandbox_mode:true,google:true,
     sandbox_prozorro_read:true,sandbox_operational:true,sandbox_nazk_read:true,sandbox_amcu_read:true,
-    scheduler_jobs:[],bids_mode:'disabled'}),renderGoogleRuntimeState:()=>{},
+    scheduler_jobs:[],items:[],bids_mode:'disabled'}),$:()=>[],renderGoogleRuntimeState:()=>{},
     renderManualBidsUpdateState:()=>{},esc:s=>s,toast:()=>{},schedulerJobLabels:{}};
   vm.createContext(context);await vm.runInContext(fn+'; loadRuntimeFeatures()',context);
   for(const id of ['#resetBtn','#supplierRegistryRefresh','#frameworksRefresh','#requestsRefresh',
