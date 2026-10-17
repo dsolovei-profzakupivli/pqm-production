@@ -6,6 +6,15 @@ import unittest
 
 
 class HalloweenUiTests(unittest.TestCase):
+    def test_pumpkins_paint_existing_badges_without_changing_layout_or_values(self):
+        css=Path('halloween.css').read_text(encoding='utf-8')
+        self.assertIn('html[data-halloween="on"] .topbar #mainNav .action-count-badge',css)
+        self.assertIn('width:30px;height:30px',css)
+        self.assertIn('background:transparent!important;color:#fff!important',css)
+        self.assertIn('.action-count-badge[hidden]::before{content:none}',css)
+        source=Path('halloween.js').read_text(encoding='utf-8')
+        self.assertNotIn('action-count-badge',source)
+
     def test_hat_is_avatar_bound_and_uses_shared_switch(self):
         source=Path('halloween.js').read_text(encoding='utf-8')
         css=Path('halloween.css').read_text(encoding='utf-8')
