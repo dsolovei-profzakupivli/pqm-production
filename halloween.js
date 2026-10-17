@@ -33,10 +33,17 @@
       const button=nav.querySelector('button.nav-active');
       if(!enabled||!button){spider.hidden=true;return}
       const b=button.getBoundingClientRect(),n=nav.getBoundingClientRect();
+      const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
+      const width=button.clientWidth;
+      // Geometry, never tab names: 38px icon button → 22px web; wide → 44px.
+      button.style.setProperty('--halloween-web-width',Math.min(width-2,Math.max(20,Math.min(44,22+(width-38)*.32)))+'px');
+      const content=document.createRange();content.selectNodeContents(button);
+      const bounds=content.getBoundingClientRect();
+      const topGap=Math.max(2,(bounds.top-b.top)/zoom-1);
+      button.style.setProperty('--halloween-web-height',Math.min(14,topGap)+'px');
       const x=b.left+4;
       spider.hidden=!b.width||!b.height||x<n.left+2||x>n.right-8||b.top<0||b.bottom+22>innerHeight;
       if(spider.hidden)return;
-      const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
       spider.style.left=(x/zoom-6)+'px';spider.style.top=((b.top+2)/zoom)+'px';
       spider.style.height=((b.height+19)/zoom)+'px';
     };

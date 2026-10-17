@@ -6,6 +6,14 @@ import unittest
 
 
 class HalloweenUiTests(unittest.TestCase):
+    def test_web_uses_actual_button_geometry_and_content_clearance(self):
+        source=Path('halloween.js').read_text(encoding='utf-8')
+        self.assertIn('const width=button.clientWidth',source)
+        self.assertIn("button.style.setProperty('--halloween-web-width'",source)
+        self.assertIn('content.selectNodeContents(button)',source)
+        self.assertIn("button.style.setProperty('--halloween-web-height'",source)
+        self.assertIn("preserveAspectRatio='none'",Path('halloween.css').read_text(encoding='utf-8'))
+
     def test_navigation_decoration_is_active_only_and_uses_shared_toggle(self):
         css=Path('halloween.css').read_text(encoding='utf-8')
         self.assertIn('html[data-halloween="on"] #mainNav button.nav-active::before',css)

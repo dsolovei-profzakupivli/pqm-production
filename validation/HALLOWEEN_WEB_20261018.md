@@ -1,5 +1,12 @@
 # Halloween stage 2 — local Sandbox candidate (lowered spider revision)
 
+Adaptive web revision: actual button.clientWidth determines 20–44px width
+(38px icon button → about22px; wide text buttons →44px). Rendered content's top
+clearance caps web height, keeping icons/text/counts uncovered. No tab-name
+conditions. SVG uses preserveAspectRatio=none to fill the measured web area.
+Four additional wide/compact × light/dark comparisons passed; screenshots and
+adaptive-checks.json saved in the evidence folder. Spider and cat unchanged.
+
 Parent a619e1d preserves the approved cat refinements. Cat SVG SHA256 is pinned
 by regression test; its dimensions, position, animations and silhouette rules
 are unchanged in this stage. No Production, backend, database or API changes.
