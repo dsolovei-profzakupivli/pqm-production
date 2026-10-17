@@ -61,14 +61,22 @@ const app=read('app.js'),section=(a,b)=>app.slice(app.indexOf(a),app.indexOf(b,a
    assert.equal(await page.locator('#workQueueKpis').isVisible(),false);assert.equal(await page.locator('.work-queue-details').isVisible(),false);assert.equal(await page.locator('#workQueueView .work-queue-toolbar').isVisible(),false);
    let originalHeight=null;
    for(const count of [1,2,3,4,5,7]){
-    await page.evaluate(count=>{for(const id of ['queueQualificationCards','queueProtocolOfficerCards','queueCategoryCards','queueProtocolCategoryCards'])$('#'+id).innerHTML=Array.from({length:count},(_,i)=>`<button class="qualification-summary-officer"><span>${i%2?'Пальне':'Тетяна ФЕДЧЕНКО'}</span><strong>26</strong><small>категорія</small></button>`).join('');$('#queuePublicationControl').innerHTML='<button><span>Все ще очікує рішення</span><strong>26</strong></button>'},count);
+    await page.evaluate(count=>{for(const id of ['queueQualificationCards','queueProtocolOfficerCards','queueCategoryCards','queueProtocolCategoryCards']){const category=id.includes('Category');$('#'+id).innerHTML=Array.from({length:count},(_,i)=>`<button class="qualification-summary-officer ${category?'qualification-summary-category':''}"><span>${category?['Їжа','Інше','Газ/ЕЕ','Пальне'][i%4]:'Тетяна ФЕДЧЕНКО'}</span><strong>26</strong><small>категорія</small></button>`).join('')}$('#queuePublicationControl').innerHTML='<button><span>Все ще очікує рішення</span><strong>26</strong></button>'},count);
     await page.waitForTimeout(45);
     const cards=await page.evaluate(()=>$$('#workQueueView .qualification-summary-cards').map(group=>({x:group.scrollWidth<=group.clientWidth+1,cards:[...group.children].map(n=>{const span=n.querySelector('span');return{width:n.clientWidth,height:n.getBoundingClientRect().height,text:span.scrollWidth<=span.clientWidth+1}})})));
     assert(cards.every(g=>g.x&&g.cards.every(c=>c.text)),'Work Queue clipping '+JSON.stringify({width,zoom,count,cards}));
     if(originalHeight===null)originalHeight=cards[0].cards[0].height;assert(cards.every(g=>g.cards.every(c=>Math.abs(c.height-originalHeight)<1)),'KPI card height changed');
+    if(count===4&&zoom===1){
+      const layout=await page.locator('#queueProtocolCategoryCards').evaluate(group=>{const r=group.getBoundingClientRect();return{left:r.left,right:r.right,scroll:group.scrollWidth,client:group.clientWidth,cards:[...group.children].map(n=>{const c=n.getBoundingClientRect();return{x:c.x,y:c.y,width:c.width,right:c.right}})}});
+      assert.equal(new Set(layout.cards.map(c=>Math.round(c.y))).size,1,'Protocol categories wrap');
+      assert(Math.max(...layout.cards.map(c=>c.width))-Math.min(...layout.cards.map(c=>c.width))<1,'Category widths differ');
+      assert(layout.scroll<=layout.client+1);assert(layout.cards[0].x>=layout.left&&layout.cards.at(-1).right<=layout.right+1);
+    }
    }
    if(width===1440&&zoom===1)await page.screenshot({path:path.join(out,`work-queue-final-${dark?'dark':'light'}.png`)});
   }
+  await page.setViewportSize({width:390,height:900});await page.evaluate(()=>{document.body.style.zoom='1';show('workQueueView');$('#queueProtocolCategoryCards').innerHTML=['Їжа','Інше','Газ/ЕЕ','Пальне'].map(name=>`<button class="qualification-summary-officer qualification-summary-category"><span>${name}</span><strong>20000</strong><small>категорія</small></button>`).join('')});await page.waitForTimeout(50);
+  const narrowCategories=await page.locator('#queueProtocolCategoryCards').evaluate(n=>({fits:n.scrollWidth<=n.clientWidth+1,rows:new Set([...n.children].map(c=>Math.round(c.getBoundingClientRect().y))).size,labels:[...n.querySelectorAll('span')].every(s=>s.scrollWidth<=s.clientWidth+1)}));assert(narrowCategories.fits&&narrowCategories.labels&&narrowCategories.rows===2);
   await page.evaluate(()=>{document.body.style.zoom='1';show('administrationView');$('#adminSyncPanel').hidden=false});await page.setViewportSize({width:1920,height:1080});
   await page.evaluate(()=>loadRuntimeFeatures());
   assert.equal(await page.locator('#schedulerJobs>.scheduler-job').count(),4);assert.equal(await page.locator('#schedulerJobs .scheduler-editor').count(),3);

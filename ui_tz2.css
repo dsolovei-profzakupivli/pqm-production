@@ -30,4 +30,7 @@ body:has(#auditDialog[open])::after{content:'';position:fixed;inset:0;background
 .audit-value-comparison pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:55vh;overflow-y:auto}
 .request-protocol-cell{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:180px}
 .request-protocol-cell button,.request-protocol-cell a{width:max-content;padding:4px 8px}
+#workQueueView #queueProtocolCategoryCards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;overflow:visible}
+#workQueueView #queueProtocolCategoryCards>button{width:100%;min-width:0;max-width:none}
+@media(max-width:650px){#workQueueView #queueProtocolCategoryCards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:800px){.audit-value-comparison{grid-template-columns:1fr}.amcu-toolbar>div:first-child{flex-basis:200px}#supplierRegistryFrameworkFilter>.multi-panel{position:fixed;left:20px;right:20px;width:auto;max-height:60vh}}
