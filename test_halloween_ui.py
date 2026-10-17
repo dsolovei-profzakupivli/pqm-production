@@ -1,10 +1,27 @@
 """Frontend-only seasonal decoration contracts; no runtime or external API."""
 from pathlib import Path
+import hashlib
 import subprocess
 import unittest
 
 
 class HalloweenUiTests(unittest.TestCase):
+    def test_navigation_decoration_is_active_only_and_uses_shared_toggle(self):
+        css=Path('halloween.css').read_text(encoding='utf-8')
+        self.assertIn('html[data-halloween="on"] #mainNav button.nav-active::before',css)
+        self.assertIn('html[data-halloween="on"] #mainNav button.nav-active::after',css)
+        self.assertIn('height:min(100%,30px)',css)
+        self.assertIn('pointer-events:none',css)
+        self.assertIn('pqm-spider-sway',css)
+        self.assertIn('button.nav-active::after{animation:none}',css)
+        self.assertNotIn('overflow:visible!important',css)
+
+    def test_cat_svg_is_identical_to_approved_parent(self):
+        current=Path('halloween.js').read_text(encoding='utf-8')
+        svg=lambda s:s[s.index('<svg class="halloween-cat"'):s.index('</svg>')+6]
+        # SHA256 of the approved SVG in parent a619e1d; works in ZIP fixtures too.
+        self.assertEqual(hashlib.sha256(svg(current).encode()).hexdigest(),'637d43a94e1e24e42d1d23d933d3e18ccfe0d4abf89324af94549a9c561a9e57')
+
     def test_decorative_svg_and_no_backend_calls(self):
         source=Path('halloween.js').read_text(encoding='utf-8')
         self.assertIn('aria-hidden="true" focusable="false"',source)

@@ -25,7 +25,7 @@
   const form=document.querySelector('#accountSettingsForm');
   if(form){
     const label=document.createElement('label');label.className='halloween-preference';
-    label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span>Halloween · чорний кіт<small>Декоративне оформлення лише в цьому браузері</small></span>';
+    label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span>Halloween · кіт і павутинка<small>Декоративне оформлення лише в цьому браузері</small></span>';
     form.querySelector('footer').before(label);
     const input=label.querySelector('input');input.checked=enabled;
     input.addEventListener('change',()=>{enabled=input.checked;apply();try{localStorage.setItem(key,enabled?'1':'0')}catch{}});
