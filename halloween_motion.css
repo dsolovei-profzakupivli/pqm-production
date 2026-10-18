@@ -1,0 +1,15 @@
+/* Isolated decoration, no content sizing, colours or hit targets changed. */
+/* Reuse the original night clouds, softly cropped into the upper sky only. */
+html[data-halloween="on"][data-theme="dark"] #workQueueView:not([hidden])::after{content:"";position:absolute;inset:0 0 auto;height:134px;z-index:-1;pointer-events:none;background:url("assets/halloween-workqueue-dark.webp") center 40%/100% auto no-repeat;opacity:.55;filter:brightness(1.65);mix-blend-mode:screen;mask-image:linear-gradient(to bottom,transparent,#000 18%,#000 68%,transparent)}
+.halloween-flight-lane{position:absolute;left:50%;transform:translateX(-50%);width:var(--flight-viewport-width,100vw);top:0;height:86px;overflow:hidden;pointer-events:none;z-index:2;contain:paint}
+.halloween-flight-sprite{position:absolute;left:100%;top:3px;width:clamp(74px,7.5vw,112px);height:78px;animation:pqm-witch-cross var(--flight-duration,13s) linear both}
+.halloween-flight-sprite svg{display:block;width:100%;height:100%;overflow:hidden;animation:pqm-witch-sway 3.8s ease-in-out infinite;filter:drop-shadow(0 1px 1px #29203544)}
+html[data-theme="dark"] .halloween-flight-sprite svg{filter:brightness(1.12) drop-shadow(0 0 .55px #cbbce08c) drop-shadow(.4px -.5px .5px #bdc5df80)}
+.halloween-broom-trail{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+@keyframes pqm-witch-cross{0%{opacity:0;transform:translateX(0)}8%,84%{opacity:1}100%{opacity:0;transform:translateX(var(--flight-distance))}}
+@keyframes pqm-witch-sway{0%,100%{transform:translateY(1px) rotate(-1deg)}50%{transform:translateY(-3px) rotate(1deg)}}
+.halloween-cat-eyes{aspect-ratio:720/389;filter:none}
+.halloween-cat-eyes svg{display:block;width:100%;height:100%;overflow:hidden}
+.pqm-cat-lids{opacity:0;transform-box:fill-box;transform-origin:center}
+html[data-halloween="off"] .halloween-flight-lane{display:none}
+@media(prefers-reduced-motion:reduce){.halloween-flight-lane,.halloween-cat-eyes{display:none}.halloween-cat-eyes *{animation:none!important}}

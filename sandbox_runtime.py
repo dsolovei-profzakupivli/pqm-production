@@ -713,6 +713,13 @@ def decorate_html(raw):
         theme = (ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
         text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
         text = text.replace('</head>', '<script src="/sandbox_contrast.js?v=1" defer></script></head>', 1)
+        # Presentation only: Halloween motion is included exclusively in Sandbox HTML.
+        halloween_anchor = '<script src="halloween.js"></script>'
+        if text.count(halloween_anchor) != 1:
+            raise RuntimeError('STOP: SANDBOX Halloween script markup mismatch')
+        text = text.replace(halloween_anchor, halloween_anchor +
+                            '\n  <link rel="stylesheet" href="halloween_motion.css">'
+                            '\n  <script src="halloween_motion.js"></script>', 1)
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
     mode = ('ЗОВНІШНІ ДЖЕРЕЛА — читання · локальні записи лише в SANDBOX · '
             'Google-записи лише в підтверджену SANDBOX Sheet · PROD призначення заблоковані')
