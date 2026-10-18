@@ -114,6 +114,13 @@ html[data-theme="dark"] tbody tr.application-review-completed:is(:hover,.active,
 html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable th.sticky{background-color:#152b46;color:var(--ink)}
 html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable td.sticky{background-color:#102238;color:var(--ink)}
 html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable tbody tr:is(:hover,.active,:has(.row-check:checked)) td.sticky{background-color:#203e62;color:var(--ink)}
+/* ID-scoped light active-nav fills outrank the generic dark .nav-active palette. */
+html[data-theme="dark"] .topbar #mainNav button.nav-active,
+html[data-theme="dark"] .topbar .service-nav button.nav-active{background-color:#203e62;color:var(--ink);border-color:#86bdff}
+html[data-theme="dark"] .topbar #mainNav button.nav-active:hover:not(:disabled),
+html[data-theme="dark"] .topbar .service-nav button.nav-active:hover:not(:disabled){background-color:#28517b;color:#fff;border-color:#86bdff}
+/* The history view sits on the Halloween landscape; give only its pager a dark surface. */
+html[data-theme="dark"] #historyView>.pagination{background-color:#132840;color:var(--ink)}
 html[data-theme="dark"] :is(.remark-option:hover,.chat-message.own){background-color:#203e62;color:var(--ink)}
 html[data-theme="dark"] button.danger{background-color:#492936;color:#ffb1b8;border-color:#795061}
 html[data-theme="dark"] button.danger:hover{background-color:#603047;color:#fff}

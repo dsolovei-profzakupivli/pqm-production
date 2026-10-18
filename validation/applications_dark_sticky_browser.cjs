@@ -36,6 +36,10 @@ function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)
       target.hidden=false;
       const table=target.querySelector('#applicationsTable');
       if(!table)throw new Error('Actual Sandbox HTML is missing #applicationsTable');
+      const nav=document.querySelector('#mainNav');
+      if(nav)nav.innerHTML='<button id="fixtureFolderText" class="main-nav-icon-text nav-active"><svg aria-label="Папка" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v11H3z"/></svg><span>База постачальників</span></button><button id="fixtureFolderIcon" class="main-nav-icon nav-active" aria-label="База постачальників"><svg viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v11H3z"/></svg></button><button id="fixtureOtherNav" class="main-nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg></button>';
+      let history=document.querySelector('#historyView');
+      if(history){const pager=history.querySelector('.pagination');if(pager)pager.innerHTML='<span>Сторінка 1 із 7 · 322 записів</span><button>←</button><button>→</button>';}
       table.innerHTML='<thead><tr><th class="sticky" style="width:100px;min-width:100px;max-width:100px;left:0px">Вибір</th><th class="sticky" style="width:160px;min-width:160px;max-width:160px;left:100px">Дата</th><th class="sticky" style="width:220px;min-width:220px;max-width:220px;left:260px">Назва учасника</th><th>Решта таблиці</th></tr></thead><tbody><tr data-case="ordinary"><td class="sticky" style="width:100px;left:0px">звичайний</td><td class="sticky" style="width:160px;left:100px">звичайний</td><td class="sticky" style="width:220px;left:260px">звичайний</td><td>Звичайна клітинка</td></tr><tr data-case="active" class="active"><td class="sticky" style="width:100px;left:0px">активний</td><td class="sticky" style="width:160px;left:100px">активний</td><td class="sticky" style="width:220px;left:260px">активний</td><td>Активний рядок</td></tr><tr data-case="checked" class="application-review-completed"><td class="sticky" style="width:100px;left:0px"><input class="row-check" type="checkbox" checked></td><td class="sticky" style="width:160px;left:100px">вибраний</td><td class="sticky" style="width:220px;left:260px">вибраний</td><td>Розглянуто</td></tr><tr data-case="locked" class="application-final-locked"><td class="sticky locked" style="width:100px;left:0px">заблоковано</td><td class="sticky locked" style="width:160px;left:100px">заблоковано</td><td class="sticky locked" style="width:220px;left:260px">заблоковано</td><td>Фінальне рішення</td></tr></tbody>';
     };
     await page.evaluate(setup);
@@ -45,7 +49,14 @@ function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)
     });
     assert.notEqual(before.header.bg,expected.head,'baseline must reproduce the light sticky header');
     assert.notEqual(before.ordinary.bg,expected.normal,'baseline must reproduce the light sticky cell');
+    const beforeNav=await page.locator('#fixtureFolderIcon').evaluate(e=>({bg:getComputedStyle(e).backgroundColor,border:getComputedStyle(e).borderColor}));
+    const beforePager=await page.locator('#historyView>.pagination').evaluate(e=>getComputedStyle(e).backgroundColor);
+    assert.equal(beforeNav.bg,'rgb(234, 244, 255)','baseline must reproduce the pale active nav fill');
+    assert.notEqual(beforePager,'rgb(19, 40, 64)','baseline must reproduce the transparent history pager');
     await page.screenshot({path:path.join(out,'applications-dark-table-before.png'),fullPage:true});
+    await page.locator('#mainNav').screenshot({path:path.join(out,'dark-navbar-before.png')});
+    await page.evaluate(()=>{document.querySelectorAll('main').forEach(e=>e.hidden=e.id!=='historyView');const h=document.querySelector('#historyView');if(!h)throw Error('Missing actual #historyView');h.hidden=false;const table=h.querySelector('.history-table');if(table)table.innerHTML='<table><thead><tr><th>Дата</th><th>Історія</th></tr></thead><tbody><tr><td>18.10.2026</td><td>Ізольований запис історії</td></tr></tbody></table>';});
+    await page.screenshot({path:path.join(out,'dark-history-pagination-before.png'),fullPage:true});
     palette=fs.readFileSync(path.join(root,'theme.css'),'utf8');
     await page.reload();
     await page.evaluate(setup);
@@ -64,6 +75,44 @@ function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)
       return state;
     }
     let states=await verify();
+    const darkNav=await page.locator('#fixtureFolderIcon').evaluate(e=>({bg:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color,border:getComputedStyle(e).borderColor,svg:getComputedStyle(e.querySelector('svg')).color}));
+    const darkTextNav=await page.locator('#fixtureFolderText').evaluate(e=>getComputedStyle(e).backgroundColor);
+    const darkPager=await page.locator('#historyView>.pagination').evaluate(e=>({bg:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color,rect:(()=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})()}));
+    assert.equal(darkNav.bg,'rgb(32, 62, 98)','active icon-only nav item must be dark');
+    assert.equal(darkNav.border,'rgb(134, 189, 255)','active nav item must retain a blue active outline');
+    assert.equal(darkTextNav,'rgb(32, 62, 98)','active icon+text nav item must be dark');
+    assert.equal(darkPager.bg,'rgb(19, 40, 64)','history pager needs a dark solid surface');
+    assert.equal(darkPager.color,'rgb(237, 243, 252)','history pager text must be legible');
+    const svgColorsBefore=await page.locator('#fixtureFolderIcon svg').evaluate(e=>({fill:getComputedStyle(e).fill,stroke:getComputedStyle(e).stroke,color:getComputedStyle(e).color}));
+    await page.evaluate(()=>document.documentElement.dataset.theme='light');
+    const lightNav=await page.locator('#fixtureFolderIcon').evaluate(e=>getComputedStyle(e).backgroundColor);
+    const lightPager=await page.locator('#historyView>.pagination').evaluate(e=>getComputedStyle(e).backgroundColor);
+    assert.equal(lightNav,'rgb(234, 244, 255)','light nav active styling must remain unchanged');
+    assert.notEqual(lightPager,'rgb(19, 40, 64)','light history pager must remain unchanged');
+    await page.evaluate(()=>document.documentElement.dataset.theme='dark');
+    const switchedNav=await page.locator('#fixtureFolderIcon').evaluate(e=>getComputedStyle(e).backgroundColor);
+    const switchedPager=await page.locator('#historyView>.pagination').evaluate(e=>getComputedStyle(e).backgroundColor);
+    assert.equal(switchedNav,darkNav.bg,'theme switch back to dark must apply without reload');
+    assert.equal(switchedPager,darkPager.bg,'theme switch back to dark must apply without reload');
+    const svgColorsAfter=await page.locator('#fixtureFolderIcon svg').evaluate(e=>({fill:getComputedStyle(e).fill,stroke:getComputedStyle(e).stroke,color:getComputedStyle(e).color}));
+    assert.deepEqual(svgColorsAfter,svgColorsBefore,'SVG icon paint must not be modified by the dark active state');
+    const navGeometryBefore=await page.locator('#mainNav button').evaluateAll(es=>es.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]}));
+    await page.evaluate(()=>document.documentElement.dataset.theme='light');await page.evaluate(()=>document.documentElement.dataset.theme='dark');
+    const navGeometryAfter=await page.locator('#mainNav button').evaluateAll(es=>es.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]}));
+    assert.deepEqual(navGeometryAfter,navGeometryBefore,'theme switching must not move/resize navbar buttons');
+    await page.locator('#fixtureFolderIcon').hover({force:true});
+    const navHover=await page.locator('#fixtureFolderIcon').evaluate(e=>getComputedStyle(e).backgroundColor);
+    assert.equal(navHover,'rgb(40, 81, 123)','active nav hover must keep a dark, legible fill');
+    await page.locator('#fixtureFolderIcon').focus();
+    const navFocus=await page.locator('#fixtureFolderIcon').evaluate(e=>({outline:getComputedStyle(e).outlineColor,bg:getComputedStyle(e).backgroundColor}));
+    assert.equal(navFocus.outline,'rgb(255, 220, 138)','active nav focus ring must remain visible');
+    await page.locator('#mainNav').screenshot({path:path.join(out,'dark-navbar-active.png')});
+    await page.evaluate(()=>{document.querySelectorAll('main').forEach(e=>e.hidden=e.id!=='historyView');const h=document.querySelector('#historyView');if(!h)throw Error('Missing actual #historyView');h.hidden=false;const table=h.querySelector('.history-table');if(table)table.innerHTML='<table><thead><tr><th>Дата</th><th>Історія</th></tr></thead><tbody><tr><td>18.10.2026</td><td>Ізольований запис історії</td></tr></tbody></table>';});
+    const visiblePager=await page.locator('#historyView>.pagination').evaluate(e=>{const r=e.getBoundingClientRect();return {bg:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color,width:r.width,height:r.height}});
+    assert(visiblePager.width>0&&visiblePager.height>0,'history pager must be rendered in the visible history view');
+    assert.equal(visiblePager.bg,'rgb(19, 40, 64)');
+    await page.screenshot({path:path.join(out,'dark-history-pagination.png'),fullPage:true});
+    await page.evaluate(()=>{document.querySelectorAll('main').forEach(e=>e.hidden=e.id!=='applicationsView');document.querySelector('#applicationsView').hidden=false;});
     await page.screenshot({path:path.join(out,'applications-dark-table-after.png'),fullPage:true});
     await page.locator('#applicationsTable tbody tr[data-case="ordinary"]').hover({force:true});
     const hover=await page.locator('#applicationsTable tbody tr[data-case="ordinary"] td.sticky').first().evaluate(e=>getComputedStyle(e).backgroundColor);
@@ -76,7 +125,10 @@ function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)
     assert.deepEqual(updatedChecked,{bg:expected.active,color:expected.ink},'dynamically inserted checked row must remain legible');
     const minContrast=Math.min(contrast(expected.ink,expected.head),contrast(expected.ink,expected.normal),contrast(expected.ink,expected.active));
     assert(minContrast>=7,`table text contrast must be at least 7:1; got ${minContrast.toFixed(2)}`);
-    console.log(JSON.stringify({result:'PASS',scenarios:9,before,states,hover,updated,updatedChecked,minContrast:Number(minContrast.toFixed(2)),screenshots:{before:path.join(out,'applications-dark-table-before.png'),after:path.join(out,'applications-dark-table-after.png')},servedHtml:path.basename(served)}));
+    const responsive=[];
+    for(const width of [1920,1366,900,760])for(const zoom of [.75,.8,1,1.25]){await page.setViewportSize({width,height:1000});await page.evaluate(zoom=>{document.body.style.zoom=String(zoom);document.documentElement.dataset.theme='dark'},zoom);const dims=await page.locator('#mainNav button').evaluateAll(es=>es.map(e=>{const r=e.getBoundingClientRect();return [Math.round(r.width),Math.round(r.height)]}));assert(dims.every(([w,h])=>w>0&&h>0),'navbar buttons must remain visible at responsive widths and zoom levels');const activeBg=await page.locator('#fixtureFolderIcon').evaluate(e=>getComputedStyle(e).backgroundColor);assert.equal(activeBg,'rgb(32, 62, 98)');responsive.push({width,zoom,buttons:dims.length});}
+    await page.evaluate(()=>document.body.style.zoom='1');
+    console.log(JSON.stringify({result:'PASS',scenarios:32,before,beforeNav,beforePager,states,darkNav,darkTextNav,darkPager,visiblePager,lightNav,lightPager,switchedNav,switchedPager,navGeometryUnchanged:true,svgColorsUnchanged:true,navFocus,navHover,hover,updated,updatedChecked,minContrast:Number(minContrast.toFixed(2)),responsive,screenshots:{tableBefore:path.join(out,'applications-dark-table-before.png'),tableAfter:path.join(out,'applications-dark-table-after.png'),navBefore:path.join(out,'dark-navbar-before.png'),navAfter:path.join(out,'dark-navbar-active.png'),pagerBefore:path.join(out,'dark-history-pagination-before.png'),pagerAfter:path.join(out,'dark-history-pagination.png')},servedHtml:path.basename(served)}));
     await page.close();
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1});
