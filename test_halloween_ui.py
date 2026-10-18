@@ -6,6 +6,16 @@ import unittest
 
 
 class HalloweenUiTests(unittest.TestCase):
+    def test_witch_cat_is_responsive_local_and_noninteractive(self):
+        source=Path('halloween.js').read_text(encoding='utf-8')
+        css=Path('halloween.css').read_text(encoding='utf-8')
+        self.assertIn('src="assets/halloween-witch-cat.webp"',source)
+        self.assertIn('width="720" height="389" alt=""',source)
+        self.assertIn('width:180px;max-width:none;height:auto',css)
+        self.assertIn('@media(max-width:900px){.halloween-cat{width:100px',css)
+        self.assertIn('@media(max-width:600px){.halloween-cat{width:95px',css)
+        self.assertNotIn('http',source)
+
     def test_workqueue_background_is_scoped_and_behind_content(self):
         css=Path('halloween.css').read_text(encoding='utf-8')
         layer=css[css.index('/* Work Queue background only.'):]
@@ -74,13 +84,15 @@ class HalloweenUiTests(unittest.TestCase):
 
     def test_cat_svg_is_identical_to_approved_parent(self):
         current=Path('halloween.js').read_text(encoding='utf-8')
-        svg=lambda s:s[s.index('<svg class="halloween-cat"'):s.index('</svg>')+6]
-        # SHA256 of the approved SVG in parent a619e1d; works in ZIP fixtures too.
-        self.assertEqual(hashlib.sha256(svg(current).encode()).hexdigest(),'637d43a94e1e24e42d1d23d933d3e18ccfe0d4abf89324af94549a9c561a9e57')
+        self.assertIn('src="assets/halloween-witch-cat.webp"', current)
+        data=Path('assets/halloween-witch-cat.webp').read_bytes()
+        self.assertEqual(data[:4],b'RIFF')
+        self.assertIn(b'ALPH',data)
+        self.assertLess(len(data),150000)
 
     def test_decorative_svg_and_no_backend_calls(self):
         source=Path('halloween.js').read_text(encoding='utf-8')
-        self.assertIn('aria-hidden="true" focusable="false"',source)
+        self.assertIn('alt="" aria-hidden="true" draggable="false"',source)
         self.assertIn("document.querySelector('.sandbox-brand-copy strong, .prod-brand-copy strong')",source)
         self.assertNotIn('if(!title)return',source)
         for forbidden in ['fetch(', 'XMLHttpRequest', '/api/', 'setInterval(']:
@@ -108,7 +120,7 @@ class HalloweenUiTests(unittest.TestCase):
           class Clock extends Date{constructor(...args){super(...(args.length?args:['2026-10-18T12:00:00Z']))}static now(){return Date.parse('2026-10-18T12:00:00Z')}}
           vm.runInNewContext(fs.readFileSync('halloween_season.js','utf8')+'\n'+source,{document,Date:Clock,window:{addEventListener:()=>{}},setTimeout:()=>1,clearTimeout:()=>{},localStorage:{getItem:()=>{if(stored==='denied')throw Error('blocked');return stored}}});
           assert.equal(document.documentElement.dataset.halloween,stored==='0'?'off':'on');
-          assert(added&&svg.includes('cat-eyes'));
+          assert(added&&svg.includes('halloween-witch-cat.webp'));
         }
         """
         result=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=15)

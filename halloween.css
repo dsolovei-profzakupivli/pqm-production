@@ -1,16 +1,12 @@
 /* Decorative overlay: never participates in header sizing or hit testing. */
 .prod-brand-copy .halloween-title,.sandbox-brand-copy .halloween-title{position:relative;isolation:isolate}
-.halloween-cat{position:absolute;pointer-events:none;user-select:none;width:140px;height:40px;left:-14px;bottom:0;z-index:1;overflow:visible;filter:drop-shadow(0 1px 1px #ffffff55)}
-.halloween-cat .cat-tail{transform-origin:115px 25px;animation:pqm-cat-tail 12s ease-in-out infinite}
-html[data-pqm-environment="sandbox"] .halloween-cat>g:first-child,html[data-theme="dark"] .halloween-cat>g:first-child{stroke:#8996a8;stroke-width:1.1}
-.halloween-cat .cat-eyes{transform-origin:47px 23px;animation:pqm-cat-blink 11s linear infinite}
-@keyframes pqm-cat-tail{0%,100%{transform:rotate(-3deg)}50%{transform:rotate(5deg)}}
-@keyframes pqm-cat-blink{0%,43%,45%,100%{transform:scaleY(1)}44%{transform:scaleY(.08)}}
+.halloween-cat{position:absolute;pointer-events:none;user-select:none;width:180px;max-width:none;height:auto;left:-22px;top:-14px;z-index:1;filter:drop-shadow(0 0 1px #ffffff88)}
+@media(max-width:900px){.halloween-cat{width:100px;left:-10px;top:-12px}}
+@media(max-width:600px){.halloween-cat{width:95px;left:-10px;top:-12px}}
 html[data-halloween="off"] .halloween-cat{display:none}
 .halloween-preference{display:flex;align-items:center;gap:9px;padding:12px 24px;color:var(--ink)}
 .halloween-preference input{width:17px;height:17px;margin:0;accent-color:#e5a62b}
 .halloween-preference small{display:block;color:var(--muted)}
-@media(prefers-reduced-motion:reduce){.halloween-cat .cat-tail,.halloween-cat .cat-eyes{animation:none}}
 
 /* Web stays on the button; spider lives outside the nav clipping viewport. */
 #mainNav button.nav-active{position:relative}
