@@ -8,6 +8,9 @@
     if(unavailable)theme='light';
     document.documentElement.dataset.theme=theme;
     if(document.body)document.body.dataset.theme=theme;
+    for(const logo of document.querySelectorAll('img.prod-brand-initials')){
+      logo.setAttribute('src',theme==='dark'?'/assets/pqm-brand-mark-prod-dark.svg':'/assets/pqm-brand-mark-prod.svg');
+    }
     const status=document.getElementById('accountThemeStatus');
     if(status){status.hidden=!unavailable;status.textContent=unavailable?'Не вдалося завантажити темну тему. Залишено світле оформлення.':''}
     return theme;
