@@ -7,6 +7,7 @@ import unittest
 
 ROOT=Path(__file__).resolve().parent
 CONTRACT=json.loads((ROOT/'validation/production_ui_baseline_contract.json').read_text())
+ACCOUNT_BASELINE=json.loads((ROOT/'validation/personal_theme_account_baseline.json').read_text())
 
 
 def nodes(source):
@@ -17,6 +18,16 @@ def nodes(source):
         elif isinstance(node,ast.ClassDef):
             for child in node.body:
                 if isinstance(child,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                    if node.name=='Handler' and child.name=='_do_PATCH':
+                        # The user approved only /api/account. Reconstruct its
+                        # original branch before checking the old whole-handler
+                        # digest; every other write branch remains protected.
+                        original=ast.parse(ACCOUNT_BASELINE['original_account_patch']).body[0]
+                        matches=[i for i,item in enumerate(child.body)
+                                 if isinstance(item,ast.If) and
+                                 ast.dump(item.test)==ast.dump(original.test)]
+                        if len(matches)!=1:raise AssertionError('Expected one account PATCH branch')
+                        child.body[matches[0]]=original
                     found[node.name+'.'+child.name]=ast.dump(child,include_attributes=False)
     return found
 
@@ -26,6 +37,16 @@ def digest(value):
 
 
 class ProductionUiReleaseIntegrityTests(unittest.TestCase):
+    def test_account_exception_does_not_hide_other_patch_changes(self):
+        text=(ROOT/'server.py').read_text(encoding='utf-8')
+        marker='    def _do_PATCH(self):\n'
+        self.assertEqual(text.count(marker),1)
+        altered=text.replace(marker,marker+'        unexpected_write_handler_change = True\n',1)
+        source=nodes(altered)
+        self.assertNotEqual(digest({k:v for k,v in source.items()
+                                   if k not in CONTRACT['server_excluded_functions']}),
+                            CONTRACT['server_protected_ast'])
+
     def test_all_protected_server_functions_and_write_handlers_unchanged(self):
         source=nodes((ROOT/'server.py').read_text(encoding='utf-8'))
         self.assertEqual(digest({k:v for k,v in source.items()
