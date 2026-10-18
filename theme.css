@@ -1,0 +1,129 @@
+/* Personal colour palette only. No environment identity, layout or artwork. */
+@media screen {
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --ink:#edf3fc;--muted:#b2c3db;--line:#38516e;--border:#38516e;
+  --soft:#152b46;--surface:#132840;
+  --blue:#86bdff;--blue2:#203e62;--green:#8be0b6;--green2:#173e38;
+  --red:#ffb1b8;--red2:#492936;--amber:#ffdc8a;--amber2:#443b26;
+  --shadow:0 8px 30px rgb(0 0 0 / 22%);background:#0b172a;
+}
+html[data-theme="dark"] body{background:#0b172a;color:var(--ink)}
+html[data-theme="dark"] :is(.topbar,dialog,.card,.kpi-card,.officer-card,.table-card,.supplier-table-card,.reference-table-wrap,.reference-tabs,.reference-toolbar,.supplier-toolbar,.toolbar,.filters,.table-wrap,.table-scroll-top,.module-kpis>article,.stats>article,.heading-metrics,.work-queue-panel,.work-queue-details,.work-queue-table-card,.qualification-summary,.work-queue-kpis>button,.operational-type-kpi,.request-authority-card,.request-quick-filters>button,.supplier-profile-stats>div,.supplier-profile-stats>button){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(table,thead,tbody,th,td){border-color:var(--line)}
+html[data-theme="dark"] :is(th,.table-scroll-top){background-color:#152b46;color:var(--ink)}
+html[data-theme="dark"] :is(td,tbody,table){background-color:#102238;color:var(--ink)}
+html[data-theme="dark"] :is(tr:hover,tr.active,tr.selected) td{background-color:#203e62}
+html[data-theme="dark"] :is(input,select,textarea,button,.button-link){background-color:#193451;color:var(--ink);border-color:#4a6788;color-scheme:dark}
+html[data-theme="dark"] :is(input,textarea)::placeholder{color:#b2c3db}
+html[data-theme="dark"] :is(input[type="checkbox"],input[type="radio"]){accent-color:#86bdff}
+html[data-theme="dark"] button:hover:not(:disabled){background-color:#28517b}
+html[data-theme="dark"] :is(.primary,.btn-primary,button.active,button[aria-selected="true"]){background-color:#215487;color:#fff;border-color:#86bdff}
+html[data-theme="dark"] :is(button,input,select,textarea):disabled{color:#a7b6c9}
+html[data-theme="dark"] :focus-visible{outline-color:#ffdc8a}
+html[data-theme="dark"] a{color:#86bdff}
+html[data-theme="dark"] :is(.muted,small,.eyebrow,.kpi-card span,.officer-card span,.module-kpis span,.account-settings-grid label,.compact-date,.module-sync){color:var(--muted)}
+html[data-theme="dark"] :is(.multi-panel,.advanced-filter-panel,.advanced-filters-panel,.edr-monitoring-filter-grid,.toolbar-settings-panel,.profile-menu,.column-settings,.navigation-editor,.navigation-preview,.navigation-icon-library,.navigation-icon-preview,.audit-filters,.audit-value-comparison section,.audit-value-comparison pre,.account-settings-dialog form,.account-settings-dialog header,.account-settings-dialog footer){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(.multi-filter,.advanced-filters,.supplier-advanced-filters,.toolbar-settings)>summary{background-color:#193451;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(dialog>form,dialog form>header,dialog form>footer,.request-details-body,.supplier-profile-body,.operational-workspace,.operational-sticky-context,.operational-summary,.operational-context-card,.request-details-body section,.supplier-profile-section,.supplier-profile-grid,.supplier-profile-overview,.supplier-profile-identity,.supplier-nazk-context,.supplier-application-history details,.supplier-application-history summary,.supplier-nazk-completed-history,.supplier-nazk-completed-history>summary,.submission-nazk-registry,.operational-document-metadata,.operational-amcu-generated,.operational-workspace>section,.operational-workspace>details,.operational-facts>div,.operational-channels>div,.operational-registry-list article,.operational-inline-form,.request-context-grid>div,.request-recommendation,.request-result.neutral){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(.operational-compact-facts dt,.operational-facts dt,.supplier-profile-grid dt,.operational-empty,.operational-work-instruction p,.operational-summary-actions>strong,.supplier-profile-stats span,.operational-context-card h3,.operational-context-card h4){color:var(--muted)}
+html[data-theme="dark"] :is(.status-chip,.registry-profile-block,.queue-type,.decision,.status-badge,.nav-active){background-color:#203e62;color:#edf3fc;border-color:var(--line)}
+html[data-theme="dark"] :is(.operational-ready,.registry-profile-block.safe,.supplier-nazk-current.safe,.supplier-registry-state.registered,.supplier-status-count:not(.inactive),.check-result-card.admit,.request-result.satisfied,.qualification-summary-officer,.officer-card){background-color:#173e38;color:#8be0b6;border-color:#386c60}
+html[data-theme="dark"] :is(.registry-flag.nazk,.check-result-card.wait,.request-warning,.request-readonly,.registry-profile-block.warning,.supplier-registry-state.candidate,.supplier-nazk-current.warning,.submission-nazk-supplier-context,.request-result.pending){background-color:#443b26;color:#ffdc8a;border-color:#74653f}
+html[data-theme="dark"] :is(.registry-flag.amcu,.check-result-card.reject,.registry-profile-block.danger,.supplier-status-count.inactive,.supplier-nazk-current.danger,.supplier-request-stat.threshold-reached,.request-result.declined){background-color:#492936;color:#ffb1b8;border-color:#795061}
+html[data-theme="dark"] :is(.officer-card.active,.request-authority-card.active,.qualification-summary-officer.active){background-color:#215487;color:#fff;border-color:#86bdff}
+html[data-theme="dark"] :is(.registry-risk-amcu,.supplier-amcu) td{background-color:#392635}
+html[data-theme="dark"] :is(.registry-risk-nazk,.supplier-nazk) td{background-color:#343327}
+html[data-theme="dark"] td.auto-filled{background-color:#20334c;color:var(--ink)}
+html[data-theme="dark"] .supplier-nazk-current.inactive{background-color:#203e62;color:var(--muted)}
+html[data-theme="dark"] :is(.operational-registry-list>h4,.deadline-ready,.queue-overdue){color:#ffdc8a}
+html[data-theme="dark"] :is(.deadline-wait,.error,.danger-text){color:#ffb1b8}
+html[data-theme="dark"] .request-heading-actions .request-authority-cards{background-color:transparent}
+html[data-theme="dark"] :is(.chat-layout,.chat-sidebar,.chat-conversation,.chat-conversation>header,.chat-composer,.chat-thread,.chat-message,.chat-messages,.notification-list,.notification-item,.notification-popover){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(.chat-message.mine,.chat-thread.active){background-color:#203e62;color:var(--ink)}
+html[data-theme="dark"] .toast{background-color:#193451;color:var(--ink);border-color:#4a6788}
+html[data-theme="dark"] .toast-error{background-color:#492936;color:#ffb1b8}
+html[data-theme="dark"] .toast-warning{background-color:#443b26;color:#ffdc8a}
+html[data-theme="dark"] .toast-success{background-color:#173e38;color:#8be0b6}
+html[data-theme="dark"] :is(.table-card>footer,.supplier-table-card>footer,.reference-table-wrap>footer,.operational-sticky-context){background-color:#132840;color:var(--muted)}
+/* Explicitly light file/type labels retain paired dark ink; documents unmodified. */
+html[data-theme="dark"] .paperclip>span{background-color:#e8eff7;color:#172b43}
+html[data-theme="dark"] .topbar #mainNav .action-count-badge{background-color:#b42318;color:#fff}
+html[data-theme="dark"] :is(.service-nav-button,.navigation-preview button){background-color:#193451;color:var(--ink);border-color:#4a6788}
+html[data-theme="dark"] :is(.prod-brand-copy strong,.prod-brand-copy small){color:#fff}
+html[data-theme="dark"] #historyView .history-total{background-color:#132840;border-color:var(--line)}
+/* The existing candidate tile uses important light colours. Pair both here. */
+html[data-theme="dark"] .candidate-kpi{background-color:#20334c!important;border-color:#4a6788!important}
+html[data-theme="dark"] :is(.qualification-summary-heading>strong,.history-total strong){color:#86bdff}
+html[data-theme="dark"] :is(.protocol-period label,.work-queue-kpis span,.chat-empty,.empty-module p,.supplier-filter-field>label){color:var(--muted)}
+html[data-theme="dark"] #suppliersView .supplier-filter-field>label{color:var(--muted)}
+html[data-theme="dark"] #frameworkAnalyticsView label{color:var(--muted)}
+html[data-theme="dark"] .work-queue-kpis button.active span{color:#edf3fc}
+/* Existing ID-scoped and floating-window surfaces must also be recoloured. */
+html[data-theme="dark"] dialog>form>header,
+html[data-theme="dark"] dialog>form>footer,
+html[data-theme="dark"] #protocolDialog :is(.protocol-controls,.protocol-summary),
+html[data-theme="dark"] :is(.operational-task-head,.operational-inline-form,.operational-summary,.operational-context-card){background-color:#132840!important;border-color:var(--line)!important}
+html[data-theme="dark"] dialog label{color:var(--muted)}
+html[data-theme="dark"] .operational-task-head>div>span{color:#86bdff}
+/* Empty and dynamically inserted surfaces, including detached detail windows. */
+html[data-theme="dark"] :is(.reference-panel,.framework-detail-summary>div,.check-summary,.check-list,.signature-card,.remarks-mode,.protocol-issue){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] #supplierProfileBody>:is(.supplier-profile-section,.supplier-profile-overview),
+html[data-theme="dark"] #operationalTaskDialog .request-details-body,
+html[data-theme="dark"] #operationalTaskDialog .operational-amcu-overview>section,
+html[data-theme="dark"] #docsDialog .history-document-group>h3{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] .request-details-dialog[data-detail-window] :is(.request-details-body,.supplier-profile-body,.supplier-profile-section,.supplier-profile-grid,.supplier-profile-table),
+html[data-theme="dark"] .request-details-dialog[data-detail-window] .request-details-body>section{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(.request-long-text,.check-row.neutral span){color:var(--muted)}
+html[data-theme="dark"] .scheduler-job,
+html[data-theme="dark"] .admin-data-section .bids-status-grid article{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(.scheduler-job header span,.runtime-feature-state.enabled){color:#8be0b6}
+html[data-theme="dark"] :is(.scheduler-job.disabled header span,.runtime-feature-state.disabled){color:var(--muted)}
+/* Existing light row states include important and ID-scoped declarations. */
+html[data-theme="dark"] td.auto-filled{background-color:#20334c!important;color:var(--ink)}
+html[data-theme="dark"] tbody tr:is(:hover,.active) td.auto-filled{background-color:#28517b!important}
+html[data-theme="dark"] .supplier-table tr.supplier-candidate td,
+html[data-theme="dark"] #historyView .history-table tr.history-inactive-admitted>td{background-color:#20334c;color:var(--ink)}
+html[data-theme="dark"] .supplier-table tr.supplier-candidate strong{color:var(--ink)}
+html[data-theme="dark"] .requests-table .request-row:hover td,
+html[data-theme="dark"] .frameworks-table tbody tr[data-framework-id]:hover td,
+html[data-theme="dark"] #historyView .history-table tr.history-inactive-admitted:hover>td{background-color:#203e62}
+html[data-theme="dark"] .frameworks-table th[data-framework-sort]:hover{background-color:#203e62}
+html[data-theme="dark"] :is(.check-notice,.authority-panel),
+html[data-theme="dark"] .business-table .needs-review td{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
+html[data-theme="dark"] :is(.filter-active,.advanced-filters.filter-active>summary,.multi-filter.filter-active>summary,.supplier-advanced-filters.filter-active>summary){background-color:#203e62!important;color:var(--ink);border-color:#86bdff!important;box-shadow:inset 0 0 0 1px #4a6788}
+html[data-theme="dark"] .manager-fallback,
+html[data-theme="dark"] .requests-table .request-row.request-blocking-active>td{background-color:#443b26!important;color:#ffdc8a}
+/* Read-only panels and document/task content created after the initial HTML. */
+html[data-theme="dark"] :is(.check-result-card,.check-section,.doc-analysis-tags label,.contract-experience-links a,.violation-review-accordion,.supplier-contact-card,.supplier-edr-metadata>div,.violation-workbench,.violation-deadlines>div,.violation-admin-deadline,.violation-p2-chronology,.violation-reference-row,.violation-guarantee-row,.violation-contract-editor,.bulk-progressive,.chat-file,.chat-application-card,.violation-scenario-summary,.operational-registry-list:has(table),.operational-channel-card,.operational-response,.account-notification-settings){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] .admin-metadata-item.is-inactive{background-color:#20334c;color:var(--muted)}
+html[data-theme="dark"] :is(.supplier-profile-open,.supplier-card-action,.supplier-stat-drill,.nazk-control-open,.supplier-edr-actions a),
+html[data-theme="dark"] #queueFilterChips button{background-color:#193451;color:#86bdff;border-color:#4a6788}
+html[data-theme="dark"] :is(.check-summary.warning,.violation-document-unavailable,.violation-admin-deadline[data-deadline-state="attention"]),
+html[data-theme="dark"] .declension-form .required-case{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
+html[data-theme="dark"] :is(.check-summary.error,.violation-admin-deadline[data-deadline-state="overdue"]){background-color:#492936;color:#ffb1b8;border-color:#795061}
+html[data-theme="dark"] :is(.supplier-amcu-active,.supplier-application-negative) td,
+html[data-theme="dark"] #referenceAmcu tr.amcu-active-supplier td{background-color:#392635;color:var(--ink)}
+html[data-theme="dark"] .frameworks-table tr.framework-agreement-pending td,
+html[data-theme="dark"] #referenceAmcu tr.amcu-applicant td{background-color:#443b26;color:#ffdc8a}
+html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable td.sticky,
+html[data-theme="dark"] #applicationsTable tr.application-final-locked td.locked,
+html[data-theme="dark"] tbody tr.application-review-completed td{background-color:#20334c;color:var(--ink)}
+html[data-theme="dark"] tbody tr.application-review-completed:is(:hover,.active,:has(.row-check:checked)) td{background-color:#203e62;color:var(--ink)}
+html[data-theme="dark"] :is(.remark-option:hover,.chat-message.own){background-color:#203e62;color:var(--ink)}
+html[data-theme="dark"] button.danger{background-color:#492936;color:#ffb1b8;border-color:#795061}
+html[data-theme="dark"] button.danger:hover{background-color:#603047;color:#fff}
+html[data-theme="dark"] #adminSchemaPanel :is(.schema-mode,.schema-filters,.schema-table-wrap,.schema-detail,.schema-flow,.schema-flow-nodes>div,.schema-relations){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] #adminSchemaPanel :is(.schema-mode button[aria-pressed=true],.schema-chip){background-color:#203e62;color:#86bdff}
+html[data-theme="dark"] #adminSchemaPanel .schema-chip.passive{background-color:#20334c;color:var(--muted)}
+html[data-theme="dark"] #adminSchemaPanel .schema-table th{background-color:#152b46;color:var(--ink)}
+html[data-theme="dark"] #adminSchemaPanel .schema-table td{background-color:#102238;color:var(--ink)}
+html[data-theme="dark"] :is(.contract-experience-links a,.chat-file,.chat-application-card){color:#86bdff}
+html[data-theme="dark"] #historyColumnsDialog footer,
+html[data-theme="dark"] #suppliersView .supplier-advanced-filters{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] #suppliersView .supplier-filter-field>input{background-color:#193451;color:var(--ink);border-color:#4a6788}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness].active{background-color:#215487;color:#fff;border-color:#86bdff}
+html[data-theme="dark"] .edr-monitoring-kpis button:is([data-freshness="gt30"],[data-freshness="gt60"]).active{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="gt90"].active{background-color:#492936;color:#ffb1b8;border-color:#795061}
+html[data-theme="dark"] .edr-monitoring-kpis button.active span{color:inherit}
+}

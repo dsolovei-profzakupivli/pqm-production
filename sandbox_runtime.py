@@ -688,7 +688,7 @@ def decorate_html(raw):
                          '<small>Procurement Qualification Manager</small></span>'
                          '<em id="environmentBanner" class="prod-brand-accessible">PQM</em></div>')
         sandbox_brand = ('<div class="brand sandbox-brand">'
-                         '<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark.svg" alt="" aria-hidden="true">'
+                         '<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark-prod.svg" alt="" aria-hidden="true">'
                          '<span class="sandbox-brand-divider" aria-hidden="true"></span>'
                          '<span class="sandbox-brand-copy"><strong>Професійні закупівлі</strong>'
                          '<small>Procurement Qualification Manager</small></span>'

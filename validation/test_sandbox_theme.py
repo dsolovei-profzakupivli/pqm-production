@@ -15,7 +15,7 @@ def luminance(value):
 
 class Theme(unittest.TestCase):
     def test_detail_surface_contract(self):
-        css = (sandbox.ROOT / 'sandbox_theme.css').read_text()
+        css = (sandbox.ROOT / 'theme.css').read_text()
         for selector in ('dialog>form', 'dialog form>header', 'dialog form>footer',
                          '.request-details-body section', '.supplier-profile-section',
                          '.supplier-profile-stats>div', '.module-kpis>article',
@@ -38,7 +38,7 @@ class Theme(unittest.TestCase):
                 self.assertEqual('pqm-q-favicon.svg?v=4' in html, flag == '1')
                 self.assertEqual('pqm-q-favicon-16.png?v=4' in html, flag == '1')
                 self.assertEqual('pqm-q-favicon-180.png?v=4' in html, flag == '1')
-                self.assertEqual('pqm-brand-mark.svg' in html, flag == '1')
+                self.assertIn('pqm-brand-mark-prod.svg', html)
                 if flag == '0': self.assertIn('pqm-q-favicon-prod-192.png?v=6', html)
         root = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}rect').get('fill'), '#132840')
@@ -84,7 +84,7 @@ class Theme(unittest.TestCase):
         with patch.dict(os.environ, PQM_SANDBOX='0'):
             prod_html = sandbox.decorate_html(raw).decode()
         self.assertIn('class="brand sandbox-brand"', html)
-        self.assertIn('<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark.svg"', html)
+        self.assertIn('<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark-prod.svg"', html)
         self.assertIn('class="sandbox-brand-divider"', html)
         self.assertIn('<strong>Професійні закупівлі</strong>', html)
         self.assertIn('<small>Procurement Qualification Manager</small>', html)
@@ -118,7 +118,7 @@ class Theme(unittest.TestCase):
                 ratio = (luminance(foreground)+.05)/(luminance(background)+.05)
                 self.assertGreaterEqual(ratio, 4.5, (foreground, background, ratio))
     def test_light_surfaces_contrast(self):
-        css = (sandbox.ROOT / 'sandbox_theme.css').read_text()
+        css = (sandbox.ROOT / 'theme.css').read_text()
         for selector in ('.multi-filter', '.advanced-filters', '.toolbar-settings', '.table-card>footer', '.paperclip>span'):
             self.assertIn(selector, css)
         for background in ('#f2f5fa', '#e8eff7'):
