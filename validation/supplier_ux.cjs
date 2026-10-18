@@ -22,7 +22,11 @@ assert.match(html,/<div class="brand prod-brand">[\s\S]*?id="environmentBanner" 
 assert.match(html,/src="\/assets\/pqm-brand-mark-prod\.svg"/);
 assert.match(html,/href="\/assets\/pqm-q-favicon-prod-192\.png\?v=6"/);
 assert.match(sandboxRuntime,/class="brand sandbox-brand"/);
-assert.match(sandboxRuntime,/pqm-brand-mark\.svg/);
+assert.match(sandboxRuntime,/class="sandbox-brand-initials" src="\/assets\/pqm-brand-mark-prod\.svg"/);
+const personalTheme=fs.readFileSync(path.join(root,'theme_ui.js'),'utf8');
+assert.match(personalTheme,/img\.sandbox-brand-initials/);
+assert.match(personalTheme,/pqm-brand-mark-prod-dark\.svg/);
+assert.match(personalTheme,/pqm-brand-mark-prod\.svg/);
 assert.match(sandboxRuntime,/pqm-q-favicon\.svg\?v=4/);
 assert.match(css,/\.topbar \.brand\.prod-brand\{gap:0;align-items:center\}/);
 assert.match(sandboxTheme,/html\[data-pqm-environment="sandbox"\] \.topbar \.brand\.sandbox-brand/);
