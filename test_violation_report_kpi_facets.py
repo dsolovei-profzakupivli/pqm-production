@@ -112,6 +112,59 @@ class ViolationReportKpiFacetTests(unittest.TestCase):
         self.assertEqual((1, 0, 0), (data["pending"], data["satisfied"], data["declined"]))
         self.assertEqual(["R-EXPIRED"], [item["report_id"] for item in data["items"]])
 
+    def test_response_contract_sort_order_and_pagination_boundaries(self):
+        first = self.query(page=1, size=10)
+        second = self.query(page=2, size=10)
+        self.assertEqual({"items", "total", "pending", "satisfied", "declined", "page", "size",
+                          "pages", "statuses", "reasons", "authorities", "sync"}, set(first))
+        self.assertEqual((14, 10, 2, 1), (first["total"], len(first["items"]), first["pages"], first["page"]))
+        self.assertEqual((14, 4, 2, 2), (second["total"], len(second["items"]), second["pages"], second["page"]))
+        self.assertEqual(["answered", "cancelled", "declined", "draft", "future_status", "pending", "satisfied"], first["statuses"])
+        self.assertEqual(["r1", "r2"], first["reasons"])
+        self.assertIsInstance(first["sync"], dict)
+        self.assertTrue({"id", "report_id", "status", "date_published", "authority_code", "reason",
+                         "defendant_code", "evidence_documents", "decision_documents", "defendant_statements",
+                         "blocking_marker", "protocol_summary"} <= set(first["items"][0]))
+
+        observed_desc = [(item["date_published"], item["report_id"]) for item in first["items"]]
+        self.assertEqual([
+            ("2026-10-08", "R-13-other"), ("2026-10-07", "R-6-other"),
+            ("2026-10-07", "R-12-other"), ("2026-10-06", "R-5-other"),
+            ("2026-10-06", "R-11-other"), ("2026-10-05", "R-4-needle"),
+            ("2026-10-05", "R-10-needle"), ("2026-10-04", "R-9-other"),
+            ("2026-10-04", "R-3-other"), ("2026-10-03", "R-8-needle"),
+        ], observed_desc)
+        pending = self.query(status="pending", size=10)
+        self.assertEqual(["R-0-needle", "R-7-needle", "R-1-needle"], [item["report_id"] for item in pending["items"]])
+
+        clamped = self.query(page=0, size=1)
+        self.assertEqual((1, 10, 2, 10), (clamped["page"], clamped["size"], clamped["pages"], len(clamped["items"])))
+        capped = self.query(page=1, size=999)
+        self.assertEqual((200, 14), (capped["size"], len(capped["items"])))
+
+    def test_unclassified_statuses_remain_in_facets_and_totals(self):
+        answered = self.query(status="answered")
+        self.assertEqual(2, answered["total"])
+        # Decision KPIs omit their own selected-status facet, by design.
+        self.assertEqual((3, 2, 2), (answered["pending"], answered["satisfied"], answered["declined"]))
+        self.assertEqual({"A": 1, "B": 1}, {item["authority_code"]: item["count"] for item in answered["authorities"]})
+        all_rows = self.query()
+        self.assertEqual(14, all_rows["total"])
+        self.assertEqual(7, all_rows["total"] - all_rows["pending"] - all_rows["satisfied"] - all_rows["declined"])
+
+    def test_malformed_pagination_values_raise_without_changing_query_behavior(self):
+        with self.assertRaises(ValueError):
+            self.query(page="not-an-integer")
+        with self.assertRaises(ValueError):
+            self.query(size="not-an-integer")
+
+    def test_read_authorization_and_http_route_remain_outside_allowlisted_function(self):
+        self.assertEqual("appeals.read", server.auth_access.permission_key("GET", "/api/violation-reports"))
+        source = Path(server.__file__).read_text(encoding="utf-8")
+        self.assertIn('if parsed.path == "/api/violation-reports":', source)
+        self.assertIn("return self.send_json(list_violation_reports(urllib.parse.parse_qs(parsed.query)))", source)
+        self.assertIn("if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False)):", source)
+
 
 if __name__ == "__main__":
     unittest.main()

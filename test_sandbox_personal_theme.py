@@ -11,13 +11,55 @@ import sandbox_runtime
 
 
 def normalized_server(source):
-    class AccountsOnly(ast.NodeTransformer):
+    tree = ast.parse(source)
+    targets = [
+        (index, node) for index, node in enumerate(tree.body)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "list_violation_reports"
+    ]
+    if len(targets) != 1:
+        raise AssertionError("Expected exactly one top-level list_violation_reports function")
+    index, function = targets[0]
+    if (not isinstance(function, ast.FunctionDef)
+            or [arg.arg for arg in function.args.args] != ["params"]
+            or function.args.posonlyargs or function.args.kwonlyargs
+            or function.args.vararg or function.args.kwarg
+            or function.args.defaults or function.args.kw_defaults
+            or ast.dump(function.args.args[0].annotation, include_attributes=False)
+               != ast.dump(ast.Name(id="dict", ctx=ast.Load()), include_attributes=False)
+            or ast.dump(function.returns, include_attributes=False)
+               != ast.dump(ast.Name(id="dict", ctx=ast.Load()), include_attributes=False)
+            or function.decorator_list):
+        raise AssertionError("list_violation_reports signature changed outside its approved body")
+    previous = tree.body[index - 1] if index else None
+    following = tree.body[index + 1] if index + 1 < len(tree.body) else None
+    if (not isinstance(previous, ast.FunctionDef) or previous.name != "start_nazk_registry_refresh"
+            or not isinstance(following, ast.Assign)
+            or not any(isinstance(target, ast.Name) and target.id == "VIOLATION_REVIEW_FIELDS"
+                       for target in following.targets)):
+        raise AssertionError("list_violation_reports moved from its protected top-level location")
+
+    class ApprovedRegionsOnly(ast.NodeTransformer):
+        account_branch_count = 0
+
         def visit_If(self,node):
             if ast.unparse(node.test) == "parsed.path == '/api/account'":
+                self.account_branch_count += 1
                 node.body=[ast.Pass()]
                 return node
             return self.generic_visit(node)
-    return ast.dump(AccountsOnly().visit(ast.parse(source)),include_attributes=False)
+
+        def visit_FunctionDef(self, node):
+            if node is function:
+                node.body = [ast.Pass()]
+                return node
+            return self.generic_visit(node)
+
+    normalizer = ApprovedRegionsOnly()
+    normalized = normalizer.visit(tree)
+    if normalizer.account_branch_count != 2:
+        raise AssertionError("Expected exactly the GET and PATCH /api/account handler branches")
+    return ast.dump(normalized,include_attributes=False)
 
 
 def normalized_app(source):
@@ -30,9 +72,11 @@ def normalized_app(source):
 
 
 class SandboxPersonalThemeTests(unittest.TestCase):
-    def test_whole_server_unchanged_outside_two_account_branches(self):
+    def test_whole_server_unchanged_outside_account_and_approved_appeals_kpi_function(self):
         contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())
-        self.assertEqual(hashlib.sha256(normalized_server(Path('server.py').read_text(encoding='utf-8')).encode()).hexdigest(),contract['server_without_account'])
+        self.assertEqual(contract['server_baseline'], '0374436f2006c9e8eae1836d959b34ae7dfda7d8')
+        digest=hashlib.sha256(normalized_server(Path('server.py').read_text(encoding='utf-8')).encode()).hexdigest()
+        self.assertEqual(digest,contract['server_outside_account_and_appeals_kpi'])
 
     def test_app_business_functions_unchanged(self):
         contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())

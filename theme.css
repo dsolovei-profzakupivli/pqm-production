@@ -177,7 +177,13 @@ html[data-theme="dark"] #frameworkAnalyticsView .frameworks-table a.ghost:focus-
 html[data-theme="dark"] #frameworkAnalyticsView #frameworksExportSelected:hover,
 html[data-theme="dark"] #frameworkAnalyticsView #frameworksExportSelected:focus-visible{background-color:#28517b;color:#fff;border-color:#86bdff}
 
-/* Supplier EDR metadata cards follow the active theme, including light mode in Sandbox. */
+/* Restore the agreed light supplier-card presentation over legacy Sandbox defaults. */
+html[data-theme="light"] #supplierProfileBody .supplier-edr-actions a{background-color:#f7f9fc;color:#184c83;border-color:#b7c8db}
+html[data-theme="light"] #supplierProfileBody .supplier-edr-actions a:hover{background-color:#e9f2ff;color:#184c83;border-color:#7ca5d2}
+html[data-theme="light"] #supplierProfileBody .supplier-edr-actions a:focus-visible{background-color:#f7f9fc;color:#184c83;border-color:#b7c8db;outline:2px solid #2767af;outline-offset:2px}
+html[data-theme="light"] #supplierProfileBody .supplier-edr-metadata>div{background-color:#f6f9fd;color:var(--ink);border-color:#d8e2ed}
+html[data-theme="light"] #supplierProfileBody .supplier-edr-metadata dt{color:#64748b}
+/* Dark supplier-card presentation follows the active theme, not the environment. */
 html[data-theme="dark"] #supplierProfileBody .supplier-edr-metadata>div{background-color:#132840;color:#edf3fc;border-color:#38516e}
 html[data-theme="dark"] #supplierProfileBody .supplier-edr-metadata dt{color:#b2c3db}
 
