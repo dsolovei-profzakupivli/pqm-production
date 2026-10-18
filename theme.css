@@ -137,4 +137,49 @@ html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness].active{backg
 html[data-theme="dark"] .edr-monitoring-kpis button:is([data-freshness="gt30"],[data-freshness="gt60"]).active{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
 html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="gt90"].active{background-color:#492936;color:#ffb1b8;border-color:#795061}
 html[data-theme="dark"] .edr-monitoring-kpis button.active span{color:inherit}
+
+/* Local visual prototype: transparent empty Applications KPI wrapper; keep its children intact. */
+html[data-theme="dark"] #applicationsView .heading-metrics{background-color:transparent}
+
+/* Muted category colors for operational-task KPIs in dark mode. */
+html[data-theme="dark"] #workQueueView #queueQualificationCards>.qualification-summary-officer:not(.unassigned),
+html[data-theme="dark"] #workQueueView #queueProtocolOfficerCards>.qualification-summary-officer:not(.unassigned){background-color:#173e38;color:#b8edca;border-color:#386c60}
+html[data-theme="dark"] #workQueueView #queueQualificationCards>.qualification-summary-officer:not(.unassigned) span,
+html[data-theme="dark"] #workQueueView #queueProtocolOfficerCards>.qualification-summary-officer:not(.unassigned) span{color:#b8edca}
+html[data-theme="dark"] #workQueueView #queueQualificationCards>.qualification-summary-officer:not(.unassigned) small,
+html[data-theme="dark"] #workQueueView #queueProtocolOfficerCards>.qualification-summary-officer:not(.unassigned) small{color:#a9cfb7}
+html[data-theme="dark"] #workQueueView #queueCategoryCards>.qualification-summary-category,
+html[data-theme="dark"] #workQueueView #queueProtocolCategoryCards>.qualification-summary-category{background-color:#1c3551;color:#c5dcf7;border-color:#3d6288}
+html[data-theme="dark"] #workQueueView #queueCategoryCards>.qualification-summary-category span,
+html[data-theme="dark"] #workQueueView #queueProtocolCategoryCards>.qualification-summary-category span{color:#c5dcf7}
+html[data-theme="dark"] #workQueueView #queueCategoryCards>.qualification-summary-category small,
+html[data-theme="dark"] #workQueueView #queueProtocolCategoryCards>.qualification-summary-category small{color:#adcae7}
+html[data-theme="dark"] #workQueueView #queuePublicationControl [data-publication-state="active"]{background-color:#173e38;color:#b8edca;border-color:#386c60}
+html[data-theme="dark"] #workQueueView #queuePublicationControl [data-publication-state="unsuccessful"]{background-color:#482932;color:#ffb9c1;border-color:#794552}
+html[data-theme="dark"] #workQueueView #queuePublicationControl [data-publication-state="pending"]{background-color:#443b26;color:#ffdf91;border-color:#74653f}
+
+/* Dark EDR freshness palette: preserve six status meanings without bright light-theme fills. */
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="not_current"]{background-color:#30263f;color:#decaf4;border-color:#62487e}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="lt30"]{background-color:#183a31;color:#b8edca;border-color:#38694e}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="gt30"]{background-color:#41371f;color:#ffdf91;border-color:#71602f}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="gt60"]{background-color:#493022;color:#ffd0a3;border-color:#815334}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="gt90"]{background-color:#472630;color:#ffb9c1;border-color:#7b3f51}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="not_checked"]{background-color:#27384b;color:#c6d3e0;border-color:#465b70}
+html[data-theme="dark"] .edr-monitoring-kpis button.active{box-shadow:0 0 0 2px rgba(134,189,255,.28)}
+
+/* Improve dark-mode labels and values for customer-appeals authority KPIs. */
+html[data-theme="dark"] #requestAuthorityCards .request-authority-card{background-color:#132840;color:#e5effa;border-color:#34516f}
+html[data-theme="dark"] #requestAuthorityCards .request-authority-card span{color:#c3d5e8}
+html[data-theme="dark"] #requestAuthorityCards .request-authority-card strong{color:#f5f9ff}
+html[data-theme="dark"] #requestAuthorityCards .request-authority-card.active{background-color:#215487;color:#fff;border-color:#86bdff}
+html[data-theme="dark"] #requestAuthorityCards .request-authority-card.active span,
+html[data-theme="dark"] #requestAuthorityCards .request-authority-card.active strong{color:#fff}
+
+/* Keep the Registry's full officer group, including unassigned, on the same dark-green palette. */
+html[data-theme="dark"] #applicationsView #officerCards>.officer-card{background-color:#173e38!important;color:#b8edca!important;border-color:#386c60!important}
+html[data-theme="dark"] #applicationsView #officerCards>.officer-card span{color:#b8edca!important}
+html[data-theme="dark"] #applicationsView #officerCards>.officer-card strong{color:#e4f7e9!important}
+html[data-theme="dark"] #applicationsView #officerCards>.officer-card:hover:not(.active){background-color:#20503f!important;border-color:#5a9f79!important}
+html[data-theme="dark"] #applicationsView #officerCards>.officer-card.active{background-color:#173e38!important;color:#e4f7e9!important;border-color:#8be0b6!important;box-shadow:inset 0 0 0 2px #8be0b6}
+html[data-theme="dark"] #applicationsView #officerCards>.officer-card:focus-visible{outline-color:#8be0b6!important}
 }

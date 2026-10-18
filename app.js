@@ -8,6 +8,7 @@ let authorizedOfficerItems=[];
 async function loadAuthorizedOfficers(activeOnly=true){
   const data=await request(`${API}/admin/officers${activeOnly?'?active=1':''}`);
   authorizedOfficerItems=data.items||[];
+  globalThis.PqmUi?.setOfficerRoster?.(authorizedOfficerItems);
   if(activeOnly)protocolOfficers=authorizedOfficerItems.filter(x=>x.active).map(x=>x.full_name);
   return authorizedOfficerItems;
 }
