@@ -1,18 +1,17 @@
 /* Local visual prototype screenshots using the candidate's real PQM HTML/CSS and isolated fixture values. */
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {chromium}=require(require.resolve('playwright',{paths:['C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules']}));
-const ROOT=path.resolve(__dirname,'..'),OUT=path.join(ROOT,'evidence','kpi-visual-acceptance-20261018');
+const ROOT=path.resolve(__dirname,'..'),OUT=process.env.PQM_KPI_EVIDENCE||path.join(ROOT,'evidence','kpi-visual-acceptance-20261018');
 const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
 const html=read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi,'');
 const cssFiles=['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','ui_final.css','theme.css','ui_tz2.css','halloween.css'];
-const roster=[{full_name:'Дмитро САВВА'},{full_name:'Тетяна ФЕДЧЕНКО'},{full_name:'Олена ЄРЬОМІНА'}];
-const officers=['Д. Савва','Т. Федченко','О. Єрьоміна'];
+const officers=['Дмитро САВВА','Тетяна ФЕДЧЕНКО','Олена ЄРЬОМІНА'];
 async function pageFor(browser,{theme='light',view='applications',prototype=true}={}){
   const page=await browser.newPage({viewport:{width:1920,height:1080},deviceScaleFactor:1});
   page.on('pageerror',e=>{throw e});await page.setContent(html);
   for(const name of cssFiles){let css=read(name);if(!prototype&&name==='ui_improvements.css')css=css.split('/* Local visual prototype: all officer-distribution cards, including unassigned, share one light palette. */')[0];if(!prototype&&name==='theme.css')css=css.split('/* Local visual prototype: transparent empty Applications KPI wrapper; keep its children intact. */')[0];await page.addStyleTag({content:css})}
   await page.addScriptTag({content:read('ui_improvements.js')});
-  await page.evaluate(({theme,view,roster,officers})=>{
+  await page.evaluate(({theme,view,officers})=>{
     const root=document.documentElement;root.dataset.pqmEnvironment='sandbox';root.dataset.theme=theme;root.dataset.halloween='off';
     document.querySelector('#loginGate').hidden=true;document.querySelector('#applicationShell').hidden=false;
     document.querySelectorAll('main').forEach(el=>el.hidden=el.id!==({applications:'applicationsView',workQueue:'workQueueView',edr:'edrMonitoringView',requests:'requestsView'}[view]));
@@ -25,8 +24,7 @@ async function pageFor(browser,{theme='light',view='applications',prototype=true
     const freshness=['not_current','lt30','gt30','gt60','gt90','not_checked'];
     freshness.forEach((key,i)=>{const button=document.querySelector(`#edrMonitoringKpis [data-freshness="${key}"]`);if(button){button.querySelector('strong').textContent=String([14,108,32,19,8,27][i]);}});
     document.querySelector('#requestAuthorityCards').innerHTML=['Професійні закупівлі','УСС','МЗУ'].map((name,i)=>`<button type="button" class="request-authority-card${i===1&&location.hash==='#active'?' active':''}" data-authority-code="fixture-${i}"><span>${name}</span><strong>${[28,14,9][i]}</strong></button>`).join('');
-  },{theme,view,roster,officers});
-  await page.evaluate(items=>window.PqmUi?.setOfficerRoster(items),roster);
+  },{theme,view,officers});
   return page;
 }
 (async()=>{
@@ -37,7 +35,8 @@ async function pageFor(browser,{theme='light',view='applications',prototype=true
     const light=await save({theme:'light',view:'applications'},'#applicationsView .page-heading','registry-light-no-filter-after.png');
     const active=await pageFor(browser,{theme:'light',view:'applications'});await active.locator('#officerCards>.officer-card[data-officer="Не визначено"]').evaluate(e=>e.classList.add('active'));await active.locator('#applicationsView .page-heading').screenshot({path:path.join(OUT,'registry-light-unassigned-active.png')});shots.push('registry-light-unassigned-active.png');
     const work=await save({theme:'dark',view:'workQueue'},'#workQueueView .work-queue-operational-grid','work-queue-dark-colored-kpis-full-names.png');
-    const workNames=await work.locator('#queueProtocolOfficerCards span').allTextContents();assert.deepEqual(workNames,roster.map(x=>x.full_name));
+    const workNames=await work.locator('#queueProtocolOfficerCards span').allTextContents();assert.deepEqual(workNames,officers);
+    const registryNames=await light.locator('#officerCards>.officer-card:not(.unassigned) span').allTextContents();assert.deepEqual(registryNames,officers);
     const edr=await save({theme:'dark',view:'edr'},'#edrMonitoringKpis','edr-dark-six-kpi-colors.png');
     const appeals=await save({theme:'dark',view:'requests'},'#requestsView .module-heading','appeals-dark-kpi-contrast.png');
     const regDark=await save({theme:'dark',view:'applications'},'#applicationsView .page-heading','registry-dark-transparent-kpi-wrapper.png');

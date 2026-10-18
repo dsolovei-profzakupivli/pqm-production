@@ -4,46 +4,9 @@
     const parts=String(value||'').trim().split(/\s+/).filter(Boolean);
     if(/^(Не визначено|Не призначено)$/i.test(parts.join(' ')))return parts.join(' ');
     if(parts.length<2)return parts.join(' ');
-    const surname=parts.at(-1).split('-').map(word=>word[0].toLocaleUpperCase('uk-UA')+word.slice(1).toLocaleLowerCase('uk-UA')).join('-');
-    return `${parts.slice(0,-1).map(word=>word[0]+'.').join(' ')} ${surname}`;
+    return `${parts.slice(0,-1).map(word=>word.toLocaleLowerCase('uk-UA').replace(/^./u,char=>char.toLocaleUpperCase('uk-UA'))).join(' ')} ${parts.at(-1).toLocaleUpperCase('uk-UA')}`;
   }
-  function fullOfficerName(value,officers=[]){
-    const source=String(value||'').trim(),parts=source.split(/\s+/).filter(Boolean);
-    if(!source||/^(Не визначено|Не призначено)$/i.test(source)||parts.length<2)return source;
-    const normalize=word=>String(word||'').replace(/\.$/,'').normalize('NFC').toLocaleUpperCase('uk-UA');
-    const surname=normalize(parts.at(-1));
-    const matches=(officers||[]).filter(item=>{
-      const full=String(item?.full_name||'').trim().split(/\s+/).filter(Boolean);
-      if(full.length<2||normalize(full.at(-1))!==surname)return false;
-      const given=parts.slice(0,-1),candidate=full.slice(0,-1);
-      return given.length<=candidate.length&&given.every((part,index)=>{
-        const token=normalize(part),name=normalize(candidate[index]);
-        return /\.$/.test(part)?name.startsWith(token):token===name;
-      });
-    });
-    return matches.length===1?matches[0].full_name:source;
-  }
-  function displayOfficerFullName(value){
-    const parts=String(value||'').trim().split(/\s+/).filter(Boolean);
-    if(parts.length<2)return parts.join(' ');
-    return `${parts.slice(0,-1).map(word=>word[0].toLocaleUpperCase('uk-UA')+word.slice(1).toLocaleLowerCase('uk-UA')).join(' ')} ${parts.at(-1).toLocaleUpperCase('uk-UA')}`;
-  }
-  const api={compactOfficer,clearInput:null,formatActionButtons:null,resetIds:[],prozorroIds:[],officerRoster:[],responseExpired:false};
-  function refreshProtocolOfficerNames(){
-    const cards=root.document?.querySelectorAll('#queueProtocolOfficerCards [data-protocol-officer]')||[];
-    cards.forEach(card=>{
-      const span=card.querySelector('span');if(!span)return;
-      const full=fullOfficerName(card.dataset.protocolOfficer,api.officerRoster);
-      const label=displayOfficerFullName(full);
-      if(label&&span.textContent!==label)span.textContent=label;
-      if(label&&span.title!==label)span.title=label;
-    });
-  }
-  api.setOfficerRoster=items=>{api.officerRoster=Array.isArray(items)?items:[];refreshProtocolOfficerNames()};
-  if(root.document){
-    const observe=()=>{const host=root.document.querySelector('#queueProtocolOfficerCards');if(host)new MutationObserver(refreshProtocolOfficerNames).observe(host,{childList:true,subtree:true})};
-    if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',observe,{once:true});else observe();
-  }
+  const api={compactOfficer,clearInput:null,formatActionButtons:null,resetIds:[],prozorroIds:[],responseExpired:false};
   function clearInput(input){
     input.value='';
     input.dispatchEvent(new Event('input',{bubbles:true}));

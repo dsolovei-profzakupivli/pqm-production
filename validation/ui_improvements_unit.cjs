@@ -8,9 +8,10 @@ for(const id of ui.resetIds){assert.equal(buttons.get('#'+id).textContent,'×');
 for(const id of ui.prozorroIds){assert.equal(buttons.get('#'+id).textContent,'↻ Prozorro');assert.equal(buttons.get('#'+id).title,'Оновити дані з Prozorro');assert(buttons.get('#'+id).disabled)}
 const busy=buttons.get('#requestsRefresh'),handler=busy.onclick;busy.textContent='Оновлення…';busy.title='Оновлення вже триває';ui.formatActionButtons(root);
 assert.equal(busy.textContent,'Оновлення…');assert.equal(busy.title,'Оновлення вже триває');assert.equal(busy.onclick,handler);assert.equal(syncCalls,0);
-assert.equal(ui.compactOfficer('Дмитро САВВА'),'Д. Савва');
-assert.equal(ui.compactOfficer('Олена ЄРЬОМІНА'),'О. Єрьоміна');
+assert.equal(ui.compactOfficer('Дмитро САВВА'),'Дмитро САВВА');
+assert.equal(ui.compactOfficer('Олена ЄРЬОМІНА'),'Олена ЄРЬОМІНА');
 assert.equal(ui.compactOfficer('Не визначено'),'Не визначено');
+assert.equal(ui.setOfficerRoster,undefined);
 const events=[],input={value:'Назва',dispatchEvent:e=>events.push(e),focus:()=>events.push('focus')};
 ui.clearInput(input);assert.equal(input.value,'');assert.equal(events[0].type,'input');assert.equal(events[0].bubbles,true);
 const app=fs.readFileSync('app.js','utf8'),boot=fs.readFileSync('ui_improvements_boot.js','utf8'),css=fs.readFileSync('ui_improvements.css','utf8');
