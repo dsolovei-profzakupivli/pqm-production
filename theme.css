@@ -110,6 +110,10 @@ html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable td.
 html[data-theme="dark"] #applicationsTable tr.application-final-locked td.locked,
 html[data-theme="dark"] tbody tr.application-review-completed td{background-color:#20334c;color:var(--ink)}
 html[data-theme="dark"] tbody tr.application-review-completed:is(:hover,.active,:has(.row-check:checked)) td{background-color:#203e62;color:var(--ink)}
+/* Pinned cells have ID-scoped light backgrounds in styles.css; pair their normal and row states here. */
+html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable th.sticky{background-color:#152b46;color:var(--ink)}
+html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable td.sticky{background-color:#102238;color:var(--ink)}
+html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable tbody tr:is(:hover,.active,:has(.row-check:checked)) td.sticky{background-color:#203e62;color:var(--ink)}
 html[data-theme="dark"] :is(.remark-option:hover,.chat-message.own){background-color:#203e62;color:var(--ink)}
 html[data-theme="dark"] button.danger{background-color:#492936;color:#ffb1b8;border-color:#795061}
 html[data-theme="dark"] button.danger:hover{background-color:#603047;color:#fff}
