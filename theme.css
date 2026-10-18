@@ -51,4 +51,12 @@ html[data-theme="dark"] .paperclip>span{background-color:#e8eff7;color:#172b43}
 html[data-theme="dark"] .topbar #mainNav .action-count-badge{background-color:#b42318;color:#fff}
 html[data-theme="dark"] :is(.service-nav-button,.navigation-preview button){background-color:#193451;color:var(--ink);border-color:#4a6788}
 html[data-theme="dark"] :is(.prod-brand-copy strong,.prod-brand-copy small){color:var(--ink)}
+html[data-theme="dark"] #historyView .history-total{background-color:#132840;border-color:var(--line)}
+/* The existing candidate tile uses important light colours. Pair both here. */
+html[data-theme="dark"] .candidate-kpi{background-color:#20334c!important;border-color:#4a6788!important}
+html[data-theme="dark"] :is(.qualification-summary-heading>strong,.history-total strong){color:#86bdff}
+html[data-theme="dark"] :is(.protocol-period label,.work-queue-kpis span,.chat-empty,.empty-module p,.supplier-filter-field>label){color:var(--muted)}
+html[data-theme="dark"] #suppliersView .supplier-filter-field>label{color:var(--muted)}
+html[data-theme="dark"] #frameworkAnalyticsView label{color:var(--muted)}
+html[data-theme="dark"] .work-queue-kpis button.active span{color:#edf3fc}
 }
