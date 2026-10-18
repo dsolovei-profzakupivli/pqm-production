@@ -63,7 +63,7 @@ html[data-theme="dark"] .work-queue-kpis button.active span{color:#edf3fc}
 html[data-theme="dark"] dialog>form>header,
 html[data-theme="dark"] dialog>form>footer,
 html[data-theme="dark"] #protocolDialog :is(.protocol-controls,.protocol-summary),
-html[data-theme="dark"] :is(.operational-task-head,.operational-inline-form){background-color:#132840!important;border-color:var(--line)!important}
+html[data-theme="dark"] :is(.operational-task-head,.operational-inline-form,.operational-summary,.operational-context-card){background-color:#132840!important;border-color:var(--line)!important}
 html[data-theme="dark"] dialog label{color:var(--muted)}
 html[data-theme="dark"] .operational-task-head>div>span{color:#86bdff}
 /* Empty and dynamically inserted surfaces, including detached detail windows. */
@@ -91,4 +91,7 @@ html[data-theme="dark"] #historyView .history-table tr.history-inactive-admitted
 html[data-theme="dark"] .frameworks-table th[data-framework-sort]:hover{background-color:#203e62}
 html[data-theme="dark"] :is(.check-notice,.authority-panel),
 html[data-theme="dark"] .business-table .needs-review td{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
+html[data-theme="dark"] :is(.filter-active,.advanced-filters.filter-active>summary,.multi-filter.filter-active>summary,.supplier-advanced-filters.filter-active>summary){background-color:#203e62!important;color:var(--ink);border-color:#86bdff!important;box-shadow:inset 0 0 0 1px #4a6788}
+html[data-theme="dark"] .manager-fallback,
+html[data-theme="dark"] .requests-table .request-row.request-blocking-active>td{background-color:#443b26!important;color:#ffdc8a}
 }
