@@ -10321,11 +10321,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/account":
             with db() as con:
-                row = con.execute("SELECT display_name,start_view,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
+                row = con.execute("SELECT display_name,start_view,color_scheme,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
                 managed = bool(con.execute("SELECT 1 FROM auth_users WHERE username=?", (self.auth_user,)).fetchone())
                 has_avatar = bool(con.execute("SELECT 1 FROM user_avatars WHERE username=?", (self.auth_user,)).fetchone())
+            preferences = dict(row) if row else {"display_name":"","start_view":"applications","density":"comfortable","presence_status":"working","updated_at":None}
+            preferences["color_scheme"] = "dark" if preferences.get("color_scheme") == "dark" else "light"
             return self.send_json({"username": self.auth_user, "role": self.auth_role, "managed": managed,
-              "has_avatar": has_avatar, "color_scheme": "light", **(dict(row) if row else {"display_name":"","start_view":"applications","density":"comfortable","presence_status":"working","updated_at":None})})
+              "has_avatar": has_avatar, **preferences})
         avatar_match = re.fullmatch(r"/api/users/([^/]+)/avatar", parsed.path)
         if avatar_match:
             username = urllib.parse.unquote(avatar_match.group(1))
@@ -11844,9 +11846,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/account":
             payload = self.read_json()
+            color_scheme = payload.get("color_scheme")
+            if "color_scheme" in payload and (not isinstance(color_scheme, str) or color_scheme not in {"light", "dark"}):
+                return self.send_json({"error": "Некоректна тема оформлення"}, 400)
+            # Theme-only clients must not reset any other account preference.
+            if "color_scheme" in payload and set(payload) <= {"color_scheme", "username"}:
+                with db() as con:
+                    con.execute("""INSERT INTO user_preferences(username,color_scheme,updated_at) VALUES (?,?,?)
+                      ON CONFLICT(username) DO UPDATE SET color_scheme=excluded.color_scheme,updated_at=excluded.updated_at""",
+                      (self.auth_user,color_scheme,now_iso()))
+                return self.send_json({"saved": True, "reauthenticate": False})
             display_name = str(payload.get("display_name") or "").strip()[:100]
             start_view = str(payload.get("start_view") or "applications")
-            color_scheme = "light"
             density = str(payload.get("density") or "comfortable")
             presence_status = str(payload.get("presence_status") or "working")
             if start_view not in {"workQueue","applications","suppliers","frameworks","procurements","references","requests"}:
@@ -11869,9 +11880,9 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute("UPDATE auth_users SET password_hash=?,updated_at=? WHERE username=?", (password_hash,now_iso(),self.auth_user))
                 con.execute("""INSERT INTO user_preferences(username,display_name,start_view,color_scheme,density,presence_status,updated_at)
                   VALUES (?,?,?,?,?,?,?) ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name,
-                  start_view=excluded.start_view,color_scheme='light',density=excluded.density,
+                  start_view=excluded.start_view,color_scheme=CASE WHEN ? THEN excluded.color_scheme ELSE user_preferences.color_scheme END,density=excluded.density,
                   presence_status=excluded.presence_status,updated_at=excluded.updated_at""",
-                  (self.auth_user,display_name,start_view,color_scheme,density,presence_status,now_iso()))
+                  (self.auth_user,display_name,start_view,color_scheme or "light",density,presence_status,now_iso(),"color_scheme" in payload))
             if new_password:
                 with AUTH_SESSIONS_LOCK:
                     for token, session in list(AUTH_SESSIONS.items()):
