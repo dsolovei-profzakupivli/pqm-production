@@ -4,8 +4,8 @@
     const parts=String(value||'').trim().split(/\s+/).filter(Boolean);
     if(/^(Не визначено|Не призначено)$/i.test(parts.join(' ')))return parts.join(' ');
     if(parts.length<2)return parts.join(' ');
-    const surname=parts.at(-1).split('-').map(word=>word[0].toLocaleUpperCase('uk-UA')+word.slice(1).toLocaleLowerCase('uk-UA')).join('-');
-    return `${parts.slice(0,-1).map(word=>word[0]+'.').join(' ')} ${surname}`;
+    const given=parts.slice(0,-1).map(word=>word.toLocaleLowerCase('uk-UA').replace(/^./u,char=>char.toLocaleUpperCase('uk-UA'))).join(' ');
+    return `${given} ${parts.at(-1).toLocaleUpperCase('uk-UA')}`;
   }
   function clearInput(input){
     input.value='';

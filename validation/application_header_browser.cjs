@@ -55,7 +55,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
   await page.addScriptTag({content:[line('const kpiDefinitions='),line('function profile()'),line('function saveProfiles()'),line('function normalizeProfiles()'),visibility,line('function renderProfiles()'),line('async function loadProfiles()'),line('let profileSaveTimer;'),line('function cardsDialog()'),line('async function loadStatsData()')].join('\n')});
   await page.addScriptTag({content:app.slice(app.indexOf('const decisionKpiValues='),app.indexOf("$('#applicationCategoryFilter').onchange=",app.indexOf('const decisionKpiValues=')))});
   await page.evaluate(async()=>{await loadProfiles();await loadStatsData();applyKpiVisibility()});
-  assert.equal(await page.locator('[data-officer="Дмитро САВВА"] span').textContent(),'Д. Савва');
+  assert.equal(await page.locator('[data-officer="Дмитро САВВА"] span').textContent(),'Дмитро САВВА');
   assert.equal(await page.locator('[data-officer="Дмитро САВВА"]').getAttribute('title'),'Дмитро САВВА');
   for(const dark of [false,true])for(const width of [1366,1440,1600,1920,768,390]){
    await page.setViewportSize({width,height:1000});
