@@ -94,4 +94,29 @@ html[data-theme="dark"] .business-table .needs-review td{background-color:#443b2
 html[data-theme="dark"] :is(.filter-active,.advanced-filters.filter-active>summary,.multi-filter.filter-active>summary,.supplier-advanced-filters.filter-active>summary){background-color:#203e62!important;color:var(--ink);border-color:#86bdff!important;box-shadow:inset 0 0 0 1px #4a6788}
 html[data-theme="dark"] .manager-fallback,
 html[data-theme="dark"] .requests-table .request-row.request-blocking-active>td{background-color:#443b26!important;color:#ffdc8a}
+/* Read-only panels and document/task content created after the initial HTML. */
+html[data-theme="dark"] :is(.check-result-card,.check-section,.doc-analysis-tags label,.contract-experience-links a,.violation-review-accordion,.supplier-contact-card,.supplier-edr-metadata>div,.violation-workbench,.violation-deadlines>div,.violation-admin-deadline,.violation-p2-chronology,.violation-reference-row,.violation-guarantee-row,.violation-contract-editor,.bulk-progressive,.chat-file,.chat-application-card,.violation-scenario-summary,.operational-registry-list:has(table),.operational-channel-card,.operational-response,.account-notification-settings){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] .admin-metadata-item.is-inactive{background-color:#20334c;color:var(--muted)}
+html[data-theme="dark"] :is(.supplier-profile-open,.supplier-card-action,.supplier-stat-drill,.nazk-control-open,.supplier-edr-actions a),
+html[data-theme="dark"] #queueFilterChips button{background-color:#193451;color:#86bdff;border-color:#4a6788}
+html[data-theme="dark"] :is(.check-summary.warning,.violation-document-unavailable,.violation-admin-deadline[data-deadline-state="attention"]),
+html[data-theme="dark"] .declension-form .required-case{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
+html[data-theme="dark"] :is(.check-summary.error,.violation-admin-deadline[data-deadline-state="overdue"]){background-color:#492936;color:#ffb1b8;border-color:#795061}
+html[data-theme="dark"] :is(.supplier-amcu-active,.supplier-application-negative) td,
+html[data-theme="dark"] #referenceAmcu tr.amcu-active-supplier td{background-color:#392635;color:var(--ink)}
+html[data-theme="dark"] .frameworks-table tr.framework-agreement-pending td,
+html[data-theme="dark"] #referenceAmcu tr.amcu-applicant td{background-color:#443b26;color:#ffdc8a}
+html[data-theme="dark"] .applications-toolbar+.table-card #applicationsTable td.sticky,
+html[data-theme="dark"] #applicationsTable tr.application-final-locked td.locked,
+html[data-theme="dark"] tbody tr.application-review-completed td{background-color:#20334c;color:var(--ink)}
+html[data-theme="dark"] tbody tr.application-review-completed:is(:hover,.active,:has(.row-check:checked)) td{background-color:#203e62;color:var(--ink)}
+html[data-theme="dark"] :is(.remark-option:hover,.chat-message.own){background-color:#203e62;color:var(--ink)}
+html[data-theme="dark"] button.danger{background-color:#492936;color:#ffb1b8;border-color:#795061}
+html[data-theme="dark"] button.danger:hover{background-color:#603047;color:#fff}
+html[data-theme="dark"] #adminSchemaPanel :is(.schema-mode,.schema-filters,.schema-table-wrap,.schema-detail,.schema-flow,.schema-flow-nodes>div,.schema-relations){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] #adminSchemaPanel :is(.schema-mode button[aria-pressed=true],.schema-chip){background-color:#203e62;color:#86bdff}
+html[data-theme="dark"] #adminSchemaPanel .schema-chip.passive{background-color:#20334c;color:var(--muted)}
+html[data-theme="dark"] #adminSchemaPanel .schema-table th{background-color:#152b46;color:var(--ink)}
+html[data-theme="dark"] #adminSchemaPanel .schema-table td{background-color:#102238;color:var(--ink)}
+html[data-theme="dark"] :is(.contract-experience-links a,.chat-file,.chat-application-card){color:#86bdff}
 }
