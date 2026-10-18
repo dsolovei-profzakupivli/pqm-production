@@ -1,7 +1,6 @@
 /* Sandbox decoration only. One bounded calendar timer, no API/profile writes. */
 (()=>{
-  const title=document.querySelector('.prod-brand-copy strong');
-  if(!title)return;
+  const title=document.querySelector('.sandbox-brand-copy strong, .prod-brand-copy strong');
   const key='pqm.halloween.cat.enabled.v1';
   let preferred=true,enabled=false,seasonTimer=null,input=null,hint=null;
   try{preferred=localStorage.getItem(key)!=='0'}catch{/* Private storage may be unavailable. */}
@@ -21,6 +20,7 @@
     seasonTimer=setTimeout(synchronize,delay);
   };
   synchronize();
+  if(title){
   title.classList.add('halloween-title');
   title.insertAdjacentHTML('beforeend',`<svg class="halloween-cat" viewBox="0 0 156 57" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
     <g fill="#101116" stroke="#30323b" stroke-width=".8" stroke-linejoin="round">
@@ -36,6 +36,7 @@
     <path d="M45 32L42 34M45 32L48 34M35 30L23 28M35 32L22 33M55 30L67 28M55 32L68 34M36 48L36 51M39 48L39 51M56 47L57 50M59 47L60 50" fill="none" stroke="#777581" stroke-width=".7" stroke-linecap="round"/>
     <path d="M73 20Q88 14 102 21" fill="none" stroke="#34343e" stroke-width="1.2"/>
   </svg>`);
+  }
   const nav=document.querySelector('#mainNav');
   if(nav){
     const spider=document.createElement('span');spider.className='halloween-spider';

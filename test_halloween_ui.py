@@ -81,7 +81,8 @@ class HalloweenUiTests(unittest.TestCase):
     def test_decorative_svg_and_no_backend_calls(self):
         source=Path('halloween.js').read_text(encoding='utf-8')
         self.assertIn('aria-hidden="true" focusable="false"',source)
-        self.assertIn("document.querySelector('.prod-brand-copy strong')",source)
+        self.assertIn("document.querySelector('.sandbox-brand-copy strong, .prod-brand-copy strong')",source)
+        self.assertNotIn('if(!title)return',source)
         for forbidden in ['fetch(', 'XMLHttpRequest', '/api/', 'setInterval(']:
             self.assertNotIn(forbidden,source)
         self.assertEqual(source.count('setTimeout('),1)
