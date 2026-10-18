@@ -66,4 +66,29 @@ html[data-theme="dark"] #protocolDialog :is(.protocol-controls,.protocol-summary
 html[data-theme="dark"] :is(.operational-task-head,.operational-inline-form){background-color:#132840!important;border-color:var(--line)!important}
 html[data-theme="dark"] dialog label{color:var(--muted)}
 html[data-theme="dark"] .operational-task-head>div>span{color:#86bdff}
+/* Empty and dynamically inserted surfaces, including detached detail windows. */
+html[data-theme="dark"] :is(.reference-panel,.framework-detail-summary>div,.check-summary,.check-list,.signature-card,.remarks-mode,.protocol-issue){background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] #supplierProfileBody>:is(.supplier-profile-section,.supplier-profile-overview),
+html[data-theme="dark"] #operationalTaskDialog .request-details-body,
+html[data-theme="dark"] #operationalTaskDialog .operational-amcu-overview>section,
+html[data-theme="dark"] #docsDialog .history-document-group>h3{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] .request-details-dialog[data-detail-window] :is(.request-details-body,.supplier-profile-body,.supplier-profile-section,.supplier-profile-grid,.supplier-profile-table),
+html[data-theme="dark"] .request-details-dialog[data-detail-window] .request-details-body>section{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(.request-long-text,.check-row.neutral span){color:var(--muted)}
+html[data-theme="dark"] .scheduler-job,
+html[data-theme="dark"] .admin-data-section .bids-status-grid article{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] :is(.scheduler-job header span,.runtime-feature-state.enabled){color:#8be0b6}
+html[data-theme="dark"] :is(.scheduler-job.disabled header span,.runtime-feature-state.disabled){color:var(--muted)}
+/* Existing light row states include important and ID-scoped declarations. */
+html[data-theme="dark"] td.auto-filled{background-color:#20334c!important;color:var(--ink)}
+html[data-theme="dark"] tbody tr:is(:hover,.active) td.auto-filled{background-color:#28517b!important}
+html[data-theme="dark"] .supplier-table tr.supplier-candidate td,
+html[data-theme="dark"] #historyView .history-table tr.history-inactive-admitted>td{background-color:#20334c;color:var(--ink)}
+html[data-theme="dark"] .supplier-table tr.supplier-candidate strong{color:var(--ink)}
+html[data-theme="dark"] .requests-table .request-row:hover td,
+html[data-theme="dark"] .frameworks-table tbody tr[data-framework-id]:hover td,
+html[data-theme="dark"] #historyView .history-table tr.history-inactive-admitted:hover>td{background-color:#203e62}
+html[data-theme="dark"] .frameworks-table th[data-framework-sort]:hover{background-color:#203e62}
+html[data-theme="dark"] :is(.check-notice,.authority-panel),
+html[data-theme="dark"] .business-table .needs-review td{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
 }
