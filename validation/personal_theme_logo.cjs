@@ -5,7 +5,7 @@ const root=path.resolve(__dirname,'..'),out=process.env.PQM_THEME_EVIDENCE||requ
 (async()=>{
  const original=fs.readFileSync(path.join(root,'assets/pqm-brand-mark-prod.svg'),'utf8').replaceAll('\r\n','\n').trim();
  const dark=fs.readFileSync(path.join(root,'assets/pqm-brand-mark-prod-dark.svg'),'utf8').trim();
- assert.equal(dark,original.replaceAll('fill="#132840"','fill="#fff"'),'Only P/M fills may change');
+ assert.equal(dark,original.replaceAll('fill="#132840"','fill="#fff"').replace('r="10" fill="#fff"','r="10" fill="#132840"'),'Only P/M and Q centre fills may change');
  const html=fs.readFileSync(process.env.PQM_SERVED_HTML||path.join(root,'index.html'),'utf8');
  assert.equal(html,fs.readFileSync(path.join(root,'index.html'),'utf8'),'Served Production HTML must match candidate');
  const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:{})});
