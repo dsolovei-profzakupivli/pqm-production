@@ -119,4 +119,11 @@ html[data-theme="dark"] #adminSchemaPanel .schema-chip.passive{background-color:
 html[data-theme="dark"] #adminSchemaPanel .schema-table th{background-color:#152b46;color:var(--ink)}
 html[data-theme="dark"] #adminSchemaPanel .schema-table td{background-color:#102238;color:var(--ink)}
 html[data-theme="dark"] :is(.contract-experience-links a,.chat-file,.chat-application-card){color:#86bdff}
+html[data-theme="dark"] #historyColumnsDialog footer,
+html[data-theme="dark"] #suppliersView .supplier-advanced-filters{background-color:#132840;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] #suppliersView .supplier-filter-field>input{background-color:#193451;color:var(--ink);border-color:#4a6788}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness].active{background-color:#215487;color:#fff;border-color:#86bdff}
+html[data-theme="dark"] .edr-monitoring-kpis button:is([data-freshness="gt30"],[data-freshness="gt60"]).active{background-color:#443b26;color:#ffdc8a;border-color:#74653f}
+html[data-theme="dark"] .edr-monitoring-kpis button[data-freshness="gt90"].active{background-color:#492936;color:#ffb1b8;border-color:#795061}
+html[data-theme="dark"] .edr-monitoring-kpis button.active span{color:inherit}
 }
