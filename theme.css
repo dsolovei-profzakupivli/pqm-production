@@ -59,4 +59,11 @@ html[data-theme="dark"] :is(.protocol-period label,.work-queue-kpis span,.chat-e
 html[data-theme="dark"] #suppliersView .supplier-filter-field>label{color:var(--muted)}
 html[data-theme="dark"] #frameworkAnalyticsView label{color:var(--muted)}
 html[data-theme="dark"] .work-queue-kpis button.active span{color:#edf3fc}
+/* Existing ID-scoped and floating-window surfaces must also be recoloured. */
+html[data-theme="dark"] dialog>form>header,
+html[data-theme="dark"] dialog>form>footer,
+html[data-theme="dark"] #protocolDialog :is(.protocol-controls,.protocol-summary),
+html[data-theme="dark"] :is(.operational-task-head,.operational-inline-form){background-color:#132840!important;border-color:var(--line)!important}
+html[data-theme="dark"] dialog label{color:var(--muted)}
+html[data-theme="dark"] .operational-task-head>div>span{color:#86bdff}
 }
