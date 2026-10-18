@@ -4,7 +4,7 @@
 on 19 October 2026. Preserve the witches, spark trail, cat eyes and theme
 appearance without further design changes.
 
-Parent baseline: `8fa52a62641f80bb322de177a76a98bf92ce3ecb`.
+Sandbox baseline: `8fa52a62641f80bb322de177a76a98bf92ce3ecb`.
 Candidate branch: `codex/sandbox-halloween-candidate-20261019`.
 The exact candidate revision is this commit, obtainable with `git rev-parse HEAD`.
 
@@ -69,3 +69,38 @@ This commit and candidate-branch publication authorize no merge, deployment,
 restart, Production promotion or workflow dispatch by the agent. Stop after
 publishing and let the user run GitHub Actions manually. Full Release Gate
 acceptance remains pending that manual run.
+
+## Visually accepted atlas-frame correction
+
+The first candidate `9ceb412639bac494b3bb14c4fc7218ccb86c10b8` passed manual
+Release Gate run `39173122347`, including 1766 regression tests. A subsequent
+visual review identified neighbouring-frame pixels beside the witches.
+
+The default SVG `xMidYMid meet` alignment leaves horizontal gutters when each
+source frame is fitted into the approved viewport. `viewBox` alone did not
+clip the atlas to that frame, so the other witch's broom could paint there.
+Each image now has an explicit `userSpaceOnUse` clip matching its source frame.
+The PNG, witches, timing, dimensions, trajectory, eye animation and spark
+implementation are unchanged. No background masking is used.
+
+The user visually accepted this correction (`VISUAL_ACCEPTANCE=PASS`).
+Pixel checks show 30/349 painted gutter pixels before and zero after for
+witches 1/2 in both themes. Both complete subject components remain inside
+their source bounds; the original PNG bytes are unchanged. The review samples
+100 flight phases for each witch/theme and preserves geometry and timing.
+
+Reproduce the local enlarged comparison with:
+
+```text
+python -B validation/render_halloween_integration.py
+node validation/halloween_fragment_review.cjs before
+node validation/halloween_fragment_review.cjs after
+python -B validation/halloween_fragment_report.py
+```
+
+The before renderer reads only the original candidate's motion script from
+Git history; it never rewrites working source. The report uses Pillow for
+read-only alpha-component analysis. Open `evidence/halloween-fragment/index.html`.
+
+The earlier successful Release Gate covers only `9ceb412...`. Run it manually
+again on the new exact branch SHA; do not promote using the old result.

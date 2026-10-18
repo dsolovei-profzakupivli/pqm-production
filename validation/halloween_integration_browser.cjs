@@ -3,8 +3,8 @@ const {chromium}=require('C:/Users/User/.cache/codex-runtimes/codex-primary-runt
 const root=path.resolve(__dirname,'..'),out=path.join(root,'evidence','halloween-integration');
 const scripts=new Set(['theme_ui.js','nav_icons.js','sandbox_contrast.js','halloween_season.js','halloween.js','halloween_motion.js']);
 const browserPath='C:/Users/User/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe';
-async function fixture(browser,{candidate=true,theme='light',zoom=1,width=1440,reducedMotion='no-preference',off=false,fast=true,clock=false}={}){
- const context=await browser.newContext({viewport:{width,height:960},deviceScaleFactor:1,reducedMotion,timezoneId:'Europe/Kyiv'});
+async function fixture(browser,{candidate=true,theme='light',zoom=1,width=1440,reducedMotion='no-preference',off=false,fast=true,clock=false,dpr=1,motionSource=null}={}){
+ const context=await browser.newContext({viewport:{width,height:960},deviceScaleFactor:dpr,reducedMotion,timezoneId:'Europe/Kyiv'});
  await context.addInitScript(({fast,off})=>{
   const NativeDate=Date;let now=NativeDate.parse('2026-10-19T12:00:00Z');
   window.Date=class extends NativeDate{constructor(...a){super(...(a.length?a:[now]))}static now(){return now}};
@@ -31,6 +31,7 @@ async function fixture(browser,{candidate=true,theme='light',zoom=1,width=1440,r
   const u=new URL(r.request().url());if(u.origin!=='http://pqm.halloween.local'){blocked.push(u.href);return r.abort()}
   const rel=decodeURIComponent(u.pathname).replace(/^\//,''),file=path.resolve(root,rel);
   if(u.pathname==='/')return r.fulfill({body:fs.readFileSync(path.join(out,candidate?'candidate.html':'baseline.html')),contentType:'text/html'});
+  if(rel==='halloween_motion.js'&&motionSource!==null)return r.fulfill({body:motionSource,contentType:'application/javascript'});
   if(!file.startsWith(root+path.sep))return r.abort();
   if(rel.endsWith('.js')&&!scripts.has(path.basename(rel)))return r.fulfill({body:'',contentType:'application/javascript'});
   if(!fs.existsSync(file))return r.fulfill({status:404,body:'missing fixture file'});

@@ -101,7 +101,10 @@
       lane.style.setProperty('--flight-viewport-width',(innerWidth/zoom)+'px');
       const sprite=document.createElement('span');sprite.className='halloween-flight-sprite';
       const second=variant++%2!==0,box=second?'1050 0 933 793':'0 0 1050 793';
-      sprite.innerHTML=`<svg viewBox="${box}" focusable="false"><image href="assets/halloween-witches-sheet.png" width="1983" height="793"/></svg>`;
+      // viewBox + xMidYMid meet leaves side gutters inside this viewport.
+      // Explicitly clip the atlas frame so adjacent artwork cannot paint there.
+      const frameId=second?'pqmWitchFrame2':'pqmWitchFrame1';
+      sprite.innerHTML=`<svg viewBox="${box}" focusable="false"><defs><clipPath id="${frameId}" clipPathUnits="userSpaceOnUse"><rect x="${second?1050:0}" y="0" width="${second?933:1050}" height="793"/></clipPath></defs><image clip-path="url(#${frameId})" href="assets/halloween-witches-sheet.png" width="1983" height="793"/></svg>`;
       lane.append(sprite);queue.append(lane);flight=lane;
       // Translation is confined to this clipped sky lane, below all workspace content.
       lane.style.setProperty('--flight-distance',(-lane.clientWidth-125)+'px');
