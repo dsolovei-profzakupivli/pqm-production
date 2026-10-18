@@ -18,9 +18,9 @@ class HalloweenUiTests(unittest.TestCase):
 
     def test_workqueue_background_is_scoped_and_behind_content(self):
         css=Path('halloween.css').read_text(encoding='utf-8')
-        layer=css[css.index('/* Work Queue background only.'):]
-        self.assertIn('html[data-halloween="on"] #workQueueView:not([hidden])',layer)
-        self.assertIn('position:absolute;inset:0 0 auto;height:var(--halloween-queue-area-height,100%)',layer)
+        layer=css[css.index('/* Explicitly selected workspaces only.'):]
+        self.assertIn('html[data-halloween="on"] .halloween-workspace:not([hidden])',layer)
+        self.assertIn('position:absolute;inset:0 0 auto;height:var(--halloween-workspace-height,0px)',layer)
         self.assertIn('z-index:-1;pointer-events:none',layer)
         self.assertNotIn('animation',layer)
         for forbidden in ['.card{','button{','input{','min-height:','overflow:']:

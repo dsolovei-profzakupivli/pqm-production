@@ -1,6 +1,0 @@
-/* LOCAL VISUAL EXPERIMENT: only the three explicitly requested workspaces. */
-html[data-halloween="on"] :is(#applicationsView,#operationalTasksView,#suppliersView):not([hidden]){position:relative;isolation:isolate}
-html[data-halloween="on"] :is(#applicationsView,#operationalTasksView,#suppliersView):not([hidden])::before{content:"";position:absolute;inset:0 0 auto;height:var(--halloween-experiment-height,100%);z-index:-1;pointer-events:none;background-image:url("assets/halloween-workqueue-light.webp");background-size:cover;background-position:right bottom;background-repeat:no-repeat}
-html[data-halloween="on"][data-pqm-environment="sandbox"] :is(#applicationsView,#operationalTasksView,#suppliersView):not([hidden])::before,
-html[data-halloween="on"][data-theme="dark"] :is(#applicationsView,#operationalTasksView,#suppliersView):not([hidden])::before{background-image:url("assets/halloween-workqueue-dark.webp")}
-@media(max-width:900px){html[data-halloween="on"] :is(#applicationsView,#operationalTasksView,#suppliersView):not([hidden])::before{background-size:contain}}

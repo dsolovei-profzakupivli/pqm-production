@@ -87,19 +87,26 @@
     if(window.visualViewport){visualViewport.addEventListener('resize',schedule,{passive:true});visualViewport.addEventListener('scroll',schedule,{passive:true})}
     document.fonts?.ready.then(schedule);refreshHat();
   }
-  const queue=document.querySelector('#workQueueView');
-  if(queue){
+  const workspaceIds=['workQueueView','applicationsView','historyView','suppliersView','edrMonitoringView','frameworkAnalyticsView','procurementsView','referencesView','requestsView','operationalTasksView'];
+  const workspaces=workspaceIds.map(id=>document.querySelector('#'+id)).filter(Boolean);
+  for(const view of workspaces)view.classList.add('halloween-workspace');
+  if(workspaces.length){
     refreshQueueBackground=()=>{
-      if(!enabled||queue.hidden)return;
-      const box=queue.getBoundingClientRect(),zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
-      // Paint down to the viewport bottom; never add layout height or scrolling.
-      const height=Math.max(box.height,innerHeight-box.top)/zoom;
-      queue.style.setProperty('--halloween-queue-area-height',height+'px');
+      if(!enabled)return;
+      const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
+      for(const view of workspaces){
+        if(view.hidden)continue;
+        const box=view.getBoundingClientRect();
+        // One viewport-sized scene, independent of rows and document scroll.
+        const top=Math.max(0,box.top+window.scrollY);
+        const height=Math.max(0,innerHeight-top)/zoom;
+        view.style.setProperty('--halloween-workspace-height',height+'px');
+      }
     };
     let queued=false;
     const schedule=()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;refreshQueueBackground()})};
-    new ResizeObserver(schedule).observe(queue);
-    new MutationObserver(schedule).observe(queue,{attributes:true,attributeFilter:['hidden']});
+    const size=new ResizeObserver(schedule),visibility=new MutationObserver(schedule);
+    for(const view of workspaces){size.observe(view);visibility.observe(view,{attributes:true,attributeFilter:['hidden']})}
     window.addEventListener('resize',schedule,{passive:true});
     if(window.visualViewport)visualViewport.addEventListener('resize',schedule,{passive:true});
     document.fonts?.ready.then(schedule);refreshQueueBackground();

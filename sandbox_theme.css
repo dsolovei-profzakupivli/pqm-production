@@ -24,6 +24,8 @@ html[data-pqm-environment="sandbox"] :is(.topbar,dialog,th,
   background-color:#132840!important;
 }
 html[data-pqm-environment="sandbox"] :is(td,tbody,table) {background-color:#102238!important}
+/* This is a flex wrapper, not a KPI card: keep its unused space unpainted. */
+html[data-pqm-environment="sandbox"] #requestsView #requestAuthorityCards {background-color:transparent!important}
 html[data-pqm-environment="sandbox"] tr:hover td,
 html[data-pqm-environment="sandbox"] tr.active td {background-color:#203e62!important}
 html[data-pqm-environment="sandbox"] :is(h1,h2,h3,h4,h5,strong,b,label,summary) {color:var(--ink)}
