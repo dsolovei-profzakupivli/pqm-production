@@ -135,20 +135,24 @@ renderTypesContext.renderOperationalTaskTypes({nazk_check:3,amcu_exclusion:2,war
 for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_exclusion'])assert.match(renderedTypes.innerHTML,new RegExp(`data-task-type="${type}"`));
 assert.match(renderedTypes.innerHTML,/data-task-type="warning_block" aria-pressed="true"/);
 assert.match(renderedTypes.innerHTML,/data-task-type="nazk_check" aria-pressed="false"/);
-let typeReloads=0;
+let typeReloads=0;const typeSnapshots=[];
 const typeNodes=new Map(),typeKpiNode={};
-const typeActions=vm.createContext({$:selector=>{if(selector==='#operationalTaskTypes')return typeKpiNode;if(!typeNodes.has(selector))typeNodes.set(selector,{value:'stale'});return typeNodes.get(selector)},operationalTaskTimer:null,clearTimeout(){},loadOperationalTasks(){typeReloads++}});
-vm.runInContext(app.split(/\r?\n/).find(line=>line.startsWith('function resetOperationalKpiFilters(){')),typeActions);
-const typeSelect=typeActions.$('#operationalTaskType');
-vm.runInContext(section(app,"$('#operationalTaskTypes').onclick=","function operationalTaskEmptyMessage"),typeActions);
-for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
-  const typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
-  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
-  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
-  for(const id of ['operationalTaskSearch','operationalTaskOfficer','operationalTaskDateFrom'])assert.equal(typeActions.$('#'+id).value,'');
-  assert.equal(typeActions.$('#operationalTaskStatus').value,'active');
+const typeActions=vm.createContext({$:selector=>{if(selector==='#operationalTaskTypes')return typeKpiNode;if(!typeNodes.has(selector))typeNodes.set(selector,{value:''});return typeNodes.get(selector)},operationalTaskTimer:null,operationalBasisDirection:'desc',clearTimeout(){},loadOperationalTasks(){typeReloads++;typeSnapshots.push(JSON.stringify(typeActions.operationalTaskParams()))}});
+vm.runInContext(app.split(/\r?\n/).filter(line=>line.startsWith('function operationalTaskParams()')||line.startsWith("$('#operationalTaskTypes').onclick=")).join('\n'),typeActions);
+const typeSelect=typeActions.$('#operationalTaskType'),statusSelect=typeActions.$('#operationalTaskStatus');
+for(const status of ['completed','awaiting_response'])for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
+  const shared={operationalTaskSearch:'тест 0001',operationalTaskOfficer:'42',operationalTaskDateFrom:'2026-10-17'};
+  for(const [id,value] of Object.entries(shared))typeActions.$('#'+id).value=value;
+  typeSelect.value='';statusSelect.value=status;
+  const before=JSON.stringify(typeActions.operationalTaskParams()),typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);assert.equal(statusSelect.value,status);
+  assert.equal(JSON.stringify(typeActions.operationalTaskParams()),JSON.stringify({...JSON.parse(before),type}));
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,'');assert.equal(statusSelect.value,status);
+  assert.equal(JSON.stringify(typeActions.operationalTaskParams()),before);
+  for(const [id,value] of Object.entries(shared))assert.equal(typeActions.$('#'+id).value,value);
 }
-assert.equal(typeReloads,8);
+assert.equal(typeReloads,16);
+for(let i=0;i<typeSnapshots.length;i+=2){assert.notEqual(typeSnapshots[i],typeSnapshots[i+1]);assert.equal(JSON.parse(typeSnapshots[i]).status_group,JSON.parse(typeSnapshots[i+1]).status_group)}
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
 assert.match(app,/cell\.classList\.add\('supplier-code-action-cell'\)/);
 assert.match(app,/line\.append\(code,action\);cell\.classList\.add\('supplier-code-action-cell'\);cell\.replaceChildren\(line\)/);
