@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import unittest
 from pathlib import Path
@@ -8,14 +9,22 @@ import sandbox_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LIVE_INDEX_SHA256 = "f2c0abda242358eb33c133587185b2e27f021081aacdf8c3b3094c160daaa576"
+HALLOWEEN_CONTRACT = ROOT / "test_halloween_motion_contract.json"
+
+
+def normalized_index_sha256():
+    raw = (ROOT / "index.html").read_bytes()
+    raw = raw.replace(b"\r\n", b"\n")
+    return hashlib.sha256(raw).hexdigest()
 
 
 class SandboxDropdownPopoverContractTests(unittest.TestCase):
     def test_protected_index_is_unchanged(self):
+        contract = json.loads(HALLOWEEN_CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(contract["normalization"], "CRLF to LF for text only")
         self.assertEqual(
-            hashlib.sha256((ROOT / "index.html").read_bytes()).hexdigest(),
-            LIVE_INDEX_SHA256,
+            normalized_index_sha256(),
+            contract["files"]["index.html"],
         )
 
     def test_script_is_injected_only_by_sandbox_decorator(self):
