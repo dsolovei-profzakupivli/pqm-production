@@ -68,6 +68,27 @@
   box-shadow: var(--shadow);
 }
 
+/* Open filter panels use the browser top layer and escape isolated workspaces. */
+.multi-filter.popover-fixed[open] {
+  z-index: 10001;
+}
+.multi-filter.popover-fixed[open] > .multi-panel,
+.advanced-filters.popover-fixed[open] > :is(.advanced-filter-panel,.edr-monitoring-filter-grid) {
+  position: fixed;
+  z-index: 10000;
+  inset: auto;
+  margin: 0;
+  top: var(--registry-popover-top);
+  left: var(--registry-popover-left);
+  right: auto;
+  bottom: auto;
+  max-width: min(430px, calc(100vw - 16px));
+  max-height: min(320px, calc(100vh - 16px));
+}
+.multi-filter.popover-fixed[open] > .multi-panel { min-width: var(--registry-popover-min-width); }
+.advanced-filters.popover-fixed[open] > .advanced-filter-panel { max-width: min(820px, calc(100vw - 16px)); }
+.advanced-filters.popover-fixed[open] > .edr-monitoring-filter-grid { max-width: calc(100vw - 16px); }
+
 .multi-panel label {
   display: flex;
   align-items: flex-start;

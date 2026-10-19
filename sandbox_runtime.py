@@ -718,6 +718,7 @@ def decorate_html(raw):
         if text.count(halloween_anchor) != 1:
             raise RuntimeError('STOP: SANDBOX Halloween script markup mismatch')
         text = text.replace(halloween_anchor, halloween_anchor +
+                            '\n  <script src="registry_popovers.js"></script>'
                             '\n  <link rel="stylesheet" href="halloween_motion.css">'
                             '\n  <script src="halloween_motion.js"></script>', 1)
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
