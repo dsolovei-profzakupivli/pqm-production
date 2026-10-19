@@ -69,10 +69,15 @@
 }
 
 /* Filter popovers escape their responsive scrollports while open. */
+.multi-filter.popover-fixed[open] {
+  z-index: 10001;
+}
 .multi-filter.popover-fixed[open] > .multi-panel,
 .advanced-filters.popover-fixed[open] > :is(.advanced-filter-panel,.edr-monitoring-filter-grid) {
   position: fixed;
-  z-index: 100;
+  z-index: 10000;
+  inset: auto;
+  margin: 0;
   top: var(--registry-popover-top);
   left: var(--registry-popover-left);
   right: auto;
