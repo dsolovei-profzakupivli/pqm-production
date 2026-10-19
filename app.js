@@ -1608,6 +1608,13 @@ function renderOperationalTaskTypes(counts){
   const selected=$('#operationalTaskType').value;
   $('#operationalTaskTypes').innerHTML=['nazk_check','amcu_exclusion','warning_block','termination_exclusion'].filter(type=>Number(counts[type])>0).map(type=>`<button type="button" class="operational-type-marker operational-type-kpi${selected===type?' active':''}" data-task-type="${type}" aria-pressed="${selected===type}"><span>${esc(operationalTaskTypeLabels[type])}</span><strong>${Number(counts[type]).toLocaleString('uk-UA')}</strong></button>`).join('');
 }
+function renderOperationalTaskOfficers(officers=[]){
+  const select=$('#operationalTaskOfficer');if(!select)return;
+  const selected=select.value,options=[{value:'',label:'Усі УО'},...officers.map(item=>({value:String(item.value),label:item.historical_snapshot?`${item.full_name} · Історична УО`:item.full_name})),{value:'__unassigned__',label:'Не призначено'}];
+  if(selected&&!options.some(item=>item.value===selected))options.splice(options.length-1,0,{value:selected,label:selected.startsWith('__legacy_snapshot__:')?selected.slice('__legacy_snapshot__:'.length)+' · збережений історичний фільтр':'Вибрану УО не знайдено'});
+  select.innerHTML=options.map(item=>`<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');
+  select.value=selected;
+}
 $('#operationalTaskTypes').onclick=event=>{const chip=event.target.closest('button[data-task-type]');if(!chip)return;const filter=$('#operationalTaskType');filter.value=filter.value===chip.dataset.taskType?'':chip.dataset.taskType;loadOperationalTasks()};
 function operationalTaskEmptyMessage(){const group=$('#operationalTaskStatus').value||'active',type=$('#operationalTaskType').value;if(type==='amcu_exclusion'&&group==='active')return 'Активних задач АМКУ немає';if(group==='active')return 'Активних операційних задач немає';if(group==='completed')return 'Виконаних задач за вибраними умовами немає';if(group==='cancelled')return 'Скасованих задач за вибраними умовами немає';return 'Задач за вибраними умовами немає'}
 let operationalListGeneration=0;
@@ -1622,6 +1629,7 @@ async function loadOperationalTasks(){
     const kpiKeys=['active','needs_action','awaiting_response','ready_for_document','awaiting_sync','completed'];
     $$('#operationalTaskKpis [data-task-kpi]').forEach(card=>{const value=k[card.dataset.taskKpi]||0,target=card.querySelector('strong');if(target)target.textContent=Number(value).toLocaleString('uk-UA');card.classList.toggle('active',card.dataset.taskKpi===(data.status_group||'active'))});
     renderOperationalTaskTypes(data.type_counts||{});
+    renderOperationalTaskOfficers(data.officers||[]);
     $('#operationalActionHeader').hidden=!showAction;
     body.innerHTML=(data.items||[]).map(item=>`<tr data-task-id="${esc(item.id)}" tabindex="0" role="button" aria-label="Відкрити задачу для ${esc(item.supplier_name_snapshot)}"><td>${operationalTaskTypeMarker(item.task_type)}</td><td><strong>${esc(item.supplier_name_snapshot)||'—'}</strong><small>${esc(item.supplier_code)||'—'}</small></td><td>${operationalTriggerHtml(item)}</td><td ${showAction?'':'hidden'}>${esc(operationalListAction(item))}</td><td>${esc(formatOfficerName(item.assigned_officer_name))||'Не призначено'}</td><td>${esc(operationalTaskStatusLabel(item))}</td><td>${esc(displayDate(item.created_at))||'—'}</td><td>${operationalBasisHtml(item)}</td><td>${operationalResultHtml(item)}</td><td>${operationalDecisionHtml(item)}</td></tr>`).join('')||`<tr><td colspan="${showAction?10:9}">${operationalTaskEmptyMessage()}</td></tr>`;
     $('#operationalTasksCount').textContent=`Знайдено задач: ${Number(data.total||0).toLocaleString('uk-UA')}`;

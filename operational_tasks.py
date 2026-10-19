@@ -1169,7 +1169,7 @@ def list_tasks(con,params):
     where=[]; args=[]
     def value(key):
         raw=params.get(key,[""]); return (raw[0] if isinstance(raw,list) else raw).strip()
-    if value("officer"): where.append("CAST(assigned_officer_id AS TEXT)=?"); args.append(value("officer"))
+    officer_filter=value("officer")
     group=value("status_group") or "active"
     if group not in STATUS_GROUPS: raise ValueError("Невідома група статусів")
     grouped=sorted(STATUS_GROUPS[group]); where.append("status IN (%s)" % ",".join("?" for _ in grouped)); args.extend(grouped)
@@ -1194,13 +1194,38 @@ def list_tasks(con,params):
       LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
       LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id"""
     qualified_clause=clause.replace("status", "t.status").replace("task_type", "t.task_type").replace("assigned_officer_id", "COALESCE(c.responsible_officer_id,t.assigned_officer_id)").replace("supplier_name_snapshot", "t.supplier_name_snapshot").replace("supplier_code", "t.supplier_code").replace("created_at", "t.created_at")
+    officer_args=[]
+    if officer_filter=="__unassigned__":
+        qualified_clause+=" AND COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NULL AND NULLIF(TRIM(COALESCE(c.responsible_officer_name,'')),'') IS NULL"
+    elif officer_filter.startswith("__legacy_snapshot__:"):
+        qualified_clause+=" AND COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NULL AND TRIM(c.responsible_officer_name)=?"
+        officer_args.append(officer_filter.removeprefix("__legacy_snapshot__:"))
+    elif officer_filter:
+        qualified_clause+=" AND CAST(COALESCE(c.responsible_officer_id,t.assigned_officer_id) AS TEXT)=?"
+        officer_args.append(officer_filter)
+    facet_args=args+officer_args
+    officer_rows=con.execute("""SELECT value,officer_name,historical_snapshot FROM (
+      SELECT CAST(COALESCE(c.responsible_officer_id,t.assigned_officer_id) AS TEXT) value,
+        COALESCE(NULLIF(TRIM(nuo.full_name),''),NULLIF(TRIM(c.responsible_officer_name),''),NULLIF(TRIM(o.full_name),''),'') officer_name,
+        0 historical_snapshot
+      FROM operational_tasks t LEFT JOIN authorized_officers o ON o.id=t.assigned_officer_id
+      LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+      LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id
+      WHERE COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NOT NULL
+      UNION
+      SELECT '__legacy_snapshot__:'||TRIM(c.responsible_officer_name),TRIM(c.responsible_officer_name),1
+      FROM operational_tasks t LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+      WHERE COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NULL
+        AND NULLIF(TRIM(COALESCE(c.responsible_officer_name,'')),'') IS NOT NULL
+      ) ORDER BY officer_name COLLATE NOCASE,value""").fetchall()
+    officers=[{"value":str(row["value"]),"full_name":row["officer_name"] or f"УО · ID {row['value']}",**({"historical_snapshot":True} if row["historical_snapshot"] else {})} for row in officer_rows]
     # Keep the LOCAL type facet: all other filters apply, the selected type does not.
     type_counts={row[0]:row[1] for row in con.execute(
         "SELECT t.task_type,COUNT(*)"+projection[projection.index("\n      FROM") :]+
-        qualified_clause+" GROUP BY t.task_type",args)}
+        qualified_clause+" GROUP BY t.task_type",facet_args)}
     if value("type"):
-        qualified_clause+=" AND t.task_type=?"; args.append(value("type"))
-    rows=con.execute(projection+qualified_clause+" ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,t.created_at DESC",args).fetchall()
+        qualified_clause+=" AND t.task_type=?"; facet_args.append(value("type"))
+    rows=con.execute(projection+qualified_clause+" ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,t.created_at DESC",facet_args).fetchall()
     items=[_task(con,row) for row in rows]
     if value('sort')=='latest_basis_date':
         direction=value('direction') or 'desc'
@@ -1209,7 +1234,7 @@ def list_tasks(con,params):
         items=dated+sorted((x for x in items if not x['latest_basis_date']),key=lambda x:x['id'])
     all_rows=con.execute("SELECT status FROM operational_tasks").fetchall()
     kpis={key:sum(r[0] in statuses for r in all_rows) for key,statuses in STATUS_GROUPS.items()}
-    return {"items":items,"total":len(items),"kpis":kpis,"type_counts":type_counts,"status_group":group}
+    return {"items":items,"total":len(items),"kpis":kpis,"type_counts":type_counts,"status_group":group,"officers":officers}
 
 
 def detail(con,task_id):
