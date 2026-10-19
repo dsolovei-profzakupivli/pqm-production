@@ -11,13 +11,14 @@
   const cat=document.querySelector('.halloween-cat');
   let timer=null,flight=null,variant=0,paused=false,blinkTimer=null,lookTimer=null;
   const eyeAnimations=[];
+  let nextBlinkAt=0,nextWinkAt=0,lastWinkAt=-Infinity,lidsBusy=false,lidGeneration=0,reactionPending=false;
   const track=a=>{eyeAnimations.push(a);a.oncancel=a.onfinish=()=>{const i=eyeAnimations.indexOf(a);if(i>=0)eyeAnimations.splice(i,1)};return a};
   let eyes=null;
   if(cat){
     // The resting cat remains original. Only the clipped iris/pupil overlay moves.
     eyes=document.createElement('span');eyes.className='halloween-cat halloween-cat-eyes';
     eyes.setAttribute('aria-hidden','true');
-    eyes.innerHTML='<svg viewBox="0 0 720 389" focusable="false"><defs><clipPath id="pqmCatEyeMask"><path d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190ZM565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatEyeMask)"><g class="pqm-cat-eye-art" opacity="0"><defs><linearGradient id="pqmCatIris" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d4e65c"/><stop offset=".6" stop-color="#e5ef7e"/><stop offset="1" stop-color="#bacc4d"/></linearGradient></defs><path fill="url(#pqmCatIris)" d="M479 168H535V228H479ZM556 208H620V265H556Z"/><g class="pqm-cat-gaze" fill="#090d0b"><ellipse cx="510" cy="201" rx="9" ry="14" transform="rotate(25 510 201)"/><ellipse cx="581" cy="235" rx="9" ry="14" transform="rotate(25 581 235)"/><g fill="#ffffe9"><ellipse cx="508" cy="192" rx="3.5" ry="4"/><circle cx="513" cy="197" r="1.5"/><ellipse cx="578" cy="226" rx="3.5" ry="4"/><circle cx="583" cy="231" r="1.5"/></g></g></g><path class="pqm-cat-lids" fill="#100f17" d="M479 168H535V228H479Z"/><path class="pqm-cat-lids" fill="#100f17" d="M556 208H620V265H556Z"/></g></svg>';
+    eyes.innerHTML='<svg viewBox="0 0 720 389" focusable="false"><defs><clipPath id="pqmCatEyeMask"><path d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190ZM565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatEyeMask)"><g class="pqm-cat-eye-art" opacity="0"><defs><linearGradient id="pqmCatIris" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d4e65c"/><stop offset=".6" stop-color="#e5ef7e"/><stop offset="1" stop-color="#bacc4d"/></linearGradient></defs><path fill="url(#pqmCatIris)" d="M479 168H535V228H479ZM556 208H620V265H556Z"/><g class="pqm-cat-gaze" fill="#090d0b"><ellipse cx="510" cy="201" rx="9" ry="14" transform="rotate(25 510 201)"/><ellipse cx="581" cy="235" rx="9" ry="14" transform="rotate(25 581 235)"/><g fill="#ffffe9"><ellipse cx="508" cy="192" rx="3.5" ry="4"/><circle cx="513" cy="197" r="1.5"/><ellipse cx="578" cy="226" rx="3.5" ry="4"/><circle cx="583" cy="231" r="1.5"/></g></g></g></g><defs><clipPath id="pqmCatLidMask"><path transform="translate(507 199) scale(1.2) translate(-507 -199)" d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190Z"/><path transform="translate(590 236) scale(1.2) translate(-590 -236)" d="M565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatLidMask)"><g class="pqm-cat-lids"><path fill="#0b0c10" d="M479 168H535V228H479Z"/><path d="M486 194Q504 208 529 203" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g><g class="pqm-cat-lids"><path fill="#0b0c10" d="M556 208H620V265H556Z"/><path d="M564 233Q586 246 614 238" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g></g></svg>';
     cat.after(eyes);
   }
   const allowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on'&&!!shell&&!shell.hidden;
@@ -32,6 +33,7 @@
     // Isolation changes painting order without creating a new containing block
     // for existing absolute/fixed children or changing layout geometry.
     for(const element of view.querySelectorAll(controlsSelector+','+workingSelector))if(!element.classList.contains('pqm-halloween-foreground'))element.classList.add('pqm-halloween-foreground');
+    for(const child of heading?.children||[])if(!child.classList.contains('pqm-halloween-foreground'))child.classList.add('pqm-halloween-foreground');
     for(const child of view.children)if(child!==heading&&!child.classList.contains('pqm-halloween-foreground'))child.classList.add('pqm-halloween-foreground');
   };
   const findSurface=()=>{
@@ -42,7 +44,10 @@
     if(document.querySelector('dialog[open]'))return{safe:false,reason:'dialog-open',view};
     const zoom=parseFloat(getComputedStyle(document.body).zoom)||1,r=view.getBoundingClientRect();
     const top=Math.max(0,r.top,document.querySelector('.topbar')?.getBoundingClientRect().bottom||0)+2;
-    return{safe:true,reason:'clear-sky',view,top:top/zoom,zoom,width:innerWidth/zoom};
+    const heading=view.querySelector(':scope > .module-heading,:scope > .page-heading,:scope > .history-heading');
+    const skyBottom=Math.min(innerHeight,heading?.getBoundingClientRect().bottom||top+86*zoom);
+    const amplitude=Math.max(0,Math.min(20,(skyBottom-top-86*zoom)/(2*zoom)));
+    return{safe:true,reason:'clear-sky',view,top:top/zoom,zoom,width:innerWidth/zoom,amplitude};
   };
   const stopGaze=()=>{if(eyes)for(const e of eyes.querySelectorAll('.pqm-cat-gaze,.pqm-cat-eye-art'))for(const a of e.getAnimations())a.cancel()};
   const refreshSurface=()=>{
@@ -50,7 +55,7 @@
     host.style.setProperty('--flight-viewport-width',(innerWidth/zoom)+'px');
     const previous=surface,wasSafe=surface.safe;surface=findSurface();host.dataset.view=surface.view?.id||'';host.dataset.reason=surface.reason;
     host.dataset.safe=String(surface.safe);host.style.visibility=surface.safe?'visible':'hidden';
-    if(surface.safe){host.style.top=surface.top+'px';host.style.setProperty('--flight-viewport-width',surface.width+'px');
+    if(surface.safe){host.style.setProperty('--maneuver-amplitude',surface.amplitude+'px');host.style.top=surface.top+'px';host.style.setProperty('--flight-viewport-width',surface.width+'px');
       if(flight){host.style.setProperty('--flight-distance',(-surface.width-125)+'px');if(previous.view!==surface.view||previous.top!==surface.top)stopTrail?.pause();stopTrail?.resize();stopTrail?.resume();if(!wasSafe){const a=flight.getAnimations().find(a=>a.animationName==='pqm-witch-cross');if(a)gaze(true,a.effect.getTiming().duration,a.currentTime||0)}}
     }else{stopTrail?.pause();if(wasSafe&&flight)stopGaze()}
   };
@@ -105,15 +110,37 @@
     const stop=()=>{stopped=true;pause();canvas.remove()};
     resize();resume();return{stop,pause,resume,resize};
   };
-  const stopEyes=()=>{clearTimeout(blinkTimer);clearTimeout(lookTimer);blinkTimer=lookTimer=null;for(const a of eyeAnimations)a.cancel();eyeAnimations.length=0;};
+  const stopEyes=()=>{clearTimeout(blinkTimer);clearTimeout(lookTimer);blinkTimer=lookTimer=null;lidGeneration++;lidsBusy=false;nextBlinkAt=nextWinkAt=0;reactionPending=false;for(const a of [...eyeAnimations])a.cancel();eyeAnimations.length=0;};
+  const animateLids=indices=>{
+    if(!eyes||!allowed()||lidsBusy)return;
+    lidsBusy=true;const generation=lidGeneration;
+    const lids=[...eyes.querySelectorAll('.pqm-cat-lids')];
+    const animations=indices.map(i=>track(lids[i].animate([
+      {opacity:0,transform:'scaleY(0)'},{opacity:1,transform:'scaleY(1)',offset:.45},
+      {opacity:1,transform:'scaleY(1)',offset:.55},{opacity:0,transform:'scaleY(0)'}
+    ],{duration:420,easing:'ease-in-out'})));
+    Promise.all(animations.map(a=>a.finished.catch(()=>{}))).then(()=>{
+      if(generation!==lidGeneration)return;lidsBusy=false;reactionPending=false;blink();
+    });
+  };
   const blink=()=>{
-    if(!eyes||!allowed()||blinkTimer!==null)return;
+    if(!eyes||!allowed()||blinkTimer!==null||lidsBusy)return;
+    const now=performance.now();
+    if(!nextBlinkAt)nextBlinkAt=now+7000+Math.random()*9000;
+    if(!nextWinkAt)nextWinkAt=now+40000+Math.random()*20000;
+    // A single eyelid clock coordinates bilateral blinks and one-eye winks.
     blinkTimer=setTimeout(()=>{blinkTimer=null;if(!allowed())return;
-      for(const lid of eyes.querySelectorAll('.pqm-cat-lids'))track(lid.animate([
-        {opacity:0,transform:'scaleY(0)'},{opacity:1,transform:'scaleY(1)',offset:.45},
-        {opacity:1,transform:'scaleY(1)',offset:.55},{opacity:0,transform:'scaleY(0)'}
-      ],{duration:420,easing:'ease-in-out'}));blink();
-    },7000+Math.random()*9000);
+      const now=performance.now();
+      if(now>=nextWinkAt){lastWinkAt=now;nextWinkAt=now+40000+Math.random()*20000;
+        nextBlinkAt=Math.max(nextBlinkAt,now+1800);animateLids([Math.random()<.5?0:1]);
+      }else{nextBlinkAt=now+7000+Math.random()*9000;animateLids([0,1])}
+    },Math.max(0,Math.min(nextBlinkAt,nextWinkAt)-now));
+  };
+  const reactAfterFlight=()=>{
+    if(!eyes||!allowed()||lidsBusy||performance.now()-lastWinkAt<40000||Math.random()>=.35)return;
+    // Tracking gaze finishes in the centre; then optionally wink. Reuse the
+    // existing eyelid clock rather than creating a per-flight reaction timer.
+    reactionPending=true;nextWinkAt=performance.now()+250;nextBlinkAt=Math.max(nextBlinkAt,nextWinkAt+1800);clearTimeout(blinkTimer);blinkTimer=null;blink();
   };
   const gaze=(tracking=false,flightDuration=13000,elapsed=0)=>{
     if(!eyes||!allowed())return;
@@ -133,7 +160,7 @@
     if(tracking&&elapsed){art.currentTime=elapsed;a.currentTime=elapsed}
   };
   const look=()=>{if(!eyes||!allowed()||lookTimer!==null)return;lookTimer=setTimeout(()=>{
-    lookTimer=null;if(!allowed())return;if(!flight)gaze();look();
+    lookTimer=null;if(!allowed())return;if(!flight&&!lidsBusy&&!reactionPending)gaze();look();
   },16000+Math.random()*12000)};
   const schedule=()=>{
     if(!allowed()||timer!==null||flight)return;
@@ -147,7 +174,8 @@
       // viewBox + xMidYMid meet leaves side gutters inside this viewport.
       // Explicitly clip the atlas frame so adjacent artwork cannot paint there.
       const frameId=second?'pqmWitchFrame2':'pqmWitchFrame1';
-      sprite.innerHTML=`<svg viewBox="${box}" focusable="false"><defs><clipPath id="${frameId}" clipPathUnits="userSpaceOnUse"><rect x="${second?1050:0}" y="0" width="${second?933:1050}" height="793"/></clipPath></defs><image clip-path="url(#${frameId})" href="assets/halloween-witches-sheet.png" width="1983" height="793"/></svg>`;
+      sprite.dataset.witch=second?'2':'1';
+      sprite.innerHTML=`<span class="halloween-witch-maneuver"><svg viewBox="${box}" focusable="false"><defs><clipPath id="${frameId}" clipPathUnits="userSpaceOnUse"><rect x="${second?1050:0}" y="0" width="${second?933:1050}" height="793"/></clipPath></defs><image clip-path="url(#${frameId})" href="assets/halloween-witches-sheet.png" width="1983" height="793"/></svg></span>`;
       lane.append(sprite);flight=sprite;
       // Translation is confined to this clipped sky lane, below all workspace content.
       lane.style.setProperty('--flight-distance',(-lane.clientWidth-125)+'px');
@@ -157,7 +185,7 @@
       lane.style.setProperty('--flight-duration',duration+'s');
       gaze(true,duration*1000);
       stopTrail=startTrail(lane,sprite.querySelector('svg'),second);
-      sprite.addEventListener('animationend',e=>{if(e.animationName!=='pqm-witch-cross')return;clearFlight();schedule()});
+      sprite.addEventListener('animationend',e=>{if(e.animationName!=='pqm-witch-cross')return;clearFlight();reactAfterFlight();schedule()});
   };
   const sync=()=>{
     refreshSurface();host.hidden=!allowed();
