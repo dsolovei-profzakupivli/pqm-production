@@ -188,7 +188,7 @@ class OperationalStatusGroupTests(unittest.TestCase):
         queries=[]; con.set_trace_callback(lambda sql: queries.append(sql) if sql.lstrip().upper().startswith(('SELECT','WITH')) else None)
         active=operational_tasks.list_tasks(con,{})
         self.assertEqual(active["status_group"],"active"); self.assertEqual(active["total"],2); self.assertEqual(active["kpis"]["active"],2)
-        self.assertEqual(len(queries),3)  # type facet + list projection + status KPIs, independent of row count
+        self.assertEqual(len(queries),3)  # type facet + list projection + status/officer summary, independent of row count
         history=operational_tasks.list_tasks(con,{"status_group":["historical"]})
         self.assertEqual(history["total"],2); self.assertEqual({x["status"] for x in history["items"]},{"completed","cancelled"})
 
