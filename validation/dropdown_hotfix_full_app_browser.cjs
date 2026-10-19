@@ -138,6 +138,31 @@ async function openAndMeasure(page, detailsSelector, panelSelector) {
         await page.waitForTimeout(40);
         const moved = await page.evaluate(() => { const panel = document.querySelector('#marketplaceDecisionFilter > .multi-panel'), r = panel.getBoundingClientRect(), hit = document.elementFromPoint(r.left + 20, r.top + 20); return { topLayer: panel.matches(':popover-open'), hitInside: panel.contains(hit), right: r.right, bottom: r.bottom, width: innerWidth, height: innerHeight }; });
         assert(moved.topLayer && moved.hitInside && moved.right <= moved.width && moved.bottom <= moved.height, `${theme}/${halloween}/${width}: scroll/resize regression ${JSON.stringify(moved)}`);
+        const zoomSession = await page.context().newCDPSession(page);
+        await zoomSession.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1.25 });
+        await page.waitForTimeout(60);
+        const zoomed = await page.evaluate(() => {
+          const details = document.querySelector('#marketplaceDecisionFilter');
+          const summary = details.querySelector(':scope > summary').getBoundingClientRect();
+          const panel = details.querySelector(':scope > .multi-panel');
+          const rect = panel.getBoundingClientRect();
+          const hit = document.elementFromPoint(rect.left + 20, rect.top + 20);
+          return {
+            topLayer: panel.matches(':popover-open'),
+            hitInside: panel.contains(hit),
+            top: rect.top,
+            expectedTop: Math.min(summary.bottom + 4, innerHeight - rect.height - 8),
+            right: rect.right,
+            bottom: rect.bottom,
+            width: innerWidth,
+            height: innerHeight,
+            scale: visualViewport?.scale,
+          };
+        });
+        assert(zoomed.topLayer && zoomed.hitInside && zoomed.right <= zoomed.width && zoomed.bottom <= zoomed.height, `${theme}/${halloween}/${width}: browser zoom regression ${JSON.stringify(zoomed)}`);
+        assert(Math.abs(zoomed.top - zoomed.expectedTop) <= 2, `${theme}/${halloween}/${width}: popover did not realign after browser zoom ${JSON.stringify(zoomed)}`);
+        await zoomSession.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
+        await zoomSession.detach();
         const documentClose = await page.evaluate(() => { document.body.click(); return document.querySelector('#marketplaceDecisionFilter').open; });
         assert.equal(documentClose, false);
 
