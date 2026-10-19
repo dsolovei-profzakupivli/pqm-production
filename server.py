@@ -6367,8 +6367,6 @@ def list_violation_reports(params: dict) -> dict:
     if search:
         where.append("(INSTR(CASEFOLD(report_id),?)>0 OR INSTR(CASEFOLD(author_name),?)>0 OR INSTR(CASEFOLD(author_code),?)>0 OR INSTR(CASEFOLD(defendant_name),?)>0 OR INSTR(CASEFOLD(defendant_code),?)>0 OR INSTR(CASEFOLD(tender_pretty_id),?)>0 OR INSTR(CASEFOLD(description),?)>0)")
         args.extend([search] * 7)
-    if status:
-        where.append("status=?"); args.append(status)
     if reason:
         where.append("reason=?"); args.append(reason)
     if date_from:
@@ -6377,8 +6375,19 @@ def list_violation_reports(params: dict) -> dict:
         where.append("SUBSTR(date_published,1,10)<=?"); args.append(date_to)
     if supplier_code:
         where.append("defendant_code=?"); args.append(supplier_code)
-    authority_clause = " AND ".join(where)
-    authority_args = list(args)
+    # Keep shared filters separate from the two mutually-exclusive KPI facets.
+    # Authority cards include the selected status but omit their own authority;
+    # status cards include the selected authority but omit their own status.
+    shared_where, shared_args = list(where), list(args)
+    authority_where, authority_args = list(shared_where), list(shared_args)
+    if status:
+        authority_where.append("status=?"); authority_args.append(status)
+    authority_clause = " AND ".join(authority_where)
+    status_where, status_args = list(shared_where), list(shared_args)
+    if authority_code:
+        status_where.append("authority_code=?"); status_args.append(authority_code)
+    status_clause = " AND ".join(status_where)
+    where, args = list(authority_where), list(authority_args)
     if authority_code:
         where.append("authority_code=?"); args.append(authority_code)
     clause = " AND ".join(where)
@@ -6397,7 +6406,8 @@ def list_violation_reports(params: dict) -> dict:
         statuses = [row[0] for row in con.execute("SELECT DISTINCT status FROM violation_reports WHERE status<>'' ORDER BY status")]
         reasons = [row[0] for row in con.execute("SELECT DISTINCT reason FROM violation_reports WHERE reason<>'' ORDER BY reason")]
         status_counts = {row[0]: row[1] for row in con.execute(
-            "SELECT status,COUNT(*) FROM violation_reports GROUP BY status")}
+            f"SELECT status,COUNT(*) FROM violation_reports WHERE {status_clause} GROUP BY status",
+            status_args)}
         pending, satisfied, declined = (status_counts.get("pending", 0), status_counts.get("satisfied", 0),
                                         status_counts.get("declined", 0))
         authorities = [dict(row) for row in con.execute(f"""SELECT authority_code,authority_name,COUNT(*) count

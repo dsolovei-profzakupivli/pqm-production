@@ -901,13 +901,18 @@ def task_ui_summary(con, item, tables=None):
     if 'generated_documents' in tables:
         # Local import avoids the document module's dependency on operational_tasks.
         import task_documents
+        current_protocol_types=set()
         for doc in task_documents.documents(con,task_id):
             if doc.get('status')!='generated':
                 continue
             if doc.get('document_type')=='nazk_supplier_request':
                 requests.append(doc)
             elif doc.get('document_type') in {'amcu_exclusion_protocol','termination_exclusion_protocol'}:
-                decision['documents'].append(doc)
+                # The task card shows the newest generated document of each type;
+                # older generations remain available in the separate history.
+                if doc['document_type'] not in current_protocol_types:
+                    decision['documents'].append(doc)
+                    current_protocol_types.add(doc['document_type'])
     return {'basis_items':basis,'latest_basis_date':next((x['sort_date'] for x in basis if x['sort_date']),None),
             'result_summary':result,'officer_decision':decision,'supplier_requests':requests}
 
