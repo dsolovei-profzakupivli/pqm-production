@@ -206,5 +206,6 @@ html[data-theme="dark"] .topbar .service-nav .service-nav-button[aria-selected="
 html[data-theme="dark"] .topbar #mainNav .main-nav-icon:is(:hover,:focus-visible),
 html[data-theme="dark"] .topbar .service-nav .service-nav-button:is(:hover,:focus-visible){background-color:#28517b!important;color:#fff!important;border-color:#86bdff!important}
 html[data-theme="dark"] .topbar #mainNav .main-nav-icon:disabled,
-html[data-theme="dark"] .topbar .service-nav .service-nav-button:disabled{background-color:#132840!important;color:#8193a8!important;border-color:#344b63!important;box-shadow:none;opacity:.55}
+html[data-theme="dark"] .topbar #mainNav .main-nav-icon:disabled,
+html[data-theme="dark"] .topbar .service-nav .service-nav-button:disabled{background-color:#132840!important;color:#8193a8!important;border-color:#344b63!important;box-shadow:none}
 }
