@@ -6,6 +6,7 @@ import http.client
 from http.server import HTTPServer
 import json
 from pathlib import Path
+import re
 import sqlite3
 import socket
 import tempfile
@@ -143,8 +144,47 @@ class PersonalThemeSourceTests(unittest.TestCase):
         self.assertIn('value="light">Світла',source)
         self.assertIn('value="dark">Темна',source)
 
-    def test_html_has_no_seasonal_dependencies(self):
+    def test_html_has_only_approved_production_halloween_dependencies(self):
         html=Path('index.html').read_text(encoding='utf-8').lower()
-        for forbidden in ['halloween','sandbox_runtime','sandbox_theme','sandbox_contrast']:self.assertNotIn(forbidden,html)
+        self.assertIn('data-pqm-halloween-target="production"',html)
+        resources=re.findall(r'(?:href|src)="([^"]*halloween[^"]*)"',html)
+        self.assertCountEqual(resources,[
+            'halloween.css',
+            'halloween_motion.css',
+            'halloween_season.js',
+            'halloween.js',
+            'halloween_motion.js',
+        ])
+        for forbidden in ['sandbox_runtime','sandbox_theme','sandbox_contrast','data-pqm-environment="sandbox"','pqm_disable_background_jobs']:
+            self.assertNotIn(forbidden,html)
         self.assertIn('theme.css',html)
         self.assertIn('theme_ui.js',html)
+
+    def test_halloween_is_client_only_and_separate_from_personal_theme(self):
+        halloween='\n'.join(Path(name).read_text(encoding='utf-8').lower() for name in (
+            'halloween_season.js','halloween.js','halloween_motion.js','halloween.css','halloween_motion.css'))
+        for forbidden in ['/api/','fetch(','xmlhttprequest','pqm_disable_background_jobs','runtime_feature_settings','db_path','sqlite','database','postgres','scheduler','google_integration']:
+            self.assertNotIn(forbidden,halloween)
+        self.assertIn("if(document.documentelement.dataset.pqmhalloweentarget!=='production')return;",halloween)
+        theme_ui=Path('theme_ui.js').read_text(encoding='utf-8').lower()
+        self.assertNotIn('halloween',theme_ui)
+        self.assertNotRegex(Path('halloween.js').read_text(encoding='utf-8'),r'dataset\.theme\s*=')
+        self.assertIn("document.documentelement.dataset.halloween=enabled?'on':'off'",halloween)
+
+    def test_halloween_local_toggle_and_kyiv_season_contract(self):
+        season=Path('halloween_season.js').read_text(encoding='utf-8')
+        halloween=Path('halloween.js').read_text(encoding='utf-8')
+        self.assertIn("timeZone='Europe/Kyiv'",season)
+        self.assertIn('p.month===10',season)
+        self.assertIn("const key='pqm.halloween.cat.enabled.v1'",halloween)
+        self.assertIn("localStorage.getItem(key)!=='0'",halloween)
+        self.assertIn("localStorage.setItem(key,preferred?'1':'0')",halloween)
+        self.assertIn('enabled=current.available&&preferred',halloween)
+        self.assertIn('input.disabled=!current.available',halloween)
+
+    def test_halloween_respects_reduced_motion(self):
+        motion=Path('halloween_motion.js').read_text(encoding='utf-8')
+        for stylesheet in ['halloween.css','halloween_motion.css']:
+            css=Path(stylesheet).read_text(encoding='utf-8').lower()
+            self.assertIn('@media(prefers-reduced-motion:reduce)',css)
+        self.assertIn("matchmedia('(prefers-reduced-motion: reduce)')",motion.lower())
