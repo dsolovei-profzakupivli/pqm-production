@@ -1,7 +1,12 @@
 /* Local Halloween visual prototype. Uses the existing Kyiv/calendar preference gate. */
 (()=>{
-  const root=document.documentElement, queue=document.querySelector('#workQueueView');
+  const root=document.documentElement;
   if(root.dataset.pqmEnvironment!=='sandbox')return;
+  if(document.getElementById('pqmHalloweenHost'))return;
+  const shell=document.querySelector('#applicationShell'),views=[...document.querySelectorAll('main')];
+  const host=document.createElement('div');host.id='pqmHalloweenHost';host.className='halloween-flight-lane';
+  host.setAttribute('aria-hidden','true');host.hidden=true;(shell||document.body).prepend(host);
+  let surface={safe:false,reason:'no-active-view',view:null};
   const reduce=matchMedia('(prefers-reduced-motion: reduce)');
   const cat=document.querySelector('.halloween-cat');
   let timer=null,flight=null,variant=0,paused=false,blinkTimer=null,lookTimer=null;
@@ -15,23 +20,56 @@
     eyes.innerHTML='<svg viewBox="0 0 720 389" focusable="false"><defs><clipPath id="pqmCatEyeMask"><path d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190ZM565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatEyeMask)"><g class="pqm-cat-eye-art" opacity="0"><defs><linearGradient id="pqmCatIris" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d4e65c"/><stop offset=".6" stop-color="#e5ef7e"/><stop offset="1" stop-color="#bacc4d"/></linearGradient></defs><path fill="url(#pqmCatIris)" d="M479 168H535V228H479ZM556 208H620V265H556Z"/><g class="pqm-cat-gaze" fill="#090d0b"><ellipse cx="510" cy="201" rx="9" ry="14" transform="rotate(25 510 201)"/><ellipse cx="581" cy="235" rx="9" ry="14" transform="rotate(25 581 235)"/><g fill="#ffffe9"><ellipse cx="508" cy="192" rx="3.5" ry="4"/><circle cx="513" cy="197" r="1.5"/><ellipse cx="578" cy="226" rx="3.5" ry="4"/><circle cx="583" cy="231" r="1.5"/></g></g></g><path class="pqm-cat-lids" fill="#100f17" d="M479 168H535V228H479Z"/><path class="pqm-cat-lids" fill="#100f17" d="M556 208H620V265H556Z"/></g></svg>';
     cat.after(eyes);
   }
-  const allowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on';
+  const allowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on'&&!!shell&&!shell.hidden;
   let stopTrail=null;
-  const clear=()=>{clearTimeout(timer);timer=null;stopTrail?.();stopTrail=null;flight?.remove();flight=null};
+  const clearFlight=()=>{stopTrail?.stop();stopTrail=null;flight?.remove();flight=null};
+  const clear=()=>{clearTimeout(timer);timer=null;clearFlight()};
+  // One host below working surfaces, outside all hidden tab containers.
+  const controlsSelector='button,input,select,textarea,a,[role="button"],summary';
+  const workingSelector='table,.card,.table-card,.module-kpis,.kpi-row,.kpi,.kpi-card,.heading-metrics,.history-total,.operational-type-kpis,.work-queue-kpis';
+  const foreground=view=>{
+    const heading=view.querySelector(':scope > .module-heading,:scope > .page-heading,:scope > .history-heading');
+    // Isolation changes painting order without creating a new containing block
+    // for existing absolute/fixed children or changing layout geometry.
+    for(const element of view.querySelectorAll(controlsSelector+','+workingSelector))if(!element.classList.contains('pqm-halloween-foreground'))element.classList.add('pqm-halloween-foreground');
+    for(const child of view.children)if(child!==heading&&!child.classList.contains('pqm-halloween-foreground'))child.classList.add('pqm-halloween-foreground');
+  };
+  const findSurface=()=>{
+    const view=views.find(v=>!v.hidden&&v.getBoundingClientRect().width&&v.getBoundingClientRect().height);
+    if(!view)return{safe:false,reason:'no-active-view',view:null};
+    if(!view.classList.contains('halloween-workspace'))return{safe:false,reason:'no-halloween-landscape',view};
+    foreground(view);
+    if(document.querySelector('dialog[open]'))return{safe:false,reason:'dialog-open',view};
+    const zoom=parseFloat(getComputedStyle(document.body).zoom)||1,r=view.getBoundingClientRect();
+    const top=Math.max(0,r.top,document.querySelector('.topbar')?.getBoundingClientRect().bottom||0)+2;
+    return{safe:true,reason:'clear-sky',view,top:top/zoom,zoom,width:innerWidth/zoom};
+  };
+  const stopGaze=()=>{if(eyes)for(const e of eyes.querySelectorAll('.pqm-cat-gaze,.pqm-cat-eye-art'))for(const a of e.getAnimations())a.cancel()};
+  const refreshSurface=()=>{
+    const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
+    host.style.setProperty('--flight-viewport-width',(innerWidth/zoom)+'px');
+    const previous=surface,wasSafe=surface.safe;surface=findSurface();host.dataset.view=surface.view?.id||'';host.dataset.reason=surface.reason;
+    host.dataset.safe=String(surface.safe);host.style.visibility=surface.safe?'visible':'hidden';
+    if(surface.safe){host.style.top=surface.top+'px';host.style.setProperty('--flight-viewport-width',surface.width+'px');
+      if(flight){host.style.setProperty('--flight-distance',(-surface.width-125)+'px');if(previous.view!==surface.view||previous.top!==surface.top)stopTrail?.pause();stopTrail?.resize();stopTrail?.resume();if(!wasSafe){const a=flight.getAnimations().find(a=>a.animationName==='pqm-witch-cross');if(a)gaze(true,a.effect.getTiming().duration,a.currentTime||0)}}
+    }else{stopTrail?.pause();if(wasSafe&&flight)stopGaze()}
+  };
   const startTrail=(lane,svg,second)=>{
     const canvas=document.createElement('canvas');canvas.className='halloween-broom-trail';
     lane.prepend(canvas);
-    const ctx=canvas.getContext('2d');if(!ctx)return ()=>canvas.remove();
-    const width=lane.clientWidth,height=lane.clientHeight,dpr=Math.min(devicePixelRatio||1,2);
-    canvas.width=Math.ceil(width*dpr);canvas.height=Math.ceil(height*dpr);ctx.scale(dpr,dpr);
+    const ctx=canvas.getContext('2d');if(!ctx)return{stop:()=>canvas.remove(),pause(){},resume(){},resize(){}};
+    let width=lane.clientWidth,height=lane.clientHeight;
+    const dpr=Math.min(devicePixelRatio||1,2);
     const particles=[],point=svg.createSVGPoint();
     // Source-sheet coordinates at the straw tip, transformed with the SVG sway.
     point.x=second?1930:1005;point.y=second?630:625;
     let frame=null,last=0,lastBirth=0,stopped=false;
     const draw=now=>{
       if(stopped)return;
-      if(!allowed()||queue.hidden){clear();if(!allowed())stopEyes();return}
+      frame=null;
+      if(!allowed()){clear();stopEyes();return}
       if(!lane.isConnected){stop();return}
+      if(!surface.safe)return;
       frame=requestAnimationFrame(draw);
       if(now-last<32)return;last=now;
       const matrix=svg.getScreenCTM(),bounds=canvas.getBoundingClientRect();
@@ -61,8 +99,11 @@
       }
       ctx.globalAlpha=1;ctx.shadowBlur=0;
     };
-    const stop=()=>{stopped=true;cancelAnimationFrame(frame);frame=null;particles.length=0;canvas.remove()};
-    frame=requestAnimationFrame(draw);return stop;
+    const pause=()=>{cancelAnimationFrame(frame);frame=null;particles.length=0;ctx.clearRect(0,0,width,height)};
+    const resize=()=>{const w=lane.clientWidth,h=lane.clientHeight;if(canvas.width===Math.ceil(w*dpr)&&canvas.height===Math.ceil(h*dpr))return;width=w;height=h;particles.length=0;canvas.width=Math.ceil(width*dpr);canvas.height=Math.ceil(height*dpr);ctx.scale(dpr,dpr)};
+    const resume=()=>{if(!stopped&&surface.safe&&frame===null)frame=requestAnimationFrame(draw)};
+    const stop=()=>{stopped=true;pause();canvas.remove()};
+    resize();resume();return{stop,pause,resume,resize};
   };
   const stopEyes=()=>{clearTimeout(blinkTimer);clearTimeout(lookTimer);blinkTimer=lookTimer=null;for(const a of eyeAnimations)a.cancel();eyeAnimations.length=0;};
   const blink=()=>{
@@ -74,14 +115,14 @@
       ],{duration:420,easing:'ease-in-out'}));blink();
     },7000+Math.random()*9000);
   };
-  const gaze=(tracking=false,flightDuration=13000)=>{
+  const gaze=(tracking=false,flightDuration=13000,elapsed=0)=>{
     if(!eyes||!allowed())return;
     // SVG source units are scaled 4:1 in the 180px cat: the old 3-unit
     // movement was only 0.75 screen pixels and was practically invisible.
     const amplitude=10,x=tracking?amplitude:(Math.random()<.5?-amplitude:amplitude);
     for(const a of eyes.querySelector('.pqm-cat-gaze').getAnimations())a.cancel();
     for(const a of eyes.querySelector('.pqm-cat-eye-art').getAnimations())a.cancel();
-    track(eyes.querySelector('.pqm-cat-eye-art').animate([
+    const art=track(eyes.querySelector('.pqm-cat-eye-art').animate([
       {opacity:0},{opacity:1,offset:.08},{opacity:1,offset:.92},{opacity:0}
     ],{duration:tracking?flightDuration:3200,easing:'linear'}));
     const a=eyes.querySelector('.pqm-cat-gaze').animate([
@@ -89,43 +130,52 @@
       {transform:`translateX(${tracking?-amplitude:x}px)`,offset:.85,easing:'ease-in-out'},{transform:'translateX(0)'}
     ],{duration:tracking?flightDuration:3200,easing:'linear'});
     track(a);
+    if(tracking&&elapsed){art.currentTime=elapsed;a.currentTime=elapsed}
   };
   const look=()=>{if(!eyes||!allowed()||lookTimer!==null)return;lookTimer=setTimeout(()=>{
     lookTimer=null;if(!allowed())return;if(!flight)gaze();look();
   },16000+Math.random()*12000)};
   const schedule=()=>{
-    if(!allowed()||!queue||queue.hidden||timer!==null||flight)return;
-    timer=setTimeout(()=>{timer=null;if(!allowed()||queue.hidden)return;
-      const lane=document.createElement('div');lane.className='halloween-flight-lane';lane.setAttribute('aria-hidden','true');
-      const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
-      lane.style.setProperty('--flight-viewport-width',(innerWidth/zoom)+'px');
+    if(!allowed()||timer!==null||flight)return;
+    timer=setTimeout(()=>{timer=null;if(!allowed())return;refreshSurface();if(!surface.safe){schedule();return}launchFlight();
+    },20000+Math.random()*10000);
+  };
+  const launchFlight=()=>{
+      const lane=host;
       const sprite=document.createElement('span');sprite.className='halloween-flight-sprite';
       const second=variant++%2!==0,box=second?'1050 0 933 793':'0 0 1050 793';
       // viewBox + xMidYMid meet leaves side gutters inside this viewport.
       // Explicitly clip the atlas frame so adjacent artwork cannot paint there.
       const frameId=second?'pqmWitchFrame2':'pqmWitchFrame1';
       sprite.innerHTML=`<svg viewBox="${box}" focusable="false"><defs><clipPath id="${frameId}" clipPathUnits="userSpaceOnUse"><rect x="${second?1050:0}" y="0" width="${second?933:1050}" height="793"/></clipPath></defs><image clip-path="url(#${frameId})" href="assets/halloween-witches-sheet.png" width="1983" height="793"/></svg>`;
-      lane.append(sprite);queue.append(lane);flight=lane;
+      lane.append(sprite);flight=sprite;
       // Translation is confined to this clipped sky lane, below all workspace content.
       lane.style.setProperty('--flight-distance',(-lane.clientWidth-125)+'px');
       // Extend the route across the heading without increasing travel speed.
-      const previousDistance=queue.clientWidth*.63+125;
+      const previousDistance=surface.view.clientWidth*.63+125;
       const duration=13*(lane.clientWidth+125)/previousDistance;
       lane.style.setProperty('--flight-duration',duration+'s');
       gaze(true,duration*1000);
       stopTrail=startTrail(lane,sprite.querySelector('svg'),second);
-      sprite.addEventListener('animationend',e=>{if(e.animationName!=='pqm-witch-cross')return;clear();schedule()},{once:true});
-    },20000+Math.random()*10000);
+      sprite.addEventListener('animationend',e=>{if(e.animationName!=='pqm-witch-cross')return;clearFlight();schedule()});
   };
   const sync=()=>{
+    refreshSurface();host.hidden=!allowed();
     if(!allowed())stopEyes();else{blink();look()}
-    if(!allowed()||queue?.hidden)clear();else schedule();
+    if(!allowed())clear();else schedule();
   };
   new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-halloween']});
-  if(queue)new MutationObserver(sync).observe(queue,{attributes:true,attributeFilter:['hidden']});
+  const visibility=new MutationObserver(sync),size=new ResizeObserver(refreshSurface),content=new MutationObserver(refreshSurface);
+  for(const view of views){visibility.observe(view,{attributes:true,attributeFilter:['hidden']});size.observe(view);
+    const heading=view.querySelector(':scope > .module-heading,:scope > .page-heading,:scope > .history-heading');
+    if(heading){size.observe(heading);content.observe(heading,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['hidden','class']})}
+  }
+  if(shell)visibility.observe(shell,{attributes:true,attributeFilter:['hidden']});
+  for(const dialog of document.querySelectorAll('dialog'))visibility.observe(dialog,{attributes:true,attributeFilter:['open']});
   reduce.addEventListener('change',sync);document.addEventListener('visibilitychange',sync);
   window.addEventListener('pagehide',()=>{paused=true;clear();sync()});
   window.addEventListener('pageshow',()=>{paused=false;sync()});
-  window.addEventListener('resize',()=>{clear();sync()},{passive:true});
+  window.addEventListener('resize',refreshSurface,{passive:true});window.addEventListener('scroll',refreshSurface,{passive:true,capture:true});
+  document.fonts?.ready.then(refreshSurface);
   sync();
 })();

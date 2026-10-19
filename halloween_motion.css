@@ -1,7 +1,10 @@
 /* Isolated decoration, no content sizing, colours or hit targets changed. */
-/* Reuse the original night clouds, softly cropped into the upper sky only. */
-html[data-halloween="on"][data-theme="dark"] #workQueueView:not([hidden])::after{content:"";position:absolute;inset:0 0 auto;height:134px;z-index:-1;pointer-events:none;background:url("assets/halloween-workqueue-dark.webp") center 40%/100% auto no-repeat;opacity:.55;filter:brightness(1.65);mix-blend-mode:screen;mask-image:linear-gradient(to bottom,transparent,#000 18%,#000 68%,transparent)}
-.halloween-flight-lane{position:absolute;left:50%;transform:translateX(-50%);width:var(--flight-viewport-width,100vw);top:0;height:86px;overflow:hidden;pointer-events:none;z-index:2;contain:paint}
+/* One shared cloud treatment for the active existing night landscape. */
+html[data-halloween="on"][data-theme="dark"] .halloween-workspace:not([hidden])::after{content:"";position:absolute;inset:0 0 auto;height:134px;z-index:-1;pointer-events:none;background:url("assets/halloween-workqueue-dark.webp") center 40%/100% auto no-repeat;opacity:.55;filter:brightness(1.65);mix-blend-mode:screen;mask-image:linear-gradient(to bottom,transparent,#000 18%,#000 68%,transparent)}
+html[data-pqm-environment="sandbox"][data-halloween="on"] #applicationShell{isolation:isolate}
+html[data-pqm-environment="sandbox"][data-halloween="on"] .halloween-workspace:not([hidden]){isolation:auto}
+html[data-pqm-environment="sandbox"][data-halloween="on"] .pqm-halloween-foreground{isolation:isolate}
+.halloween-flight-lane{position:fixed;left:0;width:var(--flight-viewport-width,100vw);height:86px;overflow:hidden;pointer-events:none;z-index:0;contain:paint}
 .halloween-flight-sprite{position:absolute;left:100%;top:3px;width:clamp(74px,7.5vw,112px);height:78px;animation:pqm-witch-cross var(--flight-duration,13s) linear both}
 .halloween-flight-sprite svg{display:block;width:100%;height:100%;overflow:hidden;animation:pqm-witch-sway 3.8s ease-in-out infinite;filter:drop-shadow(0 1px 1px #29203544)}
 html[data-theme="dark"] .halloween-flight-sprite svg{filter:brightness(1.12) drop-shadow(0 0 .55px #cbbce08c) drop-shadow(.4px -.5px .5px #bdc5df80)}

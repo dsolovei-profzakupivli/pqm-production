@@ -1,0 +1,200 @@
+{
+  "visualAcceptance": "PASS (user approved 2026-10-19)",
+  "parentCandidate": "1e08c83458226fdc4e8c519302083232c6530c64",
+  "sandboxBaseline": "8fa52a62641f80bb322de177a76a98bf92ce3ecb",
+  "scope": "One shared host/controller; flight behind buttons and KPI on all 10 existing Halloween landscapes. Three tabs without a landscape remain excluded. Shared existing night-cloud resource. No new artwork or business changes.",
+  "browserCases": 78,
+  "configurations": [
+    "1440px / 100%",
+    "1440px / 125%",
+    "390px / 100%"
+  ],
+  "checks": [
+    {
+      "waitingTimerPreservedAcross13Views": true,
+      "delay": 27739.257290765658
+    },
+    {
+      "sameFlightAndCanvasAcrossSafeAndPausedViews": true,
+      "progressContinues": true
+    },
+    {
+      "workingSurfacesDoNotPauseFlight": true,
+      "oneController": true,
+      "alternation": true,
+      "reducedMotion": true,
+      "manualOff": true,
+      "kyivBoundaries": [
+        false,
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "realFirstFlightDelay": 25794.63100896308,
+      "noEarlyFlight": true
+    }
+  ],
+  "workingLayers": "Buttons and KPI hit-tested above decorative host in both themes; no geometry or color changes in 78 comparisons.",
+  "targetedTests": "27 Halloween tests PASS; 10 integration/personal-theme contract tests PASS.",
+  "matrix": [
+    {
+      "view": "workQueueView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "applicationsView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "historyView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "suppliersView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "edrMonitoringView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "frameworkAnalyticsView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "referencesView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "frameworksView",
+      "theme": "light",
+      "shown": false,
+      "reason": "no-halloween-landscape"
+    },
+    {
+      "view": "procurementsView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "messagesView",
+      "theme": "light",
+      "shown": false,
+      "reason": "no-halloween-landscape"
+    },
+    {
+      "view": "administrationView",
+      "theme": "light",
+      "shown": false,
+      "reason": "no-halloween-landscape"
+    },
+    {
+      "view": "requestsView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "operationalTasksView",
+      "theme": "light",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "workQueueView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "applicationsView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "historyView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "suppliersView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "edrMonitoringView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "frameworkAnalyticsView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "referencesView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "frameworksView",
+      "theme": "dark",
+      "shown": false,
+      "reason": "no-halloween-landscape"
+    },
+    {
+      "view": "procurementsView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "messagesView",
+      "theme": "dark",
+      "shown": false,
+      "reason": "no-halloween-landscape"
+    },
+    {
+      "view": "administrationView",
+      "theme": "dark",
+      "shown": false,
+      "reason": "no-halloween-landscape"
+    },
+    {
+      "view": "requestsView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    },
+    {
+      "view": "operationalTasksView",
+      "theme": "dark",
+      "shown": true,
+      "reason": "clear-sky"
+    }
+  ],
+  "releaseGate": "Pending manual workflow_dispatch against the published exact candidate SHA. Do not merge, deploy or restart."
+}

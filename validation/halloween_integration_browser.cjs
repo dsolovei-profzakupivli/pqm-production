@@ -12,7 +12,7 @@ async function fixture(browser,{candidate=true,theme='light',zoom=1,width=1440,r
   if(off)localStorage.setItem('pqm.halloween.cat.enabled.v1','0');
   const timeout=setTimeout.bind(window);window.__flightDelays=[];window.__pendingFlightTimers=new Set();
   window.setTimeout=(fn,d,...args)=>{
-   if(typeof fn==='function'&&fn.toString().includes("lane.className='halloween-flight-lane'")){
+   if(typeof fn==='function'&&(fn.toString().includes("lane.className='halloween-flight-lane'")||fn.toString().includes('launchFlight()'))){
     window.__flightDelays.push(d);let id;id=timeout(()=>{window.__pendingFlightTimers.delete(id);fn(...args)},fast?100:d);window.__pendingFlightTimers.add(id);return id;
    }return timeout(fn,d,...args);
   };
