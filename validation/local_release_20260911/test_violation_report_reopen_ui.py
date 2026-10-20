@@ -7,6 +7,51 @@ from pathlib import Path
 
 
 class ViolationReportReopenUiTests(unittest.TestCase):
+    def test_individual_protocol_sends_explicit_type_and_confirmed_current_notes(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        local = Path(__file__).with_name("app.js")
+        app = local if local.exists() else Path(__file__).parents[2] / "app.js"
+        script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const start = source.indexOf('async function generateViolationProtocol(');
+const end = source.indexOf('async function completeViolationReview(', start);
+assert.ok(start >= 0 && end > start);
+const calls = [];
+const elements = {
+  '#generateViolationProtocol': {disabled:false,textContent:'Сформувати протокол'},
+  '#violationProtocolType': {value:'decline_individual_review'},
+  '#confirmReviewNotes': {checked:true},
+  '#violationProtocolReasons': {hidden:true,textContent:''},
+};
+const context = {
+  API:'/api', $:selector=>elements[selector],
+  collectViolationReview:()=>({protocol_number:'SYN-1',protocol_date:'2026-10-20',review_notes:'Актуальний коментар УО'}),
+  request:async (url,options)=>{calls.push({url,body:JSON.parse(options.body)});return {ok:true}},
+  unresolvedDeclensionsByReport:new Map(), toast:()=>{}, openViolationReportById:async()=>{},
+};
+vm.createContext(context);
+vm.runInContext(source.slice(start,end),context);
+(async()=>{
+ await context.generateViolationProtocol({id:'synthetic',protocol_readiness:{ready:false},protocol_readiness_individual:{ready:true}});
+ assert.equal(calls[0].url,'/api/violation-reports/synthetic/review');
+ assert.equal(calls[0].body.review_notes,'Актуальний коментар УО');
+ assert.equal(calls[1].url,'/api/violation-reports/synthetic/protocol/generate');
+ assert.equal(calls[1].body.protocol_type,'decline_individual_review');
+ assert.equal(calls[1].body.confirm_review_notes,true);
+ assert.equal(calls[1].body.confirmed_review_notes,'Актуальний коментар УО');
+})().catch(error=>{console.error(error);process.exitCode=1});
+"""
+        result = subprocess.run(
+            [node, "-e", script, str(app)], text=True, capture_output=True,
+            timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_generate_reopens_fresh_report_with_document_actions(self):
         node = shutil.which("node")
         if not node:

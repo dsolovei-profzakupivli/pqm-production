@@ -33,7 +33,7 @@ class TemplateDownloadTests(unittest.TestCase):
         return status[0], headers, handler.wfile.getvalue()
 
     def test_all_existing_templates_bytes_and_headers(self):
-        for key in ('warning', 'decline_p49_1_2', 'decline_p49_3', 'application_protocol'):
+        for key in ('warning', 'decline_p49_1_2', 'decline_p49_3', 'decline_individual_review', 'application_protocol'):
             with self.subTest(key=key):
                 path = server.TEMPLATES[key]
                 before = path.read_bytes()

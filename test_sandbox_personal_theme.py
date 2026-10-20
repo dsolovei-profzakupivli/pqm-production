@@ -8,6 +8,9 @@ import unittest
 from unittest.mock import patch
 
 import sandbox_runtime
+from validation.local_release_20260911.sandbox_protocol_integrity_variant import (
+ protected_content_matches,
+)
 
 
 def normalized_server(source):
@@ -76,11 +79,18 @@ class SandboxPersonalThemeTests(unittest.TestCase):
         contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())
         self.assertEqual(contract['server_baseline'], '0374436f2006c9e8eae1836d959b34ae7dfda7d8')
         digest=hashlib.sha256(normalized_server(Path('server.py').read_text(encoding='utf-8')).encode()).hexdigest()
-        self.assertEqual(digest,contract['server_outside_account_and_appeals_kpi'])
+        raw=Path('server.py').read_bytes()
+        self.assertTrue(protected_content_matches(
+            'server.py',raw,digest,contract['server_outside_account_and_appeals_kpi'],
+            'personal_theme_normalized_sha256'))
 
     def test_app_business_functions_unchanged(self):
         contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())
-        self.assertEqual(hashlib.sha256(normalized_app(Path('app.js').read_text(encoding='utf-8')).encode()).hexdigest(),contract['app_without_account'])
+        digest=hashlib.sha256(normalized_app(Path('app.js').read_text(encoding='utf-8')).encode()).hexdigest()
+        raw=Path('app.js').read_bytes()
+        self.assertTrue(protected_content_matches(
+            'app.js',raw,digest,contract['app_without_account'],
+            'personal_theme_normalized_sha256'))
 
     def test_protected_modules_and_halloween_bytes_unchanged(self):
         contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())

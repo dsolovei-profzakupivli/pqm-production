@@ -44,6 +44,102 @@ class ViolationReportTests(unittest.TestCase):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
 
+    def _individual_protocol_fixture(self, reason):
+        return {
+            "id": "report-internal", "report_id": "UA-D-SYNTHETIC", "reason": reason,
+            "authority_code": "40996564", "date_published": "2026-08-18T10:00:00+03:00",
+            "date_created": "2026-08-18T10:00:00+03:00", "tender_pretty_id": "UA-TEST",
+            "author_name": "Замовник", "author_code": "11111111",
+            "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "Синтетичний опис", "evidence_documents": [],
+            "defendant_statements": [], "supplier_verified": None,
+            "deadline_control": {"supplier_ready": True}, "has_official_decision": False,
+            "procurement_context": {"available": True, "tender_date_published": "2026-07-30",
+                                    "winner_state": "unknown", "rejection_ambiguous": False},
+            "review": {"review_status": "in_review", "assigned_officer": "Тестова УО",
+                       "internal_decision": "decline", "decision_justification": "Окреме обґрунтування",
+                       "review_notes": "Актуальний коментар УО", "protocol_number": "SYN-1",
+                       "protocol_date": "2026-08-31"},
+        }
+
+    @patch.object(server, "violation_protocol_declensions", lambda *_: [])
+    def test_individual_decline_protocol_is_explicit_and_maps_reference_from_request_basis(self):
+        expected = {"contractBreach": "пп. 1 п. 49", "signingRefusal": "пп. 2 п. 49",
+                    "goodsNonCompliance": "пп. 3 п. 49"}
+        for reason, reference in expected.items():
+            with self.subTest(reason=reason):
+                item = self._individual_protocol_fixture(reason)
+                item["procurement_context"]["rejection_ambiguous"] = True
+                gate = server.violation_protocol_readiness(
+                    item, requested_protocol_type="decline_individual_review")
+                self.assertTrue(gate["ready"], gate["reasons"])
+                self.assertEqual(gate["protocol_type"], "decline_individual_review")
+                with patch.object(server, "require_local_violation_report_owned"), \
+                        patch.object(server, "require_owned_violation_report"), \
+                        patch.object(server, "violation_report_detail", return_value=item), \
+                        patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+                    prepared = server.generate_violation_protocol(item["id"], {
+                        "protocol_type": "decline_individual_review", "protocol_number": "SYN-1",
+                        "protocol_date": "2026-08-31", "confirm_review_notes": True,
+                        "confirmed_review_notes": "Актуальний коментар УО",
+                    }, prepare_only=True)
+                self.assertEqual(prepared["values"]["p49_reference"], reference)
+                self.assertEqual(prepared["values"]["review_notes"], item["review"]["review_notes"])
+                self.assertEqual(prepared["values"]["decision_justification"],
+                                 item["review"]["decision_justification"])
+                self.assertEqual(prepared["values"]["winner_date"], "")
+
+    @patch.object(server, "violation_protocol_declensions", lambda *_: [])
+    def test_individual_decline_blocks_unknown_basis_wrong_decision_and_stale_comment(self):
+        for reason, decision in (("supplierMisconduct", "decline"),
+                                 ("contractBreach", "warning")):
+            item = self._individual_protocol_fixture(reason)
+            item["review"]["internal_decision"] = decision
+            gate = server.violation_protocol_readiness(
+                item, requested_protocol_type="decline_individual_review")
+            self.assertFalse(gate["ready"])
+            self.assertTrue(any("лише для рішення" in message for message in gate["reasons"]))
+        item = self._individual_protocol_fixture("contractBreach")
+        for supplied, confirmed in ((False, "Актуальний коментар УО"),
+                                    (True, "Застарілий коментар")):
+            payload = {"protocol_type": "decline_individual_review", "protocol_number": "SYN-1",
+                       "protocol_date": "2026-08-31", "confirm_review_notes": supplied,
+                       "confirmed_review_notes": confirmed}
+            with patch.object(server, "require_local_violation_report_owned"), \
+                    patch.object(server, "require_owned_violation_report"), \
+                    patch.object(server, "violation_report_detail", return_value=item):
+                with self.assertRaisesRegex(ValueError, "Коментар УО змінився"):
+                    server.generate_violation_protocol(item["id"], payload, prepare_only=True)
+
+    @patch.object(server, "violation_protocol_declensions", lambda *_: [])
+    def test_individual_protocol_generation_does_not_complete_review(self):
+        item = self._individual_protocol_fixture("goodsNonCompliance")
+        with server.db() as con:
+            con.execute("INSERT INTO violation_report_reviews (report_id,review_status,assigned_officer,internal_decision,decision_justification,review_notes,protocol_number,protocol_date,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        ("report-internal", "in_review", "Тестова УО", "decline", "Обґрунтування", "Актуальний коментар УО", "SYN-1", "2026-08-31", "2026-08-31T12:00:00+03:00"))
+        output_dir = Path(self.temp.name) / "protocols"
+        def write_docx(_kind, path, *_args):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic-docx")
+            return path
+        payload = {"protocol_type": "decline_individual_review", "protocol_number": "SYN-1",
+                   "protocol_date": "2026-08-31", "confirm_review_notes": True,
+                   "confirmed_review_notes": "Актуальний коментар УО"}
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}), \
+                patch.object(server, "PROTOCOLS_DIR", output_dir), \
+                patch.object(server, "build_violation_protocol_docx", side_effect=write_docx):
+            result = server.generate_violation_protocol("report-internal", payload)
+        with server.db() as con:
+            row = con.execute("SELECT review_status,completed_at,generated_protocol_metadata_json FROM violation_report_reviews WHERE report_id='report-internal'").fetchone()
+        self.assertEqual(row["review_status"], "in_review")
+        self.assertFalse(row["completed_at"])
+        self.assertEqual(__import__("json").loads(row["generated_protocol_metadata_json"])["protocol_type"],
+                         "decline_individual_review")
+        self.assertTrue((output_dir / result["filename"]).is_file())
+
     def test_protocol_missing_required_context_returns_422(self):
         request = SimpleNamespace(
             path="/api/violation-reports/report-internal/protocol/generate",

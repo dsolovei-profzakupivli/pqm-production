@@ -58,7 +58,10 @@ class DeclensionNavigationUiTests(unittest.TestCase):
         self.assertIn("$('#declensionGenitive').value=item?.genitive||''",self.app)
         self.assertIn("$('#declensionAccusative').value=item?.accusative||''",self.app)
         self.assertIn("data-declension-edit",self.app)
-        self.assertIn("return html+violationDeclensionActions(declensions)+controls}",self.app)
+        # The action toolbar is now inside a dedicated DOM target so the
+        # protocol-type switch can refresh its declension state in place.
+        self.assertIn('id="violationProtocolDeclensionActions"',self.app)
+        self.assertIn("violationDeclensionActions(declensions)",self.app)
 
     def test_appeals_status_uses_only_kpi_buttons_and_reason_is_preserved(self):
         html=(self.assets/'index.html').read_text(encoding='utf-8')

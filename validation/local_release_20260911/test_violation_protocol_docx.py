@@ -43,7 +43,7 @@ BASE_VALUES = {
     "rejection_reason": "Фактична підстава відхилення", "refusal_date": "04.09.2026",
     "refusal_outgoing_number": "42", "refusal_document": "https://example.test/refusal",
     "supplier_response": "Фактичне пояснення постачальника", "contract_date": "03.09.2026",
-    "contract_number": "C-77",
+    "contract_number": "C-77", "review_notes": "Причина відмови — синтетичний текст УО.",
 }
 
 
@@ -809,6 +809,85 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             self.assertTrue(item["exists"])
             self.assertEqual(item["filename"], "warning.docx")
             self.assertTrue(item["modified_at"])
+
+    def test_individual_decline_docx_uses_comment_verbatim_and_keeps_justification_separate(self):
+        values = {**BASE_VALUES, "review_notes": "SYNTHETIC-REVIEW-NOTES-EXACT-731.",
+                  "decision_justification": "Окреме повне обґрунтування рішення."}
+        output = Path(self.temp.name) / "individual-decline.docx"
+        generator.build_violation_protocol_docx(
+            "decline_individual_review", output, values, values["decision_justification"],
+            [], [], {"has_written_refusal": True, "has_contract": False,
+                     "has_civil_code_basis": False, "has_court_decision": False,
+                     "has_supplier_response": True},
+        )
+        text = all_text(output)
+        self.assertIn("SYNTHETIC-REVIEW-NOTES-EXACT-731.", text)
+        self.assertIn("Окреме повне обґрунтування рішення.", text)
+        self.assertNotIn("{{", text)
+        self.assertNotIn("winner_date", generator._template_tokens(
+            generator.TEMPLATES["decline_individual_review"]))
+
+    def test_individual_decline_docx_requires_review_notes(self):
+        values = {**BASE_VALUES, "review_notes": ""}
+        with self.assertRaisesRegex(generator.ProtocolContextValidationError, "Коментар УО"):
+            self.build("decline_individual_review", values=values)
+
+    def test_p49_3_replacement_may_remove_winner_date_and_generates_without_it(self):
+        runtime = Path(self.temp.name) / "runtime"
+        templates = {key: runtime / path.name for key, path in generator.TEMPLATES.items()}
+        replacement = Path(self.temp.name) / "decline_p49_3_without_winner_date.docx"
+        output = Path(self.temp.name) / "generated_p49_3.docx"
+        with patch.object(generator, "TEMPLATE_DIR", runtime), patch.object(generator, "TEMPLATES", templates):
+            generator.ensure_runtime_templates()
+            document = Document(templates["decline_p49_3"])
+            winner_paragraphs = [p for p in generator._all_paragraphs(document)
+                                 if "{{ winner_date }}" in p.text]
+            self.assertTrue(winner_paragraphs)
+            for paragraph in winner_paragraphs:
+                paragraph._p.getparent().remove(paragraph._p)
+            document.save(replacement)
+            original_hash = sha256(templates["decline_p49_3"])
+            generator.replace_runtime_template("decline_p49_3", replacement)
+            self.assertNotEqual(sha256(templates["decline_p49_3"]), original_hash)
+            self.assertEqual(len(list((runtime / "_versions").glob("decline_p49_3_*.docx"))), 1)
+            self.assertNotIn("winner_date", generator._template_tokens(templates["decline_p49_3"]))
+            values = dict(BASE_VALUES)
+            values.pop("winner_date")
+            generator.build_violation_protocol_docx(
+                "decline_p49_3", output, values, "Синтетичне обґрунтування рішення",
+                [], [], {"has_written_refusal": True, "has_contract": True,
+                         "has_contract_security": True, "has_civil_code_basis": True,
+                         "has_court_decision": True, "has_supplier_response": True},
+            )
+            self.assertTrue(output.is_file())
+
+    def test_p49_3_removal_exception_does_not_allow_removing_other_markers(self):
+        runtime = Path(self.temp.name) / "runtime"
+        templates = {key: runtime / path.name for key, path in generator.TEMPLATES.items()}
+        replacement = Path(self.temp.name) / "decline_p49_3_without_supplier.docx"
+        with patch.object(generator, "TEMPLATE_DIR", runtime), patch.object(generator, "TEMPLATES", templates):
+            generator.ensure_runtime_templates()
+            document = Document(templates["decline_p49_3"])
+            for paragraph in list(generator._all_paragraphs(document)):
+                if "{{ supplier_name }}" in paragraph.text:
+                    paragraph._p.getparent().remove(paragraph._p)
+            document.save(replacement)
+            with self.assertRaisesRegex(ValueError, "supplier_name"):
+                generator.replace_runtime_template("decline_p49_3", replacement)
+
+    def test_other_protocol_replacement_cannot_remove_winner_date(self):
+        runtime = Path(self.temp.name) / "runtime"
+        templates = {key: runtime / path.name for key, path in generator.TEMPLATES.items()}
+        replacement = Path(self.temp.name) / "warning_without_winner_date.docx"
+        with patch.object(generator, "TEMPLATE_DIR", runtime), patch.object(generator, "TEMPLATES", templates):
+            generator.ensure_runtime_templates()
+            document = Document(templates["warning"])
+            for paragraph in list(generator._all_paragraphs(document)):
+                if "{{ winner_date }}" in paragraph.text:
+                    paragraph._p.getparent().remove(paragraph._p)
+            document.save(replacement)
+            with self.assertRaisesRegex(ValueError, "winner_date"):
+                generator.replace_runtime_template("warning", replacement)
 
     def test_replacement_retries_a_transient_windows_lock(self):
         runtime = Path(self.temp.name) / "runtime"

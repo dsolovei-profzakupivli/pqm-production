@@ -3,7 +3,8 @@ const vm=require('vm');
 const assert=require('assert');
 const src=fs.readFileSync('app.js','utf8').replace(/\r\n/g,'\n');
 const actions=src.slice(src.indexOf('function unresolvedViolationDeclensionsBySide('),src.indexOf('async function loadReferencesView(){'));
-assert(src.includes('return html+violationDeclensionActions(declensions)+controls}'));
+assert(src.includes('id="violationProtocolDeclensionActions"') && src.includes('violationDeclensionActions(declensions)'),
+  'declension actions must render in the protocol workbench target');
 const openSource=src.slice(src.indexOf('async function openDocumentDeclension('),src.indexOf('async function openDeclensionFromValidation('));
 assert(openSource.indexOf("if(context.originType==='violation_report_side')")<openSource.indexOf("$('#requestDetailsDialog').close()"), 'side editor must keep the appeal card open');
 const entry=(side,status='unresolved',original=side)=>({subject_label:side==='customer'?'Замовник':'Постачальник',status,original,entity_type:'legal_entity',grammatical_case:'genitive'});

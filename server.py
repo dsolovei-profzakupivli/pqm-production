@@ -7934,6 +7934,9 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
             and item["review"] and item["review"].get("justification_source_hash")
             and item["review"].get("justification_source_hash") != current_hash)
         item["protocol_readiness"] = violation_protocol_readiness(item)
+        if item.get("review", {}).get("internal_decision") == "decline" and item.get("reason") in SUPPORTED_P49_REASONS:
+            item["protocol_readiness_individual"] = violation_protocol_readiness(
+                item, requested_protocol_type=INDIVIDUAL_DECLINE_PROTOCOL)
     else:
         item["recommendation"] = None
         item["justification_draft"] = ""
@@ -8193,8 +8196,18 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
     return violation_report_detail(report["id"], refresh=False)
 
 
-def violation_protocol_type(report: dict, review: dict) -> str:
+INDIVIDUAL_DECLINE_PROTOCOL = "decline_individual_review"
+SUPPORTED_P49_REASONS = {"contractBreach", "signingRefusal", "goodsNonCompliance"}
+
+
+def violation_protocol_type(report: dict, review: dict, requested_type: str = "") -> str:
     decision, reason = str(review.get("internal_decision") or ""), str(report.get("reason") or "")
+    requested_type = str(requested_type or "").strip()
+    if requested_type:
+        if (requested_type == INDIVIDUAL_DECLINE_PROTOCOL and decision == "decline"
+                and reason in SUPPORTED_P49_REASONS):
+            return INDIVIDUAL_DECLINE_PROTOCOL
+        return ""
     if decision == "warning":
         return "warning"
     if decision == "decline" and reason in {"contractBreach", "signingRefusal"}:
@@ -8243,7 +8256,8 @@ def violation_has_complete_rejection(context: dict | None) -> bool:
     return bool(context.get("rejection_date") and reason)
 
 
-def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol_date: str = "") -> dict:
+def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol_date: str = "",
+                                 requested_protocol_type: str = "") -> dict:
     review, deadline = item.get("review") or {}, item.get("deadline_control") or {}
     number = str(protocol_number or review.get("protocol_number") or "").strip()
     date = str(protocol_date or review.get("protocol_date") or "").strip()
@@ -8256,8 +8270,13 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
         reasons.append("Не завершився офіційний строк постачальника")
     if not (review.get("assigned_officer_id") or review.get("assigned_officer")):
         reasons.append("Не призначена відповідальна УО")
-    if not violation_protocol_type(item, review):
-        reasons.append("Не визначено підтримуваний тип протоколу для рішення і підстави")
+    protocol_type = violation_protocol_type(item, review, requested_protocol_type)
+    individual_decline = protocol_type == INDIVIDUAL_DECLINE_PROTOCOL
+    if not protocol_type:
+        if requested_protocol_type:
+            reasons.append("Тип «Відмова — індивідуальний розгляд» дозволений лише для рішення «Відмова» та визначеної підстави п. 49")
+        else:
+            reasons.append("Не визначено підтримуваний тип протоколу для рішення і підстави")
     if not str(review.get("decision_justification") or "").strip():
         reasons.append("Не заповнене обґрунтування рішення")
     officer_decision = review.get("internal_decision") or ""
@@ -8281,7 +8300,7 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
     if not date:
         reasons.append("Не введено дату протоколу")
     context = item.get("procurement_context") or {}
-    if context.get("rejection_ambiguous"):
+    if context.get("rejection_ambiguous") and not individual_decline:
         reasons.append("Неоднозначне рішення про відхилення: потрібна перевірка provenance")
     rejected = violation_has_complete_rejection(context)
     manual_winner_confirmed = (context.get("winner_date_source") == "officer_manual"
@@ -8292,14 +8311,14 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
     winner_absent_decline = (context.get("available") is True
                              and context.get("winner_state") == "absent_confirmed"
                              and review.get("internal_decision") == "decline")
-    if (item.get("reason") in {"contractBreach", "signingRefusal"}
+    if (not individual_decline and item.get("reason") in {"contractBreach", "signingRefusal"}
             and context.get("winner_state") in {"unknown", "ambiguous", "unavailable"}
             and not manual_winner_confirmed):
         reasons.append("Подію визначення переможцем не підтверджено: потрібна перевірка provenance")
-    if (item.get("reason") in {"contractBreach", "signingRefusal"}
+    if (not individual_decline and item.get("reason") in {"contractBreach", "signingRefusal"}
             and not context.get("winner_selected_at") and not winner_absent_decline):
         reasons.append("Не визначено дату визначення переможцем")
-    if item.get("reason") == "signingRefusal":
+    if not individual_decline and item.get("reason") == "signingRefusal":
         missing_refusal = []
         if not str(review.get("written_refusal_date") or "").strip():
             missing_refusal.append("Дата письмової відмови")
@@ -8309,10 +8328,10 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
             missing_refusal.append("Документ письмової відмови")
         if missing_refusal:
             reasons.append("Не заповнено обов’язкові поля: " + ", ".join(missing_refusal))
-    contract_required = violation_protocol_type(item, review) == "decline_p49_3" and not rejected
+    contract_required = protocol_type == "decline_p49_3" and not rejected
     if contract_required and not review.get("actual_contract_signed"):
         reasons.append("Не підтверджено ручне поле «Договір укладено»")
-    if review.get("actual_contract_signed") and not rejected:
+    if review.get("actual_contract_signed") and not rejected and not individual_decline:
         missing_contract = []
         if not str(review.get("actual_contract_number") or "").strip():
             missing_contract.append("Номер договору")
@@ -8320,17 +8339,20 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
             missing_contract.append("Дата договору")
         if missing_contract:
             reasons.append("Не заповнено обов’язкові поля: " + ", ".join(missing_contract))
-    declensions=violation_protocol_declensions(item)
+    if individual_decline and not str(review.get("review_notes") or "").strip():
+        reasons.append("Для індивідуального протоколу потрібно заповнити коментар УО")
+    declensions=(violation_protocol_declensions(item, protocol_type)
+                 if individual_decline else violation_protocol_declensions(item))
     unresolved=[entry for entry in declensions if entry['status']!='resolved']
     if unresolved:reasons.append('Потрібні перевірені відмінкові форми')
-    return {"ready": not reasons, "reasons": reasons, "protocol_type": violation_protocol_type(item, review),
+    return {"ready": not reasons, "reasons": reasons, "protocol_type": protocol_type,
             "protocol_number": number, "protocol_date": date,
             "declensions":declensions,"unresolved":unresolved}
 
 
-def violation_protocol_declensions(item: dict) -> list[dict]:
+def violation_protocol_declensions(item: dict, requested_protocol_type: str = "") -> list[dict]:
     """Expose the same template-dependent forms for review before generation."""
-    protocol_type=violation_protocol_type(item,item.get('review') or {})
+    protocol_type=violation_protocol_type(item,item.get('review') or {},requested_protocol_type)
     path=TEMPLATES.get(protocol_type)
     if not path or not Path(path).is_file():return []
     tokens=set()
@@ -8535,7 +8557,7 @@ def _violation_protocol_filename(item: dict, gate: dict) -> str:
             raise ValueError("Не вказано обов’язковий реквізит назви DOCX: " + label)
         cleaned[label] = value
     kind = gate.get("protocol_type")
-    if kind not in {"warning", "decline_p49_1_2", "decline_p49_3"}:
+    if kind not in {"warning", "decline_p49_1_2", "decline_p49_3", INDIVIDUAL_DECLINE_PROTOCOL}:
         raise ValueError("Не визначено вид протокольного рішення для назви DOCX")
     marker = "П" if kind == "warning" else "В"
     filename = (f"{cleaned['ідентифікатор звернення']}_{cleaned['номер протоколу']}_{marker}_"
@@ -8569,10 +8591,18 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     require_local_violation_report_owned(report_id)
     item = violation_report_detail(report_id, refresh=True)
     require_owned_violation_report(item)
-    gate = violation_protocol_readiness(item, payload.get("protocol_number", ""), payload.get("protocol_date", ""))
+    requested_protocol_type = str(payload.get("protocol_type") or "").strip()
+    gate = violation_protocol_readiness(item, payload.get("protocol_number", ""),
+                                        payload.get("protocol_date", ""), requested_protocol_type)
     if not gate["ready"]:
         raise ValueError("; ".join(gate["reasons"]))
     review, context = item.get("review") or {}, item.get("procurement_context") or {}
+    if gate.get("protocol_type") == INDIVIDUAL_DECLINE_PROTOCOL:
+        confirmed_notes = payload.get("confirmed_review_notes")
+        if (payload.get("confirm_review_notes") is not True
+                or not isinstance(confirmed_notes, str)
+                or confirmed_notes != str(review.get("review_notes") or "")):
+            raise ValueError("Коментар УО змінився або не підтверджений. Перевірте актуальний текст і підтвердьте його повторно.")
     publication_metadata = _violation_publication_document_metadata(context)
     publication_date = publication_metadata["date"]
     download_filename = _violation_protocol_filename(item, gate)
@@ -8651,8 +8681,10 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "contract_url": "" if rejected else str(review.get("actual_contract_url") or ""),
         "decision_justification": normalize_justification_text(
             review.get("decision_justification")),
+        "review_notes": str(review.get("review_notes") or ""),
     }
     protocol_metadata = _resolve_violation_protocol_metadata(item, values)
+    protocol_metadata["protocol_type"] = gate["protocol_type"]
     protocol_metadata["procurement_publication"] = publication_metadata
     protocol_metadata["protocol_download"] = {"filename": download_filename}
     flags = {

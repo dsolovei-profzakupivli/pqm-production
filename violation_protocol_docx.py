@@ -39,6 +39,7 @@ TEMPLATES = {
     "warning": TEMPLATE_DIR / "warning.docx",
     "decline_p49_1_2": TEMPLATE_DIR / "decline_p49_1_2.docx",
     "decline_p49_3": TEMPLATE_DIR / "decline_p49_3.docx",
+    "decline_individual_review": TEMPLATE_DIR / "decline_individual_review.docx",
     "application_protocol": DATA_DIR / "templates" / "application_protocol.docx",
 }
 TOKEN_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
@@ -66,6 +67,8 @@ CONDITIONAL_TOKEN_FLAGS = {
     "contract_number": "has_contract",
 }
 DOCUMENT_TOKENS = {"customer_documents", "supplier_documents"}
+# Лише шаблон P49.3 може не містити цього маркера; для інших шаблонів він обов’язковий.
+OPTIONAL_REMOVABLE_TOKENS = {"decline_p49_3": {"winner_date"}}
 FIELD_LABELS = {
     "protocol_number": "Номер протоколу", "protocol_date": "Дата протоколу",
     "report_id": "Номер звернення", "procurement_id": "Номер закупівлі",
@@ -78,6 +81,7 @@ FIELD_LABELS = {
     "supplier_name_accusative": "Назва постачальника (знахідний відмінок)",
     "supplier_code": "ЄДРПОУ / РНОКПП постачальника", "supplier_code_label": "Тип коду постачальника",
     "officer_name": "Уповноважена особа", "decision_justification": "Обґрунтування рішення",
+    "review_notes": "Коментар УО",
     "contract_number": "Номер договору", "contract_date": "Дата договору",
 }
 def _token_name(value: str) -> str:
@@ -107,6 +111,7 @@ def template_metadata() -> list[dict[str, Any]]:
         "warning": "Попередження за зверненням",
         "decline_p49_1_2": "Відмова за пп. 1–2 п. 49",
         "decline_p49_3": "Відмова за пп. 3 п. 49",
+        "decline_individual_review": "Відмова — індивідуальний розгляд",
         "application_protocol": "Протокол розгляду заявок / кваліфікації",
     }
     result = []
@@ -164,7 +169,7 @@ def replace_runtime_template(key: str, source_path: str | Path) -> Path:
         raise
     except Exception as exc:
         raise ValueError("Не вдалося прочитати структуру DOCX") from exc
-    missing = sorted(expected - supplied)
+    missing = sorted((expected - supplied) - OPTIONAL_REMOVABLE_TOKENS.get(key, set()))
     if missing:
         raise ValueError("У DOCX відсутні обов’язкові маркери: " + ", ".join(missing))
     versions = TEMPLATE_DIR / "_versions"
@@ -861,11 +866,12 @@ def build_violation_protocol_docx(
             document_type,
         )
         document = Document(temporary)
-        _finalize_civil_code_block(document, bool((flags or {}).get("has_civil_code_basis")))
+        if protocol_type != "decline_individual_review":
+            _finalize_civil_code_block(document, bool((flags or {}).get("has_civil_code_basis")))
         customer_documents = _normalized_documents(customer_documents)
         supplier_documents = _normalized_documents(supplier_documents)
         normalized_values = {
-            _token_name(key): (str(value or "") if _token_name(key) == "violation_description"
+            _token_name(key): (str(value or "") if _token_name(key) in {"violation_description", "review_notes"}
                                else _presentation_text(
                                    _presentation_entity_name(value) if _token_name(key) in ENTITY_NAME_TOKENS else value
                                ).strip())
