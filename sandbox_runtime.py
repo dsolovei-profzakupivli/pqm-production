@@ -719,8 +719,11 @@ def decorate_html(raw):
             raise RuntimeError('STOP: SANDBOX Halloween script markup mismatch')
         text = text.replace(halloween_anchor, halloween_anchor +
                             '\n  <script src="registry_popovers.js"></script>'
+                            '\n  <script src="operational_task_officers.js?v=1"></script>'
                             '\n  <link rel="stylesheet" href="halloween_motion.css">'
                             '\n  <script src="halloween_motion.js"></script>', 1)
+        if text.count('<script src="operational_task_officers.js?v=1"></script>') != 1:
+            raise RuntimeError('STOP: SANDBOX operational officer module include mismatch')
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
     mode = ('ЗОВНІШНІ ДЖЕРЕЛА — читання · локальні записи лише в SANDBOX · '
             'Google-записи лише в підтверджену SANDBOX Sheet · PROD призначення заблоковані')

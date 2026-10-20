@@ -35,6 +35,9 @@ class SandboxDropdownPopoverContractTests(unittest.TestCase):
             production = sandbox_runtime.decorate_html(raw).decode("utf-8")
         self.assertEqual(sandbox.count('<script src="registry_popovers.js"></script>'), 1)
         self.assertNotIn('<script src="registry_popovers.js"></script>', production)
+        include = '<script src="operational_task_officers.js?v=1"></script>'
+        self.assertEqual(sandbox.count(include), 1)
+        self.assertNotIn(include, production)
 
 
 if __name__ == "__main__":
