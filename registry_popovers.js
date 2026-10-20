@@ -1,8 +1,9 @@
 (() => {
-  const selector = '.multi-filter,.advanced-filters';
+  const selector = '.multi-filter,.advanced-filters,.toolbar-settings';
   const panelSelector = ':scope > .multi-panel,:scope > .advanced-filter-panel,:scope > .edr-monitoring-filter-grid';
 
   function panelFor(details) {
+    if (details.matches('.toolbar-settings')) return details.querySelector(':scope > .toolbar-settings-panel');
     return details.querySelector(panelSelector);
   }
 
@@ -33,15 +34,20 @@
 
     const size = panel.getBoundingClientRect();
     const margin = 8;
-    const left = Math.max(margin, Math.min(anchor.left, innerWidth - size.width - margin));
-    const below = innerHeight - anchor.bottom - margin - 4;
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    let preferredLeft = details.matches('.toolbar-settings') ? anchor.right - size.width : anchor.left;
+    if (details.matches('.toolbar-settings') && preferredLeft < margin) preferredLeft = anchor.left;
+    const left = Math.max(margin, Math.min(preferredLeft, viewportWidth - size.width - margin));
+    const below = viewportHeight - anchor.bottom - margin - 4;
     const above = anchor.top - margin - 4;
     const top = size.height <= below || below >= above
-      ? Math.min(anchor.bottom + 4, innerHeight - size.height - margin)
-      : Math.max(margin, anchor.top - size.height - 4);
+      ? Math.min(anchor.bottom + 4, viewportHeight - size.height - margin)
+      : Math.max(margin, Math.min(anchor.top - size.height - 4, viewportHeight - size.height - margin));
+    const layoutZoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
 
-    panel.style.setProperty('--registry-popover-top', `${top}px`);
-    panel.style.setProperty('--registry-popover-left', `${left}px`);
+    panel.style.setProperty('--registry-popover-top', `${top / layoutZoom}px`);
+    panel.style.setProperty('--registry-popover-left', `${left / layoutZoom}px`);
   }
 
   function resetPanel(details) {
@@ -63,7 +69,7 @@
     const details = event.target;
     if (!(details instanceof HTMLDetailsElement) || !details.matches(selector)) {
       const panel = event.target;
-      const owner = panel instanceof HTMLElement && panel.matches('.multi-panel,.advanced-filter-panel,.edr-monitoring-filter-grid')
+      const owner = panel instanceof HTMLElement && panel.matches('.multi-panel,.advanced-filter-panel,.edr-monitoring-filter-grid,.toolbar-settings-panel')
         ? panel.parentElement?.closest(selector) : null;
       if (owner?.open && !panel.matches(':popover-open')) {
         owner.open = false;
@@ -82,6 +88,12 @@
   // The application already owns pointerdown dismissal. Handle keyboard and
   // programmatic clicks here so navigation cannot leave a hidden panel open.
   document.addEventListener('click', event => {
+    const settingsAction = event.target instanceof Element ? event.target.closest('.toolbar-settings-panel button') : null;
+    if (settingsAction) {
+      const owner = settingsAction.closest('.toolbar-settings[open]');
+      if (owner) owner.open = false;
+      return;
+    }
     if (event.detail !== 0) return;
     document.querySelectorAll(`${selector}[open]`).forEach(details => {
       if (!details.contains(event.target)) details.open = false;
@@ -97,5 +109,6 @@
     if (!details) return;
     event.preventDefault();
     details.open = false;
+    requestAnimationFrame(() => details.querySelector(':scope > summary')?.focus());
   }, true);
 })();
