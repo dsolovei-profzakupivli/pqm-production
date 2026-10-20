@@ -1,8 +1,9 @@
 """Exact integrity checks for the separately approved protocol presentation fixes."""
+import hashlib
 import json
-import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,22 +24,51 @@ PRODUCT_FILES = {
     "styles.css",
     "violation_protocol_docx.py",
 }
+HISTORICAL_FIXTURE = ROOT / "validation/fixtures/protocol_integrity_history.zip"
+HISTORICAL_FIXTURE_SHA256 = "57203e4896bd7ec44eb3ffa68e67092bdfaee913af5549d8e1485adbdcf24381"
+HISTORICAL_REVISIONS = (BASELINE, PREVIOUS_VARIANT)
 
 
-def materialize_git_tree(revision, contract, destination):
-    paths = set(contract.get("product_files", {}))
-    paths.update(contract.get("guarded_files", {}))
-    paths.update(
-        path for path, values in contract.get("protected_files", {}).items()
-        if values.get("sha256")
-    )
-    for relative in paths:
-        content = subprocess.check_output(
-            ["git", "show", f"{revision}:{relative}"], cwd=ROOT
+def materialize_historical_tree(revision, contract, destination):
+    if revision not in HISTORICAL_REVISIONS:
+        raise AssertionError(f"Невідома історична ревізія integrity fixture: {revision}")
+
+    def contract_paths(value):
+        paths = set(value.get("product_files", {}))
+        paths.update(value.get("guarded_files", {}))
+        paths.update(
+            path for path, values in value.get("protected_files", {}).items()
+            if values.get("sha256")
         )
-        target = Path(destination) / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        return paths
+
+    previous, current = load_contracts()
+    baseline_paths = contract_paths(previous) | contract_paths(current)
+    previous_variant_paths = contract_paths(previous)
+    expected_paths = baseline_paths if revision == BASELINE else previous_variant_paths
+    paths = contract_paths(contract)
+    if not paths.issubset(expected_paths):
+        raise AssertionError("Integrity fixture не містить усіх запитаних файлів ревізії")
+
+    archive_bytes = HISTORICAL_FIXTURE.read_bytes()
+    if hashlib.sha256(archive_bytes).hexdigest() != HISTORICAL_FIXTURE_SHA256:
+        raise AssertionError("Змінено зафіксований архів історичних integrity fixture")
+
+    expected_entries = {
+        f"{historical_revision}/{relative}"
+        for historical_revision in HISTORICAL_REVISIONS
+        for relative in (baseline_paths if historical_revision == BASELINE else previous_variant_paths)
+    }
+    with zipfile.ZipFile(HISTORICAL_FIXTURE) as archive:
+        entries = archive.namelist()
+        if len(entries) != len(set(entries)) or set(entries) != expected_entries:
+            raise AssertionError("Склад історичних integrity fixture не відповідає маніфесту")
+
+        for relative in paths:
+            content = archive.read(f"{revision}/{relative}")
+            target = Path(destination) / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
 
 
 def materialize_working_tree(contract, destination):
@@ -73,7 +103,7 @@ class ProtocolFixesIntegrityV2Tests(unittest.TestCase):
     def test_baseline_and_previous_allowed_variant_still_match_v1(self):
         for revision in (BASELINE, PREVIOUS_VARIANT):
             with self.subTest(revision=revision), tempfile.TemporaryDirectory(dir=ROOT) as temp:
-                materialize_git_tree(revision, self.previous, temp)
+                materialize_historical_tree(revision, self.previous, temp)
                 self.assertTrue(manifest_tree_matches(self.previous, temp))
 
     def test_new_variant_is_exactly_bound_to_baseline_and_four_files(self):
@@ -91,7 +121,7 @@ class ProtocolFixesIntegrityV2Tests(unittest.TestCase):
 
     def test_new_variant_rejects_baseline_and_every_single_byte_mutation(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as baseline_tree:
-            materialize_git_tree(BASELINE, self.current, baseline_tree)
+            materialize_historical_tree(BASELINE, self.current, baseline_tree)
             self.assertFalse(manifest_tree_matches(self.current, baseline_tree))
 
         with tempfile.TemporaryDirectory(dir=ROOT) as candidate_tree:
