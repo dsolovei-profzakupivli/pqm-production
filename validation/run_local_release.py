@@ -29,6 +29,10 @@ def main():
         shutil.copytree(ROOT/'validation/local_release_20260911',
                         root/'validation/local_release_20260911',
                         ignore=shutil.ignore_patterns('__pycache__'))
+        fixture_source=ROOT/'validation/fixtures/protocol_integrity_history.zip'
+        fixture_target=root/'validation/fixtures'
+        fixture_target.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(fixture_source,fixture_target/fixture_source.name)
         # Node regressions run against this same disposable source fixture.
         for source in (ROOT/'validation').glob('*.cjs'):
             shutil.copy2(source,root/'validation'/source.name)
