@@ -181,7 +181,12 @@ class SandboxHTTP(unittest.TestCase):
                      '/api/uo-work-queue', '/api/violation-reports', '/api/chats', '/api/reference-status',
                      '/api/edr-monitoring']:
             self.assertEqual(200, self.request(path)[0], path)
-        self.assertEqual(7, len(self.request('/api/admin/templates')[1]['items']))
+        template_items = self.request('/api/admin/templates')[1]['items']
+        self.assertEqual({
+            'amcu_exclusion_protocol', 'application_protocol',
+            'decline_individual_review', 'decline_p49_1_2', 'decline_p49_3',
+            'nazk_supplier_request', 'termination_exclusion_protocol', 'warning',
+        }, {item['key'] for item in template_items})
 
     def test_12_local_destination_preserves_auth_and_unknown_route_guard(self):
         self.assertEqual(401,self.request('/api/applications/sandbox-pending',None,'PATCH',{'notes':'forbidden'})[0])
