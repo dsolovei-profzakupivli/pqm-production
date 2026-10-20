@@ -7,6 +7,76 @@ from pathlib import Path
 
 
 class ViolationReportReopenUiTests(unittest.TestCase):
+    def test_document_flag_save_preserves_unsaved_fields_and_handles_api_failure(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        local = Path(__file__).with_name("app.js")
+        app = local if local.exists() else Path(__file__).parents[2] / "app.js"
+        script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const start = source.indexOf('async function saveViolationDocumentReview(');
+const end = source.indexOf('function downloadFilenameFromDisposition(', start);
+assert.ok(start >= 0 && end > start);
+let fail = false, calls = 0;
+const form = {innerHTML:'synthetic form remains untouched'};
+const row = {
+  state:null,
+  querySelector(selector){
+    if(selector==='.violation-document-unavailable')return this.state;
+    if(selector==='a')return {after:(...nodes)=>{this.state=nodes.at(-1)}};
+    return null;
+  }
+};
+const input = {checked:true,disabled:false,
+  dataset:{violationDocumentSource:'customer',violationDocumentId:'doc-1'},
+  closest:()=>row};
+const item = {id:'synthetic-report',evidence_documents:[{id:'doc-1',title:'Доказ.pdf',file_unavailable:false}]};
+const notices=[];
+const context = {
+  API:'/api', document:{createElement:()=>({remove(){row.state=null}}),createTextNode:value=>({textContent:value})},
+  $:selector=>selector==='#requestDetailsBody'?form:null,
+  request:async(url,options)=>{calls++;assert.equal(url,'/api/violation-reports/synthetic-report/documents/customer/doc-1');assert.equal(JSON.parse(options.body).file_unavailable,input.checked);if(fail)throw new Error('synthetic API error');return{}},
+  toast:message=>notices.push(message),
+};
+vm.createContext(context);
+vm.runInContext(source.slice(start,end),context);
+(async()=>{
+  await context.saveViolationDocumentReview(item,input);
+  assert.equal(calls,1);assert.equal(input.checked,true);assert.equal(input.disabled,false);
+  assert.equal(item.evidence_documents[0].file_unavailable,true);
+  assert.equal(row.state.textContent,'Недоступний');
+  assert.equal(form.innerHTML,'synthetic form remains untouched');
+  input.checked=false;
+  await context.saveViolationDocumentReview(item,input);
+  assert.equal(calls,2);assert.equal(item.evidence_documents[0].file_unavailable,false);
+  assert.equal(row.state,null);assert.equal(form.innerHTML,'synthetic form remains untouched');
+  input.checked=true;fail=true;
+  await context.saveViolationDocumentReview(item,input);
+  assert.equal(calls,3);assert.equal(input.checked,false);assert.equal(input.disabled,false);
+  assert.equal(form.innerHTML,'synthetic form remains untouched');
+  assert.equal(notices.at(-1),'synthetic API error');
+})().catch(error=>{console.error(error);process.exitCode=1});
+"""
+        result = subprocess.run([node, "-e", script, str(app)], text=True,
+                                capture_output=True, timeout=20, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_protocol_review_notes_confirmation_is_a_separate_responsive_row(self):
+        local = Path(__file__).with_name("app.js")
+        app = local if local.exists() else Path(__file__).parents[2] / "app.js"
+        styles = app.with_name("styles.css")
+        source = app.read_text(encoding="utf-8")
+        css = styles.read_text(encoding="utf-8")
+        self.assertIn("violation-review-notes-confirmation", source)
+        self.assertIn("controls.insertBefore(confirmation,main.nextSibling)", source)
+        self.assertIn("preview.textContent=`«${notesInput.value}»`", source)
+        self.assertIn("grid-template-columns:minmax(0,1fr) auto", css)
+        self.assertIn("@media(max-width:700px){.protocol-supplier-name-provenance dl>div{grid-template-columns:1fr;gap:4px}.violation-review-notes-confirmation", css)
+
     def test_individual_protocol_sends_explicit_type_and_confirmed_current_notes(self):
         node = shutil.which("node")
         if not node:

@@ -487,17 +487,54 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             self.assertIsNotNone(size)
             self.assertEqual(size.get(qn("w:val")), "24")
 
-    def test_local_unavailable_flag_does_not_claim_source_file_is_damaged(self):
-        output = self.build(customer=[{
-            "id": "c1", "title": "Ламаний файл.docx", "url": "https://example.test/broken",
-            "file_unavailable": True,
-        }])
-        text = all_text(output)
-        self.assertNotIn("технічно пошкоджен", text.lower())
-        self.assertNotIn("0 байт", text.lower())
-        with zipfile.ZipFile(output) as package:
-            relationships = package.read("word/_rels/document.xml.rels").decode("utf-8")
-        self.assertIn("https://example.test/broken", relationships)
+    def test_customer_unavailable_marks_are_scoped_and_formatted_in_all_protocols(self):
+        note = generator.CUSTOMER_DOCUMENT_UNAVAILABLE_NOTE
+        scenarios = (
+            ([{"id": "c1", "title": "Позначений файл.docx", "url": "https://example.test/marked",
+              "file_unavailable": True},
+             {"id": "c2", "title": "Доступний файл.pdf", "url": "https://example.test/available",
+              "file_unavailable": False}], 1),
+            ([{"id": "c1", "title": "Перший файл.pdf", "url": "https://example.test/first",
+              "file_unavailable": True},
+             {"id": "c2", "title": "Другий файл.docx", "url": "https://example.test/second",
+              "file_unavailable": True},
+             {"id": "c3", "title": "Третій файл.pdf", "url": "https://example.test/third",
+              "file_unavailable": False}], 2),
+            ([{"id": "c1", "title": "Доступний файл.pdf", "url": "https://example.test/available",
+              "file_unavailable": False}], 0),
+        )
+        for protocol_type in ("warning", "decline_p49_1_2", "decline_p49_3", "decline_individual_review"):
+            for index, (documents, expected_notes) in enumerate(scenarios):
+                with self.subTest(protocol_type=protocol_type, scenario=index):
+                    output = self.build(protocol_type, customer=documents)
+                    document = Document(output)
+                    paragraphs = [paragraph for table in document.tables for row in table.rows
+                                  for cell in row.cells for paragraph in cell.paragraphs]
+                    xml_text = ["".join(paragraph._p.xpath(".//w:t/text()")) for paragraph in paragraphs]
+                    self.assertEqual(sum(text.count(note) for text in xml_text), expected_notes)
+                    self.assertNotIn("технічно пошкоджен", "\n".join(xml_text).lower())
+                    self.assertNotIn("0 байт", "\n".join(xml_text).lower())
+                    for title, url, marked in ((item["title"], item["url"], item["file_unavailable"])
+                                                for item in documents):
+                        matching = [text for text in xml_text if title in text]
+                        self.assertEqual(len(matching), 1)
+                        self.assertEqual(note in matching[0], marked)
+                        if marked:
+                            self.assertLess(matching[0].index(title), matching[0].index(note))
+                            paragraph = next(paragraph for paragraph, text in zip(paragraphs, xml_text)
+                                             if text == matching[0])
+                            self.assertTrue(paragraph._p.xpath(".//w:br"))
+                            self.assertTrue(paragraph._p.xpath(".//w:hyperlink"))
+                            note_run = next(run for run in paragraph.runs if note in run.text)
+                            self.assertEqual(note_run.font.size.pt, 8)
+                            self.assertTrue(note_run.italic)
+                            self.assertFalse(note_run.bold)
+                            self.assertEqual(str(note_run.font.color.rgb), "000000")
+                    with zipfile.ZipFile(output) as package:
+                        relationships = package.read("word/_rels/document.xml.rels").decode("utf-8")
+                    for _, url, _ in ((item["title"], item["url"], item["file_unavailable"])
+                                      for item in documents):
+                        self.assertIn(url, relationships)
 
     def test_supplier_unavailable_adds_no_generated_wording(self):
         output = self.build(supplier=[{

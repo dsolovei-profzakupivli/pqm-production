@@ -2550,12 +2550,19 @@ $('#requestDetailsBody').addEventListener('click',event=>{
   if(action)openSupplierProfile(action.dataset.supplierCode);
 });
 async function saveViolationDocumentReview(item,input){
+  const source=input.dataset.violationDocumentSource,id=input.dataset.violationDocumentId;
+  const requestedValue=input.checked,previousValue=!requestedValue;
   input.disabled=true;
   try{
-    const source=input.dataset.violationDocumentSource,id=input.dataset.violationDocumentId;
-    const data=await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/documents/${encodeURIComponent(source)}/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_unavailable:input.checked})});
-    $('#requestDetailsBody').innerHTML=violationDetailHtml(data);bindViolationReview(data);toast('Ознаку документа збережено');
-  }catch(error){input.checked=!input.checked;input.disabled=false;toast(error.message)}
+    await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/documents/${encodeURIComponent(source)}/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_unavailable:requestedValue})});
+    const updateDocuments=documents=>(documents||[]).map(document=>String(document.id||'')===String(id)?{...document,file_unavailable:requestedValue}:document);
+    if(source==='customer')item.evidence_documents=updateDocuments(item.evidence_documents);
+    if(source==='supplier')item.defendant_statements=(item.defendant_statements||[]).map(statement=>({...statement,documents:updateDocuments(statement.documents)}));
+    const row=input.closest('.violation-document-row');let state=row?.querySelector('.violation-document-unavailable');
+    if(requestedValue&&!state){state=document.createElement('span');state.className='violation-document-unavailable';state.textContent='Недоступний';row?.querySelector('a')?.after(document.createTextNode(' '),state)}
+    else if(!requestedValue)state?.remove();
+    input.disabled=false;toast('Ознаку документа збережено');
+  }catch(error){input.checked=previousValue;input.disabled=false;toast(error.message)}
 }
 function downloadFilenameFromDisposition(disposition,fallback){
   const encoded=String(disposition||'').match(/filename\*=UTF-8''([^;]+)/i);
@@ -2590,6 +2597,7 @@ function compactViolationProtocolControls(){
   const controls=$('#requestDetailsBody .violation-protocol-controls');
   if(!controls||controls.querySelector(':scope > .violation-protocol-main'))return;
   const fields=controls.querySelector(':scope > .request-form-grid');
+  const confirmation=fields?.querySelector('#confirmReviewNotesField');
   const regenerate=controls.querySelector('#generateViolationProtocol');
   const docx=controls.querySelector('a[download]');
   const pdf=controls.querySelector('[data-download-protocol-pdf]');
@@ -2597,11 +2605,21 @@ function compactViolationProtocolControls(){
   if(!fields||!regenerate||!complete)return;
   const main=document.createElement('div'),actions=document.createElement('div');
   main.className='violation-protocol-main';actions.className='violation-protocol-actions';
+  if(confirmation){
+    const raw=confirmation.textContent.trim(),match=raw.match(/^Підтверджую використання актуального коментаря УО:\s*«([\s\S]*)»$/);
+    const comment=match?match[1]:'';
+    const checkbox=confirmation.querySelector('#confirmReviewNotes');
+    confirmation.className='violation-review-notes-confirmation';
+    const preview=document.createElement('p');preview.className='violation-review-notes-preview';preview.id='confirmReviewNotesText';preview.textContent=`«${comment}»`;
+    const label=document.createElement('label');label.className='request-check';label.append(checkbox,document.createTextNode(' Підтверджую актуальність коментаря УО'));
+    confirmation.replaceChildren(preview,label);confirmation.remove();
+  }
   regenerate.classList.remove('primary');regenerate.classList.add('ghost');
   complete.classList.remove('ghost');complete.classList.add('primary');
   for(const action of [regenerate,docx,pdf,complete])if(action)actions.append(action);
   main.append(fields,actions);
   controls.insertBefore(main,controls.querySelector('.document-resolved-metadata'));
+  if(confirmation)controls.insertBefore(confirmation,main.nextSibling);
   controls.querySelectorAll(':scope > .violation-inline-actions').forEach(row=>{
     if(!row.children.length)row.remove();
   });
@@ -2624,7 +2642,7 @@ bindViolationReview=function(item){
   const syncProtocolType=()=>{if(!protocolType)return;const individual=protocolType.value==='decline_individual_review',confirmNotes=$('#confirmReviewNotes'),gate=individual?item.protocol_readiness_individual:item.protocol_readiness,reasons=$('#violationProtocolReasons'),declensions=$('#violationProtocolDeclensionActions');if(confirmField)confirmField.hidden=!individual;if(reasons){const list=gate?.reasons||[];reasons.hidden=!list.length;reasons.textContent=list.join(' · ')}if(declensions){declensions.innerHTML=violationDeclensionActions(gate?.declensions||[]);declensions.querySelectorAll('[data-check-declension-side]').forEach(button=>button.onclick=()=>openViolationDeclensionSide(button.dataset.checkDeclensionSide,item))}if(generateButton)generateButton.disabled=!gate?.ready||Boolean((gate?.unresolved||[]).length)||(individual&&!confirmNotes?.checked)};
   if(protocolType)protocolType.onchange=syncProtocolType;
   const confirmNotes=$('#confirmReviewNotes');if(confirmNotes)confirmNotes.onchange=syncProtocolType;
-  const notesInput=$('#requestDetailsBody [data-review="review_notes"]');if(notesInput&&!notesInput.dataset.confirmationBound){notesInput.dataset.confirmationBound='1';notesInput.addEventListener('input',()=>{const label=confirmField;if(label)label.innerHTML=`<input type="checkbox" id="confirmReviewNotes"> Підтверджую використання актуального коментаря УО: «${esc(notesInput.value)}»`;const replacement=$('#confirmReviewNotes');if(replacement)replacement.onchange=syncProtocolType;syncProtocolType()})}
+  const notesInput=$('#requestDetailsBody [data-review="review_notes"]');if(notesInput&&!notesInput.dataset.confirmationBound){notesInput.dataset.confirmationBound='1';notesInput.addEventListener('input',()=>{const preview=$('#confirmReviewNotesText');if(preview)preview.textContent=`«${notesInput.value}»`;const replacement=$('#confirmReviewNotes');if(replacement)replacement.checked=false;syncProtocolType()})}
   syncProtocolType();
   const decision=$('#requestDetailsBody [data-review="internal_decision"]');
   const justification=$('#requestDetailsBody [data-review="decision_justification"]');

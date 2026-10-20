@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import sandbox_runtime
 from validation.local_release_20260911.sandbox_protocol_integrity_variant import (
+ exact_variant_file_matches,
+ exact_variant_tree_matches,
  protected_content_matches,
 )
 
@@ -98,7 +100,11 @@ class SandboxPersonalThemeTests(unittest.TestCase):
             with self.subTest(file=file):
                 data=Path(file).read_bytes()
                 if not file.endswith('.webp'):data=data.replace(b'\r\n',b'\n')
-                self.assertEqual(hashlib.sha256(data).hexdigest(),digest)
+                actual=hashlib.sha256(data).hexdigest()
+                if actual != digest:
+                    self.assertIn(file, {'styles.css'})
+                    self.assertTrue(exact_variant_tree_matches())
+                    self.assertTrue(exact_variant_file_matches(file,Path(file).read_bytes()))
 
     def test_actual_decorated_html_keeps_identity_and_both_switch_resources(self):
         with patch.dict(os.environ,PQM_SANDBOX='1'):

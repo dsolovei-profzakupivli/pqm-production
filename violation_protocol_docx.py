@@ -461,7 +461,14 @@ def _document_label(document: dict[str, Any]) -> str:
                document.get("documentType") or "Документ").strip()
 
 
-def _set_document_links(paragraph, documents: list[dict[str, Any]]):
+CUSTOMER_DOCUMENT_UNAVAILABLE_NOTE = (
+    "Документ, доданий замовником до звернення, не відкривається, "
+    "що унеможливлює ознайомлення з його змістом."
+)
+
+
+def _set_document_links(paragraph, documents: list[dict[str, Any]], *,
+                        include_unavailable_notes: bool = False):
     """Render one physical document per Word paragraph, without duplicates."""
     unique, seen = [], set()
     for document in documents:
@@ -471,7 +478,7 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         if marker in seen:
             continue
         seen.add(marker)
-        unique.append((label, url))
+        unique.append((label, url, bool(document.get("file_unavailable"))))
     if not unique:
         _clear_paragraph_content(paragraph)
         run = paragraph.add_run("не надано")
@@ -479,7 +486,7 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         return
     current = paragraph
     base_ppr = deepcopy(paragraph._p.pPr) if paragraph._p.pPr is not None else None
-    for index, (label, url) in enumerate(unique):
+    for index, (label, url, file_unavailable) in enumerate(unique):
         if index:
             node = OxmlElement("w:p")
             if base_ppr is not None:
@@ -493,6 +500,10 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         else:
             run = current.add_run(label)
             _set_run_font(run, 11)
+        if include_unavailable_notes and file_unavailable:
+            current.add_run().add_break()
+            note = current.add_run(CUSTOMER_DOCUMENT_UNAVAILABLE_NOTE)
+            _set_run_font(note, 8, italic=True)
 
 
 def _set_refusal_link(paragraph, values: dict[str, str]) -> None:
@@ -526,12 +537,7 @@ def _clear_paragraph(paragraph):
 
 
 def _configure_customer_document_block(document, documents: list[dict[str, Any]]):
-    """Render source documents without inferring corruption from local access.
-
-    ``file_unavailable`` is a manual PQM access check, not authoritative proof
-    of zero bytes or source corruption, so it must not trigger the template's
-    legal damaged-file statement.
-    """
+    """Render customer documents and their explicit manual access annotations."""
     for table in document.tables:
         for row in table.rows:
             row_tokens = {_token_name(match.group(1)) for cell in row.cells
@@ -558,7 +564,7 @@ def _configure_customer_document_block(document, documents: list[dict[str, Any]]
             for paragraph in list(target.paragraphs):
                 if paragraph is not token and not paragraph.text.strip():
                     paragraph._element.getparent().remove(paragraph._element)
-            _set_document_links(token, documents)
+            _set_document_links(token, documents, include_unavailable_notes=True)
             return
 
 
@@ -914,7 +920,8 @@ def build_violation_protocol_docx(
                         first.text = first.text[1:]
                         last.text = last.text[:-1]
             if "customer_documents" in token_names:
-                _set_document_links(paragraph, customer_documents or [])
+                _set_document_links(paragraph, customer_documents or [],
+                                    include_unavailable_notes=True)
             elif "supplier_documents" in token_names:
                 _set_document_links(paragraph, supplier_documents or [])
             elif "refusal_document" in token_names:

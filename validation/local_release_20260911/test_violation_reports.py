@@ -2376,6 +2376,20 @@ class ViolationProtocolFilenameTests(unittest.TestCase):
         self.assertIn('_769-1_В_', filename)
         self.assertEqual(Path(filename).name, filename)
 
+    def test_supplier_filename_uses_same_quote_presentation_as_document_names(self):
+        item = self.item()
+        item["defendant_name"] = 'ТОВ "КОНТИНЕНТ-СТАЛЬ"'
+        item["supplier_verified"] = {
+            "full_name": 'ТОВ "КОНТИНЕНТ-СТАЛЬ"',
+            "short_name": 'ТОВ "КОНТИНЕНТ-СТАЛЬ"',
+        }
+        names = server.protocol_supplier_names.resolve(item, server.normalize_document_name)
+        for key in ("full_name", "short_name", "filename_name"):
+            self.assertEqual(names[key]["value"], "ТОВ «КОНТИНЕНТ-СТАЛЬ»")
+        filename = server._violation_protocol_filename(item, self.gate())
+        self.assertIn("(на ТОВ «КОНТИНЕНТ-СТАЛЬ»; 45727617)", filename)
+        self.assertNotIn('"КОНТИНЕНТ-СТАЛЬ"', filename)
+
     def test_missing_requisites_and_long_names_fail_without_truncation(self):
         for field in ("report_id", "defendant_code"):
             item = self.item(); item[field] = ""
