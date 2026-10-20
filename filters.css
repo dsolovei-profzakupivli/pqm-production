@@ -85,6 +85,21 @@
   max-width: min(430px, calc(100vw - 16px));
   max-height: min(320px, calc(100vh - 16px));
 }
+.toolbar-settings.popover-fixed[open] > .toolbar-settings-panel {
+  position: fixed;
+  z-index: 10000;
+  inset: auto;
+  margin: 0;
+  top: var(--registry-popover-top);
+  left: var(--registry-popover-left);
+  right: auto;
+  bottom: auto;
+  width: min(225px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .multi-filter.popover-fixed[open] > .multi-panel { min-width: var(--registry-popover-min-width); }
 .advanced-filters.popover-fixed[open] > .advanced-filter-panel { max-width: min(820px, calc(100vw - 16px)); }
 .advanced-filters.popover-fixed[open] > .edr-monitoring-filter-grid { max-width: calc(100vw - 16px); }
