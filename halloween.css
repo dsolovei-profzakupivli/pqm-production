@@ -3,7 +3,7 @@
 .halloween-cat{position:absolute;pointer-events:none;user-select:none;width:180px;max-width:none;height:auto;left:-22px;top:-14px;z-index:1;filter:drop-shadow(0 0 1px #ffffff88)}
 @media(max-width:900px){.halloween-cat{width:100px;left:-10px;top:-12px}}
 @media(max-width:600px){.halloween-cat{width:95px;left:-10px;top:-12px}}
-html[data-halloween="off"] .halloween-cat{display:none}
+html[data-pqm-cat="off"] .halloween-cat{display:none}
 .halloween-preference{display:flex;align-items:center;gap:9px;padding:12px 24px;color:var(--ink)}
 .halloween-preference input{width:17px;height:17px;margin:0;accent-color:#e5a62b}
 .halloween-preference small{display:block;color:var(--muted)}

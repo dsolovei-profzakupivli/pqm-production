@@ -1,7 +1,9 @@
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync('app.js','utf8');
 const helper=source.slice(source.indexOf('function protocolSupplierNamesHtml('),source.indexOf('const violationProtocolWorkbench='));
-const generate=source.split('\n').find(line=>line.startsWith('async function generateViolationProtocol(item)'));
+const generateStart=source.indexOf('async function generateViolationProtocol(item){');
+const generateEnd=source.indexOf('async function completeViolationReview(',generateStart);
+const generate=source.slice(generateStart,generateEnd);
 assert(helper&&generate);
 const requests=[],button={textContent:'Сформувати',disabled:false};
 const context={esc:s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
@@ -17,7 +19,7 @@ assert(html.includes('Зі звернення Prozorro'));assert(html.includes('
 assert(html.includes('&lt;img'));assert(!html.includes('<img'));assert(!html.includes('disabled'));
 assert.equal((html.match(/<dt>/g)||[]).length,3);
 assert.equal(vm.runInContext('protocolSupplierNamesHtml({...item,is_read_only:true})',context),'');
-const controls=source.split('\n').find(line=>line.startsWith('requestContextBlock=function(item){const html=violationProtocolWorkbench'));
+const controls=source.slice(source.indexOf('const violationProtocolWorkbench=requestContextBlock;'),source.indexOf('const violationProtocolNonBlockingBase=requestContextBlock;'));
 assert(controls.indexOf('${protocolSupplierNamesHtml(item)}')<controls.indexOf('id="generateViolationProtocol"'));
 (async()=>{await vm.runInContext('generateViolationProtocol(item)',context);
   assert.deepEqual(requests,['/api/violation-reports/fixture/review','/api/violation-reports/fixture/protocol/generate']);

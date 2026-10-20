@@ -39,6 +39,7 @@ TEMPLATES = {
     "warning": TEMPLATE_DIR / "warning.docx",
     "decline_p49_1_2": TEMPLATE_DIR / "decline_p49_1_2.docx",
     "decline_p49_3": TEMPLATE_DIR / "decline_p49_3.docx",
+    "decline_individual_review": TEMPLATE_DIR / "decline_individual_review.docx",
     "application_protocol": DATA_DIR / "templates" / "application_protocol.docx",
 }
 TOKEN_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
@@ -66,6 +67,8 @@ CONDITIONAL_TOKEN_FLAGS = {
     "contract_number": "has_contract",
 }
 DOCUMENT_TOKENS = {"customer_documents", "supplier_documents"}
+# Лише шаблон P49.3 може не містити цього маркера; для інших шаблонів він обов’язковий.
+OPTIONAL_REMOVABLE_TOKENS = {"decline_p49_3": {"winner_date"}}
 FIELD_LABELS = {
     "protocol_number": "Номер протоколу", "protocol_date": "Дата протоколу",
     "report_id": "Номер звернення", "procurement_id": "Номер закупівлі",
@@ -78,6 +81,7 @@ FIELD_LABELS = {
     "supplier_name_accusative": "Назва постачальника (знахідний відмінок)",
     "supplier_code": "ЄДРПОУ / РНОКПП постачальника", "supplier_code_label": "Тип коду постачальника",
     "officer_name": "Уповноважена особа", "decision_justification": "Обґрунтування рішення",
+    "review_notes": "Коментар УО",
     "contract_number": "Номер договору", "contract_date": "Дата договору",
 }
 def _token_name(value: str) -> str:
@@ -107,6 +111,7 @@ def template_metadata() -> list[dict[str, Any]]:
         "warning": "Попередження за зверненням",
         "decline_p49_1_2": "Відмова за пп. 1–2 п. 49",
         "decline_p49_3": "Відмова за пп. 3 п. 49",
+        "decline_individual_review": "Відмова — індивідуальний розгляд",
         "application_protocol": "Протокол розгляду заявок / кваліфікації",
     }
     result = []
@@ -164,7 +169,7 @@ def replace_runtime_template(key: str, source_path: str | Path) -> Path:
         raise
     except Exception as exc:
         raise ValueError("Не вдалося прочитати структуру DOCX") from exc
-    missing = sorted(expected - supplied)
+    missing = sorted((expected - supplied) - OPTIONAL_REMOVABLE_TOKENS.get(key, set()))
     if missing:
         raise ValueError("У DOCX відсутні обов’язкові маркери: " + ", ".join(missing))
     versions = TEMPLATE_DIR / "_versions"
@@ -456,7 +461,14 @@ def _document_label(document: dict[str, Any]) -> str:
                document.get("documentType") or "Документ").strip()
 
 
-def _set_document_links(paragraph, documents: list[dict[str, Any]]):
+CUSTOMER_DOCUMENT_UNAVAILABLE_NOTE = (
+    "Документ, доданий замовником до звернення, не відкривається, "
+    "що унеможливлює ознайомлення з його змістом."
+)
+
+
+def _set_document_links(paragraph, documents: list[dict[str, Any]], *,
+                        include_unavailable_notes: bool = False):
     """Render one physical document per Word paragraph, without duplicates."""
     unique, seen = [], set()
     for document in documents:
@@ -466,7 +478,7 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         if marker in seen:
             continue
         seen.add(marker)
-        unique.append((label, url))
+        unique.append((label, url, bool(document.get("file_unavailable"))))
     if not unique:
         _clear_paragraph_content(paragraph)
         run = paragraph.add_run("не надано")
@@ -474,7 +486,7 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         return
     current = paragraph
     base_ppr = deepcopy(paragraph._p.pPr) if paragraph._p.pPr is not None else None
-    for index, (label, url) in enumerate(unique):
+    for index, (label, url, file_unavailable) in enumerate(unique):
         if index:
             node = OxmlElement("w:p")
             if base_ppr is not None:
@@ -488,6 +500,10 @@ def _set_document_links(paragraph, documents: list[dict[str, Any]]):
         else:
             run = current.add_run(label)
             _set_run_font(run, 11)
+        if include_unavailable_notes and file_unavailable:
+            current.add_run().add_break()
+            note = current.add_run(CUSTOMER_DOCUMENT_UNAVAILABLE_NOTE)
+            _set_run_font(note, 8, italic=True)
 
 
 def _set_refusal_link(paragraph, values: dict[str, str]) -> None:
@@ -521,12 +537,7 @@ def _clear_paragraph(paragraph):
 
 
 def _configure_customer_document_block(document, documents: list[dict[str, Any]]):
-    """Render source documents without inferring corruption from local access.
-
-    ``file_unavailable`` is a manual PQM access check, not authoritative proof
-    of zero bytes or source corruption, so it must not trigger the template's
-    legal damaged-file statement.
-    """
+    """Render customer documents and their explicit manual access annotations."""
     for table in document.tables:
         for row in table.rows:
             row_tokens = {_token_name(match.group(1)) for cell in row.cells
@@ -553,7 +564,7 @@ def _configure_customer_document_block(document, documents: list[dict[str, Any]]
             for paragraph in list(target.paragraphs):
                 if paragraph is not token and not paragraph.text.strip():
                     paragraph._element.getparent().remove(paragraph._element)
-            _set_document_links(token, documents)
+            _set_document_links(token, documents, include_unavailable_notes=True)
             return
 
 
@@ -861,11 +872,12 @@ def build_violation_protocol_docx(
             document_type,
         )
         document = Document(temporary)
-        _finalize_civil_code_block(document, bool((flags or {}).get("has_civil_code_basis")))
+        if protocol_type != "decline_individual_review":
+            _finalize_civil_code_block(document, bool((flags or {}).get("has_civil_code_basis")))
         customer_documents = _normalized_documents(customer_documents)
         supplier_documents = _normalized_documents(supplier_documents)
         normalized_values = {
-            _token_name(key): (str(value or "") if _token_name(key) == "violation_description"
+            _token_name(key): (str(value or "") if _token_name(key) in {"violation_description", "review_notes"}
                                else _presentation_text(
                                    _presentation_entity_name(value) if _token_name(key) in ENTITY_NAME_TOKENS else value
                                ).strip())
@@ -908,7 +920,8 @@ def build_violation_protocol_docx(
                         first.text = first.text[1:]
                         last.text = last.text[:-1]
             if "customer_documents" in token_names:
-                _set_document_links(paragraph, customer_documents or [])
+                _set_document_links(paragraph, customer_documents or [],
+                                    include_unavailable_notes=True)
             elif "supplier_documents" in token_names:
                 _set_document_links(paragraph, supplier_documents or [])
             elif "refusal_document" in token_names:

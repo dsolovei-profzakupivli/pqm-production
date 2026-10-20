@@ -38,7 +38,8 @@ class ProtocolNameTests(unittest.TestCase):
             n=self.resolve(item)
             old_full=server.normalize_document_name(full or report or '')
             old_short=server.normalize_document_name(short or old_full)
-            old_filename=next((str(v).strip() for v in (short,report) if v is not None and str(v).strip()),'')
+            old_filename=server.normalize_document_name(
+                next((str(v).strip() for v in (short,report) if v is not None and str(v).strip()),''))
             self.assertEqual([n[k]['value'] for k in ('full_name','short_name','filename_name')],[old_full,old_short,old_filename])
 
     def test_missing_names_do_not_use_qualification_or_manual_payload(self):

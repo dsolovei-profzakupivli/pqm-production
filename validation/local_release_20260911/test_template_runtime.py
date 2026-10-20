@@ -10,9 +10,9 @@ class TemplateRuntimeTests(unittest.TestCase):
         self.assertEqual(templates.TEMPLATE_DIR, Path(templates.DATA_DIR) / "templates" / "violation_protocols")
         self.assertNotEqual(templates.TEMPLATE_DIR.resolve(), templates.PACKAGED_TEMPLATE_DIR.resolve())
 
-    def test_all_four_templates_are_managed_and_application_validates(self):
+    def test_all_templates_are_managed_and_application_validates(self):
         items=templates.template_metadata()
-        self.assertEqual({'warning','decline_p49_1_2','decline_p49_3','application_protocol'},
+        self.assertEqual({'warning','decline_p49_1_2','decline_p49_3','decline_individual_review','application_protocol'},
                          {x['key'] for x in items})
         self.assertTrue(all(x['exists'] for x in items))
         with tempfile.TemporaryDirectory() as folder:

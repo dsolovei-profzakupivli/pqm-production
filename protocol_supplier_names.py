@@ -27,8 +27,8 @@ def resolve(item, normalize):
     filename_raw=next((str(v).strip() for v in (verified.get('short_name'),defendant)
                        if v is not None and str(v).strip()),'')
     if str(verified.get('short_name') or '').strip():
-        filename=value(filename_raw,'edr','supplier_edr_profiles.short_name')
+        filename=value(normalize(filename_raw),'edr','supplier_edr_profiles.short_name')
     else:
-        filename=value(filename_raw,'prozorro_violation' if filename_raw else 'missing','defendants[0]')
+        filename=value(normalize(filename_raw),'prozorro_violation' if filename_raw else 'missing','defendants[0]')
     return {'full_name':full,'short_name':short,'filename_name':filename,
             'uses_fallback':any(v['source']=='prozorro_violation' for v in (full,short,filename))}

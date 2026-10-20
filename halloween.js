@@ -3,7 +3,7 @@
   if(document.documentElement.dataset.pqmHalloweenTarget!=='production')return;
   const title=document.querySelector('.prod-brand-copy strong');
   const key='pqm.halloween.cat.enabled.v1';
-  let preferred=true,enabled=false,seasonTimer=null,input=null,hint=null;
+  let preferred=true,enabled=false,seasonTimer=null,input=null,hint=null,caption=null,catImage=null;
   try{preferred=localStorage.getItem(key)!=='0'}catch{/* Private storage may be unavailable. */}
   let refreshSpider=()=>{};
   let refreshHat=()=>{};
@@ -12,9 +12,12 @@
   const synchronize=()=>{
     if(seasonTimer!==null)clearTimeout(seasonTimer);
     const current=season();enabled=current.available&&preferred;
+    document.documentElement.dataset.pqmCat=preferred?'on':'off';
     document.documentElement.dataset.halloween=enabled?'on':'off';
-    if(input){input.disabled=!current.available;input.checked=enabled;input.title=current.available?'':'Доступно лише у жовтні за часом Києва'}
-    if(hint)hint.textContent=current.available?'Декоративне оформлення лише в цьому браузері':'Доступно лише у жовтні · Europe/Kyiv. Ваш вибір збережено.';
+    if(input){input.checked=preferred;input.title=current.available?'Керує Halloween-оформленням і котиком':'Керує видимістю котика PQM'}
+    if(caption)caption.textContent=current.available?'Halloween · святкове оформлення':'Котик PQM';
+    if(hint)hint.textContent=current.available?'Святкове оформлення й котик у цьому браузері':'Видимість котика в цьому браузері';
+    if(catImage){const source=current.available?'assets/halloween-witch-cat.webp':'assets/pqm-cat-no-hat.png';if(!catImage.getAttribute('src')?.endsWith(source))catImage.src=source}
     refreshSpider();refreshHat();refreshQueueBackground();
     // Minute checks handle clock adjustments; the final callback targets midnight.
     const delay=Math.max(1,Math.min(60000,(current.nextTransitionAt??(Date.now()+60000))-Date.now()));
@@ -23,7 +26,8 @@
   synchronize();
   if(title){
   title.classList.add('halloween-title');
-  title.insertAdjacentHTML('beforeend','<img class="halloween-cat" src="assets/halloween-witch-cat.webp" width="720" height="389" alt="" aria-hidden="true" draggable="false">');
+  catImage=document.createElement('img');catImage.className='halloween-cat';catImage.width=720;catImage.height=389;catImage.alt='';catImage.setAttribute('aria-hidden','true');catImage.draggable=false;
+  catImage.src=season().available?'assets/halloween-witch-cat.webp':'assets/pqm-cat-no-hat.png';title.append(catImage);
   }
   const nav=document.querySelector('#mainNav');
   if(nav){
@@ -115,14 +119,14 @@
   const form=document.querySelector('#accountSettingsForm');
   if(form){
     const label=document.createElement('label');label.className='halloween-preference';
-    label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span>Halloween · святкове оформлення<small>Декоративне оформлення лише в цьому браузері</small></span>';
+    label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span><span class="halloween-preference-caption"></span><small></small></span>';
     form.querySelector('footer').before(label);
-    input=label.querySelector('input');hint=label.querySelector('small');
+    input=label.querySelector('input');hint=label.querySelector('small');caption=label.querySelector('.halloween-preference-caption');
     input.addEventListener('change',()=>{
-      if(!season().available){synchronize();return}
       preferred=input.checked;try{localStorage.setItem(key,preferred?'1':'0')}catch{}
       synchronize();
     });
+    synchronize();
   }
   document.addEventListener('visibilitychange',synchronize);
   window.addEventListener('focus',synchronize);

@@ -16,7 +16,7 @@ CATALOG=Path(__file__).parent/'metadata/template_fields.v1.json'
 LEGACY=CATALOG.with_name('template_legacy_tokens.v1.json')
 LOCK=threading.RLock()
 VALUE_TYPES={'string','integer','decimal','boolean','date','datetime','url','enum','object','array<object>'}
-RUNTIME_TYPES={'warning':'warning_notice','decline_p49_1_2':'decline_p49_1_2','decline_p49_3':'decline_p49_3','application_protocol':'application_review_protocol'}
+RUNTIME_TYPES={'warning':'warning_notice','decline_p49_1_2':'decline_p49_1_2','decline_p49_3':'decline_p49_3','decline_individual_review':'violation_review_protocol','application_protocol':'application_review_protocol'}
 
 def load(path=CATALOG):
     return json.loads(Path(path).read_text(encoding='utf-8'))

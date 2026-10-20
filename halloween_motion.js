@@ -22,6 +22,54 @@
     cat.after(eyes);
   }
   const allowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on'&&!!shell&&!shell.hidden;
+  const catAllowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.pqmCat==='on'&&!!shell&&!shell.hidden;
+  // Cursor and automatic gaze share the existing clipped pupil group. The
+  // original iris is fully covered while pupils move, avoiding ghost pupils.
+  let cursorOwns=false,cursorEngaged=false,cursorJob=null,cursorIdle=null,cursorPoint=null,cursorEpoch=0;
+  const cursorGaze=eyes?.querySelector('.pqm-cat-gaze'),cursorArt=eyes?.querySelector('.pqm-cat-eye-art');
+  const stopCursor=()=>{
+    clearTimeout(cursorJob);clearTimeout(cursorIdle);cursorJob=cursorIdle=null;cursorPoint=null;cursorOwns=cursorEngaged=false;cursorEpoch++;
+    if(cursorGaze)for(const a of cursorGaze.getAnimations())a.cancel();
+    if(cursorArt){for(const a of cursorArt.getAnimations())a.cancel();cursorArt.style.removeProperty('opacity')}
+  };
+  const moveCursorGaze=(x,y,centering=false)=>{
+    if(!cursorGaze||!catAllowed())return;
+    const from=getComputedStyle(cursorGaze).transform;
+    const epoch=++cursorEpoch;cursorOwns=true;
+    for(const a of cursorGaze.getAnimations())a.cancel();
+    for(const a of cursorArt.getAnimations())a.cancel();
+    cursorArt.style.opacity='1';
+    const a=track(cursorGaze.animate([{transform:from==='none'?'translate(0px,0px)':from},{transform:`translate(${x}px,${y}px)`}],
+      {duration:centering?360:180,easing:'ease-out',fill:'forwards'}));
+    if(centering)a.addEventListener('finish',()=>{
+      if(epoch!==cursorEpoch)return;a.cancel();cursorArt.style.removeProperty('opacity');cursorOwns=false;
+    },{once:true});
+  };
+  const centerCursor=()=>{
+    clearTimeout(cursorIdle);cursorIdle=null;
+    if((cursorOwns||cursorGaze?.getAnimations().length)&&catAllowed())moveCursorGaze(0,0,true);
+  };
+  const applyCursor=()=>{
+    cursorJob=null;if(!catAllowed()||!cursorPoint||!cursorGaze)return;
+    const svg=eyes.querySelector('svg'),matrix=svg.getScreenCTM();if(!matrix)return;
+    const point=svg.createSVGPoint();point.x=550;point.y=219;
+    const origin=point.matrixTransform(matrix),dx=cursorPoint.x-origin.x,dy=cursorPoint.y-origin.y;
+    const distance=Math.hypot(dx,dy),scale=Math.hypot(matrix.a,matrix.b);
+    if(!scale)return;
+    const radius=Math.max(220,Math.min(360,cat.getBoundingClientRect().width*2));
+    const near=1-Math.min(1,distance/radius),strength=.78+.22*near;
+    const maxX=Math.min(10,2.7/scale),maxY=Math.min(7,1.7/scale),denominator=Math.max(36,distance);
+    moveCursorGaze(dx/denominator*maxX*strength,dy/denominator*maxY*strength);
+    clearTimeout(cursorIdle);cursorIdle=setTimeout(centerCursor,4000);
+  };
+  document.addEventListener('pointermove',event=>{
+    if(!catAllowed()||!eyes||event.pointerType==='touch')return;
+    cursorEngaged=true;cursorPoint={x:event.clientX,y:event.clientY};
+    if(cursorJob===null)cursorJob=setTimeout(applyCursor,32);
+  },{passive:true});
+  const leaveCursor=()=>{clearTimeout(cursorJob);cursorJob=null;cursorPoint=null;cursorEngaged=false;centerCursor()};
+  document.addEventListener('pointerleave',leaveCursor,{passive:true});
+  window.addEventListener('blur',leaveCursor,{passive:true});
   let stopTrail=null;
   const clearFlight=()=>{stopTrail?.stop();stopTrail=null;flight?.remove();flight=null};
   const clear=()=>{clearTimeout(timer);timer=null;clearFlight()};
@@ -49,7 +97,7 @@
     const amplitude=Math.max(0,Math.min(20,(skyBottom-top-86*zoom)/(2*zoom)));
     return{safe:true,reason:'clear-sky',view,top:top/zoom,zoom,width:innerWidth/zoom,amplitude};
   };
-  const stopGaze=()=>{if(eyes)for(const e of eyes.querySelectorAll('.pqm-cat-gaze,.pqm-cat-eye-art'))for(const a of e.getAnimations())a.cancel()};
+  const stopGaze=()=>{if(eyes&&!cursorOwns)for(const e of eyes.querySelectorAll('.pqm-cat-gaze,.pqm-cat-eye-art'))for(const a of e.getAnimations())a.cancel()};
   const refreshSurface=()=>{
     const zoom=parseFloat(getComputedStyle(document.body).zoom)||1;
     host.style.setProperty('--flight-viewport-width',(innerWidth/zoom)+'px');
@@ -72,7 +120,7 @@
     const draw=now=>{
       if(stopped)return;
       frame=null;
-      if(!allowed()){clear();stopEyes();return}
+      if(!allowed()){clear();stopGaze();return}
       if(!lane.isConnected){stop();return}
       if(!surface.safe)return;
       frame=requestAnimationFrame(draw);
@@ -110,9 +158,9 @@
     const stop=()=>{stopped=true;pause();canvas.remove()};
     resize();resume();return{stop,pause,resume,resize};
   };
-  const stopEyes=()=>{clearTimeout(blinkTimer);clearTimeout(lookTimer);blinkTimer=lookTimer=null;lidGeneration++;lidsBusy=false;nextBlinkAt=nextWinkAt=0;reactionPending=false;for(const a of [...eyeAnimations])a.cancel();eyeAnimations.length=0;};
+  const stopEyes=()=>{stopCursor();clearTimeout(blinkTimer);clearTimeout(lookTimer);blinkTimer=lookTimer=null;lidGeneration++;lidsBusy=false;nextBlinkAt=nextWinkAt=0;reactionPending=false;for(const a of [...eyeAnimations])a.cancel();eyeAnimations.length=0;};
   const animateLids=indices=>{
-    if(!eyes||!allowed()||lidsBusy)return;
+    if(!eyes||!catAllowed()||lidsBusy)return;
     lidsBusy=true;const generation=lidGeneration;
     const lids=[...eyes.querySelectorAll('.pqm-cat-lids')];
     const animations=indices.map(i=>track(lids[i].animate([
@@ -124,12 +172,12 @@
     });
   };
   const blink=()=>{
-    if(!eyes||!allowed()||blinkTimer!==null||lidsBusy)return;
+    if(!eyes||!catAllowed()||blinkTimer!==null||lidsBusy)return;
     const now=performance.now();
     if(!nextBlinkAt)nextBlinkAt=now+7000+Math.random()*9000;
     if(!nextWinkAt)nextWinkAt=now+40000+Math.random()*20000;
     // A single eyelid clock coordinates bilateral blinks and one-eye winks.
-    blinkTimer=setTimeout(()=>{blinkTimer=null;if(!allowed())return;
+    blinkTimer=setTimeout(()=>{blinkTimer=null;if(!catAllowed())return;
       const now=performance.now();
       if(now>=nextWinkAt){lastWinkAt=now;nextWinkAt=now+40000+Math.random()*20000;
         nextBlinkAt=Math.max(nextBlinkAt,now+1800);animateLids([Math.random()<.5?0:1]);
@@ -137,13 +185,13 @@
     },Math.max(0,Math.min(nextBlinkAt,nextWinkAt)-now));
   };
   const reactAfterFlight=()=>{
-    if(!eyes||!allowed()||lidsBusy||performance.now()-lastWinkAt<40000||Math.random()>=.35)return;
+    if(!eyes||!catAllowed()||lidsBusy||performance.now()-lastWinkAt<40000||Math.random()>=.35)return;
     // Tracking gaze finishes in the centre; then optionally wink. Reuse the
     // existing eyelid clock rather than creating a per-flight reaction timer.
     reactionPending=true;nextWinkAt=performance.now()+250;nextBlinkAt=Math.max(nextBlinkAt,nextWinkAt+1800);clearTimeout(blinkTimer);blinkTimer=null;blink();
   };
   const gaze=(tracking=false,flightDuration=13000,elapsed=0)=>{
-    if(!eyes||!allowed())return;
+    if(!eyes||!catAllowed()||cursorOwns||cursorEngaged)return;
     // SVG source units are scaled 4:1 in the 180px cat: the old 3-unit
     // movement was only 0.75 screen pixels and was practically invisible.
     const amplitude=10,x=tracking?amplitude:(Math.random()<.5?-amplitude:amplitude);
@@ -159,8 +207,8 @@
     track(a);
     if(tracking&&elapsed){art.currentTime=elapsed;a.currentTime=elapsed}
   };
-  const look=()=>{if(!eyes||!allowed()||lookTimer!==null)return;lookTimer=setTimeout(()=>{
-    lookTimer=null;if(!allowed())return;if(!flight&&!lidsBusy&&!reactionPending)gaze();look();
+  const look=()=>{if(!eyes||!catAllowed()||lookTimer!==null)return;lookTimer=setTimeout(()=>{
+    lookTimer=null;if(!catAllowed())return;if(!flight&&!lidsBusy&&!reactionPending)gaze();look();
   },16000+Math.random()*12000)};
   const schedule=()=>{
     if(!allowed()||timer!==null||flight)return;
@@ -189,10 +237,10 @@
   };
   const sync=()=>{
     refreshSurface();host.hidden=!allowed();
-    if(!allowed())stopEyes();else{blink();look()}
-    if(!allowed())clear();else schedule();
+    if(!catAllowed())stopEyes();else{blink();look()}
+    if(!allowed()){clear();stopGaze()}else schedule();
   };
-  new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-halloween']});
+  new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-halloween','data-pqm-cat']});
   const visibility=new MutationObserver(sync),size=new ResizeObserver(refreshSurface),content=new MutationObserver(refreshSurface);
   for(const view of views){visibility.observe(view,{attributes:true,attributeFilter:['hidden']});size.observe(view);
     const heading=view.querySelector(':scope > .module-heading,:scope > .page-heading,:scope > .history-heading');

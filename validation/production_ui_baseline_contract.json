@@ -19,5 +19,37 @@
     "Dockerfile": "148df1108a0ee00056599efab3aeb47a538363d342d961d06ec7736374245c62",
     "bulk_application_save.js": "f7ecef3ac9b542510918d15942d6cb77599688c1cdba8cd453d70c15cf215cc0"
   },
-  "automation_ui_sha256": "5df5428fe555abcdf4dc3afe66c6019f020a44ccc7af01127bc9a157dc1628f6"
+  "automation_ui_sha256": "5df5428fe555abcdf4dc3afe66c6019f020a44ccc7af01127bc9a157dc1628f6",
+  "approved_product_variants": {
+    "protocols_and_seasonal_cat": {
+      "baseline": "b433bcb290ca9a205910db54f0c9b77af4f02cc7",
+      "server_protected_ast": "f00cc69ecf02d51f768a49c0ff9c753ae36c8b1776adee5473dff57fa2e114aa",
+      "server_variant_excluded_functions": [
+        "violation_report_detail",
+        "violation_protocol_type",
+        "violation_protocol_readiness",
+        "violation_protocol_declensions",
+        "_violation_protocol_filename",
+        "generate_violation_protocol"
+      ],
+      "binary_files": [
+        "assets/pqm-cat-no-hat.png",
+        "templates/violation_protocols/decline_individual_review.docx"
+      ],
+      "files": {
+        "app.js": "4da81a2f8a77c1246c4bb034d59c9e1abf112eb5289996bb277fa58d25c21ecb",
+        "assets/pqm-cat-no-hat.png": "a073d1a06748ef8b52e5b13b72e2abc79a75379e4576b387c53c12ded3fc70a9",
+        "halloween.css": "5284208ec113f3e3fdde1f4f057d3645a530f6c1c7a75a7783ea5baa0f49a787",
+        "halloween.js": "0d9be7912773fbd95aa8f56f0350c0ef5e80db24e2787c2513deafca3d374a95",
+        "halloween_motion.js": "d3a4fcb7dc21beaf7f9a6c229533d2884419259eb74636962d85402170fa94d3",
+        "metadata/template_legacy_tokens.v1.json": "a52f4438acd181005d3d0273c45437d36286f3876e3d49dedb62f37c06cf3987",
+        "protocol_supplier_names.py": "2073337bfa562ef6734a0139c8b95647f41f5d2ee563d00e0a0936cf7237a6ca",
+        "server.py": "c518724c27296a7d3b9e51bd8160816310988a303435f77a6ad647bd4f412f17",
+        "styles.css": "ecc6d5376bd48694d0b927b617052f16e91a43a082ada4843a7938f6329c68e3",
+        "template_catalog.py": "3f4639fd9c6341542edcc158cc64197bd0d77fb6bf64c2c9f8729ca8b7130a15",
+        "templates/violation_protocols/decline_individual_review.docx": "4b2e1509f441dc5b72bfad3f59b4798cef73a622dea092f57f2fc52869f42037",
+        "violation_protocol_docx.py": "a1a3ad24cf6e9cf34dea3f8bbdc92c95c0b264db03b5a3ade4b1491d4279949f"
+      }
+    }
+  }
 }

@@ -2368,7 +2368,31 @@ requestContextBlock=function(item){
   }
   return html.replace('<section class="violation-justification">',`<section class="violation-justification"><p class="request-warning" id="violationP3DraftReviewNotice" ${show?'':'hidden'}>${esc(violationP3DraftReviewNotice)}</p>`);
 };
-async function generateViolationProtocol(item){const button=$('#generateViolationProtocol'),payload=collectViolationReview(),old=button.textContent,canGenerate=Boolean(item.protocol_readiness?.ready);button.disabled=true;button.textContent='Формування…';try{await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/review`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/protocol/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({protocol_number:payload.protocol_number||'',protocol_date:payload.protocol_date||''})});unresolvedDeclensionsByReport.delete(String(item.id));toast('Протокол сформовано · звернення залишається на розгляді');await openViolationReportById(item.id)}catch(error){toast(error.message,error.code==='declension_unresolved'?'warning':'error');const reasons=$('#violationProtocolReasons');if(reasons){reasons.hidden=false;if(error.code==='declension_unresolved'&&Array.isArray(error.unresolved)){unresolvedDeclensionsByReport.set(String(item.id),error.unresolved);reasons.innerHTML=`<strong>Потрібні перевірені відмінкові форми:</strong><ul>${error.unresolved.map((entry,index)=>`<li><span>${esc(entry.subject_label||'Назва')} · ${esc(entry.original)} · ${esc({genitive:'родовий',dative:'давальний',accusative:'знахідний'}[entry.grammatical_case]||entry.grammatical_case)}</span> <button type="button" class="ghost" data-go-declension="${index}">Відкрити модуль відмінювання</button></li>`).join('')}</ul>`;reasons.querySelectorAll('[data-go-declension]').forEach(action=>action.onclick=()=>openDeclensionFromValidation(error.unresolved[Number(action.dataset.goDeclension)],item))}else reasons.textContent=error.message}}finally{button.disabled=!canGenerate||Boolean((unresolvedDeclensionsByReport.get(String(item.id))||[]).length);button.textContent=old}}
+const violationProtocolIndividualBase=requestContextBlock;
+requestContextBlock=function(item){
+  let html=violationProtocolIndividualBase(item);
+  const review=item.review||{},canChoose=item.reason&&['contractBreach','signingRefusal','goodsNonCompliance'].includes(item.reason)&&review.internal_decision==='decline';
+  if(!canChoose)return html;
+  const selected=review.generated_protocol_metadata?.protocol_type==='decline_individual_review'?'decline_individual_review':'automatic';
+  const control=`<label class="wide">Тип протоколу<select id="violationProtocolType"><option value="automatic" ${selected==='automatic'?'selected':''}>Автоматичний за підставою звернення</option><option value="decline_individual_review" ${selected==='decline_individual_review'?'selected':''}>Відмова — індивідуальний розгляд</option></select></label><label id="confirmReviewNotesField" class="request-check wide" ${selected==='decline_individual_review'?'':'hidden'}><input type="checkbox" id="confirmReviewNotes"> Підтверджую використання актуального коментаря УО: «${esc(review.review_notes||'')}»</label>`;
+  html=html.replace('<label>№ протоколу<input data-review="protocol_number"',`${control}<label>№ протоколу<input data-review="protocol_number"`);
+  const actions=violationDeclensionActions((selected==='decline_individual_review'?item.protocol_readiness_individual:item.protocol_readiness)?.declensions||[]);
+  if(actions)html=html.replace(actions,`<div id="violationProtocolDeclensionActions">${actions}</div>`);
+  return html;
+};
+async function generateViolationProtocol(item){
+  const button=$('#generateViolationProtocol'),payload=collectViolationReview(),protocolType=$('#violationProtocolType')?.value||'automatic',confirmed=$('#confirmReviewNotes')?.checked===true,confirmedNotes=String(payload.review_notes||''),old=button.textContent;
+  const canGenerate=Boolean(protocolType==='decline_individual_review'?item.protocol_readiness_individual?.ready:item.protocol_readiness?.ready);
+  button.disabled=true;button.textContent='Формування…';
+  try{
+    await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/review`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/protocol/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({protocol_number:payload.protocol_number||'',protocol_date:payload.protocol_date||'',protocol_type:protocolType==='automatic'?'':protocolType,confirm_review_notes:confirmed,confirmed_review_notes:confirmedNotes})});
+    unresolvedDeclensionsByReport.delete(String(item.id));toast('Протокол сформовано · звернення залишається на розгляді');await openViolationReportById(item.id);
+  }catch(error){
+    toast(error.message,error.code==='declension_unresolved'?'warning':'error');const reasons=$('#violationProtocolReasons');
+    if(reasons){reasons.hidden=false;if(error.code==='declension_unresolved'&&Array.isArray(error.unresolved)){unresolvedDeclensionsByReport.set(String(item.id),error.unresolved);reasons.innerHTML=`<strong>Потрібні перевірені відмінкові форми:</strong><ul>${error.unresolved.map((entry,index)=>`<li><span>${esc(entry.subject_label||'Назва')} · ${esc(entry.original)} · ${esc({genitive:'родовий',dative:'давальний',accusative:'знахідний'}[entry.grammatical_case]||entry.grammatical_case)}</span> <button type="button" class="ghost" data-go-declension="${index}">Відкрити модуль відмінювання</button></li>`).join('')}</ul>`;reasons.querySelectorAll('[data-go-declension]').forEach(action=>action.onclick=()=>openDeclensionFromValidation(error.unresolved[Number(action.dataset.goDeclension)],item))}else reasons.textContent=error.message}
+  }finally{button.disabled=!canGenerate||Boolean((unresolvedDeclensionsByReport.get(String(item.id))||[]).length)||(protocolType==='decline_individual_review'&&!$('#confirmReviewNotes')?.checked);button.textContent=old}
+}
 async function completeViolationReview(item){if(!confirm('Завершити розгляд звернення? Статус буде змінено на «Розглянуто». Переконайтеся, що протокол перевірено та необхідні дії в електронній системі закупівель виконано.'))return;try{const payload=collectViolationReview();await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/review/complete`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});toast('Поточні поля збережено, розгляд звернення завершено');$('#requestDetailsDialog').close();await loadViolationReports();if(activeModule==='workQueue')await loadWorkQueue()}catch(error){toast(error.message)}}
 const bindViolationProtocolBase=bindViolationReview;
 function violationReviewedDocumentLinks(documents,source,item){
@@ -2469,12 +2493,19 @@ $('#requestDetailsBody').addEventListener('click',event=>{
   if(action)openSupplierProfile(action.dataset.supplierCode);
 });
 async function saveViolationDocumentReview(item,input){
+  const source=input.dataset.violationDocumentSource,id=input.dataset.violationDocumentId;
+  const requestedValue=input.checked,previousValue=!requestedValue;
   input.disabled=true;
   try{
-    const source=input.dataset.violationDocumentSource,id=input.dataset.violationDocumentId;
-    const data=await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/documents/${encodeURIComponent(source)}/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_unavailable:input.checked})});
-    $('#requestDetailsBody').innerHTML=violationDetailHtml(data);bindViolationReview(data);toast('Ознаку документа збережено');
-  }catch(error){input.checked=!input.checked;input.disabled=false;toast(error.message)}
+    await request(`${API}/violation-reports/${encodeURIComponent(item.id)}/documents/${encodeURIComponent(source)}/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_unavailable:requestedValue})});
+    const updateDocuments=documents=>(documents||[]).map(document=>String(document.id||'')===String(id)?{...document,file_unavailable:requestedValue}:document);
+    if(source==='customer')item.evidence_documents=updateDocuments(item.evidence_documents);
+    if(source==='supplier')item.defendant_statements=(item.defendant_statements||[]).map(statement=>({...statement,documents:updateDocuments(statement.documents)}));
+    const row=input.closest('.violation-document-row');let state=row?.querySelector('.violation-document-unavailable');
+    if(requestedValue&&!state){state=document.createElement('span');state.className='violation-document-unavailable';state.textContent='Недоступний';row?.querySelector('a')?.after(document.createTextNode(' '),state)}
+    else if(!requestedValue)state?.remove();
+    input.disabled=false;toast('Ознаку документа збережено');
+  }catch(error){input.checked=previousValue;input.disabled=false;toast(error.message)}
 }
 function downloadFilenameFromDisposition(disposition,fallback){
   const encoded=String(disposition||'').match(/filename\*=UTF-8''([^;]+)/i);
@@ -2509,6 +2540,7 @@ function compactViolationProtocolControls(){
   const controls=$('#requestDetailsBody .violation-protocol-controls');
   if(!controls||controls.querySelector(':scope > .violation-protocol-main'))return;
   const fields=controls.querySelector(':scope > .request-form-grid');
+  const confirmation=fields?.querySelector('#confirmReviewNotesField');
   const regenerate=controls.querySelector('#generateViolationProtocol');
   const docx=controls.querySelector('a[download]');
   const pdf=controls.querySelector('[data-download-protocol-pdf]');
@@ -2516,11 +2548,21 @@ function compactViolationProtocolControls(){
   if(!fields||!regenerate||!complete)return;
   const main=document.createElement('div'),actions=document.createElement('div');
   main.className='violation-protocol-main';actions.className='violation-protocol-actions';
+  if(confirmation){
+    const raw=confirmation.textContent.trim(),match=raw.match(/^Підтверджую використання актуального коментаря УО:\s*«([\s\S]*)»$/);
+    const comment=match?match[1]:'';
+    const checkbox=confirmation.querySelector('#confirmReviewNotes');
+    confirmation.className='violation-review-notes-confirmation';
+    const preview=document.createElement('p');preview.className='violation-review-notes-preview';preview.id='confirmReviewNotesText';preview.textContent=`«${comment}»`;
+    const label=document.createElement('label');label.className='request-check';label.append(checkbox,document.createTextNode(' Підтверджую актуальність коментаря УО'));
+    confirmation.replaceChildren(preview,label);confirmation.remove();
+  }
   regenerate.classList.remove('primary');regenerate.classList.add('ghost');
   complete.classList.remove('ghost');complete.classList.add('primary');
   for(const action of [regenerate,docx,pdf,complete])if(action)actions.append(action);
   main.append(fields,actions);
   controls.insertBefore(main,controls.querySelector('.document-resolved-metadata'));
+  if(confirmation)controls.insertBefore(confirmation,main.nextSibling);
   controls.querySelectorAll(':scope > .violation-inline-actions').forEach(row=>{
     if(!row.children.length)row.remove();
   });
@@ -2539,6 +2581,20 @@ bindViolationReview=function(item){
   bindViolationProtocolBase(item);
   compactViolationProtocolControls();
   installViolationCompactReview(item);
+  const protocolType=$('#violationProtocolType'),confirmField=$('#confirmReviewNotesField'),generateButton=$('#generateViolationProtocol');
+  const syncProtocolType=()=>{
+    if(!protocolType)return;
+    const individual=protocolType.value==='decline_individual_review',confirmNotes=$('#confirmReviewNotes'),gate=individual?item.protocol_readiness_individual:item.protocol_readiness,reasons=$('#violationProtocolReasons'),declensions=$('#violationProtocolDeclensionActions');
+    if(confirmField)confirmField.hidden=!individual;
+    if(reasons){const list=gate?.reasons||[];reasons.hidden=!list.length;reasons.textContent=list.join(' · ')}
+    if(declensions){declensions.innerHTML=violationDeclensionActions(gate?.declensions||[]);declensions.querySelectorAll('[data-check-declension-side]').forEach(button=>button.onclick=()=>openViolationDeclensionSide(button.dataset.checkDeclensionSide,item))}
+    if(generateButton)generateButton.disabled=!gate?.ready||Boolean((gate?.unresolved||[]).length)||(individual&&!confirmNotes?.checked);
+  };
+  if(protocolType)protocolType.onchange=syncProtocolType;
+  const confirmNotes=$('#confirmReviewNotes');if(confirmNotes)confirmNotes.onchange=syncProtocolType;
+  const notesInput=$('#requestDetailsBody [data-review="review_notes"]');
+  if(notesInput&&!notesInput.dataset.confirmationBound){notesInput.dataset.confirmationBound='1';notesInput.addEventListener('input',()=>{const preview=$('#confirmReviewNotesText');if(preview)preview.textContent=`«${notesInput.value}»`;const checkbox=$('#confirmReviewNotes');if(checkbox)checkbox.checked=false;syncProtocolType()})}
+  syncProtocolType();
   const decision=$('#requestDetailsBody [data-review="internal_decision"]');
   const justification=$('#requestDetailsBody [data-review="decision_justification"]');
   const draftNotice=$('#violationP3DraftReviewNotice');
