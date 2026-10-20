@@ -77,8 +77,13 @@ class WebAcceptance(unittest.TestCase):
         for path in ['/api/health','/api/auth/me','/api/account','/api/applications','/api/application-history','/api/application-profiles','/api/admin/access-roles','/api/admin/users','/api/admin/schema','/api/admin/frameworks','/api/admin/templates','/api/uo-work-queue','/api/violation-reports','/api/chats','/api/table-widths','/api/runtime-features','/api/supplier-profile/00000000']:
             self.assertEqual(200,self.request(path)[0],path)
         templates=self.request('/api/admin/templates')[1]
-        self.assertEqual(7,len(templates['items']))
-        self.assertTrue({'amcu_exclusion_protocol','termination_exclusion_protocol','nazk_supplier_request'} <= {x['key'] for x in templates['items']})
+        expected_template_keys = {
+            'warning', 'decline_p49_1_2', 'decline_p49_3', 'application_protocol',
+            'nazk_supplier_request', 'amcu_exclusion_protocol', 'termination_exclusion_protocol',
+            'decline_individual_review',
+        }
+        actual_template_keys = {item['key'] for item in templates['items']}
+        self.assertEqual(expected_template_keys, actual_template_keys)
         for item in templates['items']:
             self.assertEqual(200,self.request('/api/admin/templates/'+item['key']+'/download')[0])
         self.assertEqual(404,self.request('/api/nonexistent')[0])
