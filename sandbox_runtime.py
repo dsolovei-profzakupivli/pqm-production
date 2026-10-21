@@ -721,9 +721,15 @@ def decorate_html(raw):
                             '\n  <script src="registry_popovers.js"></script>'
                             '\n  <script src="operational_task_officers.js?v=1"></script>'
                             '\n  <link rel="stylesheet" href="halloween_motion.css">'
-                            '\n  <script src="halloween_motion.js"></script>', 1)
+                            '\n  <script src="halloween_motion.js"></script>'
+                            '\n  <link rel="stylesheet" href="halloween_cat_season.css?v=1">'
+                            '\n  <script src="halloween_cat_season.js?v=1"></script>', 1)
         if text.count('<script src="operational_task_officers.js?v=1"></script>') != 1:
             raise RuntimeError('STOP: SANDBOX operational officer module include mismatch')
+        if text.count('<link rel="stylesheet" href="halloween_cat_season.css?v=1">') != 1:
+            raise RuntimeError('STOP: SANDBOX permanent cat stylesheet include mismatch')
+        if text.count('<script src="halloween_cat_season.js?v=1"></script>') != 1:
+            raise RuntimeError('STOP: SANDBOX permanent cat controller include mismatch')
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
     mode = ('ЗОВНІШНІ ДЖЕРЕЛА — читання · локальні записи лише в SANDBOX · '
             'Google-записи лише в підтверджену SANDBOX Sheet · PROD призначення заблоковані')

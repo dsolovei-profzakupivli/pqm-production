@@ -38,6 +38,14 @@ class SandboxDropdownPopoverContractTests(unittest.TestCase):
         include = '<script src="operational_task_officers.js?v=1"></script>'
         self.assertEqual(sandbox.count(include), 1)
         self.assertNotIn(include, production)
+        for include in (
+            '<link rel="stylesheet" href="halloween_cat_season.css?v=1">',
+            '<script src="halloween_cat_season.js?v=1"></script>',
+        ):
+            self.assertEqual(sandbox.count(include), 1)
+            self.assertNotIn(include, production)
+        self.assertEqual(sandbox.count('<script src="halloween_motion.js"></script>'), 1)
+        self.assertNotIn('<script src="halloween_motion.js"></script>', production)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@
     cat.after(eyes);
   }
   const allowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on'&&!!shell&&!shell.hidden;
+  const catAllowed=()=>!paused&&!document.hidden&&!reduce.matches&&(root.dataset.pqmCat==='on'||(!('pqmCat' in root.dataset)&&root.dataset.halloween==='on'))&&!!shell&&!shell.hidden;
   // Cursor and automatic gaze share the existing clipped pupil group. The
   // original iris is fully covered while pupils move, avoiding ghost pupils.
   let cursorOwns=false,cursorEngaged=false,cursorJob=null,cursorIdle=null,cursorPoint=null,cursorEpoch=0;
@@ -32,7 +33,7 @@
     if(cursorArt){for(const a of cursorArt.getAnimations())a.cancel();cursorArt.style.removeProperty('opacity')}
   };
   const moveCursorGaze=(x,y,centering=false)=>{
-    if(!cursorGaze||!allowed())return;
+    if(!cursorGaze||!catAllowed())return;
     const from=getComputedStyle(cursorGaze).transform;
     const epoch=++cursorEpoch;cursorOwns=true;
     for(const a of cursorGaze.getAnimations())a.cancel();
@@ -46,10 +47,10 @@
   };
   const centerCursor=()=>{
     clearTimeout(cursorIdle);cursorIdle=null;
-    if((cursorOwns||cursorGaze?.getAnimations().length)&&allowed())moveCursorGaze(0,0,true);
+    if((cursorOwns||cursorGaze?.getAnimations().length)&&catAllowed())moveCursorGaze(0,0,true);
   };
   const applyCursor=()=>{
-    cursorJob=null;if(!allowed()||!cursorPoint||!cursorGaze)return;
+    cursorJob=null;if(!catAllowed()||!cursorPoint||!cursorGaze)return;
     const svg=eyes.querySelector('svg'),matrix=svg.getScreenCTM();if(!matrix)return;
     const point=svg.createSVGPoint();point.x=550;point.y=219;
     const origin=point.matrixTransform(matrix),dx=cursorPoint.x-origin.x,dy=cursorPoint.y-origin.y;
@@ -64,7 +65,7 @@
     clearTimeout(cursorIdle);cursorIdle=setTimeout(centerCursor,4000);
   };
   document.addEventListener('pointermove',event=>{
-    if(!allowed()||!eyes||event.pointerType==='touch')return;
+    if(!catAllowed()||!eyes||event.pointerType==='touch')return;
     cursorEngaged=true;
     cursorPoint={x:event.clientX,y:event.clientY};
     if(cursorJob===null)cursorJob=setTimeout(applyCursor,32);
@@ -122,7 +123,7 @@
     const draw=now=>{
       if(stopped)return;
       frame=null;
-      if(!allowed()){clear();stopEyes();return}
+      if(!allowed()){clear();return}
       if(!lane.isConnected){stop();return}
       if(!surface.safe)return;
       frame=requestAnimationFrame(draw);
@@ -162,7 +163,7 @@
   };
   const stopEyes=()=>{stopCursor();clearTimeout(blinkTimer);clearTimeout(lookTimer);blinkTimer=lookTimer=null;lidGeneration++;lidsBusy=false;nextBlinkAt=nextWinkAt=0;reactionPending=false;for(const a of [...eyeAnimations])a.cancel();eyeAnimations.length=0;};
   const animateLids=indices=>{
-    if(!eyes||!allowed()||lidsBusy)return;
+    if(!eyes||!catAllowed()||lidsBusy)return;
     lidsBusy=true;const generation=lidGeneration;
     const lids=[...eyes.querySelectorAll('.pqm-cat-lids')];
     const animations=indices.map(i=>track(lids[i].animate([
@@ -174,12 +175,12 @@
     });
   };
   const blink=()=>{
-    if(!eyes||!allowed()||blinkTimer!==null||lidsBusy)return;
+    if(!eyes||!catAllowed()||blinkTimer!==null||lidsBusy)return;
     const now=performance.now();
     if(!nextBlinkAt)nextBlinkAt=now+7000+Math.random()*9000;
     if(!nextWinkAt)nextWinkAt=now+40000+Math.random()*20000;
     // A single eyelid clock coordinates bilateral blinks and one-eye winks.
-    blinkTimer=setTimeout(()=>{blinkTimer=null;if(!allowed())return;
+    blinkTimer=setTimeout(()=>{blinkTimer=null;if(!catAllowed())return;
       const now=performance.now();
       if(now>=nextWinkAt){lastWinkAt=now;nextWinkAt=now+40000+Math.random()*20000;
         nextBlinkAt=Math.max(nextBlinkAt,now+1800);animateLids([Math.random()<.5?0:1]);
@@ -187,13 +188,13 @@
     },Math.max(0,Math.min(nextBlinkAt,nextWinkAt)-now));
   };
   const reactAfterFlight=()=>{
-    if(!eyes||!allowed()||lidsBusy||performance.now()-lastWinkAt<40000||Math.random()>=.35)return;
+    if(!eyes||!catAllowed()||lidsBusy||performance.now()-lastWinkAt<40000||Math.random()>=.35)return;
     // Tracking gaze finishes in the centre; then optionally wink. Reuse the
     // existing eyelid clock rather than creating a per-flight reaction timer.
     reactionPending=true;nextWinkAt=performance.now()+250;nextBlinkAt=Math.max(nextBlinkAt,nextWinkAt+1800);clearTimeout(blinkTimer);blinkTimer=null;blink();
   };
   const gaze=(tracking=false,flightDuration=13000,elapsed=0)=>{
-    if(!eyes||!allowed()||cursorOwns||cursorEngaged)return;
+    if(!eyes||!catAllowed()||cursorOwns||cursorEngaged)return;
     // SVG source units are scaled 4:1 in the 180px cat: the old 3-unit
     // movement was only 0.75 screen pixels and was practically invisible.
     const amplitude=10,x=tracking?amplitude:(Math.random()<.5?-amplitude:amplitude);
@@ -209,8 +210,8 @@
     track(a);
     if(tracking&&elapsed){art.currentTime=elapsed;a.currentTime=elapsed}
   };
-  const look=()=>{if(!eyes||!allowed()||lookTimer!==null)return;lookTimer=setTimeout(()=>{
-    lookTimer=null;if(!allowed())return;if(!flight&&!lidsBusy&&!reactionPending)gaze();look();
+  const look=()=>{if(!eyes||!catAllowed()||lookTimer!==null)return;lookTimer=setTimeout(()=>{
+    lookTimer=null;if(!catAllowed())return;if(!flight&&!lidsBusy&&!reactionPending)gaze();look();
   },16000+Math.random()*12000)};
   const schedule=()=>{
     if(!allowed()||timer!==null||flight)return;
@@ -239,10 +240,10 @@
   };
   const sync=()=>{
     refreshSurface();host.hidden=!allowed();
-    if(!allowed())stopEyes();else{blink();look()}
+    if(!catAllowed())stopEyes();else{blink();look()}
     if(!allowed())clear();else schedule();
   };
-  new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-halloween']});
+  new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-halloween','data-pqm-cat']});
   const visibility=new MutationObserver(sync),size=new ResizeObserver(refreshSurface),content=new MutationObserver(refreshSurface);
   for(const view of views){visibility.observe(view,{attributes:true,attributeFilter:['hidden']});size.observe(view);
     const heading=view.querySelector(':scope > .module-heading,:scope > .page-heading,:scope > .history-heading');

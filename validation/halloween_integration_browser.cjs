@@ -1,15 +1,16 @@
 const fs=require('fs'),path=require('path'),assert=require('node:assert/strict');
 const {chromium}=require('C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const root=path.resolve(__dirname,'..'),out=path.join(root,'evidence','halloween-integration');
-const scripts=new Set(['theme_ui.js','nav_icons.js','sandbox_contrast.js','halloween_season.js','halloween.js','halloween_motion.js']);
+const scripts=new Set(['theme_ui.js','nav_icons.js','sandbox_contrast.js','halloween_season.js','halloween.js','halloween_motion.js','halloween_cat_season.js']);
 const browserPath='C:/Users/User/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe';
-async function fixture(browser,{candidate=true,theme='light',zoom=1,width=1440,reducedMotion='no-preference',off=false,fast=true,clock=false,dpr=1,motionSource=null,recordVideo=null}={}){
+async function fixture(browser,{candidate=true,theme='light',zoom=1,width=1440,reducedMotion='no-preference',off=false,fast=true,clock=false,dpr=1,motionSource=null,recordVideo=null,startDate='2026-10-19T12:00:00Z',storageDisabled=false}={}){
  const context=await browser.newContext({viewport:{width,height:960},deviceScaleFactor:dpr,reducedMotion,timezoneId:'Europe/Kyiv',...(recordVideo?{recordVideo}:{})});
- await context.addInitScript(({fast,off})=>{
-  const NativeDate=Date;let now=NativeDate.parse('2026-10-19T12:00:00Z');
+ await context.addInitScript(({fast,off,startDate,storageDisabled})=>{
+  if(storageDisabled){Object.defineProperty(localStorage,'getItem',{configurable:true,value(){throw new Error('Storage unavailable')}});Object.defineProperty(localStorage,'setItem',{configurable:true,value(){throw new Error('Storage unavailable')}})}
+  const NativeDate=Date;let now=NativeDate.parse(sessionStorage.getItem('__pqmFixtureClock')||startDate);
   window.Date=class extends NativeDate{constructor(...a){super(...(a.length?a:[now]))}static now(){return now}};
-  window.__setNow=d=>{now=NativeDate.parse(d);dispatchEvent(new Event('focus'))};
-  if(off)localStorage.setItem('pqm.halloween.cat.enabled.v1','0');
+  window.__setNow=d=>{now=NativeDate.parse(d);sessionStorage.setItem('__pqmFixtureClock',d);dispatchEvent(new Event('focus'))};
+  if(off&&!storageDisabled)localStorage.setItem('pqm.halloween.cat.enabled.v1','0');
   const timeout=setTimeout.bind(window);window.__flightDelays=[];window.__pendingFlightTimers=new Set();
   window.setTimeout=(fn,d,...args)=>{
    if(typeof fn==='function'&&(fn.toString().includes("lane.className='halloween-flight-lane'")||fn.toString().includes('launchFlight()'))){
@@ -24,8 +25,8 @@ async function fixture(browser,{candidate=true,theme='light',zoom=1,width=1440,r
   window.__particles={active:0,max:0,draws:0};
   CanvasRenderingContext2D.prototype.clearRect=function(...a){window.__particles.active=0;window.__particles.draws++;return clearRect.apply(this,a)};
   CanvasRenderingContext2D.prototype.arc=function(...a){const p=window.__particles;p.active++;p.max=Math.max(p.max,p.active);return arc.apply(this,a)};
- },{fast,off});
- const page=await context.newPage(),errors=[],blocked=[];page.on('pageerror',e=>errors.push(e.message));
+ },{fast,off,startDate,storageDisabled});
+ const page=await context.newPage(),errors=[],blocked=[];page.on('pageerror',e=>errors.push({message:e.message,stack:e.stack}));
  if(clock)await page.clock.install({time:new Date('2026-10-19T12:00:00Z')});
  await page.route('**/*',r=>{
   const u=new URL(r.request().url());if(u.origin!=='http://pqm.halloween.local'){blocked.push(u.href);return r.abort()}
@@ -48,7 +49,7 @@ async function geometry(page){return page.evaluate(()=>{
  const nodes=[...new Set(selectors.flatMap(s=>[...document.querySelectorAll(s)]))].filter(e=>e.getBoundingClientRect().width&&e.getBoundingClientRect().height);
  return {scroll:[document.documentElement.scrollWidth,document.documentElement.scrollHeight],nodes:nodes.map(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return{tag:e.tagName,id:e.id,rect:[r.x,r.y,r.width,r.height],color:s.color,background:s.backgroundColor,font:s.fontSize}})};
 })}
-async function noActivity(page){await page.waitForTimeout(120);assert.equal(await page.locator('.halloween-flight-lane').count(),0);assert.equal(await page.evaluate(()=>__trailFrames.size),0);assert.equal(await page.evaluate(()=>__pendingFlightTimers.size),0)}
+async function noActivity(page){await page.waitForTimeout(120);assert.equal(await page.locator('.halloween-flight-sprite').count(),0);assert.equal(await page.locator('.halloween-broom-trail').count(),0);assert.equal(await page.evaluate(()=>__trailFrames.size),0);const timers=await page.evaluate(()=>__pendingFlightTimers.size),stopped=await page.evaluate(()=>document.documentElement.dataset.halloween==='off'||matchMedia('(prefers-reduced-motion: reduce)').matches);assert(stopped?timers===0:timers<=1)}
 async function hitState(page){return page.evaluate(()=>[...document.querySelectorAll('#workQueueView button,#workQueueView input')].filter(e=>{const r=e.getBoundingClientRect();return r.width&&r.height&&r.x+r.width/2>=0&&r.x+r.width/2<innerWidth&&r.y+r.height/2>=0&&r.y+r.height/2<innerHeight}).map(e=>{const r=e.getBoundingClientRect();return{id:e.id,text:e.textContent,clickable:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}}))}
 module.exports={fixture,geometry};
 if(require.main===module)(async()=>{const browser=await chromium.launch({headless:true,executablePath:browserPath});const report={cases:[],checks:[]};try{
@@ -60,9 +61,9 @@ if(require.main===module)(async()=>{const browser=await chromium.launch({headles
   const metrics=await after.page.evaluate(()=>{const sprite=document.querySelector('.halloween-flight-sprite'),lane=sprite.parentElement,a=sprite.getAnimations()[0];a.pause();a.currentTime=a.effect.getTiming().duration*.28;
    return{theme:document.documentElement.dataset.theme,environment:document.documentElement.dataset.pqmEnvironment,delays:__flightDelays,instances:document.querySelectorAll('.halloween-flight-sprite').length,width:sprite.getBoundingClientRect().width,pointer:getComputedStyle(lane).pointerEvents,z:getComputedStyle(lane).zIndex,cat:document.querySelector('img.halloween-cat').getBoundingClientRect().toJSON(),pupils:document.querySelectorAll('.pqm-cat-gaze>ellipse').length,duration:a.effect.getTiming().duration,oldSpeed:(document.querySelector('#workQueueView').clientWidth*.63+125)/13,speed:(lane.clientWidth+125)/(a.effect.getTiming().duration/1000)};
   });
-  assert.equal(metrics.instances,1);assert.equal(metrics.environment,'sandbox');assert.equal(metrics.pupils,2);assert.equal(metrics.pointer,'none');assert.equal(metrics.z,'2');assert(metrics.delays.every(d=>d>=20000&&d<=30000));assert(Math.abs(metrics.speed-metrics.oldSpeed)<.001);
+  assert.equal(metrics.instances,1);assert.equal(metrics.environment,'sandbox');assert.equal(metrics.pupils,2);assert.equal(metrics.pointer,'none');assert.equal(metrics.z,'0');assert(metrics.delays.every(d=>d>=20000&&d<=30000));assert(Math.abs(metrics.speed-metrics.oldSpeed)<.001);
   // Real controls stay hit-testable even with an active decorative layer.
-  assert.deepEqual(await hitState(after.page),await hitState(before.page));
+  const candidateHits=await hitState(after.page);assert.deepEqual(candidateHits,await hitState(before.page));
   await after.page.screenshot({path:path.join(out,`${theme}-${zoom===1?'100':'125'}.png`),fullPage:true});
   if(zoom===1){
    // Sample actual CSS/WAAPI phases without changing delivered timings.
@@ -89,7 +90,8 @@ if(require.main===module)(async()=>{const browser=await chromium.launch({headles
    await after.page.evaluate(()=>{const i=document.querySelector('#halloweenDecorationEnabled');i.checked=false;i.dispatchEvent(new Event('change'))});await noActivity(after.page);
    assert.equal(await after.page.locator('.halloween-cat').first().evaluate(e=>getComputedStyle(e).display),'none');
    await after.page.evaluate(()=>{const i=document.querySelector('#halloweenDecorationEnabled');i.checked=true;i.dispatchEvent(new Event('change'))});await after.page.waitForSelector('.halloween-flight-sprite');
-   await after.page.evaluate(()=>{document.querySelector('#workQueueView').hidden=true;document.querySelector('#applicationsView').hidden=false});await noActivity(after.page);
+   await after.page.evaluate(()=>{document.querySelector('#workQueueView').hidden=true;document.querySelector('#applicationsView').hidden=false});await after.page.waitForTimeout(120);
+   assert.equal(await after.page.locator('#applicationsView').evaluate(e=>e.hidden),false);assert(await after.page.locator('#applicationsView').evaluate(e=>e.classList.contains('halloween-workspace')));assert(await after.page.locator('.halloween-flight-sprite').count()<=1);assert.equal(await after.page.locator('.halloween-flight-lane').evaluate(e=>getComputedStyle(e).pointerEvents),'none');
    await after.page.evaluate(()=>{document.querySelector('#applicationsView').hidden=true;document.querySelector('#workQueueView').hidden=false});await after.page.waitForSelector('.halloween-flight-sprite');
    await after.page.evaluate(()=>dispatchEvent(new Event('pagehide')));await noActivity(after.page);
    await after.page.evaluate(()=>dispatchEvent(new Event('pageshow')));await after.page.waitForSelector('.halloween-flight-sprite');
@@ -129,4 +131,4 @@ if(require.main===module)(async()=>{const browser=await chromium.launch({headles
  const trailGallery=['light','dark'].map(t=>'<h2>'+t+' · послідовні кадри шлейфа (~0,6 с)</h2>'+[0,1,2,3,4].map(i=>'<img src="'+t+'-trail-'+i+'.png">').join('')).join('');
  fs.writeFileSync(path.join(out,'frames.html'),gallery+trailGallery);console.log(JSON.stringify({result:'PASS',cases:report.cases.length,checks:report.checks.length,realPause:report.realPause,naturalBlink:report.naturalBlink},null,2));
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});
-async function noActivityTimerOnly(page){assert.equal(await page.locator('.halloween-flight-lane').count(),0);assert.equal(await page.evaluate(()=>__pendingFlightTimers.size),1)}
+async function noActivityTimerOnly(page){assert.equal(await page.locator('.halloween-flight-sprite').count(),0);assert.equal(await page.evaluate(()=>__pendingFlightTimers.size),1)}

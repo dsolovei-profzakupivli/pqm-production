@@ -70,7 +70,8 @@ async function capture(page,name){const b=await page.locator('img.halloween-cat'
   await step(p);assert(await p.locator('.pqm-cat-lids').evaluateAll(es=>es.some(e=>e.getAnimations().length)));
   await p.emulateMedia({reducedMotion:'reduce'});await p.waitForTimeout(40);assert.equal(await p.evaluate(()=>__eyeJobs.size),0);assert.equal(await p.locator('.pqm-cat-lids').evaluateAll(es=>es.flatMap(e=>e.getAnimations()).length),0);
   await p.emulateMedia({reducedMotion:'no-preference'});await p.waitForTimeout(40);assert.equal(await p.evaluate(()=>__eyeJobs.size),1);
-  await p.evaluate(()=>document.documentElement.dataset.halloween='off');await p.waitForTimeout(40);assert.equal(await p.evaluate(()=>__eyeJobs.size),0);
+  await p.evaluate(()=>document.documentElement.dataset.halloween='off');await p.waitForTimeout(40);assert.equal(await p.evaluate(()=>__eyeJobs.size),1);
+  await p.evaluate(()=>document.documentElement.dataset.pqmCat='off');await p.waitForTimeout(40);assert.equal(await p.evaluate(()=>__eyeJobs.size),0);
   assert.deepEqual(f.errors,[]);assert.deepEqual(reaction.errors,[]);
   reports.push({theme,winks,normalBilateralBlink:true,otherEyeStaysOpen:true,duration:420,oneEyelidClockAcross13Tabs:true,reactionAfterCentredGaze:true,reactionCooldown:true,randomReactionMaySkip:true,geometryUnchanged:true,reducedMotionCancelsActiveLids:true,off:true});await reaction.context.close();
  }
