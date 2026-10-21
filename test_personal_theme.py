@@ -180,7 +180,15 @@ class PersonalThemeSourceTests(unittest.TestCase):
         self.assertIn("localStorage.getItem(key)!=='0'",halloween)
         self.assertIn("localStorage.setItem(key,preferred?'1':'0')",halloween)
         self.assertIn('enabled=current.available&&preferred',halloween)
-        self.assertIn('input.disabled=!current.available',halloween)
+        self.assertIn("document.documentElement.dataset.pqmCat=preferred?'on':'off'",halloween)
+        self.assertIn("document.documentElement.dataset.halloween=enabled?'on':'off'",halloween)
+        self.assertIn("current.available?'Halloween · святкове оформлення':'Котик PQM'",halloween)
+        self.assertIn("current.available?'Керує Halloween-оформленням і котиком':'Керує видимістю котика PQM'",halloween)
+        self.assertIn('if(input){input.checked=preferred;',halloween)
+        self.assertIn("input.addEventListener('change',()=>{",halloween)
+        self.assertIn("const source=current.available?'assets/halloween-witch-cat.webp':'assets/pqm-cat-no-hat.png'",halloween)
+        self.assertIn("window.addEventListener('focus',synchronize)",halloween)
+        self.assertNotIn('input.disabled=',halloween)
 
     def test_halloween_respects_reduced_motion(self):
         motion=Path('halloween_motion.js').read_text(encoding='utf-8')

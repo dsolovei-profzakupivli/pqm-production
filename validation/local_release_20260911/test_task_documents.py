@@ -224,8 +224,18 @@ class TaskDocumentTests(unittest.TestCase):
 
     def test_registry_and_source_preservation(self):
         metadata=template_runtime.metadata(self.schema)
-        self.assertEqual(len(metadata),7)
         by_key={item['key']:item for item in metadata}
+        self.assertEqual(set(by_key),{
+            'warning','decline_p49_1_2','decline_p49_3','decline_individual_review',
+            'application_protocol','nazk_supplier_request','amcu_exclusion_protocol',
+            'termination_exclusion_protocol',
+        })
+        for key in by_key:
+            with self.subTest(template=key):
+                path=template_runtime.template_path(key)
+                self.assertTrue(path.is_file())
+                with ZipFile(path) as package:
+                    self.assertIsNone(package.testzip())
         self.assertTrue(by_key[td.KEY]['validation']['can_activate_canonical'])
         amcu_runtime=by_key[td.AMCU_PROTOCOL_KEY]['validation']
         if not amcu_runtime['can_activate_canonical']:
