@@ -14,13 +14,35 @@
   let nextBlinkAt=0,nextWinkAt=0,lastWinkAt=-Infinity,lidsBusy=false,lidGeneration=0,reactionPending=false;
   const track=a=>{eyeAnimations.push(a);a.oncancel=a.onfinish=()=>{const i=eyeAnimations.indexOf(a);if(i>=0)eyeAnimations.splice(i,1)};return a};
   let eyes=null;
-  if(cat){
+  const criticalStylesReady=()=>{
+    const declarations=new Map();
+    const visit=rules=>{for(const rule of rules||[]){
+      if(rule.selectorText&&rule.style){
+        for(const selector of rule.selectorText.split(',').map(value=>value.trim())){
+          if(!declarations.has(selector))declarations.set(selector,[]);
+          declarations.get(selector).push(rule.style);
+        }
+      }
+      if(rule.cssRules)try{visit(rule.cssRules)}catch{}
+    }};
+    for(const sheet of document.styleSheets)try{visit(sheet.cssRules)}catch{}
+    const has=(selector,property,value)=>declarations.get(selector)?.some(style=>style.getPropertyValue(property).trim()===value)||false;
+    return has('.halloween-cat','position','absolute')&&
+      has('.halloween-cat-eyes svg','display','block')&&
+      has('.pqm-cat-lids','opacity','0');
+  };
+  const ensureEyes=()=>{
+    if(!cat||!criticalStylesReady())return false;
+    if(eyes?.isConnected)return true;
+    eyes=document.getElementById('pqmHalloweenCatEyes');
+    if(eyes){cat.after(eyes);return true}
     // The resting cat remains original. Only the clipped iris/pupil overlay moves.
-    eyes=document.createElement('span');eyes.className='halloween-cat halloween-cat-eyes';
+    eyes=document.createElement('span');eyes.id='pqmHalloweenCatEyes';eyes.className='halloween-cat halloween-cat-eyes';
     eyes.setAttribute('aria-hidden','true');
-    eyes.innerHTML='<svg viewBox="0 0 720 389" focusable="false"><defs><clipPath id="pqmCatEyeMask"><path d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190ZM565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatEyeMask)"><g class="pqm-cat-eye-art" opacity="0"><defs><linearGradient id="pqmCatIris" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d4e65c"/><stop offset=".6" stop-color="#e5ef7e"/><stop offset="1" stop-color="#bacc4d"/></linearGradient></defs><path fill="url(#pqmCatIris)" d="M479 168H535V228H479ZM556 208H620V265H556Z"/><g class="pqm-cat-gaze" fill="#090d0b"><ellipse cx="510" cy="201" rx="9" ry="14" transform="rotate(25 510 201)"/><ellipse cx="581" cy="235" rx="9" ry="14" transform="rotate(25 581 235)"/><g fill="#ffffe9"><ellipse cx="508" cy="192" rx="3.5" ry="4"/><circle cx="513" cy="197" r="1.5"/><ellipse cx="578" cy="226" rx="3.5" ry="4"/><circle cx="583" cy="231" r="1.5"/></g></g></g></g><defs><clipPath id="pqmCatLidMask"><path transform="translate(507 199) scale(1.2) translate(-507 -199)" d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190Z"/><path transform="translate(590 236) scale(1.2) translate(-590 -236)" d="M565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatLidMask)"><g class="pqm-cat-lids"><path fill="#0b0c10" d="M479 168H535V228H479Z"/><path d="M486 194Q504 208 529 203" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g><g class="pqm-cat-lids"><path fill="#0b0c10" d="M556 208H620V265H556Z"/><path d="M564 233Q586 246 614 238" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g></g></svg>';
-    cat.after(eyes);
-  }
+    eyes.innerHTML='<svg viewBox="0 0 720 389" focusable="false"><defs><clipPath id="pqmCatEyeMask"><path d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190ZM565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatEyeMask)"><g class="pqm-cat-eye-art" opacity="0"><defs><linearGradient id="pqmCatIris" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d4e65c"/><stop offset=".6" stop-color="#e5ef7e"/><stop offset="1" stop-color="#bacc4d"/></linearGradient></defs><path fill="url(#pqmCatIris)" d="M479 168H535V228H479ZM556 208H620V265H556Z"/><g class="pqm-cat-gaze" fill="#090d0b"><ellipse cx="510" cy="201" rx="9" ry="14" transform="rotate(25 510 201)"/><ellipse cx="581" cy="235" rx="9" ry="14" transform="rotate(25 581 235)"/><g fill="#ffffe9"><ellipse cx="508" cy="192" rx="3.5" ry="4"/><circle cx="513" cy="197" r="1.5"/><ellipse cx="578" cy="226" rx="3.5" ry="4"/><circle cx="583" cy="231" r="1.5"/></g></g></g></g><defs><clipPath id="pqmCatLidMask"><path transform="translate(507 199) scale(1.2) translate(-507 -199)" d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190Z"/><path transform="translate(590 236) scale(1.2) translate(-590 -236)" d="M565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatLidMask)"><g class="pqm-cat-lids" opacity="0"><path fill="#0b0c10" d="M479 168H535V228H479Z"/><path d="M486 194Q504 208 529 203" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g><g class="pqm-cat-lids" opacity="0"><path fill="#0b0c10" d="M556 208H620V265H556Z"/><path d="M564 233Q586 246 614 238" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g></g></svg>';
+    cat.after(eyes);return true;
+  };
+  ensureEyes();
   const allowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on'&&!!shell&&!shell.hidden;
   const catAllowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.pqmCat==='on'&&!!shell&&!shell.hidden;
   // Cursor and automatic gaze share the existing clipped pupil group. The
@@ -240,6 +262,13 @@
     if(!catAllowed())stopEyes();else{blink();look()}
     if(!allowed()){clear();stopGaze()}else schedule();
   };
+  const motionStylesheet=[...document.querySelectorAll('link[rel~="stylesheet"]')]
+    .find(link=>{try{return new URL(link.href,location.href).pathname.endsWith('/halloween_motion.css')}catch{return false}});
+  motionStylesheet?.addEventListener('load',()=>{if(ensureEyes())sync()});
+  motionStylesheet?.addEventListener('error',()=>{
+    if(!eyes)return;
+    stopEyes();eyes.remove();eyes=null;
+  });
   new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-halloween','data-pqm-cat']});
   const visibility=new MutationObserver(sync),size=new ResizeObserver(refreshSurface),content=new MutationObserver(refreshSurface);
   for(const view of views){visibility.observe(view,{attributes:true,attributeFilter:['hidden']});size.observe(view);

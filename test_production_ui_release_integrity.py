@@ -9,6 +9,8 @@ ROOT=Path(__file__).resolve().parent
 CONTRACT=json.loads((ROOT/'validation/production_ui_baseline_contract.json').read_text())
 ACCOUNT_BASELINE=json.loads((ROOT/'validation/personal_theme_account_baseline.json').read_text())
 VARIANT=CONTRACT.get('approved_product_variants',{}).get('protocols_and_seasonal_cat')
+FAILSAFE_VARIANT=CONTRACT.get('approved_product_variants',{}).get('protocols_and_seasonal_cat_css_failsafe')
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT) if value]
 
 
 def nodes(source):
@@ -37,14 +39,15 @@ def digest(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
 
-def variant_matches(root, changed_paths, *, overrides=None):
+def variant_matches(root, changed_paths, *, overrides=None, variant=None):
     """Accept only the complete, exact product manifest for the pinned baseline."""
-    if not VARIANT or VARIANT.get('baseline')!='b433bcb290ca9a205910db54f0c9b77af4f02cc7':
+    variant=variant or VARIANT
+    if not variant or variant.get('baseline')!='b433bcb290ca9a205910db54f0c9b77af4f02cc7':
         return False
-    expected=VARIANT.get('files',{})
-    if set(changed_paths)!=set(expected) or set(expected)!=set(VARIANT.get('files',{})):
+    expected=variant.get('files',{})
+    if set(changed_paths)!=set(expected) or set(expected)!=set(variant.get('files',{})):
         return False
-    binary=set(VARIANT.get('binary_files',[]))
+    binary=set(variant.get('binary_files',[]))
     overrides=overrides or {}
     for name,expected_sha in expected.items():
         try:
@@ -58,6 +61,11 @@ def variant_matches(root, changed_paths, *, overrides=None):
     return True
 
 
+def matching_variant(root):
+    return next((variant for variant in VARIANTS
+                 if variant_matches(root,variant.get('files',{}),variant=variant)),None)
+
+
 class ProductionUiReleaseIntegrityTests(unittest.TestCase):
     def test_account_exception_does_not_hide_other_patch_changes(self):
         text=(ROOT/'server.py').read_text(encoding='utf-8')
@@ -65,10 +73,11 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
         self.assertEqual(text.count(marker),1)
         altered=text.replace(marker,marker+'        unexpected_write_handler_change = True\n',1)
         source=nodes(altered)
-        if VARIANT and variant_matches(ROOT,VARIANT['files']):
-            excluded=set(CONTRACT['server_excluded_functions'])|set(VARIANT['server_variant_excluded_functions'])
+        matched=matching_variant(ROOT)
+        if matched:
+            excluded=set(CONTRACT['server_excluded_functions'])|set(matched['server_variant_excluded_functions'])
             self.assertNotEqual(digest({k:v for k,v in source.items() if k not in excluded}),
-                                VARIANT['server_protected_ast'])
+                                matched['server_protected_ast'])
             return
         self.assertNotEqual(digest({k:v for k,v in source.items()
                                    if k not in CONTRACT['server_excluded_functions']}),
@@ -80,34 +89,46 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
                                 if k not in CONTRACT['server_excluded_functions']})
         if baseline_digest==CONTRACT['server_protected_ast']:
             return
-        self.assertIsNotNone(VARIANT,'No exact Production integrity variant is registered')
-        self.assertTrue(variant_matches(ROOT,VARIANT['files']),
+        matched=matching_variant(ROOT)
+        self.assertIsNotNone(matched,'No exact Production integrity variant is registered')
+        self.assertTrue(variant_matches(ROOT,matched['files'],variant=matched),
                         'server.py differs from baseline without an exact approved product manifest')
-        excluded=set(CONTRACT['server_excluded_functions'])|set(VARIANT['server_variant_excluded_functions'])
+        excluded=set(CONTRACT['server_excluded_functions'])|set(matched['server_variant_excluded_functions'])
         self.assertEqual(digest({k:v for k,v in source.items() if k not in excluded}),
-                         VARIANT['server_protected_ast'])
+                         matched['server_protected_ast'])
 
     def test_production_variant_is_bound_to_baseline_and_exact_manifest(self):
         self.assertEqual(CONTRACT['baseline'],'f2aacf88713a63b2d915d16af137c4133a5f1fd8')
+        self.assertEqual(set(CONTRACT['approved_product_variants']),{
+            'protocols_and_seasonal_cat','protocols_and_seasonal_cat_css_failsafe',
+        })
         self.assertEqual(VARIANT['baseline'],'b433bcb290ca9a205910db54f0c9b77af4f02cc7')
-        self.assertEqual(set(VARIANT['files']),{
+        expected_files={
             'app.js','assets/pqm-cat-no-hat.png','halloween.css','halloween.js',
             'halloween_motion.js','metadata/template_legacy_tokens.v1.json',
             'protocol_supplier_names.py','server.py','styles.css','template_catalog.py',
             'templates/violation_protocols/decline_individual_review.docx',
             'violation_protocol_docx.py',
+        }
+        self.assertEqual(set(VARIANT['files']),expected_files)
+        self.assertEqual(set(FAILSAFE_VARIANT['files']),expected_files)
+        self.assertEqual(FAILSAFE_VARIANT['baseline'],VARIANT['baseline'])
+        self.assertEqual(FAILSAFE_VARIANT['files'],{
+            **VARIANT['files'],
+            'halloween_motion.js':'1d552ed58cc480f79f8d10c8f1a05af3bb1da3a8e69aaf98ad0c3a748b75071c',
         })
-        self.assertTrue(variant_matches(ROOT,VARIANT['files']))
-        self.assertFalse(variant_matches(ROOT,list(VARIANT['files'])[:-1]))
-        self.assertFalse(variant_matches(ROOT,[*VARIANT['files'],'unapproved.py']))
+        self.assertTrue(variant_matches(ROOT,FAILSAFE_VARIANT['files'],variant=FAILSAFE_VARIANT))
+        self.assertFalse(variant_matches(ROOT,list(FAILSAFE_VARIANT['files'])[:-1],variant=FAILSAFE_VARIANT))
+        self.assertFalse(variant_matches(ROOT,[*FAILSAFE_VARIANT['files'],'unapproved.py'],variant=FAILSAFE_VARIANT))
 
     def test_production_variant_rejects_single_byte_changes_to_every_manifest_file(self):
-        self.assertTrue(variant_matches(ROOT,VARIANT['files']))
-        for name in VARIANT['files']:
+        self.assertTrue(variant_matches(ROOT,FAILSAFE_VARIANT['files'],variant=FAILSAFE_VARIANT))
+        for name in FAILSAFE_VARIANT['files']:
             with self.subTest(name=name):
                 data=(ROOT/name).read_bytes()
                 changed=bytes([data[0]^1])+data[1:]
-                self.assertFalse(variant_matches(ROOT,VARIANT['files'],overrides={name:changed}))
+                self.assertFalse(variant_matches(ROOT,FAILSAFE_VARIANT['files'],
+                                                 overrides={name:changed},variant=FAILSAFE_VARIANT))
 
     def test_operational_lifecycle_and_write_algorithms_unchanged(self):
         source=nodes((ROOT/'operational_tasks.py').read_text(encoding='utf-8'))
