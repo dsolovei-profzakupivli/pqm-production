@@ -26,8 +26,16 @@ for (const key of ['p49_1_decline_before_deadline', 'p49_1_warning', 'p49_2_decl
 const guardStart = source.indexOf('const violationP3DraftReviewNotice=');
 const guardEnd = source.indexOf('async function generateViolationProtocol', guardStart);
 assert.ok(guardStart > 0 && guardEnd > guardStart);
-const guardContext = {requestContextBlock: () => '<select data-review="internal_decision"></select><section class="violation-justification"></section>', esc: value => value};
+const declensionActionsStart = source.indexOf('function unresolvedViolationDeclensionsBySide(');
+const declensionActionsEnd = source.indexOf('async function loadReferencesView()', declensionActionsStart);
+assert.ok(declensionActionsStart > 0 && declensionActionsEnd > declensionActionsStart);
+const guardContext = {
+  requestContextBlock: () => '<select data-review="internal_decision"></select><section class="violation-justification"></section>',
+  esc: value => value,
+  currentMe: {permissions: {'appeals.review': true, 'declension.manage': true}},
+};
 vm.createContext(guardContext);
+vm.runInContext(source.slice(declensionActionsStart, declensionActionsEnd), guardContext);
 vm.runInContext(source.slice(guardStart, guardEnd), guardContext);
 const scenario = {...base, reason: 'goodsNonCompliance', review: {court_decision_final_present: false, internal_decision: ''}, defendant_statements: [], recommendation: {recommended_decision: 'decline'}};
 assert.equal(guardContext.violationP3DraftNeedsReview(scenario, '', base.justification_draft), false);
