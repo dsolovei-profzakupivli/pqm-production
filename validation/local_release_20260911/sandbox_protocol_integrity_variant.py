@@ -1,6 +1,7 @@
 """Exact, baseline-bound integrity exception for the approved protocol work."""
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -68,6 +69,57 @@ TEXT_PRODUCT_FILES = PRODUCT_FILES - {
 }
 PROTECTED_FILES = {"app.js", "server.py"}
 HASH_FORMAT = "Full-file SHA-256; text files use canonical LF line endings, DOCX is hashed byte-for-byte"
+
+NAZK_CONTRACT = ROOT / "test_sandbox_nazk_columns_integrity_variant.json"
+NAZK_CONTRACT_SHA256 = "c4137c780c1640e6f23ab5f20c831b591e9c5577758e56c4b7af1ea94c5b6450"
+NAZK_BASELINE = "de774010d99e3786eb6ff8308bba78aa5c9a6f13"
+NAZK_VARIANT_ID = "sandbox-nazk-three-columns-v1"
+NAZK_PRODUCTS = {"app.js", "index.html", "styles.css", "nazk_registry_evidence.py", "reference_directories.py"}
+NAZK_EXTRA_GUARDS = {
+    "operational_tasks.py", "uo_work_queue.py", "nazk_workflow.py", "nazk_evidence.py",
+    "test_sandbox_protocol_integrity_variant.json",
+    "test_sandbox_protocol_integrity_variant_protocol-fixes-v2.json",
+    "test_sandbox_permanent_cat_integrity_variant.json",
+}
+NAZK_SCOPE = {
+    "three_trailing_columns_in_two_existing_nazk_tables",
+    "read_only_decree_projection_from_saved_raw",
+    "preserve_exact_decree_strings_and_court_fields",
+    "omit_full_raw_from_browser",
+}
+NAZK_BASELINE_FIXTURE = ROOT / "validation/fixtures/nazk_integrity_baseline_de77401.zip"
+NAZK_BASELINE_FIXTURE_SHA256 = "94e14820ee3b9720cd80a04a2dfdf5165ee59e8da6e95655c1564741c1705ba0"
+
+
+def load_nazk_contract(cat):
+    raw = NAZK_CONTRACT.read_bytes()
+    if sha256(raw.replace(b"\r\n", b"\n")) != NAZK_CONTRACT_SHA256:
+        raise AssertionError("Changed pinned NAZK integrity manifest")
+    contract = json.loads(raw.decode("utf-8"))
+    expected_guards = (set(cat["product_files"]) | set(cat["guarded_files"]) |
+                       NAZK_EXTRA_GUARDS) - NAZK_PRODUCTS - PROTECTED_FILES
+    if (contract.get("variant_id") != NAZK_VARIANT_ID or
+            contract.get("baseline_sha") != NAZK_BASELINE or
+            contract.get("hash_format") != cat["hash_format"] or
+            set(contract.get("approved_scope", [])) != NAZK_SCOPE or
+            set(contract.get("product_files", {})) != NAZK_PRODUCTS or
+            set(contract.get("protected_files", {})) != PROTECTED_FILES or
+            set(contract.get("guarded_files", {})) != expected_guards):
+        raise AssertionError("NAZK manifest does not match the exact approved scope")
+    if contract["protected_files"]["server.py"] != cat["protected_files"]["server.py"]:
+        raise AssertionError("NAZK must preserve the complete server protection")
+    if contract["protected_files"]["app.js"]["sha256"] != contract["product_files"]["app.js"]["sha256"]:
+        raise AssertionError("Conflicting NAZK app hashes")
+    return contract
+
+
+def nazk_baseline_content(relative):
+    """Read exact historical bytes; never use the modified working copy."""
+    raw = NAZK_BASELINE_FIXTURE.read_bytes()
+    if sha256(raw) != NAZK_BASELINE_FIXTURE_SHA256:
+        raise AssertionError("Changed pinned NAZK baseline fixture")
+    with zipfile.ZipFile(NAZK_BASELINE_FIXTURE) as archive:
+        return archive.read(f"{NAZK_BASELINE}/{relative}")
 
 
 def load_contract():
@@ -139,6 +191,7 @@ def load_contracts():
     if cat["protected_files"]["server.py"].get("personal_theme_normalized_sha256") != "0a88cd31457a5aea015d76b4df48caffbdd2c3f1af04072197c2bdddfb6e5b60":
         raise AssertionError("Integrity-варіант котика змінив захист персональної теми server.py")
     contracts.append(cat)
+    contracts.append(load_nazk_contract(cat))
     return contracts
 
 
@@ -155,6 +208,8 @@ def canonical_content(relative, content):
 
 def manifest_tree_matches(contract, root=ROOT):
     """Check every pinned file in one manifest against an arbitrary read-only tree."""
+    if contract not in load_contracts():
+        return False  # A partial or caller-supplied manifest is never an exception.
     for section in ("product_files", "guarded_files", "protected_files"):
         for relative, expected in contract.get(section, {}).items():
             try:

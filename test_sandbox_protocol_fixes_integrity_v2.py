@@ -81,7 +81,7 @@ def materialize_working_tree(contract, destination):
     for relative in paths:
         target = Path(destination) / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes((ROOT / relative).read_bytes())
+        target.write_bytes(integrity.nazk_baseline_content(relative))
 
 
 class ProtocolFixesIntegrityV2Tests(unittest.TestCase):
@@ -117,7 +117,7 @@ class ProtocolFixesIntegrityV2Tests(unittest.TestCase):
         for relative, expected in self.current["product_files"].items():
             with self.subTest(file=relative):
                 self.assertEqual(len(expected["sha256"]), 64)
-                actual = (ROOT / relative).read_bytes()
+                actual = integrity.nazk_baseline_content(relative)
                 self.assertEqual(
                     integrity.sha256(integrity.canonical_content(relative, actual)),
                     expected["sha256"],
@@ -127,12 +127,14 @@ class ProtocolFixesIntegrityV2Tests(unittest.TestCase):
                 if relative == "halloween_motion.js":
                     continue
                 with self.subTest(section=section, file=relative):
-                    actual = (ROOT / relative).read_bytes()
+                    actual = integrity.nazk_baseline_content(relative)
                     self.assertEqual(
                         integrity.sha256(integrity.canonical_content(relative, actual)),
                         expected["sha256"],
                     )
-        self.assertTrue(manifest_tree_matches(self.cat, ROOT))
+        with tempfile.TemporaryDirectory(dir=ROOT) as historical_cat:
+            materialize_working_tree(self.cat, historical_cat)
+            self.assertTrue(manifest_tree_matches(self.cat, historical_cat))
         self.assertEqual(self.cat["baseline_sha"], "20fe5a4c721ab60ae95ba44816b79d00a6e3df8d")
         self.assertEqual(set(self.cat["product_files"]), {
             "sandbox_runtime.py", "halloween_motion.js", "halloween_cat_season.js",

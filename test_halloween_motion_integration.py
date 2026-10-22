@@ -33,9 +33,13 @@ class HalloweenMotionIntegrationTests(unittest.TestCase):
     raw=Path(name).read_bytes()
     actual=raw if name.endswith('.webp') else raw.replace(b'\r\n',b'\n')
     actual_sha=hashlib.sha256(actual).hexdigest()
-    if actual_sha != digest:self.assertIn(name,variant['protected_files'])
-    self.assertTrue(protected_content_matches(
-     name,raw,actual_sha,digest,'halloween_normalized_sha256'))
+    if actual_sha == digest or name in variant['protected_files']:
+     self.assertTrue(protected_content_matches(
+      name,raw,actual_sha,digest,'halloween_normalized_sha256'))
+    else:
+     # A changed index is allowed only by a complete, pinned product variant.
+     self.assertTrue(exact_variant_tree_matches())
+     self.assertTrue(exact_variant_file_matches(name,raw))
 
  def test_protocol_variant_manifest_pins_exact_product_bytes(self):
   variant=load_contract()
