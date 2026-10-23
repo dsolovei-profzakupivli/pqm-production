@@ -102,7 +102,13 @@ class EditableSandbox(base.SandboxHTTP):
     def test_13_viewer_can_only_write_owner_scoped_column_preferences(self):
         profiles=self.request('/api/application-profiles','viewer')[1]['items']
         source=next(item for item in profiles if item['is_system'])
-        payload={'name':'Synthetic personal layout','columns':source['columns'],
+        # The persisted system-profile fixture intentionally starts with an
+        # empty layout; the browser supplies its default columns locally.
+        # Give this permission test an explicit non-empty synthetic layout so
+        # it exercises a real owner-scoped write rather than indexing [] or
+        # silently skipping the authorization scenario.
+        source_columns=[{'key':'supplier_name','visible':True,'order':0,'width':260}]
+        payload={'name':'Synthetic personal layout','columns':source_columns,
                  'source_system_profile_id':source['id']}
         status,result,_=self.request('/api/application-profiles','viewer','POST',payload)
         self.assertEqual(201,status)
@@ -111,10 +117,14 @@ class EditableSandbox(base.SandboxHTTP):
                  if item['id']==profile_id)
         self.assertFalse(own['is_system'])
         self.assertEqual('sandbox.viewer',own['owner_key'])
+        self.assertEqual('supplier_name',own['columns'][0]['key'])
         columns=[dict(column) for column in own['columns']]
-        columns[0]['width']=min(1200,int(columns[0].get('width',260))+20)
+        columns[0]['width']=280
         self.assertEqual(200,self.request('/api/application-profiles/'+profile_id,'viewer','PATCH',
                                           {'columns':columns})[0])
+        persisted=next(item for item in self.request('/api/application-profiles','viewer')[1]['items']
+                       if item['id']==profile_id)
+        self.assertEqual(280,persisted['columns'][0]['width'])
         self.assertEqual(403,self.request('/api/application-profiles/'+profile_id,'viewer','PATCH',
                                           {'name':'Not a layout-only update'})[0])
         self.assertEqual(403,self.request('/api/application-profiles/'+source['id'],'viewer','PATCH',

@@ -1,0 +1,19 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v3",
+  "baseline_sha": "d457aae211bc0b88cdc66414b9e5765ac7ba350d",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v2.json",
+  "base_manifest_sha256": "ee4b837875836ba2807fff5752528898e26b1b554b853ba3bc5de76d2166c427",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "sandbox_smoke_uses_explicit_nonempty_synthetic_columns_for_owner_scope_permission_test"
+  ],
+  "remove_from_guarded_files": [
+    "test_sandbox_admin_officer_link_integrity.py"
+  ],
+  "product_overrides": {
+    "validation/sandbox_editable_smoke.py": {"sha256": "1e0f6aac96d8978d59335ba190dc7a069b4379c19a762963660165942e8f93e4"},
+    "test_sandbox_ui_integrated_d457_integrity.py": {"sha256": "1cb54c9ca4e96fe7fa4ca77ed76e5868accdc2871ad0bb34a49cb96ad2b7d5fa"},
+    "test_sandbox_admin_officer_link_integrity.py": {"sha256": "f4ba0426f08f06de6ce3e8b068b7e9e3f3b91ba6eb1a7f48d48810c3cc8582ba"},
+    "test_sandbox_nazk_columns_integrity.py": {"sha256": "fcbd71061d4303305ba74f2dc2e75a0c39e476c7dbbb786959687849cc1808a2"}
+  }
+}

@@ -126,6 +126,9 @@ UI_CANDIDATE_ID = "sandbox-ui-integrated-d457-v1"
 UI_CANDIDATE_V2_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v2.json"
 UI_CANDIDATE_V2_DELTA_SHA256 = "ee4b837875836ba2807fff5752528898e26b1b554b853ba3bc5de76d2166c427"
 UI_CANDIDATE_V2_ID = "sandbox-ui-integrated-d457-v2"
+UI_CANDIDATE_V3_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v3.json"
+UI_CANDIDATE_V3_DELTA_SHA256 = "46b3e905c401fd8e45fd8e8bf07d2d9350b5da68dc25c1ad68abb45d3b857d95"
+UI_CANDIDATE_V3_ID = "sandbox-ui-integrated-d457-v3"
 UI_CANDIDATE_PRODUCTS = {
     "app.js", "auth_access.py", "auth_ui.js", "edr_sync_v2.py",
     "history_columns.js", "index.html", "reference_directories.py", "server.py", "styles.css",
@@ -192,6 +195,15 @@ UI_CANDIDATE_V2_GUARD_OVERRIDES = {
     "validation/column_settings_popover_browser.cjs",
     "validation/fixtures/column_widths_baseline_4625498.zip",
     "validation/run_local_release.py",
+}
+UI_CANDIDATE_V3_SCOPE = {
+    "sandbox_smoke_uses_explicit_nonempty_synthetic_columns_for_owner_scope_permission_test",
+}
+UI_CANDIDATE_V3_PRODUCT_OVERRIDES = {
+    "validation/sandbox_editable_smoke.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
 }
 
 
@@ -396,7 +408,9 @@ def load_contracts():
     contracts.append(v3)
     ui_v1 = load_ui_candidate_v1(v3)
     contracts.append(ui_v1)
-    contracts.append(load_ui_candidate_v2(ui_v1))
+    ui_v2 = load_ui_candidate_v2(ui_v1)
+    contracts.append(ui_v2)
+    contracts.append(load_ui_candidate_v3(ui_v2))
     return contracts
 
 
@@ -466,6 +480,35 @@ def load_ui_candidate_v2(ui_v1):
         del candidate["guarded_files"][guarded_path]
     candidate["protected_files"].update(delta["protected_overrides"])
     candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
+
+
+def load_ui_candidate_v3(ui_v2):
+    raw = UI_CANDIDATE_V3_DELTA.read_bytes()
+    if sha256(raw.replace(b"\r\n", b"\n")) != UI_CANDIDATE_V3_DELTA_SHA256:
+        raise AssertionError("Changed pinned integrated Sandbox UI v3 addendum")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "remove_from_guarded_files",
+                       "product_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V3_ID or
+            delta.get("baseline_sha") != "d457aae211bc0b88cdc66414b9e5765ac7ba350d" or
+            delta.get("base_manifest") != UI_CANDIDATE_V2_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V2_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V3_SCOPE or
+            set(delta.get("remove_from_guarded_files", [])) != {"test_sandbox_admin_officer_link_integrity.py"} or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V3_PRODUCT_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v3 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v2)
+    candidate["variant_id"] = UI_CANDIDATE_V3_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                          set(delta["approved_scope_additions"]))
+    for guarded_path in delta["remove_from_guarded_files"]:
+        if guarded_path not in candidate["guarded_files"]:
+            raise AssertionError(f"Expected promoted v3 test file is not guarded: {guarded_path}")
+        del candidate["guarded_files"][guarded_path]
+    candidate["product_files"].update(delta["product_overrides"])
     return candidate
 
 
