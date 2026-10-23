@@ -82,11 +82,45 @@ class EditableSandbox(base.SandboxHTTP):
 
     def test_12_attested_local_settings_and_unknown_route(self):
         key='suppliersView:supplierRegistryBody'
-        payload={'table_key':key,'widths':{'єдрпоу-рнокпп':240}}
+        payload={'table_key':key,'widths':{'єдрпоу-рнокпп':240},'visible':['єдрпоу-рнокпп'],
+                 'order':['єдрпоу-рнокпп','supplier_name'],'columns':['єдрпоу-рнокпп','supplier_name']}
         self.assertEqual(403,self.request('/api/admin/table-widths','viewer','POST',payload)[0])
         self.assertEqual(200,self.request('/api/admin/table-widths','admin','POST',payload)[0])
-        self.assertEqual(240,self.request('/api/table-widths','admin')[1]['tables'][key]['єдрпоу-рнокпп'])
+        saved=self.request('/api/table-widths','viewer')[1]['tables'][key]
+        self.assertEqual(240,saved['єдрпоу-рнокпп'])
+        self.assertEqual(['єдрпоу-рнокпп'],saved['__visible__'])
+        self.assertEqual(payload['order'],saved['__order__'])
+        # Width-only changes merge into the record and cannot erase order/visibility.
+        self.assertEqual(200,self.request('/api/admin/table-widths','admin','POST',
+                                         {'table_key':key,'widths':{'supplier_name':420}})[0])
+        merged=self.request('/api/table-widths','viewer')[1]['tables'][key]
+        self.assertEqual(420,merged['supplier_name'])
+        self.assertEqual(payload['order'],merged['__order__'])
+        self.assertEqual(payload['visible'],merged['__visible__'])
         self.assertEqual(404,self.request('/api/unknown-future-route','admin','POST',{})[0])
+
+    def test_13_viewer_can_only_write_owner_scoped_column_preferences(self):
+        profiles=self.request('/api/application-profiles','viewer')[1]['items']
+        source=next(item for item in profiles if item['is_system'])
+        payload={'name':'Synthetic personal layout','columns':source['columns'],
+                 'source_system_profile_id':source['id']}
+        status,result,_=self.request('/api/application-profiles','viewer','POST',payload)
+        self.assertEqual(201,status)
+        profile_id=result['id']
+        own=next(item for item in self.request('/api/application-profiles','viewer')[1]['items']
+                 if item['id']==profile_id)
+        self.assertFalse(own['is_system'])
+        self.assertEqual('sandbox.viewer',own['owner_key'])
+        columns=[dict(column) for column in own['columns']]
+        columns[0]['width']=min(1200,int(columns[0].get('width',260))+20)
+        self.assertEqual(200,self.request('/api/application-profiles/'+profile_id,'viewer','PATCH',
+                                          {'columns':columns})[0])
+        self.assertEqual(403,self.request('/api/application-profiles/'+profile_id,'viewer','PATCH',
+                                          {'name':'Not a layout-only update'})[0])
+        self.assertEqual(403,self.request('/api/application-profiles/'+source['id'],'viewer','PATCH',
+                                          {'columns':columns})[0])
+        self.assertEqual(403,self.request('/api/application-profiles/'+profile_id,'officer','PATCH',
+                                          {'columns':columns})[0])
 
     def test_20_edits_and_final_status_locks(self):
         for role in ['admin','officer']:

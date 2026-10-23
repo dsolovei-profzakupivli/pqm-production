@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import re
 import tempfile
 import unittest
 import zipfile
@@ -39,12 +40,13 @@ class NazkIntegrityTests(unittest.TestCase):
         admin_variant = next(contract for contract in self.contracts
                              if contract.get("variant_id") == "sandbox-admin-officer-link-v3")
         self.assertEqual(admin_variant["variant_id"], "sandbox-admin-officer-link-v3")
-        self.assertTrue(integrity.manifest_tree_matches(admin_variant))
-        # The old NAZK candidate is historical; the current tree layers Admin on
-        # top of the confirmed 4625498 baseline and must not be mistaken for it.
+        self.assertFalse(integrity.manifest_tree_matches(admin_variant))
+        integrated = self.contracts[-1]
+        self.assertEqual(integrated["variant_id"], integrity.UI_CANDIDATE_V2_ID)
+        self.assertTrue(integrity.manifest_tree_matches(integrated))
         self.assertFalse(integrity.manifest_tree_matches(self.nazk))
         self.assertTrue(integrity.exact_variant_tree_matches())
-        for relative in paths(admin_variant):
+        for relative in paths(integrated):
             self.assertTrue(integrity.exact_variant_file_matches(relative, (ROOT / relative).read_bytes()), relative)
 
     def test_every_single_byte_product_and_guard_mutation_is_rejected(self):
@@ -116,6 +118,25 @@ class NazkIntegrityTests(unittest.TestCase):
             self.assertFalse(integrity.manifest_tree_matches(self.nazk, temp))
         for relative in sorted(integrity.NAZK_EXTRA_GUARDS):
             self.assertEqual((ROOT / relative).read_bytes().replace(b"\r\n", b"\n"), integrity.nazk_baseline_content(relative).replace(b"\r\n", b"\n"))
+
+    def test_supplier_profile_nazk_history_headers_match_all_data_cells(self):
+        app = (ROOT / "app.js").read_text(encoding="utf-8")
+        start = app.index('<section class="supplier-profile-section registry-profile-block ${nazkRegistry.length?\'warning\':\'\'}"><h3>Запис(и) у Реєстрі НАЗК')
+        end = app.index("</section>", start)
+        table = app[start:end]
+        headers = re.findall(r"<th>(.*?)</th>", table)
+        self.assertEqual(headers, ["ПІБ", "Порушення", "Вид стягнення", "№ судової справи",
+                                   "Дата рішення", "Набрання законної сили", "Рішення"])
+        cells = ["x.full_name||'—'", "x.offense_name||'—'", "x.punishment||'—'",
+                 "x.court_case_number||'—'", "displayDateOnly(x.sentence_date)",
+                 "displayDateOnly(x.punishment_start)", "x.decision_url?"]
+        positions = [table.index(cell) for cell in cells]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(table.count("<td>"), len(headers))
+        self.assertIn('<td colspan="7">Записів не знайдено</td>', table)
+        self.assertIn("esc(x.offense_name||'—')", table)
+        self.assertIn("esc(x.punishment||'—')", table)
+        self.assertIn(".supplier-profile-table{overflow:auto", (ROOT / "styles.css").read_text(encoding="utf-8"))
 
     def test_fixture_is_exact_and_corruption_is_rejected(self):
         self.assertEqual(hashlib.sha256(integrity.NAZK_BASELINE_FIXTURE.read_bytes()).hexdigest(), integrity.NAZK_BASELINE_FIXTURE_SHA256)

@@ -163,7 +163,9 @@ class ViolationReportKpiFacetTests(unittest.TestCase):
         source = Path(server.__file__).read_text(encoding="utf-8")
         self.assertIn('if parsed.path == "/api/violation-reports":', source)
         self.assertIn("return self.send_json(list_violation_reports(urllib.parse.parse_qs(parsed.query)))", source)
-        self.assertIn("if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False)):", source)
+        normalized = " ".join(source.split())
+        self.assertIn("if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False) and not personal_layout_write):", normalized)
+        self.assertIn("personal_layout_write = (self.auth_role == 'viewer' and self.command in {'POST', 'PATCH'} and re.fullmatch(r'/api/application-profiles(?:/[^/]+)?', path))", normalized)
 
 
 if __name__ == "__main__":

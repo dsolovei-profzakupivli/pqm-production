@@ -14,7 +14,7 @@ CONTRACT_FILE = ROOT / 'test_sandbox_admin_officer_link_integrity_v2.json'
 class AdminOfficerLinkIntegrityTests(unittest.TestCase):
     def test_historical_admin_contract_is_unchanged_and_new_variant_uses_live_baseline(self):
         contracts = integrity.load_contracts()
-        self.assertEqual(7, len(contracts))
+        self.assertEqual(9, len(contracts))
         self.assertEqual('sandbox-admin-officer-link-v1', contracts[4]['variant_id'])
         self.assertEqual('de774010d99e3786eb6ff8308bba78aa5c9a6f13', contracts[4]['baseline_sha'])
         self.assertEqual('sandbox-admin-officer-link-v2', contracts[5]['variant_id'])
@@ -24,7 +24,13 @@ class AdminOfficerLinkIntegrityTests(unittest.TestCase):
         self.assertEqual('4625498cdb938f704cb8dc125c77bf58b2c2a7da', contracts[6]['baseline_sha'])
         self.assertIn('reference_directories.py', contracts[6]['product_files'])
         self.assertNotIn('reference_directories.py', contracts[6]['guarded_files'])
-        self.assertTrue(integrity.manifest_tree_matches(contracts[6]))
+        self.assertFalse(integrity.manifest_tree_matches(contracts[6]))
+        self.assertEqual('sandbox-ui-integrated-d457-v1', contracts[7]['variant_id'])
+        self.assertEqual('d457aae211bc0b88cdc66414b9e5765ac7ba350d', contracts[7]['baseline_sha'])
+        self.assertFalse(integrity.manifest_tree_matches(contracts[7]))
+        self.assertEqual('sandbox-ui-integrated-d457-v2', contracts[8]['variant_id'])
+        self.assertEqual('d457aae211bc0b88cdc66414b9e5765ac7ba350d', contracts[8]['baseline_sha'])
+        self.assertTrue(integrity.manifest_tree_matches(contracts[8]))
 
     def test_exact_admin_variant_rejects_single_byte_mutations_in_product_and_guards(self):
         contract = integrity.load_contracts()[-1]

@@ -29,12 +29,20 @@ def main():
         shutil.copytree(ROOT/'validation/local_release_20260911',
                         root/'validation/local_release_20260911',
                         ignore=shutil.ignore_patterns('__pycache__'))
+        # The integrated UI-v2 integrity contract pins this local-only
+        # destination/safety smoke helper; include it in the disposable tree
+        # so exact-tree and adversarial mutation checks see the same fixture.
+        shutil.copy2(ROOT/'validation/sandbox_editable_smoke.py',
+                     root/'validation/sandbox_editable_smoke.py')
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
         for fixture_name in ('protocol_integrity_history.zip',
-                             'nazk_integrity_baseline_de77401.zip'):
+                             'nazk_integrity_baseline_de77401.zip',
+                             'column_widths_baseline_4625498.zip'):
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             shutil.copy2(fixture_source,fixture_target/fixture_name)
+        # The runner is itself pinned by the column-width integrity variant.
+        shutil.copy2(ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
         # Node regressions run against this same disposable source fixture.
         for source in (ROOT/'validation').glob('*.cjs'):
             shutil.copy2(source,root/'validation'/source.name)

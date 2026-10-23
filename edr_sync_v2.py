@@ -271,7 +271,10 @@ def freshness_state(prozorro_status: str, verification_date: str,
     if not checked:
         return {"bucket": "not_checked", "marker": "⚪ Не перевірено",
                 "age_days": None, "monitored": status in {"Активний", "Призупинений"}}
-    age = max(0, ((today or date.today()) - date.fromisoformat(checked)).days)
+    age = ((today or date.today()) - date.fromisoformat(checked)).days
+    if age < 0:
+        return {"bucket": "not_checked", "marker": "⚪ Не перевірено",
+                "age_days": None, "monitored": status in {"Активний", "Призупинений"}}
     if age < 30:
         bucket, marker = "lt30", "🟢 <30 днів"
     elif age < 60:

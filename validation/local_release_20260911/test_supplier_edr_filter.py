@@ -2,6 +2,7 @@ import re
 import sqlite3
 import unittest
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 import server
 import edr_sync_v2
@@ -13,11 +14,23 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.con.create_function('DIGITS',1,lambda v:re.sub(r'\D','',v or ''))
         self.con.create_function('CASEFOLD',1,lambda v:(v or '').casefold())
         self.con.create_function('NORMALIZE_NAME',1,lambda v:(v or '').casefold())
-        source=sqlite3.connect('file:data/pqm.sqlite3?mode=ro',uri=True)
+        # Use only the isolated database initialized by run_local_release.py;
+        # never read an operator or Live database to obtain a schema fixture.
+        schema_fixture = Path(server.DB_PATH).resolve()
+        source=sqlite3.connect(f'file:{schema_fixture.as_posix()}?mode=ro',uri=True)
         try:
             for sql, in source.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL"):
                 self.con.execute(sql)
         finally:source.close()
+        self.con.execute("""CREATE TABLE IF NOT EXISTS supplier_google_receipts
+          (supplier_code TEXT PRIMARY KEY, received_at TEXT NOT NULL DEFAULT '',
+           actor TEXT NOT NULL DEFAULT '', source_sheet TEXT NOT NULL DEFAULT '',
+           source_row INTEGER NOT NULL DEFAULT 0, source_fingerprint TEXT NOT NULL DEFAULT '')""")
+        profile_columns = {row[1] for row in self.con.execute(
+            "PRAGMA table_info(supplier_edr_profiles)"
+        )}
+        if 'last_google_received_at' not in profile_columns:
+            self.con.execute("ALTER TABLE supplier_edr_profiles ADD COLUMN last_google_received_at TEXT NOT NULL DEFAULT ''")
         for code in ('3038301896','30067771'):
             self.add_current_contract(code)
             self.con.execute("INSERT INTO supplier_registry_summary(supplier_code,supplier_name,active_count,qualifications_count,refreshed_at) VALUES(?,?,1,1,'fixture')",(code,'Fixture '+code))
@@ -109,20 +122,26 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано')['total'],1)
 
     def test_canonical_freshness_and_verification_date_filters(self):
-        checked = date.today().isoformat()
-        self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at=?", (checked,))
-        self.con.execute("""INSERT INTO supplier_edr_verification_events
-          (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
-           source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
-          VALUES('30067771','google_clarity',?,'Тестова УО','Google Sheets','',
-                 'ЮО',2,'[]','freshness-fixture','{}',?)""",
-          (checked, checked + 'T10:00:00Z'))
-        self.con.commit()
-        recent=self.listing(freshness='lt30',verification_from=checked,verification_to=checked)
+        class ControlledDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 9, 15)
+        with patch.object(edr_sync_v2, 'date', ControlledDate):
+            checked = ControlledDate.today().isoformat()
+            self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at=?", (checked,))
+            self.con.execute("""INSERT INTO supplier_edr_verification_events
+              (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
+               source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
+              VALUES('30067771','google_clarity',?,'Тестова УО','Google Sheets','',
+                     'ЮО',2,'[]','freshness-fixture','{}',?)""",
+              (checked, checked + 'T10:00:00Z'))
+            self.con.commit()
+            recent=self.listing(freshness='lt30',verification_from=checked,verification_to=checked)
+            not_checked=self.listing(freshness='not_checked')
         self.assertEqual([row['code'] for row in recent['items']],['30067771','3038301896'])
         self.assertEqual(recent['items'][0]['edr_freshness_marker'],'🟢 <30 днів')
         self.assertEqual(recent['items'][0]['edr_verification_officer'],'Тестова УО')
-        self.assertEqual(self.listing(freshness='not_checked')['total'],0)
+        self.assertEqual(not_checked['total'],0)
 
     def test_calendar_verification_range_includes_seconds_without_truncating_data(self):
         stamps={'30067771':'2026-10-13T23:59:59.123+03:00',

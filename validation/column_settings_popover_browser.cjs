@@ -62,6 +62,8 @@ async function prepare(browser, { theme, halloween, width, height, zoom }) {
     if (script === 'registry_popovers.js') popoverLoaded = true;
   }
   if (!popoverLoaded) await page.addScriptTag({ path: path.join(root, 'registry_popovers.js') });
+  // Width/order controls now require an explicit authorized account in fixtures.
+  await page.evaluate(() => { window.eval("currentMe={role:'admin',permissions:{}}"); document.body.dataset.authRole='admin'; });
   await page.waitForTimeout(80);
   await page.evaluate(halloween => { document.documentElement.dataset.halloween = halloween ? 'on' : 'off'; }, halloween);
   await page.evaluate(() => {
@@ -142,13 +144,16 @@ async function openGear(page) {
       if (theme === 'light' && width === 1600 && height === 900 && zoom === 1) await page.screenshot({ path: path.join(evidence, `${environment}-light-halloween-${halloween ? 'on' : 'off'}.png`) });
       if (theme === 'dark' && width === 1600 && height === 900 && zoom === 1) await page.screenshot({ path: path.join(evidence, `${environment}-dark-halloween-${halloween ? 'on' : 'off'}.png`) });
 
+      // This scenario exercises the editor using an already-existing personal
+      // profile. The synthetic fetch adapter below deliberately never resolves,
+      // so constructing a first personal profile here would stall on its POST.
+      await page.evaluate(() => window.eval(`profiles[0].id = 'synthetic-column-profile'; profiles[0].is_system = false; activeProfileId = 'synthetic-column-profile'; localStorage.setItem('pqm.server.activeProfile.v2', activeProfileId);`));
       if (!(await page.locator('.toolbar-settings').evaluate(node => node.open))) await openGear(page);
       await page.locator('#columnsBtn').click();
       const dialogState = await page.locator('#columnsDialog').evaluate(dialog => ({ open: dialog.open, onclickType: typeof document.querySelector('#columnsBtn').onclick }));
       assert.equal(dialogState.open, true, `Columns action should open its existing dialog; state=${JSON.stringify(dialogState)}; errors=${errors.join('; ')}`);
       assert.equal(await page.locator('.toolbar-settings').evaluate(node => node.open), false, 'Selecting a settings action should close the gear panel');
       await page.evaluate(() => window.eval(`loading = false; rows = [{id:'column-settings-fixture',participant:'Тестовий учасник',edrpou:'12345678',documents:[],registryDocuments:[],decision:'Очікує рішення',protocolDecision:'',marketplaceDecision:'',complianceStatus:'',documentCheckCategories:{},nazkPresentationState:''}]; total = 1; pages = 1; render();`));
-      await page.evaluate(() => window.eval(`profiles[0].id = 'synthetic-column-profile'; profiles[0].is_system = false; activeProfileId = 'synthetic-column-profile'; localStorage.setItem('pqm.server.activeProfile.v2', activeProfileId);`));
       const visible = page.locator('#columnsList .column-item[data-key="participant"] .col-visible');
       assert.equal(await visible.count(), 1, 'The participant column is available in the real settings dialog');
       const columnState = async () => page.evaluate(() => ({

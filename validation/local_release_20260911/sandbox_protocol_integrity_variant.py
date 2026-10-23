@@ -120,6 +120,79 @@ ADMIN_SCOPE = {
     "admin_only_access_to_administration_section",
 }
 ADMIN_HASH_FORMAT = "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte"
+UI_CANDIDATE_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum.json"
+UI_CANDIDATE_DELTA_SHA256 = "da4a79667f29e7e1f9ac7d1394dae99cfd225bd38c6da286e5822dd0ac86d284"
+UI_CANDIDATE_ID = "sandbox-ui-integrated-d457-v1"
+UI_CANDIDATE_V2_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v2.json"
+UI_CANDIDATE_V2_DELTA_SHA256 = "ee4b837875836ba2807fff5752528898e26b1b554b853ba3bc5de76d2166c427"
+UI_CANDIDATE_V2_ID = "sandbox-ui-integrated-d457-v2"
+UI_CANDIDATE_PRODUCTS = {
+    "app.js", "auth_access.py", "auth_ui.js", "edr_sync_v2.py",
+    "history_columns.js", "index.html", "reference_directories.py", "server.py", "styles.css",
+    "table_widths_ui.js",
+}
+UI_CANDIDATE_GUARDS = {
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "test_amcu_qualification_colors.py",
+    "validation/column_settings_popover_browser.cjs",
+    "validation/local_release_20260911/test_chat_widths.py",
+    "validation/local_release_20260911/test_edr_sync_v2.py",
+    "validation/local_release_20260911/test_history_ui_alignment.py",
+    "validation/local_release_20260911/test_supplier_edr_filter.py",
+    "validation/run_local_release.py",
+    "validation/table_widths_native_browser.cjs",
+    "validation/table_widths_unified_browser.cjs",
+    "validation/nazk_toolbar_layout_browser.cjs",
+    "validation/amcu_qualification_colors_browser.cjs",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+}
+UI_CANDIDATE_SCOPE = {
+    "account_and_table_scoped_personal_column_widths_admin_only",
+    "drag_resizing_and_existing_width_menu_are_synchronized",
+    "preserve_existing_supported_column_order_settings",
+    "nazk_column_order_text_widths_history_alignment_and_compact_toolbar",
+    "amcu_compact_toolbar_readable_rows_and_qualification_status_colors",
+    "edr_future_check_date_fails_safe_and_inactive_markers_remain_purple",
+    "officer_directory_toolbar_uses_one_desktop_row",
+}
+UI_CANDIDATE_V2_SCOPE = {
+    "central_shared_width_order_visibility_for_non_personal_tables",
+    "admin_only_shared_layout_update_and_reset_server_enforced",
+    "preserve_personal_application_and_history_layouts_per_user",
+    "legacy_width_records_merge_order_visibility_and_new_columns_default_visible",
+    "no_local_storage_as_source_for_shared_table_layouts",
+    "cross_browser_shared_layout_and_cross_account_personal_layout_isolation",
+    "release_tests_use_isolated_source_paths_and_schema_fixtures",
+}
+UI_CANDIDATE_V2_PRODUCT_ADDITIONS = {
+    "table_widths.py",
+    "validation/sandbox_editable_smoke.py",
+}
+UI_CANDIDATE_V2_PRODUCT_OVERRIDES = {
+    "app.js", "history_columns.js", "server.py", "styles.css", "table_widths_ui.js",
+    "test_sandbox_nazk_columns_integrity.py", "test_sandbox_ui_integrated_d457_integrity.py",
+    "validation/local_release_20260911/test_chat_widths.py",
+    "validation/local_release_20260911/test_supplier_edr_filter.py",
+    "validation/table_widths_native_browser.cjs",
+    "validation/table_widths_unified_browser.cjs",
+}
+UI_CANDIDATE_V2_REMOVE_GUARDS = {
+    "test_sandbox_nazk_columns_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+    "validation/local_release_20260911/test_chat_widths.py",
+    "validation/local_release_20260911/test_supplier_edr_filter.py",
+    "validation/table_widths_native_browser.cjs",
+    "validation/table_widths_unified_browser.cjs",
+}
+UI_CANDIDATE_V2_GUARD_OVERRIDES = {
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_violation_report_kpi_facets.py",
+    "validation/nazk_toolbar_layout_browser.cjs",
+    "validation/column_settings_popover_browser.cjs",
+    "validation/fixtures/column_widths_baseline_4625498.zip",
+    "validation/run_local_release.py",
+}
 
 
 def load_nazk_contract(cat):
@@ -321,7 +394,79 @@ def load_contracts():
     v3["protected_files"].update(delta["protected_overrides"])
     v3["guarded_files"].update(delta["guarded_overrides"])
     contracts.append(v3)
+    ui_v1 = load_ui_candidate_v1(v3)
+    contracts.append(ui_v1)
+    contracts.append(load_ui_candidate_v2(ui_v1))
     return contracts
+
+
+def load_ui_candidate_v1(admin_v3):
+    raw = UI_CANDIDATE_DELTA.read_bytes()
+    if sha256(raw.replace(b"\r\n", b"\n")) != UI_CANDIDATE_DELTA_SHA256:
+        raise AssertionError("Changed pinned integrated Sandbox UI integrity addendum")
+    delta = json.loads(raw.decode("utf-8"))
+    expected_guards = ((set(admin_v3["guarded_files"]) - UI_CANDIDATE_PRODUCTS) |
+                       UI_CANDIDATE_GUARDS)
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_files",
+                       "protected_files", "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_ID or
+            delta.get("baseline_sha") != "d457aae211bc0b88cdc66414b9e5765ac7ba350d" or
+            delta.get("base_manifest") != "test_sandbox_admin_officer_link_integrity_v3.json" or
+            delta.get("base_manifest_sha256") != ADMIN_V3_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_SCOPE or
+            set(delta.get("product_files", {})) != UI_CANDIDATE_PRODUCTS or
+            set(delta.get("protected_files", {})) != ADMIN_PROTECTED_FILES or
+            set(delta.get("guarded_overrides", {})) != expected_guards):
+        raise AssertionError("Integrated Sandbox UI integrity addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(admin_v3)
+    candidate["variant_id"] = UI_CANDIDATE_ID
+    candidate["baseline_sha"] = delta["baseline_sha"]
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                         set(delta["approved_scope_additions"]))
+    candidate["product_files"] = delta["product_files"]
+    candidate["protected_files"] = delta["protected_files"]
+    candidate["guarded_files"] = delta["guarded_overrides"]
+    return candidate
+
+
+def load_ui_candidate_v2(ui_v1):
+    raw = UI_CANDIDATE_V2_DELTA.read_bytes()
+    if sha256(raw.replace(b"\r\n", b"\n")) != UI_CANDIDATE_V2_DELTA_SHA256:
+        raise AssertionError("Changed pinned integrated Sandbox UI v2 addendum")
+    delta = json.loads(raw.decode("utf-8"))
+    expected_remove = UI_CANDIDATE_V2_REMOVE_GUARDS
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_files_additional",
+                       "product_overrides", "protected_overrides", "remove_from_guarded_files",
+                       "remove_from_protected_files", "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V2_ID or
+            delta.get("baseline_sha") != "d457aae211bc0b88cdc66414b9e5765ac7ba350d" or
+            delta.get("base_manifest") != UI_CANDIDATE_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V2_SCOPE or
+            set(delta.get("product_files_additional", {})) != UI_CANDIDATE_V2_PRODUCT_ADDITIONS or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V2_PRODUCT_OVERRIDES or
+            set(delta.get("protected_overrides", {})) != ADMIN_PROTECTED_FILES or
+            set(delta.get("remove_from_guarded_files", [])) != expected_remove or
+            delta.get("remove_from_protected_files") != [] or
+            set(delta.get("guarded_overrides", {})) != UI_CANDIDATE_V2_GUARD_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v2 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v1)
+    candidate["variant_id"] = UI_CANDIDATE_V2_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                          set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_files_additional"])
+    candidate["product_files"].update(delta["product_overrides"])
+    for guarded_path in delta["remove_from_guarded_files"]:
+        if guarded_path not in candidate["guarded_files"]:
+            raise AssertionError(f"Expected promoted UI test file is not guarded: {guarded_path}")
+        del candidate["guarded_files"][guarded_path]
+    candidate["protected_files"].update(delta["protected_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
 
 
 def sha256(data):
@@ -330,7 +475,7 @@ def sha256(data):
 
 def canonical_content(relative, content):
     """Normalize checkout line endings, but never normalize binary templates."""
-    if not relative.endswith((".docx", ".webp", ".png", ".jpg", ".jpeg", ".gif")):
+    if not relative.endswith((".docx", ".webp", ".png", ".jpg", ".jpeg", ".gif", ".zip")):
         return content.replace(b"\r\n", b"\n")
     return content
 

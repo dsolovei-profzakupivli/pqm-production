@@ -1,0 +1,230 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v1",
+  "baseline_sha": "d457aae211bc0b88cdc66414b9e5765ac7ba350d",
+  "base_manifest": "test_sandbox_admin_officer_link_integrity_v3.json",
+  "base_manifest_sha256": "cb13dfe806ca884acaea7392c4fc8fc44ae86149eea5378934dad08d077da030",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "account_and_table_scoped_personal_column_widths_admin_only",
+    "drag_resizing_and_existing_width_menu_are_synchronized",
+    "preserve_existing_supported_column_order_settings",
+    "nazk_column_order_text_widths_history_alignment_and_compact_toolbar",
+    "amcu_compact_toolbar_readable_rows_and_qualification_status_colors",
+    "edr_future_check_date_fails_safe_and_inactive_markers_remain_purple",
+    "officer_directory_toolbar_uses_one_desktop_row"
+  ],
+  "product_files": {
+    "app.js": {
+      "sha256": "35f960b770e543ab3808ec4eda6afe9211683398b2d5269154acd3591f5eca8f"
+    },
+    "auth_access.py": {
+      "sha256": "52c176e6f470d2ed7c55249d89bfa06fe5ba4ccca47a51e1313e73aa6ed0d25f"
+    },
+    "auth_ui.js": {
+      "sha256": "360e3e9c9a8b5fed38655aaef3952a12a3be237af75189d3fbad986b4c65aff1"
+    },
+    "edr_sync_v2.py": {
+      "sha256": "3adf91129a99434b71059924e2aa406f465221ad4fa55b8103e5c705d86b0d17"
+    },
+    "history_columns.js": {
+      "sha256": "1977683b47a2f0e7966a64ce5088271db5bccda82f73d13a81841ea75b4d32d9"
+    },
+    "index.html": {
+      "sha256": "350d7d38f4d58241eb5e986e65fa4d00f97101a9db8be50856b8e5bf3c8e4baf"
+    },
+    "reference_directories.py": {
+      "sha256": "8b893ae98a514e698145bcd6285787a115c045f1eb8afd716468cc5e9f50fe7a"
+    },
+    "server.py": {
+      "sha256": "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58"
+    },
+    "styles.css": {
+      "sha256": "cd1e6ab7bb2b6642eb6a19ba120c09de6dbce88e95fb92dd7a39e50305f4c99b"
+    },
+    "table_widths_ui.js": {
+      "sha256": "a8037b6f5b68911d758b3615f9a603a0fc9b32f46bebb72a742145088de258d0"
+    }
+  },
+  "protected_files": {
+    "app.js": {
+      "sha256": "35f960b770e543ab3808ec4eda6afe9211683398b2d5269154acd3591f5eca8f",
+      "halloween_normalized_sha256": "35f960b770e543ab3808ec4eda6afe9211683398b2d5269154acd3591f5eca8f",
+      "personal_theme_normalized_sha256": "b70a6312636402a3b2bcd0d21de2b8e0eedbf490b558bf972956a1e647670349"
+    },
+    "server.py": {
+      "sha256": "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58",
+      "halloween_normalized_sha256": "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58",
+      "personal_theme_normalized_sha256": "f3e4311b965e73fb97383d557e7c1b52007991d56329412ff9bb3d458bc1b598"
+    }
+  },
+  "guarded_overrides": {
+    "application_selection.js": {
+      "sha256": "90f664bbbb819294e5271e3f1e5b9f4f8f0eff636765b4c12dd87321c537ff3e"
+    },
+    "assets/halloween-witch-cat.webp": {
+      "sha256": "62991ef629660918e07247008cbae56a1ebe7ef4a6beb87199d745f86acdb528"
+    },
+    "assets/halloween-workqueue-dark.webp": {
+      "sha256": "54201419649b53a1d41f3dc33abe38b25fe3a7d26707c7446831df233d364377"
+    },
+    "assets/halloween-workqueue-light.webp": {
+      "sha256": "f11bb9e7b4f042fde5f24f2e55ea9b0895275823d0196e1780cef734f3747302"
+    },
+    "assets/pqm-cat-no-hat.png": {
+      "sha256": "a073d1a06748ef8b52e5b13b72e2abc79a75379e4576b387c53c12ded3fc70a9"
+    },
+    "background_jobs.py": {
+      "sha256": "a7a646735771f2d384f1394751f148602fbf970020b568e2cbbd6b3503d6629a"
+    },
+    "bulk_application_save.js": {
+      "sha256": "f7ecef3ac9b542510918d15942d6cb77599688c1cdba8cd453d70c15cf215cc0"
+    },
+    "filters.css": {
+      "sha256": "23ceb7fa4d734a271f729d8f416004641b56e263d03125a0a5a1318a1a2e440c"
+    },
+    "google_writer_execution.py": {
+      "sha256": "6a739ce800a83354ac5a036fe9ca4d61b800a53ea416862ca4dab53f038be518"
+    },
+    "halloween.css": {
+      "sha256": "e3ed1c1af7a6e939ce6b4c4f8ae052c0d9c51662bfa38e4444cff1522aaa7041"
+    },
+    "halloween.js": {
+      "sha256": "738409340f50a306c2397b5fc90f97709238cc4e6b9c01a335bf955eaeed58d9"
+    },
+    "halloween_cat_season.css": {
+      "sha256": "ff0f748a41ed8f99f3c10b2d5be31e5af9d023ff76ba376f8ecd2ca695dd8436"
+    },
+    "halloween_cat_season.js": {
+      "sha256": "0e95ecb02522d42ce41872716a5d341aae6cc4db3e32d3d5aa072250e682aecd"
+    },
+    "halloween_motion.css": {
+      "sha256": "a276f51b3a015cd33377a71c77a5592c241d996c7e5c6a43cecf39baf368f0e5"
+    },
+    "halloween_motion.js": {
+      "sha256": "f9460a4d9bc2bb58a11dfe3f67340ad18f9bfdd583483c703dd4e33d3609f2f8"
+    },
+    "halloween_season.js": {
+      "sha256": "ad799ef80123f8df49b8c5b7f0240a47344a1a4298cadde18e99723320fa53ff"
+    },
+    "metadata/template_legacy_tokens.v1.json": {
+      "sha256": "a52f4438acd181005d3d0273c45437d36286f3876e3d49dedb62f37c06cf3987"
+    },
+    "modules.css": {
+      "sha256": "d30760f0ff5d8f81b13a8557a97aa6010d8c6e51cf71fb184c9a0a714245f077"
+    },
+    "nazk_registry_evidence.py": {
+      "sha256": "7cba0685d906943f68a5c970ce9ee627090af75761512886834797eebec0f395"
+    },
+    "operational_task_officers.js": {
+      "sha256": "cb438753d78b4bae5d723e178d075d3b6b0a20c3e64f73e02d3d10828cd27282"
+    },
+    "protocol_supplier_names.py": {
+      "sha256": "2073337bfa562ef6734a0139c8b95647f41f5d2ee563d00e0a0936cf7237a6ca"
+    },
+    "registry_popovers.js": {
+      "sha256": "dd974f8f682f4bb53bf61be8976e617ffcd8cba84b6df84c3e58efe6a84e19e8"
+    },
+    "sandbox_amcu.py": {
+      "sha256": "8a2b143cb2e236e55aafcea4dae35a025beab543ef2d39e1da83d01c422a868d"
+    },
+    "sandbox_contrast.js": {
+      "sha256": "de344949e5f2cef4967a562399698608c01c872be74e09a8c2bb372072aed9b5"
+    },
+    "sandbox_documents.py": {
+      "sha256": "70d45d181a6ceef62306230d63d12cc5633d659312732e5e3625dc19134a16ca"
+    },
+    "sandbox_runtime.py": {
+      "sha256": "b3b6ce4865e9ac7421850fe6fe55bb6f8a1af4917194cb631a101d21178c0ac3"
+    },
+    "sandbox_theme.css": {
+      "sha256": "976bd8b3e675674b9da1559ccc1cce089a775c63bc3be4a57111078546b86c37"
+    },
+    "scheduler_runtime.py": {
+      "sha256": "7196fee231fa7b89edf287d1d81c26b350c67c807a0ba75e600091753a562be0"
+    },
+    "templates/violation_protocols/decline_individual_review.docx": {
+      "sha256": "4b2e1509f441dc5b72bfad3f59b4798cef73a622dea092f57f2fc52869f42037"
+    },
+    "template_catalog.py": {
+      "sha256": "3f4639fd9c6341542edcc158cc64197bd0d77fb6bf64c2c9f8729ca8b7130a15"
+    },
+    "theme.css": {
+      "sha256": "1e127957ae92b53c0dcbf66e2fccce2cc6c876c34eb026d3e786a0a59bf9283d"
+    },
+    "theme_ui.js": {
+      "sha256": "bffe598802f3f3b52cae0ac3781b0bae1e195b6883825c1aa2a076cc8e921b94"
+    },
+    "ui_final.js": {
+      "sha256": "bfbec74ba77c61ff000344ee088bdd4680e4851840f029dc3cf2c1281c87077b"
+    },
+    "ui_tz2.js": {
+      "sha256": "7dfe2af32ed178b139b74c0de7dd3a320ba18dea514c6742c663861422a7e8d2"
+    },
+    "violation_protocol_docx.py": {
+      "sha256": "a1a3ad24cf6e9cf34dea3f8bbdc92c95c0b264db03b5a3ade4b1491d4279949f"
+    },
+    "test_supplier_filter_excel.py": {
+      "sha256": "86ee2cf0209e3b4637c13204164499ba66fb9a543ed9c515f5f758a6c84d7ddd"
+    },
+    "validation/local_release_20260911/test_amcu_open_data.py": {
+      "sha256": "807edfe3d88824ae2b72d52e428e07c5f053b042224e0ac976308f58b8983353"
+    },
+    "validation/local_release_20260911/test_amcu_refresh_recovery.py": {
+      "sha256": "66ddf583b0160128ddb2ceeb074c91c037ff790685cbaae20c07d2d4f5ee06c6"
+    },
+    "validation/local_release_20260911/test_winner_decisions.py": {
+      "sha256": "bd744e729fa6d60b589d3479e47a74d64cda94af71d1f23598b6bb79e79d053b"
+    },
+    "validation/local_release_20260911/test_sandbox_operational_phase1.py": {
+      "sha256": "69fbacdcbaaf32dd04657dd8428eac97a6856fde5c9c8697aca747e05a099183"
+    },
+    "validation/local_release_20260911/test_bids_runtime.py": {
+      "sha256": "f36145967a52d19632a845ca4206562429e7a5f2f6c0a4be4da6b40b19f6195d"
+    },
+    "validation/local_release_20260911/test_admin_officer_linkage.py": {
+      "sha256": "eef9cf905325fd223c4288ea3c36bd24c6765551d50d1b785bca16c0e3b88bbe"
+    },
+    "test_amcu_qualification_colors.py": {
+      "sha256": "e74ef45c0b63e6dc932d8bcb397d339eb18c37a7fbd11ca5f8519a1fb6a79e13"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "0624e2dd58d963abe7c4fb4adfe7388d111962273b2c93a72b0fe88b0af42b3e"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "beb0a2727c114d0f6f98fe3c6b63a285b6d3b2960ced59ac9024f948084b90e9"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "c75808b036efab9570be4f23b1b2af697d7eb4040625c530079bdc6cb26e52c7"
+    },
+    "validation/amcu_qualification_colors_browser.cjs": {
+      "sha256": "bf858f8602a04c958a66e3b3e90a876ccd92949d34e3754455f21b09a1a5e9b3"
+    },
+    "validation/column_settings_popover_browser.cjs": {
+      "sha256": "0e1e05133e134828fd43c6bb7f53b4a302fe41b2e5e5df6835a7089060ff2d87"
+    },
+    "validation/local_release_20260911/test_chat_widths.py": {
+      "sha256": "81b8e19f75b9411a000c68745cef7df07a888088ee625ea92d9b7834e3b47416"
+    },
+    "validation/local_release_20260911/test_edr_sync_v2.py": {
+      "sha256": "01623ed6546d58943257d7d8e7d2a45d0399bcf07c2a9117d799da186f76222f"
+    },
+    "validation/local_release_20260911/test_history_ui_alignment.py": {
+      "sha256": "e205eafbc9c19969aba24d5ad86bcf77cfc6618da9a7e0d1ccad5cd9852622e4"
+    },
+    "validation/local_release_20260911/test_supplier_edr_filter.py": {
+      "sha256": "961e4b31fb7cf7dd2422dabed1f912863e3008ddfe8cccf97d6e9db9637e4827"
+    },
+    "validation/nazk_toolbar_layout_browser.cjs": {
+      "sha256": "458876d43491b51e702ed5cb6ec323658c5396cc7a30104c1fc2f5e417d8fe86"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "96ff93b31f6a4eae9be69793f01f812351dcaecc48649b6ae1c20c65148240ee"
+    },
+    "validation/table_widths_native_browser.cjs": {
+      "sha256": "321b181502773b3f5d45c0cc6c4276b532d1d3f9c4ca215ee24173460c65c5ae"
+    },
+    "validation/table_widths_unified_browser.cjs": {
+      "sha256": "804e6f54ea36e776d8505af8f0881f3dfbf4e167ac69253e06f930541295854c"
+    }
+  }
+}

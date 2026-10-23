@@ -95,9 +95,10 @@ class HistoryAlignmentJsTests(unittest.TestCase):
             node = str(Path.home() / '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe')
         script = r'''
 const vm=require('node:vm'),fs=require('node:fs'),assert=require('node:assert/strict');
-const nodes=new Map();let writes=0,dragInstalled=0,savedPayload;
+const nodes=new Map(),documentListeners=new Map();let writes=0,dragInstalled=0,savedPayload;
 function node(key){if(!nodes.has(key))nodes.set(key,{value:'',innerHTML:'',textContent:'',disabled:false,open:false,style:{},dataset:{},querySelector(s){return node(key+' '+s)},insertAdjacentHTML(){},showModal(){this.open=true},close(){this.open=false}});return nodes.get(key)}
-const context={structuredClone,Set,Number,Math,document:{querySelector:node,body:node('body')},window:{installViewportDrag(){dragInstalled++}},esc:x=>String(x??''),formatOfficerName:x=>String(x||''),historicalApplicationMarker:()=>'',historyDateCell:x=>x,drawHistorySort(){},historyItems:[],request:async(path,options)=>{if(options){writes++;savedPayload=JSON.parse(options.body)}return {columns:[]}}};
+node('body').dataset.authRole='admin';
+const context={structuredClone,Set,Number,Math,document:{querySelector:node,body:node('body'),addEventListener(type,listener){documentListeners.set(type,listener)}},window:{installViewportDrag(){dragInstalled++}},esc:x=>String(x??''),formatOfficerName:x=>String(x||''),historicalApplicationMarker:()=>'',historyDateCell:x=>x,drawHistorySort(){},historyItems:[],request:async(path,options)=>{if(options){writes++;savedPayload=JSON.parse(options.body)}return {columns:[]}}};
 vm.createContext(context);vm.runInContext(fs.readFileSync('history_columns.js','utf8'),context);
 async function test(){
 const run=s=>vm.runInContext(s,context);
@@ -136,6 +137,12 @@ context.historyItems=[{supplier_name:'Test',documents:[],review_officer:'Actual 
 assert.ok(node('#historyRows').innerHTML.includes('>Actual reviewer</td>'));assert.ok(node('#historyRows').innerHTML.includes('>Protocol officer</td>'));
 context.historyItems[0].review_officer='';run('renderHistoryTable()');assert.ok(node('#historyRows').innerHTML.includes('data-history-column="review_officer" class="" style="">—</td>'));
 run("var pins=[{pin:'left',width:120},{pin:'',width:90},{pin:'left',width:80}]");assert.ok(run('historyPinnedStyle(pins[2],pins)').includes('left:120px'));
+// The shared application-table resize event must persist the matching history
+// column and update the live editor model; keep the resize assertion active.
+writes=0;
+const resizeListener=documentListeners.get('pqm:table-column-resize');assert.equal(typeof resizeListener,'function');
+await resizeListener({target:{closest:selector=>selector==='#historyView'?{}:null},detail:{key:'supplier',width:333}});
+assert.equal(writes,1);assert.equal(savedPayload.columns.find(c=>c.key==='supplier').width,333);assert.equal(run("historyColumns.find(c=>c.key==='supplier').width"),333);
 // Exercise the existing drag helper, not an alternate implementation.
 const listeners={},headerListeners={},style={},header={dataset:{},classList:{add(){},remove(){}},addEventListener(k,f){headerListeners[k]=f},hasPointerCapture(){return true},releasePointerCapture(){},setPointerCapture(){}};
 const dialog={open:true,style,addEventListener(k,f){listeners[k]=f},getBoundingClientRect(){return {left:100,top:100,width:500,height:300}}};

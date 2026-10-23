@@ -580,7 +580,7 @@ class EdrSyncV2Tests(unittest.TestCase):
             0: ('lt30', '🟢 <30 днів'), 29: ('lt30', '🟢 <30 днів'),
             30: ('gt30', '🟡 >30 днів'), 59: ('gt30', '🟡 >30 днів'),
             60: ('gt60', '🟠 >60 днів'), 89: ('gt60', '🟠 >60 днів'),
-            90: ('gt90', '🔴 >90 днів'),
+            90: ('gt90', '🔴 >90 днів'), 120: ('gt90', '🔴 >90 днів'),
         }
         for age, pair in expected.items():
             state = sync.freshness_state('Активний', (today - timedelta(days=age)).isoformat(), today)
@@ -591,6 +591,18 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(sync.freshness_state('Неактивний', '2020-01-01', today)['marker'], '🟣 Неактуально')
         self.assertEqual(sync.freshness_state('Ще не в реєстрі', '2026-09-15', today)['marker'], '🟣 Неактуально')
         self.assertEqual(sync.freshness_state('Призупинений', '', today)['marker'], '⚪ Не перевірено')
+        self.assertEqual(sync.freshness_state('Призупинений',
+                         (today - timedelta(days=29)).isoformat(), today)['marker'],
+                         '🟢 <30 днів')
+        for status in ('Активний', 'Призупинений'):
+            for invalid in ('', 'not-a-date', '2026-02-30'):
+                state = sync.freshness_state(status, invalid, today)
+                self.assertEqual((state['bucket'], state['marker'], state['age_days']),
+                                 ('not_checked', '⚪ Не перевірено', None))
+            future = (today + timedelta(days=1)).isoformat()
+            state = sync.freshness_state(status, future, today)
+            self.assertEqual((state['bucket'], state['marker'], state['age_days']),
+                             ('not_checked', '⚪ Не перевірено', None))
 
     def test_latest_verification_keeps_date_and_officer_from_same_event(self):
         con = database()
