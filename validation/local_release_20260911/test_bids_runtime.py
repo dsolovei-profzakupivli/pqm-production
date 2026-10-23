@@ -3,6 +3,7 @@ import threading
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing, contextmanager
 import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer
@@ -19,7 +20,8 @@ class BidsRuntimeTests(unittest.TestCase):
         thread.start()
         try:
             req = urllib.request.Request(f'http://127.0.0.1:{http.server_port}/api/bids-sync',
-                data=json.dumps(payload).encode(), headers={'Content-Type':'application/json', 'X-PQM-Local-Role':'admin'})
+                data=b'' if payload is None else json.dumps(payload).encode(),
+                headers={'Content-Type':'application/json', 'X-PQM-Local-Role':'admin'}, method='POST')
             try:
                 response = urllib.request.urlopen(req, timeout=5)
             except urllib.error.HTTPError as exc:
@@ -30,9 +32,30 @@ class BidsRuntimeTests(unittest.TestCase):
             http.shutdown(); http.server_close(); thread.join()
 
     def setUp(self):
+        # The handler's authorization preflight opens the configured PQM DB
+        # before dispatching even these isolated runtime requests. Keep that
+        # request path real, but point it at a disposable migrated fixture.
+        self.db_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.db_temp.cleanup)
+        self.db_path = Path(self.db_temp.name) / 'bids-runtime.sqlite3'
+        with closing(sqlite3.connect(self.db_path)) as con:
+            auth_access.migrate(con)
+            con.commit()
+        real_db = server.db
+        @contextmanager
+        def closing_test_db():
+            con = real_db()
+            try:
+                with con:
+                    yield con
+            finally:
+                con.close()
+
         self.patches = [patch.object(server, 'AUTH_ENABLED', False),
                        patch.object(server, 'LOCAL_ROLE_IMPERSONATION', True),
                        patch.object(server, 'IS_WEB_ENV', False),
+                       patch.object(server, 'DB_PATH', self.db_path),
+                       patch.object(server, 'db', closing_test_db),
                        patch.object(server, 'ENABLE_BIDS_UPDATE', True),
                        patch.object(server, 'manual_bids_update_state', return_value={'enabled':True}),
                        patch.object(server, 'BIDS_MODE', 'readonly'),
@@ -63,7 +86,9 @@ class BidsRuntimeTests(unittest.TestCase):
         self.assertEqual(self.post({})[0], 409)
         with patch.object(server, 'IS_WEB_ENV', True):
             # WEB must fail closed before RBAC when authentication is disabled.
-            self.assertEqual(self.post({})[0], 503)
+            # Send no body: the early auth rejection intentionally happens
+            # before request-body processing, which can reset a TCP stream on Windows.
+            self.assertEqual(self.post(None)[0], 503)
         with patch.object(server, 'manual_bids_update_state', return_value={'enabled':False}):
             self.assertEqual(self.post({})[0], 403)
 

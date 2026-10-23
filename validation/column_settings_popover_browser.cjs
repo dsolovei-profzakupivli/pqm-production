@@ -131,12 +131,12 @@ async function openGear(page) {
         assert(await page.locator('#columnsBtn').isVisible(), 'Last settings action remains reachable by scrolling');
       }
       if (width === 1600 && height === 900 && zoom === 1) await page.screenshot({ path: path.join(evidence, `production-${theme}-halloween-${halloween ? 'on' : 'off'}.png`) });
+      await page.evaluate(() => window.eval(`currentMe = {role:'admin'}; profiles[0].id = 'synthetic-column-profile'; profiles[0].is_system = false; activeProfileId = 'synthetic-column-profile'; localStorage.setItem('pqm.server.activeProfile.v2', activeProfileId);`));
       if (!(await page.locator('.toolbar-settings').evaluate(node => node.open))) await openGear(page);
       await page.locator('#columnsBtn').click();
       assert.equal(await page.locator('#columnsDialog').evaluate(dialog => dialog.open), true);
       assert.equal(await page.locator('.toolbar-settings').evaluate(node => node.open), false);
       await page.evaluate(() => window.eval(`loading = false; rows = [{id:'column-settings-fixture',participant:'Тестовий учасник',edrpou:'12345678',documents:[],registryDocuments:[],decision:'Очікує рішення',protocolDecision:'',marketplaceDecision:'',complianceStatus:'',documentCheckCategories:{},nazkPresentationState:''}]; total = 1; pages = 1; render();`));
-      await page.evaluate(() => window.eval(`profiles[0].id = 'synthetic-column-profile'; profiles[0].is_system = false; activeProfileId = 'synthetic-column-profile'; localStorage.setItem('pqm.server.activeProfile.v2', activeProfileId);`));
       const visible = page.locator('#columnsList .column-item[data-key="participant"] .col-visible');
       assert.equal(await visible.count(), 1, 'The participant column is available in the real settings dialog');
       const columnState = async () => page.evaluate(() => ({

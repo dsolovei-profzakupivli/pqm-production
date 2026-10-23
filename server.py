@@ -49,7 +49,7 @@ import webbrowser
 import zipfile
 from xml.etree import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import ui_action_summary
@@ -424,6 +424,9 @@ def mutation_allowed(role: str, method: str, path: str) -> bool:
         return role in AUTH_ROLES
     # Account-owned presentation preferences only; never a business-data mutation.
     if method == 'POST' and path == '/api/history-columns' and role in AUTH_ROLES:
+        return True
+    if method in {'POST','PATCH'} and re.fullmatch(r'/api/application-profiles(?:/[^/]+)?',path) and role in AUTH_ROLES:
+        # Profile writes are owner-scoped below; viewers may save only their own column layout.
         return True
     # Read-only preview still requires tasks.read in the central permission gate.
     if method == 'POST' and path == '/api/edr-monitoring/termination-exclusions/preview':
@@ -864,7 +867,7 @@ def _validated_profile_columns(value) -> list[dict]:
         seen.add(key)
         result.append({"key": key, "visible": bool(raw.get("visible", True)),
                        "order": int(raw.get("order", index)),
-                       "width": max(40, min(500, int(raw.get("width", 120)))),
+                       "width": max(40, min(1200, int(raw.get("width", 120)))),
                        "pin": "left" if raw.get("pin") == "left" else ""})
     return result
 
@@ -6665,13 +6668,24 @@ def _documents_without_signature(documents: list[dict]) -> list[dict]:
     return sorted(documents or [], key=lambda item: str(item.get("datePublished") or ""), reverse=True)
 
 
-def _attested_winner_snapshot_connection() -> sqlite3.Connection:
+@contextmanager
+def _attested_winner_snapshot_connection():
     # A read-path may persist the first evidenced decision. Attest its actual
     # destination before opening each connection, not only at HTTP dispatch.
     if SANDBOX_MODE:
         import sandbox_runtime
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
-    return db()
+    resource = db()
+    if not isinstance(resource, sqlite3.Connection):
+        # Lightweight test/embedding adapters may own their own context.
+        with resource as connection:
+            yield connection
+        return
+    try:
+        with resource:
+            yield resource
+    finally:
+        resource.close()
 
 
 def _report_winner_decision(report: dict, tender: dict) -> dict | None:
@@ -10257,7 +10271,10 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
         permission = auth_access.permission_key(self.command, path)
-        if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False)):
+        personal_layout_write = (self.auth_role == 'viewer' and self.command in {'POST', 'PATCH'}
+                                 and re.fullmatch(r'/api/application-profiles(?:/[^/]+)?', path))
+        if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False)
+                                              and not personal_layout_write):
             length = int(self.headers.get('Content-Length', '0'))
             if 0 < length <= 1024 * 1024:
                 self.rfile.read(length)
@@ -11433,7 +11450,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == '/api/admin/table-widths':
             payload=self.read_json()
             try:
-                with db() as con: widths=table_widths.save(con,payload.get('table_key'),payload.get('widths'),self.auth_user,payload.get('visible'))
+                with db() as con: widths=table_widths.save(con,payload.get('table_key'),payload.get('widths'),self.auth_user,payload.get('visible'),payload.get('order'),payload.get('columns'))
             except (TypeError,ValueError) as exc: return self.send_json({'error':str(exc)},400)
             return self.send_json({'saved':True,'widths':widths})
         if parsed.path == "/api/chats":
@@ -11508,7 +11525,23 @@ class Handler(BaseHTTPRequestHandler):
             is_system = bool(payload.get("is_system"))
             if is_system and self.auth_role != "admin":
                 return self.send_json({"error": "Системні профілі може створювати лише адміністратор"}, 403)
-            layout_json = _profile_layout_json(payload.get("columns"), payload.get("kpis"), payload.get("sorts"))
+            if self.auth_role == 'viewer':
+                if is_system or not set(payload).issubset({'name', 'columns', 'source_system_profile_id'}):
+                    return self.send_json({"error": "Перегляд може зберігати лише власні налаштування колонок"}, 403)
+                source_id = str(payload.get("source_system_profile_id") or "").strip()
+                with db() as con:
+                    source = con.execute("SELECT is_system,columns_json FROM application_view_profiles WHERE id=?",
+                                         (source_id,)).fetchone()
+                if not source or not source['is_system']:
+                    return self.send_json({"error": "Потрібен чинний системний профіль як джерело"}, 400)
+                try: source_layout = json.loads(source['columns_json'] or '[]')
+                except json.JSONDecodeError: source_layout = []
+                source_layout = source_layout if isinstance(source_layout, dict) else {}
+                layout_json = _profile_layout_json(payload.get("columns"),
+                                                   source_layout.get('kpis', []),
+                                                   source_layout.get('sorts', []))
+            else:
+                layout_json = _profile_layout_json(payload.get("columns"), payload.get("kpis"), payload.get("sorts"))
             profile_id = str(uuid.uuid4())
             owner = "__system__" if is_system else _profile_owner(self.auth_user)
             source = str(payload.get("source_system_profile_id") or "").strip() or None
@@ -12006,6 +12039,8 @@ class Handler(BaseHTTPRequestHandler):
             with db() as con:
                 current = con.execute("SELECT * FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
                 if not current: return self.send_json({"error": "Профіль не знайдено"}, 404)
+                if self.auth_role == 'viewer' and not set(payload).issubset({'columns'}):
+                    return self.send_json({"error": "Перегляд може змінювати лише власні колонки"}, 403)
                 if current["is_system"] and self.auth_role != "admin":
                     return self.send_json({"error": "Системний профіль може змінювати лише адміністратор"}, 403)
                 if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):

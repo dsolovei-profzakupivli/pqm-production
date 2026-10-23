@@ -238,6 +238,15 @@ class WinnerDecisionsTests(unittest.TestCase):
                     self.assertIsNone(connection.execute(
                         "SELECT decision_json FROM violation_winner_decision_snapshots").fetchone()[0])
 
+    def test_attested_winner_snapshot_connection_closes_owned_connection(self):
+        import server
+        connection = sqlite3.connect(":memory:")
+        with patch.object(server, "SANDBOX_MODE", False), patch.object(server, "db", return_value=connection):
+            with server._attested_winner_snapshot_connection() as opened:
+                self.assertIs(opened, connection)
+        with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed database"):
+            connection.execute("SELECT 1")
+
     def test_existing_report_without_eligibility_marker_is_not_backfilled(self):
         import server
         with tempfile.TemporaryDirectory() as folder:

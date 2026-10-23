@@ -1,9 +1,17 @@
 """Isolated production-baseline schema; synthetic rows only, no runtime DB."""
 import io,json,sqlite3,unittest,subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from openpyxl import load_workbook
 import server,reference_directories,auth_access
+
+def borrowed_database(connection):
+    @contextmanager
+    def transaction():
+        with connection:
+            yield connection
+    return transaction()
 
 
 class SupplierFilterExcelTests(unittest.TestCase):
@@ -13,7 +21,7 @@ class SupplierFilterExcelTests(unittest.TestCase):
         self.con.create_function('DIGITS',1,lambda v:''.join(c for c in str(v or '') if c.isdigit()))
         self.con.create_function('CASEFOLD',1,lambda v:str(v or '').casefold())
         server.edr_sync_v2.register_verification_sql_functions(self.con)
-        with patch('reference_directories.sqlite3.connect',return_value=self.con):reference_directories.init_reference_tables(':memory:')
+        with patch.object(reference_directories,'_database_connection',side_effect=lambda *_a,**_k:borrowed_database(self.con)):reference_directories.init_reference_tables(':memory:')
         with patch.object(server,'db',return_value=self.con),patch.object(server,'DB_PATH',Path('memory-only-fixture.sqlite3')):server.init_db()
         self.addCleanup(self.con.close)
         for fid,dk in [('f1','03110000-1'),('f2','03220000-2'),('f3','03110000-1')]:

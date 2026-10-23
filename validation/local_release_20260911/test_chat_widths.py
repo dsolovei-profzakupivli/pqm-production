@@ -28,13 +28,24 @@ class ChatAndWidthsTests(unittest.TestCase):
         self.assertEqual(saved['edr_status'],40)
         self.assertEqual(saved['__visible__'],['supplier_name'])
         self.assertEqual(table_widths.list_all(self.db)['edr-monitoring']['__visible__'],['supplier_name'])
+    def test_shared_order_metadata_merges_without_losing_widths_or_visibility(self):
+        first=table_widths.save(self.db,'nazk',{'name':240,'offense':420},'admin',['name','offense'])
+        second=table_widths.save(self.db,'nazk',{'name':260},'admin',order=['name','offense'],columns=['name','offense','punishment'])
+        self.assertEqual(second['name'],260)
+        self.assertEqual(second['offense'],420)
+        self.assertEqual(second['__visible__'],['name','offense'])
+        self.assertEqual(second['__order__'],['name','offense'])
+        self.assertEqual(second['__columns__'],['name','offense','punishment'])
+        self.assertEqual(table_widths.list_all(self.db)['nazk'],second)
     def test_width_control_is_scoped_to_visible_table_toolbar(self):
         source=self._width_ui_source()
-        self.assertIn("if(table.closest('#applicationsView,#historyView'))return",source)
-        self.assertIn("if(document.body.dataset.authRole!=='admin'||!isVisible(table))return",source)
+        self.assertIn("if(!isVisible(table))return",source)
+        self.assertIn("if(table.id==='applicationsTable'||table.closest('#historyView'))return",source)
+        self.assertIn("if(document.body.dataset.authRole!=='admin')return",source)
         self.assertIn("occupied.has(toolbar)",source)
-        self.assertIn("data-visible",source)
-        self.assertIn("visibilityControl",source)
+        self.assertIn("__visible__",source)
+        self.assertIn("__order__",source)
+        self.assertIn("pqm:table-column-resize",source)
         self.assertNotIn(".module-heading')||",source)
     def test_supplier_widths_save_reload_and_visible_failure(self):
         key='suppliersView:supplierRegistryBody'

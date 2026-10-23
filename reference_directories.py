@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -38,8 +39,19 @@ def _now():
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+@contextmanager
+def _database_connection(db_path, **kwargs):
+    """Commit/rollback like sqlite's context, then always close the handle."""
+    con = sqlite3.connect(db_path, **kwargs)
+    try:
+        with con:
+            yield con
+    finally:
+        con.close()
+
+
 def init_reference_tables(db_path):
-    with sqlite3.connect(db_path, timeout=60) as con:
+    with _database_connection(db_path, timeout=60) as con:
         con.execute("PRAGMA busy_timeout=60000")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS reference_sync_state (
@@ -79,12 +91,12 @@ def _state(db_path, source, status, message="", count=None, source_updated_at=No
     if source_updated_at is not None:
         fields.append("source_updated_at=?"); values.append(source_updated_at)
     values.append(source)
-    with sqlite3.connect(db_path) as con:
+    with _database_connection(db_path) as con:
         con.execute(f"UPDATE reference_sync_state SET {','.join(fields)} WHERE source=?", values)
 
 
 def reference_status(db_path):
-    with sqlite3.connect(db_path) as con:
+    with _database_connection(db_path) as con:
         con.row_factory = sqlite3.Row
         result = {r["source"]: dict(r) for r in con.execute("SELECT * FROM reference_sync_state")}
     key = str(Path(db_path).resolve())
@@ -159,7 +171,7 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
                 str(item.get("courtCaseNumber") or ""), _date_iso(item.get("sentenceDate")), sentence, _date_iso(item.get("punishmentStart")), str(item.get("courtId") or ""),
                 str(item.get("courtName") or ""), articles, decision_url, json.dumps(item, ensure_ascii=False)))
         phase = "commit"
-        with sqlite3.connect(db_path) as con:
+        with _database_connection(db_path) as con:
             con.execute("PRAGMA foreign_keys=ON")
             con.execute("BEGIN IMMEDIATE")
             con.execute("PRAGMA defer_foreign_keys=ON")
@@ -498,7 +510,7 @@ def refresh_amcu(db_path, raw=None, filename="", *, _claimed=False, on_complete=
         LOG.info("AMCU refresh started")
         source, rows = _amcu_rows_bounded(raw, filename)
         fetched = time.monotonic()
-        with sqlite3.connect(db_path, timeout=30) as con:
+        with _database_connection(db_path, timeout=30) as con:
             con.execute("BEGIN IMMEDIATE")
             _validate_amcu_replacement(con, rows)
             con.execute("DELETE FROM amcu_registry")
@@ -561,7 +573,7 @@ def list_registry(db_path, source, query):
         if court: conditions.append("court_name=?"); params.append(court)
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
     order_by = "decision_date DESC, offender_name, row_key" if source == "amcu" else "sentence_date DESC, full_name, source_id"
-    with sqlite3.connect(db_path) as con:
+    with _database_connection(db_path) as con:
         con.row_factory = sqlite3.Row
         con.create_function("NORMALIZE_SEARCH", 1, lambda value: " ".join(
             re.sub(r"[’'`\-]+", " ", str(value or "").casefold()).split()
@@ -589,7 +601,9 @@ if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--amcu-work
             rows = parse_amcu_xlsx(raw)
         else:
             source, rows = _download_amcu_rows()
-        print(json.dumps({"source": source, "rows": rows}, ensure_ascii=False))
+        # JSON crosses a child-process stdout pipe. ASCII escaping keeps the
+        # byte stream UTF-8-safe under legacy Windows console code pages.
+        print(json.dumps({"source": source, "rows": rows}, ensure_ascii=True))
     except Exception as exc:
         detail = str(exc)
         if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:

@@ -57,7 +57,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
   await page.evaluate(async()=>{await loadProfiles();await loadStatsData();applyKpiVisibility()});
   assert.equal(await page.locator('[data-officer="Дмитро САВВА"] span').textContent(),'Дмитро САВВА');
   assert.equal(await page.locator('[data-officer="Дмитро САВВА"]').getAttribute('title'),'Дмитро САВВА');
-  for(const dark of [false,true])for(const width of [1366,1440,1600,1920,768,390]){
+  for(const dark of [false,true])for(const width of [1920,1440,1280,1024,390]){
    await page.setViewportSize({width,height:1000});
    await page.evaluate(dark=>{if(dark)document.documentElement.dataset.pqmEnvironment='sandbox';else delete document.documentElement.dataset.pqmEnvironment;applyKpiVisibility()},dark);
    await page.waitForTimeout(60);
@@ -116,7 +116,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
   await page.evaluate(()=>{$('#cardsDialog').close();profile().kpis=[];normalizeProfiles();applyKpiVisibility()});
   assert.deepEqual(await page.evaluate(()=>profile().kpis),[],'Deselected cards forced back');
   // Overflow only scrolls KPI, never the two action rows.
-  for(const width of [1366,1440,1600,1920,390]){
+  for(const width of [1920,1440,1280,1024,390]){
    await page.setViewportSize({width,height:1000});
    await page.evaluate(async()=>{apiOfficers=Array.from({length:24},(_,i)=>({officer:`Тестова УО ${i}`,applications:123456789}));profile().kpis=kpiDefinitions.map(([k])=>k);applyKpiVisibility();statsSignature='';await loadStatsData()});
    const scroll=await page.evaluate(()=>{const n=$('.heading-metrics'),actions=$('.heading-actions'),before=actions.getBoundingClientRect().x;n.scrollLeft=n.scrollWidth;n.scrollTop=10;return{x:n.scrollLeft,y:n.scrollTop,before,after:actions.getBoundingClientRect().x,sh:n.scrollHeight,ch:n.clientHeight}});
@@ -124,6 +124,6 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
    await page.evaluate(()=>{profile().kpis=['applications','decision_yes'];applyKpiVisibility()});
    if(width>=1366)assert(await page.locator('.heading-metrics').evaluate(n=>n.scrollWidth<=n.clientWidth),'Unnecessary scroll');
   }
-  assert.deepEqual(errors,[]);console.log('HEADER_BROWSER=PASS; themes=2 widths=6; single-row/scroll/settings/relogin/order/actions=PASS');
+  assert.deepEqual(errors,[]);console.log('HEADER_BROWSER=PASS; themes=2 widths=5 (390/1024/1280/1440/1920); single-row/scroll/settings/relogin/order/actions=PASS');
  }finally{await browser.close()}
 })().catch(error=>{console.error(error);process.exitCode=1});

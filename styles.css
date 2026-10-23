@@ -548,3 +548,61 @@ tbody tr.application-review-completed .status.admit{color:var(--green);backgroun
 @media(max-width:1200px){.operational-task-heading{flex-direction:column;align-items:stretch}.operational-type-kpis{justify-content:flex-start}}
 .application-amcu-blocked{display:block;color:#a61b27;font-weight:700;margin-top:2px}
 tr.registry-risk-amcu td{background:#fff1f1}
+/* Production UI release: scoped column controls, NAZK/AMCU layout and status surfaces. */
+.system-width-fields .column-order-controls{display:flex;gap:2px}
+.system-width-fields .column-order-controls button{width:25px;min-width:25px;height:28px;padding:2px}
+.system-width-fields label{min-width:0;overflow-wrap:anywhere;grid-template-columns:54px minmax(0,1fr) 100px 24px}
+.system-width-fields.with-visibility label{grid-template-columns:54px 20px minmax(0,1fr) 100px 24px}
+.system-width-fields.with-visibility input[type=checkbox]{width:17px;height:17px;margin:0}
+.system-width-toolbar{position:sticky;left:0;z-index:2;display:flex;justify-content:flex-end;gap:8px;padding:4px;max-width:100%}
+.column-resize-handle{position:absolute;right:0;top:0;bottom:0;width:8px;z-index:3;cursor:col-resize;touch-action:none;border-right:2px solid transparent}
+.column-resizable:hover>.column-resize-handle{border-right-color:var(--accent,#1265d6)}
+.system-width-dialog{max-width:calc(100vw - 24px)}
+.system-width-dialog footer{flex-wrap:wrap}
+@media(max-width:600px){.system-width-fields label{grid-template-columns:54px minmax(0,1fr) 76px 20px}.system-width-fields.with-visibility label{grid-template-columns:54px 20px minmax(0,1fr) 76px 20px}}
+#referenceAmcu,#referenceNazk{min-width:0;max-width:100%}
+#referenceAmcu .amcu-toolbar,#referenceNazk .reference-toolbar{min-width:0;max-width:100%;align-items:center;flex-wrap:wrap}
+#referenceAmcu #refAmcuSearch,#referenceNazk #refNazkSearch{flex:1 1 360px;min-width:min(280px,100%);max-width:100%;box-sizing:border-box}
+#referenceAmcu .amcu-toolbar select,#referenceNazk .reference-toolbar select{min-width:0;max-width:100%}
+#referenceAmcu .reference-table-wrap,#referenceNazk .reference-table-wrap{max-width:100%;overflow:auto}
+#referenceNazk .reference-table{min-width:1700px!important}
+#referenceNazk .reference-table th[data-column-key="full_name"]{width:250px}
+#referenceNazk .reference-table th[data-column-key="offense_name"]{width:420px}
+#referenceNazk .reference-table th[data-column-key="punishment"]{width:360px}
+#referenceNazk .reference-table th[data-column-key="court_case_number"]{width:160px}
+#referenceNazk .reference-table th[data-column-key="sentence_date"]{width:125px}
+#referenceNazk .reference-table th[data-column-key="punishment_start"]{width:150px}
+#referenceNazk .reference-table th[data-column-key="decision_url"]{width:130px}
+#referenceNazk .reference-table th[data-column-key="decree_number"],#referenceNazk .reference-table th[data-column-key="decree_date"]{width:120px}
+#referenceNazk .reference-table :is(th,td){white-space:normal;overflow-wrap:anywhere}
+#referenceAmcu tr.amcu-applicant td{background:inherit}
+#referenceAmcu tr.amcu-applicant td:first-child{box-shadow:none}
+#referenceAmcu tr.amcu-applicant .registry-flag.applicant{display:none}
+html[data-theme] #referenceAmcu tbody tr.amcu-active-supplier{--amcu-row-bg:var(--red2);--amcu-row-ink:#243447}
+html[data-theme] #referenceAmcu tbody tr.amcu-our-supplier{--amcu-row-bg:var(--green2);--amcu-row-ink:#243447}
+html[data-theme="dark"] #referenceAmcu tbody tr.amcu-active-supplier{--amcu-row-bg:#482932;--amcu-row-ink:#ffb9c1}
+html[data-theme="dark"] #referenceAmcu tbody tr.amcu-our-supplier{--amcu-row-ink:#b8edca}
+html[data-theme] #referenceAmcu tbody tr:is(.amcu-active-supplier,.amcu-our-supplier)>td,
+html[data-theme] #referenceAmcu tbody tr:is(.amcu-active-supplier,.amcu-our-supplier):is(:hover,.active,.selected,[aria-selected="true"])>td{background-color:var(--amcu-row-bg);color:var(--amcu-row-ink)}
+html[data-theme] #referenceAmcu tbody tr:is(.amcu-active-supplier,.amcu-our-supplier)>td :is(strong,small,a){color:var(--amcu-row-ink)}
+html[data-theme] #referenceAmcu tbody tr.amcu-active-supplier .registry-flag.active-supplier{background:var(--amcu-row-bg);color:var(--amcu-row-ink);border:1px solid var(--red)}
+html[data-theme] #referenceAmcu tbody tr.amcu-our-supplier .registry-flag.supplier{background:var(--amcu-row-bg);color:var(--amcu-row-ink);border:1px solid var(--green)}
+@media(min-width:1280px){
+ #referenceNazk .reference-toolbar,#referenceAmcu .amcu-toolbar{flex-wrap:nowrap;gap:6px}
+ #referenceNazk .reference-toolbar>div:first-child{flex:0 0 230px;min-width:0;display:flex;flex-direction:column;align-items:flex-start}
+ #referenceNazk .reference-toolbar>div:first-child :is(strong,small),#referenceAmcu .amcu-toolbar>div:first-child :is(strong,small){display:block;white-space:nowrap}
+ #referenceNazk #refNazkSearch{flex:1 1 220px;min-width:140px;width:0}
+ #referenceNazk .reference-toolbar .reference-date-filter{flex:0 0 auto}
+ #referenceNazk .reference-toolbar .reference-date-filter input{width:116px;min-width:116px;padding:7px 8px}
+ #referenceNazk #refNazkCourt{flex:0 1 180px;width:180px;min-width:140px;max-width:180px}
+ #referenceNazk .reference-toolbar>button,#referenceAmcu .amcu-toolbar>button{flex-shrink:0;white-space:nowrap}
+ #referenceAmcu .amcu-toolbar>div:first-child{flex:0 0 120px;min-width:0;display:flex;flex-direction:column;align-items:flex-start}
+ #referenceAmcu #refAmcuSearch{flex:1 1 200px;min-width:140px;width:0}
+ #referenceAmcu .amcu-toolbar .reference-date-filter{flex:0 0 auto}
+ #referenceAmcu .amcu-toolbar .reference-date-filter input{width:116px;min-width:116px}
+ #referenceAmcu #refAmcuAuthority{flex:0 1 164px;width:164px;min-width:130px}
+ #referenceAmcu #refAmcuSupplierScope{flex:0 1 140px;width:140px;min-width:120px}
+ #referenceNazk .reference-toolbar>.system-width-button,#referenceAmcu .amcu-toolbar>.system-width-button{flex:0 0 40px;margin-left:0}
+}
+@media(max-width:600px){#referenceNazk #refNazkSearch{flex:1 1 100%;min-width:0;width:100%}#referenceNazk .reference-toolbar .reference-date-filter input{width:116px;min-width:116px;padding:7px 8px}#referenceNazk #refNazkCourt{flex:1 1 180px;min-width:160px;max-width:100%}}
+@media(min-width:1280px){#adminOfficersPanel .admin-officer-add>.system-width-button{width:40px;min-width:40px;margin:0;justify-self:end}}

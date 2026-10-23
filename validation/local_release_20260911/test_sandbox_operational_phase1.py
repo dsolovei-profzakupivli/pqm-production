@@ -13,6 +13,14 @@ import operational_tasks
 import reference_directories as ref
 import sandbox_runtime
 import server
+
+def borrowed_database(connection):
+    @contextlib.contextmanager
+    def transaction():
+        with connection:
+            yield connection
+    return transaction()
+
 try:
     from test_nazk_task_relevance import NazkTaskPersonRelevanceTests
 except ImportError:
@@ -288,18 +296,18 @@ class SandboxOperationalTaskChainTests(unittest.TestCase):
         matching = ('A1', '1', '', '', '42', '2026-09-20', 'AMCU', 'Fixture supplier', self.fixture.CODE, '', '{}')
         unrelated = ('A2', '2', '', '', '43', '2026-09-20', 'AMCU', 'Other supplier', '99999999', '', '{}')
         callback = lambda: operational_tasks.build(self.con, 'PQM AMCU refresh', include_nazk=False)
-        with patch.object(ref.sqlite3, 'connect', return_value=self.con), \
+        with patch.object(ref, '_database_connection', side_effect=lambda *_a,**_k:borrowed_database(self.con)), \
              patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [matching])):
             ref.refresh_amcu('fixture', on_complete=callback)
             self.assertEqual(self.con.execute("SELECT status FROM reference_sync_state WHERE source='amcu'").fetchone()[0], 'ok')
             self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion'").fetchone()[0], 1)
             ref.refresh_amcu('fixture', on_complete=callback)
             self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion'").fetchone()[0], 1)
-        with patch.object(ref.sqlite3, 'connect', return_value=self.con), \
+        with patch.object(ref, '_database_connection', side_effect=lambda *_a,**_k:borrowed_database(self.con)), \
              patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [unrelated])):
             ref.refresh_amcu('fixture', on_complete=callback)
             self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion' AND status!='cancelled'").fetchone()[0], 0)
-        with patch.object(ref.sqlite3, 'connect', return_value=self.con), \
+        with patch.object(ref, '_database_connection', side_effect=lambda *_a,**_k:borrowed_database(self.con)), \
              patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [matching])):
             ref.refresh_amcu('fixture', on_complete=lambda: (_ for _ in ()).throw(RuntimeError('task build failed')))
             self.assertEqual(self.con.execute("SELECT status FROM reference_sync_state WHERE source='amcu'").fetchone()[0], 'error')

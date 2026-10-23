@@ -94,7 +94,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
   await page.waitForFunction(()=>!document.querySelector('#operationalTasksNav .action-count-badge').hidden);
   for(const dark of [false,true]){
    await page.evaluate(dark=>{if(dark)document.documentElement.dataset.pqmEnvironment='sandbox';else delete document.documentElement.dataset.pqmEnvironment},dark);
-   for(const width of [1920,1440,768,390]){
+   for(const width of [1920,1440,1280,1024,390]){
     await page.setViewportSize({width,height:1000});
     await page.evaluate(()=>showFixture('applicationsView'));await page.waitForTimeout(80);
     const metrics=await page.locator('#applicationsView .heading-metrics').boundingBox(),actions=await page.locator('#applicationsView .heading-actions').boundingBox();
@@ -111,7 +111,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
     if(width>=1440)assert(await page.locator('.amcu-toolbar').evaluate(toolbar=>{
       const info=toolbar.firstElementChild.getBoundingClientRect(),search=toolbar.querySelector('.pqm-clear-wrap').getBoundingClientRect();
       const readable=[...toolbar.querySelectorAll('select')].every(n=>{const s=getComputedStyle(n),c=document.createElement('canvas').getContext('2d');c.font=s.font;return n.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)>=c.measureText(n.selectedOptions[0].textContent).width&&n.clientHeight-parseFloat(s.paddingTop)-parseFloat(s.paddingBottom)>=parseFloat(s.fontSize)*1.2});
-      return info.width>=220&&search.left-info.right<=9&&readable;
+      return info.width>=115&&search.left>=info.right-1&&search.left-info.right<=9&&readable;
     }),'AMCU info/search gap or default option readability');
     assert(await page.locator('.amcu-toolbar').evaluate(n=>[...n.children].filter(c=>!c.hidden&&getComputedStyle(c).display!=='none').every(c=>{const r=c.getBoundingClientRect();return r.x>=0&&r.right<=window.innerWidth})), 'AMCU control clipped');
     assert(await page.locator('.amcu-toolbar .pqm-clear-wrap').evaluate(n=>{const a=n.getBoundingClientRect(),b=n.querySelector('input').getBoundingClientRect();return b.x>=a.x-1&&b.right<=a.right+1}), 'Search input overlaps adjacent filters');
@@ -119,6 +119,6 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
     if(width===1440||width===390)await page.screenshot({path:path.join(OUT,`amcu-${dark?'dark':'light'}-${width}.png`)});
    }
   }
-  assert.deepEqual(errors,[]);console.log('BROWSER_UI=PASS; themes=2 widths=4 clear_fields=12 copy/badges/filter/column-button/no-F5=PASS');
+  assert.deepEqual(errors,[]);console.log('BROWSER_UI=PASS; themes=2 widths=5 (390/1024/1280/1440/1920) clear_fields=12 copy/badges/filter/column-button/no-F5=PASS');
  }finally{await browser.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -581,6 +581,8 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(sync.freshness_state('Неактивний', '2020-01-01', today)['marker'], '🟣 Неактуально')
         self.assertEqual(sync.freshness_state('Ще не в реєстрі', '2026-09-15', today)['marker'], '🟣 Неактуально')
         self.assertEqual(sync.freshness_state('Призупинений', '', today)['marker'], '⚪ Не перевірено')
+        future=sync.freshness_state('Активний',(today+timedelta(days=1)).isoformat(),today)
+        self.assertEqual((future['bucket'],future['marker'],future['age_days']),('not_checked','⚪ Не перевірено',None))
 
     def test_latest_verification_keeps_date_and_officer_from_same_event(self):
         con = database()
