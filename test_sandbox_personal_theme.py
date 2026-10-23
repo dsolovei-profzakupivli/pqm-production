@@ -102,7 +102,7 @@ class SandboxPersonalThemeTests(unittest.TestCase):
                 if not file.endswith('.webp'):data=data.replace(b'\r\n',b'\n')
                 actual=hashlib.sha256(data).hexdigest()
                 if actual != digest:
-                    self.assertIn(file, {'styles.css'})
+                    self.assertIn(file, {'styles.css', 'auth_access.py'})
                     self.assertTrue(exact_variant_tree_matches())
                     self.assertTrue(exact_variant_file_matches(file,Path(file).read_bytes()))
 

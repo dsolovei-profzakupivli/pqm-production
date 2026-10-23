@@ -3,6 +3,7 @@ import os
 import contextlib
 import gc
 import sqlite3
+import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
@@ -276,33 +277,52 @@ class SandboxOperationalTaskChainTests(unittest.TestCase):
         self.assertIn('Q2', qualifications)
 
     def test_committed_amcu_refresh_materializes_once_and_reports_downstream_failure(self):
-        self.con.execute('DROP TABLE amcu_registry')
-        self.con.execute('''CREATE TABLE amcu_registry (
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        db_path = Path(temp.name) / 'operational-amcu.sqlite3'
+        with contextlib.closing(sqlite3.connect(db_path)) as file_con:
+            file_con.executescript('\n'.join(self.con.iterdump()))
+            file_con.execute('DROP TABLE amcu_registry')
+            file_con.execute('''CREATE TABLE amcu_registry (
           row_key TEXT PRIMARY KEY,ordinal TEXT,division_no TEXT,sequence_no TEXT,
           decision_no TEXT,decision_date TEXT,authority TEXT,offender_name TEXT,
           offender_code TEXT,court_case_no TEXT,raw_json TEXT)''')
-        self.con.execute('''CREATE TABLE reference_sync_state (
+            file_con.execute('''CREATE TABLE reference_sync_state (
           source TEXT PRIMARY KEY,status TEXT,message TEXT,row_count INTEGER DEFAULT 0,
           updated_at TEXT,source_updated_at TEXT)''')
-        self.con.execute("INSERT INTO reference_sync_state(source,status) VALUES('amcu','idle')")
+            file_con.execute("INSERT INTO reference_sync_state(source,status) VALUES('amcu','idle')")
+            file_con.commit()
         matching = ('A1', '1', '', '', '42', '2026-09-20', 'AMCU', 'Fixture supplier', self.fixture.CODE, '', '{}')
         unrelated = ('A2', '2', '', '', '43', '2026-09-20', 'AMCU', 'Other supplier', '99999999', '', '{}')
-        callback = lambda: operational_tasks.build(self.con, 'PQM AMCU refresh', include_nazk=False)
-        with patch.object(ref.sqlite3, 'connect', return_value=self.con), \
-             patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [matching])):
-            ref.refresh_amcu('fixture', on_complete=callback)
-            self.assertEqual(self.con.execute("SELECT status FROM reference_sync_state WHERE source='amcu'").fetchone()[0], 'ok')
-            self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion'").fetchone()[0], 1)
-            ref.refresh_amcu('fixture', on_complete=callback)
-            self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion'").fetchone()[0], 1)
-        with patch.object(ref.sqlite3, 'connect', return_value=self.con), \
-             patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [unrelated])):
-            ref.refresh_amcu('fixture', on_complete=callback)
-            self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion' AND status!='cancelled'").fetchone()[0], 0)
-        with patch.object(ref.sqlite3, 'connect', return_value=self.con), \
-             patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [matching])):
-            ref.refresh_amcu('fixture', on_complete=lambda: (_ for _ in ()).throw(RuntimeError('task build failed')))
-            self.assertEqual(self.con.execute("SELECT status FROM reference_sync_state WHERE source='amcu'").fetchone()[0], 'error')
+        def connection():
+            con = sqlite3.connect(db_path)
+            con.row_factory = sqlite3.Row
+            con.create_function('DIGITS', 1, lambda value: ''.join(ch for ch in str(value or '') if ch.isdigit()))
+            con.create_function('NORMALIZE_NAME', 1, lambda value: ' '.join(str(value or '').casefold().split()))
+            return con
+
+        def rows(sql, params=()):
+            with contextlib.closing(connection()) as con:
+                return con.execute(sql, params).fetchall()
+
+        def callback():
+            with contextlib.closing(connection()) as con:
+                with con:
+                    operational_tasks.build(con, 'PQM AMCU refresh', include_nazk=False)
+
+        with patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [matching])):
+            ref.refresh_amcu(str(db_path), on_complete=callback)
+            self.assertEqual(rows("SELECT status FROM reference_sync_state WHERE source='amcu'")[0][0], 'ok',
+                             ref.AMCU_ERRORS.get(str(db_path.resolve()), 'no AMCU error detail'))
+            self.assertEqual(rows("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion'")[0][0], 1)
+            ref.refresh_amcu(str(db_path), on_complete=callback)
+            self.assertEqual(rows("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion'")[0][0], 1)
+        with patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [unrelated])):
+            ref.refresh_amcu(str(db_path), on_complete=callback)
+            self.assertEqual(rows("SELECT COUNT(*) FROM operational_tasks WHERE task_type='amcu_exclusion' AND status!='cancelled'")[0][0], 0)
+        with patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [matching])):
+            ref.refresh_amcu(str(db_path), on_complete=lambda: (_ for _ in ()).throw(RuntimeError('task build failed')))
+            self.assertEqual(rows("SELECT status FROM reference_sync_state WHERE source='amcu'")[0][0], 'error')
 
 
 if __name__ == '__main__':

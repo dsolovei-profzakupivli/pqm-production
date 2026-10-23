@@ -1,4 +1,5 @@
 """Exact, baseline-bound integrity exception for the approved protocol work."""
+import copy
 import hashlib
 import json
 import zipfile
@@ -89,6 +90,36 @@ NAZK_SCOPE = {
 }
 NAZK_BASELINE_FIXTURE = ROOT / "validation/fixtures/nazk_integrity_baseline_de77401.zip"
 NAZK_BASELINE_FIXTURE_SHA256 = "94e14820ee3b9720cd80a04a2dfdf5165ee59e8da6e95655c1564741c1705ba0"
+ADMIN_HISTORY_CONTRACT = ROOT / "test_sandbox_admin_officer_link_integrity_variant.json"
+ADMIN_HISTORY_CONTRACT_SHA256 = "1859d4772ae3febfb0df4be1385d334711104a1130d931294ce0cfb5a1ed9912"
+ADMIN_CONTRACT = ROOT / "test_sandbox_admin_officer_link_integrity_v2.json"
+ADMIN_CONTRACT_SHA256 = "0c908cbc2c8da86c7ff95d8e09d99122c8524090d9205e3d4951678fda66db08"
+ADMIN_V3_DELTA = ROOT / "test_sandbox_admin_officer_link_integrity_v3.json"
+ADMIN_V3_DELTA_SHA256 = "cb13dfe806ca884acaea7392c4fc8fc44ae86149eea5378934dad08d077da030"
+ADMIN_PRODUCT_FILES = {"app.js", "auth_access.py", "auth_ui.js", "index.html", "server.py", "styles.css"}
+ADMIN_GUARDED_FILES = {
+    "application_selection.js", "assets/halloween-witch-cat.webp",
+    "assets/halloween-workqueue-dark.webp", "assets/halloween-workqueue-light.webp",
+    "assets/pqm-cat-no-hat.png", "background_jobs.py", "bulk_application_save.js",
+    "filters.css", "google_writer_execution.py", "halloween.css", "halloween.js",
+    "halloween_cat_season.css", "halloween_cat_season.js", "halloween_motion.css",
+    "halloween_motion.js", "halloween_season.js", "metadata/template_legacy_tokens.v1.json",
+    "modules.css", "nazk_registry_evidence.py", "operational_task_officers.js",
+    "protocol_supplier_names.py", "reference_directories.py", "registry_popovers.js",
+    "sandbox_amcu.py", "sandbox_contrast.js", "sandbox_documents.py", "sandbox_runtime.py",
+    "sandbox_theme.css", "scheduler_runtime.py", "template_catalog.py",
+    "templates/violation_protocols/decline_individual_review.docx", "theme.css",
+    "theme_ui.js", "ui_final.js", "ui_tz2.js", "violation_protocol_docx.py",
+}
+ADMIN_PROTECTED_FILES = {"app.js", "server.py"}
+ADMIN_SCOPE = {
+    "separate_officer_directory_and_access_tabs",
+    "preserve_existing_access_management_sections_and_handlers",
+    "preserve_admin_officer_id_independently_of_role",
+    "preserve_officer_id_on_omitted_field_updates",
+    "admin_only_access_to_administration_section",
+}
+ADMIN_HASH_FORMAT = "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte"
 
 
 def load_nazk_contract(cat):
@@ -192,6 +223,104 @@ def load_contracts():
         raise AssertionError("Integrity-варіант котика змінив захист персональної теми server.py")
     contracts.append(cat)
     contracts.append(load_nazk_contract(cat))
+    for admin_path, expected_manifest_sha, expected_variant, expected_baseline in (
+            (ADMIN_HISTORY_CONTRACT, ADMIN_HISTORY_CONTRACT_SHA256,
+             "sandbox-admin-officer-link-v1", "de774010d99e3786eb6ff8308bba78aa5c9a6f13"),
+            (ADMIN_CONTRACT, ADMIN_CONTRACT_SHA256,
+             "sandbox-admin-officer-link-v2", "4625498cdb938f704cb8dc125c77bf58b2c2a7da")):
+        raw = admin_path.read_bytes()
+        if sha256(raw.replace(b"\r\n", b"\n")) != expected_manifest_sha:
+            raise AssertionError("Змінено закріплений integrity-маніфест Admin officer link")
+        admin = json.loads(raw.decode("utf-8"))
+        expected_guards = (ADMIN_GUARDED_FILES if expected_variant == "sandbox-admin-officer-link-v2"
+                           else set(admin.get("guarded_files", {})))
+        if (admin.get("variant_id") != expected_variant or
+                admin.get("baseline_sha") != expected_baseline or
+                admin.get("hash_format") != ADMIN_HASH_FORMAT or
+                set(admin.get("approved_scope", [])) != ADMIN_SCOPE or
+                set(admin.get("product_files", {})) != ADMIN_PRODUCT_FILES or
+                set(admin.get("guarded_files", {})) != expected_guards or
+                set(admin.get("protected_files", {})) != ADMIN_PROTECTED_FILES):
+            raise AssertionError("Admin integrity-варіант не відповідає повному погодженому маніфесту")
+        for protected_path, expected in admin["protected_files"].items():
+            if (expected.get("sha256") != expected.get("halloween_normalized_sha256") or
+                    not expected.get("personal_theme_normalized_sha256")):
+                raise AssertionError(f"Admin integrity-варіант недостатньо захищає {protected_path}")
+        contracts.append(admin)
+    delta_raw = ADMIN_V3_DELTA.read_bytes()
+    if sha256(delta_raw.replace(b"\r\n", b"\n")) != ADMIN_V3_DELTA_SHA256:
+        raise AssertionError("Змінено закріплений integrity-addendum Admin v3")
+    delta = json.loads(delta_raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_files_additional",
+                       "product_overrides", "protected_overrides", "remove_from_guarded_files", "remove_from_protected_files",
+                       "guarded_overrides"} or
+            delta.get("variant_id") != "sandbox-admin-officer-link-v3" or
+            delta.get("baseline_sha") != "4625498cdb938f704cb8dc125c77bf58b2c2a7da" or
+            delta.get("base_manifest") != ADMIN_CONTRACT.name or
+            delta.get("base_manifest_sha256") != ADMIN_CONTRACT_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != {
+                "close_reference_directory_sqlite_connections",
+                "close_winner_snapshot_sqlite_connections",
+                "release_test_fixture_sqlite_connections",
+                "ascii_safe_amcu_worker_json",
+                "stable_local_http_fixture_teardown",
+            } or
+            set(delta.get("product_files_additional", {})) != {"reference_directories.py"} or
+            delta.get("product_files_additional", {}).get("reference_directories.py", {}).get("sha256") !=
+                "8b893ae98a514e698145bcd6285787a115c045f1eb8afd716468cc5e9f50fe7a" or
+            set(delta.get("product_overrides", {})) != {"server.py"} or
+            delta.get("product_overrides", {}).get("server.py", {}).get("sha256") !=
+                "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58" or
+            delta.get("protected_overrides", {}).get("server.py", {}).get("sha256") !=
+                "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58" or
+            delta.get("protected_overrides", {}).get("server.py", {}).get("halloween_normalized_sha256") !=
+                "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58" or
+            delta.get("protected_overrides", {}).get("server.py", {}).get("personal_theme_normalized_sha256") !=
+                "f3e4311b965e73fb97383d557e7c1b52007991d56329412ff9bb3d458bc1b598" or
+            set(delta.get("remove_from_guarded_files", [])) != {"reference_directories.py"} or
+            delta.get("remove_from_protected_files", []) != [] or
+            set(delta.get("guarded_overrides", {})) != {
+                "test_sandbox_nazk_columns_integrity.py",
+                "test_supplier_filter_excel.py",
+                "validation/local_release_20260911/test_amcu_open_data.py",
+                "validation/local_release_20260911/test_amcu_refresh_recovery.py",
+                "validation/local_release_20260911/test_winner_decisions.py",
+                "validation/local_release_20260911/test_sandbox_operational_phase1.py",
+                "validation/local_release_20260911/test_bids_runtime.py",
+                "validation/local_release_20260911/test_admin_officer_linkage.py",
+            } or
+            delta.get("guarded_overrides", {}).get("test_sandbox_nazk_columns_integrity.py", {}).get("sha256") !=
+                "045b5d72f0514dc5e9b0e89fdc3e84d7815409ca1ff51fc4b019940a0ef1aa71" or
+            delta.get("guarded_overrides", {}).get("test_supplier_filter_excel.py", {}).get("sha256") !=
+                "86ee2cf0209e3b4637c13204164499ba66fb9a543ed9c515f5f758a6c84d7ddd" or
+            delta.get("guarded_overrides", {}).get("validation/local_release_20260911/test_amcu_open_data.py", {}).get("sha256") !=
+                "807edfe3d88824ae2b72d52e428e07c5f053b042224e0ac976308f58b8983353" or
+            delta.get("guarded_overrides", {}).get("validation/local_release_20260911/test_amcu_refresh_recovery.py", {}).get("sha256") !=
+                "66ddf583b0160128ddb2ceeb074c91c037ff790685cbaae20c07d2d4f5ee06c6" or
+            delta.get("guarded_overrides", {}).get("validation/local_release_20260911/test_winner_decisions.py", {}).get("sha256") !=
+                "bd744e729fa6d60b589d3479e47a74d64cda94af71d1f23598b6bb79e79d053b" or
+            delta.get("guarded_overrides", {}).get("validation/local_release_20260911/test_sandbox_operational_phase1.py", {}).get("sha256") !=
+                "69fbacdcbaaf32dd04657dd8428eac97a6856fde5c9c8697aca747e05a099183" or
+            delta.get("guarded_overrides", {}).get("validation/local_release_20260911/test_bids_runtime.py", {}).get("sha256") !=
+                "f36145967a52d19632a845ca4206562429e7a5f2f6c0a4be4da6b40b19f6195d" or
+            delta.get("guarded_overrides", {}).get("validation/local_release_20260911/test_admin_officer_linkage.py", {}).get("sha256") !=
+                "eef9cf905325fd223c4288ea3c36bd24c6765551d50d1b785bca16c0e3b88bbe"):
+        raise AssertionError("Admin integrity-addendum v3 має неочікуваний scope")
+    v2 = next(contract for contract in contracts if contract.get("variant_id") == "sandbox-admin-officer-link-v2")
+    v3 = copy.deepcopy(v2)
+    v3["variant_id"] = delta["variant_id"]
+    v3["approved_scope"] = sorted(set(v3["approved_scope"]) | set(delta["approved_scope_additions"]))
+    v3["product_files"].update(delta["product_files_additional"])
+    v3["product_files"].update(delta["product_overrides"])
+    for guarded_path in delta["remove_from_guarded_files"]:
+        del v3["guarded_files"][guarded_path]
+    for protected_path in delta["remove_from_protected_files"]:
+        del v3["protected_files"][protected_path]
+    v3["protected_files"].update(delta["protected_overrides"])
+    v3["guarded_files"].update(delta["guarded_overrides"])
+    contracts.append(v3)
     return contracts
 
 

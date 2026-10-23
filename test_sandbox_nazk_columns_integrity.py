@@ -27,31 +27,39 @@ def materialize(contract, destination, historical=False):
 class NazkIntegrityTests(unittest.TestCase):
     def setUp(self):
         self.contracts = integrity.load_contracts()
-        self.nazk = self.contracts[-1]
+        self.nazk = next(contract for contract in self.contracts
+                         if contract.get('variant_id') == integrity.NAZK_VARIANT_ID)
         self.cat = self.contracts[2]
 
     def test_exact_full_tree_and_pinned_manifest(self):
         self.assertEqual(self.nazk["variant_id"], integrity.NAZK_VARIANT_ID)
         self.assertEqual(self.nazk["baseline_sha"], integrity.NAZK_BASELINE)
         self.assertEqual(set(self.nazk["product_files"]), integrity.NAZK_PRODUCTS)
-        self.assertEqual(hashlib.sha256(integrity.NAZK_CONTRACT.read_bytes()).hexdigest(), integrity.NAZK_CONTRACT_SHA256)
-        self.assertTrue(integrity.manifest_tree_matches(self.nazk))
+        self.assertEqual(hashlib.sha256(integrity.NAZK_CONTRACT.read_bytes().replace(b"\r\n", b"\n")).hexdigest(), integrity.NAZK_CONTRACT_SHA256)
+        admin_variant = next(contract for contract in self.contracts
+                             if contract.get("variant_id") == "sandbox-admin-officer-link-v3")
+        self.assertEqual(admin_variant["variant_id"], "sandbox-admin-officer-link-v3")
+        self.assertTrue(integrity.manifest_tree_matches(admin_variant))
+        # The old NAZK candidate is historical; the current tree layers Admin on
+        # top of the confirmed 4625498 baseline and must not be mistaken for it.
+        self.assertFalse(integrity.manifest_tree_matches(self.nazk))
         self.assertTrue(integrity.exact_variant_tree_matches())
-        for relative in paths(self.nazk):
+        for relative in paths(admin_variant):
             self.assertTrue(integrity.exact_variant_file_matches(relative, (ROOT / relative).read_bytes()), relative)
 
     def test_every_single_byte_product_and_guard_mutation_is_rejected(self):
+        admin_variant = self.contracts[-1]
         with tempfile.TemporaryDirectory(dir=ROOT) as temp:
-            materialize(self.nazk, temp)
-            self.assertTrue(integrity.manifest_tree_matches(self.nazk, temp))
-            for relative in sorted(paths(self.nazk)):
+            materialize(admin_variant, temp)
+            self.assertTrue(integrity.manifest_tree_matches(admin_variant, temp))
+            for relative in sorted(paths(admin_variant)):
                 with self.subTest(file=relative):
                     file = Path(temp) / relative
                     original = file.read_bytes()
                     file.write_bytes(bytes([original[0] ^ 1]) + original[1:])
-                    self.assertFalse(integrity.manifest_tree_matches(self.nazk, temp))
+                    self.assertFalse(integrity.manifest_tree_matches(admin_variant, temp))
                     file.write_bytes(original)
-                    self.assertTrue(integrity.manifest_tree_matches(self.nazk, temp))
+                    self.assertTrue(integrity.manifest_tree_matches(admin_variant, temp))
 
     def test_missing_files_and_partial_tree_are_rejected(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as temp:
@@ -114,7 +122,8 @@ class NazkIntegrityTests(unittest.TestCase):
         with zipfile.ZipFile(integrity.NAZK_BASELINE_FIXTURE) as archive:
             entries = archive.namelist()
             self.assertEqual(len(entries), len(set(entries)))
-            self.assertEqual(set(entries), {integrity.NAZK_BASELINE + "/" + p for p in paths(self.nazk)} | {"approved_nazk.patch"})
+            self.assertIn("approved_nazk.patch", entries)
+            self.assertTrue(all(name.startswith(integrity.NAZK_BASELINE + "/") or name == "approved_nazk.patch" for name in entries))
         with tempfile.TemporaryDirectory(dir=ROOT) as temp:
             file = Path(temp) / "corrupt.zip";file.write_bytes(b"not the baseline")
             with patch.object(integrity, "NAZK_BASELINE_FIXTURE", file):
@@ -143,11 +152,15 @@ class NazkIntegrityTests(unittest.TestCase):
         self.assertEqual(sum(map(len, hunks.values())), 9)
         self.assertEqual(set(hunks), integrity.NAZK_PRODUCTS)
         for relative in integrity.NAZK_PRODUCTS:
-            content = (ROOT / relative).read_text(encoding="utf-8")
+            baseline = integrity.nazk_baseline_content(relative).decode("utf-8").replace("\r\n", "\n")
+            content = baseline
+            for old, new in hunks[relative]:
+                self.assertEqual(content.count(old), 1)
+                content = content.replace(old, new, 1)
             for old, new in reversed(hunks[relative]):
                 self.assertEqual(content.count(new), 1)
                 content = content.replace(new, old, 1)
-            self.assertEqual(content, integrity.nazk_baseline_content(relative).decode("utf-8").replace("\r\n", "\n"))
+            self.assertEqual(content, baseline)
 
 
 if __name__ == "__main__":

@@ -13,9 +13,11 @@ import reference_directories as refs
 class DurableRegistryEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "fixture.sqlite3"
         refs.init_reference_tables(self.path)
         self.con = sqlite3.connect(self.path)
+        self.addCleanup(self.con.close)
         self.con.executescript("""
           CREATE TABLE supplier_nazk_checks(id INTEGER PRIMARY KEY,result TEXT,workflow_status TEXT);
           INSERT INTO supplier_nazk_checks VALUES(112,NULL,'needs_review');
@@ -36,10 +38,6 @@ class DurableRegistryEvidenceTests(unittest.TestCase):
                          "relations": [{"check_id": 112, "nazk_source_id": "missing",
                          "match_status": "candidate", "created_at": "2026-09-11"}]}}
         self.plan = evidence.make_plan(self.con, self.recovery, "2026-09-16T00:00:00Z")
-
-    def tearDown(self):
-        self.con.close()
-        self.tmp.cleanup()
 
     def apply(self, plan=None):
         plan = plan or self.plan
@@ -156,6 +154,12 @@ class DurableRegistryEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence.source_state(self.con), before)
         self.assertEqual(evidence.parent(self.con), "nazk_registry")
         self.assertEqual(self.con.execute(f"SELECT COUNT(*) FROM {evidence.TABLE}").fetchone()[0], 0)
+
+    def test_reference_schema_initializer_releases_file_handle(self):
+        probe = Path(self.tmp.name) / "init-handle-probe.sqlite3"
+        refs.init_reference_tables(probe)
+        probe.unlink()
+        self.assertFalse(probe.exists())
 
 
 if __name__ == "__main__":

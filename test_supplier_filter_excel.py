@@ -2,6 +2,7 @@
 import io
 import json
 import sqlite3
+import tempfile
 import unittest
 import warnings
 import re
@@ -26,15 +27,17 @@ class SupplierFilterExcelTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
 
     def setUp(self):
-        self.con=sqlite3.connect(':memory:');self.con.row_factory=sqlite3.Row
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_path=Path(self.tmp.name)/'supplier-filter.sqlite3'
+        self.con=sqlite3.connect(self.db_path);self.con.row_factory=sqlite3.Row
+        self.addCleanup(self.con.close)
         self.con.create_function('DIGITS',1,lambda v:''.join(c for c in str(v or '') if c.isdigit()))
         self.con.create_function('CASEFOLD',1,lambda v:str(v or '').casefold())
         server.edr_sync_v2.register_verification_sql_functions(self.con)
-        with patch('reference_directories.sqlite3.connect',return_value=self.con):
-            reference_directories.init_reference_tables(':memory:')
-        with patch.object(server,'db',return_value=self.con),patch.object(server,'DB_PATH',Path('memory-only-fixture.sqlite3')):
+        reference_directories.init_reference_tables(self.db_path)
+        with patch.object(server,'db',return_value=self.con),patch.object(server,'DB_PATH',self.db_path):
             server.init_db()
-        self.addCleanup(self.con.close)
         for fid,dk in [('f1','03110000-1'),('f2','03220000-2'),('f3','03110000-1')]:
             self.con.execute('INSERT INTO frameworks(id,pretty_id,title,dk_code,status,raw_json,synced_at) VALUES(?,?,?,?,?,?,?)',
               (fid,'UA-F-'+fid,'Відбір '+fid,dk,'active',json.dumps({'qualificationPeriod':{'endDate':'2099-01-01T00:00:00+02:00'}}),'fixture'))
