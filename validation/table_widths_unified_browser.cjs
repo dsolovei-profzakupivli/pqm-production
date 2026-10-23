@@ -12,6 +12,7 @@ const fixture=[
 ];
 const legacy={'referencesView:refAmcuBody':{'суб-єкт':410,'код':110,'рішення':170,'дата':120,'орган-амку':230,'судова-справа':150}};
 legacy['referencesView:legacy-nazk']={'піб':431,'порушення':541};
+legacy['suppliersView:supplierRegistryBody']={'постачальник':380,'єдрпоу-рнокпп':155};
 const sharedStore=structuredClone(legacy),personalProfiles=new Map(),historySettings=new Map();let failNextSharedSave=false,personalId=0,sharedWrites=0;
 const defaultApplicationColumns=[{key:'participant',label:'Назва учасника',width:260,order:0,visible:true},{key:'edrpou',label:'Код',width:140,order:1,visible:true}];
 const markup=read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'');
@@ -79,6 +80,45 @@ async function drag(page,selector,index,delta){
  await installRoutes(context);
  try{
   if(process.argv.includes('--native-only')){console.log(await require('./table_widths_native_browser.cjs')({page,prepare,drag,read,out}));assert.deepEqual(errors,[]);return}
+  await prepare(page);
+  const supplierTable='#suppliersView .supplier-table';
+  assert.equal(await page.locator(supplierTable).count(),1);
+  assert.equal(await page.locator(supplierTable).evaluate(table=>table.closest('main').hidden),true);
+  assert.equal(await page.locator(supplierTable).getAttribute('data-system-table'),null,
+    'Saved supplier widths must not be applied while its view is hidden');
+  await page.evaluate(()=>{
+   const view=document.querySelector('#suppliersView'),body=document.querySelector('#supplierRegistryBody');
+   document.querySelectorAll('main').forEach(main=>main.hidden=main!==view);
+   body.innerHTML='<tr>'+Array.from({length:9},(_,i)=>`<td>Синтетичний постачальник ${i+1}</td>`).join('')+'</tr>';
+  });
+  await page.locator('#suppliersView .system-width-button').waitFor();
+  await page.waitForFunction(()=>Math.round(document.querySelector('#suppliersView .supplier-table thead th').getBoundingClientRect().width)===380);
+  assert.equal((await widths(page,supplierTable))[0],380,'Saved widths apply after supplier view becomes visible');
+  await openEditor(page,'#suppliersView');
+  await page.locator('.system-width-fields [data-column="постачальник"]').fill('455');
+  await page.locator('.system-width-dialog .primary').click();
+  await page.waitForFunction(()=>Math.round(document.querySelector('#suppliersView .supplier-table thead th').getBoundingClientRect().width)===455);
+  assert.equal(sharedStore['suppliersView:supplierRegistryBody']['постачальник'],455,
+    'Supplier width is persisted through the shared settings API');
+  await page.evaluate(()=>{document.querySelector('#suppliersView').hidden=true;document.querySelector('#referencesView').hidden=false});
+  await page.waitForTimeout(80);
+  assert.equal(await page.locator(supplierTable).evaluate(table=>table.closest('main').hidden),true,
+    'Supplier table remains inside its hidden view between navigation changes');
+  assert.equal(await page.locator(supplierTable+' thead th').first().evaluate(th=>th.style.width),'455px',
+    'Hiding the supplier view does not discard its applied width');
+  await page.evaluate(()=>{document.querySelector('#referencesView').hidden=true;document.querySelector('#suppliersView').hidden=false});
+  await page.waitForFunction(()=>Math.round(document.querySelector('#suppliersView .supplier-table thead th').getBoundingClientRect().width)===455);
+  assert.equal((await widths(page,supplierTable))[0],455,'Saved width reapplies after hide/show');
+  await page.reload();
+  assert.equal(await page.locator(supplierTable).evaluate(table=>table.closest('main').hidden),true);
+  assert.equal(await page.locator(supplierTable).getAttribute('data-system-table'),null,
+    'Supplier view starts hidden and remains unapplied after reload');
+  await page.evaluate(()=>{document.querySelectorAll('main').forEach(main=>main.hidden=main.id!=='suppliersView')});
+  await page.locator('#suppliersView .system-width-button').waitFor();
+  await page.waitForFunction(()=>Math.round(document.querySelector('#suppliersView .supplier-table thead th').getBoundingClientRect().width)===455);
+  assert.equal((await widths(page,supplierTable))[0],455,'Supplier width survives reload and is applied only when visible');
+  results.push('Supplier table: hidden view defers saved widths; admin edit persists; hide/show and reload reapply after visibility');
+  if(process.argv.includes('--supplier-only')){assert.deepEqual(errors,[]);console.log(JSON.stringify({status:'PASS',results},null,2));return}
   await prepare(page);
   assert.deepEqual(await page.locator('#referenceNazk thead th').allTextContents(),expected);
   assert.deepEqual((await widths(page,'#referenceNazk table')).slice(0,3),[380,520,160]);

@@ -39,21 +39,27 @@ assert.match(navigation,/function update\(\)\{button\.hidden=!canShowBack\(curre
 assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
 assert.match(widths,/colgroup\[data-system-widths\]/);
 assert.match(widths,/table\.style\.tableLayout='fixed'/);
-assert.match(widths,/table\.closest\('#suppliersView'\)&&!isVisible\(table\)\)return;apply\(table,saved\[key\]\|\|\{\}\)/);
-assert.match(widths,/saved\[key\]=\{\.\.\.next/);
+const widthInstall=section(widths,'function install(){','function toolbarForFallback(');
+assert.match(widthInstall,/if\(!isVisible\(table\)\)return;[\s\S]*?apply\(table,saved\[key\]\|\|\{\}\)/,
+  'Hidden tables must be skipped before any saved width is applied');
+assert.match(widths,/new MutationObserver\(schedule\)\.observe\(document\.body/,
+  'Visibility changes must schedule a fresh installation pass');
+assert.match(widths,/saved\[key\]=result\.widths\|\|settings/,
+  'Saved settings must use the server-confirmed complete layout');
 const widthContext=vm.createContext({WeakMap,Number,Math,Set,Array,document:{createElement(tag){return {style:{},dataset:{},children:[],replaceChildren(...children){this.children=children}}}}});
-vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}",widthContext);
-vm.runInContext(section(widths,'function apply(table,widths){','const dialog='),widthContext);
-function widthTable(){const heads=['name','code','status'].map(col=>({dataset:{col},style:{},hidden:false,getBoundingClientRect(){return {width:col==='name'?240:80}}}));const row={cells:heads.map(()=>({style:{},hidden:false}))};return {tHead:{rows:[{cells:heads}]},tBodies:[{rows:[row]}],dataset:{},style:{},group:null,closest:()=>({}),querySelector(){return this.group},prepend(group){this.group=group}}}
+vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}function isPersonalTable(){return false}function reorderTable(){}function heads(table){return table.tHead.rows[0].cells}function sizesFor(table,widths){return heads(table).map(th=>Number(widths[th.dataset.col])||th.defaultWidth)}function effectiveVisibility(table){return new Set(heads(table).map(th=>th.dataset.col))}function currentOrder(table){return heads(table).map(th=>th.dataset.col)}",widthContext);
+vm.runInContext(section(widths,'function applyLogical(table,widths){','let suppressClickUntil='),widthContext);
+vm.runInContext(section(widths,'function apply(table,widths){','async function saveShared('),widthContext);
+function widthTable(){const heads=['name','code','status'].map((col,i)=>({dataset:{col},style:{},hidden:false,colSpan:1,rowSpan:1,defaultWidth:col==='name'?240:80,getBoundingClientRect(){return {width:this.defaultWidth}}}));const row={cells:heads.map(()=>({style:{},hidden:false,colSpan:1,rowSpan:1})),dataset:{}};const style={setProperty(name,value){this[name]=value}};return {tHead:{rows:[{cells:heads,dataset:{}}]},tBodies:[{rows:[row]}],dataset:{},style,group:null,closest:()=>null,querySelector(){return this.group},prepend(group){this.group=group}}}
 const widthFixture=widthTable();widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tHead.rows[0].cells[1].style.width,'150px');
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
-assert.equal(widthFixture.group.children[1].style.width,'150px');
 assert.equal(widthFixture.style.width,'470px');
-widthFixture.tBodies[0].rows=[{cells:[{style:{}},{style:{}},{style:{}}]}];widthContext.apply(widthFixture,{code:150});
+widthFixture.tBodies[0].rows=[{cells:[{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1}],dataset:{}}];widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
 const afterReload=widthTable();widthContext.apply(afterReload,{code:150});
-assert.equal(afterReload.group.children[1].style.width,'150px');
+assert.equal(afterReload.tHead.rows[0].cells[1].style.width,'150px');
+assert.equal(afterReload.tBodies[0].rows[0].cells[1].style.width,'150px');
 assert.match(css,/@media\(max-width:1280px\)\{[\s\S]*?\.topbar #mainNav\{order:5/);
 assert.equal(context.displayDateOnly('2026-09-09'),'09.09.2026');
 assert.equal(context.displayDate('2026-09-09'),'09.09.2026');
