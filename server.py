@@ -5774,7 +5774,7 @@ def supplier_profile(supplier_code: str) -> dict:
         if normalized_managers:
             placeholders = ",".join("?" for _ in normalized_managers)
             nazk = [dict(row) for row in con.execute(f"""SELECT full_name,offense_name,court_case_number,
-              sentence_date,punishment_start,court_name,decision_url FROM nazk_registry
+              sentence_date,punishment_start,court_name,decision_url,punishment FROM nazk_registry
               WHERE NORMALIZE_NAME(full_name) IN ({placeholders}) ORDER BY sentence_date DESC""", tuple(normalized_managers))]
         current_registry_match = bool(current_manager_row and con.execute(
             "SELECT 1 FROM nazk_registry WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?) LIMIT 1",

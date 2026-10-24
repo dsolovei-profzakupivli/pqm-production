@@ -339,6 +339,26 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertEqual(profile["nazk"][0]["court_case_number"], "1/1/26")
         self.assertEqual(profile["supplier_nazk_checks"][0]["result"], "refuted")
 
+    def test_supplier_profile_projects_nonempty_and_empty_punishment(self):
+        self.seed_supplier(manager="КРУГЛЯК ОЛЕКСІЙ МИХАЙЛОВИЧ")
+        self.seed_submission(manager="КРУГЛЯК ОЛЕКСІЙ МИХАЙЛОВИЧ")
+        punishment = "Визнано винним; призначено штраф та позбавлення права обіймати посади."
+        with server.db() as con:
+            con.execute("""UPDATE nazk_registry SET punishment=?,court_case_number='551/226/26',
+              sentence_date='2026-10-07',raw_json='secret raw data' WHERE source_id='nazk-10000001'""",
+              (punishment,))
+            con.execute("""INSERT INTO nazk_registry
+              (source_id,full_name,offense_name,punishment,court_case_number,sentence_date,raw_json)
+              VALUES ('nazk-empty','КРУГЛЯК ОЛЕКСІЙ МИХАЙЛОВИЧ','Інше порушення','',
+                      '552/227/26','2026-10-06','secret raw data')""")
+
+        profile = server.supplier_profile("10000001")
+        self.assertEqual([row["punishment"] for row in profile["nazk"]], [punishment, ""])
+        self.assertEqual([row["court_case_number"] for row in profile["nazk"]],
+                         ["551/226/26", "552/227/26"])
+        self.assertTrue(all("raw_json" not in row and "punishment_type_name" not in row
+                            for row in profile["nazk"]))
+
     def test_active_supplier_without_manager(self):
         self.seed_supplier(manager=None, registry=False)
         self.assertEqual(self.state()["state"], "missing_manager")
