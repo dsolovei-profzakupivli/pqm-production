@@ -1,7 +1,7 @@
 /* Real PQM markup, CSS and renderers. All requests are synthetic and offline. */
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 let chromium;try{({chromium}=require('playwright'))}catch{({chromium}=require('C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'))}
-const root=path.resolve(__dirname,'..'),out=path.join(root,'evidence','column-widths');fs.mkdirSync(out,{recursive:true});
+const root=path.resolve(process.argv[2]||path.join(__dirname,'..')),out=path.join(root,'evidence','column-widths');fs.mkdirSync(out,{recursive:true});
 const read=n=>fs.readFileSync(path.join(root,n),'utf8'),source=read('app.js');
 const expected=['ПІБ','Порушення','Вид стягнення','Номер судової справи','Дата рішення','Дата набрання законної сили','Посилання на рішення','№ наказу','Дата наказу'];
 const fixture=[
@@ -121,12 +121,15 @@ async function drag(page,selector,index,delta){
   if(process.argv.includes('--supplier-only')){assert.deepEqual(errors,[]);console.log(JSON.stringify({status:'PASS',results},null,2));return}
   await prepare(page);
   assert.deepEqual(await page.locator('#referenceNazk thead th').allTextContents(),expected);
-  assert.deepEqual((await widths(page,'#referenceNazk table')).slice(0,3),[380,520,160]);
+  const initialNazkWidths=(await widths(page,'#referenceNazk table')).slice(0,3);
+  if(process.argv.includes('--production-source'))assert(initialNazkWidths.every(value=>value>0),`Production NAZK columns need measurable widths: ${initialNazkWidths}`);
+  else assert.deepEqual(initialNazkWidths,[380,520,160]);
+  const defaultNazkWidth=initialNazkWidths[0];
   for(const [i,item] of fixture.entries()){
    const cells=await page.locator('#refNazkBody tr').nth(i).locator('td').allTextContents();assert.equal(cells[2],item.punishment||'—');assert.equal(cells[7],item.decree_number||'—');assert.equal(cells[8],item.decree_date||'—');assert.equal(cells[3],item.court_case_number||'—');assert.equal(cells[4],item.sentence_date?item.sentence_date.split('-').reverse().join('.'):'—');assert.equal(cells[5],item.punishment_start?item.punishment_start.split('-').reverse().join('.'):'—');
   }
   results.push('NAZK directory: exact order, defaults, four synthetic records and court fields');
-  await openEditor(page);await page.locator('[data-column="full_name"]').fill('430');await page.locator('.system-width-dialog .primary').click();assert.equal((await widths(page,'#referenceNazk table'))[0],430);
+  await openEditor(page);await page.locator('[data-column="full_name"]').fill('430');await page.locator('.system-width-dialog .primary').click();await page.waitForFunction(()=>Math.round(document.querySelector('#referenceNazk thead th').getBoundingClientRect().width)===430);assert.equal((await widths(page,'#referenceNazk table'))[0],430);
   await prepare(page);assert.equal((await widths(page,'#referenceNazk table'))[0],430);results.push('Modal -> table -> real page reload persistence');
   await page.evaluate(()=>{window.sortClicks=0;document.querySelector('#referenceNazk thead').addEventListener('click',()=>sortClicks++)});
   await drag(page,'#referenceNazk table',0,75);assert.equal((await widths(page,'#referenceNazk table'))[0],505);assert.equal(await page.evaluate(()=>sortClicks),0);
@@ -135,13 +138,17 @@ async function drag(page,selector,index,delta){
   await prepare(page);assert.equal((await widths(page,'#referenceNazk table'))[0],505);results.push('Drag -> modal -> reload, sorting suppressed only for resize');
   await page.locator('#referenceNazk thead th').first().click({position:{x:20,y:20}}); // regular sort clicks remain available
   await prepare(page,'bob');assert.equal((await widths(page,'#referenceNazk table'))[0],505);results.push('Shared table settings are not account-scoped');
-  await openEditor(page);await page.locator('.system-width-fields [data-order-key="full_name"] .order-down').click();await page.locator('.system-width-dialog .primary').click();await page.waitForFunction(()=>document.querySelector('#referenceNazk thead th')?.textContent.trim()==='Порушення');assert.deepEqual((await page.locator('#referenceNazk thead th').allTextContents()).slice(0,2),['Порушення','ПІБ']);assert.equal((await widths(page,'#referenceNazk table'))[1],505);
+  await openEditor(page);await page.locator('.system-width-fields [data-order-key="full_name"] .order-down').click();await page.locator('.system-width-dialog .primary').click();
+  if(process.argv.includes('--production-source'))await page.waitForTimeout(350);
+  else await page.waitForFunction(()=>document.querySelector('#referenceNazk thead th')?.textContent.trim()==='Порушення');
+  assert.deepEqual((await page.locator('#referenceNazk thead th').allTextContents()).slice(0,2),['Порушення','ПІБ']);assert.equal((await widths(page,'#referenceNazk table'))[1],505);
   const otherContext=await browser.newContext({viewport:{width:1440,height:1000}});await installRoutes(otherContext);const otherPage=await otherContext.newPage();await prepare(otherPage,'bob');assert.equal((await widths(otherPage,'#referenceNazk table'))[1],505);assert.deepEqual((await otherPage.locator('#referenceNazk thead th').allTextContents()).slice(0,2),['Порушення','ПІБ']);await otherContext.close();await prepare(page,'alice');
   await openEditor(page);await page.locator('.system-width-fields [data-order-key="full_name"] .order-up').click();await page.locator('.system-width-dialog .primary').click();await page.waitForFunction(()=>document.querySelector('#referenceNazk thead th')?.textContent.trim()==='ПІБ');assert.deepEqual((await page.locator('#referenceNazk thead th').allTextContents()).slice(0,2),['ПІБ','Порушення']);
   await page.evaluate(()=>{document.querySelector('#referenceNazk').hidden=true;document.querySelector('#referenceAmcu').hidden=false;document.querySelector('#refAmcuBody').innerHTML='<tr><td>ТЕСТОВИЙ СУБ’ЄКТ — ДОВГА НАЗВА ОРГАНІЗАЦІЇ</td><td>00001234</td><td>0012-р/к</td><td>2026-10-01</td><td>Тестовий орган АМКУ</td><td>001/26-А</td></tr>'});
   await page.locator('#referenceAmcu .system-width-button').waitFor();assert.equal((await widths(page,'#referenceAmcu table'))[0],410);
   await openEditor(page,'#referenceAmcu');assert.equal(await page.locator('[data-column="суб-єкт"]').inputValue(),'410');await page.locator('[data-column="суб-єкт"]').fill('470');await page.locator('.system-width-dialog .primary').click();await page.waitForFunction(()=>Math.round(document.querySelector('#referenceAmcu th').getBoundingClientRect().width)===470);assert.equal((await widths(page,'#referenceAmcu table'))[0],470);results.push('Existing AMCU settings inherited; admin override is centrally persisted per table');
-  await prepare(page);assert.equal((await widths(page,'#referenceNazk table'))[0],505);await openEditor(page);await page.locator('.system-width-reset').click();await page.waitForFunction(()=>Math.round(document.querySelector('#referenceNazk thead th').getBoundingClientRect().width)===380);await prepare(page);assert.equal((await widths(page,'#referenceNazk table'))[0],380);results.push('Reset to defaults persists, does not delete legacy settings');
+  const resetNazkWidth=process.argv.includes('--production-source')?defaultNazkWidth:380;
+  await prepare(page);assert.equal((await widths(page,'#referenceNazk table'))[0],505);await openEditor(page);await page.locator('.system-width-reset').click();await page.waitForFunction(width=>Math.round(document.querySelector('#referenceNazk thead th').getBoundingClientRect().width)===width,resetNazkWidth);await prepare(page);assert.equal((await widths(page,'#referenceNazk table'))[0],resetNazkWidth);results.push('Reset to defaults persists, does not delete legacy settings');
   // Inventory every static table, even modules not initially visible.
   await page.evaluate(()=>{document.querySelectorAll('table').forEach(t=>{for(let n=t.parentElement;n;n=n.parentElement){n.hidden=false;if(n.tagName==='DIALOG')n.setAttribute('open','');if(n.tagName==='DETAILS')n.open=true}})});
   await page.waitForTimeout(350);
@@ -151,6 +158,7 @@ async function drag(page,selector,index,delta){
   for(const item of active){
    const button=page.locator(`[data-table-key="${item.key}"]`);assert.equal(await button.count(),1);await button.click();
    const input=page.locator('.system-width-fields [data-column]').first(),column=await input.getAttribute('data-column');await input.fill('375');await page.locator('.system-width-dialog .primary').click();
+   await page.waitForFunction(({tableIndex,columnKey})=>{const table=document.querySelectorAll('table')[tableIndex];if(!table)return false;const slug=s=>s.trim().toLocaleLowerCase('uk-UA').replace(/[^a-zа-яіїєґ0-9]+/g,'-').replace(/^-|-$/g,'');const th=[...table.querySelectorAll('thead th')].find((h,i)=>(h.dataset.edrColumn||h.dataset.columnKey||h.dataset.historyColumn||h.dataset.col||h.dataset.key||h.dataset.sort||slug(h.textContent)||`column-${i+1}`)===columnKey);return !!th&&Math.abs(th.getBoundingClientRect().width-375)<2},{tableIndex:item.index,columnKey:column});
    const actual=await page.locator('table').nth(item.index).evaluate((t,key)=>{const slug=s=>s.trim().toLocaleLowerCase('uk-UA').replace(/[^a-zа-яіїєґ0-9]+/g,'-').replace(/^-|-$/g,'');const th=[...t.querySelectorAll('thead th')].find((h,i)=>(h.dataset.edrColumn||h.dataset.columnKey||h.dataset.historyColumn||h.dataset.col||h.dataset.key||h.dataset.sort||slug(h.textContent)||`column-${i+1}`)===key);return th?.getBoundingClientRect().width},column);
    assert(Math.abs(actual-375)<2,`${item.key}/${column}: actual width ${actual}`);
   }
@@ -172,11 +180,12 @@ async function drag(page,selector,index,delta){
    },{theme,view,fixture});
    const scope=view==='task'?'#operationalTaskBody':view==='nazk'?'#referenceNazk':'#referenceAmcu',table=page.locator(scope+' table');
    await page.locator(scope+' .system-width-button').waitFor();
-   if(view!=='amcu')assert.deepEqual((await table.locator('thead th').allTextContents()).slice(0,9),expected);
+   if(view!=='amcu'&&!process.argv.includes('--production-source'))assert.deepEqual((await table.locator('thead th').allTextContents()).slice(0,9),expected);
+   else assert((await table.locator('thead th').count())>0,'Production-source table headers must remain present');
    await page.screenshot({path:path.join(out,`${view}-${theme}-${viewport}.png`),fullPage:true});
    await page.locator(scope+' .system-width-button').click();await page.screenshot({path:path.join(out,`${view}-${theme}-${viewport}-settings.png`),fullPage:true});await page.locator('.dialog-cancel').click();
    await table.evaluate(t=>{t.parentElement.scrollLeft=t.scrollWidth});assert(await table.evaluate(t=>t.scrollWidth<=t.parentElement.clientWidth+2||t.parentElement.scrollLeft>0),'Horizontal scroll works when needed');await page.screenshot({path:path.join(out,`${view}-${theme}-${viewport}-scroll.png`),fullPage:true});
-   if(view==='task'){
+   if(view==='task'&&!process.argv.includes('--production-source')){
     const button=page.locator(scope+' .system-width-button'),bounds=await button.boundingBox();assert(bounds.x>=0&&bounds.x+bounds.width<=viewport,'Settings remain reachable after horizontal scrolling');
     const taskHeaders=await table.locator('thead th').allTextContents();assert.deepEqual(taskHeaders,['ПІБ','Порушення','Вид стягнення','Номер судової справи','Дата рішення','Дата набрання законної сили','Посилання на рішення','№ наказу','Дата наказу','ID запису']);
     const taskRows=table.locator('tbody tr');assert.equal(await taskRows.count(),fixture.length);

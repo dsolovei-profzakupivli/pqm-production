@@ -132,6 +132,9 @@ UI_CANDIDATE_V3_ID = "sandbox-ui-integrated-d457-v3"
 UI_CANDIDATE_V4_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v4.json"
 UI_CANDIDATE_V4_DELTA_SHA256 = "e3097ff818c1b17dafdd7b29c92e3b335c28533de3a423d1b320221e90bf505b"
 UI_CANDIDATE_V4_ID = "sandbox-ui-integrated-d457-v4"
+UI_CANDIDATE_V5_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v5.json"
+UI_CANDIDATE_V5_DELTA_SHA256 = "1f210bc192fcf3080a6027a7fca28a45fe8403def013e95088e21be7e4495cee"
+UI_CANDIDATE_V5_ID = "sandbox-ui-integrated-d457-v5"
 UI_CANDIDATE_PRODUCTS = {
     "app.js", "auth_access.py", "auth_ui.js", "edr_sync_v2.py",
     "history_columns.js", "index.html", "reference_directories.py", "server.py", "styles.css",
@@ -215,6 +218,20 @@ UI_CANDIDATE_V4_SCOPE = {
 }
 UI_CANDIDATE_V4_PRODUCT_OVERRIDES = {
     "validation/sandbox_supplier_ux.cjs",
+    "validation/table_widths_unified_browser.cjs",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+}
+UI_CANDIDATE_V5_SCOPE = {
+    "avoid_reordering_cells_when_actual_order_already_matches",
+    "mutation_observer_settles_after_sort_filter_page_and_resize",
+    "supplier_and_appeal_cards_open_on_one_ordinary_click",
+    "run_shared_and_personal_layout_browser_matrix_against_both_exact_sources",
+}
+UI_CANDIDATE_V5_PRODUCT_OVERRIDES = {
+    "table_widths_ui.js",
+    "validation/card_click_stability.cjs",
     "validation/table_widths_unified_browser.cjs",
     "test_sandbox_ui_integrated_d457_integrity.py",
     "test_sandbox_admin_officer_link_integrity.py",
@@ -427,7 +444,9 @@ def load_contracts():
     contracts.append(ui_v2)
     ui_v3 = load_ui_candidate_v3(ui_v2)
     contracts.append(ui_v3)
-    contracts.append(load_ui_candidate_v4(ui_v3))
+    ui_v4 = load_ui_candidate_v4(ui_v3)
+    contracts.append(ui_v4)
+    contracts.append(load_ui_candidate_v5(ui_v4))
     return contracts
 
 
@@ -546,6 +565,29 @@ def load_ui_candidate_v4(ui_v3):
         raise AssertionError("Integrated Sandbox UI v4 addendum has an unexpected exact scope")
     candidate = copy.deepcopy(ui_v3)
     candidate["variant_id"] = UI_CANDIDATE_V4_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                          set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    return candidate
+
+
+def load_ui_candidate_v5(ui_v4):
+    raw = UI_CANDIDATE_V5_DELTA.read_bytes()
+    if sha256(raw.replace(b"\r\n", b"\n")) != UI_CANDIDATE_V5_DELTA_SHA256:
+        raise AssertionError("Changed integrated Sandbox UI v5 integrity addendum")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V5_ID or
+            delta.get("baseline_sha") != "d457aae211bc0b88cdc66414b9e5765ac7ba350d" or
+            delta.get("base_manifest") != UI_CANDIDATE_V4_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V4_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V5_SCOPE or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V5_PRODUCT_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v5 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v4)
+    candidate["variant_id"] = UI_CANDIDATE_V5_ID
     candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
                                           set(delta["approved_scope_additions"]))
     candidate["product_files"].update(delta["product_overrides"])
