@@ -37,6 +37,11 @@ function reorderTable(table,widths){
     const stored=row.dataset.systemOrder?JSON.parse(row.dataset.systemOrder):canonical,current=[...stored.filter(key=>canonical.includes(key)),...canonical.filter(key=>!stored.includes(key))];
     const cells=[...row.cells],byKey=new Map(current.map((key,index)=>[key,cells[index]]));
     if(desired.some(key=>!byKey.has(key)))continue;
+    const actual=cells.map((_,index)=>current[index]);
+    if(actual.length===desired.length&&actual.every((key,index)=>key===desired[index])){
+      row.dataset.systemOrder=JSON.stringify(desired);
+      continue;
+    }
     desired.forEach(key=>row.append(byKey.get(key)));row.dataset.systemOrder=JSON.stringify(desired);
   }
   return true;

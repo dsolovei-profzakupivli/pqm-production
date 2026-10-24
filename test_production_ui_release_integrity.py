@@ -11,7 +11,8 @@ ACCOUNT_BASELINE=json.loads((ROOT/'validation/personal_theme_account_baseline.js
 VARIANT=CONTRACT.get('approved_product_variants',{}).get('protocols_and_seasonal_cat')
 FAILSAFE_VARIANT=CONTRACT.get('approved_product_variants',{}).get('protocols_and_seasonal_cat_css_failsafe')
 UI_VARIANT=CONTRACT.get('approved_product_variants',{}).get('sandbox_ui_transfer_from_bddd5f6')
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT) if value]
+CARD_VARIANT=CONTRACT.get('approved_product_variants',{}).get('card_click_dom_stability_v1')
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT) if value]
 
 
 def nodes(source):
@@ -110,7 +111,7 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
         self.assertEqual(CONTRACT['baseline'],'f2aacf88713a63b2d915d16af137c4133a5f1fd8')
         self.assertEqual(set(CONTRACT['approved_product_variants']),{
             'protocols_and_seasonal_cat','protocols_and_seasonal_cat_css_failsafe',
-            'sandbox_ui_transfer_from_bddd5f6',
+            'sandbox_ui_transfer_from_bddd5f6','card_click_dom_stability_v1',
         })
         self.assertEqual(VARIANT['baseline'],'b433bcb290ca9a205910db54f0c9b77af4f02cc7')
         expected_files={
@@ -135,20 +136,45 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
             'app.js','edr_sync_v2.py','history_columns.js','index.html','reference_directories.py','server.py',
             'styles.css','table_widths.py','table_widths_ui.js',
         })
+        self.assertEqual(CARD_VARIANT['baseline'],UI_VARIANT['baseline'])
+        self.assertEqual(CARD_VARIANT['server_protected_ast'],UI_VARIANT['server_protected_ast'])
+        self.assertEqual(CARD_VARIANT['server_variant_excluded_functions'],UI_VARIANT['server_variant_excluded_functions'])
+        self.assertEqual(CARD_VARIANT['binary_files'],UI_VARIANT['binary_files'])
+        self.assertEqual(CARD_VARIANT['files'],{
+            **UI_VARIANT['files'],
+            'table_widths_ui.js':'a7f13dcc3d63cf338d7e3db6f20c5942e752c3bdfb9daf9c1df01b069019332e',
+        })
+        self.assertEqual(CARD_VARIANT['regression_test_sha256'],
+                         '4de8495963ece4d7ad4615477f4684826e2b88a8ccc218aaf16c04b6dabaaee7')
         self.assertEqual(VARIANT['files']['halloween_motion.js'],'d3a4fcb7dc21beaf7f9a6c229533d2884419259eb74636962d85402170fa94d3')
         self.assertEqual(FAILSAFE_VARIANT['files']['halloween_motion.js'],'1d552ed58cc480f79f8d10c8f1a05af3bb1da3a8e69aaf98ad0c3a748b75071c')
         self.assertEqual(FAILSAFE_VARIANT['files'].keys(),VARIANT['files'].keys())
 
     def test_production_variant_rejects_single_byte_changes_to_every_manifest_file(self):
-        self.assertTrue(variant_matches(ROOT,UI_VARIANT['files'],variant=UI_VARIANT))
-        self.assertFalse(variant_matches(ROOT,list(UI_VARIANT['files'])[:-1],variant=UI_VARIANT))
-        self.assertFalse(variant_matches(ROOT,[*UI_VARIANT['files'],'unapproved.py'],variant=UI_VARIANT))
-        for name in UI_VARIANT['files']:
+        self.assertEqual(UI_VARIANT['files']['table_widths_ui.js'],
+                         '3ab7c60b71194c5b93967e6ebdbf9480793afa9744c2b2907504d97280ea06a2')
+        self.assertFalse(variant_matches(ROOT,UI_VARIANT['files'],variant=UI_VARIANT),
+                         'The historical UI manifest must remain unchanged and not match the fixed tree')
+        self.assertTrue(variant_matches(ROOT,CARD_VARIANT['files'],variant=CARD_VARIANT))
+        self.assertFalse(variant_matches(ROOT,list(CARD_VARIANT['files'])[:-1],variant=CARD_VARIANT))
+        self.assertFalse(variant_matches(ROOT,[*CARD_VARIANT['files'],'unapproved.py'],variant=CARD_VARIANT))
+        for name in CARD_VARIANT['files']:
             with self.subTest(name=name):
                 data=(ROOT/name).read_bytes()
                 changed=bytes([data[0]^1])+data[1:]
-                self.assertFalse(variant_matches(ROOT,UI_VARIANT['files'],
-                                                 overrides={name:changed},variant=UI_VARIANT))
+                self.assertFalse(variant_matches(ROOT,CARD_VARIANT['files'],
+                                                 overrides={name:changed},variant=CARD_VARIANT))
+
+    def test_card_dom_stability_variant_is_exact_and_rejects_single_byte_changes(self):
+        self.assertTrue(variant_matches(ROOT,CARD_VARIANT['files'],variant=CARD_VARIANT))
+        test_bytes=(ROOT/'validation/card_click_stability.cjs').read_bytes().replace(b'\r\n',b'\n')
+        self.assertEqual(hashlib.sha256(test_bytes).hexdigest(),CARD_VARIANT['regression_test_sha256'])
+        for name in CARD_VARIANT['files']:
+            with self.subTest(name=name):
+                data=(ROOT/name).read_bytes()
+                changed=bytes([data[0]^1])+data[1:]
+                self.assertFalse(variant_matches(ROOT,CARD_VARIANT['files'],
+                                                 overrides={name:changed},variant=CARD_VARIANT))
 
     def test_operational_lifecycle_and_write_algorithms_unchanged(self):
         source=nodes((ROOT/'operational_tasks.py').read_text(encoding='utf-8'))
