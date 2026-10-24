@@ -37,23 +37,48 @@ assert.match(sandboxCss,/\.sandbox-brand-copy strong\s*\{[^}]*font-size:15px/);
 assert.match(sandboxCss,/\.sandbox-brand-copy small\s*\{[^}]*font-size:9\.5px;line-height:1\.1;margin-top:1px/);
 assert.match(navigation,/function update\(\)\{button\.hidden=!canShowBack\(current\);button\.disabled=restoring/);
 assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
-assert.match(widths,/colgroup\[data-system-widths\]/);
 assert.match(widths,/table\.style\.tableLayout='fixed'/);
-assert.match(widths,/table\.closest\('#suppliersView'\)&&!isVisible\(table\)\)return;apply\(table,saved\[key\]\|\|\{\}\)/);
-assert.match(widths,/saved\[key\]=\{\.\.\.next/);
+const widthInstall=section(widths,'function install(){','function toolbarForFallback(');
+assert.match(widthInstall,/if\(!isVisible\(table\)\)return;[\s\S]*?apply\(table,saved\[key\]\|\|\{\}\)/,
+  'Hidden tables must be skipped before saved widths are applied');
+assert.match(widths,/new MutationObserver\(schedule\)\.observe\(document\.body/,
+  'Visibility changes must schedule a fresh installation pass');
+assert.match(widths,/saved\[key\]=result\.widths\|\|settings/,
+  'Saved settings must use the server-confirmed complete layout');
+const appliedLayouts=[],lifecycleCalls=[];
+const toolbar={querySelector(){return null},append(button){this.button=button}};
+const supplierTable={id:'supplierRegistryTable',dataset:{},tHead:{rows:[{cells:[{}]}]},closest(selector){return selector==='[hidden]'&&this.hidden?this:null},getBoundingClientRect(){return {width:this.hidden?0:470}},hidden:true};
+const lifecycleContext=vm.createContext({
+  document:{body:{dataset:{authRole:'admin'}},querySelectorAll(selector){return selector==='table'?[supplierTable]:[]},createElement(){return {dataset:{},setAttribute(){}}}},
+  dialog:{open:false},saved:{'suppliersView:supplierRegistryBody':{supplier:240,status:150}},
+  CSS:{escape:value=>value},getComputedStyle:()=>({display:'table',visibility:'visible'}),
+  defaultsFor(){lifecycleCalls.push('defaults')},bindResize(){lifecycleCalls.push('resize')},
+  tableKey:()=> 'suppliersView:supplierRegistryBody',
+  apply(table,layout){appliedLayouts.push({table,layout})},toolbarFor:()=>toolbar,
+});
+vm.runInContext(section(widths,'function isVisible(element){','function toolbarFor(table){'),lifecycleContext);
+vm.runInContext(section(widths,'function install(){','function toolbarForFallback('),lifecycleContext);
+lifecycleContext.install();
+assert.equal(appliedLayouts.length,0,'A hidden supplier table must not receive saved widths');
+assert.equal(lifecycleCalls.length,0,'A hidden supplier table must not be measured or bound');
+supplierTable.hidden=false;lifecycleContext.install();
+assert.equal(appliedLayouts.length,1,'The supplier table receives saved settings after becoming visible');
+assert.deepEqual({...appliedLayouts[0].layout},{supplier:240,status:150});
 const widthContext=vm.createContext({WeakMap,Number,Math,Set,Array,document:{createElement(tag){return {style:{},dataset:{},children:[],replaceChildren(...children){this.children=children}}}}});
-vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}",widthContext);
+vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}function isPersonalTable(){return false}function reorderTable(){}function heads(table){return table.tHead.rows[0].cells}function sizesFor(table,widths){return heads(table).map(th=>Number(widths[th.dataset.col])||th.defaultWidth)}function effectiveVisibility(table){return new Set(heads(table).map(th=>th.dataset.col))}function currentOrder(table){return heads(table).map(th=>th.dataset.col)}",widthContext);
+vm.runInContext(section(widths,'function applyLogical(table,widths){','let suppressClickUntil='),widthContext);
 vm.runInContext(section(widths,'function apply(table,widths){','const dialog='),widthContext);
-function widthTable(){const heads=['name','code','status'].map(col=>({dataset:{col},style:{},hidden:false,getBoundingClientRect(){return {width:col==='name'?240:80}}}));const row={cells:heads.map(()=>({style:{},hidden:false}))};return {tHead:{rows:[{cells:heads}]},tBodies:[{rows:[row]}],dataset:{},style:{},group:null,closest:()=>({}),querySelector(){return this.group},prepend(group){this.group=group}}}
+function widthTable(){const columns=['name','code','status'];const heads=columns.map(col=>({dataset:{col},style:{},hidden:false,colSpan:1,rowSpan:1,defaultWidth:col==='name'?240:80,getBoundingClientRect(){return {width:this.defaultWidth}}}));const row={cells:columns.map(()=>({style:{},hidden:false,colSpan:1,rowSpan:1})),dataset:{}};const style={setProperty(name,value){this[name]=value}};return {tHead:{rows:[{cells:heads,dataset:{}}]},tBodies:[{rows:[row]}],dataset:{},style,closest:()=>null,querySelector(){return null}}}
 const widthFixture=widthTable();widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tHead.rows[0].cells[1].style.width,'150px');
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
-assert.equal(widthFixture.group.children[1].style.width,'150px');
 assert.equal(widthFixture.style.width,'470px');
-widthFixture.tBodies[0].rows=[{cells:[{style:{}},{style:{}},{style:{}}]}];widthContext.apply(widthFixture,{code:150});
+widthFixture.tBodies[0].rows=[{cells:[{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1}],dataset:{}}];widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
 const afterReload=widthTable();widthContext.apply(afterReload,{code:150});
-assert.equal(afterReload.group.children[1].style.width,'150px');
+assert.equal(afterReload.tHead.rows[0].cells[1].style.width,'150px');
+assert.equal(afterReload.tBodies[0].rows[0].cells[1].style.width,'150px');
+assert.equal(afterReload.style.width,'470px');
 assert.match(css,/@media\(max-width:1280px\)\{[\s\S]*?\.topbar #mainNav\{order:5/);
 assert.equal(context.displayDateOnly('2026-09-09'),'09.09.2026');
 assert.equal(context.displayDate('2026-09-09'),'09.09.2026');
