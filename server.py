@@ -5661,6 +5661,7 @@ def latest_supplier_submission_name(con, code):
 
 def supplier_profile(supplier_code: str) -> dict:
     """Full local PQM/Bids/registry card for one supplier."""
+    import nazk_registry_evidence
     code = re.sub(r"\D", "", urllib.parse.unquote(supplier_code or ""))
     if not code:
         raise KeyError(supplier_code)
@@ -5773,9 +5774,10 @@ def supplier_profile(supplier_code: str) -> dict:
         nazk = []
         if normalized_managers:
             placeholders = ",".join("?" for _ in normalized_managers)
-            nazk = [dict(row) for row in con.execute(f"""SELECT full_name,offense_name,court_case_number,
-              sentence_date,punishment_start,court_name,decision_url,punishment FROM nazk_registry
+            nazk = [dict(row) for row in con.execute(f"""SELECT source_id,full_name,offense_name,court_case_number,
+              sentence_date,punishment_start,court_name,decision_url,punishment,raw_json FROM nazk_registry
               WHERE NORMALIZE_NAME(full_name) IN ({placeholders}) ORDER BY sentence_date DESC""", tuple(normalized_managers))]
+            nazk = [nazk_registry_evidence.project_decree_fields(row) for row in nazk]
         current_registry_match = bool(current_manager_row and con.execute(
             "SELECT 1 FROM nazk_registry WHERE NORMALIZE_NAME(full_name)=NORMALIZE_NAME(?) LIMIT 1",
             (current_manager_row["manager_name"],),

@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from nazk_registry_evidence import project_decree_fields
+
 NAZK_URL = "https://corruptinfo.nazk.gov.ua/ep/1.0/corrupt/getAllData"
 AMCU_PAGE = "https://amcu.gov.ua/napryami/oskarzhennya-publichnih-zakupivel/zvedeni-vidomosti-shchodo-spotvorennya-rezultativ-torgiv/zvedeni-vidomosti-shchodo-spotvorennia-rezultativ-torhiv-za-2026-rik"
 AMCU_OPEN_DATA_ID = "1b98d102-0b52-44ba-882f-5f6a559ff81c"
@@ -542,7 +544,7 @@ def list_registry(db_path, source, query):
     q = (query.get("search", [""])[0] or "").strip()
     page = max(1, int(query.get("page", [1])[0])); size = min(200, max(1, int(query.get("size", [50])[0])))
     table = "nazk_registry" if source == "nazk" else "amcu_registry"
-    cols = "full_name,offense_name,court_case_number,sentence_date,punishment_start,decision_url" if source == "nazk" else """offender_name,offender_code,decision_no,decision_date,authority,court_case_no,
+    cols = "source_id,full_name,offense_name,court_case_number,sentence_date,punishment_start,decision_url,punishment,raw_json" if source == "nazk" else """offender_name,offender_code,decision_no,decision_date,authority,court_case_no,
       EXISTS(SELECT 1 FROM supplier_registry_summary srs WHERE srs.supplier_code=amcu_registry.offender_code) in_supplier_registry,
       COALESCE((SELECT MAX(srs.active_count) FROM supplier_registry_summary srs WHERE srs.supplier_code=amcu_registry.offender_code),0) active_qualifications,
       EXISTS(SELECT 1 FROM submissions s WHERE s.supplier_code=amcu_registry.offender_code) has_application"""
@@ -580,6 +582,8 @@ def list_registry(db_path, source, query):
         ))
         total = con.execute(f"SELECT COUNT(*) FROM {table}{where}", params).fetchone()[0]
         rows = [dict(r) for r in con.execute(f"SELECT {cols} FROM {table}{where} ORDER BY {order_by} LIMIT ? OFFSET ?", params + [size, (page-1)*size])]
+        if source == "nazk":
+            rows = [project_decree_fields(row) for row in rows]
         date_field = "sentence_date" if source == "nazk" else "decision_date"
         for row in rows:
             row[date_field] = _date_display(row.get(date_field))

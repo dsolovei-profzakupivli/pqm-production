@@ -13,7 +13,8 @@ FAILSAFE_VARIANT=CONTRACT.get('approved_product_variants',{}).get('protocols_and
 UI_VARIANT=CONTRACT.get('approved_product_variants',{}).get('sandbox_ui_transfer_from_bddd5f6')
 CARD_VARIANT=CONTRACT.get('approved_product_variants',{}).get('card_click_dom_stability_v1')
 NAZK_CARD_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_dom_stability_nazk_punishment_v1')
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT) if value]
+NAZK_FULL_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_nazk_full_contract_v1')
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT) if value]
 
 
 def nodes(source):
@@ -49,6 +50,7 @@ def variant_matches(root, changed_paths, *, overrides=None, variant=None):
         'b433bcb290ca9a205910db54f0c9b77af4f02cc7',
         'f8cd1ded13864587e71f8904ee0bcfe24ec5d471',
         '388d6e1c355d3f3947edd7b9d3142ec28624e62f',
+        'ef4da147a221fd01082dc62253a166223ee58ce8',
     }:
         return False
     expected=variant.get('files',{})
@@ -114,7 +116,7 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
         self.assertEqual(set(CONTRACT['approved_product_variants']),{
             'protocols_and_seasonal_cat','protocols_and_seasonal_cat_css_failsafe',
             'sandbox_ui_transfer_from_bddd5f6','card_click_dom_stability_v1',
-            'production_dom_stability_nazk_punishment_v1',
+            'production_dom_stability_nazk_punishment_v1','production_nazk_full_contract_v1',
         })
         self.assertEqual(VARIANT['baseline'],'b433bcb290ca9a205910db54f0c9b77af4f02cc7')
         expected_files={
@@ -176,7 +178,8 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
                          'The historical UI manifest must remain unchanged and not match the fixed tree')
         self.assertFalse(variant_matches(ROOT,CARD_VARIANT['files'],variant=CARD_VARIANT),
                          'Historical DOM stability variant remains unchanged and rejects the integrated tree')
-        self.assertTrue(variant_matches(ROOT,NAZK_CARD_VARIANT['files'],variant=NAZK_CARD_VARIANT))
+        self.assertFalse(variant_matches(ROOT,NAZK_CARD_VARIANT['files'],variant=NAZK_CARD_VARIANT),
+                         'The historical punishment-only manifest must remain pinned and not match the completed integration')
         self.assertFalse(variant_matches(ROOT,list(NAZK_CARD_VARIANT['files'])[:-1],variant=NAZK_CARD_VARIANT))
         self.assertFalse(variant_matches(ROOT,[*NAZK_CARD_VARIANT['files'],'unapproved.py'],variant=NAZK_CARD_VARIANT))
         for name in NAZK_CARD_VARIANT['files']:
@@ -189,7 +192,8 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
     def test_card_dom_stability_variant_is_exact_and_rejects_single_byte_changes(self):
         self.assertEqual(CARD_VARIANT['files']['table_widths_ui.js'],
                          'a7f13dcc3d63cf338d7e3db6f20c5942e752c3bdfb9daf9c1df01b069019332e')
-        self.assertTrue(variant_matches(ROOT,NAZK_CARD_VARIANT['files'],variant=NAZK_CARD_VARIANT))
+        self.assertFalse(variant_matches(ROOT,NAZK_CARD_VARIANT['files'],variant=NAZK_CARD_VARIANT),
+                         'The historical card-only manifest must not match the completed integration')
         test_bytes=(ROOT/'validation/card_click_stability.cjs').read_bytes().replace(b'\r\n',b'\n')
         self.assertEqual(hashlib.sha256(test_bytes).hexdigest(),NAZK_CARD_VARIANT['card_regression_test_sha256'])
         for name in NAZK_CARD_VARIANT['files']:
@@ -200,11 +204,46 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
                                                  overrides={name:changed},variant=NAZK_CARD_VARIANT))
 
     def test_nazk_punishment_variant_binds_api_and_browser_regressions(self):
-        self.assertTrue(variant_matches(ROOT,NAZK_CARD_VARIANT['files'],variant=NAZK_CARD_VARIANT))
+        self.assertFalse(variant_matches(ROOT,NAZK_CARD_VARIANT['files'],variant=NAZK_CARD_VARIANT),
+                         'The historical punishment-only manifest must remain unchanged')
         api_test=(ROOT/'validation/local_release_20260911/test_nazk_workflow.py').read_bytes().replace(b'\r\n',b'\n')
         browser_test=(ROOT/'validation/nazk_punishment_display.cjs').read_bytes().replace(b'\r\n',b'\n')
         self.assertEqual(hashlib.sha256(api_test).hexdigest(),NAZK_CARD_VARIANT['nazk_api_test_sha256'])
         self.assertEqual(hashlib.sha256(browser_test).hexdigest(),NAZK_CARD_VARIANT['nazk_browser_test_sha256'])
+
+    def test_nazk_full_contract_variant_is_exact_and_rejects_single_byte_changes(self):
+        self.assertEqual(NAZK_FULL_VARIANT['baseline'],'ef4da147a221fd01082dc62253a166223ee58ce8')
+        self.assertEqual(NAZK_FULL_VARIANT['server_protected_ast'],
+                         '87571dbdb96201c0985e4a60786b1705013f59a19cba508ca13244d38848fd3d')
+        self.assertEqual(NAZK_FULL_VARIANT['server_variant_excluded_functions'],[
+            *CARD_VARIANT['server_variant_excluded_functions'],'supplier_profile',
+        ])
+        self.assertEqual(NAZK_FULL_VARIANT['binary_files'],[])
+        self.assertEqual(set(NAZK_FULL_VARIANT['files']),{
+            'app.js','reference_directories.py','server.py','nazk_registry_evidence.py','edr_sync_v2.py',
+        })
+        self.assertEqual(NAZK_FULL_VARIANT['files'],{
+            'app.js':'a917007497bb516e8e91e7e8a4d68bb5acad5d8d97500ef7dba71931f5b3d720',
+            'reference_directories.py':'f2873e6abfe42e543ed0910c9c97c6aabfcfe089e13875bdb450c221390edf11',
+            'server.py':'33e63c5d6aed71d947ee6c1f0070187821578e5485e2f5ae8d394081eb41f4c6',
+            'nazk_registry_evidence.py':'7cba0685d906943f68a5c970ce9ee627090af75761512886834797eebec0f395',
+            'edr_sync_v2.py':'9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb',
+        })
+        self.assertEqual(NAZK_FULL_VARIANT['api_test_sha256'],
+                         '829db6538fa96ac4cd4a3fc67c61c12d484d259a739e6b820ccf8760885c01fe')
+        self.assertEqual(NAZK_FULL_VARIANT['browser_test_sha256'],
+                         '0c0dee6bc2323329170eb38cf3602af040bc0491c750e81fdd229980e087328e')
+        self.assertTrue(variant_matches(ROOT,NAZK_FULL_VARIANT['files'],variant=NAZK_FULL_VARIANT))
+        for name in NAZK_FULL_VARIANT['files']:
+            with self.subTest(name=name):
+                data=(ROOT/name).read_bytes()
+                changed=bytes([data[0]^1])+data[1:]
+                self.assertFalse(variant_matches(ROOT,NAZK_FULL_VARIANT['files'],
+                                                 overrides={name:changed},variant=NAZK_FULL_VARIANT))
+        for name,key in [('validation/local_release_20260911/test_nazk_full_contract.py','api_test_sha256'),
+                         ('validation/nazk_full_contract_browser.cjs','browser_test_sha256')]:
+            data=(ROOT/name).read_bytes().replace(b'\r\n',b'\n')
+            self.assertEqual(hashlib.sha256(data).hexdigest(),NAZK_FULL_VARIANT[key])
 
     def test_operational_lifecycle_and_write_algorithms_unchanged(self):
         source=nodes((ROOT/'operational_tasks.py').read_text(encoding='utf-8'))

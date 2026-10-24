@@ -146,6 +146,27 @@
       "card_regression_test_sha256": "4de8495963ece4d7ad4615477f4684826e2b88a8ccc218aaf16c04b6dabaaee7",
       "nazk_api_test_sha256": "e05b066ef6886d46ddb7bf17db750b7b84ebdc1d61289565f301f2daf32a0b7b",
       "nazk_browser_test_sha256": "d45178f0687cfb589d0f82a2debc3a88712a792f6cdb36539fcb928b28a0c303"
+    },
+    "production_nazk_full_contract_v1": {
+      "baseline": "ef4da147a221fd01082dc62253a166223ee58ce8",
+      "server_protected_ast": "87571dbdb96201c0985e4a60786b1705013f59a19cba508ca13244d38848fd3d",
+      "server_variant_excluded_functions": [
+        "mutation_allowed",
+        "Handler._do_POST",
+        "Handler._do_PATCH",
+        "_validated_profile_columns",
+        "supplier_profile"
+      ],
+      "binary_files": [],
+      "files": {
+        "app.js": "a917007497bb516e8e91e7e8a4d68bb5acad5d8d97500ef7dba71931f5b3d720",
+        "reference_directories.py": "f2873e6abfe42e543ed0910c9c97c6aabfcfe089e13875bdb450c221390edf11",
+        "server.py": "33e63c5d6aed71d947ee6c1f0070187821578e5485e2f5ae8d394081eb41f4c6",
+        "nazk_registry_evidence.py": "7cba0685d906943f68a5c970ce9ee627090af75761512886834797eebec0f395",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb"
+      },
+      "api_test_sha256": "829db6538fa96ac4cd4a3fc67c61c12d484d259a739e6b820ccf8760885c01fe",
+      "browser_test_sha256": "0c0dee6bc2323329170eb38cf3602af040bc0491c750e81fdd229980e087328e"
     }
   }
 }
