@@ -1,33 +1,33 @@
-"""Read-only provenance for the deployed protocol name selection rules.
-
-No qualification-submission fallback, manual override, storage, or eligibility
-rules are introduced. Document and download filename priorities differ on the
-deployed baseline and must remain separate until explicitly approved otherwise.
-"""
+"""Resolve current EDR names and safe fallbacks for newly generated documents."""
+import document_quotes
 
 
 def resolve(item, normalize):
     verified=item.get('supplier_verified') or {}
-    defendant=item.get('defendant_name') or ''
+    def usable(value):
+        text=str(value or '').strip()
+        return '' if text in {'—','–','-'} else text
+    defendant=usable(item.get('defendant_name'))
     def value(text,source,path):
-        return {'value':text,'source':source,'source_path':path,
+        return {'value':document_quotes.normalize_output_quotes(text),'source':source,'source_path':path,
                 'source_label':{'edr':'З ЄДР (збережені дані PQM)',
                   'prozorro_violation':'Зі звернення Prozorro',
                   'missing':'Не визначено'}[source]}
-    full_raw=verified.get('full_name') or defendant
+    edr_full=usable(verified.get('full_name'))
+    edr_short=usable(verified.get('short_name'))
+    full_raw=edr_full or defendant
     full=value(normalize(full_raw),
-               'edr' if verified.get('full_name') else ('prozorro_violation' if defendant else 'missing'),
-               'supplier_edr_profiles.full_name' if verified.get('full_name') else 'defendants[0]')
-    if verified.get('short_name'):
-        short=value(normalize(verified['short_name']),'edr','supplier_edr_profiles.short_name')
+               'edr' if edr_full else ('prozorro_violation' if defendant else 'missing'),
+               'supplier_edr_profiles.full_name' if edr_full else 'defendants[0]')
+    if edr_short:
+        short=value(normalize(edr_short),'edr','supplier_edr_profiles.short_name')
     else:
         short={**full,'value':normalize(full['value'])}
-    # Filename first_name() ignores whitespace-only strings; document selection
-    # above retains the deployed truthiness + normalization behavior exactly.
-    filename_raw=next((str(v).strip() for v in (verified.get('short_name'),defendant)
-                       if v is not None and str(v).strip()),'')
-    if str(verified.get('short_name') or '').strip():
+    filename_raw=edr_short or edr_full or defendant
+    if edr_short:
         filename=value(normalize(filename_raw),'edr','supplier_edr_profiles.short_name')
+    elif edr_full:
+        filename=value(normalize(filename_raw),'edr','supplier_edr_profiles.full_name')
     else:
         filename=value(normalize(filename_raw),'prozorro_violation' if filename_raw else 'missing','defendants[0]')
     return {'full_name':full,'short_name':short,'filename_name':filename,

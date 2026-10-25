@@ -6,6 +6,7 @@ import background_jobs
 import auth_access
 import table_widths
 import protocol_supplier_names
+import document_quotes
 import navigation_settings
 import supplier_activity
 import supplier_registry_integration
@@ -6753,6 +6754,8 @@ def list_violation_reports(params: dict) -> dict:
         item["blocking_marker"] = warning_markers.get(item["report_id"])
         import violation_protocol_summary
         saved_review=protocol_reviews.get(item['id'],{})
+        item["decision_justification"] = normalize_justification_text(
+            saved_review.get("decision_justification"))
         projected_review=dict(saved_review)
         if raw.get('decisions'):projected_review['review_status']='completed'
         item['protocol_summary']=violation_protocol_summary.present(
@@ -8567,7 +8570,7 @@ def _violation_protocol_filename(item: dict, gate: dict) -> str:
     }
     cleaned = {}
     for label, raw in fields.items():
-        value = re.sub(r'\s+', ' ', str(raw or '')).strip()
+        value = document_quotes.normalize_output_quotes(re.sub(r'\s+', ' ', str(raw or '')).strip())
         value = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', '-', value).strip(' .')
         if not value or not value.strip('- '):
             raise ValueError("Не вказано обов’язковий реквізит назви DOCX: " + label)
@@ -8699,7 +8702,8 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
             review.get("decision_justification")),
         "review_notes": str(review.get("review_notes") or ""),
     }
-    protocol_metadata = _resolve_violation_protocol_metadata(item, values)
+    values = document_quotes.normalize_output_tree(values)
+    protocol_metadata = document_quotes.normalize_output_tree(_resolve_violation_protocol_metadata(item, values))
     protocol_metadata["protocol_type"] = gate["protocol_type"]
     protocol_metadata["procurement_publication"] = publication_metadata
     protocol_metadata["protocol_download"] = {"filename": download_filename}

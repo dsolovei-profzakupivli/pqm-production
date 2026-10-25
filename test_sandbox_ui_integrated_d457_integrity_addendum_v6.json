@@ -1,0 +1,49 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v6",
+  "baseline_sha": "3fc2b2977073f56c570941fbcdff49b1a187fb7e",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v5.json",
+  "base_manifest_sha256": "1f210bc192fcf3080a6027a7fca28a45fe8403def013e95088e21be7e4495cee",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "permanent_card_declension_actions_for_customer_and_supplier",
+    "read_only_declension_forms_for_viewers_and_existing_editor_for_managers",
+    "preserve_review_card_draft_while_saving_declension_override",
+    "browser_regressions_cover_one_click_roles_themes_and_saved_forms",
+    "new_protocol_docx_uses_saved_card_declension_overrides_and_pdf_uses_current_docx"
+  ],
+  "product_overrides": {
+    "app.js": {
+      "sha256": "af2c299db38df40fcd6bd756470052c25c4e036381611353cee5b0cfbc479bce"
+    },
+    "styles.css": {
+      "sha256": "fc60ab3784913b0abc835c4c0c277251a521b793bc565548604668153c310c45"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "13cd6c22d499dea0d4b15a64c155ef9ae125d5b5197692a55a25b871dc073b8f"
+    }
+  },
+  "protected_overrides": {
+    "app.js": {
+      "sha256": "af2c299db38df40fcd6bd756470052c25c4e036381611353cee5b0cfbc479bce",
+      "halloween_normalized_sha256": "af2c299db38df40fcd6bd756470052c25c4e036381611353cee5b0cfbc479bce",
+      "personal_theme_normalized_sha256": "d1e1990d2e8837d2d451038e1efd4f970e5d5cb51b830a4a05c6beb0df28ff6d"
+    }
+  },
+  "guarded_overrides": {
+    "validation/appeals_declension_card_browser.cjs": {
+      "sha256": "0c5e321dbe8253848929e26d9c9652b79895220b559b6477267fde7bf3ee0225"
+    },
+    "validation/docker_release_gate.py": {
+      "sha256": "b197b93cb973b83921ffe2649b0d681f269af5414e74e718c69cb5a0f5967e5c"
+    },
+    "validation/local_release_20260911/test_card_declension_generation.py": {
+      "sha256": "4a25b81c5c9c2e5e77556f86592099b4a81ba82efac0ff220df7d93158a5c25f"
+    },
+    "validation/sandbox_appeals_declension_ui.cjs": {
+      "sha256": "ed212c6caa4e05efaaa19989f162ac7ce199e98e85be4770eaddc659127e9b01"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "3f5355348c0f3389fac1564e48b28643b50aafd777a3f62ae9da03461daae568"
+    }
+  }
+}

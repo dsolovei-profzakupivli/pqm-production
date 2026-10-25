@@ -41,8 +41,13 @@ class NazkIntegrityTests(unittest.TestCase):
                              if contract.get("variant_id") == "sandbox-admin-officer-link-v3")
         self.assertEqual(admin_variant["variant_id"], "sandbox-admin-officer-link-v3")
         self.assertFalse(integrity.manifest_tree_matches(admin_variant))
+        historical_integrated = next(contract for contract in self.contracts
+                                     if contract.get("variant_id") == integrity.UI_CANDIDATE_V4_ID)
+        self.assertEqual("d457aae211bc0b88cdc66414b9e5765ac7ba350d",
+                         historical_integrated["baseline_sha"])
+        self.assertFalse(integrity.manifest_tree_matches(historical_integrated))
         integrated = self.contracts[-1]
-        self.assertEqual(integrated["variant_id"], integrity.UI_CANDIDATE_V5_ID)
+        self.assertEqual(integrated["variant_id"], integrity.UI_CANDIDATE_V8_ID)
         self.assertTrue(integrity.manifest_tree_matches(integrated))
         self.assertFalse(integrity.manifest_tree_matches(self.nazk))
         self.assertTrue(integrity.exact_variant_tree_matches())

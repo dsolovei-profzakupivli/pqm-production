@@ -35,7 +35,7 @@ const twoCustomer=[entry('customer','resolved'),customer,entry('customer','unres
   const saved=[];let returned=0,next=null,lastRendered='';
   Object.assign(context,{
     $:selector=>selector==='#declensionDialog'?{close:()=>{}}:selector==='#declensionSearch'?{value:''}:{value:formValues[selector]||''},
-    API:'/api',editingDeclensionId:null,declensionReturnContext:context.selection.selection,declensionItems:[],
+    API:'/api',editingDeclensionId:null,declensionEditorReadOnly:false,declensionReturnContext:context.selection.selection,declensionItems:[],
     request:async(_url,options)=>{saved.push(JSON.parse(options.body))},
     loadDeclensionOverrides:async()=>{context.declensionItems=saved.map(row=>({...row}))},
     openDeclensionEditor:(item,grammaticalCase,requestContext)=>{next={item,grammaticalCase,requestContext}},

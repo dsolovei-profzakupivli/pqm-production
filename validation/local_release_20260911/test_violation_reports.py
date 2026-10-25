@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import server
+import violation_protocol_summary
 from declension import DeclensionResult
 from violation_text import normalize_justification_text
 
@@ -43,6 +44,39 @@ class ViolationReportTests(unittest.TestCase):
     def tearDown(self):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
+
+    def test_list_api_projects_only_saved_justification_without_generation_or_writes(self):
+        fixtures = [
+            ("pending", "contractBreach", "За результатами розгляду звернення Замовника встановлено наступне.\n\nСтаном на 12.10.2026 строк укладення договору сплив, але договір не укладено."),
+            ("satisfied", "signingRefusal", "У цій закупівлі письмову відмову надано 18.10.2026 після граничної дати 15.10.2026."),
+            ("declined", "goodsNonCompliance", "До звернення не додано рішення суду, що набрало законної сили.")]
+        for index, (status, reason, saved) in enumerate(fixtures, 1):
+            payload = report_payload()
+            payload.update({"id": f"saved-list-{index}", "violationReportID": f"UA-D-SAVED-{index}", "status": status})
+            payload["details"]["reason"] = reason
+            server.save_violation_report(payload)
+            with server.db() as con:
+                con.execute("""INSERT INTO violation_report_reviews
+                    (report_id,review_status,decision_justification,updated_at)
+                    VALUES (?,?,?,?)""",
+                    (f"saved-list-{index}", "in_review", saved, "2026-10-25T10:00:00+03:00"))
+        with server.db() as con:
+            before = [tuple(row) for row in con.execute(
+                "SELECT report_id,review_status,decision_justification,updated_at "
+                "FROM violation_report_reviews ORDER BY report_id")]
+        with patch.object(server, "build_violation_decision_justification",
+                          side_effect=AssertionError("list must not generate justification")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        projected = {row["id"]: row["decision_justification"] for row in result["items"]}
+        for index, (_, _, saved) in enumerate(fixtures, 1):
+            self.assertEqual(projected[f"saved-list-{index}"], normalize_justification_text(saved))
+        self.assertEqual(projected.get("report-internal", ""), "")
+        with server.db() as con:
+            after = [tuple(row) for row in con.execute(
+                "SELECT report_id,review_status,decision_justification,updated_at "
+                "FROM violation_report_reviews ORDER BY report_id")]
+        self.assertEqual(after, before)
 
     def _individual_protocol_fixture(self, reason):
         return {
@@ -2364,8 +2398,10 @@ class ViolationProtocolFilenameTests(unittest.TestCase):
 
     def test_missing_supplier_short_uses_exact_report_full_name(self):
         item = self.item()
-        item["supplier_verified"] = {"full_name": "ІНША НАЗВА"}
-        self.assertIn(item["defendant_name"], server._violation_protocol_filename(item, self.gate()))
+        item["supplier_verified"] = {"full_name": "АКТУАЛЬНА ПОВНА НАЗВА З ЄДР", "short_name": "—"}
+        name = server._violation_protocol_filename(item, self.gate())
+        self.assertIn(item["supplier_verified"]["full_name"], name)
+        self.assertNotIn(item["defendant_name"], name)
 
     def test_sanitization_preserves_unicode_punctuation_and_blocks_traversal(self):
         item = self.item()

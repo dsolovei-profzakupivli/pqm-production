@@ -135,6 +135,60 @@ UI_CANDIDATE_V4_ID = "sandbox-ui-integrated-d457-v4"
 UI_CANDIDATE_V5_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v5.json"
 UI_CANDIDATE_V5_DELTA_SHA256 = "1f210bc192fcf3080a6027a7fca28a45fe8403def013e95088e21be7e4495cee"
 UI_CANDIDATE_V5_ID = "sandbox-ui-integrated-d457-v5"
+
+UI_CANDIDATE_V6_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v6.json"
+UI_CANDIDATE_V6_DELTA_SHA256 = "48d59f1e4ae91a7b56c5610b6832be94549414cf470202a7941b3d2b9913c68d"
+UI_CANDIDATE_V6_ID = "sandbox-ui-integrated-d457-v6"
+UI_CANDIDATE_V7_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v7.json"
+UI_CANDIDATE_V7_DELTA_SHA256 = "1ecc1a6c40e06eea3f4911c04e07b6357a867dc1e3b0aee2bcdce21941609b79"
+UI_CANDIDATE_V7_ID = "sandbox-ui-integrated-d457-v7"
+UI_CANDIDATE_V8_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v8.json"
+UI_CANDIDATE_V8_DELTA_SHA256 = "cd9d0225591ff9d8ba588f18032326aacd802ab8ccc052c26c701825e8a41143"
+UI_CANDIDATE_V8_ID = "sandbox-ui-integrated-d457-v8"
+UI_CANDIDATE_V6_SCOPE = {'browser_regressions_cover_one_click_roles_themes_and_saved_forms',
+ 'new_protocol_docx_uses_saved_card_declension_overrides_and_pdf_uses_current_docx',
+ 'permanent_card_declension_actions_for_customer_and_supplier',
+ 'preserve_review_card_draft_while_saving_declension_override',
+ 'read_only_declension_forms_for_viewers_and_existing_editor_for_managers'}
+UI_CANDIDATE_V6_PRODUCT_OVERRIDES = {'app.js', 'test_sandbox_ui_integrated_d457_integrity.py', 'styles.css'}
+UI_CANDIDATE_V6_PROTECTED_OVERRIDES = {'app.js'}
+UI_CANDIDATE_V6_GUARD_OVERRIDES = {'validation/appeals_declension_card_browser.cjs',
+ 'validation/docker_release_gate.py',
+ 'validation/local_release_20260911/test_card_declension_generation.py',
+ 'validation/run_local_release.py',
+ 'validation/sandbox_appeals_declension_ui.cjs'}
+UI_CANDIDATE_V7_SCOPE = {'collapse_protocol_name_provenance_block_by_default',
+ 'normalize_balanced_quotes_in_new_protocol_documents_and_metadata',
+ 'use_full_current_edr_name_when_short_name_is_missing_or_placeholder'}
+UI_CANDIDATE_V7_PRODUCT_OVERRIDES = {'app.js',
+ 'document_quotes.py',
+ 'protocol_supplier_names.py',
+ 'server.py',
+ 'styles.css',
+ 'test_sandbox_ui_integrated_d457_integrity.py'}
+UI_CANDIDATE_V7_PROTECTED_OVERRIDES = {'app.js', 'server.py'}
+UI_CANDIDATE_V7_GUARD_OVERRIDES = {'test_document_quotes.py',
+ 'test_protocol_supplier_names.py',
+ 'validation/docker_release_gate.py',
+ 'validation/protocol_names_card_browser.cjs'}
+UI_CANDIDATE_V8_SCOPE = {'keep_historical_integrity_suites_version_aware_for_integrated_ui_v8',
+ 'preserve_table_preferences_and_appeal_card_actions',
+ 'project_saved_appeal_justification_in_list_without_regeneration',
+ 'show_adaptive_scenario_summary_without_control_scenario_heading',
+ 'show_concise_saved_justification_with_read_only_one_click_viewer'}
+UI_CANDIDATE_V8_PRODUCT_OVERRIDES = {'app.js',
+ 'index.html',
+ 'server.py',
+ 'styles.css',
+ 'test_sandbox_admin_officer_link_integrity.py',
+ 'test_sandbox_nazk_columns_integrity.py',
+ 'test_sandbox_ui_integrated_d457_integrity.py'}
+UI_CANDIDATE_V8_PROTECTED_OVERRIDES = {'app.js', 'server.py'}
+UI_CANDIDATE_V8_GUARD_OVERRIDES = {'test_sandbox_admin_officer_link_integrity.py',
+ 'test_sandbox_nazk_columns_integrity.py',
+ 'validation/appeals_justification_browser.cjs',
+ 'validation/docker_release_gate.py',
+ 'validation/local_release_20260911/test_violation_reports.py'}
 UI_CANDIDATE_PRODUCTS = {
     "app.js", "auth_access.py", "auth_ui.js", "edr_sync_v2.py",
     "history_columns.js", "index.html", "reference_directories.py", "server.py", "styles.css",
@@ -446,7 +500,13 @@ def load_contracts():
     contracts.append(ui_v3)
     ui_v4 = load_ui_candidate_v4(ui_v3)
     contracts.append(ui_v4)
-    contracts.append(load_ui_candidate_v5(ui_v4))
+    ui_v5 = load_ui_candidate_v5(ui_v4)
+    contracts.append(ui_v5)
+    ui_v6 = load_ui_candidate_v6(ui_v5)
+    contracts.append(ui_v6)
+    ui_v7 = load_ui_candidate_v7(ui_v6)
+    contracts.append(ui_v7)
+    contracts.append(load_ui_candidate_v8(ui_v7))
     return contracts
 
 
@@ -593,6 +653,99 @@ def load_ui_candidate_v5(ui_v4):
     candidate["product_files"].update(delta["product_overrides"])
     return candidate
 
+
+
+def _load_ui_delta(path, expected_sha):
+    raw = path.read_bytes()
+    if sha256(raw.replace(b"\r\n", b"\n")) != expected_sha:
+        raise AssertionError(f"Changed pinned integrated Sandbox UI addendum: {path.name}")
+    return json.loads(raw.decode("utf-8"))
+
+
+def load_ui_candidate_v6(ui_v5):
+    delta = _load_ui_delta(UI_CANDIDATE_V6_DELTA, UI_CANDIDATE_V6_DELTA_SHA256)
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "protected_overrides", "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V6_ID or
+            delta.get("baseline_sha") != "3fc2b2977073f56c570941fbcdff49b1a187fb7e" or
+            delta.get("base_manifest") != UI_CANDIDATE_V5_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V5_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V6_SCOPE or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V6_PRODUCT_OVERRIDES or
+            set(delta.get("protected_overrides", {})) != UI_CANDIDATE_V6_PROTECTED_OVERRIDES or
+            set(delta.get("guarded_overrides", {})) != UI_CANDIDATE_V6_GUARD_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v6 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v5)
+    candidate["variant_id"] = UI_CANDIDATE_V6_ID
+    candidate["baseline_sha"] = delta["baseline_sha"]
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["protected_files"].update(delta["protected_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
+
+
+def load_ui_candidate_v7(ui_v6):
+    delta = _load_ui_delta(UI_CANDIDATE_V7_DELTA, UI_CANDIDATE_V7_DELTA_SHA256)
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "protected_overrides", "remove_from_guarded_files", "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V7_ID or
+            delta.get("baseline_sha") != "3fc2b2977073f56c570941fbcdff49b1a187fb7e" or
+            delta.get("base_manifest") != UI_CANDIDATE_V6_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V6_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V7_SCOPE or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V7_PRODUCT_OVERRIDES or
+            set(delta.get("protected_overrides", {})) != UI_CANDIDATE_V7_PROTECTED_OVERRIDES or
+            set(delta.get("remove_from_guarded_files", [])) != {"protocol_supplier_names.py"} or
+            set(delta.get("guarded_overrides", {})) != UI_CANDIDATE_V7_GUARD_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v7 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v6)
+    candidate["variant_id"] = UI_CANDIDATE_V7_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["protected_files"].update(delta["protected_overrides"])
+    for path in delta["remove_from_guarded_files"]:
+        if path not in candidate["guarded_files"]:
+            raise AssertionError(f"Expected promoted v7 test file is not guarded: {path}")
+        del candidate["guarded_files"][path]
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    for path, expected in delta["protected_overrides"].items():
+        if (expected.get("sha256") != expected.get("halloween_normalized_sha256") or
+                not expected.get("personal_theme_normalized_sha256")):
+            raise AssertionError(f"Integrated Sandbox UI v7 does not preserve protected projections: {path}")
+    return candidate
+
+
+def load_ui_candidate_v8(ui_v7):
+    delta = _load_ui_delta(UI_CANDIDATE_V8_DELTA, UI_CANDIDATE_V8_DELTA_SHA256)
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "protected_overrides", "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V8_ID or
+            delta.get("baseline_sha") != "3fc2b2977073f56c570941fbcdff49b1a187fb7e" or
+            delta.get("base_manifest") != UI_CANDIDATE_V7_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V7_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V8_SCOPE or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V8_PRODUCT_OVERRIDES or
+            set(delta.get("protected_overrides", {})) != UI_CANDIDATE_V8_PROTECTED_OVERRIDES or
+            set(delta.get("guarded_overrides", {})) != UI_CANDIDATE_V8_GUARD_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v8 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v7)
+    candidate["variant_id"] = UI_CANDIDATE_V8_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["protected_files"].update(delta["protected_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    for path, expected in delta["protected_overrides"].items():
+        if (expected.get("sha256") != expected.get("halloween_normalized_sha256") or
+                not expected.get("personal_theme_normalized_sha256")):
+            raise AssertionError(f"Integrated Sandbox UI v8 does not preserve protected projections: {path}")
+    return candidate
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()

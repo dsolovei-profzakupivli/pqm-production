@@ -43,6 +43,7 @@ def main():
             shutil.copy2(fixture_source,fixture_target/fixture_name)
         # The runner is itself pinned by the column-width integrity variant.
         shutil.copy2(ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
+        shutil.copy2(ROOT/'validation/docker_release_gate.py',root/'validation/docker_release_gate.py')
         # Node regressions run against this same disposable source fixture.
         for source in (ROOT/'validation').glob('*.cjs'):
             shutil.copy2(source,root/'validation'/source.name)

@@ -17,10 +17,18 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                                    ("product_files", "protected_files", "guarded_files")))
 
     def test_exact_candidate_matches_and_historical_admin_contract_is_not_rewritten(self):
-        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V5_ID)
-        self.assertEqual(self.contract["baseline_sha"], "d457aae211bc0b88cdc66414b9e5765ac7ba350d")
+        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V8_ID)
+        self.assertEqual(self.contract["baseline_sha"], "3fc2b2977073f56c570941fbcdff49b1a187fb7e")
         raw = integrity.UI_CANDIDATE_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), integrity.UI_CANDIDATE_DELTA_SHA256)
+        v5_raw = integrity.UI_CANDIDATE_V5_DELTA.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(v5_raw).hexdigest(), integrity.UI_CANDIDATE_V5_DELTA_SHA256)
+        v6_raw = integrity.UI_CANDIDATE_V6_DELTA.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(v6_raw).hexdigest(), integrity.UI_CANDIDATE_V6_DELTA_SHA256)
+        v7_raw = integrity.UI_CANDIDATE_V7_DELTA.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(v7_raw).hexdigest(), integrity.UI_CANDIDATE_V7_DELTA_SHA256)
+        v8_raw = integrity.UI_CANDIDATE_V8_DELTA.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(v8_raw).hexdigest(), integrity.UI_CANDIDATE_V8_DELTA_SHA256)
         self.assertTrue(integrity.manifest_tree_matches(self.contract))
         self.assertTrue(integrity.exact_variant_tree_matches())
         previous_v2 = next(c for c in integrity.load_contracts()
@@ -30,18 +38,23 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
         self.assertEqual("f15ba9d14a52f131e7a2b1d9e84ea920667dfeefe4143ef27266d7d4c4795521",
                          previous_v2["product_files"]["validation/sandbox_editable_smoke.py"]["sha256"])
         self.assertFalse(integrity.manifest_tree_matches(previous_v2))
-        v4_raw = integrity.UI_CANDIDATE_V4_DELTA.read_bytes().replace(b"\r\n", b"\n")
-        self.assertEqual(hashlib.sha256(v4_raw).hexdigest(), integrity.UI_CANDIDATE_V4_DELTA_SHA256)
-        previous_v4 = next(c for c in integrity.load_contracts()
-                           if c["variant_id"] == integrity.UI_CANDIDATE_V4_ID)
-        self.assertFalse(integrity.manifest_tree_matches(previous_v4))
         previous = next(c for c in integrity.load_contracts()
                         if c["variant_id"] == "sandbox-admin-officer-link-v3")
         self.assertFalse(integrity.manifest_tree_matches(previous))
         historical_v1 = next(c for c in integrity.load_contracts()
                              if c["variant_id"] == integrity.UI_CANDIDATE_ID)
-        self.assertEqual(historical_v1["baseline_sha"], self.contract["baseline_sha"])
+        self.assertEqual(historical_v1["baseline_sha"], "d457aae211bc0b88cdc66414b9e5765ac7ba350d")
+        self.assertNotEqual(historical_v1["baseline_sha"], self.contract["baseline_sha"])
         self.assertFalse(integrity.manifest_tree_matches(historical_v1))
+        historical_v4 = next(c for c in integrity.load_contracts()
+                             if c["variant_id"] == integrity.UI_CANDIDATE_V4_ID)
+        self.assertFalse(integrity.manifest_tree_matches(historical_v4))
+        historical_v5 = next(c for c in integrity.load_contracts()
+                             if c["variant_id"] == integrity.UI_CANDIDATE_V5_ID)
+        self.assertFalse(integrity.manifest_tree_matches(historical_v5))
+        historical_v6 = next(c for c in integrity.load_contracts()
+                             if c["variant_id"] == integrity.UI_CANDIDATE_V6_ID)
+        self.assertFalse(integrity.manifest_tree_matches(historical_v6))
         for path in self.paths:
             self.assertTrue(integrity.exact_variant_file_matches(path, (ROOT / path).read_bytes()), path)
 
@@ -72,14 +85,18 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                     integrity.UI_CANDIDATE_V2_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V3_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V4_PRODUCT_OVERRIDES |
-                    integrity.UI_CANDIDATE_V5_PRODUCT_OVERRIDES)
+                    integrity.UI_CANDIDATE_V5_PRODUCT_OVERRIDES |
+                    integrity.UI_CANDIDATE_V6_PRODUCT_OVERRIDES |
+                    integrity.UI_CANDIDATE_V7_PRODUCT_OVERRIDES |
+                    integrity.UI_CANDIDATE_V8_PRODUCT_OVERRIDES)
         self.assertEqual(set(self.contract["product_files"]), expected)
         self.assertEqual(set(self.contract["approved_scope"]) - set(
             next(c for c in integrity.load_contracts()
                  if c["variant_id"] == "sandbox-admin-officer-link-v3")["approved_scope"]),
             integrity.UI_CANDIDATE_SCOPE | integrity.UI_CANDIDATE_V2_SCOPE |
             integrity.UI_CANDIDATE_V3_SCOPE | integrity.UI_CANDIDATE_V4_SCOPE |
-            integrity.UI_CANDIDATE_V5_SCOPE)
+            integrity.UI_CANDIDATE_V5_SCOPE | integrity.UI_CANDIDATE_V6_SCOPE |
+            integrity.UI_CANDIDATE_V7_SCOPE | integrity.UI_CANDIDATE_V8_SCOPE)
         for path in (integrity.ADMIN_HISTORY_CONTRACT, integrity.ADMIN_CONTRACT,
                      integrity.ADMIN_V3_DELTA):
             self.assertTrue(path.is_file())
