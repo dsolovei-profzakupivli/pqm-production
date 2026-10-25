@@ -37,8 +37,10 @@ class AdminOfficerLinkIntegrityTests(unittest.TestCase):
                           integrity.UI_CANDIDATE_V7_ID, integrity.UI_CANDIDATE_V8_ID,
                           integrity.UI_CANDIDATE_V9_ID, integrity.UI_CANDIDATE_V10_ID,
                           integrity.UI_CANDIDATE_V11_ID],
-                         [contract['variant_id'] for contract in contracts[-7:]])
-        self.assertEqual(integrity.UI_CANDIDATE_V11_ID, contracts[-1]['variant_id'])
+                         [contract['variant_id'] for contract in contracts[-8:-1]])
+        self.assertEqual(integrity.UI_CANDIDATE_V11_ID, contracts[-2]['variant_id'])
+        self.assertEqual(integrity.PREVIEW_VARIANT_ID, contracts[-1]['variant_id'])
+        self.assertEqual(integrity.PREVIEW_BASELINE, contracts[-1]['baseline_sha'])
 
     def test_exact_admin_variant_rejects_single_byte_mutations_in_product_and_guards(self):
         contract = integrity.load_contracts()[-1]

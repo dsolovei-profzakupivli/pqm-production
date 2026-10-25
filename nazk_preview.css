@@ -1,0 +1,26 @@
+/* Scoped additions only. Existing theme, modal, column and DOM stability rules remain intact. */
+.nazk-preview-nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}
+.nazk-preview-nav[hidden],#nazkPreviewPanel[hidden]{display:none!important}
+.nazk-preview-nav button[aria-pressed=true]{border-color:#3488d5;box-shadow:inset 0 -2px #3488d5}
+#nazkPreviewPanel{color:inherit;min-width:0}
+#nazkPreviewPanel .nazk-preview-note{border:1px solid #8295a6;border-radius:8px;padding:12px}
+#nazkPreviewPanel .nazk-preview-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}
+#nazkPreviewPanel .nazk-preview-kpis>div{border:1px solid #8295a6;border-radius:8px;padding:14px}
+#nazkPreviewPanel .nazk-preview-kpis strong{display:block;font-size:28px;margin-top:8px}
+#nazkPreviewPanel .nazk-preview-filters{display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin:16px 0}
+#nazkPreviewPanel label{display:grid;gap:5px;min-width:160px;max-width:100%}
+#nazkPreviewPanel select,#nazkPreviewPanel input{max-width:100%;min-height:36px}
+#nazkPreviewPanel .nazk-preview-scroll{max-width:100%;overflow:auto;border:1px solid #8295a6;border-radius:8px}
+#nazkPreviewPanel table{border-collapse:collapse;width:100%;min-width:1240px;color:inherit}
+#nazkPreviewPanel th,#nazkPreviewPanel td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #8295a6;white-space:normal;overflow-wrap:anywhere}
+#nazkPreviewPanel th{font-size:12px}
+#nazkPreviewPanel td:first-child{min-width:230px}
+#nazkPreviewPanel td:nth-child(7){min-width:230px}
+#nazkPreviewPanel td:last-child{min-width:150px}
+#nazkPreviewPanel small{display:block;color:inherit;margin-top:5px;font-size:12px}
+#nazkPreviewPanel .nazk-preview-supplier{font-weight:650;text-align:left}
+#nazkPreviewPanel .nazk-preview-badge{font-weight:650}
+#nazkPreviewPanel button{margin:2px}
+#nazkPreviewPanel .nazk-preview-footer{display:flex;gap:8px;align-items:center;margin:12px 0;flex-wrap:wrap}
+#nazkPreviewPanel :focus-visible,.nazk-preview-nav :focus-visible{outline:2px solid #3488d5;outline-offset:2px}
+@media(max-width:750px){#nazkPreviewPanel .nazk-preview-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}#nazkPreviewPanel .nazk-preview-filters label{width:100%}}

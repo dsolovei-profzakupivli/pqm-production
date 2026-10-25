@@ -9,6 +9,7 @@ import protocol_supplier_names
 import document_quotes
 import navigation_settings
 import supplier_activity
+import nazk_preview
 import supplier_registry_integration
 import legacy_google_verification_preview
 import legacy_google_verification_overlap_audit
@@ -10480,7 +10481,8 @@ class Handler(BaseHTTPRequestHandler):
             session = AUTH_SESSIONS.get(token)
             if session and session["expires_at"] > time.time() and accounts.get(session["username"], {}).get("active", False):
                 seen_now = time.time(); session["last_seen"] = seen_now
-                if seen_now - float(session.get("last_seen_persisted") or 0) >= 60:
+                if (seen_now - float(session.get("last_seen_persisted") or 0) >= 60
+                        and not (self.command == "GET" and path == "/api/operational-tasks/nazk-preview")):
                     session["last_seen_persisted"] = seen_now
                     try:
                         with db() as con:
@@ -10840,7 +10842,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "counts": counts, "sync": sync_status_payload()})
         if parsed.path == "/api/auth/me":
             return self.send_json({"username": self.auth_user, "role": self.auth_role,
-                                   "ui_features": {"supplier_bids_ready": BIDS_MODE != 'disabled' and
+                                   "ui_features": {"nazk_preview": bool(SANDBOX_MODE or not IS_WEB_ENV),
+                                       "supplier_bids_ready": BIDS_MODE != 'disabled' and
                                        os.getenv('PQM_SUPPLIER_BIDS_READY', '0').lower() in {'1','true'}},
                                    "managed_role": self.auth_access['code'],
                                    "permissions": self.auth_access['permissions'],
@@ -11087,6 +11090,24 @@ class Handler(BaseHTTPRequestHandler):
             with db() as con:
                 return self.send_json(get_uo_work_queue(
                     con, query, self.auth_user, violation_report_owned_by_pqm))
+        if parsed.path == "/api/operational-tasks/nazk-preview":
+            if IS_WEB_ENV and not SANDBOX_MODE:
+                return self.send_json({"error": "Not found"}, 404)
+            permissions = getattr(self, "auth_access", {}).get("permissions", {})
+            if not all(permissions.get(key, False) for key in ("tasks.read", "suppliers.read")):
+                return self.send_json({"error": "Недостатньо прав для перегляду НАЗК"}, 403)
+            try:
+                return self.send_json(nazk_preview.snapshot(
+                    DB_PATH, urllib.parse.parse_qs(parsed.query, keep_blank_values=True),
+                    role=self.auth_role, permissions={key for key, value in permissions.items() if value},
+                    risk_projector=supplier_risk_projection))
+            except PermissionError:
+                return self.send_json({"error": "Недостатньо прав для перегляду НАЗК"}, 403)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except (sqlite3.Error, OSError):
+                SERVER_LOG.warning("Read-only NAZK preview unavailable")
+                return self.send_json({"error": "Попередній перегляд тимчасово недоступний", "code": "preview_unavailable"}, 503)
         if parsed.path == "/api/operational-tasks":
             with db() as con:
                 return self.send_json(operational_tasks.list_tasks(con, urllib.parse.parse_qs(parsed.query)))

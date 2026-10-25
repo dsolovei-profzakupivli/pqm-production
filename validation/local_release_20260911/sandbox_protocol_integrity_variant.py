@@ -571,6 +571,7 @@ def load_contracts():
     ui_v10 = load_ui_candidate_v10(ui_v9)
     contracts.append(ui_v10)
     contracts.append(load_ui_candidate_v11(ui_v10))
+    contracts.append(load_nazk_preview_contract(contracts[-1]))
     return contracts
 
 
@@ -942,3 +943,54 @@ def protected_content_matches(path, content, actual_projection_sha256,
         if expected and expected == actual_projection_sha256:
             return True
     return False
+
+
+# Additive, exact read-only NAZK preview. Every previous manifest remains pinned.
+PREVIEW_CONTRACT = ROOT / "test_sandbox_nazk_preview_integrity_variant.json"
+PREVIEW_CONTRACT_SHA256 = "71b8ae89a87099061f72427b759829fd8129a05f976d5fa5a4678dcbf1e17b15"
+PREVIEW_VARIANT_ID = "sandbox-nazk-readonly-preview-appeals-v1"
+PREVIEW_BASELINE = "f394d4c5e5f7afd76f39985d54e3e157ae65c811"
+PREVIEW_SCOPE = {
+    "read-only-supplier-nazk-preview-in-operational-tasks",
+    "reuse-canonical-history-coverage-and-activity",
+    "role-scoped-minimized-preview-without-domain-writes",
+    "preserve-dom-stability-column-preferences-and-existing-task-handlers",
+}
+PREVIEW_EXTRA_GUARDS = {"operational_tasks.py", "nazk_workflow.py", "nazk_evidence.py",
+                        "supplier_activity.py", "registry_popovers.js", "scheduler_runtime.py"}
+PREVIEW_PRODUCTS = {
+    "server.py", "index.html", "nazk_preview.py", "nazk_preview.js", "nazk_preview.css",
+    "test_sandbox_admin_officer_link_integrity.py", "test_sandbox_nazk_columns_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py", "test_sandbox_nazk_preview_integrity.py",
+    "validation/nazk_preview_fixture.py", "validation/nazk_preview_browser_fixture.py",
+    "validation/nazk_preview_browser.cjs", "validation/local_release_20260911/test_nazk_preview.py",
+    "validation/fixtures/nazk_preview_baseline_f394d4c.zip", "validation/run_local_release.py",
+}
+
+
+def load_nazk_preview_contract(previous):
+    raw = PREVIEW_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != PREVIEW_CONTRACT_SHA256:
+        raise AssertionError("Changed exact NAZK preview contract")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides", "guarded_additions"} or
+            delta.get("variant_id") != PREVIEW_VARIANT_ID or delta.get("baseline_sha") != PREVIEW_BASELINE or
+            delta.get("base_manifest") != UI_CANDIDATE_V11_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V11_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != PREVIEW_SCOPE or
+            set(delta.get("product_overrides", {})) != PREVIEW_PRODUCTS or
+            set(delta.get("guarded_additions", {})) != PREVIEW_EXTRA_GUARDS or
+            previous.get("variant_id") != UI_CANDIDATE_V11_ID):
+        raise AssertionError("Unexpected exact NAZK preview scope")
+    candidate = copy.deepcopy(previous)
+    candidate["variant_id"] = PREVIEW_VARIANT_ID
+    candidate["baseline_sha"] = PREVIEW_BASELINE
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | PREVIEW_SCOPE)
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["guarded_files"].update(delta["guarded_additions"])
+    for section in ("protected_files", "guarded_files"):
+        for relative in set(candidate[section]) & PREVIEW_PRODUCTS:
+            candidate[section][relative] = delta["product_overrides"][relative]
+    return candidate
