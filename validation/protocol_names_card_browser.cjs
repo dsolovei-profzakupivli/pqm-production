@@ -1,13 +1,12 @@
 /* Browser regression for the compact, collapsed protocol name provenance block. */
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-let chromium;try{({chromium}=require('playwright'))}catch{({chromium}=require('C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'))}
+const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..'),read=name=>fs.readFileSync(path.join(root,name),'utf8'),app=read('app.js');
 const start=app.indexOf('function protocolSupplierNamesHtml(item){'),end=app.indexOf('\nconst violationProtocolWorkbench=',start);
 assert(start>=0&&end>start,'protocol supplier names renderer is missing');
 const renderer=app.slice(start,end);
-const localBrowser='C:/Users/User/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe';
 ;(async()=>{
-  const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:fs.existsSync(localBrowser)?{executablePath:localBrowser}:{})});
+  const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:{})});
   try{
     const page=await browser.newPage();
     await page.setContent(`<!doctype html><html data-theme="light"><head><style>${read('styles.css')}\n${read('theme.css')}</style></head><body><main id="root"></main><script>

@@ -1,7 +1,7 @@
 /* Chromium regression: stored appeal justification summary and read-only eye viewer. */
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const vm=require('node:vm');
-let chromium;try{({chromium}=require('playwright'))}catch{({chromium}=require('C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'))}
+const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..'),read=name=>fs.readFileSync(path.join(root,name),'utf8'),app=read('app.js'),index=read('index.html');
 const fragment=(start,end)=>{const a=app.indexOf(start),b=app.indexOf(end,a);assert(a>=0&&b>a,`missing source ${start}`);return app.slice(a,b).trim()};
 const helpers=[
@@ -20,7 +20,6 @@ const saved=[
   {id:'D-1',report_id:'UA-D-DECLINED',status:'declined',decision_justification:'До звернення не додано рішення суду, що набрало законної сили.'},
   {id:'N-1',report_id:'UA-D-NONE',status:'pending',decision_justification:''}
 ];
-const localBrowser='C:/Users/User/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe';
 const widths=read('table_widths_ui.js'),visibilitySource=widths.match(/function effectiveVisibility\(table,widths\)\{[^}]*\}/)?.[0],orderSource=widths.match(/function effectiveOrder\(table,widths\)\{[^}]*\}/)?.[0];
 assert(visibilitySource&&orderSource,'existing table preference helpers must remain available');
 const prefContext={keysFor:()=>['appeal-id','decision_justification'],simpleOrderRows:()=>true};
@@ -29,7 +28,7 @@ const priorSettings={__visible__:['appeal-id'],__columns__:['appeal-id'],__order
 assert([...vm.runInContext('effectiveVisibility({},'+JSON.stringify(priorSettings)+')',prefContext)].includes('decision_justification'),'new justification column is visible when older settings omit it');
 assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(priorSettings)+')',prefContext)),['appeal-id','decision_justification'],'older column order is retained and new column appended');
 ;(async()=>{
- const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:fs.existsSync(localBrowser)?{executablePath:localBrowser}:{})});
+ const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:{})});
  try{
   const page=await browser.newPage();
   await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('theme.css')}</style></head><body>${requestsTable}${dialog}<script>

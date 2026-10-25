@@ -47,7 +47,7 @@ class NazkIntegrityTests(unittest.TestCase):
                          historical_integrated["baseline_sha"])
         self.assertFalse(integrity.manifest_tree_matches(historical_integrated))
         integrated = self.contracts[-1]
-        self.assertEqual(integrated["variant_id"], integrity.UI_CANDIDATE_V8_ID)
+        self.assertEqual(integrated["variant_id"], integrity.UI_CANDIDATE_V9_ID)
         self.assertTrue(integrity.manifest_tree_matches(integrated))
         self.assertFalse(integrity.manifest_tree_matches(self.nazk))
         self.assertTrue(integrity.exact_variant_tree_matches())

@@ -44,6 +44,12 @@ def main():
         # The runner is itself pinned by the column-width integrity variant.
         shutil.copy2(ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
         shutil.copy2(ROOT/'validation/docker_release_gate.py',root/'validation/docker_release_gate.py')
+        # The integrated UI integrity manifest now guards the required host-runner
+        # browser workflow, so include that exact CI file in the disposable tree.
+        workflow_source=ROOT/'.github/workflows/release-checks.yml'
+        workflow_target=root/'.github/workflows/release-checks.yml'
+        workflow_target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(workflow_source,workflow_target)
         # Node regressions run against this same disposable source fixture.
         for source in (ROOT/'validation').glob('*.cjs'):
             shutil.copy2(source,root/'validation'/source.name)

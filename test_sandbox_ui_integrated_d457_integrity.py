@@ -17,7 +17,7 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                                    ("product_files", "protected_files", "guarded_files")))
 
     def test_exact_candidate_matches_and_historical_admin_contract_is_not_rewritten(self):
-        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V8_ID)
+        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V9_ID)
         self.assertEqual(self.contract["baseline_sha"], "3fc2b2977073f56c570941fbcdff49b1a187fb7e")
         raw = integrity.UI_CANDIDATE_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), integrity.UI_CANDIDATE_DELTA_SHA256)
@@ -29,6 +29,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(v7_raw).hexdigest(), integrity.UI_CANDIDATE_V7_DELTA_SHA256)
         v8_raw = integrity.UI_CANDIDATE_V8_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(v8_raw).hexdigest(), integrity.UI_CANDIDATE_V8_DELTA_SHA256)
+        v9_raw = integrity.UI_CANDIDATE_V9_DELTA.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(v9_raw).hexdigest(), integrity.UI_CANDIDATE_V9_DELTA_SHA256)
         self.assertTrue(integrity.manifest_tree_matches(self.contract))
         self.assertTrue(integrity.exact_variant_tree_matches())
         previous_v2 = next(c for c in integrity.load_contracts()
@@ -88,7 +90,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                     integrity.UI_CANDIDATE_V5_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V6_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V7_PRODUCT_OVERRIDES |
-                    integrity.UI_CANDIDATE_V8_PRODUCT_OVERRIDES)
+                    integrity.UI_CANDIDATE_V8_PRODUCT_OVERRIDES |
+                    integrity.UI_CANDIDATE_V9_PRODUCT_OVERRIDES)
         self.assertEqual(set(self.contract["product_files"]), expected)
         self.assertEqual(set(self.contract["approved_scope"]) - set(
             next(c for c in integrity.load_contracts()
@@ -96,10 +99,32 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
             integrity.UI_CANDIDATE_SCOPE | integrity.UI_CANDIDATE_V2_SCOPE |
             integrity.UI_CANDIDATE_V3_SCOPE | integrity.UI_CANDIDATE_V4_SCOPE |
             integrity.UI_CANDIDATE_V5_SCOPE | integrity.UI_CANDIDATE_V6_SCOPE |
-            integrity.UI_CANDIDATE_V7_SCOPE | integrity.UI_CANDIDATE_V8_SCOPE)
+            integrity.UI_CANDIDATE_V7_SCOPE | integrity.UI_CANDIDATE_V8_SCOPE |
+            integrity.UI_CANDIDATE_V9_SCOPE)
         for path in (integrity.ADMIN_HISTORY_CONTRACT, integrity.ADMIN_CONTRACT,
                      integrity.ADMIN_V3_DELTA):
             self.assertTrue(path.is_file())
+
+    def test_appeals_browser_regressions_run_required_on_recorded_ci_checkout(self):
+        workflow = (ROOT / ".github/workflows/release-checks.yml").read_text(encoding="utf-8")
+        docker_gate = (ROOT / "validation/docker_release_gate.py").read_text(encoding="utf-8")
+        local_runner = (ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
+        self.assertIn("playwright@1.62.1", workflow)
+        self.assertIn("playwright\" install --with-deps chromium", workflow)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$(cat ci-evidence/tested-sha.txt)"', workflow)
+        self.assertIn("ROOT/'.github/workflows/release-checks.yml'", local_runner)
+        scripts = (
+            "appeals_justification_browser.cjs",
+            "appeals_declension_card_browser.cjs",
+            "protocol_names_card_browser.cjs",
+        )
+        for script in scripts:
+            with self.subTest(script=script):
+                source = (ROOT / "validation" / script).read_text(encoding="utf-8")
+                self.assertIn("require('playwright')", source)
+                self.assertNotIn("C:/Users/", source)
+                self.assertIn(f"node validation/{script}", workflow)
+                self.assertNotIn(script, docker_gate)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,24 @@ jobs:
           mkdir -p ci-evidence
           git rev-parse HEAD > ci-evidence/tested-sha.txt
           printf 'PR checks test the merge revision; promotion requires the final deployed SHA.\n' > ci-evidence/scope.txt
+      - name: Setup Node.js for browser regressions
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+      - name: Install Playwright and Chromium for browser regressions
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pqm-playwright" --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
+          "$RUNNER_TEMP/pqm-playwright/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Run Appeals browser regressions on the checked-out revision
+        shell: bash
+        env:
+          NODE_PATH: ${{ runner.temp }}/pqm-playwright/node_modules
+        run: |
+          test "$(git rev-parse HEAD)" = "$(cat ci-evidence/tested-sha.txt)"
+          node validation/appeals_justification_browser.cjs
+          node validation/appeals_declension_card_browser.cjs
+          node validation/protocol_names_card_browser.cjs
       - name: Build release image
         shell: bash
         run: |

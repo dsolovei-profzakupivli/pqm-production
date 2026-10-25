@@ -1,6 +1,6 @@
 /* Browser regression for the permanent declension actions in appeal cards. */
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-let chromium;try{({chromium}=require('playwright'))}catch{({chromium}=require('C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'))}
+const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..'),read=name=>fs.readFileSync(path.join(root,name),'utf8'),app=read('app.js'),index=read('index.html');
 const line=(start,end)=>{const from=app.indexOf(start),to=app.indexOf(end,from);assert(from>=0&&to>from,`missing source fragment ${start}`);return app.slice(from,to).trim()};
 const editor=line('function openDeclensionEditor(','\nlet declensionEditorReadOnly=');
@@ -13,7 +13,6 @@ const draft=line('function collectViolationReview(){','async function saveViolat
 const restoreDraft=line('function restoreViolationReviewDraft(','\nfunction ');
 const save=line('async function saveDeclensionEditor(){','\nasync function deleteDeclension');
 const dialog=index.match(/<dialog id="declensionDialog"[\s\S]*?<\/dialog>/)?.[0];assert(dialog,'declension editor markup missing');
-const localBrowser='C:/Users/User/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe';
 const prelude=`
 let currentMe={role:'admin',permissions:{'declension.read':true,'declension.manage':true}};
 let declensionItems=[],editingDeclensionId=null,declensionReturnContext=null;
@@ -28,7 +27,7 @@ async function openViolationReportById(){renderCard(__item);return __item}
 `;
 const code=[prelude,lookup,editor,'let declensionEditorReadOnly=false;',actions,button,bind,render,restoreDraft,draft,save].join('\n');
 ;(async()=>{
-const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:fs.existsSync(localBrowser)?{executablePath:localBrowser}:{})});
+const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:{})});
 try{
   const page=await browser.newPage();
   await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('theme.css')}</style></head><body><main id="requestDetailsBody"></main>${dialog}<script>${code}</script><script>

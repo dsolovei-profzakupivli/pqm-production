@@ -1,0 +1,51 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v9",
+  "baseline_sha": "3fc2b2977073f56c570941fbcdff49b1a187fb7e",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v8.json",
+  "base_manifest_sha256": "cd9d0225591ff9d8ba588f18032326aacd802ab8ccc052c26c701825e8a41143",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "assert_browser_regressions_use_the_recorded_checkout_sha",
+    "keep_historical_integrity_suites_version_aware_for_integrated_ui_v9",
+    "keep_container_gate_limited_to_dependencies_in_the_application_image",
+    "remove_windows_only_playwright_fallbacks_and_browser_paths",
+    "run_appeals_browser_regressions_on_ubuntu_with_pinned_playwright_and_chromium"
+  ],
+  "product_overrides": {
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "7f0511db8964506c5efcaec92a80b306cd1c38a715530e628d8d532a9d47a5bf"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "465045d642c4a5ad651a6a3645c9c2cef2fe497724d2db6c85cb5071c124540c"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "3108434b462e43a12a795847ab4238b047dd2819b7814540d59990c52988a49a"
+    }
+  },
+  "guarded_overrides": {
+    ".github/workflows/release-checks.yml": {
+      "sha256": "382d69f0386c724b63ddbfb24c2f136904feba903564a4f6f736e27874ffd1d0"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "7f0511db8964506c5efcaec92a80b306cd1c38a715530e628d8d532a9d47a5bf"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "465045d642c4a5ad651a6a3645c9c2cef2fe497724d2db6c85cb5071c124540c"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "440fc547fa12872537c222aeab4920aeb97cef5d63f8c23056cbacb68bd88755"
+    },
+    "validation/appeals_declension_card_browser.cjs": {
+      "sha256": "7f31e2cb25eb0cbf45e75110a1fbddf89ee1a2b831c2467cbd155ad773637b0f"
+    },
+    "validation/docker_release_gate.py": {
+      "sha256": "e46e999ac97fd1702e62a8d02df9225d6131bc76758aefd69618c818808ce70b"
+    },
+    "validation/protocol_names_card_browser.cjs": {
+      "sha256": "ec9f301d38185822ffe30670602565d913b099b24f57af9d374e3f2d2df1f839"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "7a6ceb25eb0a16961b43ba82fd014664ed980b28294de2fbf2cb12751bb690aa"
+    }
+  }
+}

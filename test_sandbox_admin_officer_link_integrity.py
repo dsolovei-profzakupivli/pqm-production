@@ -34,9 +34,10 @@ class AdminOfficerLinkIntegrityTests(unittest.TestCase):
         self.assertEqual(integrity.UI_CANDIDATE_V4_DELTA_SHA256,
                          integrity.sha256(integrity.UI_CANDIDATE_V4_DELTA.read_bytes().replace(b'\r\n', b'\n')))
         self.assertEqual(['sandbox-ui-integrated-d457-v5', 'sandbox-ui-integrated-d457-v6',
-                          integrity.UI_CANDIDATE_V7_ID, integrity.UI_CANDIDATE_V8_ID],
-                         [contract['variant_id'] for contract in contracts[-4:]])
-        self.assertEqual(integrity.UI_CANDIDATE_V8_ID, contracts[-1]['variant_id'])
+                          integrity.UI_CANDIDATE_V7_ID, integrity.UI_CANDIDATE_V8_ID,
+                          integrity.UI_CANDIDATE_V9_ID],
+                         [contract['variant_id'] for contract in contracts[-5:]])
+        self.assertEqual(integrity.UI_CANDIDATE_V9_ID, contracts[-1]['variant_id'])
 
     def test_exact_admin_variant_rejects_single_byte_mutations_in_product_and_guards(self):
         contract = integrity.load_contracts()[-1]
