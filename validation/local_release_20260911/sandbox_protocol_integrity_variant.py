@@ -148,6 +148,9 @@ UI_CANDIDATE_V8_ID = "sandbox-ui-integrated-d457-v8"
 UI_CANDIDATE_V9_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v9.json"
 UI_CANDIDATE_V9_DELTA_SHA256 = "9174865a6bb15c77d10eff92d71c32d5334df734cf5785515442d320953a17c1"
 UI_CANDIDATE_V9_ID = "sandbox-ui-integrated-d457-v9"
+UI_CANDIDATE_V10_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v10.json"
+UI_CANDIDATE_V10_DELTA_SHA256 = "b86d31c108801bf4d076afdc3a49a7ae0749d2508ba44473b52c4fff2571c615"
+UI_CANDIDATE_V10_ID = "sandbox-ui-integrated-d457-v10"
 UI_CANDIDATE_V6_SCOPE = {'browser_regressions_cover_one_click_roles_themes_and_saved_forms',
  'new_protocol_docx_uses_saved_card_declension_overrides_and_pdf_uses_current_docx',
  'permanent_card_declension_actions_for_customer_and_supplier',
@@ -213,6 +216,19 @@ UI_CANDIDATE_V9_GUARD_OVERRIDES = {
     "validation/docker_release_gate.py",
     "validation/protocol_names_card_browser.cjs",
     "validation/run_local_release.py",
+}
+UI_CANDIDATE_V10_SCOPE = {
+    "initialize_current_user_in_supplier_ux_fixture_and_assert_declension_editor_access_modes",
+}
+UI_CANDIDATE_V10_PRODUCT_OVERRIDES = {
+    "validation/sandbox_supplier_ux.cjs",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+}
+UI_CANDIDATE_V10_GUARD_OVERRIDES = {
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
 }
 UI_CANDIDATE_PRODUCTS = {
     "app.js", "auth_access.py", "auth_ui.js", "edr_sync_v2.py",
@@ -533,7 +549,9 @@ def load_contracts():
     contracts.append(ui_v7)
     ui_v8 = load_ui_candidate_v8(ui_v7)
     contracts.append(ui_v8)
-    contracts.append(load_ui_candidate_v9(ui_v8))
+    ui_v9 = load_ui_candidate_v9(ui_v8)
+    contracts.append(ui_v9)
+    contracts.append(load_ui_candidate_v10(ui_v9))
     return contracts
 
 
@@ -791,6 +809,28 @@ def load_ui_candidate_v9(ui_v8):
         raise AssertionError("Integrated Sandbox UI v9 addendum has an unexpected exact scope")
     candidate = copy.deepcopy(ui_v8)
     candidate["variant_id"] = UI_CANDIDATE_V9_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
+
+
+def load_ui_candidate_v10(ui_v9):
+    delta = _load_ui_delta(UI_CANDIDATE_V10_DELTA, UI_CANDIDATE_V10_DELTA_SHA256)
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V10_ID or
+            delta.get("baseline_sha") != "3fc2b2977073f56c570941fbcdff49b1a187fb7e" or
+            delta.get("base_manifest") != UI_CANDIDATE_V9_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V9_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V10_SCOPE or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V10_PRODUCT_OVERRIDES or
+            set(delta.get("guarded_overrides", {})) != UI_CANDIDATE_V10_GUARD_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v10 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v9)
+    candidate["variant_id"] = UI_CANDIDATE_V10_ID
     candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
     candidate["product_files"].update(delta["product_overrides"])
     candidate["guarded_files"].update(delta["guarded_overrides"])

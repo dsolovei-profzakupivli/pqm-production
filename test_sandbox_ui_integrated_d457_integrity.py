@@ -17,7 +17,7 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                                    ("product_files", "protected_files", "guarded_files")))
 
     def test_exact_candidate_matches_and_historical_admin_contract_is_not_rewritten(self):
-        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V9_ID)
+        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V10_ID)
         self.assertEqual(self.contract["baseline_sha"], "3fc2b2977073f56c570941fbcdff49b1a187fb7e")
         raw = integrity.UI_CANDIDATE_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), integrity.UI_CANDIDATE_DELTA_SHA256)
@@ -31,6 +31,10 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(v8_raw).hexdigest(), integrity.UI_CANDIDATE_V8_DELTA_SHA256)
         v9_raw = integrity.UI_CANDIDATE_V9_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(v9_raw).hexdigest(), integrity.UI_CANDIDATE_V9_DELTA_SHA256)
+        self.assertFalse(integrity.manifest_tree_matches(next(c for c in integrity.load_contracts()
+                                                               if c["variant_id"] == integrity.UI_CANDIDATE_V9_ID)))
+        v10_raw = integrity.UI_CANDIDATE_V10_DELTA.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(v10_raw).hexdigest(), integrity.UI_CANDIDATE_V10_DELTA_SHA256)
         self.assertTrue(integrity.manifest_tree_matches(self.contract))
         self.assertTrue(integrity.exact_variant_tree_matches())
         previous_v2 = next(c for c in integrity.load_contracts()
@@ -91,7 +95,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                     integrity.UI_CANDIDATE_V6_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V7_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V8_PRODUCT_OVERRIDES |
-                    integrity.UI_CANDIDATE_V9_PRODUCT_OVERRIDES)
+                    integrity.UI_CANDIDATE_V9_PRODUCT_OVERRIDES |
+                    integrity.UI_CANDIDATE_V10_PRODUCT_OVERRIDES)
         self.assertEqual(set(self.contract["product_files"]), expected)
         self.assertEqual(set(self.contract["approved_scope"]) - set(
             next(c for c in integrity.load_contracts()
@@ -100,7 +105,7 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
             integrity.UI_CANDIDATE_V3_SCOPE | integrity.UI_CANDIDATE_V4_SCOPE |
             integrity.UI_CANDIDATE_V5_SCOPE | integrity.UI_CANDIDATE_V6_SCOPE |
             integrity.UI_CANDIDATE_V7_SCOPE | integrity.UI_CANDIDATE_V8_SCOPE |
-            integrity.UI_CANDIDATE_V9_SCOPE)
+            integrity.UI_CANDIDATE_V9_SCOPE | integrity.UI_CANDIDATE_V10_SCOPE)
         for path in (integrity.ADMIN_HISTORY_CONTRACT, integrity.ADMIN_CONTRACT,
                      integrity.ADMIN_V3_DELTA):
             self.assertTrue(path.is_file())
@@ -125,6 +130,11 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                 self.assertNotIn("C:/Users/", source)
                 self.assertIn(f"node validation/{script}", workflow)
                 self.assertNotIn(script, docker_gate)
+        supplier_ux = (ROOT / "validation/sandbox_supplier_ux.cjs").read_text(encoding="utf-8")
+        self.assertIn("currentMe:null", supplier_ux)
+        self.assertIn("the real application initializes currentMe to null before authentication", supplier_ux)
+        self.assertIn("[['admin',true],['officer',true],['viewer',false]]", supplier_ux)
+        self.assertIn("save visibility follows declension.manage", supplier_ux)
 
 
 if __name__ == "__main__":
