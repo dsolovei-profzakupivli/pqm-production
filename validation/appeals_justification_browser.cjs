@@ -2,7 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const vm=require('node:vm');
 const {chromium}=require('playwright');
-const root=path.resolve(__dirname,'..'),read=name=>fs.readFileSync(path.join(root,name),'utf8'),app=read('app.js'),index=read('index.html');
+const root=path.resolve(__dirname,'..'),read=name=>fs.readFileSync(path.join(root,name),'utf8'),app=read('app.js'),index=read('index.html'),server=read('server.py');
 const fragment=(start,end)=>{const a=app.indexOf(start),b=app.indexOf(end,a);assert(a>=0&&b>a,`missing source ${start}`);return app.slice(a,b).trim()};
 const helpers=[
   fragment('function requestScenarioCell(', '\nfunction showSavedRequestJustification('),
@@ -14,6 +14,9 @@ assert(index.includes('data-column-key="decision_justification">Сценарій
 const requestsTable=index.match(/<table class="supplier-table requests-table">[\s\S]*?<\/table>/)?.[0];assert(requestsTable,'appeals table markup missing');
 const reportLoader=fragment('async function loadViolationReports(', '\nconst internalDecisionLabels=');
 assert(reportLoader.includes('requestScenarioCell(item,index)')&&!reportLoader.includes('requestJustificationCell(item,index)'),'appeals table loader must render scenario_summary in the legacy preference column');
+const listApiStart=server.indexOf('def list_violation_reports('),listApiEnd=server.indexOf('\ndef ',listApiStart+4),listApi=server.slice(listApiStart,listApiEnd);
+assert(listApi.includes('item["scenario_summary"]=(violation_scenario_summary(scenario_report,scenario_context)'),'list API must project the canonical adaptive scenario consumed by this browser view');
+assert(listApi.includes('def saved_scenario_context(')&&listApi.includes('saved_scenario_context(decision_snapshot,scenario_report)')&&!listApi.includes('resolve_violation_procurement_context(')&&!listApi.includes('api_get('),'list API must use locally saved scenario facts and make no external requests');
 assert(!app.includes('Контрольний сценарій'),'scenario title must not be shown in appeal cards');
 assert(app.includes('item.scenario_summary?'),'scenario_summary must remain available in appeal cards');
 const saved=[

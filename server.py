@@ -6723,7 +6723,7 @@ def list_violation_reports(params: dict) -> dict:
                                                        datetime.now(ZoneInfo('Europe/Kyiv')))
         total = con.execute(f"SELECT COUNT(*) FROM violation_reports WHERE {clause}", args).fetchone()[0]
         order_sql = "date_published ASC,report_id ASC" if status == "pending" else "date_published DESC,report_id DESC"
-        rows = con.execute(f"""SELECT id,report_id,status,date_published,date_modified,tender_pretty_id,contract_pretty_id,
+        rows = con.execute(f"""SELECT id,report_id,status,date_created,date_published,date_modified,tender_id,tender_pretty_id,contract_pretty_id,
           author_name,author_code,defendant_name,defendant_code,authority_name,authority_code,reason,description,
           defendant_period_start,defendant_period_end,decision_resolution,decision_description,decision_date,
           evidence_documents_json,decision_documents_json,raw_json
@@ -6745,6 +6745,46 @@ def list_violation_reports(params: dict) -> dict:
         protocol_reviews={row['report_id']:dict(row) for row in con.execute(
             'SELECT * FROM violation_report_reviews WHERE report_id IN ('+
             ','.join('?' for _ in review_ids)+')',review_ids)} if review_ids else {}
+        decision_snapshots={}
+        if review_ids:
+            for snapshot_row in con.execute(
+                    """SELECT report_id,new_value FROM violation_report_review_events
+                       WHERE report_id IN ("""+','.join('?' for _ in review_ids)+
+                    ") AND event_type='decision_context_snapshotted' "
+                    "AND field_name='decision_context_snapshot' ORDER BY changed_at DESC,id DESC",
+                    review_ids):
+                decision_snapshots.setdefault(snapshot_row['report_id'],snapshot_row['new_value'])
+
+    def saved_scenario_context(snapshot: dict | None, report: dict) -> dict | None:
+        """Return only saved facts complete enough for an exact list summary."""
+        if not isinstance(snapshot, dict) or snapshot.get("version") != 1:
+            return None
+        snapshot_report_id = str(snapshot.get("report_id") or "")
+        if snapshot_report_id and snapshot_report_id != str(
+                report.get("report_id") or report.get("id") or ""):
+            return None
+        snapshot_reason = snapshot.get("reason")
+        if snapshot_reason and snapshot_reason != report.get("reason"):
+            return None
+        context = snapshot.get("procurement_context")
+        if not isinstance(context, dict) or "rejection_ambiguous" not in context:
+            return None
+        if context.get("rejection_ambiguous") is True:
+            return _normalized_violation_procurement_context(context)
+        required_by_reason = {
+            "contractBreach": {"rejected_before_deadline", "rejection_present",
+                                "contract_deadline_expired", "day_5_shifted"},
+            "signingRefusal": {"written_refusal_within_deadline", "day_3_shifted"},
+            "goodsNonCompliance": set(),
+        }
+        required = required_by_reason.get(report.get("reason"))
+        if required is None or not required.issubset(context):
+            return None
+        if report.get("reason") == "contractBreach" and not any(
+                key in context for key in ("performance_security_required", "contract_guarantee_required")):
+            return None
+        return _normalized_violation_procurement_context(context)
+
     items = []
     for row in rows:
         item = dict(row)
@@ -6755,6 +6795,26 @@ def list_violation_reports(params: dict) -> dict:
         item["blocking_marker"] = warning_markers.get(item["report_id"])
         import violation_protocol_summary
         saved_review=protocol_reviews.get(item['id'],{})
+        scenario_review=_review_dict(saved_review) or {}
+        scenario_report={**item,"review":scenario_review}
+        scenario_report["official_decisions"]=raw.get("decisions") or []
+        try:
+            decision_snapshot=json.loads(decision_snapshots.get(item['id']) or "null")
+        except (TypeError,ValueError):
+            decision_snapshot=None
+        scenario_report["decision_context_snapshot"]=decision_snapshot
+        has_official_decision=bool(scenario_report["official_decisions"])
+        local_review_completed=bool(scenario_review.get("completed_at") or
+                                    scenario_review.get("review_status") in {"reviewed","completed"})
+        scenario_read_only=(has_official_decision or local_review_completed or
+                            not violation_report_owned_by_pqm(scenario_report))
+        scenario_context=(saved_scenario_context(decision_snapshot,scenario_report)
+                          if scenario_read_only else None)
+        # The list path never resolves a current tender. If locally saved facts
+        # cannot reproduce the card summary exactly, leave it blank instead of
+        # inventing a partial scenario. Opening the card keeps its existing flow.
+        item["scenario_summary"]=(violation_scenario_summary(scenario_report,scenario_context)
+                                  if scenario_context is not None else "")
         item["decision_justification"] = normalize_justification_text(
             saved_review.get("decision_justification"))
         projected_review=dict(saved_review)

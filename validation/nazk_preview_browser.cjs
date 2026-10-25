@@ -54,7 +54,7 @@ function response(url){
   for(const theme of ['light','dark']){
    await page.evaluate(t=>{document.documentElement.dataset.theme=t;document.body.dataset.theme=t;},theme);
    await page.locator('[data-nazk-view=preview]').click();
-   await page.waitForFunction(()=>document.querySelector('#nazkPreviewMessage').textContent.startsWith('Лише перегляд.'));
+   await page.waitForFunction(()=>document.querySelector('#nazkPreviewMessage').textContent.startsWith('Оновлено.'));
    assert.equal(await page.locator('#nazkPreviewRows tr').count(),10);
    assert.equal(await page.locator('[data-nazk-count=new_checks]').first().textContent(),'1');
    assert.equal(await page.locator('[data-nazk-count=new_tasks]').textContent(),'1');

@@ -599,7 +599,13 @@ def load_contracts():
     contracts.append(ui_v12)
     preview = load_nazk_preview_contract(ui_v11)
     contracts.append(preview)
-    contracts.append(load_nazk_appeals_integrated_contract(ui_v12, preview))
+    integrated = load_nazk_appeals_integrated_contract(ui_v12, preview)
+    contracts.append(integrated)
+    scroll = load_nazk_scroll_contract(integrated)
+    contracts.append(scroll)
+    appeals_api = load_appeals_scenario_api_contract(integrated)
+    contracts.append(appeals_api)
+    contracts.append(load_stabilization_contract(scroll, appeals_api))
     return contracts
 
 
@@ -1020,6 +1026,7 @@ PREVIEW_PRODUCTS = {
 
 INTEGRATED_CONTRACT = ROOT / "test_sandbox_nazk_appeals_integrated_v1.json"
 INTEGRATED_CONTRACT_SHA256 = "0cb672a1d10e55562a2672a36c4089cd657bc62cba7499ffa42ecc15d3eaa3e2"
+INTEGRATED_CONTRACT_FORMATTED_SHA256 = "68660572b26e3e4a5cb1d4de928a3edb7ede9689bf19a238888dbe6a7b84fd7e"
 INTEGRATED_VARIANT_ID = "sandbox-nazk-appeals-integrated-v1"
 INTEGRATED_SCOPE = {"combine-read-only-nazk-preview-and-appeals-scenario-fix"}
 INTEGRATED_PRODUCTS = (UI_CANDIDATE_V12_PRODUCT_OVERRIDES | PREVIEW_PRODUCTS |
@@ -1028,6 +1035,67 @@ INTEGRATED_PROTECTED = UI_CANDIDATE_V12_PROTECTED_OVERRIDES | {"server.py"}
 INTEGRATED_GUARDS = UI_CANDIDATE_V12_GUARD_OVERRIDES | PREVIEW_EXTRA_GUARDS | PREVIEW_PRODUCTS.intersection(
     {"test_sandbox_admin_officer_link_integrity.py", "test_sandbox_nazk_columns_integrity.py",
      "validation/run_local_release.py"})
+APPEALS_API_CONTRACT = ROOT / "test_sandbox_appeals_scenario_api_integrity_v1.json"
+APPEALS_API_CONTRACT_SHA256 = "6a145080f048c656217a22e01714226d1b8e28d3d3a206113d43e07b2181d628"
+APPEALS_API_VARIANT_ID = "sandbox-appeals-scenario-api-v1"
+APPEALS_API_BASELINE = "fc719b07f7ce6bd43fcdf9815795f0f2906901e8"
+APPEALS_API_SCOPE = {
+    "appeals-list-projects-only-exact-saved-card-scenario-snapshot",
+    "appeals-list-never-fetches-prozorro-tender-data",
+    "appeals-list-leaves-scenario-empty-for-missing-or-partial-snapshots",
+    "appeals-list-preserves-saved-read-only-justification-separately",
+}
+APPEALS_API_PRODUCT_OVERRIDES = {
+    "server.py", "validation/appeals_justification_browser.cjs",
+    "validation/run_local_release.py",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "test_sandbox_nazk_preview_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+}
+APPEALS_API_PRODUCT_ADDITIONS = {
+    "validation/local_release_20260911/test_violation_reports.py",
+    "validation/fixtures/appeals_scenario_v11_api_tail.zip",
+}
+APPEALS_API_GUARD_OVERRIDES = {
+    "validation/run_local_release.py",
+    "validation/appeals_justification_browser.cjs",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "validation/local_release_20260911/test_violation_reports.py",
+}
+
+SCROLL_CONTRACT = ROOT / "test_sandbox_nazk_scroll_integrity_variant.json"
+SCROLL_CONTRACT_SHA256 = "2ee78bdf953d575d97dfc32e94b8ed8664328ac9e57d7b7a4fea818ac08c83a8"
+SCROLL_VARIANT_ID = "sandbox-nazk-scroll-v1"
+SCROLL_BASELINE = "fc719b07f7ce6bd43fcdf9815795f0f2906901e8"
+SCROLL_SCOPE = {
+    "restore-bounded-vertical-scroll-to-last-nazk-row",
+    "preserve-sticky-header-and-horizontal-overflow",
+    "compact-preview-toolbar-and-remove-duplicate-read-only-notice",
+}
+SCROLL_PRODUCTS = {
+    "nazk_preview.css", "nazk_preview.js", "validation/nazk_preview_browser.cjs",
+    "validation/nazk_preview_scroll_browser.cjs", "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py", "test_sandbox_nazk_preview_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py", "test_sandbox_nazk_scroll_integrity.py",
+}
+
+STABILIZATION_CONTRACT = ROOT / "test_sandbox_nazk_appeals_stabilization_v1.json"
+STABILIZATION_CONTRACT_SHA256 = "9233e8d9a27adf855d22a8cc3a5e2f7dc167ba86dac6c02fc3451ffa92d6f8c7"
+STABILIZATION_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v1"
+STABILIZATION_SCOPE = {"combine-verified-nazk-scroll-and-bounded-appeals-scenario-api"}
+STABILIZATION_PRODUCT_OVERRIDES = {
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "test_sandbox_nazk_preview_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+    "test_sandbox_nazk_scroll_integrity.py",
+    "test_sandbox_appeals_scenario_api_integrity.py",
+}
+STABILIZATION_PRODUCT_ADDITIONS = {
+    "test_sandbox_nazk_appeals_stabilization_integrity.py",
+}
 
 
 def load_nazk_preview_contract(previous):
@@ -1060,7 +1128,7 @@ def load_nazk_preview_contract(previous):
 
 def load_nazk_appeals_integrated_contract(scenario, preview):
     raw = INTEGRATED_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
-    if sha256(raw) != INTEGRATED_CONTRACT_SHA256:
+    if sha256(raw) not in {INTEGRATED_CONTRACT_SHA256, INTEGRATED_CONTRACT_FORMATTED_SHA256}:
         raise AssertionError("Changed exact combined NAZK/Appeals contract")
     delta = json.loads(raw.decode("utf-8"))
     if (set(delta) != {"variant_id", "baseline_sha", "scenario_manifest", "scenario_manifest_sha256",
@@ -1092,4 +1160,107 @@ def load_nazk_appeals_integrated_contract(scenario, preview):
     candidate["protected_files"].update(delta["protected_overrides"])
     candidate["guarded_files"].update(scenario["guarded_files"])
     candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
+
+
+def load_appeals_scenario_api_contract(integrated):
+    raw = APPEALS_API_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != APPEALS_API_CONTRACT_SHA256:
+        raise AssertionError("Changed exact Appeals scenario API contract")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "product_files_additional", "protected_server_overrides", "guarded_overrides"} or
+            delta.get("variant_id") != APPEALS_API_VARIANT_ID or
+            delta.get("baseline_sha") != APPEALS_API_BASELINE or
+            delta.get("base_manifest") != INTEGRATED_CONTRACT.name or
+            delta.get("base_manifest_sha256") != INTEGRATED_CONTRACT_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != APPEALS_API_SCOPE or
+            set(delta.get("product_overrides", {})) != APPEALS_API_PRODUCT_OVERRIDES or
+            set(delta.get("product_files_additional", {})) != APPEALS_API_PRODUCT_ADDITIONS or
+            set(delta.get("protected_server_overrides", {})) != {"halloween_normalized_sha256",
+                                                                  "personal_theme_normalized_sha256"} or
+            set(delta.get("guarded_overrides", {})) != APPEALS_API_GUARD_OVERRIDES or
+            integrated.get("variant_id") != INTEGRATED_VARIANT_ID):
+        raise AssertionError("Appeals scenario API contract has an unexpected exact scope")
+    candidate = copy.deepcopy(integrated)
+    candidate["variant_id"] = APPEALS_API_VARIANT_ID
+    candidate["baseline_sha"] = APPEALS_API_BASELINE
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                         set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["product_files"].update(delta["product_files_additional"])
+    candidate["protected_files"]["server.py"] = delta["product_overrides"]["server.py"]
+    candidate["protected_files"]["server.py"].update(delta["protected_server_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
+
+
+def load_nazk_scroll_contract(integrated):
+    raw = SCROLL_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != SCROLL_CONTRACT_SHA256:
+        raise AssertionError("Changed exact NAZK scroll integrity contract")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides"} or
+            delta.get("variant_id") != SCROLL_VARIANT_ID or
+            delta.get("baseline_sha") != SCROLL_BASELINE or
+            delta.get("base_manifest") != INTEGRATED_CONTRACT.name or
+            delta.get("base_manifest_sha256") != INTEGRATED_CONTRACT_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != SCROLL_SCOPE or
+            set(delta.get("product_overrides", {})) != SCROLL_PRODUCTS or
+            integrated.get("variant_id") != INTEGRATED_VARIANT_ID):
+        raise AssertionError("Unexpected exact NAZK scroll scope")
+    candidate = copy.deepcopy(integrated)
+    candidate["variant_id"] = SCROLL_VARIANT_ID
+    candidate["baseline_sha"] = SCROLL_BASELINE
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | SCROLL_SCOPE)
+    candidate["product_files"].update(delta["product_overrides"])
+    for section in ("protected_files", "guarded_files"):
+        for relative in set(candidate[section]) & SCROLL_PRODUCTS:
+            candidate[section][relative] = delta["product_overrides"][relative]
+    return candidate
+
+
+def load_stabilization_contract(scroll, appeals_api):
+    raw = STABILIZATION_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != STABILIZATION_CONTRACT_SHA256:
+        raise AssertionError("Changed exact combined stabilization integrity contract")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "scroll_manifest", "scroll_manifest_sha256",
+                       "appeals_manifest", "appeals_manifest_sha256", "hash_format",
+                       "approved_scope_additions", "product_overrides", "product_files_additional",
+                       "guarded_overrides", "guarded_additions"} or
+            delta.get("variant_id") != STABILIZATION_VARIANT_ID or
+            delta.get("baseline_sha") != SCROLL_BASELINE or
+            delta.get("scroll_manifest") != SCROLL_CONTRACT.name or
+            delta.get("scroll_manifest_sha256") != SCROLL_CONTRACT_SHA256 or
+            delta.get("appeals_manifest") != APPEALS_API_CONTRACT.name or
+            delta.get("appeals_manifest_sha256") != APPEALS_API_CONTRACT_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != STABILIZATION_SCOPE or
+            set(delta.get("product_overrides", {})) != STABILIZATION_PRODUCT_OVERRIDES or
+            set(delta.get("product_files_additional", {})) != STABILIZATION_PRODUCT_ADDITIONS or
+            set(delta.get("guarded_overrides", {})) != STABILIZATION_PRODUCT_OVERRIDES or
+            set(delta.get("guarded_additions", {})) != STABILIZATION_PRODUCT_ADDITIONS or
+            scroll.get("variant_id") != SCROLL_VARIANT_ID or
+            appeals_api.get("variant_id") != APPEALS_API_VARIANT_ID):
+        raise AssertionError("Combined stabilization contract has an unexpected exact scope")
+    candidate = copy.deepcopy(scroll)
+    candidate["variant_id"] = STABILIZATION_VARIANT_ID
+    candidate["baseline_sha"] = SCROLL_BASELINE
+    candidate["approved_scope"] = sorted(
+        set(candidate["approved_scope"]) | set(appeals_api["approved_scope"]) |
+        set(delta["approved_scope_additions"]))
+    for relative in APPEALS_API_PRODUCT_OVERRIDES | APPEALS_API_PRODUCT_ADDITIONS:
+        candidate["product_files"][relative] = appeals_api["product_files"][relative]
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["product_files"].update(delta["product_files_additional"])
+    candidate["protected_files"]["server.py"] = appeals_api["protected_files"]["server.py"]
+    for relative in APPEALS_API_GUARD_OVERRIDES:
+        candidate["guarded_files"][relative] = appeals_api["guarded_files"][relative]
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    candidate["guarded_files"].update(delta["guarded_additions"])
     return candidate

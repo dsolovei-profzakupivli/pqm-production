@@ -46,11 +46,14 @@ class NazkIntegrityTests(unittest.TestCase):
         self.assertEqual("d457aae211bc0b88cdc66414b9e5765ac7ba350d",
                          historical_integrated["baseline_sha"])
         self.assertFalse(integrity.manifest_tree_matches(historical_integrated))
-        integrated = self.contracts[-1]
+        integrated = next(contract for contract in self.contracts
+                          if contract.get("variant_id") == integrity.INTEGRATED_VARIANT_ID)
+        current = self.contracts[-1]
         self.assertEqual(integrated["variant_id"], integrity.INTEGRATED_VARIANT_ID)
         self.assertFalse(integrity.manifest_tree_matches(next(contract for contract in self.contracts
                                                                if contract.get("variant_id") == integrity.UI_CANDIDATE_V11_ID)))
-        self.assertTrue(integrity.manifest_tree_matches(integrated))
+        self.assertFalse(integrity.manifest_tree_matches(integrated))
+        self.assertTrue(integrity.manifest_tree_matches(current))
         self.assertFalse(integrity.manifest_tree_matches(self.nazk))
         self.assertTrue(integrity.exact_variant_tree_matches())
         for relative in paths(integrated):

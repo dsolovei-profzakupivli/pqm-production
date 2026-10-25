@@ -14,20 +14,35 @@ ROOT=integrity.ROOT
 class NazkPreviewIntegrityTests(unittest.TestCase):
     def test_exact_additive_variant(self):
         contracts=integrity.load_contracts()
-        self.assertEqual(len(contracts),21)
-        current=contracts[-1]
+        current=next(c for c in contracts if c['variant_id']==integrity.STABILIZATION_VARIANT_ID)
+        integrated=next(c for c in contracts if c['variant_id']==integrity.INTEGRATED_VARIANT_ID)
+        scroll=next(c for c in contracts if c['variant_id']==integrity.SCROLL_VARIANT_ID)
+        appeals=next(c for c in contracts if c['variant_id']==integrity.APPEALS_API_VARIANT_ID)
         previous=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V11_ID)
         preview=next(c for c in contracts if c['variant_id']==integrity.PREVIEW_VARIANT_ID)
         scenario=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V12_ID)
-        self.assertEqual(current['variant_id'],integrity.INTEGRATED_VARIANT_ID)
-        self.assertEqual(current['baseline_sha'],integrity.PREVIEW_BASELINE)
-        self.assertEqual(set(current['product_files']),set(previous['product_files'])|
+        self.assertEqual(len(contracts),24)
+        self.assertEqual(current['variant_id'],integrity.STABILIZATION_VARIANT_ID)
+        self.assertEqual(current['baseline_sha'],integrity.SCROLL_BASELINE)
+        self.assertEqual(current['baseline_sha'],integrity.APPEALS_API_BASELINE)
+        self.assertEqual(set(integrated['product_files']),set(previous['product_files'])|
                          integrity.PREVIEW_PRODUCTS|integrity.UI_CANDIDATE_V12_PRODUCT_OVERRIDES|
                          {"validation/fixtures/appeals_scenario_v11_tail.zip"})
+        self.assertEqual(set(scroll['product_files']),set(integrated['product_files'])|
+                         integrity.SCROLL_PRODUCTS)
+        self.assertEqual(set(appeals['product_files']),set(integrated['product_files'])|
+                         integrity.APPEALS_API_PRODUCT_OVERRIDES|integrity.APPEALS_API_PRODUCT_ADDITIONS)
+        self.assertEqual(set(current['product_files']),set(integrated['product_files'])|
+                         integrity.SCROLL_PRODUCTS|integrity.APPEALS_API_PRODUCT_OVERRIDES|
+                         integrity.APPEALS_API_PRODUCT_ADDITIONS|integrity.STABILIZATION_PRODUCT_OVERRIDES|
+                         integrity.STABILIZATION_PRODUCT_ADDITIONS)
         self.assertEqual(preview['variant_id'],integrity.PREVIEW_VARIANT_ID)
         self.assertEqual(scenario['variant_id'],integrity.UI_CANDIDATE_V12_ID)
         self.assertFalse(integrity.manifest_tree_matches(preview))
         self.assertFalse(integrity.manifest_tree_matches(scenario))
+        self.assertFalse(integrity.manifest_tree_matches(integrated))
+        self.assertFalse(integrity.manifest_tree_matches(scroll))
+        self.assertFalse(integrity.manifest_tree_matches(appeals))
         self.assertTrue(integrity.manifest_tree_matches(current))
         self.assertTrue(integrity.exact_variant_tree_matches())
 
@@ -41,18 +56,22 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
     def test_prior_v11_still_accepts_its_exact_historical_tree(self):
         contracts=integrity.load_contracts()
         previous=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V11_ID)
+        integrated=next(c for c in contracts if c['variant_id']==integrity.INTEGRATED_VARIANT_ID)
         paths=set().union(*(set(previous[k]) for k in ('product_files','protected_files','guarded_files')))
         with tempfile.TemporaryDirectory() as directory,\
              zipfile.ZipFile(ROOT/'validation/fixtures/nazk_preview_baseline_f394d4c.zip') as archive,\
-             zipfile.ZipFile(ROOT/'validation/fixtures/appeals_scenario_v11_tail.zip') as scenario_archive:
+             zipfile.ZipFile(ROOT/'validation/fixtures/appeals_scenario_v11_tail.zip') as scenario_archive,\
+             zipfile.ZipFile(ROOT/'validation/fixtures/appeals_scenario_v11_api_tail.zip') as api_archive:
             tree=Path(directory)
             for relative in paths:
                 target=tree/relative;target.parent.mkdir(parents=True,exist_ok=True)
                 if relative in archive.namelist():content=archive.read(relative)
                 elif relative in scenario_archive.namelist():content=scenario_archive.read(relative)
+                elif relative in api_archive.namelist():content=api_archive.read(relative)
                 else:content=(ROOT/relative).read_bytes()
                 target.write_bytes(content)
             self.assertTrue(integrity.manifest_tree_matches(previous,tree))
+            self.assertFalse(integrity.manifest_tree_matches(integrated,tree))
             self.assertFalse(integrity.manifest_tree_matches(contracts[-1],tree))
 
     def test_unchanged_guards_remain_pinned(self):
@@ -60,7 +79,11 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
         previous=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V11_ID)
         current=contracts[-1]
         changed_paths=(integrity.INTEGRATED_PRODUCTS|integrity.INTEGRATED_GUARDS|
-                       integrity.INTEGRATED_PROTECTED)
+                       integrity.INTEGRATED_PROTECTED|integrity.SCROLL_PRODUCTS|
+                       integrity.APPEALS_API_PRODUCT_OVERRIDES|
+                       integrity.APPEALS_API_PRODUCT_ADDITIONS|integrity.APPEALS_API_GUARD_OVERRIDES)
+        changed_paths |= (integrity.STABILIZATION_PRODUCT_OVERRIDES|
+                          integrity.STABILIZATION_PRODUCT_ADDITIONS)
         for section in ('product_files','protected_files','guarded_files'):
             for relative,expected in previous[section].items():
                 if relative not in changed_paths:
@@ -83,7 +106,11 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
             tree=Path(directory)
             for relative in paths:
                 target=tree/relative;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((ROOT/relative).read_bytes())
-            for relative in sorted(integrity.INTEGRATED_PRODUCTS):
+            for relative in sorted(integrity.INTEGRATED_PRODUCTS|integrity.SCROLL_PRODUCTS|
+                               integrity.APPEALS_API_PRODUCT_OVERRIDES|
+                               integrity.APPEALS_API_PRODUCT_ADDITIONS|
+                               integrity.STABILIZATION_PRODUCT_OVERRIDES|
+                               integrity.STABILIZATION_PRODUCT_ADDITIONS):
                 file=tree/relative;original=file.read_bytes();changed=bytearray(original);changed[0]^=1
                 file.write_bytes(changed)
                 self.assertFalse(integrity.manifest_tree_matches(current,tree),relative)

@@ -24,3 +24,34 @@
 #nazkPreviewPanel .nazk-preview-footer{display:flex;gap:8px;align-items:center;margin:12px 0;flex-wrap:wrap}
 #nazkPreviewPanel :focus-visible,.nazk-preview-nav :focus-visible{outline:2px solid #3488d5;outline-offset:2px}
 @media(max-width:750px){#nazkPreviewPanel .nazk-preview-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}#nazkPreviewPanel .nazk-preview-filters label{width:100%}}
+
+/* Keep the read-only NAZK preview inside the operational shell's bounded layout. */
+#operationalTasksView:has(#nazkPreviewPanel:not([hidden])) .operational-task-heading{gap:8px;margin-bottom:4px}
+#operationalTasksView:has(#nazkPreviewPanel:not([hidden])) .operational-task-heading>div:first-child{flex-basis:auto;min-width:0}
+#operationalTasksView:has(#nazkPreviewPanel:not([hidden])) .operational-task-heading .eyebrow,
+#operationalTasksView:has(#nazkPreviewPanel:not([hidden])) .operational-task-heading .muted{display:none}
+#operationalTasksView:has(#nazkPreviewPanel:not([hidden])) .operational-task-heading h1{margin:0;font-size:22px;line-height:1.2}
+#operationalTasksView:has(#nazkPreviewPanel:not([hidden])) .nazk-preview-nav{gap:6px;margin:4px 0 8px}
+#nazkPreviewPanel h2{margin:0 0 6px;font-size:18px;line-height:1.25}
+#nazkPreviewPanel .nazk-preview-note{display:none}
+#nazkPreviewPanel .nazk-preview-kpis{gap:8px;margin:0 0 7px}
+#nazkPreviewPanel .nazk-preview-kpis>div{padding:7px 10px}
+#nazkPreviewPanel .nazk-preview-kpis strong{margin-top:2px;font-size:21px;line-height:1.1}
+#nazkPreviewPanel>p:not(.nazk-preview-note){margin:0 0 6px;font-size:12px;line-height:1.3}
+#nazkPreviewPanel .nazk-preview-filters{display:grid;grid-template-columns:minmax(190px,1.7fr) repeat(4,minmax(135px,1fr)) auto;align-items:end;gap:7px;margin:0 0 5px}
+#nazkPreviewPanel .nazk-preview-filters label{min-width:0;width:auto;gap:3px;font-size:12px;line-height:1.2}
+#nazkPreviewPanel .nazk-preview-filters button{min-height:32px;margin:0;white-space:nowrap}
+#nazkPreviewPanel select,#nazkPreviewPanel input{width:100%;min-width:0;min-height:32px;padding:5px 8px}
+#nazkPreviewPanel #nazkPreviewMessage{min-height:0;margin:0 0 5px;font-size:12px;line-height:1.25}
+#nazkPreviewPanel .nazk-preview-scroll{height:clamp(180px,calc(100dvh - 420px),640px);min-height:180px;max-height:640px;overflow:auto;overscroll-behavior:contain}
+#nazkPreviewPanel table{min-width:1240px}
+#nazkPreviewPanel th{position:sticky;top:0;z-index:2;background:var(--surface,#fff);color:var(--ink);box-shadow:0 1px 0 var(--line,#8295a6)}
+#nazkPreviewPanel th,#nazkPreviewPanel td{padding:7px 9px}
+#nazkPreviewPanel .nazk-preview-footer{margin:5px 0 0}
+@media(max-width:1199px){#nazkPreviewPanel .nazk-preview-filters{grid-template-columns:repeat(3,minmax(150px,1fr))}}
+@media(max-width:750px){#nazkPreviewPanel .nazk-preview-filters{grid-template-columns:repeat(2,minmax(0,1fr))}#nazkPreviewPanel .nazk-preview-filters label:first-child{grid-column:1/-1}#nazkPreviewPanel .nazk-preview-filters button{justify-self:start}}
+@media(min-width:1061px){
+  #operationalTasksView:has(#nazkPreviewPanel:not([hidden])){row-gap:0}
+  #nazkPreviewPanel:not([hidden]){display:flex;flex:1 1 0;flex-direction:column;min-height:0;overflow:hidden}
+  #nazkPreviewPanel .nazk-preview-scroll{flex:1 1 0;height:auto;min-height:140px;max-height:none}
+}

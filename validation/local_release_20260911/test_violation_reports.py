@@ -39,7 +39,8 @@ class ViolationReportTests(unittest.TestCase):
         self.old_db = server.DB_PATH
         server.DB_PATH = Path(self.temp.name) / "test.sqlite3"
         server.init_db()
-        server.save_violation_report(report_payload())
+        with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+            server.save_violation_report(report_payload())
 
     def tearDown(self):
         server.DB_PATH = self.old_db
@@ -54,7 +55,8 @@ class ViolationReportTests(unittest.TestCase):
             payload = report_payload()
             payload.update({"id": f"saved-list-{index}", "violationReportID": f"UA-D-SAVED-{index}", "status": status})
             payload["details"]["reason"] = reason
-            server.save_violation_report(payload)
+            with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                server.save_violation_report(payload)
             with server.db() as con:
                 con.execute("""INSERT INTO violation_report_reviews
                     (report_id,review_status,decision_justification,updated_at)
@@ -66,6 +68,7 @@ class ViolationReportTests(unittest.TestCase):
                 "FROM violation_report_reviews ORDER BY report_id")]
         with patch.object(server, "build_violation_decision_justification",
                           side_effect=AssertionError("list must not generate justification")), \
+             patch.object(server, "resolve_violation_procurement_context", return_value=({}, "test_fixture")), \
              patch.object(violation_protocol_summary, "present", return_value=None):
             result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
         projected = {row["id"]: row["decision_justification"] for row in result["items"]}
@@ -77,6 +80,145 @@ class ViolationReportTests(unittest.TestCase):
                 "SELECT report_id,review_status,decision_justification,updated_at "
                 "FROM violation_report_reviews ORDER BY report_id")]
         self.assertEqual(after, before)
+
+    def test_list_api_projects_card_scenario_read_only_for_statuses_and_history(self):
+        fixtures = [
+            ("scenario-pending", "pending", "contractBreach", "in_review", "", {}, {
+                "rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": True, "contract_deadline_expired": True,
+                "performance_security_required": True, "day_5_shifted": False}),
+            ("scenario-pending-editable", "pending", "contractBreach", "in_review", "", {}, {
+                "rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": True, "contract_deadline_expired": True,
+                "performance_security_required": True, "day_5_shifted": False}),
+            ("scenario-satisfied", "satisfied", "signingRefusal", "reviewed", "warning", {
+                "written_refusal_date": "2026-08-20", "written_refusal_number": "SYN-2"}, {
+                "rejection_ambiguous": False, "written_refusal_within_deadline": False,
+                "day_3_shifted": True}),
+            ("scenario-declined", "declined", "goodsNonCompliance", "reviewed", "decline", {
+                "court_decision_final_present": 1}, {"rejection_ambiguous": False}),
+            ("scenario-historical-partial", "satisfied", "contractBreach", "reviewed", "decline", {}, {
+                "rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": False, "contract_deadline_expired": True,
+                "day_5_shifted": False}),
+            ("scenario-historical-empty", "satisfied", "unsupportedHistoricalReason", "reviewed", "decline", {}, None),
+            ("scenario-historical-no-snapshot", "declined", "signingRefusal", "reviewed", "decline", {}, None),
+        ]
+        for report_id, status, reason, review_status, decision, values, context in fixtures:
+            payload = report_payload(decisions=([{"id": "synthetic-official-decision"}]
+                                               if report_id == "scenario-pending" else None))
+            payload.update({"id": report_id, "violationReportID": f"UA-D-{report_id}", "status": status})
+            payload["details"]["reason"] = reason
+            with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                server.save_violation_report(payload)
+            with server.db() as con:
+                columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
+                review_values = {"report_id": report_id, "review_status": review_status,
+                                 "internal_decision": decision, "updated_at": "2026-10-25T10:00:00+03:00"}
+                if review_status == "reviewed":
+                    review_values["completed_at"] = "2026-10-25T10:00:00+03:00"
+                review_values.update({key: value for key, value in values.items() if key in columns})
+                con.execute("INSERT INTO violation_report_reviews (" + ",".join(review_values) + ") VALUES (" +
+                            ",".join("?" for _ in review_values) + ")", tuple(review_values.values()))
+            if context is not None:
+                snapshot = {"version": 1, "report_id": f"UA-D-{report_id}", "reason": reason,
+                            "procurement_context": context}
+                with server.db() as con:
+                    con.execute("""INSERT INTO violation_report_review_events
+                        (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                        VALUES (?,?,?,?,?,?)""",
+                        (report_id, "decision_context_snapshotted", "decision_context_snapshot",
+                         json.dumps(snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+
+        def database_state():
+            with server.db() as con:
+                return {
+                    "reports": [tuple(row) for row in con.execute(
+                        "SELECT id,status,raw_json,synced_at FROM violation_reports ORDER BY id")],
+                    "reviews": [tuple(row) for row in con.execute(
+                        "SELECT * FROM violation_report_reviews ORDER BY report_id")],
+                    "events": [tuple(row) for row in con.execute(
+                        "SELECT * FROM violation_report_review_events ORDER BY id")],
+                }
+
+        before = database_state()
+        with patch.object(server, "api_get",
+                          side_effect=AssertionError("list API must not make external Prozorro requests")), \
+             patch.object(server, "resolve_violation_procurement_context",
+                          side_effect=AssertionError("list API must use saved context only")), \
+             patch.object(server, "build_procurement_context",
+                          side_effect=AssertionError("list API must not build context from external data")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list must not refresh/save Prozorro reports")), \
+             patch.object(server, "build_violation_decision_justification",
+                          side_effect=AssertionError("list must not generate justification")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+
+        projected = {item["id"]: item for item in result["items"]}
+        for report_id, status, reason, _, _, values, snapshot_context in fixtures:
+            item = projected[report_id]
+            review = dict(values)
+            if review.get("court_decision_final_present") is not None:
+                review["court_decision_final_present"] = bool(review["court_decision_final_present"])
+            if snapshot_context is not None and report_id != "scenario-pending-editable" and ("performance_security_required" in snapshot_context or
+                    "contract_guarantee_required" in snapshot_context or reason != "contractBreach"):
+                self.assertEqual(item["scenario_summary"], server.violation_scenario_summary(
+                    {"reason": reason, "review": review, "defendant_statements": [
+                        {"description": "Пояснення постачальника"}]}, snapshot_context), report_id)
+            else:
+                self.assertEqual(item["scenario_summary"], "", report_id)
+            self.assertEqual(item["status"], status)
+        self.assertEqual(projected["scenario-declined"]["scenario_summary"],
+                         "Сценарій: пп. 3 п. 49; рішення суду, що набрало законної сили — наявне; "
+                         "пояснення постачальника — надані.")
+        self.assertEqual(projected["scenario-historical-empty"]["scenario_summary"], "")
+        self.assertEqual(projected["scenario-historical-no-snapshot"]["scenario_summary"], "")
+        self.assertEqual(projected["scenario-pending-editable"]["scenario_summary"], "")
+        self.assertEqual(database_state(), before, "GET list projection must not write reports, reviews, or events")
+
+    def test_list_scenario_projection_has_zero_network_calls_and_bounded_latency_through_200_rows(self):
+        full_context = {"rejection_ambiguous": False, "rejected_before_deadline": False,
+                        "rejection_present": False, "contract_deadline_expired": True,
+                        "performance_security_required": False, "day_5_shifted": False}
+        groups = ((1, "81000001"), (50, "81000050"), (100, "81000100"), (200, "81000200"))
+        for count, supplier_code in groups:
+            for index in range(count):
+                report_id = f"perf-{count:03d}-{index:03d}"
+                payload = report_payload()
+                payload.update({"id": report_id, "violationReportID": f"UA-D-{report_id}"})
+                payload["defendants"] = [organization(supplier_code)]
+                with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                    server.save_violation_report(payload)
+                saved_snapshot = {"version": 1, "report_id": f"UA-D-{report_id}",
+                                  "reason": "contractBreach", "procurement_context": full_context}
+                with server.db() as con:
+                    con.execute("""INSERT INTO violation_report_reviews
+                        (report_id,review_status,completed_at,updated_at) VALUES (?,?,?,?)""",
+                        (report_id, "reviewed", "2026-10-25T10:00:00+03:00",
+                         "2026-10-25T10:00:00+03:00"))
+                    con.execute("""INSERT INTO violation_report_review_events
+                        (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                        VALUES (?,?,?,?,?,?)""",
+                        (report_id, "decision_context_snapshotted", "decision_context_snapshot",
+                         json.dumps(saved_snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+        with patch.object(server, "api_get", side_effect=AssertionError("unexpected network request")), \
+             patch.object(server, "resolve_violation_procurement_context",
+                          side_effect=AssertionError("external resolver must not run")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list must not save reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            timings = {}
+            for count, supplier_code in groups:
+                size = max(10, count)
+                started = __import__("time").perf_counter()
+                result = server.list_violation_reports({"page": ["1"], "size": [str(size)],
+                                                        "supplier_code": [supplier_code]})
+                timings[count] = __import__("time").perf_counter() - started
+                self.assertEqual(len(result["items"]), count)
+                self.assertTrue(all(item["scenario_summary"] for item in result["items"]))
+        self.assertTrue(all(value < 5.0 for value in timings.values()), timings)
+        print("READ_ONLY_LIST_TIMINGS_SECONDS " + json.dumps(timings, sort_keys=True))
 
     def _individual_protocol_fixture(self, reason):
         return {

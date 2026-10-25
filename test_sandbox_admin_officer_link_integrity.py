@@ -37,11 +37,13 @@ class AdminOfficerLinkIntegrityTests(unittest.TestCase):
                          integrity.UI_CANDIDATE_V7_ID, integrity.UI_CANDIDATE_V8_ID,
                          integrity.UI_CANDIDATE_V9_ID, integrity.UI_CANDIDATE_V10_ID,
                          integrity.UI_CANDIDATE_V11_ID, integrity.UI_CANDIDATE_V12_ID,
-                         integrity.PREVIEW_VARIANT_ID, integrity.INTEGRATED_VARIANT_ID]
+                         integrity.PREVIEW_VARIANT_ID, integrity.INTEGRATED_VARIANT_ID,
+                         integrity.SCROLL_VARIANT_ID, integrity.APPEALS_API_VARIANT_ID,
+                         integrity.STABILIZATION_VARIANT_ID]
         recognized = set(expected_tail)
         self.assertEqual(expected_tail, [contract['variant_id'] for contract in contracts
                                          if contract['variant_id'] in recognized])
-        integrated = contracts[-1]
+        integrated = next(c for c in contracts if c['variant_id'] == integrity.INTEGRATED_VARIANT_ID)
         self.assertEqual(integrity.INTEGRATED_VARIANT_ID, integrated['variant_id'])
         self.assertEqual(integrity.PREVIEW_BASELINE, integrated['baseline_sha'])
 

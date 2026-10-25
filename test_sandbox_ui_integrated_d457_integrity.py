@@ -12,13 +12,14 @@ ROOT = integrity.ROOT
 
 class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
     def setUp(self):
-        self.contract = integrity.load_contracts()[-1]
+        self.contract = next(c for c in integrity.load_contracts()
+                             if c["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
         self.paths = set().union(*(set(self.contract[name]) for name in
                                    ("product_files", "protected_files", "guarded_files")))
 
     def test_exact_candidate_matches_and_historical_admin_contract_is_not_rewritten(self):
-        self.assertEqual(self.contract["variant_id"], integrity.INTEGRATED_VARIANT_ID)
-        self.assertEqual(self.contract["baseline_sha"], integrity.PREVIEW_BASELINE)
+        self.assertEqual(self.contract["variant_id"], integrity.STABILIZATION_VARIANT_ID)
+        self.assertEqual(self.contract["baseline_sha"], integrity.APPEALS_API_BASELINE)
         raw = integrity.UI_CANDIDATE_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), integrity.UI_CANDIDATE_DELTA_SHA256)
         v5_raw = integrity.UI_CANDIDATE_V5_DELTA.read_bytes().replace(b"\r\n", b"\n")
@@ -47,10 +48,23 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(preview_raw).hexdigest(), integrity.PREVIEW_CONTRACT_SHA256)
         integrated_raw = integrity.INTEGRATED_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(integrated_raw).hexdigest(), integrity.INTEGRATED_CONTRACT_SHA256)
+        appeals_api_raw = integrity.APPEALS_API_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(appeals_api_raw).hexdigest(), integrity.APPEALS_API_CONTRACT_SHA256)
+        scroll_raw = integrity.SCROLL_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(scroll_raw).hexdigest(), integrity.SCROLL_CONTRACT_SHA256)
+        stabilization_raw = integrity.STABILIZATION_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(stabilization_raw).hexdigest(), integrity.STABILIZATION_CONTRACT_SHA256)
+        integrated = next(c for c in integrity.load_contracts()
+                          if c["variant_id"] == integrity.INTEGRATED_VARIANT_ID)
+        self.assertFalse(integrity.manifest_tree_matches(integrated))
         self.assertFalse(integrity.manifest_tree_matches(next(c for c in integrity.load_contracts()
                                                                if c["variant_id"] == integrity.UI_CANDIDATE_V12_ID)))
         self.assertFalse(integrity.manifest_tree_matches(next(c for c in integrity.load_contracts()
                                                                if c["variant_id"] == integrity.PREVIEW_VARIANT_ID)))
+        self.assertFalse(integrity.manifest_tree_matches(next(c for c in integrity.load_contracts()
+                                                               if c["variant_id"] == integrity.SCROLL_VARIANT_ID)))
+        self.assertFalse(integrity.manifest_tree_matches(next(c for c in integrity.load_contracts()
+                                                               if c["variant_id"] == integrity.APPEALS_API_VARIANT_ID)))
         self.assertTrue(integrity.manifest_tree_matches(self.contract))
         self.assertTrue(integrity.exact_variant_tree_matches())
         previous_v2 = next(c for c in integrity.load_contracts()
@@ -115,6 +129,9 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                     integrity.UI_CANDIDATE_V10_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V11_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V12_PRODUCT_OVERRIDES | integrity.PREVIEW_PRODUCTS |
+                    integrity.APPEALS_API_PRODUCT_OVERRIDES | integrity.APPEALS_API_PRODUCT_ADDITIONS |
+                    integrity.SCROLL_PRODUCTS | integrity.STABILIZATION_PRODUCT_OVERRIDES |
+                    integrity.STABILIZATION_PRODUCT_ADDITIONS |
                     {"validation/fixtures/appeals_scenario_v11_tail.zip"})
         self.assertEqual(set(self.contract["product_files"]), expected)
         self.assertEqual(set(self.contract["approved_scope"]) - set(
@@ -126,7 +143,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
             integrity.UI_CANDIDATE_V7_SCOPE | integrity.UI_CANDIDATE_V8_SCOPE |
             integrity.UI_CANDIDATE_V9_SCOPE | integrity.UI_CANDIDATE_V10_SCOPE |
             integrity.UI_CANDIDATE_V11_SCOPE | integrity.UI_CANDIDATE_V12_SCOPE |
-            integrity.PREVIEW_SCOPE | integrity.INTEGRATED_SCOPE)
+            integrity.PREVIEW_SCOPE | integrity.INTEGRATED_SCOPE | integrity.APPEALS_API_SCOPE |
+            integrity.SCROLL_SCOPE | integrity.STABILIZATION_SCOPE)
         for path in (integrity.ADMIN_HISTORY_CONTRACT, integrity.ADMIN_CONTRACT,
                      integrity.ADMIN_V3_DELTA):
             self.assertTrue(path.is_file())
