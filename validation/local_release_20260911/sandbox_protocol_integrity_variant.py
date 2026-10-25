@@ -154,6 +154,9 @@ UI_CANDIDATE_V10_ID = "sandbox-ui-integrated-d457-v10"
 UI_CANDIDATE_V11_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v11.json"
 UI_CANDIDATE_V11_DELTA_SHA256 = "3afe652651a359664a0cd31295c6dd9689e2ac92fb3cd45064e77e4ef562700b"
 UI_CANDIDATE_V11_ID = "sandbox-ui-integrated-d457-v11"
+UI_CANDIDATE_V12_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v12.json"
+UI_CANDIDATE_V12_DELTA_SHA256 = "a08b5eb0abc8289e324f7246b52266c8f0bca85766afee85c4bdf7a66dcb3d7f"
+UI_CANDIDATE_V12_ID = "sandbox-ui-integrated-d457-v12"
 UI_CANDIDATE_V6_SCOPE = {'browser_regressions_cover_one_click_roles_themes_and_saved_forms',
  'new_protocol_docx_uses_saved_card_declension_overrides_and_pdf_uses_current_docx',
  'permanent_card_declension_actions_for_customer_and_supplier',
@@ -247,6 +250,26 @@ UI_CANDIDATE_V11_GUARD_OVERRIDES = {
     "test_sandbox_nazk_columns_integrity.py",
     "validation/appeals_declension_card_browser.cjs",
 }
+UI_CANDIDATE_V12_SCOPE = {
+    "restore_adaptive_scenario_summary_in_appeals_table",
+    "keep_saved_justification_in_separate_read_only_eye_viewer",
+    "preserve_existing_appeals_column_preference_key_and_layout",
+}
+UI_CANDIDATE_V12_PRODUCT_OVERRIDES = {
+    "app.js",
+    "index.html",
+    "styles.css",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "validation/appeals_justification_browser.cjs",
+}
+UI_CANDIDATE_V12_GUARD_OVERRIDES = {
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "validation/appeals_justification_browser.cjs",
+}
+UI_CANDIDATE_V12_PROTECTED_OVERRIDES = {"app.js"}
 UI_CANDIDATE_PRODUCTS = {
     "app.js", "auth_access.py", "auth_ui.js", "edr_sync_v2.py",
     "history_columns.js", "index.html", "reference_directories.py", "server.py", "styles.css",
@@ -570,7 +593,9 @@ def load_contracts():
     contracts.append(ui_v9)
     ui_v10 = load_ui_candidate_v10(ui_v9)
     contracts.append(ui_v10)
-    contracts.append(load_ui_candidate_v11(ui_v10))
+    ui_v11 = load_ui_candidate_v11(ui_v10)
+    contracts.append(ui_v11)
+    contracts.append(load_ui_candidate_v12(ui_v11))
     return contracts
 
 
@@ -874,6 +899,29 @@ def load_ui_candidate_v11(ui_v10):
     candidate["variant_id"] = UI_CANDIDATE_V11_ID
     candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
     candidate["product_files"].update(delta["product_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
+
+def load_ui_candidate_v12(ui_v11):
+    delta = _load_ui_delta(UI_CANDIDATE_V12_DELTA, UI_CANDIDATE_V12_DELTA_SHA256)
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "protected_overrides", "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V12_ID or
+            delta.get("baseline_sha") != "3fc2b2977073f56c570941fbcdff49b1a187fb7e" or
+            delta.get("base_manifest") != UI_CANDIDATE_V11_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V11_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V12_SCOPE or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V12_PRODUCT_OVERRIDES or
+            set(delta.get("protected_overrides", {})) != UI_CANDIDATE_V12_PROTECTED_OVERRIDES or
+            set(delta.get("guarded_overrides", {})) != UI_CANDIDATE_V12_GUARD_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v12 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v11)
+    candidate["variant_id"] = UI_CANDIDATE_V12_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["protected_files"].update(delta["protected_overrides"])
     candidate["guarded_files"].update(delta["guarded_overrides"])
     return candidate
 

@@ -1,0 +1,53 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v12",
+  "baseline_sha": "3fc2b2977073f56c570941fbcdff49b1a187fb7e",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v11.json",
+  "base_manifest_sha256": "3afe652651a359664a0cd31295c6dd9689e2ac92fb3cd45064e77e4ef562700b",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "restore_adaptive_scenario_summary_in_appeals_table",
+    "keep_saved_justification_in_separate_read_only_eye_viewer",
+    "preserve_existing_appeals_column_preference_key_and_layout"
+  ],
+  "product_overrides": {
+    "app.js": {
+      "sha256": "a1fb20152a719373433637af3b04791bddd5edc153c76c5f1bfa41f1c5185382"
+    },
+    "index.html": {
+      "sha256": "342a893528fe1b0c53120d4d090e9d8d14a1b8cd4b5638f2ea7c2e826a51bda8"
+    },
+    "styles.css": {
+      "sha256": "9d06bbe0882a040eeffce709d6545d9d449920855582303cd619bc87fb8f17d6"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "c0f03c7bf268602e674aa4039d203180a5c4969942ea4f7f113b71b1e82bfe97"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "dddf2a58eded58fa39c1dd77d6ff6d953c70ac08f04bff048a408129d9f538c8"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "03cce0cb6de7ffc7aa248116aa0ac6c44c44f70672a2c0f5e9f7a4dd4f1193b9"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "f4d203a4bb0d68d2cc802b8794067603268e8f09d2743bc4d797026e1a45d944"
+    }
+  },
+  "guarded_overrides": {
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "c0f03c7bf268602e674aa4039d203180a5c4969942ea4f7f113b71b1e82bfe97"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "dddf2a58eded58fa39c1dd77d6ff6d953c70ac08f04bff048a408129d9f538c8"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "f4d203a4bb0d68d2cc802b8794067603268e8f09d2743bc4d797026e1a45d944"
+    }
+  },
+  "protected_overrides": {
+    "app.js": {
+      "sha256": "a1fb20152a719373433637af3b04791bddd5edc153c76c5f1bfa41f1c5185382",
+      "halloween_normalized_sha256": "a1fb20152a719373433637af3b04791bddd5edc153c76c5f1bfa41f1c5185382",
+      "personal_theme_normalized_sha256": "5538b25b662d5d7660ba06b77e1231dae8463c43388f6d33c29c862c4b0041f3"
+    }
+  }
+}
