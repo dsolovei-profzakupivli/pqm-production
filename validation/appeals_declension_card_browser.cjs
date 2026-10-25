@@ -35,7 +35,7 @@ try{
     document.querySelector('#declensionSave').onclick=saveDeclensionEditor;
   </script></body></html>`);
   const makeItem=()=>({id:'R-1',author_name:'ТОВАРИСТВО «ПРИКЛАД»',author_code:'12345678',defendant_name:'ФОП Петренко Олена Іванівна',defendant_code:'1234567890',review:{customer_verified_full_name:'ТОВАРИСТВО «ПРИКЛАД»'},protocol_supplier_names:{full_name:{value:'ФОП Петренко Олена Іванівна'}},protocol_readiness:{declensions:[]},protocol_readiness_individual:{declensions:[]}});
-  async function setRole(role){await page.evaluate(role=>{currentMe={role,permissions:{'declension.read':true,'declension.manage':role!=='viewer'}}},role)}
+  async function setRole(role,canManage=role!=='viewer'){await page.evaluate(({role,canManage})=>{currentMe={role,permissions:{'declension.read':true,'declension.manage':canManage}}},{role,canManage})}
   async function openByClick(side){await page.locator(`[data-card-declension-side="${side}"]`).click();await page.waitForFunction(()=>document.querySelector('#declensionDialog').open);}
   for(const theme of ['light','dark']){
     await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
@@ -72,6 +72,13 @@ try{
         await page.locator('#declensionDialog button.dialog-close').click();
       }
       await page.evaluate(()=>{__overrides=[];declensionItems=[]});
+    }
+    for(const role of ['admin','officer']){
+      await setRole(role,false);await page.evaluate(item=>renderCard(item),makeItem());await openByClick('customer');
+      assert.equal(await page.locator('#declensionSave').isVisible(),false,`${theme}/${role}: no edit permission means read-only`);
+      await page.evaluate(()=>saveDeclensionEditor());
+      assert.equal(await page.evaluate(()=>__overrides.length),0,`${theme}/${role}: direct save call is blocked without declension.manage`);
+      await page.locator('#declensionDialog button.dialog-close').click();
     }
     await setRole('viewer');
     await page.evaluate(item=>{__overrides=[{id:'saved-view-only',entity_type:'fop',original:'ФОП Петренко Олена Іванівна',genitive:'ЗБЕРЕЖЕНА ВІДМІНЕНА ФОРМА',dative:'',accusative:'',comment:''}];renderCard(item)},makeItem());

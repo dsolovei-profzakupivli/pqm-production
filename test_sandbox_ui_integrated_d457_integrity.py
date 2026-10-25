@@ -17,7 +17,7 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                                    ("product_files", "protected_files", "guarded_files")))
 
     def test_exact_candidate_matches_and_historical_admin_contract_is_not_rewritten(self):
-        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V10_ID)
+        self.assertEqual(self.contract["variant_id"], integrity.UI_CANDIDATE_V11_ID)
         self.assertEqual(self.contract["baseline_sha"], "3fc2b2977073f56c570941fbcdff49b1a187fb7e")
         raw = integrity.UI_CANDIDATE_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), integrity.UI_CANDIDATE_DELTA_SHA256)
@@ -35,6 +35,10 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                                                                if c["variant_id"] == integrity.UI_CANDIDATE_V9_ID)))
         v10_raw = integrity.UI_CANDIDATE_V10_DELTA.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(v10_raw).hexdigest(), integrity.UI_CANDIDATE_V10_DELTA_SHA256)
+        self.assertFalse(integrity.manifest_tree_matches(next(c for c in integrity.load_contracts()
+                                                               if c["variant_id"] == integrity.UI_CANDIDATE_V10_ID)))
+        v11_raw = integrity.UI_CANDIDATE_V11_DELTA.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(v11_raw).hexdigest(), integrity.UI_CANDIDATE_V11_DELTA_SHA256)
         self.assertTrue(integrity.manifest_tree_matches(self.contract))
         self.assertTrue(integrity.exact_variant_tree_matches())
         previous_v2 = next(c for c in integrity.load_contracts()
@@ -96,7 +100,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                     integrity.UI_CANDIDATE_V7_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V8_PRODUCT_OVERRIDES |
                     integrity.UI_CANDIDATE_V9_PRODUCT_OVERRIDES |
-                    integrity.UI_CANDIDATE_V10_PRODUCT_OVERRIDES)
+                    integrity.UI_CANDIDATE_V10_PRODUCT_OVERRIDES |
+                    integrity.UI_CANDIDATE_V11_PRODUCT_OVERRIDES)
         self.assertEqual(set(self.contract["product_files"]), expected)
         self.assertEqual(set(self.contract["approved_scope"]) - set(
             next(c for c in integrity.load_contracts()
@@ -105,7 +110,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
             integrity.UI_CANDIDATE_V3_SCOPE | integrity.UI_CANDIDATE_V4_SCOPE |
             integrity.UI_CANDIDATE_V5_SCOPE | integrity.UI_CANDIDATE_V6_SCOPE |
             integrity.UI_CANDIDATE_V7_SCOPE | integrity.UI_CANDIDATE_V8_SCOPE |
-            integrity.UI_CANDIDATE_V9_SCOPE | integrity.UI_CANDIDATE_V10_SCOPE)
+            integrity.UI_CANDIDATE_V9_SCOPE | integrity.UI_CANDIDATE_V10_SCOPE |
+            integrity.UI_CANDIDATE_V11_SCOPE)
         for path in (integrity.ADMIN_HISTORY_CONTRACT, integrity.ADMIN_CONTRACT,
                      integrity.ADMIN_V3_DELTA):
             self.assertTrue(path.is_file())
@@ -135,6 +141,16 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
         self.assertIn("the real application initializes currentMe to null before authentication", supplier_ux)
         self.assertIn("[['admin',true],['officer',true],['viewer',false]]", supplier_ux)
         self.assertIn("save visibility follows declension.manage", supplier_ux)
+
+    def test_declension_save_fixture_models_read_only_state_and_permission_gate(self):
+        vm_test = (ROOT / "validation/appeals_declension_ui.cjs").read_text(encoding="utf-8")
+        self.assertIn("declensionEditorReadOnly:false", vm_test)
+        self.assertIn("declensionEditorReadOnly=true", vm_test)
+        self.assertIn("read-only editor must not send a save request", vm_test)
+        browser_test = (ROOT / "validation/appeals_declension_card_browser.cjs").read_text(encoding="utf-8")
+        self.assertIn("async function setRole(role,canManage=role!=='viewer')", browser_test)
+        self.assertIn("await setRole(role,false)", browser_test)
+        self.assertIn("direct save call is blocked without declension.manage", browser_test)
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ const twoCustomer=[entry('customer','resolved'),customer,entry('customer','unres
   const saved=[];let returned=0,next=null,lastRendered='';
   Object.assign(context,{
     $:selector=>selector==='#declensionDialog'?{close:()=>{}}:selector==='#declensionSearch'?{value:''}:{value:formValues[selector]||''},
-    API:'/api',editingDeclensionId:null,declensionReturnContext:context.selection.selection,declensionItems:[],
+    API:'/api',editingDeclensionId:null,declensionEditorReadOnly:false,declensionReturnContext:context.selection.selection,declensionItems:[],
     request:async(_url,options)=>{saved.push(JSON.parse(options.body))},
     loadDeclensionOverrides:async()=>{context.declensionItems=saved.map(row=>({...row}))},
     openDeclensionEditor:(item,grammaticalCase,requestContext)=>{next={item,grammaticalCase,requestContext}},
@@ -53,6 +53,11 @@ const twoCustomer=[entry('customer','resolved'),customer,entry('customer','unres
   assert.strictEqual(next,null);assert.strictEqual(returned,0);
   assert.strictEqual(lastRendered,'');
   assert.strictEqual(context.declensionReturnContext,null);
+  const savedBeforeReadOnlyAttempt=saved.length;
+  context.declensionEditorReadOnly=true;
+  await vm.runInContext('saveDeclensionEditor()',context);
+  assert.strictEqual(saved.length,savedBeforeReadOnlyAttempt,'read-only editor must not send a save request');
+  context.declensionEditorReadOnly=false;
   const list=src.slice(src.indexOf('async function loadViolationReports(){'),src.indexOf('function violationDetailHtml(item){'));
   const reloadStart=src.indexOf('async function reloadOpenViolationReportDetail(){');
   const reload=src.slice(reloadStart,src.indexOf('\n}\n',reloadStart)+3);
