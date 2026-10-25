@@ -1,0 +1,82 @@
+{
+  "variant_id": "sandbox-nazk-readonly-preview-appeals-v1",
+  "baseline_sha": "f394d4c5e5f7afd76f39985d54e3e157ae65c811",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v11.json",
+  "base_manifest_sha256": "3afe652651a359664a0cd31295c6dd9689e2ac92fb3cd45064e77e4ef562700b",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "preserve-dom-stability-column-preferences-and-existing-task-handlers",
+    "read-only-supplier-nazk-preview-in-operational-tasks",
+    "reuse-canonical-history-coverage-and-activity",
+    "role-scoped-minimized-preview-without-domain-writes"
+  ],
+  "product_overrides": {
+    "index.html": {
+      "sha256": "215c21c599021725e8acb31833fb6e991b684df82d6fec49f87e494d7891e9bb"
+    },
+    "nazk_preview.css": {
+      "sha256": "819d3f4ec065176d2d54171c437dd9024e7c09f6082931e151e86e6eac26c334"
+    },
+    "nazk_preview.js": {
+      "sha256": "da60e9b271ce59200c1d8092d06038f5185c19d638411b4e8a98fc13d9f2ff41"
+    },
+    "nazk_preview.py": {
+      "sha256": "1e210977d598902f4ae4e1b6e139caf8da51cded07c31059ba941f5c042cf629"
+    },
+    "server.py": {
+      "sha256": "3a6404641b5ab829573391ddeb54d0466edf60fad8f21396fef3c2de7b33dd82",
+      "halloween_normalized_sha256": "3a6404641b5ab829573391ddeb54d0466edf60fad8f21396fef3c2de7b33dd82",
+      "personal_theme_normalized_sha256": "7ddf919cc4d38cec04e2056df7c582358aa317e294dece6ce3167ff01fd8b306"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "cb3d1a7a5fadeb5fb46c2ee79a5832cab6d7e8c40bdba39991f9d52ed845e348"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "0cd3995486477b1e8647b8ef9b2e25e1d0870410210385aeab42351b7c9b223a"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "539e12358fc1056f9cf120a3f3f5937f17216ad0ce1799f1f42b72cbd3373b7c"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "17503a0806aa8b29d5734ce5acd1043a5edaec2ff570885ad8cd22a4398f2466"
+    },
+    "validation/fixtures/nazk_preview_baseline_f394d4c.zip": {
+      "sha256": "4eceb1817d619ba6c01d4e046b6f9f4ab027ab0e17a669a8ac7377540d167433"
+    },
+    "validation/local_release_20260911/test_nazk_preview.py": {
+      "sha256": "396c75a5d47cad41ea61f090ef83209f86c83cb6c7741ed6244405c54ca0bfb7"
+    },
+    "validation/nazk_preview_browser.cjs": {
+      "sha256": "2f42a3584937764c381f65e3f0adea83725ea402d7bf6caaee079d8d1f93b11a"
+    },
+    "validation/nazk_preview_browser_fixture.py": {
+      "sha256": "a89b47d1c5e273fdd8e4cbfa1fbeafb1d7dcd2c5513ee36b7c27eb6642414c65"
+    },
+    "validation/nazk_preview_fixture.py": {
+      "sha256": "f4aeff274a9a879a2f513279f94f13ba5ab7ef4b743be589f1c6b3937cec0f77"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "85d604af1419a74d248e64065b3540d46c345cd7464dd01371a13590db902cba"
+    }
+  },
+  "guarded_additions": {
+    "nazk_evidence.py": {
+      "sha256": "117e8bf2e0397b5a55bcf979263517ba5cc2df46ac7170b4baa510ade2616552"
+    },
+    "nazk_workflow.py": {
+      "sha256": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3"
+    },
+    "operational_tasks.py": {
+      "sha256": "4ee9a932e0c9be6d2fccf9c6f4485630f748aae0b518fda44c19fe45e1751d96"
+    },
+    "registry_popovers.js": {
+      "sha256": "dd974f8f682f4bb53bf61be8976e617ffcd8cba84b6df84c3e58efe6a84e19e8"
+    },
+    "scheduler_runtime.py": {
+      "sha256": "7196fee231fa7b89edf287d1d81c26b350c67c807a0ba75e600091753a562be0"
+    },
+    "supplier_activity.py": {
+      "sha256": "064e7d6fc70cbbddf8f9e78f60fd6e509191997197fbb7949122a279a984589b"
+    }
+  }
+}

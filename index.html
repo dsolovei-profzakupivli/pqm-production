@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="ui_final.css">
   <link id="personalThemeStyles" rel="stylesheet" href="theme.css">
   <script src="theme_ui.js"></script>
+  <link rel="stylesheet" href="nazk_preview.css">
 </head>
 <body>
   <section id="loginGate" class="login-gate" aria-labelledby="loginTitle">
@@ -312,10 +313,36 @@
       <button id="requestsRefresh" class="ghost pqm-prozorro-refresh" title="Оновити дані з Prozorro" aria-label="Оновити дані з Prozorro">↻ Prozorro</button>
     </section>
     <p id="requestsSyncStatus" class="module-sync muted"></p>
-    <section class="supplier-table-card card"><div class="supplier-table-scroll"><table class="supplier-table requests-table"><thead><tr><th>Звернення</th><th>Дата</th><th>Замовник</th><th>Постачальник</th><th>Підстава</th><th>Пояснення до</th><th>Закупівля / договір / звернення</th><th data-column-key="decision_justification">Обґрунтування</th><th>Статус</th><th>Протокол рішення</th></tr></thead><tbody id="requestsBody"></tbody></table></div><footer id="requestsFooter" class="supplier-pagination"><span id="requestsPageInfo"></span><div><button id="requestsPrev" type="button" class="ghost" aria-label="Попередня сторінка">←</button><button id="requestsNext" type="button" class="ghost" aria-label="Наступна сторінка">→</button></div></footer></section>
+    <section class="supplier-table-card card"><div class="supplier-table-scroll"><table class="supplier-table requests-table"><thead><tr><th>Звернення</th><th>Дата</th><th>Замовник</th><th>Постачальник</th><th>Підстава</th><th>Пояснення до</th><th>Закупівля / договір / звернення</th><th data-column-key="decision_justification">Сценарій</th><th>Статус</th><th>Протокол рішення</th></tr></thead><tbody id="requestsBody"></tbody></table></div><footer id="requestsFooter" class="supplier-pagination"><span id="requestsPageInfo"></span><div><button id="requestsPrev" type="button" class="ghost" aria-label="Попередня сторінка">←</button><button id="requestsNext" type="button" class="ghost" aria-label="Наступна сторінка">→</button></div></footer></section>
   </main>
   <main id="operationalTasksView" class="module-view data-module-shell" hidden>
     <section class="module-heading operational-task-heading"><div><p class="eyebrow">Контроль кваліфікованих постачальників</p><h1>Операційні задачі</h1><p class="muted">АМКУ, НАЗК та блокування за попередженнями в єдиній робочій черзі</p></div><div id="operationalTaskTypes" class="operational-type-kpis" aria-label="Типи операційних задач"></div></section>
+    <nav id="nazkPreviewTabs" class="nazk-preview-nav" aria-label="Операційні задачі" hidden>
+      <button type="button" data-nazk-view="tasks" aria-pressed="true">Задачі</button>
+      <button type="button" data-nazk-view="preview" aria-pressed="false">НАЗК</button>
+    </nav>
+    <section id="nazkPreviewPanel" aria-label="Попередній перегляд НАЗК" hidden>
+      <h2>НАЗК · попередній перегляд перевірок</h2>
+      <p class="nazk-preview-note">Лише перегляд. Відкриття, пошук та оновлення не створюють перевірок або задач.</p>
+      <div class="nazk-preview-kpis">
+        <div><span>З активними кваліфікаціями</span><strong data-nazk-count="active_suppliers">—</strong></div>
+        <div><span>Потребують нової перевірки</span><strong data-nazk-count="new_checks">—</strong></div>
+        <div><span>Уже опрацьовуються</span><strong data-nazk-count="in_progress">—</strong></div>
+        <div><span>Без пов'язаних заявок</span><strong data-nazk-count="without_applications">—</strong></div>
+      </div>
+      <p>Потенційних нових перевірок: <strong data-nazk-count="new_checks">—</strong> · потенційних нових операційних задач: <strong data-nazk-count="new_tasks">—</strong></p>
+      <div class="nazk-preview-filters">
+        <label>Пошук<input id="nazkPreviewSearch" maxlength="160" placeholder="Назва або ЄДРПОУ / РНОКПП"></label>
+        <label>Активність<select id="nazkPreviewScope"><option value="active">Є активні кваліфікації</option><option value="all">Усі зі збігами НАЗК</option><option value="inactive">Без активних кваліфікацій</option></select></label>
+        <label>Результат<select id="nazkPreviewGroup"><option value="">Усі результати</option><option value="candidate">Потенційні нові перевірки</option><option value="existing">Уже в роботі</option><option value="completed">Завершені перевірки</option><option value="blocked">Недостатньо умов</option><option value="excluded">Виключено</option></select></label>
+        <label>Стан НАЗК<select id="nazkPreviewState"><option value="">Усі стани</option></select></label>
+        <label>Причина<select id="nazkPreviewReason"><option value="">Усі причини</option></select></label>
+        <button id="nazkPreviewRefresh" type="button">Оновити перегляд</button>
+      </div>
+      <p id="nazkPreviewMessage" role="status" aria-live="polite"></p>
+      <div class="nazk-preview-scroll"><table id="nazkPreviewTable" data-system-table="operations:nazk-preview"><thead><tr><th data-column-key="supplier" data-default-width="300">Постачальник / код</th><th data-column-key="activity" data-default-width="160">Активні кваліфікації / у зведенні</th><th data-column-key="state" data-default-width="190">Стан НАЗК</th><th data-column-key="work" data-default-width="250">Перевірки / задачі</th><th data-column-key="officer" data-default-width="180">Відповідальна УО</th><th data-column-key="applications" data-default-width="160">Пов'язані активні заявки</th><th data-column-key="reason" data-default-width="360">Причина</th><th data-column-key="actions" data-default-width="190">Перегляд</th></tr></thead><tbody id="nazkPreviewRows"></tbody></table></div>
+      <footer class="nazk-preview-footer"><span id="nazkPreviewTotal"></span><button id="nazkPreviewPrev" type="button">←</button><button id="nazkPreviewNext" type="button">→</button></footer>
+    </section>
     <section id="operationalTaskKpis" class="work-queue-kpis">
       <button data-task-kpi="active" class="active"><span>Активні задачі</span><strong>0</strong></button><button data-task-kpi="needs_action"><span>Потребують дії</span><strong>0</strong></button><button data-task-kpi="awaiting_response"><span>Очікують відповіді</span><strong>0</strong></button><button data-task-kpi="ready_for_document"><span>Готові до протоколу</span><strong>0</strong></button><button data-task-kpi="awaiting_sync"><span>Очікують sync</span><strong>0</strong></button><button data-task-kpi="completed"><span>Виконані</span><strong>0</strong></button>
     </section>
@@ -359,6 +386,7 @@
   <script src="ui_improvements.js"></script>
   <script src="audit_search.js"></script>
   <script src="app.js"></script>
+  <script src="nazk_preview.js"></script>
   <script src="google_writer_ui.js"></script>
   <script src="navigation_admin.js"></script>
   <script src="formed_protocol_ui.js"></script>

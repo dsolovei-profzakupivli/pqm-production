@@ -154,6 +154,9 @@ UI_CANDIDATE_V10_ID = "sandbox-ui-integrated-d457-v10"
 UI_CANDIDATE_V11_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v11.json"
 UI_CANDIDATE_V11_DELTA_SHA256 = "3afe652651a359664a0cd31295c6dd9689e2ac92fb3cd45064e77e4ef562700b"
 UI_CANDIDATE_V11_ID = "sandbox-ui-integrated-d457-v11"
+UI_CANDIDATE_V12_DELTA = ROOT / "test_sandbox_ui_integrated_d457_integrity_addendum_v12.json"
+UI_CANDIDATE_V12_DELTA_SHA256 = "a08b5eb0abc8289e324f7246b52266c8f0bca85766afee85c4bdf7a66dcb3d7f"
+UI_CANDIDATE_V12_ID = "sandbox-ui-integrated-d457-v12"
 UI_CANDIDATE_V6_SCOPE = {'browser_regressions_cover_one_click_roles_themes_and_saved_forms',
  'new_protocol_docx_uses_saved_card_declension_overrides_and_pdf_uses_current_docx',
  'permanent_card_declension_actions_for_customer_and_supplier',
@@ -247,6 +250,26 @@ UI_CANDIDATE_V11_GUARD_OVERRIDES = {
     "test_sandbox_nazk_columns_integrity.py",
     "validation/appeals_declension_card_browser.cjs",
 }
+UI_CANDIDATE_V12_SCOPE = {
+    "restore_adaptive_scenario_summary_in_appeals_table",
+    "keep_saved_justification_in_separate_read_only_eye_viewer",
+    "preserve_existing_appeals_column_preference_key_and_layout",
+}
+UI_CANDIDATE_V12_PRODUCT_OVERRIDES = {
+    "app.js",
+    "index.html",
+    "styles.css",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "validation/appeals_justification_browser.cjs",
+}
+UI_CANDIDATE_V12_GUARD_OVERRIDES = {
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_nazk_columns_integrity.py",
+    "validation/appeals_justification_browser.cjs",
+}
+UI_CANDIDATE_V12_PROTECTED_OVERRIDES = {"app.js"}
 UI_CANDIDATE_PRODUCTS = {
     "app.js", "auth_access.py", "auth_ui.js", "edr_sync_v2.py",
     "history_columns.js", "index.html", "reference_directories.py", "server.py", "styles.css",
@@ -570,7 +593,13 @@ def load_contracts():
     contracts.append(ui_v9)
     ui_v10 = load_ui_candidate_v10(ui_v9)
     contracts.append(ui_v10)
-    contracts.append(load_ui_candidate_v11(ui_v10))
+    ui_v11 = load_ui_candidate_v11(ui_v10)
+    contracts.append(ui_v11)
+    ui_v12 = load_ui_candidate_v12(ui_v11)
+    contracts.append(ui_v12)
+    preview = load_nazk_preview_contract(ui_v11)
+    contracts.append(preview)
+    contracts.append(load_nazk_appeals_integrated_contract(ui_v12, preview))
     return contracts
 
 
@@ -877,6 +906,29 @@ def load_ui_candidate_v11(ui_v10):
     candidate["guarded_files"].update(delta["guarded_overrides"])
     return candidate
 
+def load_ui_candidate_v12(ui_v11):
+    delta = _load_ui_delta(UI_CANDIDATE_V12_DELTA, UI_CANDIDATE_V12_DELTA_SHA256)
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "protected_overrides", "guarded_overrides"} or
+            delta.get("variant_id") != UI_CANDIDATE_V12_ID or
+            delta.get("baseline_sha") != "3fc2b2977073f56c570941fbcdff49b1a187fb7e" or
+            delta.get("base_manifest") != UI_CANDIDATE_V11_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V11_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != UI_CANDIDATE_V12_SCOPE or
+            set(delta.get("product_overrides", {})) != UI_CANDIDATE_V12_PRODUCT_OVERRIDES or
+            set(delta.get("protected_overrides", {})) != UI_CANDIDATE_V12_PROTECTED_OVERRIDES or
+            set(delta.get("guarded_overrides", {})) != UI_CANDIDATE_V12_GUARD_OVERRIDES):
+        raise AssertionError("Integrated Sandbox UI v12 addendum has an unexpected exact scope")
+    candidate = copy.deepcopy(ui_v11)
+    candidate["variant_id"] = UI_CANDIDATE_V12_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["protected_files"].update(delta["protected_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate
+
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -942,3 +994,102 @@ def protected_content_matches(path, content, actual_projection_sha256,
         if expected and expected == actual_projection_sha256:
             return True
     return False
+
+
+# Additive, exact read-only NAZK preview. Every previous manifest remains pinned.
+PREVIEW_CONTRACT = ROOT / "test_sandbox_nazk_preview_integrity_variant.json"
+PREVIEW_CONTRACT_SHA256 = "71b8ae89a87099061f72427b759829fd8129a05f976d5fa5a4678dcbf1e17b15"
+PREVIEW_VARIANT_ID = "sandbox-nazk-readonly-preview-appeals-v1"
+PREVIEW_BASELINE = "f394d4c5e5f7afd76f39985d54e3e157ae65c811"
+PREVIEW_SCOPE = {
+    "read-only-supplier-nazk-preview-in-operational-tasks",
+    "reuse-canonical-history-coverage-and-activity",
+    "role-scoped-minimized-preview-without-domain-writes",
+    "preserve-dom-stability-column-preferences-and-existing-task-handlers",
+}
+PREVIEW_EXTRA_GUARDS = {"operational_tasks.py", "nazk_workflow.py", "nazk_evidence.py",
+                        "supplier_activity.py", "registry_popovers.js", "scheduler_runtime.py"}
+PREVIEW_PRODUCTS = {
+    "server.py", "index.html", "nazk_preview.py", "nazk_preview.js", "nazk_preview.css",
+    "test_sandbox_admin_officer_link_integrity.py", "test_sandbox_nazk_columns_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py", "test_sandbox_nazk_preview_integrity.py",
+    "validation/nazk_preview_fixture.py", "validation/nazk_preview_browser_fixture.py",
+    "validation/nazk_preview_browser.cjs", "validation/local_release_20260911/test_nazk_preview.py",
+    "validation/fixtures/nazk_preview_baseline_f394d4c.zip", "validation/run_local_release.py",
+}
+
+INTEGRATED_CONTRACT = ROOT / "test_sandbox_nazk_appeals_integrated_v1.json"
+INTEGRATED_CONTRACT_SHA256 = "0cb672a1d10e55562a2672a36c4089cd657bc62cba7499ffa42ecc15d3eaa3e2"
+INTEGRATED_VARIANT_ID = "sandbox-nazk-appeals-integrated-v1"
+INTEGRATED_SCOPE = {"combine-read-only-nazk-preview-and-appeals-scenario-fix"}
+INTEGRATED_PRODUCTS = (UI_CANDIDATE_V12_PRODUCT_OVERRIDES | PREVIEW_PRODUCTS |
+                       {"validation/fixtures/appeals_scenario_v11_tail.zip"})
+INTEGRATED_PROTECTED = UI_CANDIDATE_V12_PROTECTED_OVERRIDES | {"server.py"}
+INTEGRATED_GUARDS = UI_CANDIDATE_V12_GUARD_OVERRIDES | PREVIEW_EXTRA_GUARDS | PREVIEW_PRODUCTS.intersection(
+    {"test_sandbox_admin_officer_link_integrity.py", "test_sandbox_nazk_columns_integrity.py",
+     "validation/run_local_release.py"})
+
+
+def load_nazk_preview_contract(previous):
+    raw = PREVIEW_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != PREVIEW_CONTRACT_SHA256:
+        raise AssertionError("Changed exact NAZK preview contract")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides", "guarded_additions"} or
+            delta.get("variant_id") != PREVIEW_VARIANT_ID or delta.get("baseline_sha") != PREVIEW_BASELINE or
+            delta.get("base_manifest") != UI_CANDIDATE_V11_DELTA.name or
+            delta.get("base_manifest_sha256") != UI_CANDIDATE_V11_DELTA_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != PREVIEW_SCOPE or
+            set(delta.get("product_overrides", {})) != PREVIEW_PRODUCTS or
+            set(delta.get("guarded_additions", {})) != PREVIEW_EXTRA_GUARDS or
+            previous.get("variant_id") != UI_CANDIDATE_V11_ID):
+        raise AssertionError("Unexpected exact NAZK preview scope")
+    candidate = copy.deepcopy(previous)
+    candidate["variant_id"] = PREVIEW_VARIANT_ID
+    candidate["baseline_sha"] = PREVIEW_BASELINE
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) | PREVIEW_SCOPE)
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["guarded_files"].update(delta["guarded_additions"])
+    for section in ("protected_files", "guarded_files"):
+        for relative in set(candidate[section]) & PREVIEW_PRODUCTS:
+            candidate[section][relative] = delta["product_overrides"][relative]
+    return candidate
+
+
+def load_nazk_appeals_integrated_contract(scenario, preview):
+    raw = INTEGRATED_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != INTEGRATED_CONTRACT_SHA256:
+        raise AssertionError("Changed exact combined NAZK/Appeals contract")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "scenario_manifest", "scenario_manifest_sha256",
+                       "preview_manifest", "preview_manifest_sha256", "hash_format",
+                       "approved_scope_additions", "product_overrides", "protected_overrides",
+                       "guarded_overrides"} or
+            delta.get("variant_id") != INTEGRATED_VARIANT_ID or
+            delta.get("baseline_sha") != PREVIEW_BASELINE or
+            delta.get("scenario_manifest") != UI_CANDIDATE_V12_DELTA.name or
+            delta.get("scenario_manifest_sha256") != UI_CANDIDATE_V12_DELTA_SHA256 or
+            delta.get("preview_manifest") != PREVIEW_CONTRACT.name or
+            delta.get("preview_manifest_sha256") != PREVIEW_CONTRACT_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != INTEGRATED_SCOPE or
+            set(delta.get("product_overrides", {})) != INTEGRATED_PRODUCTS or
+            set(delta.get("protected_overrides", {})) != INTEGRATED_PROTECTED or
+            set(delta.get("guarded_overrides", {})) != INTEGRATED_GUARDS or
+            scenario.get("variant_id") != UI_CANDIDATE_V12_ID or
+            preview.get("variant_id") != PREVIEW_VARIANT_ID):
+        raise AssertionError("Combined NAZK/Appeals contract has an unexpected exact scope")
+    candidate = copy.deepcopy(preview)
+    candidate["variant_id"] = INTEGRATED_VARIANT_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                         set(scenario["approved_scope"]) |
+                                         set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(scenario["product_files"])
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["protected_files"].update(scenario["protected_files"])
+    candidate["protected_files"].update(delta["protected_overrides"])
+    candidate["guarded_files"].update(scenario["guarded_files"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    return candidate

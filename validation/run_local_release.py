@@ -38,9 +38,13 @@ def main():
         fixture_target.mkdir(parents=True,exist_ok=True)
         for fixture_name in ('protocol_integrity_history.zip',
                              'nazk_integrity_baseline_de77401.zip',
-                             'column_widths_baseline_4625498.zip'):
+                             'column_widths_baseline_4625498.zip',
+                             'nazk_preview_baseline_f394d4c.zip',
+                             'appeals_scenario_v11_tail.zip'):
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             shutil.copy2(fixture_source,fixture_target/fixture_name)
+        for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):
+            shutil.copy2(ROOT/'validation'/helper, root/'validation'/helper)
         # The runner is itself pinned by the column-width integrity variant.
         shutil.copy2(ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
         shutil.copy2(ROOT/'validation/docker_release_gate.py',root/'validation/docker_release_gate.py')
