@@ -80,6 +80,24 @@ async function drag(page,selector,index,delta){
  await installRoutes(context);
  try{
   if(process.argv.includes('--native-only')){console.log(await require('./table_widths_native_browser.cjs')({page,prepare,drag,read,out}));assert.deepEqual(errors,[]);return}
+  await prepare(page,'scenario-width');
+  await page.evaluate(()=>{
+   document.body.dataset.authRole='admin';document.querySelectorAll('main').forEach(main=>main.hidden=main.id!=='requestsView');
+   document.querySelector('#requestsBody').innerHTML='<tr>'+Array.from({length:10},(_,index)=>`<td>${index===7?'Короткий сценарій для перевірки налаштування ширини':''}</td>`).join('')+'</tr>';
+  });
+  const scenarioTable='#requestsView .requests-table',scenarioKey='requestsView:requestsBody';
+  await page.waitForFunction(key=>document.querySelector('#requestsView .requests-table')?.dataset.systemTable===key,scenarioKey);
+  await page.locator(`#requestsView .system-width-button[data-table-key="${scenarioKey}"]`).waitFor();
+  await page.locator(`#requestsView .system-width-button[data-table-key="${scenarioKey}"]`).click();
+  await page.locator('.system-width-fields [data-column="decision_justification"]').fill('260');
+  await page.locator('.system-width-dialog .primary').click();
+  await page.waitForFunction(()=>Math.round(document.querySelector('#requestsView .requests-table thead th[data-column-key="decision_justification"]').getBoundingClientRect().width)===260);
+  assert.equal(sharedStore[scenarioKey]['decision_justification'],260,'Scenario column width is saved through the existing shared table settings API');
+  await page.reload();
+  await page.evaluate(()=>{document.body.dataset.authRole='admin';document.querySelectorAll('main').forEach(main=>main.hidden=main.id!=='requestsView');document.querySelector('#requestsBody').innerHTML='<tr>'+Array.from({length:10},(_,index)=>`<td>${index===7?'Короткий сценарій після перезавантаження':''}</td>`).join('')+'</tr>'});
+  await page.waitForFunction(()=>Math.round(document.querySelector('#requestsView .requests-table thead th[data-column-key="decision_justification"]')?.getBoundingClientRect().width||0)===260);
+  assert.equal(Math.round(await page.locator(scenarioTable+' thead th[data-column-key="decision_justification"]').evaluate(th=>th.getBoundingClientRect().width)),260,'Scenario column width survives an F5-style page reload');
+  results.push('Appeals scenario column: shared width saved through existing admin API and restored after page reload');
   await prepare(page);
   const supplierTable='#suppliersView .supplier-table';
   assert.equal(await page.locator(supplierTable).count(),1);

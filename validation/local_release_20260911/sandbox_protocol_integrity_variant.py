@@ -609,7 +609,9 @@ def load_contracts():
     contracts.append(stabilization_v1)
     stabilization_v2 = load_stabilization_v2_contract(stabilization_v1)
     contracts.append(stabilization_v2)
-    contracts.append(load_stabilization_v3_contract(stabilization_v2))
+    stabilization_v3 = load_stabilization_v3_contract(stabilization_v2)
+    contracts.append(stabilization_v3)
+    contracts.append(load_stabilization_v4_contract(stabilization_v3))
     return contracts
 
 
@@ -1093,7 +1095,10 @@ STABILIZATION_V2_CONTRACT_SHA256 = "61512ea36622fd1173704c5123212471d4830831798a
 STABILIZATION_V2_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v2"
 STABILIZATION_V3_CONTRACT = ROOT / "test_sandbox_nazk_appeals_stabilization_v3.json"
 STABILIZATION_V3_CONTRACT_SHA256 = "3b90b40c6474c1be098c00e345b996ad4b9313359d59fc4c88c54ac440877c15"
-STABILIZATION_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v3"
+STABILIZATION_V3_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v3"
+STABILIZATION_V4_CONTRACT = ROOT / "test_sandbox_nazk_appeals_stabilization_v4.json"
+STABILIZATION_V4_CONTRACT_SHA256 = "edd13c837362a456a6e026366d003b86d81df96cb6d26e91a6d184245fb46828"
+STABILIZATION_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v4"
 STABILIZATION_SCOPE = {"combine-verified-nazk-scroll-and-bounded-appeals-scenario-api"}
 STABILIZATION_PRODUCT_OVERRIDES = {
     "test_sandbox_admin_officer_link_integrity.py",
@@ -1144,6 +1149,32 @@ STABILIZATION_V3_PRODUCT_OVERRIDES = {
 }
 STABILIZATION_V3_PRODUCT_ADDITIONS = {
     "test_sandbox_nazk_appeals_stabilization_v3_integrity.py",
+}
+STABILIZATION_V4_SCOPE = {
+    "render-full-appeals-scenario-with-natural-wrapping-at-configured-column-width",
+    "allow-appeals-scenario-row-height-to-grow-without-clipping",
+    "link-appeal-card-to-exact-zakupivli-pro-platform-id",
+    "map-technical-appeal-statuses-to-ukrainian-labels",
+    "increase-supplier-warning-counter-heading-gap",
+}
+STABILIZATION_V4_PRODUCT_OVERRIDES = {
+    "app.js",
+    "styles.css",
+    "validation/appeals_justification_browser.cjs",
+    "validation/table_widths_unified_browser.cjs",
+    "validation/run_local_release.py",
+    "test_sandbox_admin_officer_link_integrity.py",
+    "test_sandbox_appeals_scenario_api_integrity.py",
+    "test_sandbox_appeals_scenario_readonly_integrity.py",
+    "test_sandbox_nazk_appeals_stabilization_integrity.py",
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py",
+    "test_sandbox_nazk_preview_integrity.py",
+    "test_sandbox_nazk_scroll_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+}
+STABILIZATION_V4_PRODUCT_ADDITIONS = {
+    "test_sandbox_nazk_appeals_stabilization_v4_integrity.py",
+    "validation/fixtures/table_widths_v11_tail.zip",
 }
 
 
@@ -1359,7 +1390,7 @@ def load_stabilization_v3_contract(previous):
                        "hash_format", "approved_scope_additions", "product_overrides",
                        "product_files_additional", "protected_overrides", "guarded_overrides",
                        "guarded_additions"} or
-            delta.get("variant_id") != STABILIZATION_VARIANT_ID or
+            delta.get("variant_id") != STABILIZATION_V3_VARIANT_ID or
             delta.get("baseline_sha") != SCROLL_BASELINE or
             delta.get("base_manifest") != STABILIZATION_V2_CONTRACT.name or
             delta.get("base_manifest_sha256") != STABILIZATION_V2_CONTRACT_SHA256 or
@@ -1372,6 +1403,40 @@ def load_stabilization_v3_contract(previous):
             set(delta.get("guarded_additions", {})) != STABILIZATION_V3_PRODUCT_ADDITIONS or
             previous.get("variant_id") != STABILIZATION_V2_VARIANT_ID):
         raise AssertionError("scenario_context_snapshot v3 has an unexpected exact scope")
+    candidate = copy.deepcopy(previous)
+    candidate["variant_id"] = STABILIZATION_V3_VARIANT_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                         set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["product_files"].update(delta["product_files_additional"])
+    candidate["protected_files"].update(delta["protected_overrides"])
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    candidate["guarded_files"].update(delta["guarded_additions"])
+    return candidate
+
+
+def load_stabilization_v4_contract(previous):
+    raw = STABILIZATION_V4_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != STABILIZATION_V4_CONTRACT_SHA256:
+        raise AssertionError("Changed exact full-scenario display v4 manifest")
+    delta = json.loads(raw.decode("utf-8"))
+    expected_guarded = STABILIZATION_V4_PRODUCT_OVERRIDES & set(previous["guarded_files"])
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "product_files_additional", "protected_overrides", "guarded_overrides", "guarded_additions"} or
+            delta.get("variant_id") != STABILIZATION_VARIANT_ID or
+            delta.get("baseline_sha") != SCROLL_BASELINE or
+            delta.get("base_manifest") != STABILIZATION_V3_CONTRACT.name or
+            delta.get("base_manifest_sha256") != STABILIZATION_V3_CONTRACT_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != STABILIZATION_V4_SCOPE or
+            set(delta.get("product_overrides", {})) != STABILIZATION_V4_PRODUCT_OVERRIDES or
+            set(delta.get("product_files_additional", {})) != STABILIZATION_V4_PRODUCT_ADDITIONS or
+            set(delta.get("protected_overrides", {})) != {"app.js"} or
+            set(delta.get("guarded_overrides", {})) != expected_guarded or
+            set(delta.get("guarded_additions", {})) != STABILIZATION_V4_PRODUCT_ADDITIONS or
+            previous.get("variant_id") != STABILIZATION_V3_VARIANT_ID):
+        raise AssertionError("Full-scenario display v4 has an unexpected exact scope")
     candidate = copy.deepcopy(previous)
     candidate["variant_id"] = STABILIZATION_VARIANT_ID
     candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |

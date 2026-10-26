@@ -41,7 +41,8 @@ def main():
                              'column_widths_baseline_4625498.zip',
                              'nazk_preview_baseline_f394d4c.zip',
                              'appeals_scenario_v11_tail.zip',
-                             'appeals_scenario_v11_api_tail.zip'):
+                             'appeals_scenario_v11_api_tail.zip',
+                             'table_widths_v11_tail.zip'):
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             shutil.copy2(fixture_source,fixture_target/fixture_name)
         for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):

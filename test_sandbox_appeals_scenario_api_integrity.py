@@ -22,7 +22,7 @@ class AppealsScenarioApiIntegrityTests(unittest.TestCase):
                                if c["variant_id"] == integrity.INTEGRATED_VARIANT_ID)
 
     def test_additive_contract_is_exact_and_historical_integrated_contract_is_unchanged(self):
-        self.assertEqual(len(self.contracts), 26)
+        self.assertEqual(len(self.contracts), 27)
         self.assertEqual(self.current["baseline_sha"], integrity.APPEALS_API_BASELINE)
         self.assertEqual(set(self.appeals["approved_scope"]) - set(self.integrated["approved_scope"]),
                          integrity.APPEALS_API_SCOPE)
@@ -46,7 +46,9 @@ class AppealsScenarioApiIntegrityTests(unittest.TestCase):
                                 integrity.STABILIZATION_V2_PRODUCT_OVERRIDES |
                                 integrity.STABILIZATION_V2_PRODUCT_ADDITIONS |
                                 integrity.STABILIZATION_V3_PRODUCT_OVERRIDES |
-                                integrity.STABILIZATION_V3_PRODUCT_ADDITIONS):
+                                integrity.STABILIZATION_V3_PRODUCT_ADDITIONS |
+                                integrity.STABILIZATION_V4_PRODUCT_OVERRIDES |
+                                integrity.STABILIZATION_V4_PRODUCT_ADDITIONS):
                     self.assertEqual(self.current[section][path], old, path)
 
     def test_every_added_product_byte_mutation_is_rejected(self):
@@ -56,7 +58,9 @@ class AppealsScenarioApiIntegrityTests(unittest.TestCase):
                  integrity.STABILIZATION_V2_PRODUCT_OVERRIDES |
                  integrity.STABILIZATION_V2_PRODUCT_ADDITIONS |
                  integrity.STABILIZATION_V3_PRODUCT_OVERRIDES |
-                 integrity.STABILIZATION_V3_PRODUCT_ADDITIONS)
+                 integrity.STABILIZATION_V3_PRODUCT_ADDITIONS |
+                 integrity.STABILIZATION_V4_PRODUCT_OVERRIDES |
+                 integrity.STABILIZATION_V4_PRODUCT_ADDITIONS)
         with tempfile.TemporaryDirectory(dir=ROOT / "validation") as temporary:
             tree = Path(temporary)
             for relative in set(self.current["product_files"]) | set(self.current["guarded_files"]):
