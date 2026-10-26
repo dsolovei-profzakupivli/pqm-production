@@ -9,30 +9,38 @@ ROOT = integrity.ROOT
 
 
 class AppealsScenarioReadonlyIntegrityTests(unittest.TestCase):
-    def test_v2_is_additive_and_v1_history_stays_pinned(self):
+    def test_v2_history_and_v3_scenario_cache_are_additive(self):
         contracts = integrity.load_contracts()
         previous = next(c for c in contracts
                         if c["variant_id"] == integrity.STABILIZATION_V1_VARIANT_ID)
+        v2 = next(c for c in contracts
+                  if c["variant_id"] == integrity.STABILIZATION_V2_VARIANT_ID)
         current = next(c for c in contracts
                        if c["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
         raw = integrity.STABILIZATION_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(integrity.sha256(raw), integrity.STABILIZATION_CONTRACT_SHA256)
+        raw_v2 = integrity.STABILIZATION_V2_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(integrity.sha256(raw_v2), integrity.STABILIZATION_V2_CONTRACT_SHA256)
         self.assertEqual(previous["baseline_sha"], integrity.SCROLL_BASELINE)
+        self.assertEqual(v2["variant_id"], "sandbox-nazk-appeals-stabilization-v2")
         self.assertEqual(current["baseline_sha"], integrity.SCROLL_BASELINE)
-        self.assertEqual(current["variant_id"], "sandbox-nazk-appeals-stabilization-v2")
-        self.assertEqual(set(current["approved_scope"]) - set(previous["approved_scope"]),
+        self.assertEqual(current["variant_id"], "sandbox-nazk-appeals-stabilization-v3")
+        self.assertEqual(set(v2["approved_scope"]) - set(previous["approved_scope"]),
                          integrity.STABILIZATION_V2_SCOPE)
+        self.assertEqual(set(current["approved_scope"]) - set(v2["approved_scope"]),
+                         integrity.STABILIZATION_V3_SCOPE)
         self.assertEqual(set(current["product_files"]),
-                         set(previous["product_files"]) |
-                         integrity.STABILIZATION_V2_PRODUCT_OVERRIDES |
-                         integrity.STABILIZATION_V2_PRODUCT_ADDITIONS)
+                         set(v2["product_files"]) |
+                         integrity.STABILIZATION_V3_PRODUCT_OVERRIDES |
+                         integrity.STABILIZATION_V3_PRODUCT_ADDITIONS)
         self.assertEqual(set(current["guarded_files"]),
-                         (set(previous["guarded_files"]) - {"app.js"}) |
-                         (integrity.STABILIZATION_V2_PRODUCT_OVERRIDES - {"server.py", "app.js"}) |
-                         integrity.STABILIZATION_V2_PRODUCT_ADDITIONS)
+                         (set(v2["guarded_files"]) - {"server.py"}) |
+                         (integrity.STABILIZATION_V3_PRODUCT_OVERRIDES - {"server.py"}) |
+                         integrity.STABILIZATION_V3_PRODUCT_ADDITIONS)
         self.assertEqual(current["protected_files"]["server.py"]["sha256"],
                          current["product_files"]["server.py"]["sha256"])
         self.assertFalse(integrity.manifest_tree_matches(previous))
+        self.assertFalse(integrity.manifest_tree_matches(v2))
         self.assertTrue(integrity.manifest_tree_matches(current))
         self.assertTrue(integrity.exact_variant_tree_matches())
 
@@ -60,7 +68,7 @@ class AppealsScenarioReadonlyIntegrityTests(unittest.TestCase):
         self.assertIn("function showSavedRequestJustification(index)", app)
         self.assertIn("body.textContent=text||'Обґрунтування для цього звернення ще не сформовано.'", app)
 
-    def test_single_byte_mutation_of_each_v2_override_or_addition_is_rejected(self):
+    def test_single_byte_mutation_of_each_v3_override_or_addition_is_rejected(self):
         current = next(c for c in integrity.load_contracts()
                        if c["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
         paths = set(current["product_files"]) | set(current["protected_files"]) | set(current["guarded_files"])
@@ -71,8 +79,8 @@ class AppealsScenarioReadonlyIntegrityTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes((ROOT / relative).read_bytes())
             self.assertTrue(integrity.manifest_tree_matches(current, tree))
-            changed_paths = (integrity.STABILIZATION_V2_PRODUCT_OVERRIDES |
-                             integrity.STABILIZATION_V2_PRODUCT_ADDITIONS)
+            changed_paths = (integrity.STABILIZATION_V3_PRODUCT_OVERRIDES |
+                             integrity.STABILIZATION_V3_PRODUCT_ADDITIONS)
             for relative in sorted(changed_paths):
                 with self.subTest(path=relative):
                     target = tree / relative

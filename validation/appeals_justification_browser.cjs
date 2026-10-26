@@ -16,7 +16,16 @@ const reportLoader=fragment('async function loadViolationReports(', '\nconst int
 assert(reportLoader.includes('requestScenarioCell(item,index)')&&!reportLoader.includes('requestJustificationCell(item,index)'),'appeals table loader must render scenario_summary in the legacy preference column');
 const listApiStart=server.indexOf('def list_violation_reports('),listApiEnd=server.indexOf('\ndef ',listApiStart+4),listApi=server.slice(listApiStart,listApiEnd);
 assert(listApi.includes('item["scenario_summary"]=(violation_scenario_summary(scenario_report,scenario_context)'),'list API must project the canonical adaptive scenario consumed by this browser view');
-assert(listApi.includes('def saved_scenario_context(')&&listApi.includes('saved_scenario_context(decision_snapshot,scenario_report)')&&!listApi.includes('resolve_violation_procurement_context(')&&!listApi.includes('api_get('),'list API must use locally saved scenario facts and make no external requests');
+assert(listApi.includes('violation_scenario_context_snapshots')&&listApi.includes('_validated_scenario_context_snapshot(')&&
+  !listApi.includes('resolve_violation_procurement_context(')&&!listApi.includes('api_get('),
+  'list API must batch-read locally cached scenario facts and make no external requests');
+const cardDetailStart=server.indexOf('def violation_report_detail(');
+const cardDetail=server.slice(cardDetailStart,server.indexOf('\nVIOLATION_SHEETS_DECISION_LABELS=',cardDetailStart));
+assert(cardDetail.includes('_save_violation_scenario_context_snapshot(')&&cardDetail.includes('factual_procurement_context'),
+  'card detail must save already-resolved factual context for later list projection');
+assert(server.includes('CREATE TABLE IF NOT EXISTS violation_scenario_context_snapshots')&&
+  server.includes('BEGIN IMMEDIATE')&&server.includes('source_updated_at_ns'),
+  'scenario context cache must be separate, additive, and monotonic under concurrent writers');
 assert(!app.includes('Контрольний сценарій'),'scenario title must not be shown in appeal cards');
 assert(app.includes('item.scenario_summary?'),'scenario_summary must remain available in appeal cards');
 const saved=[
@@ -41,12 +50,15 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
  const browser=await chromium.launch({headless:true,...(process.env.PQM_TEST_BROWSER?{executablePath:process.env.PQM_TEST_BROWSER}:{})});
  try{
   const page=await browser.newPage({viewport:{width:390,height:844}});
-  await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('modules.css')}\n${read('theme.css')}</style></head><body><main id="requestsView"><div class="supplier-table-scroll">${requestsTable}</div></main>${dialog}<script>
+  await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('modules.css')}\n${read('theme.css')}</style></head><body><main id="requestsView"><button id="refreshScenarioList">Оновити список</button><div class="supplier-table-scroll">${requestsTable}</div></main>${dialog}<script>
     const $=selector=>document.querySelector(selector),esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    let violationReports=${JSON.stringify(saved)};let cardOpens=0,writeCalls=0;
-    function openViolationReport(index){cardOpens++;window.lastOpened=index}
+    let violationReports=${JSON.stringify(saved)};let cardOpens=0,writeCalls=0,cardContextFetches=0,listRefreshes=0;
+    const localScenarioCache=new Map();
+    function openViolationReport(index){cardOpens++;window.lastOpened=index;cardContextFetches++;localScenarioCache.set(violationReports[index].id,violationReports[index].scenario_summary)}
   </script><script>${helpers}</script><script>
-    document.querySelector('#requestsBody').innerHTML=violationReports.map((item,index)=>'<tr class="request-row" data-request-index="'+index+'">'+Array.from({length:7},()=>'<td>—</td>').join('')+'<td>'+requestScenarioCell(item,index)+'</td><td>'+item.status+'</td><td>—</td></tr>').join('');
+    const renderRows=()=>{document.querySelector('#requestsBody').innerHTML=violationReports.map((item,index)=>'<tr class="request-row" data-request-index="'+index+'">'+Array.from({length:7},()=>'<td>—</td>').join('')+'<td>'+requestScenarioCell(item,index)+'</td><td>'+item.status+'</td><td>—</td></tr>').join('')};
+    renderRows();
+    document.querySelector('#refreshScenarioList').addEventListener('click',()=>{listRefreshes++;violationReports[0].scenario_summary=localScenarioCache.get(violationReports[0].id)||'';renderRows()});
     document.querySelector('#requestJustificationBody').addEventListener('input',()=>writeCalls++);
   </script></body></html>`);
   assert(await page.locator('.supplier-table-scroll').evaluate(el=>el.scrollWidth>el.clientWidth),'table remains horizontally scrollable on a narrow screen');
@@ -89,6 +101,11 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
   }
   assert.equal(await page.evaluate(()=>cardOpens),2,'only ordinary row clicks open cards; eye clicks do not bubble into card opening');
   assert.equal(await page.evaluate(()=>writeCalls),0,'viewer does not initiate writes or regeneration');
-  console.log('PASS: adaptive scenario rows without duplicate leading label, scenario wording and line breaks preserved, prefix-only/empty values, long-text wrapping and three-line clamp, eye only for nonblank saved justification including missing/empty/whitespace cases, one-click read-only viewer, all statuses, both themes, saved column key, narrow horizontal scroll, one-click card opening');
+  await page.locator('#refreshScenarioList').click();
+  assert.equal(await page.evaluate(()=>cardContextFetches),2,'one existing card context resolution per ordinary click');
+  assert.equal(await page.evaluate(()=>listRefreshes),1,'list refresh reads saved local scenario context');
+  assert.equal(await page.locator('tr[data-request-index="0"] .request-scenario-summary').textContent(),
+    String(saved[0].scenario_summary).replace(/^Сценарій:\s*/i,''),'scenario resolved by the card appears after list refresh');
+  console.log('PASS: adaptive scenario rows without duplicate leading label, scenario wording and line breaks preserved, prefix-only/empty values, long-text wrapping and three-line clamp, eye only for nonblank saved justification including missing/empty/whitespace cases, one-click read-only viewer, all statuses, both themes, saved column key, narrow horizontal scroll, one-click card opening, card context then refreshed-list scenario reuse');
  }finally{await browser.close()}
 })().catch(error=>{console.error(error);process.exit(1)});

@@ -1,8 +1,11 @@
 import json
 import io
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -45,6 +48,215 @@ class ViolationReportTests(unittest.TestCase):
     def tearDown(self):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
+
+    def _scenario_cache_fixture(self, internal_id="scenario-cache-report", status="pending",
+                                reason="contractBreach"):
+        payload = report_payload()
+        payload.update({"id": internal_id, "violationReportID": "UA-D-2026-10-26-000001",
+                        "status": status})
+        payload["details"]["reason"] = reason
+        with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+            server.save_violation_report(payload)
+        with server.db() as con:
+            row = dict(con.execute("SELECT * FROM violation_reports WHERE id=?", (internal_id,)).fetchone())
+        row["defendant_statements"] = json.loads(row["raw_json"]).get("defendantStatements") or []
+        return row
+
+    def _scenario_cache_context(self, *, modified=None, observed=None,
+                                rejection_present=True, expired=True, security=True):
+        observed = observed or time.time_ns()
+        modified = modified or (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        return {
+            "rejection_ambiguous": False,
+            "rejected_before_deadline": False,
+            "rejection_present": rejection_present,
+            "contract_deadline_expired": expired,
+            "performance_security_required": security,
+            "day_5_shifted": False,
+            "_scenario_context_metadata": {
+                "source_updated_at": modified,
+                "observed_at_ns": observed,
+            },
+        }
+
+    def test_scenario_context_snapshot_first_card_capture_then_local_list_reuses_same_summary(self):
+        report = self._scenario_cache_fixture()
+        context = self._scenario_cache_context()
+        resolver_calls = []
+
+        def resolved(_report, _review=None, *, prefer_snapshot=True):
+            resolver_calls.append(prefer_snapshot)
+            return context, "case_scoped_resolver"
+
+        with patch.object(server, "resolve_violation_procurement_context", side_effect=resolved), \
+             patch.object(server, "api_get", side_effect=AssertionError("test must not add a second request")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            card = server.violation_report_detail(report["id"], refresh=False)
+        self.assertEqual(resolver_calls, [True], "card's already-resolved context is reused for the scenario cache")
+        self.assertTrue(card["scenario_summary"])
+        self.assertNotIn("_scenario_context_metadata", card["factual_procurement_context"])
+        with server.db() as con:
+            stored = dict(con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                      (report["id"],)).fetchone())
+            decision_snapshot_count = con.execute(
+                "SELECT COUNT(*) FROM violation_report_review_events WHERE report_id=? "
+                "AND event_type='decision_context_snapshotted'", (report["id"],)).fetchone()[0]
+        self.assertEqual(json.loads(stored["context_json"]), {
+            "contract_deadline_expired": True, "day_5_shifted": False,
+            "performance_security_required": True, "rejected_before_deadline": False,
+            "rejection_ambiguous": False, "rejection_present": True})
+        self.assertEqual(decision_snapshot_count, 0, "scenario cache is separate from decision snapshots")
+        before = tuple(stored[key] for key in ("context_hash", "captured_at", "observed_at_ns"))
+        with patch.object(server, "resolve_violation_procurement_context", side_effect=resolved), \
+             patch.object(server, "api_get", side_effect=AssertionError("reopening reuses the same resolved context")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            reopened = server.violation_report_detail(report["id"], refresh=False)
+        self.assertEqual(reopened["scenario_summary"], card["scenario_summary"])
+        with server.db() as con:
+            reopened_row = con.execute("SELECT context_hash,captured_at,observed_at_ns "
+                                       "FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                       (report["id"],)).fetchone()
+        self.assertEqual(tuple(reopened_row), before, "reopening unchanged context does not write")
+        with patch.object(server, "api_get", side_effect=AssertionError("list may not contact Prozorro")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list must not write reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        listed = next(item for item in result["items"] if item["id"] == report["id"])
+        self.assertEqual(listed["scenario_summary"], card["scenario_summary"])
+        with server.db() as con:
+            after = con.execute("SELECT context_hash,captured_at,observed_at_ns "
+                                 "FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                 (report["id"],)).fetchone()
+        self.assertEqual(tuple(after), before, "list projection is read-only")
+
+    def test_scenario_context_snapshot_updates_changed_facts_and_rejects_older_source(self):
+        report = self._scenario_cache_fixture()
+        review = {}
+        newer_time = time.time_ns()
+        newer = self._scenario_cache_context(
+            modified=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), observed=newer_time,
+                                             rejection_present=False, expired=False, security=False)
+        saved_new = server._save_violation_scenario_context_snapshot(report, review, newer)
+        self.assertFalse(saved_new["rejection_present"])
+        old = self._scenario_cache_context(
+                                           modified=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+                                           observed=newer_time - 5_000_000_000,
+                                           rejection_present=True, expired=True, security=True)
+        retained = server._save_violation_scenario_context_snapshot(report, review, old)
+        self.assertEqual(retained, saved_new, "older source version cannot replace newer context")
+        with server.db() as con:
+            current = dict(con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                       (report["id"],)).fetchone())
+        self.assertEqual(json.loads(current["context_json"])["rejection_present"], False)
+
+    def test_scenario_context_snapshot_refuses_invalid_identity_partial_and_stale_context(self):
+        report = self._scenario_cache_fixture()
+        review = {}
+        valid = self._scenario_cache_context()
+        self.assertIsNotNone(server._scenario_context_from_card(report, review, valid))
+        invalid_contexts = [
+            {**valid, "_scenario_context_metadata": {**valid["_scenario_context_metadata"],
+                                                       "source_updated_at": "not-a-date"}},
+            {**valid, "_scenario_context_metadata": {**valid["_scenario_context_metadata"],
+                                                       "observed_at_ns": time.time_ns() + 5_000_000_000}},
+            {key: value for key, value in valid.items() if key != "day_5_shifted"},
+        ]
+        for candidate in invalid_contexts:
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(server._scenario_context_from_card(report, review, candidate))
+        wrong_id = dict(report, report_id="UA-D-not-valid")
+        self.assertIsNone(server._scenario_context_from_card(wrong_id, review, valid))
+        self.assertIsNone(server._scenario_context_from_card(dict(report, reason="unknown"), review, valid))
+        candidate = server._scenario_context_from_card(report, review, valid)
+        stale_row = {**candidate, "observed_at_ns": time.time_ns() - 25 * 60 * 60 * 1_000_000_000}
+        stale_row["captured_at"] = "2026-10-25T00:00:00+00:00"
+        self.assertIsNone(server._validated_scenario_context_snapshot(stale_row, report, review))
+
+    def test_scenario_context_snapshot_isolated_across_statuses_and_preserves_decision_history(self):
+        fixtures = [("pending", "contractBreach"), ("satisfied", "signingRefusal"),
+                    ("declined", "goodsNonCompliance")]
+        reports = []
+        for index, (status, reason) in enumerate(fixtures, 1):
+            report = self._scenario_cache_fixture(f"scenario-status-{index}", status, reason)
+            reports.append(report)
+            with server.db() as con:
+                if index == 1:
+                    con.execute("""INSERT INTO violation_report_reviews
+                        (report_id,review_status,decision_justification,updated_at)
+                        VALUES (?,?,?,?)""", (report["id"], "in_review", "Historical justification",
+                                                "2026-10-25T10:00:00+03:00"))
+                    con.execute("""INSERT INTO violation_report_review_events
+                        (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                        VALUES (?,?,?,?,?,?)""", (report["id"], "decision_context_snapshotted",
+                            "decision_context_snapshot", '{"version":1}', "2026-10-25T10:00:00+03:00", "УО"))
+                else:
+                    con.execute("INSERT INTO violation_report_reviews(report_id,review_status,updated_at) "
+                                "VALUES (?,?,?)", (report["id"], "in_review", "2026-10-25T10:00:00+03:00"))
+            context = self._scenario_cache_context()
+            if reason == "signingRefusal":
+                context = {"rejection_ambiguous": False, "written_refusal_within_deadline": True,
+                           "day_3_shifted": False, **context}
+            elif reason == "goodsNonCompliance":
+                context = {"rejection_ambiguous": False, **context}
+            with server.db() as con:
+                current_review = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                              (report["id"],)).fetchone()
+            server._save_violation_scenario_context_snapshot(
+                report, server._review_dict(current_review), context)
+        with server.db() as con:
+            original_review = tuple(con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                                (reports[0]["id"],)).fetchone())
+            original_events = [tuple(row) for row in con.execute(
+                "SELECT * FROM violation_report_review_events WHERE report_id=?", (reports[0]["id"],))]
+        with patch.object(server, "api_get", side_effect=AssertionError("list must use local snapshots")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list is read-only")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        listed = {item["id"]: item for item in result["items"]}
+        for report in reports:
+            self.assertTrue(listed[report["id"]]["scenario_summary"], report["id"])
+        with server.db() as con:
+            self.assertEqual(tuple(con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                               (reports[0]["id"],)).fetchone()), original_review)
+            self.assertEqual([tuple(row) for row in con.execute(
+                "SELECT * FROM violation_report_review_events WHERE report_id=?", (reports[0]["id"],))],
+                original_events)
+
+    def test_concurrent_scenario_context_saves_keep_newest_source_version(self):
+        report = self._scenario_cache_fixture()
+        barrier = threading.Barrier(2)
+        base_ns = time.time_ns()
+        candidates = [
+            self._scenario_cache_context(modified=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+                                         observed=base_ns - 1_000_000_000,
+                                         rejection_present=True),
+            self._scenario_cache_context(modified=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                                         observed=base_ns,
+                                         rejection_present=False),
+        ]
+        errors = []
+
+        def save(candidate):
+            try:
+                barrier.wait(timeout=5)
+                return server._save_violation_scenario_context_snapshot(report, {}, candidate)
+            except Exception as exc:
+                errors.append(exc)
+                return None
+
+        threads = [threading.Thread(target=save, args=(candidate,)) for candidate in candidates]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertFalse(errors, errors)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        with server.db() as con:
+            stored = json.loads(con.execute("SELECT context_json FROM violation_scenario_context_snapshots "
+                                            "WHERE report_id=?", (report["id"],)).fetchone()[0])
+        self.assertFalse(stored["rejection_present"])
 
     def test_list_api_projects_only_saved_justification_without_generation_or_writes(self):
         fixtures = [
@@ -104,10 +316,12 @@ class ViolationReportTests(unittest.TestCase):
             ("scenario-historical-empty", "satisfied", "unsupportedHistoricalReason", "reviewed", "decline", {}, None),
             ("scenario-historical-no-snapshot", "declined", "signingRefusal", "reviewed", "decline", {}, None),
         ]
-        for report_id, status, reason, review_status, decision, values, context in fixtures:
+        for fixture_index, (report_id, status, reason, review_status, decision, values, context) in enumerate(fixtures, 1):
             payload = report_payload(decisions=([{"id": "synthetic-official-decision"}]
                                                if report_id == "scenario-pending" else None))
-            payload.update({"id": report_id, "violationReportID": f"UA-D-{report_id}", "status": status})
+            payload.update({"id": report_id,
+                            "violationReportID": f"UA-D-2026-10-25-{fixture_index:06d}",
+                            "status": status})
             payload["details"]["reason"] = reason
             with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
                 server.save_violation_report(payload)
@@ -129,6 +343,19 @@ class ViolationReportTests(unittest.TestCase):
                         VALUES (?,?,?,?,?,?)""",
                         (report_id, "decision_context_snapshotted", "decision_context_snapshot",
                          json.dumps(snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+            if context is not None and server._minimal_scenario_context(reason, context) is not None:
+                with server.db() as con:
+                    report_row = dict(con.execute("SELECT * FROM violation_reports WHERE id=?",
+                                                  (report_id,)).fetchone())
+                    review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                             (report_id,)).fetchone()
+                cache_context = dict(context)
+                cache_context["_scenario_context_metadata"] = {
+                    "source_updated_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                    "observed_at_ns": time.time_ns(),
+                }
+                server._save_violation_scenario_context_snapshot(
+                    report_row, server._review_dict(review_row), cache_context)
 
         def database_state():
             with server.db() as con:
@@ -139,6 +366,8 @@ class ViolationReportTests(unittest.TestCase):
                         "SELECT * FROM violation_report_reviews ORDER BY report_id")],
                     "events": [tuple(row) for row in con.execute(
                         "SELECT * FROM violation_report_review_events ORDER BY id")],
+                    "scenario_contexts": [tuple(row) for row in con.execute(
+                        "SELECT * FROM violation_scenario_context_snapshots ORDER BY report_id")],
                 }
 
         before = database_state()
@@ -231,11 +460,15 @@ class ViolationReportTests(unittest.TestCase):
                         "rejection_present": False, "contract_deadline_expired": True,
                         "performance_security_required": False, "day_5_shifted": False}
         groups = ((1, "81000001"), (50, "81000050"), (100, "81000100"), (200, "81000200"))
+        sequence = 0
+        source_updated_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         for count, supplier_code in groups:
             for index in range(count):
+                sequence += 1
                 report_id = f"perf-{count:03d}-{index:03d}"
                 payload = report_payload()
-                payload.update({"id": report_id, "violationReportID": f"UA-D-{report_id}"})
+                payload.update({"id": report_id,
+                                "violationReportID": f"UA-D-2026-10-25-{sequence:06d}"})
                 payload["defendants"] = [organization(supplier_code)]
                 with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
                     server.save_violation_report(payload)
@@ -251,6 +484,17 @@ class ViolationReportTests(unittest.TestCase):
                         VALUES (?,?,?,?,?,?)""",
                         (report_id, "decision_context_snapshotted", "decision_context_snapshot",
                          json.dumps(saved_snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+                    report_row = dict(con.execute("SELECT * FROM violation_reports WHERE id=?",
+                                                  (report_id,)).fetchone())
+                    review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                             (report_id,)).fetchone()
+                cache_context = dict(full_context)
+                cache_context["_scenario_context_metadata"] = {
+                    "source_updated_at": source_updated_at,
+                    "observed_at_ns": time.time_ns(),
+                }
+                server._save_violation_scenario_context_snapshot(
+                    report_row, server._review_dict(review_row), cache_context)
         with patch.object(server, "api_get", side_effect=AssertionError("unexpected network request")), \
              patch.object(server, "resolve_violation_procurement_context",
                           side_effect=AssertionError("external resolver must not run")), \

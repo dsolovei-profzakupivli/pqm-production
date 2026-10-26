@@ -607,7 +607,9 @@ def load_contracts():
     contracts.append(appeals_api)
     stabilization_v1 = load_stabilization_contract(scroll, appeals_api)
     contracts.append(stabilization_v1)
-    contracts.append(load_stabilization_v2_contract(stabilization_v1))
+    stabilization_v2 = load_stabilization_v2_contract(stabilization_v1)
+    contracts.append(stabilization_v2)
+    contracts.append(load_stabilization_v3_contract(stabilization_v2))
     return contracts
 
 
@@ -1088,7 +1090,10 @@ STABILIZATION_CONTRACT_SHA256 = "9233e8d9a27adf855d22a8cc3a5e2f7dc167ba86dac6c02
 STABILIZATION_V1_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v1"
 STABILIZATION_V2_CONTRACT = ROOT / "test_sandbox_nazk_appeals_stabilization_v2.json"
 STABILIZATION_V2_CONTRACT_SHA256 = "61512ea36622fd1173704c5123212471d4830831798af9be6595514cb381014c"
-STABILIZATION_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v2"
+STABILIZATION_V2_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v2"
+STABILIZATION_V3_CONTRACT = ROOT / "test_sandbox_nazk_appeals_stabilization_v3.json"
+STABILIZATION_V3_CONTRACT_SHA256 = "3b90b40c6474c1be098c00e345b996ad4b9313359d59fc4c88c54ac440877c15"
+STABILIZATION_VARIANT_ID = "sandbox-nazk-appeals-stabilization-v3"
 STABILIZATION_SCOPE = {"combine-verified-nazk-scroll-and-bounded-appeals-scenario-api"}
 STABILIZATION_PRODUCT_OVERRIDES = {
     "test_sandbox_admin_officer_link_integrity.py",
@@ -1119,6 +1124,26 @@ STABILIZATION_V2_PRODUCT_OVERRIDES = {
 }
 STABILIZATION_V2_PRODUCT_ADDITIONS = {
     "test_sandbox_appeals_scenario_readonly_integrity.py",
+}
+STABILIZATION_V3_SCOPE = {
+    "cache-minimal-current-scenario-context-separately-from-decision-snapshot",
+    "reuse-card-fetched-prozorro-context-for-list-without-network-calls",
+    "validate-report-reason-version-freshness-and-input-fingerprint",
+    "prevent-older-or-concurrent-context-from-overwriting-newer-snapshot",
+}
+STABILIZATION_V3_PRODUCT_OVERRIDES = {
+    "server.py",
+    "validation/local_release_20260911/test_violation_reports.py",
+    "validation/appeals_justification_browser.cjs",
+    "test_sandbox_appeals_scenario_api_integrity.py",
+    "test_sandbox_appeals_scenario_readonly_integrity.py",
+    "test_sandbox_nazk_appeals_stabilization_integrity.py",
+    "test_sandbox_nazk_preview_integrity.py",
+    "test_sandbox_nazk_scroll_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+}
+STABILIZATION_V3_PRODUCT_ADDITIONS = {
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py",
 }
 
 
@@ -1299,7 +1324,7 @@ def load_stabilization_v2_contract(previous):
                        "hash_format", "approved_scope_additions", "product_overrides",
                        "product_files_additional", "protected_overrides", "guarded_overrides",
                        "guarded_additions"} or
-            delta.get("variant_id") != STABILIZATION_VARIANT_ID or
+            delta.get("variant_id") != STABILIZATION_V2_VARIANT_ID or
             delta.get("baseline_sha") != SCROLL_BASELINE or
             delta.get("base_manifest") != STABILIZATION_CONTRACT.name or
             delta.get("base_manifest_sha256") != STABILIZATION_CONTRACT_SHA256 or
@@ -1313,13 +1338,47 @@ def load_stabilization_v2_contract(previous):
             previous.get("variant_id") != STABILIZATION_V1_VARIANT_ID):
         raise AssertionError("Appeals scenario-readonly v2 has an unexpected exact scope")
     candidate = copy.deepcopy(previous)
-    candidate["variant_id"] = STABILIZATION_VARIANT_ID
+    candidate["variant_id"] = STABILIZATION_V2_VARIANT_ID
     candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
                                          set(delta["approved_scope_additions"]))
     candidate["product_files"].update(delta["product_overrides"])
     candidate["product_files"].update(delta["product_files_additional"])
     candidate["protected_files"].update(delta["protected_overrides"])
     candidate["guarded_files"].pop("app.js", None)
+    candidate["guarded_files"].update(delta["guarded_overrides"])
+    candidate["guarded_files"].update(delta["guarded_additions"])
+    return candidate
+
+
+def load_stabilization_v3_contract(previous):
+    raw = STABILIZATION_V3_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != STABILIZATION_V3_CONTRACT_SHA256:
+        raise AssertionError("Changed exact scenario_context_snapshot v3 manifest")
+    delta = json.loads(raw.decode("utf-8"))
+    if (set(delta) != {"variant_id", "baseline_sha", "base_manifest", "base_manifest_sha256",
+                       "hash_format", "approved_scope_additions", "product_overrides",
+                       "product_files_additional", "protected_overrides", "guarded_overrides",
+                       "guarded_additions"} or
+            delta.get("variant_id") != STABILIZATION_VARIANT_ID or
+            delta.get("baseline_sha") != SCROLL_BASELINE or
+            delta.get("base_manifest") != STABILIZATION_V2_CONTRACT.name or
+            delta.get("base_manifest_sha256") != STABILIZATION_V2_CONTRACT_SHA256 or
+            delta.get("hash_format") != ADMIN_HASH_FORMAT or
+            set(delta.get("approved_scope_additions", [])) != STABILIZATION_V3_SCOPE or
+            set(delta.get("product_overrides", {})) != STABILIZATION_V3_PRODUCT_OVERRIDES or
+            set(delta.get("product_files_additional", {})) != STABILIZATION_V3_PRODUCT_ADDITIONS or
+            set(delta.get("protected_overrides", {})) != {"server.py"} or
+            set(delta.get("guarded_overrides", {})) != STABILIZATION_V3_PRODUCT_OVERRIDES - {"server.py"} or
+            set(delta.get("guarded_additions", {})) != STABILIZATION_V3_PRODUCT_ADDITIONS or
+            previous.get("variant_id") != STABILIZATION_V2_VARIANT_ID):
+        raise AssertionError("scenario_context_snapshot v3 has an unexpected exact scope")
+    candidate = copy.deepcopy(previous)
+    candidate["variant_id"] = STABILIZATION_VARIANT_ID
+    candidate["approved_scope"] = sorted(set(candidate["approved_scope"]) |
+                                         set(delta["approved_scope_additions"]))
+    candidate["product_files"].update(delta["product_overrides"])
+    candidate["product_files"].update(delta["product_files_additional"])
+    candidate["protected_files"].update(delta["protected_overrides"])
     candidate["guarded_files"].update(delta["guarded_overrides"])
     candidate["guarded_files"].update(delta["guarded_additions"])
     return candidate
