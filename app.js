@@ -1508,7 +1508,8 @@ async function loadDeclensionOverrides(){
     body.innerHTML=visible.map(item=>`<tr data-declension-id="${esc(item.id)}"><td>${item.needs_completion?'<span class="status-badge pending">Потребує заповнення</span>':'<span class="status-badge done">Заповнено</span>'}</td><td>${esc(declensionTypeLabels[item.entity_type]||item.entity_type)}</td><td><strong>${esc(item.original)}</strong></td><td>${esc(item.genitive)||'—'}</td><td>${esc(item.dative)||'—'}</td><td>${esc(item.accusative)||'—'}</td><td>${esc(item.comment)||'—'}</td><td class="declension-actions">${canManage?'<button type="button" class="ghost" data-declension-edit>Редагувати</button>':''}${canDelete?'<button type="button" class="ghost danger" data-declension-delete>Видалити</button>':''}${!canManage&&!canDelete?'—':''}</td></tr>`).join('')||'<tr><td colspan="8">Записів не знайдено</td></tr>';
     $('#declensionInfo').textContent=`${visible.length.toLocaleString('uk-UA')} із ${declensionItems.length.toLocaleString('uk-UA')} записів`;
     $('#declensionAdd').hidden=!canManage;
-  }catch(error){body.innerHTML=`<tr><td colspan="8">${esc(error.message)}</td></tr>`}
+    return true;
+  }catch(error){body.innerHTML=`<tr><td colspan="8">${esc(error.message)}</td></tr>`;return false}
 }
 function canReadDeclensions(){return currentMe?.permissions?.['declension.read']===true||currentMe?.role==='admin'}
 function violationCardDeclensionSubject(item,side){

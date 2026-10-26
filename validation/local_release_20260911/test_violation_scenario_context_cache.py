@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -158,7 +159,7 @@ class ViolationScenarioContextCacheTests(unittest.TestCase):
 
 
 def time_ns():
-    return int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
+    return time.time_ns()
 
 
 if __name__ == "__main__":

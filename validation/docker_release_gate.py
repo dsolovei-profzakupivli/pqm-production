@@ -38,6 +38,7 @@ def main():
         ["node", "validation/appeals_p2_chronology_ui.cjs"],
         ["node", "validation/appeals_p3_justification_ui.cjs"],
         ["node", "validation/production_appeals_module_ui.cjs"],
+        ["node", "validation/declension_loader_result.cjs"],
         ["node", "validation/appeals_admin_deadline_ui.cjs"],
         ["node", "validation/navigation_back_slot_ui.cjs"],
         ["node", "validation/sandbox_supplier_ux.cjs"],
