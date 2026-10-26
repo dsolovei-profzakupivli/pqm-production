@@ -21,7 +21,7 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
         previous=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V11_ID)
         preview=next(c for c in contracts if c['variant_id']==integrity.PREVIEW_VARIANT_ID)
         scenario=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V12_ID)
-        self.assertEqual(len(contracts),27)
+        self.assertEqual(len(contracts),28)
         self.assertEqual(current['variant_id'],integrity.STABILIZATION_VARIANT_ID)
         self.assertEqual(current['baseline_sha'],integrity.SCROLL_BASELINE)
         self.assertEqual(current['baseline_sha'],integrity.APPEALS_API_BASELINE)
@@ -40,7 +40,9 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
                          integrity.STABILIZATION_V3_PRODUCT_OVERRIDES|
                          integrity.STABILIZATION_V3_PRODUCT_ADDITIONS|
                          integrity.STABILIZATION_V4_PRODUCT_OVERRIDES|
-                         integrity.STABILIZATION_V4_PRODUCT_ADDITIONS)
+                         integrity.STABILIZATION_V4_PRODUCT_ADDITIONS|
+                         integrity.STABILIZATION_V5_PRODUCT_OVERRIDES|
+                         integrity.STABILIZATION_V5_PRODUCT_ADDITIONS)
         self.assertEqual(preview['variant_id'],integrity.PREVIEW_VARIANT_ID)
         self.assertEqual(scenario['variant_id'],integrity.UI_CANDIDATE_V12_ID)
         self.assertFalse(integrity.manifest_tree_matches(preview))
@@ -92,7 +94,9 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
         changed_paths |= (integrity.STABILIZATION_PRODUCT_OVERRIDES|
                           integrity.STABILIZATION_PRODUCT_ADDITIONS|
                           integrity.STABILIZATION_V4_PRODUCT_OVERRIDES|
-                          integrity.STABILIZATION_V4_PRODUCT_ADDITIONS)
+                          integrity.STABILIZATION_V4_PRODUCT_ADDITIONS|
+                          integrity.STABILIZATION_V5_PRODUCT_OVERRIDES|
+                          integrity.STABILIZATION_V5_PRODUCT_ADDITIONS)
         for section in ('product_files','protected_files','guarded_files'):
             for relative,expected in previous[section].items():
                 if relative not in changed_paths:
@@ -121,7 +125,9 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
                                integrity.STABILIZATION_PRODUCT_OVERRIDES|
                                integrity.STABILIZATION_PRODUCT_ADDITIONS|
                                integrity.STABILIZATION_V4_PRODUCT_OVERRIDES|
-                               integrity.STABILIZATION_V4_PRODUCT_ADDITIONS):
+                               integrity.STABILIZATION_V4_PRODUCT_ADDITIONS|
+                               integrity.STABILIZATION_V5_PRODUCT_OVERRIDES|
+                               integrity.STABILIZATION_V5_PRODUCT_ADDITIONS):
                 file=tree/relative;original=file.read_bytes();changed=bytearray(original);changed[0]^=1
                 file.write_bytes(changed)
                 self.assertFalse(integrity.manifest_tree_matches(current,tree),relative)

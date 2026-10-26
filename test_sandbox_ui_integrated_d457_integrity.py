@@ -136,6 +136,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                     integrity.STABILIZATION_V3_PRODUCT_ADDITIONS |
                     integrity.STABILIZATION_V4_PRODUCT_OVERRIDES |
                     integrity.STABILIZATION_V4_PRODUCT_ADDITIONS |
+                    integrity.STABILIZATION_V5_PRODUCT_OVERRIDES |
+                    integrity.STABILIZATION_V5_PRODUCT_ADDITIONS |
                     {"validation/fixtures/appeals_scenario_v11_tail.zip"})
         self.assertEqual(set(self.contract["product_files"]), expected)
         self.assertEqual(set(self.contract["approved_scope"]) - set(
@@ -149,7 +151,8 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
             integrity.UI_CANDIDATE_V11_SCOPE | integrity.UI_CANDIDATE_V12_SCOPE |
             integrity.PREVIEW_SCOPE | integrity.INTEGRATED_SCOPE | integrity.APPEALS_API_SCOPE |
             integrity.SCROLL_SCOPE | integrity.STABILIZATION_SCOPE | integrity.STABILIZATION_V2_SCOPE |
-            integrity.STABILIZATION_V3_SCOPE | integrity.STABILIZATION_V4_SCOPE)
+            integrity.STABILIZATION_V3_SCOPE | integrity.STABILIZATION_V4_SCOPE |
+            integrity.STABILIZATION_V5_SCOPE)
         for path in (integrity.ADMIN_HISTORY_CONTRACT, integrity.ADMIN_CONTRACT,
                      integrity.ADMIN_V3_DELTA):
             self.assertTrue(path.is_file())

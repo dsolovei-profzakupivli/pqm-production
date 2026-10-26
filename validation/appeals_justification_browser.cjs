@@ -23,9 +23,12 @@ const statusLinkHelpers=[
   fragment('function zakupivliComplaintLink(', '\nfunction requestBlockingBadge('),
   fragment('function violationObjectLinks(', '\nfunction violationHasCompleteRejection(')
 ].join('\n');
+const marketplaceHelper=fragment('function zakupivliComplaintLink(', '\nfunction requestBlockingBadge(');
 const activeCardRendererStart=app.indexOf('violationDetailHtml=function(item)',app.indexOf('function violationObjectLinks('));
 const activeCardRenderer=app.slice(activeCardRendererStart,app.indexOf('\nconst violationDetailHtmlBase',activeCardRendererStart));
-assert(activeCardRenderer.includes('class="violation-platform-heading"')&&activeCardRenderer.includes('zakupivliComplaintLink(item)'),'active appeal card renderer puts the safe marketplace link beside its heading');
+assert(activeCardRenderer.includes('class="violation-platform-heading"')&&activeCardRenderer.includes('zakupivliComplaintLink(item)'),'active appeal card renderer puts the supplier-filtered marketplace link beside its heading');
+assert(marketplaceHelper.includes('item?.defendant_code')&&!marketplaceHelper.includes('item?.id')&&!marketplaceHelper.includes('item?.author_code'),'marketplace target uses supplier code and never guesses from internal ID or customer code');
+assert(marketplaceHelper.includes('/complaints/list')&&marketplaceHelper.includes('?defendant_srn=')&&marketplaceHelper.includes("complaints/list',href"),'valid supplier codes filter the complaints list and invalid codes use the unfiltered list');
 assert(app.includes('requestLabel(item.status,requestStatusLabels)'),'appeals table and card use the shared Ukrainian status label helper');
 const dialog=index.match(/<dialog id="requestJustificationDialog"[\s\S]*?<\/dialog>/)?.[0];assert(dialog,'read-only justification dialog markup missing');
 assert(index.includes('data-column-key="decision_justification">Сценарій</th>'),'scenario header and stable preference key must be preserved');
@@ -71,7 +74,7 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
  await context.route('https://my.zakupivli.pro/**',route=>route.fulfill({status:200,contentType:'text/html',body:'<title>Fixture complaint</title>'}));
  try{
   const page=await context.newPage({viewport:{width:390,height:844}});
-  await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('modules.css')}\n${read('theme.css')}</style></head><body><main id="requestsView"><button id="refreshScenarioList">Оновити список</button><div class="supplier-table-scroll">${requestsTable}</div><section id="cardLayoutFixture" class="request-details-dialog-wide"><div class="violation-top-row"><div><div class="violation-party-heading"><h3>Постачальник <span class="violation-thresholds">0/3 · 0/5</span></h3><button class="violation-card-declension">Відмінювання</button></div></div><div></div><div><h3 class="violation-platform-heading">Закупівля · Договір · Звернення<a class="violation-zakupivli-link" href="https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/6ad0c3cc04a8f063b8c3d028" target="_blank" rel="noopener noreferrer" aria-label="Відкрити звернення на Zakupivli.Pro" title="Відкрити звернення на Zakupivli.Pro"><img src="/assets/zakupivli-pro-mark.svg" alt="Zakupivli.Pro"></a></h3></div></div></section></main>${dialog}<script>
+  await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('modules.css')}\n${read('theme.css')}</style></head><body><main id="requestsView"><button id="refreshScenarioList">Оновити список</button><div class="supplier-table-scroll">${requestsTable}</div><section id="cardLayoutFixture" class="request-details-dialog-wide"><div class="violation-top-row"><div><div class="violation-party-heading"><h3>Постачальник <span class="violation-thresholds">0/3 · 0/5</span></h3><button class="violation-card-declension">Відмінювання</button></div></div><div></div><div><h3 class="violation-platform-heading">Закупівля · Договір · Звернення</h3></div></div></section></main>${dialog}<script>
     const $=selector=>document.querySelector(selector),esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     let violationReports=${JSON.stringify(saved)};let cardOpens=0,writeCalls=0,cardContextFetches=0,listRefreshes=0;
     const localScenarioCache=new Map();
@@ -99,11 +102,16 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
     assert.equal(counterLayout.buttonText,'Відмінювання',`${theme}/${width}px: declension action remains in place`);
    }
    await page.setViewportSize({width:390,height:844});
-   const marketplace=await page.evaluate(()=>({valid:zakupivliComplaintLink({id:'6ad0c3cc04a8f063b8c3d028'}),invalid:zakupivliComplaintLink({id:'UA-D-2026-10-15-000002'}),status:requestLabel('declinedNoViolation',requestStatusLabels),statusClass:requestStatusClass('declinedNoViolation'),unknown:requestLabel('futureUnknownStatus',requestStatusLabels),objectHtml:violationObjectLinks({id:'6ad0c3cc04a8f063b8c3d028',status:'declinedNoViolation',procurement_context:{contract_pretty_id:'UA-C-TEST',contract_status:'declinedNoViolation'}})}));
-   assert(marketplace.valid.includes('https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/6ad0c3cc04a8f063b8c3d028'),'platform link uses the exact upstream complaint ID');
-   assert(marketplace.valid.includes('target="_blank"')&&marketplace.valid.includes('rel="noopener noreferrer"'),'platform link opens separately without exposing opener context');
-   assert(marketplace.valid.includes('/assets/zakupivli-pro-mark.svg'),'existing Zakupivli.Pro mark is reused');
-   assert.equal(marketplace.invalid,'','no active platform link is rendered from a UA-D guess');
+   const marketplace=await page.evaluate(()=>({legal:zakupivliComplaintLink({id:'not-a-platform-id',author_code:'11111111',defendant_code:'43012009'}),fop:zakupivliComplaintLink({id:'6ad0c3cc04a8f063b8c3d028',author_code:'11111111',defendant_code:'1234567890'}),missing:zakupivliComplaintLink({id:'6ad0c3cc04a8f063b8c3d028'}),malformed:zakupivliComplaintLink({id:'6ad0c3cc04a8f063b8c3d028',defendant_code:'43-012009'}),status:requestLabel('declinedNoViolation',requestStatusLabels),statusClass:requestStatusClass('declinedNoViolation'),unknown:requestLabel('futureUnknownStatus',requestStatusLabels),objectHtml:violationObjectLinks({id:'6ad0c3cc04a8f063b8c3d028',status:'declinedNoViolation',procurement_context:{contract_pretty_id:'UA-C-TEST',contract_status:'declinedNoViolation'}})}));
+   assert(marketplace.legal.includes('https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/list?defendant_srn=43012009'),'legal-entity link filters by the supplier EDRPOU');
+   assert(marketplace.fop.includes('https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/list?defendant_srn=1234567890'),'FOP link filters by the supplier RNOKPP');
+   assert.equal(marketplace.missing,'<a class="violation-zakupivli-link" href="https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/list" target="_blank" rel="noopener noreferrer" aria-label="Звернення щодо постачальника на Zakupivli.Pro" title="Звернення щодо постачальника на Zakupivli.Pro"><img src="/assets/zakupivli-pro-mark.svg" alt="Zakupivli.Pro"></a>','missing supplier code safely opens the general complaints list');
+   assert(marketplace.malformed.includes('href="https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/list"'),'malformed supplier code falls back to the general list');
+   for(const link of [marketplace.legal,marketplace.fop,marketplace.missing,marketplace.malformed])assert(!link.includes('s=pending')&&!link.includes('status='),'marketplace URL never adds a status filter');
+   assert(marketplace.legal.includes('Звернення щодо постачальника на Zakupivli.Pro'),'icon tooltip identifies supplier-filtered marketplace results');
+   assert(marketplace.legal.includes('target="_blank"')&&marketplace.legal.includes('rel="noopener noreferrer"'),'platform link opens separately without exposing opener context');
+   assert(marketplace.legal.includes('/assets/zakupivli-pro-mark.svg'),'existing Zakupivli.Pro mark is reused');
+   await page.locator('#cardLayoutFixture .violation-platform-heading').evaluate((el,html)=>el.insertAdjacentHTML('beforeend',html),marketplace.legal);
    assert.equal(marketplace.status,'Відхилено',`${theme}: declinedNoViolation gets the agreed Ukrainian label`);
    assert.equal(marketplace.statusClass,'declined',`${theme}: technical declined status keeps the existing declined color class`);
    assert.equal(marketplace.unknown,'futureUnknownStatus',`${theme}: unknown status remains visible as received`);
@@ -173,9 +181,9 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
    await page.locator('tr[data-request-index="0"] td').nth(0).click();
    assert.equal(await page.evaluate(()=>window.lastOpened),0,`${theme}: one ordinary row click opens the appeal`);
   }
-  const [platformTab]=await Promise.all([page.waitForEvent('popup'),page.locator('#cardLayoutFixture .violation-zakupivli-link').click()]);
+  const [platformTab]=await Promise.all([page.waitForEvent('popup'),page.locator('#cardLayoutFixture .violation-zakupivli-link').last().click()]);
   await platformTab.waitForLoadState('domcontentloaded');
-  assert.equal(platformTab.url(),'https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/6ad0c3cc04a8f063b8c3d028','one click opens the exact complaint in a separate tab');
+  assert.equal(platformTab.url(),'https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/list?defendant_srn=43012009','one click opens supplier-filtered marketplace complaints in a separate tab');
   await platformTab.close();
   assert.equal(await page.evaluate(()=>cardOpens),2,'only ordinary row clicks open cards; eye clicks do not bubble into card opening');
   assert.equal(await page.evaluate(()=>writeCalls),0,'viewer does not initiate writes or regeneration');

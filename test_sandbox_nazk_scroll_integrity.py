@@ -30,7 +30,9 @@ class NazkScrollIntegrityTests(unittest.TestCase):
                          integrity.STABILIZATION_V3_PRODUCT_OVERRIDES |
                          integrity.STABILIZATION_V3_PRODUCT_ADDITIONS |
                          integrity.STABILIZATION_V4_PRODUCT_OVERRIDES |
-                         integrity.STABILIZATION_V4_PRODUCT_ADDITIONS)
+                         integrity.STABILIZATION_V4_PRODUCT_ADDITIONS |
+                         integrity.STABILIZATION_V5_PRODUCT_OVERRIDES |
+                         integrity.STABILIZATION_V5_PRODUCT_ADDITIONS)
         self.assertTrue(integrity.manifest_tree_matches(current))
         self.assertTrue(integrity.exact_variant_tree_matches())
         self.assertFalse(integrity.manifest_tree_matches(integrated))

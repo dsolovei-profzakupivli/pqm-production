@@ -17,13 +17,16 @@ class ScenarioContextSnapshotIntegrityTests(unittest.TestCase):
         v3 = next(item for item in contracts
                   if item["variant_id"] == integrity.STABILIZATION_V3_VARIANT_ID)
         v4 = next(item for item in contracts
-                  if item["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
+                  if item["variant_id"] == integrity.STABILIZATION_V4_VARIANT_ID)
+        current = next(item for item in contracts
+                       if item["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
         self.assertEqual(v2["baseline_sha"], integrity.SCROLL_BASELINE)
         self.assertEqual(v3["baseline_sha"], integrity.SCROLL_BASELINE)
         self.assertEqual(set(v3["approved_scope"]) - set(v2["approved_scope"]),
                          integrity.STABILIZATION_V3_SCOPE)
         self.assertFalse(integrity.manifest_tree_matches(v3))
-        self.assertTrue(integrity.manifest_tree_matches(v4))
+        self.assertFalse(integrity.manifest_tree_matches(v4))
+        self.assertTrue(integrity.manifest_tree_matches(current))
         self.assertFalse(integrity.manifest_tree_matches(v2))
         self.assertTrue(integrity.exact_variant_tree_matches())
         self.assertEqual((ROOT / "test_sandbox_nazk_appeals_stabilization_v2.json").read_bytes(),
@@ -56,10 +59,10 @@ class ScenarioContextSnapshotIntegrityTests(unittest.TestCase):
         self.assertNotIn("table_widths_ui.js", integrity.STABILIZATION_V3_PRODUCT_OVERRIDES)
         self.assertNotIn("table_widths_ui.js", integrity.STABILIZATION_V3_PRODUCT_ADDITIONS)
 
-    def test_single_byte_mutation_of_every_v4_file_is_rejected(self):
+    def test_single_byte_mutation_of_every_v5_file_is_rejected(self):
         v4 = next(item for item in integrity.load_contracts()
                   if item["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
-        paths = integrity.STABILIZATION_V4_PRODUCT_OVERRIDES | integrity.STABILIZATION_V4_PRODUCT_ADDITIONS
+        paths = integrity.STABILIZATION_V5_PRODUCT_OVERRIDES | integrity.STABILIZATION_V5_PRODUCT_ADDITIONS
         with tempfile.TemporaryDirectory(dir=ROOT / "validation") as temporary:
             tree = Path(temporary)
             for relative in set(v4["product_files"]) | set(v4["guarded_files"]) | set(v4["protected_files"]):

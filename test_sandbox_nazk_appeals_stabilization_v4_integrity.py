@@ -17,11 +17,14 @@ class FullAppealsScenarioDisplayIntegrityTests(unittest.TestCase):
         v3 = next(item for item in contracts
                   if item["variant_id"] == integrity.STABILIZATION_V3_VARIANT_ID)
         current = next(item for item in contracts
-                       if item["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
+                       if item["variant_id"] == integrity.STABILIZATION_V4_VARIANT_ID)
+        latest = next(item for item in contracts
+                      if item["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
         for manifest, expected in (
             (integrity.STABILIZATION_CONTRACT, integrity.STABILIZATION_CONTRACT_SHA256),
             (integrity.STABILIZATION_V2_CONTRACT, integrity.STABILIZATION_V2_CONTRACT_SHA256),
             (integrity.STABILIZATION_V3_CONTRACT, integrity.STABILIZATION_V3_CONTRACT_SHA256),
+            (integrity.STABILIZATION_V4_CONTRACT, integrity.STABILIZATION_V4_CONTRACT_SHA256),
         ):
             raw = manifest.read_bytes().replace(b"\r\n", b"\n")
             self.assertEqual(hashlib.sha256(raw).hexdigest(), expected, manifest.name)
@@ -31,7 +34,11 @@ class FullAppealsScenarioDisplayIntegrityTests(unittest.TestCase):
         self.assertEqual(set(current["product_files"]), set(v3["product_files"]) |
                          integrity.STABILIZATION_V4_PRODUCT_OVERRIDES |
                          integrity.STABILIZATION_V4_PRODUCT_ADDITIONS)
-        self.assertTrue(integrity.manifest_tree_matches(current))
+        self.assertEqual(latest["variant_id"], integrity.STABILIZATION_V5_VARIANT_ID)
+        self.assertEqual(set(latest["approved_scope"]) - set(current["approved_scope"]),
+                         integrity.STABILIZATION_V5_SCOPE)
+        self.assertFalse(integrity.manifest_tree_matches(current))
+        self.assertTrue(integrity.manifest_tree_matches(latest))
         self.assertFalse(integrity.manifest_tree_matches(v3))
         self.assertFalse(integrity.manifest_tree_matches(v2))
         self.assertTrue(integrity.exact_variant_tree_matches())
@@ -47,14 +54,9 @@ class FullAppealsScenarioDisplayIntegrityTests(unittest.TestCase):
             self.assertNotIn(forbidden, rule)
         self.assertIn("overflow-wrap:anywhere", rule)
         self.assertIn(".violation-thresholds{display:inline-block;float:none;margin-left:14px;color:#0868d8;font-size:.9em;white-space:nowrap}", css)
-        app = (ROOT / "app.js").read_text(encoding="utf-8")
-        self.assertIn("declinedNoViolation:'Відхилено'", app)
-        self.assertIn("function requestStatusClass(value){return value==='declinedNoViolation'?'declined':value}", app)
-        self.assertIn("function zakupivliComplaintLink(item)", app)
-        self.assertIn("/cabinet/ecatalog/gov/complaints/${id}", app)
-        self.assertIn("!/^[a-f0-9]{24}$/i.test(id)", app)
-        self.assertIn("class=\"violation-platform-heading\"", app)
-        self.assertIn("requestLabel(c.contract_status,requestStatusLabels)", app)
+        self.assertIn("app.js", current["protected_files"])
+        self.assertNotEqual(current["protected_files"]["app.js"]["sha256"],
+                            latest["protected_files"]["app.js"]["sha256"])
         runner = (ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
         self.assertIn("'table_widths_v11_tail.zip'", runner)
         self.assertNotIn("table_widths_ui.js", integrity.STABILIZATION_V4_PRODUCT_OVERRIDES)
@@ -71,7 +73,10 @@ class FullAppealsScenarioDisplayIntegrityTests(unittest.TestCase):
         current = next(item for item in integrity.load_contracts()
                        if item["variant_id"] == integrity.STABILIZATION_VARIANT_ID)
         paths = set(current["product_files"]) | set(current["guarded_files"]) | set(current["protected_files"])
-        changed_paths = integrity.STABILIZATION_V4_PRODUCT_OVERRIDES | integrity.STABILIZATION_V4_PRODUCT_ADDITIONS
+        changed_paths = (integrity.STABILIZATION_V4_PRODUCT_OVERRIDES |
+                         integrity.STABILIZATION_V4_PRODUCT_ADDITIONS |
+                         integrity.STABILIZATION_V5_PRODUCT_OVERRIDES |
+                         integrity.STABILIZATION_V5_PRODUCT_ADDITIONS)
         with tempfile.TemporaryDirectory(dir=ROOT / "validation") as temporary:
             tree = Path(temporary)
             for relative in paths:
