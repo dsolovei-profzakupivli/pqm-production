@@ -21,17 +21,19 @@ class StabilizationIntegrityTests(unittest.TestCase):
                             if c["variant_id"] == integrity.APPEALS_API_VARIANT_ID)
 
     def test_manifest_composes_both_exact_children_without_rewriting_history(self):
-        self.assertEqual(len(self.contracts), 24)
+        self.assertEqual(len(self.contracts), 25)
         self.assertEqual(self.current["baseline_sha"],
                          "fc719b07f7ce6bd43fcdf9815795f0f2906901e8")
         self.assertEqual(set(self.current["approved_scope"]) - set(self.integrated["approved_scope"]),
                          integrity.SCROLL_SCOPE | integrity.APPEALS_API_SCOPE |
-                         integrity.STABILIZATION_SCOPE)
+                         integrity.STABILIZATION_SCOPE | integrity.STABILIZATION_V2_SCOPE)
         expected_products = (set(self.integrated["product_files"]) | integrity.SCROLL_PRODUCTS |
                              integrity.APPEALS_API_PRODUCT_OVERRIDES |
                              integrity.APPEALS_API_PRODUCT_ADDITIONS |
                              integrity.STABILIZATION_PRODUCT_OVERRIDES |
-                             integrity.STABILIZATION_PRODUCT_ADDITIONS)
+                             integrity.STABILIZATION_PRODUCT_ADDITIONS |
+                             integrity.STABILIZATION_V2_PRODUCT_OVERRIDES |
+                             integrity.STABILIZATION_V2_PRODUCT_ADDITIONS)
         self.assertEqual(set(self.current["product_files"]), expected_products)
         self.assertFalse(integrity.manifest_tree_matches(self.integrated))
         self.assertFalse(integrity.manifest_tree_matches(self.scroll))

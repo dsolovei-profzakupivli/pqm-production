@@ -161,7 +161,7 @@ class ViolationReportTests(unittest.TestCase):
             review = dict(values)
             if review.get("court_decision_final_present") is not None:
                 review["court_decision_final_present"] = bool(review["court_decision_final_present"])
-            if snapshot_context is not None and report_id != "scenario-pending-editable" and ("performance_security_required" in snapshot_context or
+            if snapshot_context is not None and ("performance_security_required" in snapshot_context or
                     "contract_guarantee_required" in snapshot_context or reason != "contractBreach"):
                 self.assertEqual(item["scenario_summary"], server.violation_scenario_summary(
                     {"reason": reason, "review": review, "defendant_statements": [
@@ -174,8 +174,57 @@ class ViolationReportTests(unittest.TestCase):
                          "пояснення постачальника — надані.")
         self.assertEqual(projected["scenario-historical-empty"]["scenario_summary"], "")
         self.assertEqual(projected["scenario-historical-no-snapshot"]["scenario_summary"], "")
-        self.assertEqual(projected["scenario-pending-editable"]["scenario_summary"], "")
+        self.assertTrue(projected["scenario-pending-editable"]["scenario_summary"])
+        with patch.object(server, "api_get",
+                          side_effect=AssertionError("card comparison must use the saved snapshot")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("card comparison must not refresh/save reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            for report_id in ("scenario-pending", "scenario-pending-editable", "scenario-satisfied",
+                              "scenario-declined"):
+                card = server.violation_report_detail(report_id, refresh=False)
+                self.assertEqual(projected[report_id]["scenario_summary"], card["scenario_summary"], report_id)
         self.assertEqual(database_state(), before, "GET list projection must not write reports, reviews, or events")
+
+    def test_list_api_rejects_mismatched_snapshot_identity_version_reason_and_partial_facts(self):
+        full = {"rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": True, "contract_deadline_expired": True,
+                "performance_security_required": True, "day_5_shifted": False}
+        fixtures = [
+            ("snapshot-wrong-id", "contractBreach", {"report_id": "UA-D-OTHER"}, full),
+            ("snapshot-wrong-version", "contractBreach", {"version": 2}, full),
+            ("snapshot-wrong-reason", "signingRefusal", {"reason": "contractBreach"}, {
+                "rejection_ambiguous": False, "written_refusal_within_deadline": False,
+                "day_3_shifted": False}),
+            ("snapshot-incomplete", "contractBreach", {}, {
+                "rejection_ambiguous": False, "rejection_present": True,
+                "contract_deadline_expired": True, "day_5_shifted": False}),
+        ]
+        for report_id, reason, overrides, context in fixtures:
+            payload = report_payload(decisions=[{"id": "synthetic-official-decision"}])
+            payload.update({"id": report_id, "violationReportID": f"UA-D-{report_id}", "status": "satisfied"})
+            payload["details"]["reason"] = reason
+            with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                server.save_violation_report(payload)
+            snapshot = {"version": 1, "report_id": f"UA-D-{report_id}", "reason": reason,
+                        "procurement_context": context, **overrides}
+            with server.db() as con:
+                con.execute("""INSERT INTO violation_report_reviews
+                    (report_id,review_status,completed_at,updated_at) VALUES (?,?,?,?)""",
+                    (report_id, "reviewed", "2026-10-25T10:00:00+03:00", "2026-10-25T10:00:00+03:00"))
+                con.execute("""INSERT INTO violation_report_review_events
+                    (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                    VALUES (?,?,?,?,?,?)""",
+                    (report_id, "decision_context_snapshotted", "decision_context_snapshot",
+                     json.dumps(snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+        with patch.object(server, "api_get", side_effect=AssertionError("list API must not request Prozorro")), \
+             patch.object(server, "build_procurement_context", side_effect=AssertionError("list API must use snapshots")), \
+             patch.object(server, "save_violation_report_with_retry", side_effect=AssertionError("list API must not write reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        projected = {item["id"]: item for item in result["items"]}
+        for report_id, _, _, _ in fixtures:
+            self.assertEqual(projected[report_id]["scenario_summary"], "", report_id)
 
     def test_list_scenario_projection_has_zero_network_calls_and_bounded_latency_through_200_rows(self):
         full_context = {"rejection_ambiguous": False, "rejected_before_deadline": False,

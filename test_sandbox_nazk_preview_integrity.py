@@ -21,7 +21,7 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
         previous=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V11_ID)
         preview=next(c for c in contracts if c['variant_id']==integrity.PREVIEW_VARIANT_ID)
         scenario=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V12_ID)
-        self.assertEqual(len(contracts),24)
+        self.assertEqual(len(contracts),25)
         self.assertEqual(current['variant_id'],integrity.STABILIZATION_VARIANT_ID)
         self.assertEqual(current['baseline_sha'],integrity.SCROLL_BASELINE)
         self.assertEqual(current['baseline_sha'],integrity.APPEALS_API_BASELINE)
@@ -35,7 +35,8 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
         self.assertEqual(set(current['product_files']),set(integrated['product_files'])|
                          integrity.SCROLL_PRODUCTS|integrity.APPEALS_API_PRODUCT_OVERRIDES|
                          integrity.APPEALS_API_PRODUCT_ADDITIONS|integrity.STABILIZATION_PRODUCT_OVERRIDES|
-                         integrity.STABILIZATION_PRODUCT_ADDITIONS)
+                         integrity.STABILIZATION_PRODUCT_ADDITIONS|integrity.STABILIZATION_V2_PRODUCT_OVERRIDES|
+                         integrity.STABILIZATION_V2_PRODUCT_ADDITIONS)
         self.assertEqual(preview['variant_id'],integrity.PREVIEW_VARIANT_ID)
         self.assertEqual(scenario['variant_id'],integrity.UI_CANDIDATE_V12_ID)
         self.assertFalse(integrity.manifest_tree_matches(preview))

@@ -1,0 +1,87 @@
+{
+  "variant_id": "sandbox-nazk-appeals-stabilization-v2",
+  "baseline_sha": "fc719b07f7ce6bd43fcdf9815795f0f2906901e8",
+  "base_manifest": "test_sandbox_nazk_appeals_stabilization_v1.json",
+  "base_manifest_sha256": "9233e8d9a27adf855d22a8cc3a5e2f7dc167ba86dac6c02fc3451ffa92d6f8c7",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "show-valid-saved-scenario-snapshot-for-editable-appeals",
+    "strip-leading-scenario-label-in-table-only",
+    "show-justification-viewer-only-for-nonempty-saved-text",
+    "show-justification-viewer-only-for-nonempty-saved-text"
+  ],
+  "product_overrides": {
+    "server.py": {
+      "sha256": "517d1dd7871bbb8b12e2c5f8282a91050e7ffd2dcd6f114bbc39b03e1e4eb2c3"
+    },
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "72ca73fc213b05a03ce5fcde7595dcbad5df6ff25c759fe5b8d29f45aa45bbc3"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "8cf467dc74b90d7374c898d3bb09a03e3734ffd01951a48640f27f4c12713400"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "886ef2d8ce509c9777f96678c2d2d4722b85e15c55b40daabd607d76993094f3"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "d212a9e99b399af108c36edf2c0fdde6f70c115a01a36a01870f219cc613deee"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "319102a8a690fd140005add01b91301af78ca1e84cab4bda0ed9ad5871fbfb8e"
+    },
+    "validation/local_release_20260911/test_violation_reports.py": {
+      "sha256": "cb904ad66f462b3eb5442e7e70b7ba7fcee1e2112cf065ac11ba90203e1f2d59"
+    },
+    "app.js": {
+      "sha256": "f87b8ddc062195e66c7372065c7bb5056f18635f00b20c99b1cbec5b7cb803cb"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "44318cfa621fdb431669e2930ba42b785d58fa907fc9e88025eac9994a92efbb"
+    }
+  },
+  "product_files_additional": {
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "d8d9696dff3ff4a78ea3d4257ce64d71b74333b25381d1d65650d17977b82bf7"
+    }
+  },
+  "protected_overrides": {
+    "server.py": {
+      "sha256": "517d1dd7871bbb8b12e2c5f8282a91050e7ffd2dcd6f114bbc39b03e1e4eb2c3",
+      "halloween_normalized_sha256": "517d1dd7871bbb8b12e2c5f8282a91050e7ffd2dcd6f114bbc39b03e1e4eb2c3",
+      "personal_theme_normalized_sha256": "7ddf919cc4d38cec04e2056df7c582358aa317e294dece6ce3167ff01fd8b306"
+    },
+    "app.js": {
+      "sha256": "f87b8ddc062195e66c7372065c7bb5056f18635f00b20c99b1cbec5b7cb803cb",
+      "halloween_normalized_sha256": "f87b8ddc062195e66c7372065c7bb5056f18635f00b20c99b1cbec5b7cb803cb",
+      "personal_theme_normalized_sha256": "79a98c2f99679e66b0d6deb257f63d2012fa79d860c5c2002fa9573d7f1c250b"
+    }
+  },
+  "guarded_overrides": {
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "72ca73fc213b05a03ce5fcde7595dcbad5df6ff25c759fe5b8d29f45aa45bbc3"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "8cf467dc74b90d7374c898d3bb09a03e3734ffd01951a48640f27f4c12713400"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "886ef2d8ce509c9777f96678c2d2d4722b85e15c55b40daabd607d76993094f3"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "d212a9e99b399af108c36edf2c0fdde6f70c115a01a36a01870f219cc613deee"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "319102a8a690fd140005add01b91301af78ca1e84cab4bda0ed9ad5871fbfb8e"
+    },
+    "validation/local_release_20260911/test_violation_reports.py": {
+      "sha256": "cb904ad66f462b3eb5442e7e70b7ba7fcee1e2112cf065ac11ba90203e1f2d59"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "44318cfa621fdb431669e2930ba42b785d58fa907fc9e88025eac9994a92efbb"
+    }
+  },
+  "guarded_additions": {
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "d8d9696dff3ff4a78ea3d4257ce64d71b74333b25381d1d65650d17977b82bf7"
+    }
+  }
+}

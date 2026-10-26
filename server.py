@@ -6803,13 +6803,7 @@ def list_violation_reports(params: dict) -> dict:
         except (TypeError,ValueError):
             decision_snapshot=None
         scenario_report["decision_context_snapshot"]=decision_snapshot
-        has_official_decision=bool(scenario_report["official_decisions"])
-        local_review_completed=bool(scenario_review.get("completed_at") or
-                                    scenario_review.get("review_status") in {"reviewed","completed"})
-        scenario_read_only=(has_official_decision or local_review_completed or
-                            not violation_report_owned_by_pqm(scenario_report))
-        scenario_context=(saved_scenario_context(decision_snapshot,scenario_report)
-                          if scenario_read_only else None)
+        scenario_context=saved_scenario_context(decision_snapshot,scenario_report)
         # The list path never resolves a current tender. If locally saved facts
         # cannot reproduce the card summary exactly, leave it blank instead of
         # inventing a partial scenario. Opening the card keeps its existing flow.

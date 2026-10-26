@@ -24,7 +24,9 @@ class NazkScrollIntegrityTests(unittest.TestCase):
         self.assertEqual(set(current["product_files"]), set(integrated["product_files"]) |
                          integrity.SCROLL_PRODUCTS | integrity.APPEALS_API_PRODUCT_OVERRIDES |
                          integrity.APPEALS_API_PRODUCT_ADDITIONS | integrity.STABILIZATION_PRODUCT_OVERRIDES |
-                         integrity.STABILIZATION_PRODUCT_ADDITIONS)
+                         integrity.STABILIZATION_PRODUCT_ADDITIONS |
+                         integrity.STABILIZATION_V2_PRODUCT_OVERRIDES |
+                         integrity.STABILIZATION_V2_PRODUCT_ADDITIONS)
         self.assertTrue(integrity.manifest_tree_matches(current))
         self.assertTrue(integrity.exact_variant_tree_matches())
         self.assertFalse(integrity.manifest_tree_matches(integrated))

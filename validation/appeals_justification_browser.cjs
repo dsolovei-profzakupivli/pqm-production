@@ -21,9 +21,13 @@ assert(!app.includes('Контрольний сценарій'),'scenario title 
 assert(app.includes('item.scenario_summary?'),'scenario_summary must remain available in appeal cards');
 const saved=[
   {id:'P-1',report_id:'UA-D-PENDING',status:'pending',scenario_summary:'Строк укладення договору сплив, але договір не укладено.',decision_justification:'Збережене офіційне обґрунтування для очікуваного звернення.'},
-  {id:'S-1',report_id:'UA-D-SATISFIED',status:'satisfied',scenario_summary:'Письмову відмову надано після граничної дати.',decision_justification:'Збережене обґрунтування задоволеного звернення.'},
+  {id:'S-1',report_id:'UA-D-SATISFIED',status:'satisfied',scenario_summary:'Сценарій: Письмову відмову надано після граничної дати.',decision_justification:'Збережене обґрунтування задоволеного звернення.'},
   {id:'D-1',report_id:'UA-D-DECLINED',status:'declined',scenario_summary:'До звернення не додано остаточного рішення суду.',decision_justification:'Збережене обґрунтування відхиленого звернення.'},
   {id:'N-1',report_id:'UA-D-NONE',status:'pending',scenario_summary:'Адаптивний сценарій без збереженого обґрунтування.',decision_justification:''},
+  {id:'N-2',report_id:'UA-D-WHITESPACE',status:'satisfied',scenario_summary:'Рішення залежить від сценарію, наведеного у матеріалах.',decision_justification:'   \n  '},
+  {id:'N-3',report_id:'UA-D-MISSING',status:'declined',scenario_summary:'Сценарій: Підстава не підтвердилася.',decision_justification:undefined},
+  {id:'N-4',report_id:'UA-D-PREFIX-ONLY',status:'pending',scenario_summary:'Сценарій:',decision_justification:''},
+  {id:'N-5',report_id:'UA-D-MULTILINE',status:'pending',scenario_summary:'Сценарій: Перший рядок.\nДругий рядок із довгим змістом: '+('довгий текст '.repeat(32)),decision_justification:''},
   {id:'S-2',report_id:'UA-D-NO-SCENARIO',status:'satisfied',scenario_summary:'',decision_justification:'Збережений текст залишається окремо доступним.'}
 ];
 const widths=read('table_widths_ui.js'),visibilitySource=widths.match(/function effectiveVisibility\(table,widths\)\{[^}]*\}/)?.[0],orderSource=widths.match(/function effectiveOrder\(table,widths\)\{[^}]*\}/)?.[0];
@@ -53,20 +57,38 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
    for(let i=0;i<saved.length;i++){
     const item=saved[i],scenario=await page.locator(`tr[data-request-index="${i}"] .request-scenario-summary`).textContent();
     assert.equal(await page.locator(`tr[data-request-index="${i}"] td`).count(),10,`${theme}/${item.status}: row aligns to all table headers`);
-    assert.equal(scenario,item.scenario_summary||'—',`${theme}/${item.status}: cell shows adaptive scenario, not justification`);
+    const expectedScenario=String(item.scenario_summary||'').trim().replace(/^Сценарій:\s*/i,'')||'—';
+    assert.equal(scenario,expectedScenario,`${theme}/${item.status}: cell shows adaptive scenario without only its leading service prefix`);
+    assert(!/^Сценарій:/i.test(scenario),`${theme}/${item.status}: no leading duplicate service prefix`);
+    if(i===4)assert(scenario.includes('сценарію'),'the word сценарій remains when it is part of the meaning');
+    if(i===6)assert.equal(scenario,'—','a prefix without scenario content renders as empty');
+    if(i===7){
+      assert(scenario.startsWith('Перший рядок.\nДругий рядок із довгим змістом:'),`${theme}: line breaks and body text survive prefix removal`);
+      const style=await page.locator(`tr[data-request-index="${i}"] .request-scenario-summary`).evaluate(el=>({whiteSpace:getComputedStyle(el).whiteSpace,overflowWrap:getComputedStyle(el).overflowWrap,overflow:getComputedStyle(el).overflow,lineClamp:getComputedStyle(el).webkitLineClamp}));
+      assert.equal(style.whiteSpace,'normal',`${theme}: text wraps in the cell`);
+      assert.equal(style.overflowWrap,'anywhere',`${theme}: long text can wrap without widening the table`);
+      assert.equal(style.overflow,'hidden',`${theme}: long summary is visually truncated`);
+      assert.equal(style.lineClamp,'3',`${theme}: long summary remains limited to three lines`);
+    }
     if(item.decision_justification)assert.notEqual(scenario,item.decision_justification,`${theme}/${item.status}: justification is not duplicated into scenario cell`);
-    await page.locator(`tr[data-request-index="${i}"] [data-view-justification]`).click();
-    assert.equal(await page.locator('#requestJustificationDialog').evaluate(el=>el.open),true,`${theme}/${item.status}: one click opens viewer`);
-    const expected=item.decision_justification||'Обґрунтування для цього звернення ще не сформовано.';
-    assert.equal(await page.locator('#requestJustificationBody').textContent(),expected);
-    assert.equal(await page.locator('#requestJustificationBody textarea, #requestJustificationBody input, #requestJustificationBody button').count(),0,'viewer is read-only');
-    await page.keyboard.press('Escape');
+    const savedJustification=String(item.decision_justification||'').trim(),eye=page.locator(`tr[data-request-index="${i}"] [data-view-justification]`);
+    if(savedJustification){
+      assert.equal(await eye.count(),1,`${theme}/${item.status}: saved nonblank justification shows eye`);
+      await eye.click();
+      assert.equal(await page.locator('#requestJustificationDialog').evaluate(el=>el.open),true,`${theme}/${item.status}: one click opens viewer`);
+      assert.equal(await page.locator('#requestJustificationBody').textContent(),savedJustification,'viewer shows the saved justification');
+      assert.equal(await page.locator('#requestJustificationBody textarea, #requestJustificationBody input, #requestJustificationBody button').count(),0,'viewer is read-only');
+      await page.keyboard.press('Escape');
+    }else{
+      assert.equal(await eye.count(),0,`${theme}/${item.status}: missing, empty, or whitespace-only justification has no eye`);
+      assert.equal(await page.locator('#requestJustificationDialog').evaluate(el=>el.open),false,`${theme}/${item.status}: no viewer opens without saved text`);
+    }
    }
    await page.locator('tr[data-request-index="0"] td').nth(0).click();
    assert.equal(await page.evaluate(()=>window.lastOpened),0,`${theme}: one ordinary row click opens the appeal`);
   }
   assert.equal(await page.evaluate(()=>cardOpens),2,'only ordinary row clicks open cards; eye clicks do not bubble into card opening');
   assert.equal(await page.evaluate(()=>writeCalls),0,'viewer does not initiate writes or regeneration');
-  console.log('PASS: adaptive scenario rows, separate one-click read-only justification viewer, missing text, all statuses, both themes, saved column key, narrow horizontal scroll, one-click card opening');
+  console.log('PASS: adaptive scenario rows without duplicate leading label, scenario wording and line breaks preserved, prefix-only/empty values, long-text wrapping and three-line clamp, eye only for nonblank saved justification including missing/empty/whitespace cases, one-click read-only viewer, all statuses, both themes, saved column key, narrow horizontal scroll, one-click card opening');
  }finally{await browser.close()}
 })().catch(error=>{console.error(error);process.exit(1)});
