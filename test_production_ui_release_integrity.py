@@ -3,6 +3,7 @@ import ast
 import hashlib
 import json
 from pathlib import Path
+import zipfile
 import unittest
 
 ROOT=Path(__file__).resolve().parent
@@ -14,7 +15,8 @@ UI_VARIANT=CONTRACT.get('approved_product_variants',{}).get('sandbox_ui_transfer
 CARD_VARIANT=CONTRACT.get('approved_product_variants',{}).get('card_click_dom_stability_v1')
 NAZK_CARD_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_dom_stability_nazk_punishment_v1')
 NAZK_FULL_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_nazk_full_contract_v1')
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT) if value]
+APPEALS_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_appeals_module_a701e96_v1')
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT) if value]
 
 
 def nodes(source):
@@ -51,6 +53,7 @@ def variant_matches(root, changed_paths, *, overrides=None, variant=None):
         'f8cd1ded13864587e71f8904ee0bcfe24ec5d471',
         '388d6e1c355d3f3947edd7b9d3142ec28624e62f',
         'ef4da147a221fd01082dc62253a166223ee58ce8',
+        'a701e96705afe316bf2fa8e8806a318b5384d4ce',
     }:
         return False
     expected=variant.get('files',{})
@@ -117,6 +120,7 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
             'protocols_and_seasonal_cat','protocols_and_seasonal_cat_css_failsafe',
             'sandbox_ui_transfer_from_bddd5f6','card_click_dom_stability_v1',
             'production_dom_stability_nazk_punishment_v1','production_nazk_full_contract_v1',
+            'production_appeals_module_a701e96_v1',
         })
         self.assertEqual(VARIANT['baseline'],'b433bcb290ca9a205910db54f0c9b77af4f02cc7')
         expected_files={
@@ -233,17 +237,43 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
                          '829db6538fa96ac4cd4a3fc67c61c12d484d259a739e6b820ccf8760885c01fe')
         self.assertEqual(NAZK_FULL_VARIANT['browser_test_sha256'],
                          '0c0dee6bc2323329170eb38cf3602af040bc0491c750e81fdd229980e087328e')
-        self.assertTrue(variant_matches(ROOT,NAZK_FULL_VARIANT['files'],variant=NAZK_FULL_VARIANT))
+        fixture_path=ROOT/'validation/fixtures/production_nazk_full_contract_a701e96.zip'
+        with zipfile.ZipFile(fixture_path) as fixture:
+            fixture_files={name:fixture.read(name) for name in fixture.namelist()}
+        self.assertEqual(set(fixture_files),set(NAZK_FULL_VARIANT['files']))
+        self.assertTrue(variant_matches(ROOT,NAZK_FULL_VARIANT['files'],
+                                        overrides=fixture_files,variant=NAZK_FULL_VARIANT))
         for name in NAZK_FULL_VARIANT['files']:
             with self.subTest(name=name):
-                data=(ROOT/name).read_bytes()
+                data=fixture_files[name]
                 changed=bytes([data[0]^1])+data[1:]
                 self.assertFalse(variant_matches(ROOT,NAZK_FULL_VARIANT['files'],
-                                                 overrides={name:changed},variant=NAZK_FULL_VARIANT))
+                                                 overrides={**fixture_files,name:changed},
+                                                 variant=NAZK_FULL_VARIANT))
         for name,key in [('validation/local_release_20260911/test_nazk_full_contract.py','api_test_sha256'),
                          ('validation/nazk_full_contract_browser.cjs','browser_test_sha256')]:
             data=(ROOT/name).read_bytes().replace(b'\r\n',b'\n')
             self.assertEqual(hashlib.sha256(data).hexdigest(),NAZK_FULL_VARIANT[key])
+
+    def test_production_appeals_variant_is_additive_exact_and_rejects_single_byte_changes(self):
+        self.assertEqual(APPEALS_VARIANT['baseline'],'a701e96705afe316bf2fa8e8806a318b5384d4ce')
+        expected_files={
+            'app.js','edr_sync_v2.py','index.html','server.py','styles.css','validation/docker_release_gate.py',
+            'validation/sandbox_supplier_ux.cjs','validation/production_appeals_module_ui.cjs',
+            'validation/local_release_20260911/test_violation_scenario_context_cache.py',
+            'validation/local_release_20260911/test_violation_report_reopen_ui.py',
+            'validation/fixtures/production_nazk_full_contract_a701e96.zip',
+        }
+        self.assertEqual(set(APPEALS_VARIANT['files']),expected_files)
+        self.assertTrue(variant_matches(ROOT,APPEALS_VARIANT['files'],variant=APPEALS_VARIANT))
+        self.assertFalse(variant_matches(ROOT,NAZK_FULL_VARIANT['files'],variant=NAZK_FULL_VARIANT),
+                         'Historical NAZK manifest remains unchanged and does not cover Appeals integration')
+        for name in APPEALS_VARIANT['files']:
+            with self.subTest(name=name):
+                data=(ROOT/name).read_bytes()
+                changed=bytes([data[0]^1])+data[1:]
+                self.assertFalse(variant_matches(ROOT,APPEALS_VARIANT['files'],
+                                                 overrides={name:changed},variant=APPEALS_VARIANT))
 
     def test_operational_lifecycle_and_write_algorithms_unchanged(self):
         source=nodes((ROOT/'operational_tasks.py').read_text(encoding='utf-8'))

@@ -114,9 +114,9 @@ assert.match(app,/actions\.append\(link\)/);
 assert.match(css,/\.supplier-edr-actions a\{display:inline-flex;align-items:center;justify-content:center;min-height:32px/);
 const caseLabels=['genitive','dative','accusative'].map(value=>({dataset:{declensionCase:value},classList:{active:false,toggle(name,state){this.active=state}}}));
 const editorNodes=new Map();
-for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
+for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog','declensionSave'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
 for(const value of ['genitive','dative','accusative'])editorNodes.set(`#declensionDialog [data-declension-case="${value}"] input`,{focus(){}});
-const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:()=>caseLabels,editingDeclensionId:null,Set,Array});
+const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:()=>caseLabels,editingDeclensionId:null,Set,Array,currentMe:{role:'admin',permissions:{'declension.manage':true}}});
 vm.runInContext(section(app,'function openDeclensionEditor(','function declensionLookup('),caseContext);
 for(const [required,expected] of [[['dative'],[false,true,false]],[['genitive'],[true,false,false]],[['genitive','dative'],[true,true,false]],[[],[false,false,false]]]){
   caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},required);

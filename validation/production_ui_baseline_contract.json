@@ -167,6 +167,38 @@
       },
       "api_test_sha256": "829db6538fa96ac4cd4a3fc67c61c12d484d259a739e6b820ccf8760885c01fe",
       "browser_test_sha256": "0c0dee6bc2323329170eb38cf3602af040bc0491c750e81fdd229980e087328e"
+    },
+    "production_appeals_module_a701e96_v1": {
+      "baseline": "a701e96705afe316bf2fa8e8806a318b5384d4ce",
+      "server_protected_ast": "68ab5f289f1ee25038b9e635a60785332d19c854cdc6f00404e07421eead929a",
+      "server_variant_excluded_functions": [
+        "init_db",
+        "build_procurement_context",
+        "violation_report_detail",
+        "_scenario_timestamp_ns",
+        "_scenario_external_report_id",
+        "_scenario_report_fingerprint",
+        "_minimal_scenario_context",
+        "_validated_scenario_context_snapshot",
+        "_scenario_context_from_card",
+        "_save_violation_scenario_context_snapshot"
+      ],
+      "binary_files": [
+        "validation/fixtures/production_nazk_full_contract_a701e96.zip"
+      ],
+      "files": {
+        "app.js": "63b8a994f23ce3f0ffdff656206a14ff901aafadb619058e5018b94dff47dc28",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+        "index.html": "d430d58b16e2d375e7d12b2dc7dc90603567c27a885dbd977acce0c907757181",
+        "server.py": "04e12430ba6189f6d5bb13d93ea6af4a2207329766ee1af0fe4231d41d13b289",
+        "styles.css": "28187ccb5d59dfa8b146c7623183e979db18a02c1abdc51744b06a7e925ed13a",
+        "validation/docker_release_gate.py": "c28a1ca30845273af93626119e5770a9f6060045f8573a3ce424e568793bf5a5",
+        "validation/sandbox_supplier_ux.cjs": "3133a1f80b237f75a9e3a414f62be4bb87f2ac1be3a3c2c7b3adeb40b4d1777f",
+        "validation/production_appeals_module_ui.cjs": "cd573c076cf31e457eecec3004ec675019656665151e134ee938d0b3cbd72209",
+        "validation/local_release_20260911/test_violation_report_reopen_ui.py": "61bbb7a47bd371889e91daad63e06138d7dc13cededab8bf2993ce904ba3f4c0",
+        "validation/local_release_20260911/test_violation_scenario_context_cache.py": "43de68c6c35224e4ba51b8c2284daf96fa86b5f3681773f2f21524687f568111",
+        "validation/fixtures/production_nazk_full_contract_a701e96.zip": "7603149f2e1ff19087808659ca1baf4efe7a0601977dbcf331dcf1594afff703"
+      }
     }
   }
 }

@@ -53,6 +53,7 @@ const context = {
     ? '<a href="/api/protocol/files/739.docx">DOCX</a><a href="/api/violation-reports/report-1/protocol/pdf">PDF</a>'
     : 'No protocol',
   bindViolationReview:()=>{bound++},
+  bindViolationCardDeclensionActions:()=>{},
   displayDate:value=>value, requestLabel:value=>value,
   requestStatusLabels:{}, esc:value=>value,
 };

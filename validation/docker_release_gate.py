@@ -37,6 +37,7 @@ def main():
         ["node", "validation/sandbox_appeals_contract_controls_ui.cjs"],
         ["node", "validation/appeals_p2_chronology_ui.cjs"],
         ["node", "validation/appeals_p3_justification_ui.cjs"],
+        ["node", "validation/production_appeals_module_ui.cjs"],
         ["node", "validation/appeals_admin_deadline_ui.cjs"],
         ["node", "validation/navigation_back_slot_ui.cjs"],
         ["node", "validation/sandbox_supplier_ux.cjs"],
@@ -52,6 +53,7 @@ def main():
         ["node", "validation/supplier_ux.cjs"],
         [sys.executable, "validation/run_local_release.py", "test_nazk_workflow.py"],
         [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
+        [sys.executable, "validation/run_local_release.py", "test_violation_scenario_context_cache.py"],
     ]
     for command in commands:
         print("DOCKER GATE: synthetic check", command[-1], flush=True)
