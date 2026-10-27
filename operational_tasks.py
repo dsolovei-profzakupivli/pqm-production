@@ -272,6 +272,25 @@ def reconcile_stale_nazk_tasks(con, actor="PQM task builder", supplier_codes=Non
     return {"cancelled":len(cancelled),"task_ids":cancelled}
 
 
+def reconcile_stale_nazk_tasks_after_prozorro_sync(con, sync_result, actor="PQM successful Prozorro sync"):
+    """Cancel stale NAZK work only when the qualification refresh was complete.
+
+    This path intentionally does not reconcile NAZK checks or materialize tasks;
+    it uses only persisted qualification facts and cannot fetch either registry.
+    """
+    if not isinstance(sync_result, dict):
+        return {"skipped": "invalid_sync_result", "cancelled": 0, "task_ids": []}
+    frameworks = sync_result.get("frameworks")
+    completed = sync_result.get("completed")
+    if (sync_result.get("status") in {"failed", "partial"} or
+            sync_result.get("errors") or sync_result.get("officer_assignments_error") or
+            type(frameworks) is not int or frameworks <= 0 or type(completed) is not int or
+            completed != frameworks):
+        return {"skipped": "sync_not_complete", "cancelled": 0, "task_ids": []}
+    result = reconcile_stale_nazk_tasks(con, actor)
+    return {"skipped": None, **result}
+
+
 def reconcile_irrelevant_nazk_managers(con, actor="PQM task builder", supplier_codes=None):
     """Cancel active NAZK work when its historical person is no longer current."""
     allowed={_digits(code) for code in supplier_codes or [] if _digits(code)} if supplier_codes is not None else None

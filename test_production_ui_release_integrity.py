@@ -22,7 +22,8 @@ DST_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v2.json
 PREVIEW_VARIANT=json.loads((ROOT/'validation/production_declension_preview_integrity_v1.json').read_text())
 PREVIEW_GATE_VARIANT=json.loads((ROOT/'validation/production_declension_preview_integrity_v2.json').read_text())
 SCENARIO_VARIANT=json.loads((ROOT/'validation/production_scenario_projection_integrity_v1.json').read_text())
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT,PREVIEW_VARIANT,PREVIEW_GATE_VARIANT,SCENARIO_VARIANT) if value]
+NAZK_RECOVERY_VARIANT=json.loads((ROOT/'validation/production_nazk_recovery_autoclose_v1.json').read_text())
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT,PREVIEW_VARIANT,PREVIEW_GATE_VARIANT,SCENARIO_VARIANT,NAZK_RECOVERY_VARIANT) if value]
 
 
 def nodes(source):
@@ -62,6 +63,7 @@ def variant_matches(root, changed_paths, *, overrides=None, variant=None):
         'a701e96705afe316bf2fa8e8806a318b5384d4ce',
         '292b0726b4adc13644c7f98721e569c8809ea785',
         '4a3aca491cb836e73f1bb36dac364a336d46341a',
+        '3eb465fad28272051478999683605e673a2bdfb1',
         'f2565a4e52d482b50f4ddfc2ff8468c38f9a49a7',
         '7af6ed16861b87fa87fc5c5243d1ce86ae71bb29',
     }:
@@ -320,15 +322,40 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
     def test_operational_lifecycle_and_write_algorithms_unchanged(self):
         source=nodes((ROOT/'operational_tasks.py').read_text(encoding='utf-8'))
         excluded={'_task','list_tasks','_basis_date','task_ui_summary','qualification_ui_summary','amcu_target_ui_rows'}
-        self.assertEqual(digest({k:v for k,v in source.items() if k not in excluded}),
-                         CONTRACT['operational_protected_ast'])
+        matched=matching_variant(ROOT)
+        if matched:
+            excluded.update(matched.get('operational_variant_excluded_functions',[]))
+        expected=(matched.get('operational_protected_ast') if matched else None) or CONTRACT['operational_protected_ast']
+        self.assertEqual(digest({k:v for k,v in source.items() if k not in excluded}),expected)
+
+    def test_production_nazk_recovery_variant_is_exact_and_rejects_single_byte_changes(self):
+        variant=NAZK_RECOVERY_VARIANT
+        self.assertEqual(variant['baseline'],'3eb465fad28272051478999683605e673a2bdfb1')
+        self.assertEqual(matching_variant(ROOT),variant)
+        self.assertEqual(variant['server_variant_excluded_functions'],[
+            'rebuild_nazk_tasks','reconcile_nazk_tasks_after_complete_prozorro_sync',
+            'sync_worker','sync_all_worker','sync_incremental_worker',
+            '_finish_scheduler_lease','start_nazk_registry_refresh',
+        ])
+        self.assertEqual(variant['operational_variant_excluded_functions'],
+                         ['reconcile_stale_nazk_tasks_after_prozorro_sync'])
+        self.assertTrue(variant_matches(ROOT,variant['files'],variant=variant))
+        self.assertFalse(variant_matches(ROOT,set(variant['files'])-{'server.py'},variant=variant))
+        self.assertFalse(variant_matches(ROOT,set(variant['files'])|{'unapproved.py'},variant=variant))
+        for name in variant['files']:
+            with self.subTest(file=name):
+                data=(ROOT/name).read_bytes()
+                changed=bytes([data[0]^1])+data[1:]
+                self.assertFalse(variant_matches(ROOT,variant['files'],
+                                                 overrides={name:changed},variant=variant))
 
     def test_protected_files_exact_content(self):
         matched=matching_variant(ROOT)
         for name,expected in CONTRACT['protected_file_hashes'].items():
             with self.subTest(name=name):
                 actual=hashlib.sha256((ROOT/name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()
-                approved=matched['files'].get(name) if matched else None
+                approved=(matched.get('files',{}).get(name) or
+                          matched.get('protected_file_hashes',{}).get(name)) if matched else None
                 self.assertEqual(actual,approved or expected)
 
     def test_existing_automation_callbacks_and_api_calls_unchanged(self):
