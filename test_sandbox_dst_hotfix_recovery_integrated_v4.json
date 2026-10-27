@@ -30,6 +30,7 @@
     "edr_future_check_date_fails_safe_and_inactive_markers_remain_purple",
     "fence-nazk-registry-replacement-and-task-workflow-by-current-lease-owner",
     "filter_zakupivli_complaints_by_supplier_code_without_status_filter",
+    "include_v4_parent_override_fixture_in_disposable_release_runner",
     "increase-supplier-warning-counter-heading-gap",
     "initialize_current_user_in_supplier_ux_fixture_and_assert_declension_editor_access_modes",
     "keep-nazk-reconciliation-idempotent-after-partial-workflow-retry",
@@ -90,6 +91,7 @@
     "supplier_and_appeal_cards_open_on_one_ordinary_click",
     "supplier_hidden_table_widths_are_deferred_until_visible",
     "supplier_shared_widths_persist_across_hide_show_and_reload",
+    "update_integrity_tests_for_the_additive_v4_contract",
     "update_table_width_regressions_for_current_generic_visibility_installation",
     "use_full_current_edr_name_when_short_name_is_missing_or_placeholder",
     "validate-report-reason-version-freshness-and-input-fingerprint"
@@ -178,7 +180,7 @@
       "sha256": "1e210977d598902f4ae4e1b6e139caf8da51cded07c31059ba941f5c042cf629"
     },
     "test_sandbox_nazk_preview_integrity.py": {
-      "sha256": "dac992bb0190ee6282b5ccaf80d0a44e280ec3060060395888ceef3d3c8edf0d"
+      "sha256": "599e4c9100f0ebb57019e323e622f6e81bdfcf11f0f73b9e14dd3a89c9df4884"
     },
     "validation/fixtures/nazk_preview_baseline_f394d4c.zip": {
       "sha256": "4eceb1817d619ba6c01d4e046b6f9f4ab027ab0e17a669a8ac7377540d167433"
@@ -196,7 +198,7 @@
       "sha256": "f4aeff274a9a879a2f513279f94f13ba5ab7ef4b743be589f1c6b3937cec0f77"
     },
     "validation/run_local_release.py": {
-      "sha256": "e5425de08adfc94f870032b0df6f965ec9ba9fe4c72ecdda929fa2b40e6cb5b3"
+      "sha256": "897b88e306dc30783be4036949a62bfbdc873dc1fcf69c8306b3f45e4a01b447"
     },
     "validation/appeals_justification_browser.cjs": {
       "sha256": "73af34376e675522248b014c0930e4f65bf52c6e6b9761914413662107e159bf"
@@ -217,10 +219,10 @@
       "sha256": "8c1d7c0b67f68b8d96918582d1c8795d100ae7c58f59d9d1b0c76a71f684c899"
     },
     "test_sandbox_appeals_scenario_api_integrity.py": {
-      "sha256": "0f02e113cdfeece4c1ea506f4febb5530897c6b100a2d812e97938a7d9b1b5cf"
+      "sha256": "51f1cbb4972b2753c1c5ef7e487f2d90ffb480f5f85e16f80daf7206a688ec0f"
     },
     "test_sandbox_nazk_appeals_stabilization_integrity.py": {
-      "sha256": "d9164b4cf8cecde1e2e7cf3e74883ff07f12c78900301369f658de4eb674e809"
+      "sha256": "dcc6d8619dd09b6b70deb3cdcf1fa5eb961acfee8ec03c9461797588bd60ac43"
     },
     "test_sandbox_appeals_scenario_readonly_integrity.py": {
       "sha256": "ba91811b8a8398366d5ba7ad7dc8ec01c0b09d987a4a1d47b3d16c490b5b8d52"
@@ -384,7 +386,7 @@
       "sha256": "ac167c758a91c41001b454960b078b2e45130dff46f53fd71d57703d8aa6500c"
     },
     "validation/run_local_release.py": {
-      "sha256": "e5425de08adfc94f870032b0df6f965ec9ba9fe4c72ecdda929fa2b40e6cb5b3"
+      "sha256": "897b88e306dc30783be4036949a62bfbdc873dc1fcf69c8306b3f45e4a01b447"
     },
     "test_violation_report_kpi_facets.py": {
       "sha256": "78145705a37f1806f5d28e142dba98cd6a12a4f76ef61c3304874b42cba6f7c7"
@@ -441,7 +443,7 @@
       "sha256": "064e7d6fc70cbbddf8f9e78f60fd6e509191997197fbb7949122a279a984589b"
     },
     "test_sandbox_nazk_preview_integrity.py": {
-      "sha256": "dac992bb0190ee6282b5ccaf80d0a44e280ec3060060395888ceef3d3c8edf0d"
+      "sha256": "599e4c9100f0ebb57019e323e622f6e81bdfcf11f0f73b9e14dd3a89c9df4884"
     },
     "test_sandbox_ui_integrated_d457_integrity.py": {
       "sha256": "236d1f37362963c2fd2ad0950be26b9ee34c2ad359512383befdcbd4487f3255"
@@ -450,10 +452,10 @@
       "sha256": "8c46216b490d54956df579b4f091a7f806cfbe45b477c2b7d430775ba7849e6b"
     },
     "test_sandbox_appeals_scenario_api_integrity.py": {
-      "sha256": "0f02e113cdfeece4c1ea506f4febb5530897c6b100a2d812e97938a7d9b1b5cf"
+      "sha256": "51f1cbb4972b2753c1c5ef7e487f2d90ffb480f5f85e16f80daf7206a688ec0f"
     },
     "test_sandbox_nazk_appeals_stabilization_integrity.py": {
-      "sha256": "d9164b4cf8cecde1e2e7cf3e74883ff07f12c78900301369f658de4eb674e809"
+      "sha256": "dcc6d8619dd09b6b70deb3cdcf1fa5eb961acfee8ec03c9461797588bd60ac43"
     },
     "test_sandbox_appeals_scenario_readonly_integrity.py": {
       "sha256": "ba91811b8a8398366d5ba7ad7dc8ec01c0b09d987a4a1d47b3d16c490b5b8d52"
@@ -477,7 +479,7 @@
       "sha256": "6fc59f81850facb454927fd26eb8f22c61ec82b443abf0cca58c8359be2d9396"
     },
     "test_sandbox_dst_hotfix_integrity.py": {
-      "sha256": "cfde6ea792d83a8736a20881d4876d6c7d3581d053c0aa73635029ef8bb85ca6"
+      "sha256": "d81f6f6b712066fe71ee98832738c469a81cb818c8a58b32c34addc35d8d9f0b"
     },
     "validation/local_release_20260911/test_dst_regression.py": {
       "sha256": "add19881dbcd8c3f2c05762c4251bf458644cef404e59c5930f1338e63c3aa83"
@@ -495,7 +497,7 @@
       "sha256": "b1913e2c0a0c5e02e8e6cf5382cc4d9ae7ab62fc4b1917967b4f2c983e959a31"
     },
     "validation/local_release_20260911/sandbox_protocol_integrity_variant.py": {
-      "sha256": "51cb2e1f87abab1ff13ce066fe6c438fcf2e9cd02d28756c500934b3016da3df"
+      "sha256": "965730949b76524bbebe3b7803f02c0544f0a57e064bd1b5218737e14c106ed9"
     },
     "test_sandbox_nazk_recovery_integrity.py": {
       "sha256": "c8a7c8d3977d531382b37b504e53583ce7d6f5cc98458a72e2d40307394fd6cc"

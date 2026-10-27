@@ -12,7 +12,7 @@ ROOT=guard.ROOT
 class SandboxDstHotfixIntegrityTests(unittest.TestCase):
     def test_exact_new_tree_and_unchanged_historical_contracts(self):
         contracts=guard.load_contracts()
-        self.assertEqual(len(contracts),31)
+        self.assertEqual(len(contracts),32)
         current=next(c for c in contracts if c['variant_id']==guard.DST_VARIANT_ID)
         self.assertEqual(current['variant_id'],guard.DST_VARIANT_ID)
         self.assertEqual(current['baseline_sha'],'94c5e37693ef2855aaf9bc848ca2af1b3965cb25')
@@ -29,7 +29,8 @@ class SandboxDstHotfixIntegrityTests(unittest.TestCase):
         for name,expected in hashes.items():
             self.assertEqual(guard.sha256((ROOT/name).read_bytes().replace(b'\r\n',b'\n')),expected,name)
         self.assertEqual(guard.sha256((ROOT/'validation/fixtures/dst_parent_94c5e37.zip').read_bytes()),current['parent_fixture_sha256'])
-        self.assertEqual(contracts[-2]['variant_id'], guard.DST_RECOVERY_VARIANT_ID)
+        recovery = next(c for c in contracts if c['variant_id'] == guard.DST_RECOVERY_VARIANT_ID)
+        self.assertEqual(recovery['variant_id'], guard.DST_RECOVERY_VARIANT_ID)
 
     def test_one_byte_change_in_every_pinned_file_is_rejected(self):
         current=guard.load_contracts()[-1]

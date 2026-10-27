@@ -45,7 +45,8 @@ def main():
                              'table_widths_v11_tail.zip',
                              'dst_parent_94c5e37.zip',
                              'dst_v5_parent_overrides.zip',
-                             'nazk_recovery_v2_parent_overrides.zip'):
+                             'nazk_recovery_v2_parent_overrides.zip',
+                             'nazk_recovery_testfix_parent_override.zip'):
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             shutil.copy2(fixture_source,fixture_target/fixture_name)
         for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):
