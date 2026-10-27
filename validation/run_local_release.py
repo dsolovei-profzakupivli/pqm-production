@@ -50,7 +50,10 @@ def main():
                              'dst_parent_94c5e37.zip',
                              'dst_v5_parent_overrides.zip',
                              'nazk_recovery_v2_parent_overrides.zip',
-                             'nazk_recovery_testfix_parent_override.zip'):
+                             'nazk_recovery_testfix_parent_override.zip',
+                             'nazk_recovery_baseline_990483_server.py',
+                             'nazk_recovery_test_v2_compat.zip',
+                             'nazk_recovery_v4_tree_overrides.zip'):
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             shutil.copy2(fixture_source,fixture_target/fixture_name)
         for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):

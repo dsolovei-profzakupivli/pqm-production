@@ -145,11 +145,15 @@ class NazkRecovery(unittest.TestCase):
 
     def test_unrelated_scheduler_jobs_keep_legacy_lease_behavior(self):
         now = datetime.now(timezone.utc)
-        owner = scheduler_runtime.claim(self.path, 'prozorro', trigger='legacy',
-                                        now=now-timedelta(seconds=5), lease_seconds=1)
-        self.assertTrue(owner)
-        self.assertTrue(scheduler_runtime.renew(self.path, 'prozorro', owner, now=now))
-        self.assertTrue(scheduler_runtime.finish(self.path, 'prozorro', owner, now=now))
+        for job in ('prozorro', 'violation_reports', 'nazk_registry'):
+            with self.subTest(job=job):
+                owner = scheduler_runtime.claim(self.path, job, trigger='legacy',
+                                                now=now-timedelta(seconds=5), lease_seconds=1)
+                self.assertTrue(owner)
+                if job == 'nazk_registry':
+                    self.assertFalse(scheduler_runtime.finish(self.path, job, owner, now=now,
+                                                              require_current=True))
+                self.assertTrue(scheduler_runtime.finish(self.path, job, owner, now=now))
 
 
 if __name__ == '__main__':

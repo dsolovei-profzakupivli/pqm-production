@@ -1,5 +1,6 @@
 """Exact, baseline-bound integrity exception for the approved protocol work."""
 import copy
+import ast
 import hashlib
 import json
 import re
@@ -619,6 +620,7 @@ def load_contracts():
     contracts.append(load_dst_recovery_contract(contracts[-1]))
     contracts.append(load_dst_recovery_qualification_contract(contracts[-1]))
     contracts.append(load_dst_recovery_qualification_test_fix_contract(contracts[-1]))
+    contracts.append(load_dst_recovery_integrity_alignment_contract(contracts[-1]))
     return contracts
 
 
@@ -964,6 +966,8 @@ def canonical_content(relative, content):
                          b'DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
         content = re.sub(rb'DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "[0-9a-f]{64}"',
                          b'DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
+        content = re.sub(rb'DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT_SHA256 = "[0-9a-f]{64}"',
+                         b'DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
     return content
 
 
@@ -1017,10 +1021,94 @@ def protected_content_matches(path, content, actual_projection_sha256,
     for contract in load_contracts():
         if not manifest_tree_matches(contract):
             continue
+        if (path == "server.py" and contract.get("server_projection") and
+                _nazk_server_historical_projection_matches(
+                    content, contract, projection_name, baseline_projection_sha256)):
+            return True
         expected = contract["protected_files"].get(path, {}).get(projection_name)
         if expected and expected == actual_projection_sha256:
             return True
     return False
+
+
+def _nazk_server_ast_projection_matches(content, baseline, approved):
+    """Require all changes to be the exact manifest-pinned NAZK function set."""
+    try:
+        current_tree = ast.parse(content.decode("utf-8-sig"))
+        baseline_tree = ast.parse(baseline.decode("utf-8-sig"))
+    except (UnicodeDecodeError, SyntaxError):
+        return False
+    current_functions = {node.name: node for node in current_tree.body
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    baseline_functions = {node.name: node for node in baseline_tree.body
+                          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    changed = {name for name in set(current_functions) | set(baseline_functions)
+               if (name not in current_functions or name not in baseline_functions or
+                   ast.dump(current_functions[name], include_attributes=False) !=
+                   ast.dump(baseline_functions[name], include_attributes=False))}
+    if changed != set(approved):
+        return False
+    for name, expected in approved.items():
+        node = current_functions.get(name)
+        if node is None or sha256(ast.dump(node, include_attributes=False).encode()) != expected:
+            return False
+    def protected_nodes(tree):
+        return [ast.dump(node, include_attributes=False) for node in tree.body
+                if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and
+                        node.name in approved)]
+    return protected_nodes(current_tree) == protected_nodes(baseline_tree)
+
+
+def _nazk_server_historical_projection_matches(content, contract, projection_name,
+                                               baseline_projection_sha256):
+    """Verify legacy server projections after only the exact NAZK delta is masked.
+
+    Unchanged top-level code must remain AST-identical to the pinned 9904832
+    parent fixture. Each approved replacement/new function is independently
+    pinned by AST digest, and the full candidate file is pinned by the manifest.
+    """
+    projection = contract.get("server_projection", {})
+    historical = projection.get("historical_projection_sha256", {})
+    accepted = projection.get("accepted_legacy_projection_sha256", {}).get(projection_name, [])
+    if baseline_projection_sha256 != historical.get(projection_name) and baseline_projection_sha256 not in accepted:
+        return False
+    product = contract.get("product_files", {}).get("server.py", {})
+    if product.get("sha256") != sha256(canonical_content("server.py", content)):
+        return False
+    fixture_path = projection.get("parent_server_fixture")
+    fixture_entry = contract.get("guarded_files", {}).get(fixture_path, {})
+    baseline_path = ROOT / fixture_path
+    try:
+        baseline = baseline_path.read_bytes()
+    except (TypeError, OSError):
+        return False
+    if sha256(canonical_content(fixture_path, baseline)) != fixture_entry.get("sha256"):
+        return False
+    approved = projection.get("approved_function_ast_sha256", {})
+    return _nazk_server_ast_projection_matches(content, baseline, approved)
+
+
+def nazk_server_projection_hashes(content, contract=None):
+    """Return exact historical projections only when the approved delta is intact."""
+    contract = contract or next((item for item in load_contracts()
+                                 if item.get("variant_id") ==
+                                 DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID), None)
+    if not contract or not contract.get("server_projection"):
+        return None
+    if not manifest_tree_matches(contract):
+        return None
+    projection = contract["server_projection"]
+    product = contract.get("product_files", {}).get("server.py", {})
+    if product.get("sha256") != sha256(canonical_content("server.py", content)):
+        return None
+    fixture_path = projection["parent_server_fixture"]
+    fixture = (ROOT / fixture_path).read_bytes()
+    approved = projection["approved_function_ast_sha256"]
+    if not _nazk_server_ast_projection_matches(content, fixture, approved):
+        return None
+    # Both historical projections are calculated from the exact pinned parent
+    # bytes; candidate-only functions stay separately AST- and file-pinned.
+    return dict(projection["historical_projection_sha256"])
 
 
 # Additive, exact read-only NAZK preview. Every previous manifest remains pinned.
@@ -1659,8 +1747,110 @@ def load_dst_recovery_qualification_test_fix_contract(previous):
         raise AssertionError("NAZK recovery+qualification test-fix manifest has an unexpected exact scope")
     return contract
 
+
+DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT = ROOT / "test_sandbox_dst_hotfix_recovery_integrated_v5.json"
+DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT_SHA256 = "7d11d140728f15a882e91304134d52e3a8e1eb357ff75c1ca57e9141fd9d26fd"
+DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID = "sandbox-dst-hotfix-9904832-v5-nazk-integrity-alignment"
+DST_RECOVERY_INTEGRITY_ALIGNMENT_SCOPE = {
+    "preserve-historical-server-projections-by-masking-only-pinned-nazk-functions",
+    "pin-approved-nazk-server-functions-separately-from-historical-projections",
+    "assert-require-current-is-keyword-only-default-false-and-nazk-scoped",
+    "preserve-v2-v3-v4-integrity-contract-bytes-and-mutation-rejection",
+    "rebuild-v2-historical-test-tree-from-exact-pre-alignment-fixture-bytes",
+    "preserve-pre-990-server-projection-anchors-through-exact-v5-allowlist",
+    "update-registered-integrity-variant-count-in-current-suite-only",
+}
+DST_RECOVERY_INTEGRITY_ALIGNMENT_PARENT_SHA = "990483222f7e65517befc285516a9d80aee2580d"
+DST_RECOVERY_INTEGRITY_ALIGNMENT_PARENT_SERVER = "validation/fixtures/nazk_recovery_baseline_990483_server.py"
+DST_RECOVERY_INTEGRITY_ALIGNMENT_FUNCTIONS = {
+    "_finish_scheduler_lease",
+    "rebuild_nazk_tasks",
+    "reconcile_nazk_tasks_after_complete_prozorro_sync",
+    "sync_all_worker",
+    "sync_incremental_worker",
+    "start_nazk_registry_refresh",
+}
+DST_RECOVERY_INTEGRITY_ALIGNMENT_GUARDED_ADDITIONS = {
+    "test_halloween_motion_integration.py",
+    DST_RECOVERY_INTEGRITY_ALIGNMENT_PARENT_SERVER,
+    "validation/fixtures/nazk_recovery_test_v2_compat.zip",
+    "validation/fixtures/nazk_recovery_v4_tree_overrides.zip",
+}
+DST_RECOVERY_INTEGRITY_ALIGNMENT_PRODUCT_HASH_UPDATES = {
+    "test_sandbox_nazk_preview_integrity.py",
+    "test_sandbox_appeals_scenario_api_integrity.py",
+    "test_sandbox_nazk_appeals_stabilization_integrity.py",
+    "validation/run_local_release.py",
+}
+DST_RECOVERY_INTEGRITY_ALIGNMENT_GUARDED_HASH_UPDATES = {
+    "test_google_sandbox_baseline_compatibility.py",
+    "test_sandbox_appeals_scenario_api_integrity.py",
+    "test_sandbox_nazk_appeals_stabilization_integrity.py",
+    "test_sandbox_dst_hotfix_integrity.py",
+    "test_sandbox_nazk_preview_integrity.py",
+    "test_sandbox_nazk_recovery_integrity.py",
+    "test_sandbox_nazk_recovery_qualification_integrity.py",
+    "test_sandbox_personal_theme.py",
+    "validation/local_release_20260911/sandbox_protocol_integrity_variant.py",
+    "validation/nazk_recovery_unit_smoke.py",
+    "validation/run_local_release.py",
+}
+
+
+def load_dst_recovery_integrity_alignment_contract(previous):
+    raw = DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT_SHA256:
+        raise AssertionError("Changed pinned NAZK recovery integrity-alignment manifest")
+    contract = json.loads(raw.decode("utf-8"))
+    expected_history = dict(previous.get("historical_manifest_sha256", {}))
+    expected_history["test_sandbox_dst_hotfix_recovery_integrated_v4.json"] = \
+        DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256
+    if (set(contract) != set(previous) | {"server_projection"} or
+            contract.get("variant_id") != DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID or
+            contract.get("baseline_sha") != DST_RECOVERY_INTEGRITY_ALIGNMENT_PARENT_SHA or
+            contract.get("hash_format") != previous.get("hash_format") or
+            set(contract.get("approved_scope", [])) !=
+                set(previous["approved_scope"]) | DST_RECOVERY_INTEGRITY_ALIGNMENT_SCOPE or
+            set(contract.get("product_files", {})) != set(previous["product_files"]) or
+            set(contract.get("protected_files", {})) != set(previous["protected_files"]) or
+            set(contract.get("guarded_files", {})) !=
+                set(previous["guarded_files"]) | DST_RECOVERY_INTEGRITY_ALIGNMENT_GUARDED_ADDITIONS or
+            contract.get("historical_manifest_sha256") != expected_history):
+        raise AssertionError("NAZK recovery integrity-alignment manifest has an unexpected exact scope")
+    for path in DST_RECOVERY_INTEGRITY_ALIGNMENT_PRODUCT_HASH_UPDATES:
+        if path not in previous["product_files"] or path not in contract["product_files"]:
+            raise AssertionError(f"Missing additive product test-contract update: {path}")
+    for path in set(previous["product_files"]) - DST_RECOVERY_INTEGRITY_ALIGNMENT_PRODUCT_HASH_UPDATES:
+        if contract["product_files"].get(path) != previous["product_files"][path]:
+            raise AssertionError(f"Unexpected product-file change in v5: {path}")
+    for path in DST_RECOVERY_INTEGRITY_ALIGNMENT_GUARDED_HASH_UPDATES:
+        if path not in previous["guarded_files"] or path not in contract["guarded_files"]:
+            raise AssertionError(f"Missing guarded test-contract update: {path}")
+    for path in set(previous["guarded_files"]) - DST_RECOVERY_INTEGRITY_ALIGNMENT_GUARDED_HASH_UPDATES:
+        if contract["guarded_files"].get(path) != previous["guarded_files"][path]:
+            raise AssertionError(f"Unexpected guarded-file change in v5: {path}")
+    projection = contract.get("server_projection", {})
+    if (set(projection) != {"baseline_sha", "parent_server_fixture",
+                            "historical_projection_sha256", "accepted_legacy_projection_sha256",
+                            "approved_function_ast_sha256"} or
+            projection.get("baseline_sha") != DST_RECOVERY_INTEGRITY_ALIGNMENT_PARENT_SHA or
+            projection.get("parent_server_fixture") != DST_RECOVERY_INTEGRITY_ALIGNMENT_PARENT_SERVER or
+            set(projection.get("approved_function_ast_sha256", {})) !=
+                DST_RECOVERY_INTEGRITY_ALIGNMENT_FUNCTIONS or
+            projection.get("historical_projection_sha256") != {
+                "halloween_normalized_sha256": "c6ddbfe7fe149b423fbfa64cdc994851706776174edac0f2a978ca37bfe86095",
+                "personal_theme_normalized_sha256": "25c8fe171c1043e586b830d6def89ede2c2e1d0b6db84b8197aeacb629943c5e",
+            } or
+            projection.get("accepted_legacy_projection_sha256") != {
+                "halloween_normalized_sha256": ["127f7c78ecc2a03155776655e58767cc1505df1cfc1011b397f0b630fe36ef53"],
+                "personal_theme_normalized_sha256": ["f3e4311b965e73fb97383d557e7c1b52007991d56329412ff9bb3d458bc1b598"],
+            }):
+        raise AssertionError("NAZK server projection must preserve the exact legacy projection contract")
+    return contract
+
 _DST_PARENT_TEMP = None
 _DST_RECOVERY_V2_TEMP = None
+_DST_RECOVERY_V4_TEMP = None
 
 def dst_recovery_v2_root():
     """Rebuild the exact v2 recovery tree from its pinned files plus local overrides."""
@@ -1690,7 +1880,39 @@ def dst_recovery_v2_root():
             target = tree / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read(relative))
+    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_test_v2_compat.zip") as archive:
+        for relative in archive.namelist():
+            target = tree / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(relative))
     return tree
+
+def dst_recovery_v4_root():
+    """Rebuild the exact published v4 tree for immutable historical checks."""
+    global _DST_RECOVERY_V4_TEMP
+    import shutil
+    import tempfile
+    if _DST_RECOVERY_V4_TEMP is not None:
+        return Path(_DST_RECOVERY_V4_TEMP.name)
+    _DST_RECOVERY_V4_TEMP = tempfile.TemporaryDirectory(
+        prefix="pqm-dst-recovery-v4-", dir=ROOT / "validation")
+    tree = Path(_DST_RECOVERY_V4_TEMP.name)
+    contract = next(c for c in load_contracts()
+                    if c["variant_id"] == DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID)
+    names = set().union(*(set(contract.get(k, {})) for k in
+                          ("product_files", "guarded_files", "protected_files")))
+    for relative in names:
+        source = ROOT / relative
+        target = tree / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v4_tree_overrides.zip") as archive:
+        for relative in archive.namelist():
+            target = tree / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(relative))
+    return tree
+
 
 def dst_parent_root():
     """Historical tests run on exact parent bytes, not relaxed current hashes."""

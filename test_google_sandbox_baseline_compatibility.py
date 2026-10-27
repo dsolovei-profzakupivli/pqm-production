@@ -1,5 +1,5 @@
 """SANDBOX baseline + fourth-job integration; disposable fixtures only."""
-import ast, hashlib, json, sqlite3, tempfile, threading, unittest
+import ast, copy, hashlib, json, sqlite3, tempfile, threading, unittest
 from unittest.mock import patch
 from pathlib import Path
 from contextlib import closing
@@ -120,6 +120,33 @@ class SandboxMirrorBaselineCompatibility(unittest.TestCase):
         for name,digest in EXPECTED.items():
             with self.subTest(function=name):
                 source=ast.get_source_segment(server_source,functions[name])+'\n'
+                if name=='_finish_scheduler_lease':
+                    function=functions[name]
+                    self.assertEqual([arg.arg for arg in function.args.kwonlyargs],['require_current'])
+                    self.assertEqual(len(function.args.kw_defaults),1)
+                    self.assertIsInstance(function.args.kw_defaults[0],ast.Constant)
+                    self.assertIs(function.args.kw_defaults[0].value,False)
+                    finish_calls=[node for node in ast.walk(function)
+                                  if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
+                                  and node.func.attr=='finish']
+                    self.assertEqual(len(finish_calls),1)
+                    self.assertEqual([(kw.arg,ast.dump(kw.value,include_attributes=False))
+                                      for kw in finish_calls[0].keywords if kw.arg=='require_current'],
+                                     [('require_current','Name(id=\'require_current\', ctx=Load())')])
+                    wrapper_calls=[node for node in ast.walk(tree)
+                                   if isinstance(node,ast.Call) and isinstance(node.func,ast.Name)
+                                   and node.func.id=='_finish_scheduler_lease']
+                    guarded_calls=[node for node in wrapper_calls
+                                   if any(kw.arg=='require_current' for kw in node.keywords)]
+                    self.assertEqual(len(wrapper_calls),5)
+                    self.assertEqual(len(guarded_calls),3)
+                    self.assertTrue(all(node.args and isinstance(node.args[0],ast.Constant)
+                                        and node.args[0].value=='nazk_registry' and
+                                        [(kw.arg, getattr(kw.value,'value',None))
+                                         for kw in node.keywords if kw.arg=='require_current']==
+                                        [('require_current',True)] for node in guarded_calls))
+                    self.assertEqual(sum(any(kw.arg=='require_current' for kw in node.keywords)
+                                         for node in wrapper_calls if node not in guarded_calls),0)
                 for insertion in additions.get(name,[]):
                     self.assertEqual(source.count(insertion),1)
                     source=source.replace(insertion,'',1)
@@ -128,6 +155,14 @@ class SandboxMirrorBaselineCompatibility(unittest.TestCase):
                     self.assertEqual(source.count(guarded),1)
                     source=source.replace(guarded,'while not stop_event.is_set():',1)
                 normalized=ast.parse(source).body[0]
+                if name=='_finish_scheduler_lease':
+                    normalized=copy.deepcopy(normalized)
+                    normalized.args.kwonlyargs=[]
+                    normalized.args.kw_defaults=[]
+                    calls=[node for node in ast.walk(normalized)
+                           if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
+                           and node.func.attr=='finish']
+                    calls[0].keywords=[kw for kw in calls[0].keywords if kw.arg!='require_current']
                 self.assertEqual(hashlib.sha256(ast.dump(normalized,include_attributes=False).encode()).hexdigest(),digest)
         self.assertEqual(set(server.SCHEDULER_TARGETS),{'prozorro','violation_reports','nazk_registry'})
 

@@ -22,7 +22,7 @@ class AppealsScenarioApiIntegrityTests(unittest.TestCase):
                                if c["variant_id"] == integrity.INTEGRATED_VARIANT_ID)
 
     def test_additive_contract_is_exact_and_historical_integrated_contract_is_unchanged(self):
-        self.assertEqual(len(self.contracts), 32)
+        self.assertEqual(len(self.contracts), 33)
         self.assertEqual(self.current["baseline_sha"], integrity.APPEALS_API_BASELINE)
         self.assertEqual(set(self.appeals["approved_scope"]) - set(self.integrated["approved_scope"]),
                          integrity.APPEALS_API_SCOPE)

@@ -17,8 +17,10 @@ class SandboxNazkRecoveryQualificationIntegrityTests(unittest.TestCase):
         recovery_v2 = next(c for c in contracts if c["variant_id"] == guard.DST_RECOVERY_VARIANT_ID)
         integrated_v3 = next(c for c in contracts
                              if c["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
-        integrated = contracts[-1]
-        self.assertEqual(len(contracts), 32)
+        integrated = next(c for c in contracts
+                          if c["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID)
+        alignment = contracts[-1]
+        self.assertEqual(len(contracts), 33)
         self.assertEqual(integrated_v3["variant_id"], guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
         self.assertEqual(integrated_v3["baseline_sha"], "990483222f7e65517befc285516a9d80aee2580d")
         self.assertEqual(integrated["variant_id"], guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID)
@@ -33,7 +35,7 @@ class SandboxNazkRecoveryQualificationIntegrityTests(unittest.TestCase):
         self.assertEqual(set(integrated["guarded_files"]),
                          set(integrated_v3["guarded_files"]) |
                          guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_GUARDED_ADDITIONS)
-        self.assertTrue(guard.manifest_tree_matches(integrated))
+        self.assertTrue(guard.manifest_tree_matches(integrated, guard.dst_recovery_v4_root()))
         self.assertTrue(guard.manifest_tree_matches(recovery_v2, guard.dst_recovery_v2_root()))
         self.assertFalse(guard.manifest_tree_matches(recovery_v2))
         self.assertFalse(guard.manifest_tree_matches(integrated_v3))
@@ -44,6 +46,32 @@ class SandboxNazkRecoveryQualificationIntegrityTests(unittest.TestCase):
         raw_v4 = guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw_v4).hexdigest(),
                          guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256)
+        self.assertEqual(alignment["variant_id"], guard.DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID)
+        self.assertTrue(guard.manifest_tree_matches(alignment))
+        self.assertEqual(alignment["historical_manifest_sha256"][
+            "test_sandbox_dst_hotfix_recovery_integrated_v4.json"],
+            guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256)
+
+    def test_server_legacy_projections_and_approved_functions_are_separately_pinned(self):
+        alignment = guard.load_contracts()[-1]
+        projection = alignment["server_projection"]
+        server = (ROOT / "server.py").read_bytes()
+        self.assertEqual(guard.nazk_server_projection_hashes(server, alignment),
+                         projection["historical_projection_sha256"])
+        with self.subTest("protected historical function mutation"):
+            changed = server.replace(b"def amcu_blocks_submission(",
+                                     b"def amcu_blocks_submissioN(", 1)
+            self.assertNotEqual(changed, server)
+            self.assertFalse(guard._nazk_server_ast_projection_matches(
+                changed, (ROOT / projection["parent_server_fixture"]).read_bytes(),
+                projection["approved_function_ast_sha256"]))
+        with self.subTest("approved NAZK section mutation"):
+            changed = server.replace(b"require_current: bool = False",
+                                     b"require_current: bool = True", 1)
+            self.assertNotEqual(changed, server)
+            self.assertFalse(guard._nazk_server_ast_projection_matches(
+                changed, (ROOT / projection["parent_server_fixture"]).read_bytes(),
+                projection["approved_function_ast_sha256"]))
 
     def test_one_byte_change_in_every_integrated_delta_file_is_rejected(self):
         contract = guard.load_contracts()[-1]
