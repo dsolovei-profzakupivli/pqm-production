@@ -2,6 +2,7 @@
 import json
 import io
 import inspect
+import importlib
 import os
 import sqlite3
 import sys
@@ -10,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import web_smoke as web
 import reference_directories as refs
@@ -25,15 +28,24 @@ class FailureRecovery(unittest.TestCase):
     def test_fetch_error_finishes_lease_without_workflow_and_allows_retry(self):
         finished = threading.Event()
         real_finish = s._finish_scheduler_lease
-        def finish(*args):
-            real_finish(*args)
-            finished.set()
+        finish_calls = []
+        def finish(job_key, owner, status="ok", error="", *, require_current=False):
+            finish_calls.append((job_key, owner, status, error, require_current))
+            try:
+                return real_finish(job_key, owner, status, error,
+                                   require_current=require_current)
+            finally:
+                finished.set()
         with patch.object(refs, '_fetch', side_effect=RuntimeError('synthetic HTTP 403')), \
              patch.object(s, 'rebuild_nazk_tasks') as workflow, \
              patch.object(s, '_finish_scheduler_lease', side_effect=finish):
             self.assertTrue(s.start_nazk_registry_refresh(trigger='synthetic'))
             self.assertTrue(finished.wait(5))
             workflow.assert_not_called()
+        self.assertEqual(len(finish_calls), 1)
+        self.assertEqual(finish_calls[0][0], 'nazk_registry')
+        self.assertTrue(finish_calls[0][1])
+        self.assertEqual(finish_calls[0][2:], ('error', 'synthetic HTTP 403', True))
         with s.db() as con:
             self.assertEqual(0, con.execute('SELECT COUNT(*) FROM scheduler_job_leases').fetchone()[0])
             row = con.execute("SELECT last_status,last_error FROM scheduler_job_state WHERE job_key='nazk_registry'").fetchone()
@@ -44,13 +56,70 @@ class FailureRecovery(unittest.TestCase):
         s.scheduler_runtime.release(s.DB_PATH, 'nazk_registry', owner)
 
     def test_status_write_failure_still_calls_failure_cleanup_only(self):
-        success, failure = Mock(), Mock()
-        with patch.object(refs, '_state', side_effect=sqlite3.OperationalError('synthetic locked')):
-            with self.assertRaises(sqlite3.OperationalError):
-                refs.refresh_nazk(s.DB_PATH, success, failure)
-        success.assert_not_called()
-        failure.assert_called_once_with('synthetic locked')
+        finished = threading.Event()
+        real_state = refs._state_with_lease
+        real_finish = s._finish_scheduler_lease
+        state_calls = []
+        finish_calls = []
+        def fail_worker_running(db_path, source, status, message, owner_id, *, count=None,
+                                source_updated_at=None):
+            state_calls.append((source, status, owner_id))
+            if len(state_calls) == 2:
+                raise sqlite3.OperationalError('synthetic locked')
+            return real_state(db_path, source, status, message, owner_id,
+                              count=count, source_updated_at=source_updated_at)
+        def finish(job_key, owner, status="ok", error="", *, require_current=False):
+            finish_calls.append((job_key, owner, status, error, require_current))
+            try:
+                return real_finish(job_key, owner, status, error,
+                                   require_current=require_current)
+            finally:
+                finished.set()
+        with s.db() as con:
+            before = tuple(con.execute("SELECT * FROM nazk_registry ORDER BY source_id"))
+        with patch.object(refs, '_state_with_lease', side_effect=fail_worker_running), \
+             patch.object(refs, '_fetch') as fetch, \
+             patch.object(s, 'rebuild_nazk_tasks') as workflow, \
+             patch.object(s, '_finish_scheduler_lease', side_effect=finish):
+            self.assertTrue(s.start_nazk_registry_refresh(trigger='status_write_failure'))
+            self.assertTrue(finished.wait(5))
+            fetch.assert_not_called()
+            workflow.assert_not_called()
+        self.assertEqual([call[:2] for call in state_calls],
+                         [('nazk', 'running'), ('nazk', 'running'), ('nazk', 'error')])
+        self.assertEqual(len(finish_calls), 1)
+        self.assertEqual(finish_calls[0][0], 'nazk_registry')
+        self.assertTrue(finish_calls[0][1])
+        self.assertEqual(finish_calls[0][2:], ('error', 'synthetic locked', True))
         self.assertFalse(refs.LOCK.locked())
+        with s.db() as con:
+            after = tuple(con.execute("SELECT * FROM nazk_registry ORDER BY source_id"))
+            leases = con.execute("SELECT COUNT(*) FROM scheduler_job_leases WHERE job_key='nazk_registry'").fetchone()[0]
+            state = con.execute("SELECT last_status,last_error FROM scheduler_job_state WHERE job_key='nazk_registry'").fetchone()
+        self.assertEqual(after, before)
+        self.assertEqual(leases, 0)
+        self.assertEqual(tuple(state), ('error', 'synthetic locked'))
+        retry_owner = s.scheduler_runtime.claim(s.DB_PATH, 'nazk_registry', trigger='status_write_retry')
+        self.assertTrue(retry_owner)
+        s.scheduler_runtime.release(s.DB_PATH, 'nazk_registry', retry_owner)
+
+    def test_other_scheduler_finish_keeps_legacy_default(self):
+        with patch.object(s.scheduler_runtime, 'finish', return_value=True) as finish:
+            s._finish_scheduler_lease('violation_reports', 'owner-token', 'ok', '')
+        finish.assert_called_once_with(s.DB_PATH, 'violation_reports', 'owner-token',
+                                       status='ok', error='', require_current=False)
+
+    def test_nazk_finish_rejects_non_owner_token(self):
+        owner = s.scheduler_runtime.claim(s.DB_PATH, 'nazk_registry', trigger='owner-token-test')
+        self.assertTrue(owner)
+        self.assertFalse(s.scheduler_runtime.finish(
+            s.DB_PATH, 'nazk_registry', owner + '-wrong', status='error',
+            error='stale worker', require_current=True))
+        with s.db() as con:
+            lease = con.execute("SELECT owner_id FROM scheduler_job_leases WHERE job_key='nazk_registry'").fetchone()
+        self.assertEqual(lease[0], owner)
+        self.assertTrue(s.scheduler_runtime.finish(
+            s.DB_PATH, 'nazk_registry', owner, status='ok', require_current=True))
 
     def test_busy_worker_reports_failure_without_unlocking_other_worker(self):
         success, failure = Mock(), Mock()
@@ -136,5 +205,32 @@ class FailureRecovery(unittest.TestCase):
         failure.assert_called_once()
 
 
+NAZK_GATE_MODULES = (
+    "validation.local_release_20260911.test_production_nazk_recovery",
+    "validation.local_release_20260911.test_production_nazk_sync_hook",
+    "validation.local_release_20260911.test_operational_tasks",
+    "validation.local_release_20260911.test_nazk_task_relevance",
+    "validation.local_release_20260911.test_reference_directories",
+    "test_production_ui_release_integrity",
+    "test_production_dst_hotfix_integrity",
+    "test_production_declension_preview_integrity",
+    "test_production_scenario_projection_integrity",
+    "test_production_nazk_recovery_integrity",
+    "test_production_nazk_recovery_followup_integrity",
+)
+
+
+def gate_suite():
+    """Run the failure smoke plus its Linux NAZK, scheduler, and integrity regressions."""
+    modules = [sys.modules[__name__]]
+    modules.extend(importlib.import_module(name) for name in NAZK_GATE_MODULES)
+    loader = unittest.defaultTestLoader
+    suite = unittest.TestSuite()
+    for module in modules:
+        suite.addTests(loader.loadTestsFromModule(module))
+    return suite
+
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    result = unittest.TextTestRunner(verbosity=2).run(gate_suite())
+    raise SystemExit(0 if result.wasSuccessful() else 1)

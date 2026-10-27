@@ -1,0 +1,9 @@
+{
+  "name": "production-nazk-recovery-autoclose-v2",
+  "baseline": "3eb465fad28272051478999683605e673a2bdfb1",
+  "parent_manifest": "validation/production_nazk_recovery_autoclose_v1.json",
+  "parent_manifest_sha256": "bc01a5a66d7384ffddefb7347f2c4a6eb4e802a3b75aff707a920cca1536bf4d",
+  "files": {
+    "validation/nazk_scheduler_failure_smoke.py": "3084373540e5d5070a685f86f1bb6d5bf2364d0931e5662980852e3145b77cb5"
+  }
+}
