@@ -177,12 +177,23 @@ class FailureRecovery(unittest.TestCase):
 
     def test_status_write_failure_still_calls_failure_cleanup_only(self):
         success, failure = Mock(), Mock()
-        with patch.object(refs, '_state', side_effect=sqlite3.OperationalError('synthetic locked')):
-            with self.assertRaises(sqlite3.OperationalError):
-                refs.refresh_nazk(s.DB_PATH, success, failure)
+        with s.db() as con:
+            registry_before = con.execute("SELECT * FROM nazk_registry ORDER BY source_id").fetchall()
+        with patch.object(refs, '_state', side_effect=sqlite3.OperationalError('synthetic locked')) as state, \
+             patch.object(refs, '_fetch') as fetch, \
+             patch.object(s, 'rebuild_nazk_tasks') as workflow:
+            # refresh_nazk is a worker entry point: it reports failures through
+            # on_error and always completes cleanup instead of re-raising.
+            refs.refresh_nazk(s.DB_PATH, success, failure)
+        self.assertEqual([call.args[2] for call in state.call_args_list], ['running', 'error'])
         success.assert_not_called()
         failure.assert_called_once_with('synthetic locked')
+        fetch.assert_not_called()
+        workflow.assert_not_called()
         self.assertFalse(refs.LOCK.locked())
+        with s.db() as con:
+            registry_after = con.execute("SELECT * FROM nazk_registry ORDER BY source_id").fetchall()
+        self.assertEqual(registry_after, registry_before, 'failed status write must not replace the registry')
 
     def test_busy_worker_reports_failure_without_unlocking_other_worker(self):
         success, failure = Mock(), Mock()

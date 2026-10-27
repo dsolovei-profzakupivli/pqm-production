@@ -618,6 +618,7 @@ def load_contracts():
     contracts.append(load_dst_hotfix_contract(contracts[-1]))
     contracts.append(load_dst_recovery_contract(contracts[-1]))
     contracts.append(load_dst_recovery_qualification_contract(contracts[-1]))
+    contracts.append(load_dst_recovery_qualification_test_fix_contract(contracts[-1]))
     return contracts
 
 
@@ -961,6 +962,8 @@ def canonical_content(relative, content):
                          b'DST_RECOVERY_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
         content = re.sub(rb'DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256 = "[0-9a-f]{64}"',
                          b'DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
+        content = re.sub(rb'DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "[0-9a-f]{64}"',
+                         b'DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
     return content
 
 
@@ -1593,6 +1596,17 @@ DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS = {
     "test_sandbox_nazk_recovery_qualification_integrity.py",
     "validation/fixtures/nazk_recovery_v2_parent_overrides.zip",
 }
+DST_RECOVERY_QUALIFICATION_TEST_FIX_SCOPE = {
+    "align_status_write_failure_smoke_with_refresh_worker_callback_contract",
+}
+DST_RECOVERY_QUALIFICATION_TEST_FIX_FILES = {
+    "validation/nazk_scheduler_failure_smoke.py",
+    "test_sandbox_nazk_recovery_integrity.py",
+    "test_sandbox_nazk_recovery_qualification_integrity.py",
+}
+DST_RECOVERY_QUALIFICATION_TEST_FIX_GUARDED_ADDITIONS = {
+    "validation/fixtures/nazk_recovery_testfix_parent_override.zip",
+}
 
 
 def load_dst_recovery_qualification_contract(previous):
@@ -1609,6 +1623,31 @@ def load_dst_recovery_qualification_contract(previous):
             set(contract.get("guarded_files", {})) != set(previous["guarded_files"]) | DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS or
             set(contract.get("protected_files", {})) != set(previous["protected_files"])):
         raise AssertionError("NAZK recovery+qualification manifest has an unexpected exact scope")
+    return contract
+
+
+DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT = ROOT / "test_sandbox_dst_hotfix_recovery_integrated_v4.json"
+DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "c29e3ad9ad2708c8ac4ceca0852c26d1e33a6893c0ef6702e3c2f9e89748c565"
+DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID = "sandbox-dst-hotfix-9904832-v4-nazk-recovery-test-contract"
+DST_RECOVERY_QUALIFICATION_TEST_FIX_FIXTURE = ROOT / "validation/fixtures/nazk_recovery_testfix_parent_override.zip"
+
+
+def load_dst_recovery_qualification_test_fix_contract(previous):
+    raw = DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256:
+        raise AssertionError("Changed pinned NAZK recovery+qualification test-fix manifest")
+    contract = json.loads(raw.decode("utf-8"))
+    if (set(contract) != set(previous) or
+            contract.get("variant_id") != DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID or
+            contract.get("baseline_sha") != previous.get("baseline_sha") or
+            contract.get("hash_format") != previous.get("hash_format") or
+            set(contract.get("approved_scope", [])) !=
+                set(previous["approved_scope"]) | DST_RECOVERY_QUALIFICATION_TEST_FIX_SCOPE or
+            set(contract.get("product_files", {})) != set(previous["product_files"]) or
+            set(contract.get("guarded_files", {})) !=
+                set(previous["guarded_files"]) | DST_RECOVERY_QUALIFICATION_TEST_FIX_GUARDED_ADDITIONS or
+            set(contract.get("protected_files", {})) != set(previous["protected_files"])):
+        raise AssertionError("NAZK recovery+qualification test-fix manifest has an unexpected exact scope")
     return contract
 
 _DST_PARENT_TEMP = None
@@ -1637,6 +1676,11 @@ def dst_recovery_v2_root():
             target = tree / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read(relative))
+    with zipfile.ZipFile(DST_RECOVERY_QUALIFICATION_TEST_FIX_FIXTURE) as archive:
+        for relative in archive.namelist():
+            target = tree / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(relative))
     return tree
 
 def dst_parent_root():
@@ -1650,10 +1694,12 @@ def dst_parent_root():
     previous = next(c for c in load_contracts() if c['variant_id'] == STABILIZATION_V5_VARIANT_ID)
     historical = [c for c in load_contracts() if c['variant_id'] not in
                   {DST_VARIANT_ID, DST_RECOVERY_VARIANT_ID,
-                   DST_RECOVERY_QUALIFICATION_VARIANT_ID}]
+                   DST_RECOVERY_QUALIFICATION_VARIANT_ID,
+                   DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID}]
     names = set().union(*(set(c.get(k, {})) for c in historical for k in ('product_files','guarded_files','protected_files')))
     names.update(p.name for p in ROOT.glob('*.json') if p not in
-                 {DST_CONTRACT, DST_RECOVERY_CONTRACT, DST_RECOVERY_QUALIFICATION_CONTRACT})
+                 {DST_CONTRACT, DST_RECOVERY_CONTRACT, DST_RECOVERY_QUALIFICATION_CONTRACT,
+                  DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT})
     with zipfile.ZipFile(ROOT/'validation/fixtures/dst_parent_94c5e37.zip') as archive:
         available=set(archive.namelist())
         for name in names:

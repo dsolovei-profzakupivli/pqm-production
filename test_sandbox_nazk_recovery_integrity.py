@@ -30,11 +30,12 @@ class SandboxNazkRecoveryIntegrityTests(unittest.TestCase):
                          dst_v1["product_files"]["table_widths_ui.js"])
 
     def test_one_byte_mutation_of_recovery_delta_is_rejected(self):
-        current = next(item for item in guard.load_contracts()
-                       if item["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
+        current = guard.load_contracts()[-1]
         paths = (guard.DST_RECOVERY_QUALIFICATION_PRODUCT_OVERRIDES |
                  guard.DST_RECOVERY_QUALIFICATION_PRODUCT_ADDITIONS |
                  guard.DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS |
+                 guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_FILES |
+                 guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_GUARDED_ADDITIONS |
                  {"validation/docker_release_gate.py",
                   "validation/local_release_20260911/sandbox_protocol_integrity_variant.py",
                   "test_sandbox_dst_hotfix_integrity.py",
@@ -65,9 +66,10 @@ class SandboxNazkRecoveryIntegrityTests(unittest.TestCase):
     def test_integrated_variant_is_additive_and_historical_v2_manifest_is_immutable(self):
         contracts = guard.load_contracts()
         recovery_v2 = next(item for item in contracts if item["variant_id"] == guard.DST_RECOVERY_VARIANT_ID)
-        integrated = contracts[-1]
-        self.assertEqual(len(contracts), 31)
-        self.assertEqual(integrated["variant_id"], guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
+        integrated = next(item for item in contracts
+                          if item["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
+        current = contracts[-1]
+        self.assertEqual(len(contracts), 32)
         self.assertEqual(integrated["baseline_sha"], "990483222f7e65517befc285516a9d80aee2580d")
         self.assertEqual(set(integrated["approved_scope"]) - set(recovery_v2["approved_scope"]),
                          guard.DST_RECOVERY_QUALIFICATION_SCOPE)
@@ -75,7 +77,8 @@ class SandboxNazkRecoveryIntegrityTests(unittest.TestCase):
                          set(recovery_v2["product_files"]) | guard.DST_RECOVERY_QUALIFICATION_PRODUCT_ADDITIONS)
         self.assertEqual(set(integrated["guarded_files"]),
                          set(recovery_v2["guarded_files"]) | guard.DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS)
-        self.assertTrue(guard.manifest_tree_matches(integrated))
+        self.assertFalse(guard.manifest_tree_matches(integrated))
+        self.assertTrue(guard.manifest_tree_matches(current))
         self.assertTrue(guard.manifest_tree_matches(recovery_v2, guard.dst_recovery_v2_root()))
         raw_v2 = guard.DST_RECOVERY_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw_v2).hexdigest(), guard.DST_RECOVERY_CONTRACT_SHA256)

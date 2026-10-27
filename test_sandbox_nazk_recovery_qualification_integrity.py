@@ -15,27 +15,43 @@ class SandboxNazkRecoveryQualificationIntegrityTests(unittest.TestCase):
     def test_integrated_manifest_is_exact_and_v2_history_is_immutable(self):
         contracts = guard.load_contracts()
         recovery_v2 = next(c for c in contracts if c["variant_id"] == guard.DST_RECOVERY_VARIANT_ID)
+        integrated_v3 = next(c for c in contracts
+                             if c["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
         integrated = contracts[-1]
-        self.assertEqual(len(contracts), 31)
-        self.assertEqual(integrated["variant_id"], guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
-        self.assertEqual(integrated["baseline_sha"], "990483222f7e65517befc285516a9d80aee2580d")
+        self.assertEqual(len(contracts), 32)
+        self.assertEqual(integrated_v3["variant_id"], guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
+        self.assertEqual(integrated_v3["baseline_sha"], "990483222f7e65517befc285516a9d80aee2580d")
+        self.assertEqual(integrated["variant_id"], guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID)
+        self.assertEqual(integrated["baseline_sha"], integrated_v3["baseline_sha"])
+        self.assertEqual(set(integrated["approved_scope"]) - set(integrated_v3["approved_scope"]),
+                         guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_SCOPE)
         self.assertEqual(set(integrated["approved_scope"]) - set(recovery_v2["approved_scope"]),
-                         guard.DST_RECOVERY_QUALIFICATION_SCOPE)
+                         guard.DST_RECOVERY_QUALIFICATION_SCOPE |
+                         guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_SCOPE)
         self.assertEqual(set(integrated["product_files"]),
                          set(recovery_v2["product_files"]) | guard.DST_RECOVERY_QUALIFICATION_PRODUCT_ADDITIONS)
         self.assertEqual(set(integrated["guarded_files"]),
-                         set(recovery_v2["guarded_files"]) | guard.DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS)
+                         set(integrated_v3["guarded_files"]) |
+                         guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_GUARDED_ADDITIONS)
         self.assertTrue(guard.manifest_tree_matches(integrated))
         self.assertTrue(guard.manifest_tree_matches(recovery_v2, guard.dst_recovery_v2_root()))
         self.assertFalse(guard.manifest_tree_matches(recovery_v2))
+        self.assertFalse(guard.manifest_tree_matches(integrated_v3))
         raw = guard.DST_RECOVERY_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), guard.DST_RECOVERY_CONTRACT_SHA256)
+        raw_v3 = guard.DST_RECOVERY_QUALIFICATION_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(raw_v3).hexdigest(), guard.DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256)
+        raw_v4 = guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(raw_v4).hexdigest(),
+                         guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256)
 
     def test_one_byte_change_in_every_integrated_delta_file_is_rejected(self):
         contract = guard.load_contracts()[-1]
         paths = (guard.DST_RECOVERY_QUALIFICATION_PRODUCT_OVERRIDES |
                  guard.DST_RECOVERY_QUALIFICATION_PRODUCT_ADDITIONS |
                  guard.DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS |
+                 guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_FILES |
+                 guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_GUARDED_ADDITIONS |
                  {"validation/docker_release_gate.py",
                   "validation/local_release_20260911/sandbox_protocol_integrity_variant.py",
                   "test_sandbox_dst_hotfix_integrity.py",
