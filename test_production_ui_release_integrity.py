@@ -20,7 +20,8 @@ DECLENSION_HOTFIX_VARIANT=CONTRACT.get('approved_product_variants',{}).get('prod
 DST_V1_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v1.json').read_text())
 DST_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v2.json').read_text())
 PREVIEW_VARIANT=json.loads((ROOT/'validation/production_declension_preview_integrity_v1.json').read_text())
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT,PREVIEW_VARIANT) if value]
+PREVIEW_GATE_VARIANT=json.loads((ROOT/'validation/production_declension_preview_integrity_v2.json').read_text())
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT,PREVIEW_VARIANT,PREVIEW_GATE_VARIANT) if value]
 
 
 def nodes(source):

@@ -116,17 +116,32 @@ const caseLabels=['genitive','dative','accusative'].map(value=>({dataset:{declen
 const editorNodes=new Map();
 for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog','declensionSave'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
 for(const value of ['genitive','dative','accusative'])editorNodes.set(`#declensionDialog [data-declension-case="${value}"] input`,{focus(){}});
-const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:()=>caseLabels,editingDeclensionId:null,Set,Array,currentMe:{role:'admin',permissions:{'declension.manage':true}}});
-vm.runInContext(section(app,'function openDeclensionEditor(','function declensionLookup('),caseContext);
+const previewCalls=[];
+const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:selector=>{
+  if(selector==='#declensionDialog [data-declension-case]')return caseLabels;
+  if(selector==='#declensionDialog [data-declension-preview-control]')return [];
+  throw new Error('Unexpected editor selector: '+selector);
+},Set,Array,currentMe:{role:'admin',permissions:{'declension.manage':true}},prepareDeclensionEditorPreview:state=>{previewCalls.push(state)}});
+const stateDeclaration=app.match(/^let declensionItems=.*;$/m);
+assert.ok(stateDeclaration,'real application lexical state must be declared');
+vm.runInContext(stateDeclaration[0],caseContext);
+assert.equal(vm.runInContext('declensionPreviewState',caseContext),null);
+assert.equal(Object.hasOwn(caseContext,'declensionPreviewState'),false);
+// This unit tests opening/layout only; the complete preview lifecycle has its own browser suite.
+vm.runInContext(section(app,'function openDeclensionEditor(','function updateViolationCardDeclensionStatus('),caseContext);
 for(const [required,expected] of [[['dative'],[false,true,false]],[['genitive'],[true,false,false]],[['genitive','dative'],[true,true,false]],[[],[false,false,false]]]){
   caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},required);
   assert.deepEqual(caseLabels.map(label=>label.classList.active),expected);
 }
 caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},['genitive','accusative'],{subject_label:'Постачальник'});
 assert.deepEqual(caseLabels.map(label=>label.hidden),[false,true,false]);
+assert.equal(vm.runInContext('declensionPreviewState',caseContext),null, 'legacy operational context does not start a preview');
+assert.equal(previewCalls.length,4);
 assert.match(modulesCss,/\.declension-form label\[hidden\]\{display:none\}/);
 caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'});
 assert.deepEqual(caseLabels.map(label=>label.hidden),[false,false,false]);
+assert.equal(previewCalls.length,5);
+assert.equal(vm.runInContext('declensionPreviewState',caseContext),previewCalls.at(-1), 'opening uses the shared lexical state');
 const pendingNodes=new Map(),pendingNode=selector=>{if(!pendingNodes.has(selector))pendingNodes.set(selector,{value:'',textContent:'',hidden:false,close(){}});return pendingNodes.get(selector)};
 const pendingContext=vm.createContext({$:pendingNode,declensionItems:[{entity_type:'legal_entity',original:'Тест',genitive:'Тесту',dative:''}],declensionReturnContext:null,showModule(){},setReferenceTab(){},loadDeclensionOverrides:async()=>{},declensionLookup:value=>String(value||'').toLowerCase().trim(),openDeclensionEditor(_item,cases){pendingContext.selected=cases}});
 vm.runInContext(section(app,'function remainingDeclensionItems(','async function returnToDeclensionReport(')+section(app,'async function openDocumentDeclension(','async function openDeclensionFromValidation('),pendingContext);

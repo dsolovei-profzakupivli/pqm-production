@@ -9,7 +9,30 @@ assert(openSource.indexOf("if(context.originType==='violation_report_side')")<op
 const entry=(side,status='unresolved',original=side)=>({subject_label:side==='customer'?'Замовник':'Постачальник',status,original,entity_type:'legal_entity',grammatical_case:'genitive'});
 const customer=entry('customer'),supplier=entry('supplier');
 const context={currentMe:{permissions:{'appeals.review':true,'declension.manage':true}},openDocumentDeclension:async(item,selection)=>{context.selection={item,selection}}};
-vm.createContext(context);vm.runInContext(actions,context);
+// Execute the real lexical initializer omitted by this extracted-function harness.
+// Do not invent a window/global fallback: missing or changed source must fail.
+function previewInitializer(source){
+  const declaration=source.match(/^let declensionItems=.*;$/m);
+  assert(declaration, 'application declension state declaration must exist');
+  const initializer=declaration[0].slice(4,-1).split(',').find(value=>/^declensionPreviewState=/.test(value));
+  assert.strictEqual(initializer,'declensionPreviewState=null', 'preview state must initialize to null');
+  const cache=source.match(/^const unresolvedDeclensionsByReport=new Map\(\);$/m);
+  assert(cache, 'application unresolved-report cache initializer must exist');
+  return `let ${initializer};\n${cache[0]}`;
+}
+const initializer=previewInitializer(src);
+assert.throws(()=>previewInitializer(src.replace('declensionPreviewState=null,','')), /preview state must initialize to null/);
+assert.throws(()=>previewInitializer(src.replace('declensionPreviewState=null,','declensionPreviewState=undefined,')), /preview state must initialize to null/);
+assert.throws(()=>previewInitializer(src.replace('const unresolvedDeclensionsByReport=new Map();','')), /cache initializer must exist/);
+// A classic browser script keeps top-level let bindings in lexical scope.
+const browserScope=vm.createContext({});
+vm.runInContext(src.match(/^let declensionItems=.*;$/m)[0]+'\nfunction readPreviewState(){return declensionPreviewState}',browserScope);
+assert.strictEqual(vm.runInContext('readPreviewState()',browserScope),null);
+assert.strictEqual(Object.hasOwn(browserScope,'declensionPreviewState'),false);
+vm.createContext(context);vm.runInContext(initializer,context);
+assert.strictEqual(vm.runInContext('declensionPreviewState',context),null);
+assert.strictEqual(Object.hasOwn(context,'declensionPreviewState'),false, 'state is lexical, not an injected global property');
+vm.runInContext(actions,context);
 const render=entries=>vm.runInContext(`violationDeclensionActions(${JSON.stringify(entries)})`,context);
 const sides=html=>({customer:html.includes('↗ Для замовника'),supplier:html.includes('↗ Для постачальника')});
 assert.deepStrictEqual(sides(render([customer])),{customer:true,supplier:false});
@@ -38,13 +61,15 @@ const twoCustomer=[entry('customer','resolved'),customer,entry('customer','unres
     request:async(_url,options)=>{saved.push(JSON.parse(options.body))},
     loadDeclensionOverrides:async()=>{context.declensionItems=saved.map(row=>({...row}))},
     openDeclensionEditor:(item,grammaticalCase,requestContext)=>{next={item,grammaticalCase,requestContext}},
-    returnToDeclensionReport:async()=>{returned++},toast:()=>{},
+    returnToDeclensionReport:async()=>{returned++},toast:(message,kind)=>{assert.notStrictEqual(kind,'error',message)},
     reloadOpenViolationReportDetail:async()=>{const remaining=twoCustomer.filter(row=>row.subject_label==='Замовник'&&row.status!=='resolved'&&!saved.some(savedRow=>savedRow.original===row.original&&savedRow.genitive));lastRendered=render(remaining);return{protocol_readiness:{declensions:remaining}}},
   });
   const lookup=src.slice(src.indexOf('function declensionLookup('),src.indexOf('async function returnToDeclensionReport(){'));
   const save=src.slice(src.indexOf('async function saveDeclensionEditor(){'),src.indexOf('async function deleteDeclension(id){'));
   vm.runInContext(lookup+save,context);
+  vm.runInContext("unresolvedDeclensionsByReport.set('R1',['stale'])",context);
   await vm.runInContext('saveDeclensionEditor()',context);
+  assert.strictEqual(vm.runInContext("unresolvedDeclensionsByReport.has('R1')",context),false);
   assert.strictEqual(next.requestContext.original,'second');assert.strictEqual(returned,0);
   assert.deepStrictEqual(sides(lastRendered),{customer:true,supplier:false});
   formValues['#declensionOriginal']='second';next=null;
