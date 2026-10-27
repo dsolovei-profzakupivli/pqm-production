@@ -612,3 +612,11 @@ html[data-theme] #referenceAmcu tbody tr.amcu-our-supplier .registry-flag.suppli
 .violation-thresholds{display:inline-block;float:none;margin-left:14px;color:#0868d8;font-size:.9em;white-space:nowrap}
 .violation-platform-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.violation-zakupivli-link{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;width:26px;height:26px;border-radius:5px}.violation-zakupivli-link img{display:block;width:22px;height:22px;object-fit:contain}.violation-zakupivli-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .request-row .request-scenario-cell{display:flex;align-items:flex-start;gap:6px;min-width:0;max-width:none}.request-row .request-scenario-summary{display:block;flex:1 1 auto;min-width:0;overflow:visible;white-space:normal;overflow-wrap:anywhere;line-height:1.35}.request-row .request-justification-view{flex:0 0 auto;min-width:30px;padding:3px 7px;line-height:1.2}.request-justification-dialog{width:min(900px,calc(100vw - 30px))}.request-justification-full{max-height:70vh;overflow:auto;padding:18px 24px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;background:var(--surface,#fff);color:var(--ink,#172b3f)}
+
+/* Declension review: scoped provenance and selected-protocol warning only. */
+.violation-party-heading button.violation-card-declension.needs-declension-review{background:var(--red2);color:var(--red);border:1px solid var(--red)}
+#declensionDialog [data-declension-origin]{grid-column:2;display:block;font-size:12px;line-height:1.4;color:var(--ink);margin-top:5px}
+#declensionDialog [data-declension-origin][data-source="override"]{border-left:3px solid var(--green);padding-left:7px}
+#declensionDialog [data-declension-origin][data-source="automatic"]{border-left:3px solid var(--amber);padding-left:7px}
+#declensionDialog .declension-form-confirm{grid-column:2;white-space:normal;display:flex;gap:6px;align-items:center;font-size:12px;font-weight:400;color:var(--ink)}
+#declensionDialog .declension-form-confirm input{width:auto;margin:0;flex:0 0 auto}

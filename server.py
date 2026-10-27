@@ -61,7 +61,7 @@ from protocol_docx import build_protocol_docx
 from protocol_template import sorted_protocol_items
 from document_semantics import supplier_code_label, supplier_entity_type
 from supplier_contacts import supplier_contacts
-from declension import decline_name, infer_entity_type, normalize_document_name
+from declension import decline_name, infer_entity_type, normalize_document_name, normalize_lookup
 from declension_overrides import (OverrideConflictError, delete_override,
                                   ensure_pending_overrides, list_overrides, save_override)
 import formed_protocols
@@ -7146,10 +7146,10 @@ def _resolve_violation_protocol_metadata(item: dict, values: dict) -> dict:
             "report_id": values["report_id"],
             "tender_id": str(item.get("tender_pretty_id") or ""),
         },
-        "customer": {"short_name": str((item.get("review") or {}).get("customer_verified_short_name") or "")},
+        "customer": {"short_name": normalize_document_name((item.get("review") or {}).get("customer_verified_short_name") or "")},
         "supplier": {
             "supplier_code": values["supplier_code"],
-            "document_short_name": values["supplier_short_name"] or values["supplier_name"],
+            "document_short_name": normalize_document_name(values["supplier_short_name"] or values["supplier_name"]),
         },
     }
     resolve_binding = document_bindings.resolver(context)
@@ -8550,6 +8550,8 @@ def _violation_protocol_filename(item: dict, gate: dict) -> str:
     }
     cleaned = {}
     for label, raw in fields.items():
+        if label in {'назва замовника', 'назва постачальника'}:
+            raw = normalize_document_name(raw)
         value = re.sub(r'\s+', ' ', str(raw or '')).strip()
         value = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', '-', value).strip(' .')
         if not value or not value.strip('- '):
@@ -11025,6 +11027,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(catalog(pqm_schema_metadata(),query.get('document_type',[''])[0],query.get('search',[''])[0]))
             except ValueError as exc:return self.send_json({'error':str(exc)},400)
         if parsed.path == "/api/declension-overrides":
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            if query.get("preview") == ["1"]:
+                original = query.get("original", [""])[0].strip()
+                entity_type = query.get("entity_type", [""])[0]
+                if not original or len(original) > 10000 or entity_type not in {"legal_entity", "fop", "person", "other"}:
+                    return self.send_json({"error": "Некоректні дані для перегляду відмінювання"}, 400)
+                saved = next((row for row in list_overrides()
+                              if row['entity_type'] == entity_type and normalize_lookup(row['original']) == normalize_lookup(original)), None)
+                return self.send_json({"preview": {case: decline_name(original, entity_type, case).as_dict()
+                                                  for case in ("genitive", "dative", "accusative")}, "item": saved})
             return self.send_json({"items": list_overrides()})
         template_download = re.fullmatch(r"/api/admin/templates/([^/]+)/download", parsed.path)
         if template_download:
@@ -11101,6 +11113,8 @@ class Handler(BaseHTTPRequestHandler):
         if violation_detail:
             report_id = urllib.parse.unquote(violation_detail.group(1))
             try:
+                if urllib.parse.parse_qs(parsed.query).get('refresh') == ['0']:
+                    return self.send_json(violation_report_detail(report_id, refresh=False))
                 return self.send_json(violation_report_detail(report_id))
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)

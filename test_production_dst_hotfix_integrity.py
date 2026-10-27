@@ -9,7 +9,7 @@ import unittest
 import zipfile
 import test_production_ui_release_integrity as guard
 
-ROOT = Path(__file__).resolve().parent
+ROOT = guard.preview_parent_root()
 MANIFEST_SHA = '39b1da68114916865b5307a1aa4e8db56f50ba7cea0fea88562a6583d1e5437b'
 V1_SHA = '9902b0cf1e281cba3c1852a5be83df2d8d925f303a26c234c53744bcfeb93c5a'
 HOTFIX_CONTRACT_SHA = 'e48197b55f08d5d96b53befd6316b6b598ed5b4396cdb61dd7674e791a28fc0a'

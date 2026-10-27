@@ -19,7 +19,8 @@ APPEALS_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_app
 DECLENSION_HOTFIX_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_appeals_declension_loader_292b072_v1')
 DST_V1_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v1.json').read_text())
 DST_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v2.json').read_text())
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT) if value]
+PREVIEW_VARIANT=json.loads((ROOT/'validation/production_declension_preview_integrity_v1.json').read_text())
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT,PREVIEW_VARIANT) if value]
 
 
 def nodes(source):
@@ -59,6 +60,7 @@ def variant_matches(root, changed_paths, *, overrides=None, variant=None):
         'a701e96705afe316bf2fa8e8806a318b5384d4ce',
         '292b0726b4adc13644c7f98721e569c8809ea785',
         '4a3aca491cb836e73f1bb36dac364a336d46341a',
+        'f2565a4e52d482b50f4ddfc2ff8468c38f9a49a7',
     }:
         return False
     if variant not in [*VARIANTS,DST_V1_VARIANT]:
@@ -342,3 +344,34 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+_PREVIEW_PARENT_TEMP = None
+
+
+def preview_parent_root():
+    """Run immutable parent contracts on exact pinned source, never loose SHA exceptions."""
+    global _PREVIEW_PARENT_TEMP
+    if _PREVIEW_PARENT_TEMP is not None:
+        return Path(_PREVIEW_PARENT_TEMP.name)
+    import tempfile
+    fixture = 'validation/fixtures/production_declension_preview_parent_f2565a4.zip'
+    data = (ROOT/fixture).read_bytes()
+    if hashlib.sha256(data).hexdigest() != PREVIEW_VARIANT['files'][fixture]:
+        raise AssertionError('Changed Declension Preview parent fixture')
+    _PREVIEW_PARENT_TEMP = tempfile.TemporaryDirectory(prefix='pqm-declension-parent-')
+    parent = Path(_PREVIEW_PARENT_TEMP.name)
+    with zipfile.ZipFile(ROOT/fixture) as archive:
+        metadata = json.loads(archive.read('metadata.json'))
+        if set(archive.namelist()) != set(metadata) | {'metadata.json'}:
+            raise AssertionError('Unexpected historical fixture scope')
+        for name, expected in metadata.items():
+            target = (parent/name).resolve()
+            if not target.is_relative_to(parent.resolve()):
+                raise AssertionError('Unsafe historical fixture path')
+            content = archive.read(name)
+            if hashlib.sha256(content.replace(b'\r\n',b'\n')).hexdigest() != expected:
+                raise AssertionError('Changed frozen parent file')
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(content)
+    return parent

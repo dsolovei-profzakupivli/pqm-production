@@ -19,7 +19,7 @@ function createContext(status) {
   const toasts = [];
   const node = selector => {
     if (!nodes.has(selector)) nodes.set(selector, selector === '#declensionDialog' ? dialog : {
-      value: '', innerHTML: '', textContent: '', hidden: false, disabled: false,
+      value: '', innerHTML: '', textContent: '', hidden: false, disabled: false, open: selector === '#requestDetailsDialog',
       focus() {}, classList: {toggle() {}}, dataset: {},
     });
     return nodes.get(selector);
@@ -28,7 +28,7 @@ function createContext(status) {
     API: '/api',
     currentMe: {role: 'admin', permissions: {'declension.read': true, 'declension.manage': true}},
     declensionTypeLabels: {legal_entity: 'Юридична особа'},
-    declensionItems: [], editingDeclensionId: null, declensionReturnContext: null,
+    declensionItems: [], editingDeclensionId: null, declensionReturnContext: null, declensionOpenSequence: 0,
     cardItem: {id: 42, author_name: 'СИНТЕТИЧНА ЮРИДИЧНА ОСОБА', author_code: '12345678'},
     esc: value => String(value), toast: (...args) => toasts.push(args),
     $: node, $$: () => [],
@@ -40,10 +40,13 @@ function createContext(status) {
       return {ok: status === 200, status, headers: {get: () => 'application/json'}, text: async () => JSON.stringify(body)};
     },
   };
+  context.activeDeclensionRequest=context.cardItem;
   vm.createContext(context);
   vm.runInContext(source.slice(requestStart, requestEnd) + '\n'
     + source.slice(start, cardEnd) + '\n'
     + source.slice(editorStart, editorEnd), context);
+  // Preview has its own real-DOM/browser regression; this suite isolates loader outcomes.
+  vm.runInContext('prepareDeclensionEditorPreview=async()=>{}', context);
   return {context, dialog, calls, toasts, node};
 }
 

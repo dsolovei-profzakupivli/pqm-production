@@ -1496,7 +1496,7 @@ async function addReferenceRemark(){openReferenceRemarkEditor()}
 async function editReferenceRemark(id){const item=remarksItems.find(x=>String(x.id)===String(id));if(item)openReferenceRemarkEditor(item)}
 async function removeReferenceRemark(id){if(!confirm('Прибрати шаблон із довідника? Збережені зауваження у заявках не зміняться.'))return;await request(`${API}/remarks-catalog/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:false})});await loadReferenceRemarks()}
 const declensionTypeLabels={legal_entity:'Юридична особа',fop:'ФОП',person:'Фізична особа / ПІБ',other:'Інше'};
-let declensionItems=[],editingDeclensionId=null,declensionReturnContext=null,activeDeclensionRequest=null;
+let declensionItems=[],editingDeclensionId=null,declensionReturnContext=null,activeDeclensionRequest=null,declensionPreviewState=null,declensionOpenSequence=0;
 const unresolvedDeclensionsByReport=new Map();
 async function loadDeclensionOverrides(){
   const body=$('#declensionBody'),search=$('#declensionSearch').value.trim().toLocaleLowerCase('uk-UA');
@@ -1522,24 +1522,98 @@ function violationCardDeclensionSubject(item,side){
   if(upper.includes('ФОП')||upper.includes('ФІЗИЧНА ОСОБА')||upper.includes('ПІДПРИЄМЕЦЬ'))inferred='fop';
   else if(['ТОВАРИСТВО','ПІДПРИЄМСТВО','ТОВ ','ПП ','МКСП'].some(marker=>upper.includes(marker))||String(identifier||'').replace(/\D/g,'').length===8)inferred='legal_entity';
   else if(upper.split(/\s+/).filter(Boolean).length>=2)inferred='person';
-  return{original,entity_type:existing?.entity_type||match?.entity_type||inferred,identifier,subject_label:subjectLabel};
+  return{original:match?.original||original,entity_type:match?.entity_type||existing?.entity_type||inferred,entity_identifier:identifier,identifier,subject_label:subjectLabel,context_type:'violation_report'};
 }
 async function openViolationCardDeclension(side,item){
   if(!canReadDeclensions())return;
+  const owner=activeDeclensionRequest,sequence=++declensionOpenSequence;
+  if(!$('#requestDetailsDialog')?.open||owner!==item)return;
   const subject=violationCardDeclensionSubject(item,side);
   if(!subject.original){toast('Не визначено найменування для відмінювання','error');return}
-  if(!await loadDeclensionOverrides()){toast('Не вдалося завантажити довідник відмінювання','error');return}
+  const loaded=await loadDeclensionOverrides();
+  if(sequence!==declensionOpenSequence||activeDeclensionRequest!==owner||!$('#requestDetailsDialog')?.open)return;
+  if(!loaded){toast('Не вдалося завантажити довідник відмінювання','error');return}
   const existing=declensionItems.find(entry=>entry.entity_type===subject.entity_type&&declensionLookup(entry.original)===declensionLookup(subject.original));
   declensionReturnContext={originType:'violation_report_card',reportId:item.id,side};
-  openDeclensionEditor(existing||{entity_type:subject.entity_type,original:subject.original},'',{...subject,readOnly:currentMe?.permissions?.['declension.manage']!==true});
+  const gate=($('#violationProtocolType')?.value==='decline_individual_review'?item.protocol_readiness_individual:item.protocol_readiness)||{};
+  const cases=[...(gate.declensions||[]),...(gate.unresolved||[])].filter(entry=>entry.subject_label===subject.subject_label).map(entry=>entry.grammatical_case);
+  openDeclensionEditor(existing||{entity_type:subject.entity_type,original:subject.original},cases,{...subject,readOnly:currentMe?.permissions?.['declension.manage']!==true});
 }
 function violationCardDeclensionButton(side){return canReadDeclensions()?`<button type="button" class="ghost violation-card-declension" data-card-declension-side="${side}">Відмінювання</button>`:''}
-function bindViolationCardDeclensionActions(item){$$('#requestDetailsBody [data-card-declension-side]').forEach(button=>{button.onclick=()=>openViolationCardDeclension(button.dataset.cardDeclensionSide,item)})}
-function openDeclensionEditor(item=null,neededCase='',requestContext=null){const cases=[...new Set((Array.isArray(neededCase)?neededCase:[neededCase]).filter(value=>['genitive','dative','accusative'].includes(value)))];editingDeclensionId=item?.id||null;$('#declensionDialogTitle').textContent=editingDeclensionId?'Редагувати відмінювання':'Додати відмінювання';$('#declensionType').value=item?.entity_type||'legal_entity';$('#declensionOriginal').value=item?.original||'';$('#declensionGenitive').value=item?.genitive||'';$('#declensionDative').value=item?.dative||'';$('#declensionAccusative').value=item?.accusative||'';$('#declensionComment').value=item?.comment||'';const readOnly=requestContext?.readOnly===true||currentMe?.permissions?.['declension.manage']!==true;['#declensionType','#declensionOriginal','#declensionGenitive','#declensionDative','#declensionAccusative','#declensionComment'].forEach(selector=>{const field=$(selector);if(field)field.disabled=readOnly});$('#declensionSave').hidden=readOnly;$$('#declensionDialog [data-declension-case]').forEach(label=>{const required=cases.includes(label.dataset.declensionCase);label.classList.toggle('required-case',required);label.hidden=Boolean(requestContext&&cases.length&&!required)});const labels={genitive:'родовий',dative:'давальний',accusative:'знахідний'},subject=requestContext?.subject_label||'';$('#declensionDialogHint').textContent=cases.length?`${subject?subject+' · ':''}для документа потрібні форми: ${cases.map(value=>labels[value]).join(', ')}${requestContext?.entity_identifier?` · ${requestContext.entity_identifier}`:''}.`:'Заповнюйте лише перевірені форми. Порожні відмінки дозволені.';$('#declensionDialog').showModal();(cases.length?$(`#declensionDialog [data-declension-case="${cases[0]}"] input`):$('#declensionOriginal')).focus()}
+function bindViolationCardDeclensionActions(item){$$('#requestDetailsBody [data-card-declension-side]').forEach(button=>{button.onclick=()=>openViolationCardDeclension(button.dataset.cardDeclensionSide,item)});updateViolationCardDeclensionStatus(item)}
+function openDeclensionEditor(item=null,neededCase='',requestContext=null){const cases=[...new Set((Array.isArray(neededCase)?neededCase:[neededCase]).filter(value=>['genitive','dative','accusative'].includes(value)))];declensionPreviewState=null;$$('#declensionDialog [data-declension-preview-control]').forEach(node=>node.remove());['#declensionGenitive','#declensionDative','#declensionAccusative'].forEach(selector=>$(selector).oninput=null);$('#declensionSave').disabled=false;editingDeclensionId=item?.id||null;$('#declensionDialogTitle').textContent=editingDeclensionId?'Редагувати відмінювання':'Додати відмінювання';$('#declensionType').value=item?.entity_type||'legal_entity';$('#declensionOriginal').value=item?.original||'';$('#declensionGenitive').value=item?.genitive||'';$('#declensionDative').value=item?.dative||'';$('#declensionAccusative').value=item?.accusative||'';$('#declensionComment').value=item?.comment||'';const readOnly=requestContext?.readOnly===true||currentMe?.permissions?.['declension.manage']!==true;['#declensionType','#declensionOriginal','#declensionGenitive','#declensionDative','#declensionAccusative','#declensionComment'].forEach(selector=>{const field=$(selector);if(field)field.disabled=readOnly});$('#declensionSave').hidden=readOnly;$$('#declensionDialog [data-declension-case]').forEach(label=>{const required=cases.includes(label.dataset.declensionCase);label.classList.toggle('required-case',required);label.hidden=Boolean(requestContext&&cases.length&&!required)});const labels={genitive:'родовий',dative:'давальний',accusative:'знахідний'},subject=requestContext?.subject_label||'';$('#declensionDialogHint').textContent=cases.length?`${subject?subject+' · ':''}для документа потрібні форми: ${cases.map(value=>labels[value]).join(', ')}${requestContext?.entity_identifier?` · ${requestContext.entity_identifier}`:''}.`:'Заповнюйте лише перевірені форми. Порожні відмінки дозволені.';$('#declensionDialog').showModal();(cases.length?$(`#declensionDialog [data-declension-case="${cases[0]}"] input`):$('#declensionOriginal')).focus();if(!requestContext||requestContext.context_type==='violation_report'){const state={readOnly,card:requestContext?.context_type==='violation_report',owner:declensionReturnContext?.originType==='violation_report_card'?activeDeclensionRequest:null};declensionPreviewState=state;$$('#declensionDialog [data-declension-case]').forEach(label=>label.hidden=false);$('#declensionType').disabled=readOnly||state.card;$('#declensionOriginal').disabled=readOnly||state.card;const refresh=()=>prepareDeclensionEditorPreview(state);$('#declensionType').onchange=refresh;$('#declensionOriginal').onchange=refresh;void refresh()}else{$('#declensionType').onchange=null;$('#declensionOriginal').onchange=null}}
+function updateViolationCardDeclensionStatus(item){
+  const warning=$('#violationProtocolReasons');if(warning){warning.setAttribute('role','status');warning.setAttribute('aria-live','polite')}
+  const individual=$('#violationProtocolType')?.value==='decline_individual_review';
+  const gate=(individual?item.protocol_readiness_individual:item.protocol_readiness)||{};
+  const unresolved=[...(gate.declensions||[]).filter(entry=>entry.status!=='resolved'),...(gate.unresolved||[])];
+  $$('#requestDetailsBody [data-card-declension-side]').forEach(button=>{
+    const label=button.dataset.cardDeclensionSide==='customer'?'Замовник':'Постачальник';
+    const required=unresolved.filter(entry=>entry.subject_label===label);
+    button.classList.toggle('needs-declension-review',Boolean(required.length));
+    button.title=required.length?'Для обраного протоколу потрібна перевірена відмінкова форма':'Питань не виявлено. Можна перевірити форми вручну; це не гарантія їх правильності.';
+    button.setAttribute('aria-label',`Відмінювання: ${label.toLocaleLowerCase('uk-UA')}${required.length?' — потрібна перевірка':''}`);
+  });
+}
+async function refreshOpenViolationDeclensionState(context){
+  const dialog=$('#requestDetailsDialog'),target=activeDeclensionRequest;
+  if(!dialog?.open||String(target?.id)!==String(context.reportId))return false;
+  try{
+    const fresh=await request(`${API}/violation-reports/${encodeURIComponent(context.reportId)}?refresh=0`);
+    if(!dialog.open||activeDeclensionRequest!==target||String(fresh?.id)!==String(context.reportId))return false;
+    target.protocol_readiness=fresh.protocol_readiness;
+    target.protocol_readiness_individual=fresh.protocol_readiness_individual;
+    unresolvedDeclensionsByReport.delete(String(context.reportId));
+    const selector=$('#violationProtocolType');if(selector)selector.dispatchEvent(new Event('change'));
+    const gate=(selector?.value==='decline_individual_review'?target.protocol_readiness_individual:target.protocol_readiness)||{};
+    const reasons=$('#violationProtocolReasons');if(reasons){reasons.hidden=!(gate.reasons||[]).length;reasons.textContent=(gate.reasons||[]).join(' · ')}
+    updateViolationCardDeclensionStatus(target);
+    return true;
+  }catch{toast('Форму збережено, але не вдалося оновити стан відкритої картки.','error');return false}
+}
+async function prepareDeclensionEditorPreview(state){
+  if(declensionPreviewState!==state)return;
+  const original=$('#declensionOriginal').value.trim(),entityType=$('#declensionType').value;
+  const token=Symbol('declension-preview');state.token=token;state.loading=true;state.failed=false;
+  $('#declensionSave').disabled=true;
+  const fields=['genitive','dative','accusative'];
+  fields.forEach(name=>{
+    const label=$(`#declensionDialog [data-declension-case="${name}"]`),input=label.querySelector('input');
+    input.disabled=true;
+    let info=label.querySelector('[data-declension-origin]');
+    if(!info){info=document.createElement('small');info.dataset.declensionOrigin=name;info.dataset.declensionPreviewControl='1';info.setAttribute('aria-live','polite');label.append(info);
+      const confirm=document.createElement('span');confirm.className='declension-form-confirm';confirm.dataset.declensionPreviewControl='1';
+      const check=document.createElement('input');check.type='checkbox';check.dataset.confirmDeclension=name;check.setAttribute('aria-label',`Підтвердити форму: ${label.querySelector('span').title||label.querySelector('span').textContent}`);confirm.append(check,document.createTextNode(' Перевірено для збереження'));label.append(confirm);
+    }
+    info.textContent=original?'Завантаження форм…':'Введіть назву для перегляду форм';info.dataset.source='unresolved';
+    const check=label.querySelector('[data-confirm-declension]');check.checked=false;check.disabled=true;
+    input.oninput=()=>{check.checked=Boolean(input.value.trim());check.disabled=state.readOnly||!input.value.trim();info.textContent=input.value.trim()?'Ручне виправлення · ще не збережено':'Форма не визначена';info.dataset.source='manual'};
+  });
+  if(!original){state.loading=false;return}
+  try{
+    const data=await request(`${API}/declension-overrides?${new URLSearchParams({preview:'1',original,entity_type:entityType})}`);
+    if(declensionPreviewState!==state||state.token!==token||!$('#declensionDialog').open)return;
+    if(state.owner&&activeDeclensionRequest!==state.owner){$('#declensionDialog').close();declensionPreviewState=null;declensionReturnContext=null;return;}
+    if(state.card){editingDeclensionId=data.item?.id||null;if(data.item)$('#declensionComment').value=data.item.comment||'';$('#declensionDialogTitle').textContent=editingDeclensionId?'Редагувати відмінювання':'Додати відмінювання'}
+    fields.forEach(name=>{
+      const form=data.preview?.[name];if(!form||!['override','automatic','unresolved'].includes(form.source))throw new Error('Некоректна відповідь перегляду');
+      const label=$(`#declensionDialog [data-declension-case="${name}"]`),input=label.querySelector('input'),check=label.querySelector('[data-confirm-declension]'),info=label.querySelector('[data-declension-origin]');
+      input.value=form.value||'';input.disabled=state.readOnly;check.checked=form.source==='override'&&Boolean(input.value.trim());check.disabled=state.readOnly||!input.value.trim();
+      info.dataset.source=form.source;info.textContent=form.source==='override'?'Перевірена форма · збережено':form.source==='automatic'?'Автоматична пропозиція · не перевірено':'Форма не визначена чинним механізмом · потрібне ручне введення';
+    });
+    state.loading=false;$('#declensionSave').disabled=state.readOnly;
+  }catch(error){
+    if(declensionPreviewState!==state||state.token!==token)return;
+    state.loading=false;state.failed=true;$('#declensionSave').disabled=true;
+    $$('#declensionDialog [data-declension-origin]').forEach(info=>info.textContent='Не вдалося отримати форми. Закрийте редактор і спробуйте ще раз.');
+    toast(error.message,'error');
+  }
+}
+
 function declensionLookup(value){return String(value||'').toLocaleLowerCase('uk-UA').replace(/[’'`\-]+/g,' ').replace(/\s+/g,' ').trim()}
 function remainingDeclensionItems(items){return(items||[]).filter(entry=>{const row=declensionItems.find(candidate=>candidate.entity_type===entry.entity_type&&declensionLookup(candidate.original)===declensionLookup(entry.original));return!row||!String(row[entry.grammatical_case]||'').trim()})}
 async function returnToDeclensionReport(){if(!declensionReturnContext)return;const context=declensionReturnContext;declensionReturnContext=null;$('#declensionBackToRequest').hidden=true;if(context.originType==='operational_task_list'){showModule('operationalTasks');return}if(context.originType==='operational_task'){showModule('operationalTasks');await openOperationalTask(context.taskId);return}if(context.originType==='violation_report_list'){showModule('requests');return}unresolvedDeclensionsByReport.delete(String(context.reportId));showModule('requests');await openViolationReportById(context.reportId)}
-async function saveDeclensionEditor(){const payload={entity_type:$('#declensionType').value,original:$('#declensionOriginal').value,genitive:$('#declensionGenitive').value,dative:$('#declensionDative').value,accusative:$('#declensionAccusative').value,comment:$('#declensionComment').value},url=editingDeclensionId?`${API}/admin/declension-overrides/${encodeURIComponent(editingDeclensionId)}`:`${API}/admin/declension-overrides`,method=editingDeclensionId?'PATCH':'POST';try{await request(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});$('#declensionDialog').close();await loadDeclensionOverrides();toast(editingDeclensionId?'Відмінювання оновлено':'Відмінювання додано','success');if(declensionReturnContext?.originType==='violation_report_side'){const context=declensionReturnContext,item=await reloadOpenViolationReportDetail();if(!item)return;const remaining=unresolvedViolationDeclensionsBySide(item.protocol_readiness?.declensions,context.side);if(remaining.length){const next=remaining[0];context.entries=remaining;context.entry=next;const existing=declensionItems.find(candidate=>candidate.entity_type===next.entity_type&&declensionLookup(candidate.original)===declensionLookup(next.original));openDeclensionEditor(existing||{entity_type:next.entity_type,original:next.original},next.grammatical_case,next)}else declensionReturnContext=null;return}if(declensionReturnContext)await returnToDeclensionReport()}catch(error){toast(error.message,'error')}}
+async function saveDeclensionEditor(){if(currentMe?.permissions?.['declension.manage']!==true)return;if(declensionPreviewState?.loading||declensionPreviewState?.failed)return;if(declensionPreviewState?.owner&&activeDeclensionRequest!==declensionPreviewState.owner){$('#declensionDialog').close();declensionPreviewState=null;declensionReturnContext=null;toast('Картку змінено. Відкрийте відмінювання для поточного звернення.','warning');return}const payload={entity_type:$('#declensionType').value,original:$('#declensionOriginal').value,genitive:$('#declensionGenitive').value,dative:$('#declensionDative').value,accusative:$('#declensionAccusative').value,comment:$('#declensionComment').value},url=editingDeclensionId?`${API}/admin/declension-overrides/${encodeURIComponent(editingDeclensionId)}`:`${API}/admin/declension-overrides`,method=editingDeclensionId?'PATCH':'POST';if(declensionPreviewState){for(const name of ['genitive','dative','accusative']){const confirmed=$(`#declensionDialog [data-confirm-declension="${name}"]`);if(!confirmed?.checked||!String(payload[name]||'').trim())payload[name]=''}}try{await request(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});$('#declensionDialog').close();await loadDeclensionOverrides();toast(editingDeclensionId?'Відмінювання оновлено':'Відмінювання додано','success');if(declensionReturnContext?.originType==='violation_report_card'){const context=declensionReturnContext;unresolvedDeclensionsByReport.delete(String(context.reportId));if(await refreshOpenViolationDeclensionState(context))declensionReturnContext=null;return}if(declensionReturnContext?.originType==='violation_report_side'){unresolvedDeclensionsByReport.delete(String(declensionReturnContext.reportId));const context=declensionReturnContext,item=await reloadOpenViolationReportDetail();if(!item)return;const remaining=unresolvedViolationDeclensionsBySide(item.protocol_readiness?.declensions,context.side);if(remaining.length){const next=remaining[0];context.entries=remaining;context.entry=next;const existing=declensionItems.find(candidate=>candidate.entity_type===next.entity_type&&declensionLookup(candidate.original)===declensionLookup(next.original));openDeclensionEditor(existing||{entity_type:next.entity_type,original:next.original},next.grammatical_case,next)}else declensionReturnContext=null;return}if(declensionReturnContext)await returnToDeclensionReport()}catch(error){toast(error.message,'error')}}
 async function deleteDeclension(id){const item=declensionItems.find(row=>row.id===id);if(!item||!confirm(`Видалити перевірені форми для «${item.original}»?`))return;try{await request(`${API}/admin/declension-overrides/${encodeURIComponent(id)}`,{method:'DELETE'});await loadDeclensionOverrides();toast('Запис відмінювання видалено','success')}catch(error){toast(error.message,'error')}}
 async function openDocumentDeclension(item,context){const entries=context.entries||[item];if(context.originType==='operational_task')$('#operationalTaskDialog').close();else if(context.originType!=='violation_report_side')$('#requestDetailsDialog').close();if(context.originType!=='violation_report_side'){showModule('references');setReferenceTab('declension');$('#declensionBackToRequest').hidden=false;$('#declensionBackToRequest').textContent=`← Назад до ${context.label}`}await loadDeclensionOverrides();const pending=remainingDeclensionItems(entries),target=pending[0]||item;declensionReturnContext={...context,entries,entry:target};if(context.originType!=='violation_report_side')$('#declensionSearch').value=target?.original||'Потребує заповнення';const existing=declensionItems.find(candidate=>candidate.entity_type===target?.entity_type&&declensionLookup(candidate.original)===declensionLookup(target?.original));const matching=pending.filter(entry=>entry.entity_type===target?.entity_type&&declensionLookup(entry.original)===declensionLookup(target?.original));const cases=matching.map(entry=>entry.grammatical_case);openDeclensionEditor(existing||{entity_type:target?.entity_type||'legal_entity',original:target?.original||''},cases,matching[0]||target)}
 async function openDeclensionFromValidation(item,report){const entries=report.protocol_readiness?.declensions||unresolvedDeclensionsByReport.get(String(report.id))||[item];return openDocumentDeclension(item,{reportId:report.id,label:report.report_id||report.id,entries})}
@@ -2651,6 +2725,7 @@ bindViolationReview=function(item){
     if(!protocolType)return;
     const individual=protocolType.value==='decline_individual_review',confirmNotes=$('#confirmReviewNotes'),gate=individual?item.protocol_readiness_individual:item.protocol_readiness,reasons=$('#violationProtocolReasons'),declensions=$('#violationProtocolDeclensionActions');
     if(confirmField)confirmField.hidden=!individual;
+    updateViolationCardDeclensionStatus(item);
     if(reasons){const list=gate?.reasons||[];reasons.hidden=!list.length;reasons.textContent=list.join(' · ')}
     if(declensions){declensions.innerHTML=violationDeclensionActions(gate?.declensions||[]);declensions.querySelectorAll('[data-check-declension-side]').forEach(button=>button.onclick=()=>openViolationDeclensionSide(button.dataset.checkDeclensionSide,item))}
     if(generateButton)generateButton.disabled=!gate?.ready||Boolean((gate?.unresolved||[]).length)||(individual&&!confirmNotes?.checked);
