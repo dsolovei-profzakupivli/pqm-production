@@ -35,11 +35,13 @@ def as_kyiv(moment: datetime | None = None) -> datetime:
 
 
 def next_hourly_run(moment: datetime | None = None) -> datetime:
-    current = as_kyiv(moment)
+    # Each elapsed hour has its own :05 instant, including both autumn folds.
+    # UTC arithmetic also avoids manufacturing a nonexistent spring wall time.
+    current = as_kyiv(moment).astimezone(timezone.utc)
     candidate = current.replace(minute=5, second=0, microsecond=0)
     if candidate <= current:
         candidate += timedelta(hours=1)
-    return candidate
+    return candidate.astimezone(KYIV)
 
 
 def next_nazk_run(moment: datetime | None = None) -> datetime:

@@ -17,7 +17,9 @@ NAZK_CARD_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_d
 NAZK_FULL_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_nazk_full_contract_v1')
 APPEALS_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_appeals_module_a701e96_v1')
 DECLENSION_HOTFIX_VARIANT=CONTRACT.get('approved_product_variants',{}).get('production_appeals_declension_loader_292b072_v1')
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT) if value]
+DST_V1_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v1.json').read_text())
+DST_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v2.json').read_text())
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT) if value]
 
 
 def nodes(source):
@@ -56,7 +58,10 @@ def variant_matches(root, changed_paths, *, overrides=None, variant=None):
         'ef4da147a221fd01082dc62253a166223ee58ce8',
         'a701e96705afe316bf2fa8e8806a318b5384d4ce',
         '292b0726b4adc13644c7f98721e569c8809ea785',
+        '4a3aca491cb836e73f1bb36dac364a336d46341a',
     }:
+        return False
+    if variant not in [*VARIANTS,DST_V1_VARIANT]:
         return False
     expected=variant.get('files',{})
     if set(changed_paths)!=set(expected) or set(expected)!=set(variant.get('files',{})):
@@ -292,16 +297,20 @@ class ProductionUiReleaseIntegrityTests(unittest.TestCase):
             if name not in {'app.js','validation/docker_release_gate.py',
                             'validation/local_release_20260911/test_violation_scenario_context_cache.py'}:
                 self.assertEqual(DECLENSION_HOTFIX_VARIANT['files'][name],expected)
+        with zipfile.ZipFile(ROOT/'validation/fixtures/production_dst_lineage_4a3aca4.zip') as archive:
+            historical={name:archive.read('hotfix/'+name) for name in DECLENSION_HOTFIX_VARIANT['files']}
         self.assertTrue(variant_matches(ROOT,DECLENSION_HOTFIX_VARIANT['files'],
-                                        variant=DECLENSION_HOTFIX_VARIANT))
+                                        overrides=historical,variant=DECLENSION_HOTFIX_VARIANT))
+        self.assertFalse(variant_matches(ROOT,DECLENSION_HOTFIX_VARIANT['files'],
+                                         variant=DECLENSION_HOTFIX_VARIANT))
         self.assertFalse(variant_matches(ROOT,APPEALS_VARIANT['files'],variant=APPEALS_VARIANT),
                          'The prior Appeals contract remains unchanged and rejects the hotfix tree')
         for name in DECLENSION_HOTFIX_VARIANT['files']:
             with self.subTest(name=name):
-                data=(ROOT/name).read_bytes().replace(b'\r\n',b'\n')
+                data=historical[name].replace(b'\r\n',b'\n')
                 changed=bytes([data[0]^1])+data[1:]
                 self.assertFalse(variant_matches(ROOT,DECLENSION_HOTFIX_VARIANT['files'],
-                                                 overrides={name:changed},variant=DECLENSION_HOTFIX_VARIANT))
+                                                 overrides={**historical,name:changed},variant=DECLENSION_HOTFIX_VARIANT))
 
     def test_operational_lifecycle_and_write_algorithms_unchanged(self):
         source=nodes((ROOT/'operational_tasks.py').read_text(encoding='utf-8'))
