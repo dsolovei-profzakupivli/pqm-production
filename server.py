@@ -1482,6 +1482,11 @@ def init_db() -> None:
           context_hash TEXT NOT NULL,
           context_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS violation_scenario_basis (
+          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,
+          snapshot_json TEXT NOT NULL, calendar_deadline TEXT,
+          basis_hash TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS violation_report_document_reviews (
           report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,
           document_source TEXT NOT NULL CHECK(document_source IN ('customer','supplier')),
@@ -6286,6 +6291,7 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
         if SANDBOX_MODE:
             sandbox_runtime.attest_internal_target(DB_PATH)
         feed = []
+        updated_report_ids = []
         for batch in paginated_pages(f"{API_ROOT}/violation_reports"):
             feed.extend(batch)
             VIOLATION_SYNC_STATE.update(total=len(feed), message=f"Знайдено {len(feed)} звернень…")
@@ -6298,11 +6304,13 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
                 detail = api_get(f"{API_ROOT}/violation_reports/{report_id}").get("data") or {}
                 if detail:
                     save_violation_report_with_retry(detail)
+                    updated_report_ids.append(report_id)
             except Exception as exc:
                 SERVER_LOG.exception("Violation report synchronization failed report=%s", report_id)
                 VIOLATION_SYNC_STATE["errors"] += 1
                 VIOLATION_SYNC_STATE["last_error"] = f"{report_id}: {exc}"
             VIOLATION_SYNC_STATE.update(processed=index, message=f"Оновлено {index}/{len(pending)} звернень")
+        _refresh_violation_scenario_projections(preferred_ids=updated_report_ids)
         error_note = f"; остання помилка: {VIOLATION_SYNC_STATE.get('last_error')}" if VIOLATION_SYNC_STATE["errors"] else ""
         VIOLATION_SYNC_STATE["message"] = f"Готово: у базі {len(feed)} звернень; оновлено {len(pending) - VIOLATION_SYNC_STATE['errors']}; помилок {VIOLATION_SYNC_STATE['errors']}{error_note}"
         rebuild_operational_tasks()
@@ -6468,6 +6476,9 @@ def list_violation_reports(params: dict) -> dict:
         scenario_context_snapshots={row['report_id']:dict(row) for row in con.execute(
             'SELECT * FROM violation_scenario_context_snapshots WHERE report_id IN ('+
             ','.join('?' for _ in review_ids)+')',review_ids)} if review_ids else {}
+        scenario_bases={row['report_id']:dict(row) for row in con.execute(
+            'SELECT * FROM violation_scenario_basis WHERE report_id IN ('+
+            ','.join('?' for _ in review_ids)+')',review_ids)} if review_ids else {}
         decision_snapshots={}
         if review_ids:
             for snapshot_row in con.execute(
@@ -6498,6 +6509,14 @@ def list_violation_reports(params: dict) -> dict:
         scenario_context_row = scenario_context_snapshots.get(item["id"])
         scenario_context = _validated_scenario_context_snapshot(
             scenario_context_row, scenario_report, scenario_review)
+        item["scenario_context_source"] = "cache" if scenario_context is not None else "unavailable"
+        basis_context, observed_at = _scenario_from_basis(
+            scenario_bases.get(item["id"]), scenario_report, scenario_review)
+        if basis_context is not None:
+            if scenario_context is None:
+                item["scenario_context_source"] = "saved_facts"
+                item["scenario_observed_at"] = observed_at
+            scenario_context = basis_context
         # List projection reads only the independent local scenario cache.
         # It never resolves a tender or mutates historical review state.
         item["scenario_summary"]=(violation_scenario_summary(scenario_report,scenario_context)
@@ -7263,7 +7282,8 @@ def _minimal_scenario_context(reason: str, context: dict | None) -> dict | None:
             return None
     return projected
 
-def _validated_scenario_context_snapshot(snapshot, report: dict, review: dict | None) -> dict | None:
+def _validated_scenario_context_snapshot(snapshot, report: dict, review: dict | None,
+                                         *, durable_basis: bool = False) -> dict | None:
     if snapshot is None:
         return None
     try:
@@ -7289,7 +7309,7 @@ def _validated_scenario_context_snapshot(snapshot, report: dict, review: dict | 
                 ).encode("utf-8")).hexdigest() or
                 parsed_source_ns is None or parsed_source_ns != source_ns or
                 source_ns > observed_ns or observed_ns > now_ns or
-                now_ns - observed_ns > _SCENARIO_CONTEXT_TTL_SECONDS * 1_000_000_000):
+                (not durable_basis and now_ns - observed_ns > _SCENARIO_CONTEXT_TTL_SECONDS * 1_000_000_000)):
             return None
         return context
     except (TypeError, ValueError, json.JSONDecodeError, OverflowError):
@@ -7332,59 +7352,156 @@ def _scenario_context_from_card(report: dict, review: dict | None, context: dict
     }
 
 def _save_violation_scenario_context_snapshot(report: dict, review: dict | None,
-                                               context: dict | None) -> dict | None:
+                                               context: dict | None, *, connection=None) -> dict | None:
     candidate = _scenario_context_from_card(report, review, context)
     if candidate is None:
         return None
+    if connection is not None:
+        return _upsert_violation_scenario_context(connection, candidate, report, review, context)
     with db() as con:
         con.execute("BEGIN IMMEDIATE")
-        current_report = con.execute("SELECT * FROM violation_reports WHERE id=?",
-                                     (candidate["report_id"],)).fetchone()
-        if current_report is None:
-            return None
-        current_review = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
-                                     (candidate["report_id"],)).fetchone()
-        raw_report = dict(current_report)
-        try:
-            raw_report["defendant_statements"] = json.loads(raw_report.get("raw_json") or "{}").get(
-                "defendantStatements") or []
-        except (TypeError, ValueError):
-            raw_report["defendant_statements"] = []
-        if candidate["input_fingerprint"] != _scenario_report_fingerprint(
-                raw_report, _review_dict(current_review)):
-            row = con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
-                              (candidate["report_id"],)).fetchone()
-            return _validated_scenario_context_snapshot(
-                row, raw_report, _review_dict(current_review))
-        existing = con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
-                               (candidate["report_id"],)).fetchone()
-        if existing:
-            old = dict(existing)
-            old_order = (int(old.get("source_updated_at_ns") or 0), int(old.get("observed_at_ns") or 0))
-            new_order = (candidate["source_updated_at_ns"], candidate["observed_at_ns"])
-            if new_order < old_order:
-                return _validated_scenario_context_snapshot(old, report, review)
-            existing_context = _validated_scenario_context_snapshot(old, report, review)
-            if (old.get("context_hash") == candidate["context_hash"] and existing_context is not None and
-                    old_order[0] == candidate["source_updated_at_ns"]):
-                return existing_context
-        con.execute("""INSERT INTO violation_scenario_context_snapshots
-            (report_id,snapshot_version,report_external_id,reason,tender_id,input_fingerprint,
-             source_updated_at,source_updated_at_ns,observed_at_ns,captured_at,context_hash,context_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(report_id) DO UPDATE SET
-             snapshot_version=excluded.snapshot_version,report_external_id=excluded.report_external_id,
-             reason=excluded.reason,tender_id=excluded.tender_id,input_fingerprint=excluded.input_fingerprint,
-             source_updated_at=excluded.source_updated_at,source_updated_at_ns=excluded.source_updated_at_ns,
-             observed_at_ns=excluded.observed_at_ns,captured_at=excluded.captured_at,
-             context_hash=excluded.context_hash,context_json=excluded.context_json""",
-             tuple(candidate[key] for key in (
-                 "report_id", "snapshot_version", "report_external_id", "reason", "tender_id",
-                 "input_fingerprint", "source_updated_at", "source_updated_at_ns", "observed_at_ns",
-                 "captured_at", "context_hash", "context_json")))
+        return _upsert_violation_scenario_context(con, candidate, report, review, context)
+
+
+def _upsert_violation_scenario_context(con, candidate, report, review, context):
+    current_report = con.execute("SELECT * FROM violation_reports WHERE id=?",
+                                 (candidate["report_id"],)).fetchone()
+    if current_report is None:
+        return None
+    current_review = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                 (candidate["report_id"],)).fetchone()
+    raw_report = dict(current_report)
+    try:
+        raw_report["defendant_statements"] = json.loads(raw_report.get("raw_json") or "{}").get(
+            "defendantStatements") or []
+    except (TypeError, ValueError):
+        raw_report["defendant_statements"] = []
+    if candidate["input_fingerprint"] != _scenario_report_fingerprint(
+            raw_report, _review_dict(current_review)):
+        row = con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                          (candidate["report_id"],)).fetchone()
         return _validated_scenario_context_snapshot(
-            con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
-                        (candidate["report_id"],)).fetchone(), report, review)
+            row, raw_report, _review_dict(current_review))
+    existing = con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                           (candidate["report_id"],)).fetchone()
+    if existing:
+        old = dict(existing)
+        old_order = (int(old.get("source_updated_at_ns") or 0), int(old.get("observed_at_ns") or 0))
+        new_order = (candidate["source_updated_at_ns"], candidate["observed_at_ns"])
+        if new_order < old_order:
+            return _validated_scenario_context_snapshot(old, report, review)
+        existing_context = _validated_scenario_context_snapshot(old, report, review)
+        if (old.get("context_hash") == candidate["context_hash"] and existing_context is not None and
+                old_order[0] == candidate["source_updated_at_ns"]):
+            _save_scenario_basis(con, candidate, context)
+            return existing_context
+    _save_scenario_basis(con, candidate, context)
+    con.execute("""INSERT INTO violation_scenario_context_snapshots
+        (report_id,snapshot_version,report_external_id,reason,tender_id,input_fingerprint,
+         source_updated_at,source_updated_at_ns,observed_at_ns,captured_at,context_hash,context_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(report_id) DO UPDATE SET
+         snapshot_version=excluded.snapshot_version,report_external_id=excluded.report_external_id,
+         reason=excluded.reason,tender_id=excluded.tender_id,input_fingerprint=excluded.input_fingerprint,
+         source_updated_at=excluded.source_updated_at,source_updated_at_ns=excluded.source_updated_at_ns,
+         observed_at_ns=excluded.observed_at_ns,captured_at=excluded.captured_at,
+         context_hash=excluded.context_hash,context_json=excluded.context_json""",
+         tuple(candidate[key] for key in (
+             "report_id", "snapshot_version", "report_external_id", "reason", "tender_id",
+             "input_fingerprint", "source_updated_at", "source_updated_at_ns", "observed_at_ns",
+             "captured_at", "context_hash", "context_json")))
+    return _validated_scenario_context_snapshot(
+        con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                    (candidate["report_id"],)).fetchone(), report, review)
+
+
+def _scenario_basis_hash(snapshot_json: str, calendar_deadline) -> str:
+    return hashlib.sha256(json.dumps([snapshot_json, calendar_deadline],
+        ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _save_scenario_basis(con, candidate: dict, context: dict) -> None:
+    # Minimal, server-only facts. No raw tender, review text or document content.
+    if candidate["reason"] == "contractBreach" and "contract_deadline" not in context:
+        return
+    deadline = context.get("contract_deadline")
+    if deadline is not None:
+        try:
+            datetime.strptime(str(deadline), "%Y-%m-%d")
+        except (TypeError, ValueError):
+            return
+    existing = con.execute("SELECT snapshot_json FROM violation_scenario_basis WHERE report_id=?",
+                           (candidate["report_id"],)).fetchone()
+    if existing:
+        try:
+            old = json.loads(existing[0])
+            if (int(old["source_updated_at_ns"]), int(old["observed_at_ns"])) > (
+                    candidate["source_updated_at_ns"], candidate["observed_at_ns"]):
+                return
+        except (KeyError, TypeError, ValueError):
+            pass
+    serialized = json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    con.execute("""INSERT INTO violation_scenario_basis
+        (report_id,snapshot_json,calendar_deadline,basis_hash) VALUES (?,?,?,?)
+        ON CONFLICT(report_id) DO UPDATE SET snapshot_json=excluded.snapshot_json,
+        calendar_deadline=excluded.calendar_deadline,basis_hash=excluded.basis_hash""",
+        (candidate["report_id"], serialized, deadline, _scenario_basis_hash(serialized, deadline)))
+
+
+def _scenario_from_basis(row, report: dict, review: dict | None) -> tuple[dict | None, str]:
+    if row is None:
+        return None, ""
+    try:
+        basis = dict(row)
+        serialized, deadline = basis["snapshot_json"], basis["calendar_deadline"]
+        if basis["basis_hash"] != _scenario_basis_hash(serialized, deadline):
+            return None, ""
+        snapshot = json.loads(serialized)
+        context = _validated_scenario_context_snapshot(snapshot, report, review, durable_basis=True)
+        if context is None:
+            return None, ""
+        if report.get("reason") == "contractBreach":
+            context["contract_deadline_expired"] = _deadline_passed(deadline) if deadline else None
+        return context, str(snapshot.get("captured_at") or "")
+    except (KeyError, TypeError, ValueError):
+        return None, ""
+
+
+def _refresh_violation_scenario_projections(limit: int = 50, *, preferred_ids: list[str] | None = None) -> dict:
+    """Bounded refresh in the existing Appeals sync, never in list or a new scheduler."""
+    with db() as con:
+        rows = con.execute("""SELECT r.*,v.report_id AS review_present FROM violation_reports r
+            LEFT JOIN violation_report_reviews v ON v.report_id=r.id
+            WHERE r.reason IN ('contractBreach','signingRefusal','goodsNonCompliance')
+            ORDER BY (v.generated_protocol_filename IS NOT NULL AND v.generated_protocol_filename<>'') DESC,
+                     (v.report_id IS NOT NULL) DESC,r.date_modified DESC,r.id""").fetchall()
+    priority = set(preferred_ids or [])
+    rows = sorted(rows, key=lambda row: str(row["id"]) not in priority)
+    attempted = refreshed = 0
+    for row in rows:
+        report = dict(row)
+        if not violation_report_owned_by_pqm(report):
+            continue
+        with db() as con:
+            review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?", (report["id"],)).fetchone()
+            basis = con.execute("SELECT * FROM violation_scenario_basis WHERE report_id=?", (report["id"],)).fetchone()
+        review = _review_dict(review_row)
+        context, _ = _scenario_from_basis(basis, report, review)
+        # Valid durable facts still refresh on the normal 24h source cadence.
+        if context is not None:
+            captured = json.loads(basis["snapshot_json"])
+            if time.time_ns() - int(captured["observed_at_ns"]) <= _SCENARIO_CONTEXT_TTL_SECONDS * 1_000_000_000:
+                continue
+        if attempted >= max(0, min(int(limit), 50)):
+            break
+        attempted += 1
+        try:
+            context = build_procurement_context(report, review)
+            if _save_violation_scenario_context_snapshot(report, review, context) is not None:
+                refreshed += 1
+        except Exception as exc:
+            SERVER_LOG.warning("scenario_projection_refresh_failed report=%s error=%s", report["id"], type(exc).__name__)
+    return {"attempted": attempted, "refreshed": refreshed}
 
 
 def violation_rules_engine(reason: str, context: dict, review: dict | None) -> dict:
@@ -7949,6 +8066,14 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
                 "SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?", (item["id"],)
             ).fetchone()
         scenario_context = _validated_scenario_context_snapshot(cached_scenario, item, item.get("review"))
+    item["scenario_context_source"] = "cache" if scenario_context is not None else "unavailable"
+    if scenario_context is None:
+        with db() as con:
+            basis = con.execute("SELECT * FROM violation_scenario_basis WHERE report_id=?", (item["id"],)).fetchone()
+        scenario_context, observed_at = _scenario_from_basis(basis, item, item.get("review"))
+        if scenario_context is not None:
+            item["scenario_context_source"] = "saved_facts"
+            item["scenario_observed_at"] = observed_at
     item["scenario_summary"] = (violation_scenario_summary(item, scenario_context)
                                 if scenario_context is not None else "")
     for context_key in ("procurement_context", "factual_procurement_context"):
@@ -8525,6 +8650,8 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
           (report_id,event_type,field_name,old_value,new_value,changed_at,changed_by)
           VALUES (?,?,?,?,?,?,?)""", (report["id"], "review_completed", "review_status",
           current["review_status"], "reviewed", now, completed_by))
+        _save_violation_scenario_context_snapshot(
+            item, merged, context, connection=con)
     return {"review_status": "reviewed", "completed_at": now, "completed_by": completed_by}
 
 

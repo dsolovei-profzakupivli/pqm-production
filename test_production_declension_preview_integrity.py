@@ -7,7 +7,7 @@ from pathlib import Path
 import unittest
 import test_production_ui_release_integrity as guard
 
-ROOT = Path(__file__).resolve().parent
+ROOT = guard.scenario_parent_root()
 MANIFEST_SHA = 'a7c06d66a69fefc74231b265d1ec833a5ca3331b4fadbf553050611dd1a2e362'
 GATE_MANIFEST_SHA = '09119bc0ccaea07cf7e7cb88d0c4ad9fb76ca5052d58b3d0a102b283d2b601c8'
 HISTORICAL = {

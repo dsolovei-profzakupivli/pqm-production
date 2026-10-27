@@ -21,7 +21,8 @@ DST_V1_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v1.j
 DST_VARIANT=json.loads((ROOT/'validation/production_dst_hotfix_integrity_v2.json').read_text())
 PREVIEW_VARIANT=json.loads((ROOT/'validation/production_declension_preview_integrity_v1.json').read_text())
 PREVIEW_GATE_VARIANT=json.loads((ROOT/'validation/production_declension_preview_integrity_v2.json').read_text())
-VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT,PREVIEW_VARIANT,PREVIEW_GATE_VARIANT) if value]
+SCENARIO_VARIANT=json.loads((ROOT/'validation/production_scenario_projection_integrity_v1.json').read_text())
+VARIANTS=[value for value in (VARIANT,FAILSAFE_VARIANT,UI_VARIANT,CARD_VARIANT,NAZK_CARD_VARIANT,NAZK_FULL_VARIANT,APPEALS_VARIANT,DECLENSION_HOTFIX_VARIANT,DST_VARIANT,PREVIEW_VARIANT,PREVIEW_GATE_VARIANT,SCENARIO_VARIANT) if value]
 
 
 def nodes(source):
@@ -62,6 +63,7 @@ def variant_matches(root, changed_paths, *, overrides=None, variant=None):
         '292b0726b4adc13644c7f98721e569c8809ea785',
         '4a3aca491cb836e73f1bb36dac364a336d46341a',
         'f2565a4e52d482b50f4ddfc2ff8468c38f9a49a7',
+        '7af6ed16861b87fa87fc5c5243d1ce86ae71bb29',
     }:
         return False
     if variant not in [*VARIANTS,DST_V1_VARIANT]:
@@ -374,5 +376,36 @@ def preview_parent_root():
             if hashlib.sha256(content.replace(b'\r\n',b'\n')).hexdigest() != expected:
                 raise AssertionError('Changed frozen parent file')
             target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(content)
+    return parent
+
+
+_SCENARIO_PARENT_TEMP = None
+
+
+def scenario_parent_root():
+    """Keep every Preview assertion on its exact immutable 7af6ed1 source tree."""
+    global _SCENARIO_PARENT_TEMP
+    if _SCENARIO_PARENT_TEMP is not None:
+        return Path(_SCENARIO_PARENT_TEMP.name)
+    import tempfile
+    fixture = 'validation/fixtures/production_scenario_parent_7af6ed1.zip'
+    data = (ROOT/fixture).read_bytes()
+    if hashlib.sha256(data).hexdigest() != SCENARIO_VARIANT['files'][fixture]:
+        raise AssertionError('Changed scenario parent source fixture')
+    _SCENARIO_PARENT_TEMP = tempfile.TemporaryDirectory(prefix='pqm-scenario-parent-')
+    parent = Path(_SCENARIO_PARENT_TEMP.name)
+    with zipfile.ZipFile(ROOT/fixture) as archive:
+        metadata = json.loads(archive.read('metadata.json'))
+        if set(archive.namelist()) != set(metadata) | {'metadata.json'}:
+            raise AssertionError('Unexpected scenario parent scope')
+        for name, expected in metadata.items():
+            target = (parent/name).resolve()
+            if not target.is_relative_to(parent.resolve()):
+                raise AssertionError('Unsafe parent source path')
+            content = archive.read(name)
+            if hashlib.sha256(content).hexdigest() != expected:
+                raise AssertionError('Changed historical source')
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
     return parent
