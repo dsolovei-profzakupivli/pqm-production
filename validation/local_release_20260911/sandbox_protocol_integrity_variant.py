@@ -1600,6 +1600,7 @@ DST_RECOVERY_QUALIFICATION_TEST_FIX_SCOPE = {
     "align_status_write_failure_smoke_with_refresh_worker_callback_contract",
     "include_v4_parent_override_fixture_in_disposable_release_runner",
     "include_nazk_recovery_smoke_in_disposable_release_runner",
+    "include_nazk_recovery_unit_smoke_in_disposable_release_runner",
     "update_integrity_tests_for_the_additive_v4_contract",
 }
 DST_RECOVERY_QUALIFICATION_TEST_FIX_FILES = {
@@ -1635,7 +1636,7 @@ def load_dst_recovery_qualification_contract(previous):
 
 
 DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT = ROOT / "test_sandbox_dst_hotfix_recovery_integrated_v4.json"
-DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "6be0ac3c0959015a81a2ff8b0068e5da7a84e860ab2fcaaa62de6257f2a6c913"
+DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "3f4723c767cc45e6e8ce9eb6ac749e03f8533604c6a4b5d653ecbde630d075ab"
 DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID = "sandbox-dst-hotfix-9904832-v4-nazk-recovery-test-contract"
 DST_RECOVERY_QUALIFICATION_TEST_FIX_FIXTURE = ROOT / "validation/fixtures/nazk_recovery_testfix_parent_override.zip"
 

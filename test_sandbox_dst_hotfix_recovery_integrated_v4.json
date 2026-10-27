@@ -31,6 +31,7 @@
     "fence-nazk-registry-replacement-and-task-workflow-by-current-lease-owner",
     "filter_zakupivli_complaints_by_supplier_code_without_status_filter",
     "include_nazk_recovery_smoke_in_disposable_release_runner",
+    "include_nazk_recovery_unit_smoke_in_disposable_release_runner",
     "include_v4_parent_override_fixture_in_disposable_release_runner",
     "increase-supplier-warning-counter-heading-gap",
     "initialize_current_user_in_supplier_ux_fixture_and_assert_declension_editor_access_modes",
@@ -199,7 +200,7 @@
       "sha256": "f4aeff274a9a879a2f513279f94f13ba5ab7ef4b743be589f1c6b3937cec0f77"
     },
     "validation/run_local_release.py": {
-      "sha256": "e9cda982163464f0a0bb35cf941b4653270f26b1aa1f83675ae283893d0a9b2e"
+      "sha256": "dab2483a74e8149bc8332d24524f27b97858b81dfc385fda5b15413e017a24ad"
     },
     "validation/appeals_justification_browser.cjs": {
       "sha256": "73af34376e675522248b014c0930e4f65bf52c6e6b9761914413662107e159bf"
@@ -387,7 +388,7 @@
       "sha256": "ac167c758a91c41001b454960b078b2e45130dff46f53fd71d57703d8aa6500c"
     },
     "validation/run_local_release.py": {
-      "sha256": "e9cda982163464f0a0bb35cf941b4653270f26b1aa1f83675ae283893d0a9b2e"
+      "sha256": "dab2483a74e8149bc8332d24524f27b97858b81dfc385fda5b15413e017a24ad"
     },
     "test_violation_report_kpi_facets.py": {
       "sha256": "78145705a37f1806f5d28e142dba98cd6a12a4f76ef61c3304874b42cba6f7c7"
@@ -498,7 +499,7 @@
       "sha256": "b1913e2c0a0c5e02e8e6cf5382cc4d9ae7ab62fc4b1917967b4f2c983e959a31"
     },
     "validation/local_release_20260911/sandbox_protocol_integrity_variant.py": {
-      "sha256": "83add7a74bd702c2dbe6aa08cf60cc17206d4abb2cf310836474ffa19b2a7a3f"
+      "sha256": "69db992b524c0b272d900a04ac405d2c6e6ffee2edbec415ce4d4c76449ba768"
     },
     "test_sandbox_nazk_recovery_integrity.py": {
       "sha256": "c8a7c8d3977d531382b37b504e53583ce7d6f5cc98458a72e2d40307394fd6cc"

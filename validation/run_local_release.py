@@ -36,6 +36,8 @@ def main():
                      root/'validation/sandbox_editable_smoke.py')
         shutil.copy2(ROOT/'validation/nazk_scheduler_failure_smoke.py',
                      root/'validation/nazk_scheduler_failure_smoke.py')
+        shutil.copy2(ROOT/'validation/nazk_recovery_unit_smoke.py',
+                     root/'validation/nazk_recovery_unit_smoke.py')
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
         for fixture_name in ('protocol_integrity_history.zip',
