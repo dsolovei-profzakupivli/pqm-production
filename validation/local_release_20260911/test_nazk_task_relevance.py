@@ -100,4 +100,100 @@ class CanonicalRelationCycleTests(NazkTaskPersonRelevanceTests):
         operational_tasks.build(self.con,'repeat',include_nazk=True)
         self.assertEqual([r[0] for r in self.con.execute("SELECT task_key FROM operational_tasks WHERE status='in_progress'")],[key])
 
+
+class ProzorroQualificationLossTests(NazkTaskPersonRelevanceTests):
+    def _create_ready_nazk_task(self):
+        self.con.execute("""INSERT INTO supplier_nazk_checks
+          (id,supplier_code,manager_id,manager_name,workflow_status,result,started_at,completed_at,updated_at)
+          VALUES(11,?,2,'PERSON_B','needs_review','confirmed','2026-01-03',NULL,'2026-01-03')""", (self.CODE,))
+        self.con.execute("INSERT INTO supplier_nazk_check_matches VALUES(11,'RECORD_B','confirmed')")
+        operational_tasks.materialize_nazk_tasks(self.con, 'synthetic fixture')
+        task = self.con.execute("""SELECT id FROM operational_tasks WHERE task_type='nazk_check'
+          AND CAST(json_extract(source_context,'$.nazk_check_id') AS INTEGER)=11""").fetchone()
+        self.assertIsNotNone(task)
+        self.con.execute("UPDATE operational_tasks SET status='ready_for_document' WHERE id=?", (task['id'],))
+        return task['id']
+
+    def test_reconciliation_cancels_ready_task_and_preserves_confirmed_evidence(self):
+        task_id = self._create_ready_nazk_task()
+        self.con.execute("UPDATE registry_contracts SET status='terminated' WHERE id='RC'")
+        self.assertEqual(operational_tasks._active_application_map(self.con).get(self.CODE), None)
+
+        first = operational_tasks.reconcile_stale_nazk_tasks(
+            self.con, 'synthetic successful Prozorro sync', supplier_codes=[self.CODE])
+        second = operational_tasks.reconcile_stale_nazk_tasks(
+            self.con, 'repeat synthetic sync', supplier_codes=[self.CODE])
+        task = self.con.execute("SELECT status,resolution_code FROM operational_tasks WHERE id=?", (task_id,)).fetchone()
+        check = self.con.execute("SELECT result,workflow_status FROM supplier_nazk_checks WHERE id=11").fetchone()
+        matches = self.con.execute("SELECT nazk_source_id,match_status FROM supplier_nazk_check_matches WHERE check_id=11").fetchall()
+        self.assertEqual(first['cancelled'], 1)
+        self.assertEqual(second['cancelled'], 0)
+        self.assertEqual(tuple(task), ('cancelled', 'no_active_qualifications'))
+        self.assertEqual(tuple(check), ('confirmed', 'needs_review'))
+        self.assertEqual([tuple(row) for row in matches], [('RECORD_B', 'confirmed')])
+
+    def test_successful_post_sync_must_cancel_ready_nazk_task(self):
+        """A complete synthetic qualification sync cancels ready NAZK work idempotently."""
+        task_id = self._create_ready_nazk_task()
+        self.con.execute("UPDATE registry_contracts SET status='terminated' WHERE id='RC'")
+        sync = {'frameworks': 1, 'completed': 1, 'errors': []}
+        first = operational_tasks.reconcile_stale_nazk_tasks_after_prozorro_sync(
+            self.con, sync, 'synthetic complete Prozorro sync')
+        second = operational_tasks.reconcile_stale_nazk_tasks_after_prozorro_sync(
+            self.con, sync, 'synthetic repeated Prozorro sync')
+        task = self.con.execute("SELECT status,resolution_code FROM operational_tasks WHERE id=?", (task_id,)).fetchone()
+        check = self.con.execute("SELECT result,workflow_status FROM supplier_nazk_checks WHERE id=11").fetchone()
+        matches = self.con.execute("SELECT nazk_source_id,match_status FROM supplier_nazk_check_matches WHERE check_id=11").fetchall()
+        self.assertEqual(first['cancelled'], 1)
+        self.assertEqual(second['cancelled'], 0)
+        self.assertEqual(tuple(task), ('cancelled', 'no_active_qualifications'))
+        self.assertEqual(tuple(check), ('confirmed', 'needs_review'))
+        self.assertEqual([tuple(row) for row in matches], [('RECORD_B', 'confirmed')])
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM operational_tasks WHERE task_type='nazk_check' AND status='cancelled'").fetchone()[0], 1)
+        operational_tasks.build(self.con, 'post-sync generic rebuild', include_nazk=False)
+        self.assertEqual(self.con.execute(
+            "SELECT COUNT(*) FROM operational_tasks WHERE task_type='nazk_check' AND status NOT IN ('completed','cancelled')"
+        ).fetchone()[0], 0)
+
+        # A repeated materialization with the same factual check cannot reopen
+        # the terminal task, even if qualification data later reappears.
+        self.assertEqual(operational_tasks.materialize_nazk_tasks(
+            self.con, 'repeat synthetic materialization')['created'], 0)
+        self.con.execute("UPDATE registry_contracts SET status='active' WHERE id='RC'")
+        self.assertEqual(operational_tasks.materialize_nazk_tasks(
+            self.con, 'same check after qualification return')['created'], 0)
+        self.assertEqual(self.con.execute(
+            "SELECT COUNT(*) FROM operational_tasks WHERE task_type='nazk_check' AND status NOT IN ('completed','cancelled')"
+        ).fetchone()[0], 0)
+
+    def test_partial_failed_or_incomplete_sync_never_cancels_ready_task(self):
+        for result in (
+                {'frameworks': 1, 'completed': 1, 'errors': [{'framework': 'F', 'error': 'timeout'}]},
+                {'frameworks': 1, 'completed': 1, 'errors': [], 'status': 'failed'},
+                {'frameworks': 2, 'completed': 1, 'errors': []},
+                {'frameworks': 0, 'completed': 0, 'errors': []},
+                {'frameworks': 1, 'completed': 1, 'errors': [], 'officer_assignments_error': 'unavailable'},
+                {'frameworks': 1, 'completed': 1, 'errors': [], 'status': 'partial'}):
+            with self.subTest(result=result):
+                task_id = self._create_ready_nazk_task()
+                self.con.execute("UPDATE registry_contracts SET status='terminated' WHERE id='RC'")
+                outcome = operational_tasks.reconcile_stale_nazk_tasks_after_prozorro_sync(
+                    self.con, result, 'synthetic incomplete sync')
+                self.assertEqual(outcome['cancelled'], 0)
+                self.assertEqual(self.con.execute("SELECT status FROM operational_tasks WHERE id=?", (task_id,)).fetchone()[0],
+                                 'ready_for_document')
+                self.con.execute("DELETE FROM operational_tasks WHERE id=?", (task_id,))
+                self.con.execute("DELETE FROM operational_task_events WHERE task_id=?", (task_id,))
+                self.con.execute("DELETE FROM supplier_nazk_checks WHERE id=11")
+                self.con.execute("DELETE FROM supplier_nazk_check_matches WHERE check_id=11")
+                self.con.execute("UPDATE registry_contracts SET status='active' WHERE id='RC'")
+
+    def test_complete_sync_keeps_tasks_when_supplier_still_has_active_qualification(self):
+        task_id = self._create_ready_nazk_task()
+        outcome = operational_tasks.reconcile_stale_nazk_tasks_after_prozorro_sync(
+            self.con, {'frameworks': 1, 'completed': 1, 'errors': []}, 'synthetic complete sync')
+        self.assertEqual(outcome['cancelled'], 0)
+        self.assertEqual(self.con.execute("SELECT status FROM operational_tasks WHERE id=?", (task_id,)).fetchone()[0],
+                         'ready_for_document')
+
 if __name__=='__main__': unittest.main()

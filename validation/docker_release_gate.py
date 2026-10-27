@@ -42,6 +42,7 @@ def main():
         ["node", "validation/sandbox_supplier_ux.cjs"],
         [sys.executable, str(root / "validation/release_0916_smoke.py")],
         [sys.executable, str(root / "validation/nazk_scheduler_failure_smoke.py")],
+        [sys.executable, str(root / "validation/nazk_recovery_unit_smoke.py")],
         [sys.executable, str(root / "validation/nazk_evidence_migration_smoke.py")],
         [sys.executable, "-m", "unittest", "discover", "-s",
          "validation/local_release_20260911", "-p", "test_nazk_registry_evidence.py", "-v"],
@@ -51,6 +52,7 @@ def main():
         ["node", "validation/appeals_declension_ui.cjs"],
         ["node", "validation/supplier_ux.cjs"],
         [sys.executable, "validation/run_local_release.py", "test_nazk_workflow.py"],
+        [sys.executable, "validation/run_local_release.py", "test_nazk_task_relevance.py"],
         [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
     ]
     for command in commands:

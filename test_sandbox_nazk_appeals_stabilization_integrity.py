@@ -21,7 +21,7 @@ class StabilizationIntegrityTests(unittest.TestCase):
                             if c["variant_id"] == integrity.APPEALS_API_VARIANT_ID)
 
     def test_manifest_composes_both_exact_children_without_rewriting_history(self):
-        self.assertEqual(len(self.contracts), 29)
+        self.assertEqual(len(self.contracts), 31)
         self.assertEqual(self.current["baseline_sha"],
                          "fc719b07f7ce6bd43fcdf9815795f0f2906901e8")
         self.assertEqual(set(self.current["approved_scope"]) - set(self.integrated["approved_scope"]),
@@ -76,9 +76,10 @@ class StabilizationIntegrityTests(unittest.TestCase):
     def test_table_widths_and_non_scope_modules_remain_at_integrated_bytes(self):
         for relative in ("table_widths_ui.js", "operational_tasks.py", "nazk_workflow.py",
                          "scheduler_runtime.py", "halloween.js", "registry_popovers.js"):
-            expected = (self.integrated["product_files"].get(relative) or
-                        self.integrated["guarded_files"].get(relative) or
-                        self.integrated["protected_files"].get(relative))
+            source = self.current if relative == "operational_tasks.py" else self.integrated
+            expected = (source["product_files"].get(relative) or
+                        source["guarded_files"].get(relative) or
+                        source["protected_files"].get(relative))
             self.assertIsNotNone(expected, relative)
             actual = integrity.sha256(integrity.canonical_content(relative,
                                      (ROOT / relative).read_bytes()))

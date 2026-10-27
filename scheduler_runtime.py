@@ -350,22 +350,62 @@ def claim(db_path, job_key: str, *, trigger: str, now: datetime | None = None,
     return owner
 
 
+def lease_is_current(con: sqlite3.Connection, job_key: str, owner_id: str,
+                    *, moment: datetime | None = None) -> bool:
+    """Return whether owner_id still holds an unexpired lease on this connection.
+
+    Call inside the same BEGIN IMMEDIATE transaction as protected writes. That
+    makes checking the fencing token and mutating the target rows one atomic
+    SQLite serialization point against a competing claim().
+    """
+    if not owner_id:
+        return False
+    row = con.execute("SELECT owner_id,lease_until FROM scheduler_job_leases WHERE job_key=?",
+                      (job_key,)).fetchone()
+    if not row or str(row[0]) != str(owner_id):
+        return False
+    try:
+        until = datetime.fromisoformat(str(row[1]).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return until > (moment or utc_now()).astimezone(timezone.utc)
+
+
+def require_current_lease(con: sqlite3.Connection, job_key: str, owner_id: str,
+                          *, moment: datetime | None = None) -> None:
+    """Raise when a worker has been superseded or its lease has expired."""
+    if not lease_is_current(con, job_key, owner_id, moment=moment):
+        raise LeaseLost(f"Scheduler lease lost: {job_key}")
+
+
+class LeaseLost(RuntimeError):
+    """The caller no longer owns the durable scheduler lease."""
+
+
 def renew(db_path, job_key: str, owner_id: str, *, now: datetime | None = None,
-          lease_seconds: int = 180) -> bool:
+          lease_seconds: int = 180, require_current: bool = False) -> bool:
     stamp = (now or utc_now()).astimezone(timezone.utc)
     with closing(sqlite3.connect(db_path, timeout=30)) as con, con:
+        if require_current:
+            # A fenced worker cannot resurrect an expired lease before takeover.
+            return con.execute("""UPDATE scheduler_job_leases SET lease_until=?
+                WHERE job_key=? AND owner_id=? AND lease_until>?""",
+                               (_iso(stamp + timedelta(seconds=lease_seconds)), job_key, owner_id,
+                                _iso(stamp))).rowcount == 1
         return con.execute("UPDATE scheduler_job_leases SET lease_until=? WHERE job_key=? AND owner_id=?",
                            (_iso(stamp + timedelta(seconds=lease_seconds)), job_key, owner_id)).rowcount == 1
 
 
 @contextmanager
-def keepalive(db_path, job_key: str, owner_id: str):
+def keepalive(db_path, job_key: str, owner_id: str, *, fence_expired: bool = False,
+              lease_seconds: int = 180):
     """Renew a long-running job; a killed process releases its lease in <=3 min."""
     stopped = threading.Event()
     def heartbeat():
         while not stopped.wait(30):
             try:
-                if not renew(db_path, job_key, owner_id):
+                if not renew(db_path, job_key, owner_id, lease_seconds=lease_seconds,
+                             require_current=fence_expired):
                     logging.getLogger('pqm.server').error('Scheduler lease ownership lost job=%s', job_key)
                     return
             except Exception:
@@ -380,13 +420,14 @@ def keepalive(db_path, job_key: str, owner_id: str):
 
 
 def finish(db_path, job_key: str, owner_id: str, *, status: str = "ok", error: str = "",
-           now: datetime | None = None) -> bool:
+           now: datetime | None = None, require_current: bool = False) -> bool:
     stamp = (now or utc_now()).astimezone(timezone.utc)
     with closing(sqlite3.connect(db_path, timeout=30, isolation_level=None)) as con:
         migrate(con)
         con.execute("BEGIN IMMEDIATE")
-        lease = con.execute("SELECT owner_id FROM scheduler_job_leases WHERE job_key=?", (job_key,)).fetchone()
-        if not lease or lease[0] != owner_id:
+        lease = con.execute("SELECT owner_id,lease_until FROM scheduler_job_leases WHERE job_key=?", (job_key,)).fetchone()
+        if (not lease or lease[0] != owner_id or
+                (require_current and not lease_is_current(con, job_key, owner_id, moment=stamp))):
             con.rollback()
             return False
         con.execute("DELETE FROM scheduler_job_leases WHERE job_key=? AND owner_id=?", (job_key, owner_id))

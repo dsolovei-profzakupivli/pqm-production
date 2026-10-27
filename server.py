@@ -1706,7 +1706,7 @@ def amcu_blocks_submission(con: sqlite3.Connection, submission_id: str) -> bool:
         "SELECT 1 FROM amcu_registry WHERE DIGITS(offender_code)=? LIMIT 1", (code,)).fetchone())
 
 
-def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
+def rebuild_nazk_tasks(actor: str, *, workflow: str, lease_owner: str | None = None) -> dict:
     """Explicit NAZK-only workflow; no external fetch and no unrelated tasks."""
     if SAFE_MODE and not (SANDBOX_MODE and sandbox_runtime.nazk_read_enabled()):
         return {"skipped": "safe_mode", "created": 0}
@@ -1718,10 +1718,15 @@ def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
         SERVER_LOG.info("NAZK materialization skipped: workflow not explicitly enabled")
         return {"skipped": "nazk_workflow_disabled", "created": 0}
     with db() as con:
+        if lease_owner is not None:
+            con.execute("BEGIN IMMEDIATE")
+            scheduler_runtime.require_current_lease(con, "nazk_registry", lease_owner)
         supplier_nazk = reconcile_active_supplier_nazk(con, apply=True)
         counts = operational_tasks.materialize_nazk_tasks(con, actor)
         counts["supplier_nazk_checks_created"] = sum(bool(item.get("created"))
                                                    for item in supplier_nazk.get("items", []))
+        if lease_owner is not None:
+            scheduler_runtime.require_current_lease(con, "nazk_registry", lease_owner)
         return counts
 
 
@@ -1732,6 +1737,16 @@ def reconcile_prozorro_task_lifecycles(actor: str = "PQM Prozorro qualification 
     with db() as con:
         return {"amcu": operational_tasks.reconcile_amcu_after_qualification_sync(con, actor),
                 "termination": operational_tasks.reconcile_termination_after_qualification_sync(con, actor)}
+
+
+def reconcile_nazk_tasks_after_complete_prozorro_sync(sync_result: dict) -> dict:
+    """Apply NAZK task relevance only after a complete qualification refresh."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        return operational_tasks.reconcile_stale_nazk_tasks_after_prozorro_sync(
+            con, sync_result, "PQM successful Prozorro qualification sync")
 
 
 def api_get(url: str) -> dict:
@@ -2199,6 +2214,7 @@ def sync_all_worker() -> None:
             sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_all_tracked_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
+        result["nazk_task_reconciliation"] = reconcile_nazk_tasks_after_complete_prozorro_sync(result)
         rebuild_operational_tasks()
         SYNC_STATE["message"] = (
             f"Оновлено {result['completed']}/{result['frameworks']} відборів "
@@ -2227,6 +2243,7 @@ def sync_incremental_worker() -> None:
             sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_incremental_active_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
+        result["nazk_task_reconciliation"] = reconcile_nazk_tasks_after_complete_prozorro_sync(result)
         rebuild_operational_tasks()
         SYNC_STATE["message"] = (
             f"Щогодинне оновлення: {result['completed']}/{result['frameworks']} відборів; "
@@ -2251,9 +2268,11 @@ def sync_incremental_worker() -> None:
         SYNC_STATE['running'] = False
 
 
-def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error: str = "") -> None:
+def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error: str = "", *,
+                            require_current: bool = False) -> None:
     try:
-        scheduler_runtime.finish(DB_PATH, job_key, owner, status=status, error=error)
+        scheduler_runtime.finish(DB_PATH, job_key, owner, status=status, error=error,
+                                 require_current=require_current)
     except Exception:
         SERVER_LOG.exception("Cannot finish scheduler lease job=%s owner=%s", job_key, owner)
 
@@ -6674,15 +6693,21 @@ def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=No
         return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
-    owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger, expected_revision=expected_revision)
+    # The upstream fetch can take 900s. Keep the durable claim beyond that
+    # bound so a missed heartbeat cannot start a second fetch beside the first.
+    nazk_lease_seconds = 1200
+    owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger,
+                                    expected_revision=expected_revision,
+                                    lease_seconds=nazk_lease_seconds)
     if not owner:
         return False
-    heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner)
+    heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner,
+                                            fence_expired=True, lease_seconds=nazk_lease_seconds)
     def failed(error):
         # A failed fetch must release the lease/heartbeat without reconciling
         # checks or tasks. Success-only workflow callbacks keep their contract.
         try:
-            _finish_scheduler_lease("nazk_registry", owner, "error", str(error))
+            _finish_scheduler_lease("nazk_registry", owner, "error", str(error), require_current=True)
         finally:
             heartbeat.__exit__(None, None, None)
     def completed():
@@ -6690,16 +6715,18 @@ def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=No
             state = reference_status(DB_PATH).get("nazk", {})
             error = str(state.get("message") or "") if state.get("status") == "error" else ""
             if not error:
-                rebuild_nazk_tasks("PQM NAZK job", workflow="nazk_job")
-            _finish_scheduler_lease("nazk_registry", owner, "error" if error else "ok", error)
+                rebuild_nazk_tasks("PQM NAZK job", workflow="nazk_job", lease_owner=owner)
+            _finish_scheduler_lease("nazk_registry", owner, "error" if error else "ok", error,
+                                    require_current=True)
         except Exception as exc:
-            _finish_scheduler_lease("nazk_registry", owner, "error", str(exc))
+            _finish_scheduler_lease("nazk_registry", owner, "error", str(exc), require_current=True)
             SERVER_LOG.exception("Explicit NAZK workflow failed")
         finally:
             heartbeat.__exit__(None, None, None)
     try:
         heartbeat.__enter__()
-        if start_reference_refresh(DB_PATH, "nazk", on_complete=completed, on_error=failed):
+        if start_reference_refresh(DB_PATH, "nazk", on_complete=completed, on_error=failed,
+                                   lease_owner=owner):
             return True
     except Exception:
         scheduler_runtime.release(DB_PATH, "nazk_registry", owner)

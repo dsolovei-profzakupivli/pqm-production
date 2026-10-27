@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from nazk_registry_evidence import project_decree_fields
@@ -28,6 +28,10 @@ START_LOCK = threading.Lock()
 AMCU_ACTIVE = set()
 AMCU_ERRORS = {}
 AMCU_LOCK = threading.Lock()
+# Process-local worker presence is combined with the durable scheduler lease.
+# The in-memory set alone is never used to infer that another process is idle.
+NAZK_ACTIVE = set()
+NAZK_ACTIVE_LOCK = threading.Lock()
 AMCU_WORKER_TIMEOUT = 300
 AMCU_MAX_BYTES = 25 * 1024 * 1024
 LOG = logging.getLogger("pqm.server")
@@ -97,17 +101,80 @@ def _state(db_path, source, status, message="", count=None, source_updated_at=No
         con.execute(f"UPDATE reference_sync_state SET {','.join(fields)} WHERE source=?", values)
 
 
-def reference_status(db_path):
+def _lease_row(db_path, job_key):
+    try:
+        with _database_connection(db_path) as con:
+            return con.execute("SELECT owner_id,lease_until FROM scheduler_job_leases WHERE job_key=?",
+                               (job_key,)).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).casefold():
+            return None
+        raise
+
+
+def _lease_is_live(row, moment=None):
+    if not row:
+        return False
+    try:
+        until = datetime.fromisoformat(str(row[1]).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return until > (moment or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+
+def reference_status(db_path, *, lease_owner=None):
     with _database_connection(db_path) as con:
         con.row_factory = sqlite3.Row
         result = {r["source"]: dict(r) for r in con.execute("SELECT * FROM reference_sync_state")}
     key = str(Path(db_path).resolve())
+    nazk = result.get("nazk", {})
+    if nazk.get("status") == "running":
+        with NAZK_ACTIVE_LOCK:
+            active_here = key in NAZK_ACTIVE
+        lease = _lease_row(db_path, "nazk_registry")
+        lease_live = _lease_is_live(lease)
+        caller_owns_lease = bool(lease_owner and lease and str(lease[0]) == str(lease_owner))
+        # A live lease is the cross-process signal. Only an expired/missing
+        # lease can be projected as interrupted, unless this request is the
+        # newly claimed owner recovering a persisted stale reference status.
+        if not active_here and (not lease_live or caller_owns_lease):
+            nazk.update(status="error", interrupted=True,
+                        interrupted_from_status="running",
+                        interrupted_message=str(nazk.get("message") or ""),
+                        interrupted_updated_at=str(nazk.get("updated_at") or ""),
+                        message="Попереднє оновлення НАЗК перерване або втратило scheduler lease. Збережений реєстр доступний; повторіть дозволений запуск.")
     state = result.get("amcu", {})
     if state.get("status") == "running" and key not in AMCU_ACTIVE:
         # Read-only projection: no registry/init/reconciliation side effects.
         state.update(status="error", interrupted=True, message=AMCU_ERRORS.get(key) or
                      "Попереднє оновлення перерване (процес завершився або сервер перезапущено). Повторіть оновлення. Збережений реєстр доступний.")
     return result
+
+
+def _state_with_lease(db_path, source, status, message, owner_id, *, count=None,
+                      source_updated_at=None):
+    import scheduler_runtime
+    fields = ["status=?", "message=?", "updated_at=?"]
+    values = [status, message, _now()]
+    if count is not None:
+        fields.append("row_count=?"); values.append(int(count))
+    if source_updated_at is not None:
+        fields.append("source_updated_at=?"); values.append(source_updated_at)
+    values.append(source)
+    with _database_connection(db_path, timeout=60) as con:
+        con.execute("PRAGMA busy_timeout=60000")
+        con.execute("BEGIN IMMEDIATE")
+        scheduler_runtime.require_current_lease(con, "nazk_registry", owner_id)
+        con.execute(f"UPDATE reference_sync_state SET {','.join(fields)} WHERE source=?", values)
+        scheduler_runtime.require_current_lease(con, "nazk_registry", owner_id)
+
+
+def _require_lease(db_path, owner_id):
+    if owner_id is None:
+        return
+    import scheduler_runtime
+    with _database_connection(db_path, timeout=30) as con:
+        scheduler_runtime.require_current_lease(con, "nazk_registry", owner_id)
 
 
 def _fetch(url, timeout=900, max_bytes=None):
@@ -127,7 +194,7 @@ def _fetch(url, timeout=900, max_bytes=None):
         return raw
 
 
-def refresh_nazk(db_path, on_complete=None, on_error=None):
+def refresh_nazk(db_path, on_complete=None, on_error=None, *, lease_owner=None):
     if not LOCK.acquire(blocking=False):
         if on_error:
             on_error("НАЗК: інше оновлення вже виконується")
@@ -136,6 +203,9 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
     failure = ""
     target_attested = False
     phase = "preflight"
+    key = str(Path(db_path).resolve())
+    with NAZK_ACTIVE_LOCK:
+        NAZK_ACTIVE.add(key)
     try:
         if os.environ.get('PQM_SANDBOX') == '1':
             import sandbox_runtime
@@ -143,10 +213,14 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
             if not sandbox_runtime.nazk_read_enabled():
                 raise RuntimeError('STOP: SANDBOX NAZK read is disabled')
         target_attested = True
-        _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
+        if lease_owner is None:
+            _state(db_path, "nazk", "running", "Завантаження реєстру НАЗК")
+        else:
+            _state_with_lease(db_path, "nazk", "running", "Завантаження реєстру НАЗК", lease_owner)
         phase = "fetch"
         raw = (sandbox_runtime.fetch_nazk_bytes(NAZK_URL)
                if os.environ.get('PQM_SANDBOX') == '1' else _fetch(NAZK_URL))
+        _require_lease(db_path, lease_owner)
         phase = "validate"
         payload = json.loads(raw.decode("utf-8-sig"))
         items = payload if isinstance(payload, list) else payload.get("data", payload.get("items", []))
@@ -176,6 +250,9 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
         with _database_connection(db_path) as con:
             con.execute("PRAGMA foreign_keys=ON")
             con.execute("BEGIN IMMEDIATE")
+            if lease_owner is not None:
+                import scheduler_runtime
+                scheduler_runtime.require_current_lease(con, "nazk_registry", lease_owner)
             con.execute("PRAGMA defer_foreign_keys=ON")
             # Legacy schemas fail closed if a linked source vanishes. The
             # explicit evidence-FK migration allows disappearance without
@@ -184,8 +261,14 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
             con.executemany("INSERT INTO nazk_registry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             if con.execute("PRAGMA foreign_key_check").fetchone():
                 raise ValueError("НАЗК: FK-перевірка не пройдена; збережені дані не змінено")
+            if lease_owner is not None:
+                scheduler_runtime.require_current_lease(con, "nazk_registry", lease_owner)
         phase = "status"
-        _state(db_path, "nazk", "ok", "Оновлено", len(rows), _now())
+        if lease_owner is None:
+            _state(db_path, "nazk", "ok", "Оновлено", len(rows), _now())
+        else:
+            _state_with_lease(db_path, "nazk", "ok", "Оновлено", lease_owner,
+                              count=len(rows), source_updated_at=_now())
         succeeded = True
     except Exception as exc:
         failure = str(exc) or type(exc).__name__
@@ -193,16 +276,29 @@ def refresh_nazk(db_path, on_complete=None, on_error=None):
             NAZK_SANDBOX_LOG.error("SANDBOX NAZK refresh failed phase=%s exception_type=%s",
                                    phase, type(exc).__name__)
         if target_attested:
-            _state(db_path, "nazk", "error", str(exc))
+            try:
+                if lease_owner is None:
+                    _state(db_path, "nazk", "error", str(exc))
+                else:
+                    _state_with_lease(db_path, "nazk", "error", str(exc), lease_owner)
+            except Exception:
+                # A superseded worker must never overwrite the current owner's
+                # status while reporting its own failure.
+                LOG.exception("NAZK worker could not persist terminal status after lease validation")
     finally:
         LOCK.release()
-        if succeeded and on_complete:
-            on_complete()
-        elif not succeeded and on_error:
-            on_error(failure or "НАЗК: оновлення не завершено")
+        try:
+            if succeeded and on_complete:
+                on_complete()
+            elif not succeeded and on_error:
+                on_error(failure or "НАЗК: оновлення не завершено")
+        finally:
+            with NAZK_ACTIVE_LOCK:
+                NAZK_ACTIVE.discard(key)
 
 
-def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=None, on_error=None):
+def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=None, on_error=None,
+                             *, lease_owner=None):
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
     import background_jobs
     if background_jobs.disabled():
@@ -215,15 +311,39 @@ def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=
     if source == "amcu":
         return _start_amcu_refresh(db_path, raw, filename, on_complete)
     with START_LOCK:
-        state = reference_status(db_path).get(source, {})
+        state = reference_status(db_path, lease_owner=lease_owner).get(source, {})
         if state.get("status") == "running" or LOCK.locked():
             return False
-        _state(db_path, source, "running", "Підготовка фонового оновлення")
+        with NAZK_ACTIVE_LOCK:
+            NAZK_ACTIVE.add(str(Path(db_path).resolve()))
+        try:
+            if lease_owner is None:
+                _state(db_path, source, "running", "Підготовка фонового оновлення")
+            else:
+                _state_with_lease(db_path, source, "running", "Підготовка фонового оновлення", lease_owner)
+        except Exception:
+            with NAZK_ACTIVE_LOCK:
+                NAZK_ACTIVE.discard(str(Path(db_path).resolve()))
+            raise
         target = refresh_nazk if source == "nazk" else refresh_amcu
         args = (db_path, on_complete, on_error) if source == "nazk" else (db_path, raw, filename)
-        timer = threading.Timer(0.2, target, args=args)
+        kwargs = {"lease_owner": lease_owner} if source == "nazk" else {}
+        timer = threading.Timer(0.2, target, args=args, kwargs=kwargs)
         timer.daemon = True
-        timer.start()
+        try:
+            timer.start()
+        except Exception as exc:
+            with NAZK_ACTIVE_LOCK:
+                NAZK_ACTIVE.discard(str(Path(db_path).resolve()))
+            try:
+                if lease_owner is None:
+                    _state(db_path, source, "error", str(exc))
+                else:
+                    _state_with_lease(db_path, source, "error", str(exc), lease_owner)
+            finally:
+                if on_error:
+                    on_error(str(exc))
+            raise
     return True
 
 

@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -615,6 +616,8 @@ def load_contracts():
     contracts.append(stabilization_v4)
     contracts.append(load_stabilization_v5_contract(stabilization_v4))
     contracts.append(load_dst_hotfix_contract(contracts[-1]))
+    contracts.append(load_dst_recovery_contract(contracts[-1]))
+    contracts.append(load_dst_recovery_qualification_contract(contracts[-1]))
     return contracts
 
 
@@ -951,7 +954,13 @@ def sha256(data):
 def canonical_content(relative, content):
     """Normalize checkout line endings, but never normalize binary templates."""
     if not relative.endswith((".docx", ".webp", ".png", ".jpg", ".jpeg", ".gif", ".zip")):
-        return content.replace(b"\r\n", b"\n")
+        content = content.replace(b"\r\n", b"\n")
+    if relative == "validation/local_release_20260911/sandbox_protocol_integrity_variant.py":
+        # Avoid a self-referential digest while still pinning all loader logic.
+        content = re.sub(rb'DST_RECOVERY_CONTRACT_SHA256 = "[0-9a-f]{64}"',
+                         b'DST_RECOVERY_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
+        content = re.sub(rb'DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256 = "[0-9a-f]{64}"',
+                         b'DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
     return content
 
 
@@ -1528,7 +1537,107 @@ def load_dst_hotfix_contract(previous):
         raise AssertionError("Unexpected DST hotfix scope/baseline")
     return contract
 
+
+# Additive crash recovery and scheduler lease fencing; DST v1 remains immutable.
+DST_RECOVERY_CONTRACT = ROOT / "test_sandbox_dst_hotfix_recovery_v2.json"
+DST_RECOVERY_PARENT_OVERRIDES = ROOT / "validation/fixtures/dst_v5_parent_overrides.zip"
+DST_RECOVERY_CONTRACT_SHA256 = "be7ad2401a1d91c1a55aa47acc51e4914b320cd80b1ba77e43fd2bc6e3004918"
+DST_RECOVERY_VARIANT_ID = "sandbox-dst-hotfix-94c5e37-v2-nazk-recovery"
+DST_RECOVERY_SCOPE = {
+    "recover-stale-nazk-running-state-read-only-and-retry-after-crash",
+    "fence-nazk-registry-replacement-and-task-workflow-by-current-lease-owner",
+    "prevent-expired-scheduler-owner-from-renewing-or-finishing",
+    "keep-nazk-reconciliation-idempotent-after-partial-workflow-retry",
+    "limit-expired-lease-fencing-to-nazk-with-no-change-to-other-jobs",
+}
+DST_RECOVERY_PRODUCT_OVERRIDES = {"server.py", "reference_directories.py"}
+DST_RECOVERY_GUARDED_ADDITIONS = {
+    "validation/nazk_scheduler_failure_smoke.py",
+    "validation/nazk_recovery_unit_smoke.py",
+    "validation/local_release_20260911/sandbox_protocol_integrity_variant.py",
+    "test_sandbox_nazk_recovery_integrity.py",
+    "validation/fixtures/dst_v5_parent_overrides.zip",
+}
+
+
+def load_dst_recovery_contract(previous):
+    raw = DST_RECOVERY_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != DST_RECOVERY_CONTRACT_SHA256:
+        raise AssertionError("Changed pinned NAZK recovery integrity manifest")
+    contract = json.loads(raw.decode("utf-8"))
+    if (set(contract) != set(previous) or
+            contract.get("variant_id") != DST_RECOVERY_VARIANT_ID or
+            contract.get("baseline_sha") != "94c5e37693ef2855aaf9bc848ca2af1b3965cb25" or
+            contract.get("hash_format") != previous.get("hash_format") or
+            set(contract.get("approved_scope", [])) != set(previous["approved_scope"]) | DST_RECOVERY_SCOPE or
+            set(contract.get("product_files", {})) != set(previous["product_files"]) or
+            set(contract.get("guarded_files", {})) != set(previous["guarded_files"]) | DST_RECOVERY_GUARDED_ADDITIONS or
+            set(contract.get("protected_files", {})) != set(previous["protected_files"])):
+        raise AssertionError("NAZK recovery integrity manifest has an unexpected exact scope")
+    return contract
+
+
+DST_RECOVERY_QUALIFICATION_CONTRACT = ROOT / "test_sandbox_dst_hotfix_recovery_integrated_v3.json"
+DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256 = "053c171ac316b6a3f3f736edf398cc595d7bf71074b87ab22aaa8c2e2ca5a5d7"
+DST_RECOVERY_QUALIFICATION_VARIANT_ID = "sandbox-dst-hotfix-9904832-v3-nazk-recovery-qualification"
+DST_RECOVERY_QUALIFICATION_SCOPE = {
+    "reconcile-stale-nazk-tasks-only-after-complete-prozorro-qualification-sync",
+    "never-cancel-nazk-tasks-after-partial-failed-or-empty-sync",
+    "preserve-confirmed-nazk-evidence-and-cancelled-task-terminality",
+}
+DST_RECOVERY_QUALIFICATION_PRODUCT_OVERRIDES = {"server.py"}
+DST_RECOVERY_QUALIFICATION_PRODUCT_ADDITIONS = {"operational_tasks.py"}
+DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS = {
+    "validation/local_release_20260911/test_nazk_task_relevance.py",
+    "test_sandbox_nazk_recovery_integrity.py",
+    "test_sandbox_nazk_recovery_qualification_integrity.py",
+    "validation/fixtures/nazk_recovery_v2_parent_overrides.zip",
+}
+
+
+def load_dst_recovery_qualification_contract(previous):
+    raw = DST_RECOVERY_QUALIFICATION_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != DST_RECOVERY_QUALIFICATION_CONTRACT_SHA256:
+        raise AssertionError("Changed pinned NAZK recovery+qualification integrity manifest")
+    contract = json.loads(raw.decode("utf-8"))
+    if (set(contract) != set(previous) or
+            contract.get("variant_id") != DST_RECOVERY_QUALIFICATION_VARIANT_ID or
+            contract.get("baseline_sha") != "990483222f7e65517befc285516a9d80aee2580d" or
+            contract.get("hash_format") != previous.get("hash_format") or
+            set(contract.get("approved_scope", [])) != set(previous["approved_scope"]) | DST_RECOVERY_QUALIFICATION_SCOPE or
+            set(contract.get("product_files", {})) != set(previous["product_files"]) | DST_RECOVERY_QUALIFICATION_PRODUCT_ADDITIONS or
+            set(contract.get("guarded_files", {})) != set(previous["guarded_files"]) | DST_RECOVERY_QUALIFICATION_GUARDED_ADDITIONS or
+            set(contract.get("protected_files", {})) != set(previous["protected_files"])):
+        raise AssertionError("NAZK recovery+qualification manifest has an unexpected exact scope")
+    return contract
+
 _DST_PARENT_TEMP = None
+_DST_RECOVERY_V2_TEMP = None
+
+def dst_recovery_v2_root():
+    """Rebuild the exact v2 recovery tree from its pinned files plus local overrides."""
+    global _DST_RECOVERY_V2_TEMP
+    if _DST_RECOVERY_V2_TEMP is not None:
+        return Path(_DST_RECOVERY_V2_TEMP.name)
+    import shutil
+    import tempfile
+    _DST_RECOVERY_V2_TEMP = tempfile.TemporaryDirectory(
+        prefix="pqm-dst-recovery-v2-", dir=ROOT / "validation")
+    tree = Path(_DST_RECOVERY_V2_TEMP.name)
+    v2 = next(c for c in load_contracts() if c["variant_id"] == DST_RECOVERY_VARIANT_ID)
+    names = set().union(*(set(v2.get(k, {})) for k in
+                          ("product_files", "guarded_files", "protected_files")))
+    for relative in names:
+        source = ROOT / relative
+        target = tree / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v2_parent_overrides.zip") as archive:
+        for relative in archive.namelist():
+            target = tree / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(relative))
+    return tree
 
 def dst_parent_root():
     """Historical tests run on exact parent bytes, not relaxed current hashes."""
@@ -1536,16 +1645,31 @@ def dst_parent_root():
     if _DST_PARENT_TEMP is not None:
         return Path(_DST_PARENT_TEMP.name)
     import tempfile
-    _DST_PARENT_TEMP = tempfile.TemporaryDirectory(prefix="pqm-dst-parent-")
+    _DST_PARENT_TEMP = tempfile.TemporaryDirectory(prefix="pqm-dst-parent-", dir=ROOT / "validation")
     parent = Path(_DST_PARENT_TEMP.name)
     previous = next(c for c in load_contracts() if c['variant_id'] == STABILIZATION_V5_VARIANT_ID)
-    historical = [c for c in load_contracts() if c['variant_id'] != DST_VARIANT_ID]
+    historical = [c for c in load_contracts() if c['variant_id'] not in
+                  {DST_VARIANT_ID, DST_RECOVERY_VARIANT_ID,
+                   DST_RECOVERY_QUALIFICATION_VARIANT_ID}]
     names = set().union(*(set(c.get(k, {})) for c in historical for k in ('product_files','guarded_files','protected_files')))
-    names.update(p.name for p in ROOT.glob('*.json') if p != DST_CONTRACT)
+    names.update(p.name for p in ROOT.glob('*.json') if p not in
+                 {DST_CONTRACT, DST_RECOVERY_CONTRACT, DST_RECOVERY_QUALIFICATION_CONTRACT})
     with zipfile.ZipFile(ROOT/'validation/fixtures/dst_parent_94c5e37.zip') as archive:
         available=set(archive.namelist())
         for name in names:
             target=parent/name
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_bytes(archive.read(name) if name in available else (ROOT/name).read_bytes())
+    # V5 precedes the DST baseline and had two unchanged files omitted from
+    # the later parent archive. Restore those exact V5 bytes for history checks.
+    with zipfile.ZipFile(DST_RECOVERY_PARENT_OVERRIDES) as archive:
+        for name in archive.namelist():
+            target=parent/name
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(archive.read(name))
+    # Restore operational_tasks.py before the qualification-loss behavior was added.
+    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v2_parent_overrides.zip") as archive:
+        target = parent / "operational_tasks.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(archive.read("operational_tasks.py"))
     return parent
