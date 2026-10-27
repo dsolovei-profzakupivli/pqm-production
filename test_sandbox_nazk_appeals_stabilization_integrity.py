@@ -5,7 +5,7 @@ from pathlib import Path
 
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
-ROOT = integrity.ROOT
+ROOT = integrity.dst_parent_root()
 
 
 class StabilizationIntegrityTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class StabilizationIntegrityTests(unittest.TestCase):
                             if c["variant_id"] == integrity.APPEALS_API_VARIANT_ID)
 
     def test_manifest_composes_both_exact_children_without_rewriting_history(self):
-        self.assertEqual(len(self.contracts), 28)
+        self.assertEqual(len(self.contracts), 29)
         self.assertEqual(self.current["baseline_sha"],
                          "fc719b07f7ce6bd43fcdf9815795f0f2906901e8")
         self.assertEqual(set(self.current["approved_scope"]) - set(self.integrated["approved_scope"]),
@@ -46,7 +46,7 @@ class StabilizationIntegrityTests(unittest.TestCase):
         self.assertFalse(integrity.manifest_tree_matches(self.integrated))
         self.assertFalse(integrity.manifest_tree_matches(self.scroll))
         self.assertFalse(integrity.manifest_tree_matches(self.appeals))
-        self.assertTrue(integrity.manifest_tree_matches(self.current))
+        self.assertTrue(integrity.manifest_tree_matches(self.current, ROOT))
         self.assertTrue(integrity.exact_variant_tree_matches())
 
     def test_every_pinned_product_guard_and_protected_byte_mutation_is_rejected(self):

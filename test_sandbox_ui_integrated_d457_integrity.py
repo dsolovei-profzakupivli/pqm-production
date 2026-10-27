@@ -7,7 +7,7 @@ from pathlib import Path
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
 
-ROOT = integrity.ROOT
+ROOT = integrity.dst_parent_root()
 
 
 class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
@@ -65,7 +65,7 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                                                                if c["variant_id"] == integrity.SCROLL_VARIANT_ID)))
         self.assertFalse(integrity.manifest_tree_matches(next(c for c in integrity.load_contracts()
                                                                if c["variant_id"] == integrity.APPEALS_API_VARIANT_ID)))
-        self.assertTrue(integrity.manifest_tree_matches(self.contract))
+        self.assertTrue(integrity.manifest_tree_matches(self.contract, ROOT))
         self.assertTrue(integrity.exact_variant_tree_matches())
         previous_v2 = next(c for c in integrity.load_contracts()
                            if c["variant_id"] == integrity.UI_CANDIDATE_V2_ID)
@@ -92,7 +92,7 @@ class IntegratedSandboxUiIntegrityTests(unittest.TestCase):
                              if c["variant_id"] == integrity.UI_CANDIDATE_V6_ID)
         self.assertFalse(integrity.manifest_tree_matches(historical_v6))
         for path in self.paths:
-            self.assertTrue(integrity.exact_variant_file_matches(path, (ROOT / path).read_bytes()), path)
+            self.assertTrue(integrity.exact_variant_file_matches(path, (integrity.ROOT / path).read_bytes()), path)
 
     def test_every_single_byte_product_guard_and_protected_mutation_is_rejected(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "validation") as temp:

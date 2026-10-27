@@ -5,7 +5,7 @@ from pathlib import Path
 
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
-ROOT = integrity.ROOT
+ROOT = integrity.dst_parent_root()
 
 
 class NazkScrollIntegrityTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class NazkScrollIntegrityTests(unittest.TestCase):
                          integrity.STABILIZATION_V4_PRODUCT_ADDITIONS |
                          integrity.STABILIZATION_V5_PRODUCT_OVERRIDES |
                          integrity.STABILIZATION_V5_PRODUCT_ADDITIONS)
-        self.assertTrue(integrity.manifest_tree_matches(current))
+        self.assertTrue(integrity.manifest_tree_matches(current, ROOT))
         self.assertTrue(integrity.exact_variant_tree_matches())
         self.assertFalse(integrity.manifest_tree_matches(integrated))
         self.assertFalse(integrity.manifest_tree_matches(scroll))

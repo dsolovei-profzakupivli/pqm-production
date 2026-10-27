@@ -6,7 +6,7 @@ from pathlib import Path
 
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
-ROOT = integrity.ROOT
+ROOT = integrity.dst_parent_root()
 
 
 class ScenarioContextSnapshotIntegrityTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class ScenarioContextSnapshotIntegrityTests(unittest.TestCase):
                          integrity.STABILIZATION_V3_SCOPE)
         self.assertFalse(integrity.manifest_tree_matches(v3))
         self.assertFalse(integrity.manifest_tree_matches(v4))
-        self.assertTrue(integrity.manifest_tree_matches(current))
+        self.assertTrue(integrity.manifest_tree_matches(current, ROOT))
         self.assertFalse(integrity.manifest_tree_matches(v2))
         self.assertTrue(integrity.exact_variant_tree_matches())
         self.assertEqual((ROOT / "test_sandbox_nazk_appeals_stabilization_v2.json").read_bytes(),

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
-ROOT = integrity.ROOT
+ROOT = integrity.dst_parent_root()
 
 
 class AppealsScenarioApiIntegrityTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class AppealsScenarioApiIntegrityTests(unittest.TestCase):
                                if c["variant_id"] == integrity.INTEGRATED_VARIANT_ID)
 
     def test_additive_contract_is_exact_and_historical_integrated_contract_is_unchanged(self):
-        self.assertEqual(len(self.contracts), 28)
+        self.assertEqual(len(self.contracts), 29)
         self.assertEqual(self.current["baseline_sha"], integrity.APPEALS_API_BASELINE)
         self.assertEqual(set(self.appeals["approved_scope"]) - set(self.integrated["approved_scope"]),
                          integrity.APPEALS_API_SCOPE)
@@ -30,7 +30,7 @@ class AppealsScenarioApiIntegrityTests(unittest.TestCase):
                          set(self.integrated["product_files"]) |
                          integrity.APPEALS_API_PRODUCT_OVERRIDES |
                          integrity.APPEALS_API_PRODUCT_ADDITIONS)
-        self.assertTrue(integrity.manifest_tree_matches(self.current))
+        self.assertTrue(integrity.manifest_tree_matches(self.current, ROOT))
         self.assertFalse(integrity.manifest_tree_matches(self.integrated))
         self.assertFalse(integrity.manifest_tree_matches(self.scroll))
         self.assertFalse(integrity.manifest_tree_matches(self.appeals))

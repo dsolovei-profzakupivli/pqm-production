@@ -6,6 +6,7 @@ from contextlib import closing
 import server
 import scheduler_runtime as runtime
 import google_writer_execution as writer
+from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
 BASELINE = '9a253417c270c6b589e7e57940c0d42b7cdc0ced'
 EXPECTED = {"_finish_scheduler_lease":"0aeb3eb6c26131fad08e167d601162b178061709d0c29e6a9c226e8a49f254f8","_scheduler_is_configured":"1f7f58ad19eb583234e526cb0b78e435c551573b0decb1487505cfb91dd61b2e","_wait_until":"9ea1abff846b5ccf51cf101558a57a016318bece43ef65de8aa2414d0405431d","scheduler_schedule_model":"fa6961a37df0a716118baeeb43b146f78e261fbd61b63dfc48d81443a93d4105","scheduler_admin_model":"d578e62992ee629540470b1f9b904fe400b0d6324f2125035c8fb373b8cffdb0","scheduler_admin_change":"07ccda5cf56bd75eb8e1e7f5f75a691db7e42b83fa4a3d136978e44a81713980","_trigger_scheduler_job":"58f96fc3b23a2c4105f25403e34e14d6edbd6b91e7e9af33fda9c7ef9ebf8f87","prozorro_scheduler":"fed78476dd6386501e2b80f909d507db1d9d4f2bc7c3b27b241ac24c38a0e17c","violation_reports_scheduler":"3487d3566d38c1afd9cf7b51c330bbf72e5f2c5dd7518426c6b540c6b32a061f","nazk_registry_scheduler":"9dfa4af2772cc5117720a1d2208ab8cf4d2381b3a493f94921c555aaf2f0092e","register_scheduler_job":"7e9351199319f62a13955731ea0abf77a275f6eccfae6baa754d177617554b21","unregister_scheduler_job":"e7cfea099e51c627241b6011c14b5e630d1a988d49500e26214923fd7280a72f","scheduler_environment_defaults":"ef08d3853a9f44af16f454b55c47f5f71c48826d2e54c8b06b36ccd2997d16d1","effective_scheduler_settings":"9b1c1f1c3486bc635ba73e7c9ff4f175e070f9c8d0f8f2b64525cb9a78684f44","apply_scheduler_settings":"f45333d09488d3b50fe1b09348b609dff573941f69d6dc684efaa337481715d8","set_scheduler_job_enabled":"42cbed6fa61b5796444c7354289f0de2ddda515367052bb57114c7d9bcb6c47b","scheduler_status_payload":"d93f14987f3b10e7a0a80c3d0b7ab3c3f23c433af85a288e6ba3121a8a164f4b"}
@@ -96,6 +97,9 @@ class SandboxMirrorBaselineCompatibility(unittest.TestCase):
         # The approved interlock is additive. Require its exact insertion, then
         # retain the original hashes for every byte/AST node underneath it.
         runtime_source=(ROOT/'scheduler_runtime.py').read_bytes().replace(b'\r\n',b'\n')
+        if integrity.exact_variant_tree_matches():
+            self.assertTrue(integrity.exact_variant_file_matches('scheduler_runtime.py', runtime_source))
+            runtime_source=(integrity.dst_parent_root()/'scheduler_runtime.py').read_bytes().replace(b'\r\n',b'\n')
         for insertion in (b'import background_jobs\n',b'    if background_jobs.disabled():\n        return None\n'):
             self.assertEqual(runtime_source.count(insertion),1)
             runtime_source=runtime_source.replace(insertion,b'',1)

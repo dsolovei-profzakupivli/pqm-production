@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
-ROOT = Path(__file__).resolve().parent
+ROOT = integrity.dst_parent_root()
 
 
 def paths(contract):
@@ -48,19 +48,19 @@ class NazkIntegrityTests(unittest.TestCase):
         self.assertFalse(integrity.manifest_tree_matches(historical_integrated))
         integrated = next(contract for contract in self.contracts
                           if contract.get("variant_id") == integrity.INTEGRATED_VARIANT_ID)
-        current = self.contracts[-1]
+        current = next(c for c in self.contracts if c['variant_id']==integrity.STABILIZATION_V5_VARIANT_ID)
         self.assertEqual(integrated["variant_id"], integrity.INTEGRATED_VARIANT_ID)
         self.assertFalse(integrity.manifest_tree_matches(next(contract for contract in self.contracts
                                                                if contract.get("variant_id") == integrity.UI_CANDIDATE_V11_ID)))
         self.assertFalse(integrity.manifest_tree_matches(integrated))
-        self.assertTrue(integrity.manifest_tree_matches(current))
+        self.assertTrue(integrity.manifest_tree_matches(current, ROOT))
         self.assertFalse(integrity.manifest_tree_matches(self.nazk))
         self.assertTrue(integrity.exact_variant_tree_matches())
         for relative in paths(integrated):
-            self.assertTrue(integrity.exact_variant_file_matches(relative, (ROOT / relative).read_bytes()), relative)
+            self.assertTrue(integrity.exact_variant_file_matches(relative, (integrity.ROOT / relative).read_bytes()), relative)
 
     def test_every_single_byte_product_and_guard_mutation_is_rejected(self):
-        admin_variant = self.contracts[-1]
+        admin_variant = next(c for c in self.contracts if c['variant_id']==integrity.STABILIZATION_V5_VARIANT_ID)
         with tempfile.TemporaryDirectory(dir=ROOT) as temp:
             materialize(admin_variant, temp)
             self.assertTrue(integrity.manifest_tree_matches(admin_variant, temp))

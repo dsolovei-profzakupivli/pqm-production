@@ -7,7 +7,7 @@ from unittest.mock import patch
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
 
-ROOT = integrity.ROOT
+ROOT = integrity.dst_parent_root()
 CONTRACT_FILE = ROOT / 'test_sandbox_admin_officer_link_integrity_v2.json'
 
 
@@ -48,7 +48,7 @@ class AdminOfficerLinkIntegrityTests(unittest.TestCase):
         self.assertEqual(integrity.PREVIEW_BASELINE, integrated['baseline_sha'])
 
     def test_exact_admin_variant_rejects_single_byte_mutations_in_product_and_guards(self):
-        contract = integrity.load_contracts()[-1]
+        contract = next(c for c in integrity.load_contracts() if c['variant_id']==integrity.STABILIZATION_V5_VARIANT_ID)
         with tempfile.TemporaryDirectory(dir=ROOT / 'validation') as temporary:
             tree = Path(temporary)
             paths = set(contract['product_files']) | set(contract['guarded_files']) | set(contract['protected_files'])

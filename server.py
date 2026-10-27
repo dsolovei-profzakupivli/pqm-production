@@ -1016,6 +1016,23 @@ def unicode_casefold(value: str | None) -> str:
     return (value or "").casefold()
 
 
+def _timestamp_us(value) -> int | None:
+    """Exact UTC ordering key; unknown wall timestamps are not guessed as instants."""
+    raw = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+                return None
+            # Calendar-only fallback values retain midnight ordering, without
+            # changing their stored/displayed calendar date.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        elapsed = parsed.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return (elapsed.days * 86400 + elapsed.seconds) * 1000000 + elapsed.microseconds
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=60)
     con.row_factory = sqlite3.Row
@@ -5996,6 +6013,7 @@ def supplier_profile(supplier_code: str) -> dict:
     if not code:
         raise KeyError(supplier_code)
     with db() as con:
+        con.create_function("PQM_TIMESTAMP_US", 1, _timestamp_us, deterministic=True)
         latest_submission_name = latest_supplier_submission_name(con,code)
         summary = con.execute("SELECT * FROM supplier_registry_summary WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         profile = con.execute("SELECT * FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
@@ -6065,12 +6083,14 @@ def supplier_profile(supplier_code: str) -> dict:
                  JOIN json_each(milestone.value,'$.documents') doc
                 WHERE COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
                                NULLIF(json_extract(doc.value,'$.dateModified'),'')) IS NOT NULL
-                ORDER BY COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
-                                  NULLIF(json_extract(doc.value,'$.dateModified'),'')) DESC LIMIT 1),
+                ORDER BY PQM_TIMESTAMP_US(COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
+                                  NULLIF(json_extract(doc.value,'$.dateModified'),''))) DESC,
+                         milestone.key DESC,doc.key DESC LIMIT 1),
               (SELECT NULLIF(json_extract(milestone.value,'$.dateModified'),'')
                  FROM json_each(COALESCE(rc.raw_json,'{}'),'$.milestones') milestone
                 WHERE NULLIF(json_extract(milestone.value,'$.dateModified'),'') IS NOT NULL
-                ORDER BY json_extract(milestone.value,'$.dateModified') DESC LIMIT 1),
+                ORDER BY PQM_TIMESTAMP_US(json_extract(milestone.value,'$.dateModified')) DESC,
+                         milestone.key DESC LIMIT 1),
               NULLIF(json_extract(rc.raw_json,'$.date'),''),NULLIF(q.decision_date,'')
             ) event_date,
             CASE WHEN rc.status='terminated' THEN 'Рішення про виключення'
@@ -6081,7 +6101,7 @@ def supplier_profile(supplier_code: str) -> dict:
           LEFT JOIN qualifications q ON q.id=rc.qualification_id
           WHERE DIGITS(rc.supplier_code)=?), ranked AS (
           SELECT contract_events.*,ROW_NUMBER() OVER (PARTITION BY framework_id
-            ORDER BY COALESCE(event_date,'') DESC,id DESC) rn FROM contract_events)
+            ORDER BY PQM_TIMESTAMP_US(event_date) DESC,id DESC) rn FROM contract_events)
           SELECT id,status,framework_id,framework_title,dk_code,marketplace_url,event_date,event_label FROM ranked
           WHERE rn=1 ORDER BY COALESCE(dk_code,''),COALESCE(framework_title,''),framework_id""".replace(
               "__EFFECTIVE_ACTIVE__", supplier_activity.effective_active_sql('rc','f')), (code,))]
@@ -6710,9 +6730,13 @@ def list_violation_reports(params: dict) -> dict:
     if reason:
         where.append("reason=?"); args.append(reason)
     if date_from:
-        where.append("SUBSTR(date_published,1,10)>=?"); args.append(date_from)
+        start_day = datetime.strptime(date_from, "%Y-%m-%d").date()
+        where.append("PQM_TIMESTAMP_US(date_published)>=?")
+        args.append(_timestamp_us(datetime.combine(start_day, datetime.min.time(), ZoneInfo("Europe/Kyiv")).isoformat()))
     if date_to:
-        where.append("SUBSTR(date_published,1,10)<=?"); args.append(date_to)
+        end_day = datetime.strptime(date_to, "%Y-%m-%d").date() + timedelta(days=1)
+        where.append("PQM_TIMESTAMP_US(date_published)<?")
+        args.append(_timestamp_us(datetime.combine(end_day, datetime.min.time(), ZoneInfo("Europe/Kyiv")).isoformat()))
     if supplier_code:
         where.append("defendant_code=?"); args.append(supplier_code)
     # Keep shared filters separate from the two mutually-exclusive KPI facets.
@@ -6732,11 +6756,14 @@ def list_violation_reports(params: dict) -> dict:
         where.append("authority_code=?"); args.append(authority_code)
     clause = " AND ".join(where)
     with db() as con:
+        con.create_function("PQM_TIMESTAMP_US", 1, _timestamp_us, deterministic=True)
         if response_expired:
             ui_action_summary.install_deadline_function(con, violation_deadline_control,
                                                        datetime.now(ZoneInfo('Europe/Kyiv')))
         total = con.execute(f"SELECT COUNT(*) FROM violation_reports WHERE {clause}", args).fetchone()[0]
-        order_sql = "date_published ASC,report_id ASC" if status == "pending" else "date_published DESC,report_id DESC"
+        direction = "ASC" if status == "pending" else "DESC"
+        order_sql = ("(PQM_TIMESTAMP_US(date_published) IS NULL) ASC,"
+                     f"PQM_TIMESTAMP_US(date_published) {direction},report_id {direction}")
         rows = con.execute(f"""SELECT id,report_id,status,date_created,date_published,date_modified,tender_id,tender_pretty_id,contract_pretty_id,
           author_name,author_code,defendant_name,defendant_code,authority_name,authority_code,reason,description,
           defendant_period_start,defendant_period_end,decision_resolution,decision_description,decision_date,
@@ -6880,10 +6907,28 @@ def _iso_date(value: datetime | None) -> str | None:
     return value.date().isoformat() if value else None
 
 
+def _kyiv_calendar_day(value: datetime):
+    """Aware events use Kyiv days; legacy naive calendar inputs keep their date."""
+    return (value.astimezone(ZoneInfo("Europe/Kyiv")) if value.tzinfo is not None else value).date()
+
+
+def _deadline_instant(value: datetime) -> datetime | None:
+    """Resolve a legacy Kyiv wall deadline only when its instant is unambiguous."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc)
+    kyiv = ZoneInfo("Europe/Kyiv")
+    candidates = set()
+    for fold in (0, 1):
+        instant = value.replace(tzinfo=kyiv, fold=fold).astimezone(timezone.utc)
+        if instant.astimezone(kyiv).replace(tzinfo=None) == value:
+            candidates.add(instant)
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def _calendar_deadline(start: datetime | None, days: int) -> dict:
     if not start:
         return {"calendar_day": None, "weekday": None, "shifted": False, "deadline": None}
-    calendar_day = start + timedelta(days=days)
+    calendar_day = datetime.combine(_kyiv_calendar_day(start), datetime.min.time()) + timedelta(days=days)
     deadline = calendar_day
     while deadline.weekday() >= 5:
         deadline += timedelta(days=1)
@@ -6904,14 +6949,14 @@ def _within_calendar_deadline(moment: datetime | None, deadline_date: str | None
         boundary = datetime.strptime(deadline_date, "%Y-%m-%d").date()
     except ValueError:
         return None
-    return moment.date() <= boundary
+    return _kyiv_calendar_day(moment) <= boundary
 
 
 def _add_working_days(start: datetime | None, days: int) -> str | None:
     """Return the date after `days` Mon-Fri days; weekends are not counted."""
     if not start:
         return None
-    current = start.date()
+    current = _kyiv_calendar_day(start)
     added = 0
     while added < days:
         current += timedelta(days=1)
@@ -6926,17 +6971,14 @@ def _deadline_passed(deadline: str | None, moment: datetime | None = None) -> bo
     raw = str(deadline).strip()
     boundary = _parse_prozorro_date(raw)
     if boundary and ("T" in raw or " " in raw):
-        current = moment or datetime.now().astimezone()
-        if boundary.tzinfo is None:
-            boundary = boundary.replace(tzinfo=current.tzinfo)
-        elif current.tzinfo is None:
-            current = current.replace(tzinfo=boundary.tzinfo)
-        return current >= boundary
+        current = _deadline_instant(moment or datetime.now(timezone.utc))
+        boundary = _deadline_instant(boundary)
+        return bool(current is not None and boundary is not None and current >= boundary)
     try:
         boundary_date = datetime.strptime(raw[:10], "%Y-%m-%d").date()
     except (TypeError, ValueError):
         return False
-    return (moment or datetime.now()).date() > boundary_date
+    return _kyiv_calendar_day(moment or datetime.now(timezone.utc)) > boundary_date
 
 
 def violation_deadline_control(report: dict, moment: datetime | None = None) -> dict:

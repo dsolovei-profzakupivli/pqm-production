@@ -198,8 +198,11 @@ def next_run(spec, moment=None):
         raise ValueError("Timezone required")
     wall = current.replace(tzinfo=None, second=0, microsecond=0)
     if spec["kind"] == "hourly":
-        base = wall.replace(minute=spec["minute"])
-        candidates = (base + timedelta(hours=i) for i in range(50))
+        current_utc = current.astimezone(timezone.utc)
+        candidate = current_utc.replace(minute=spec["minute"], second=0, microsecond=0)
+        if candidate <= current_utc:
+            candidate += timedelta(hours=1)
+        return candidate.astimezone(KYIV)
     else:
         base = wall.replace(hour=spec["hour"], minute=spec["minute"])
         candidates = (base + timedelta(days=i) for i in range(15)
@@ -226,10 +229,10 @@ def catchup_due(spec, moment, last_finished_at):
             return False
         slot = _wall_instant(wall.replace(hour=spec["hour"], minute=spec["minute"]))
     else:
-        candidate = wall.replace(minute=spec["minute"])
-        if candidate > wall:
-            candidate -= timedelta(hours=1)
-        slot = _wall_instant(candidate)
+        current_utc = current.astimezone(timezone.utc)
+        slot = current_utc.replace(minute=spec["minute"], second=0, microsecond=0)
+        if slot > current_utc:
+            slot -= timedelta(hours=1)
     if not slot or slot.astimezone(timezone.utc) > current.astimezone(timezone.utc):
         return False
     try:

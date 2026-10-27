@@ -6,7 +6,7 @@ from pathlib import Path
 
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as integrity
 
-ROOT = integrity.ROOT
+ROOT = integrity.dst_parent_root()
 
 
 class SupplierFilteredZakupivliIntegrityTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class SupplierFilteredZakupivliIntegrityTests(unittest.TestCase):
                          integrity.STABILIZATION_V5_PRODUCT_ADDITIONS)
         self.assertEqual(current["variant_id"], integrity.STABILIZATION_VARIANT_ID)
         self.assertFalse(integrity.manifest_tree_matches(v4))
-        self.assertTrue(integrity.manifest_tree_matches(current))
+        self.assertTrue(integrity.manifest_tree_matches(current, ROOT))
         self.assertTrue(integrity.exact_variant_tree_matches())
 
     def test_link_uses_only_supplier_code_and_safe_general_list_fallback(self):

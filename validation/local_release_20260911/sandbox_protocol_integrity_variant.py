@@ -614,6 +614,7 @@ def load_contracts():
     stabilization_v4 = load_stabilization_v4_contract(stabilization_v3)
     contracts.append(stabilization_v4)
     contracts.append(load_stabilization_v5_contract(stabilization_v4))
+    contracts.append(load_dst_hotfix_contract(contracts[-1]))
     return contracts
 
 
@@ -1501,3 +1502,50 @@ def load_stabilization_v5_contract(previous):
     candidate["guarded_files"].update(delta["guarded_overrides"])
     candidate["guarded_files"].update(delta["guarded_additions"])
     return candidate
+
+
+# Additive DST contract; historical manifest bytes and validation remain intact.
+DST_CONTRACT = ROOT / "test_sandbox_dst_hotfix_v1.json"
+DST_CONTRACT_SHA256 = "492f31af285f84c44ac9aec5619c84564c02efb0d13e5a19d5f30d187a4bff83"
+DST_VARIANT_ID = "sandbox-dst-hotfix-94c5e37-v1"
+DST_ADDITIONS = {"test_google_sandbox_baseline_compatibility.py", "test_sandbox_personal_theme.py", "test_sandbox_dst_hotfix_integrity.py", "validation/local_release_20260911/test_dst_regression.py",
+                 "validation/local_release_20260911/test_dst_sandbox_schedule.py", "validation/fixtures/dst_parent_94c5e37.zip"}
+
+def load_dst_hotfix_contract(previous):
+    raw = DST_CONTRACT.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != DST_CONTRACT_SHA256:
+        raise AssertionError("Changed exact DST hotfix manifest")
+    contract = json.loads(raw)
+    if (set(contract) != set(previous) | {"parent_fixture_sha256", "historical_manifest_sha256"} or
+            contract.get("variant_id") != DST_VARIANT_ID or
+            contract.get("baseline_sha") != "94c5e37693ef2855aaf9bc848ca2af1b3965cb25" or
+            contract.get("hash_format") != previous.get("hash_format") or
+            previous.get("variant_id") != STABILIZATION_V5_VARIANT_ID or
+            set(contract["product_files"]) != set(previous["product_files"]) or
+            set(contract["protected_files"]) != set(previous["protected_files"]) or
+            set(contract["guarded_files"]) != set(previous["guarded_files"]) | DST_ADDITIONS or
+            set(contract["approved_scope"]) != set(previous["approved_scope"]) | {"dst-absolute-chronology-and-kyiv-scheduler"}):
+        raise AssertionError("Unexpected DST hotfix scope/baseline")
+    return contract
+
+_DST_PARENT_TEMP = None
+
+def dst_parent_root():
+    """Historical tests run on exact parent bytes, not relaxed current hashes."""
+    global _DST_PARENT_TEMP
+    if _DST_PARENT_TEMP is not None:
+        return Path(_DST_PARENT_TEMP.name)
+    import tempfile
+    _DST_PARENT_TEMP = tempfile.TemporaryDirectory(prefix="pqm-dst-parent-")
+    parent = Path(_DST_PARENT_TEMP.name)
+    previous = next(c for c in load_contracts() if c['variant_id'] == STABILIZATION_V5_VARIANT_ID)
+    historical = [c for c in load_contracts() if c['variant_id'] != DST_VARIANT_ID]
+    names = set().union(*(set(c.get(k, {})) for c in historical for k in ('product_files','guarded_files','protected_files')))
+    names.update(p.name for p in ROOT.glob('*.json') if p != DST_CONTRACT)
+    with zipfile.ZipFile(ROOT/'validation/fixtures/dst_parent_94c5e37.zip') as archive:
+        available=set(archive.namelist())
+        for name in names:
+            target=parent/name
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(archive.read(name) if name in available else (ROOT/name).read_bytes())
+    return parent
