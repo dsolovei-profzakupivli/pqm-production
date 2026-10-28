@@ -12113,6 +12113,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'document':document,'documents':docs,'event':event},201)
             except KeyError:return self.send_json({'error':'Задачу не знайдено'},404)
             except (ValueError,OSError) as exc:return self.send_json({'error':str(exc)},422)
+        generate_authority=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/nazk-authority-request",parsed.path)
+        if generate_authority:
+            try:
+                payload=self.read_json()
+                if payload:raise ValueError('Дія не приймає template key, path або document context від клієнта')
+                schema=pqm_schema_metadata()
+                with db() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    item=operational_tasks.detail(con,generate_authority.group(1))
+                    document=task_documents.generate_authority(con,item,schema,GENERATED_DOCUMENTS_DIR,self.auth_user)
+                    docs=task_documents.documents(con,item['id'])
+                    event=dict(con.execute('SELECT * FROM operational_task_events WHERE task_id=? ORDER BY id DESC LIMIT 1',(item['id'],)).fetchone())
+                    event['metadata']=json.loads(event['metadata'])
+                return self.send_json({'document':document,'documents':docs,'event':event},201)
+            except KeyError:return self.send_json({'error':'Задачу не знайдено'},404)
+            except (ValueError,OSError) as exc:return self.send_json({'error':str(exc)},422)
         generate_amcu=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/(amcu-exclusion-protocol|termination-exclusion-protocol)",parsed.path)
         if generate_amcu:
             try:

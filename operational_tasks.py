@@ -916,7 +916,7 @@ def task_ui_summary(con, item, tables=None):
         row=con.execute('SELECT * FROM operational_task_blocking_decisions WHERE task_id=?',(task_id,)).fetchone()
         if row:
             decision.update(number=row['protocol_number'],date=row['decision_date'],reference=row['document_url'] or row['prozorro_url'])
-    requests=[]
+    requests=[];authority_requests=[]
     if 'generated_documents' in tables:
         # Local import avoids the document module's dependency on operational_tasks.
         import task_documents
@@ -926,6 +926,8 @@ def task_ui_summary(con, item, tables=None):
                 continue
             if doc.get('document_type')=='nazk_supplier_request':
                 requests.append(doc)
+            elif doc.get('document_type')=='nazk_authority_request':
+                authority_requests.append(doc)
             elif doc.get('document_type') in {'amcu_exclusion_protocol','termination_exclusion_protocol'}:
                 # Same newest-first order used by the task card's documents[0].
                 # Keep distinct protocol types; older versions remain in detail history.
@@ -933,7 +935,8 @@ def task_ui_summary(con, item, tables=None):
                     decision['documents'].append(doc)
                     current_protocol_types.add(doc['document_type'])
     return {'basis_items':basis,'latest_basis_date':next((x['sort_date'] for x in basis if x['sort_date']),None),
-            'result_summary':result,'officer_decision':decision,'supplier_requests':requests}
+            'result_summary':result,'officer_decision':decision,'supplier_requests':requests,
+            'nazk_authority_requests':authority_requests}
 
 
 def qualification_ui_summary(con,item):
