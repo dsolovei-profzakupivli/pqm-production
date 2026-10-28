@@ -3152,6 +3152,7 @@ def list_applications(params: dict) -> dict:
         except (TypeError, ValueError):
             stored_check = {}
         item["document_check_categories"] = document_check_category_summaries(stored_check)
+        item["experience_search"] = experience_search_presentation(stored_check)
         supplier_code = re.sub(r"\D", "", item.get("supplier_code") or "")
         manager_name = " ".join(re.sub(r"[’'`\-]+", " ", (item.get("manager_name") or "").casefold()).split())
         item["amcu_match"] = bool(supplier_code and supplier_code in amcu_codes)
@@ -10100,8 +10101,17 @@ def _discover_contract_summaries(supplier: str, cpv: str | None, page_limit: int
 
 
 def search_supplier_contract_experience(supplier_code: str, cpv_code: str, submitted_at: str,
-                                        submission_id: str = "") -> dict:
-    """Return locally validated neutral candidates; dateModified remains a technical cutoff proxy."""
+                                        submission_id: str = "", *, algorithm_version: int = 4,
+                                        stop_event=None) -> dict:
+    """New searches use v4; explicit v3 is retained for historical replay only."""
+    if algorithm_version == 4:
+        import contract_experience_v4
+        return contract_experience_v4.search(
+            supplier_code, cpv_code, submitted_at,
+            cancelled=stop_event.is_set if stop_event is not None else None,
+        )
+    if algorithm_version != 3:
+        raise ValueError("unsupported_experience_version")
     supplier = _digits(supplier_code)
     cpv = normalize_experience_cpv(cpv_code)
     cutoff = _contract_experience_cutoff(submitted_at)
@@ -10460,6 +10470,22 @@ def document_check_status(checks: list[dict]) -> tuple[dict, str]:
     return counts, status
 
 
+def experience_search_presentation(result: dict) -> dict:
+    """Read-only list projection; never recategorize partial as a negative verdict."""
+    if not isinstance(result, dict):
+        return {}
+    categories = result.get("category_results")
+    category = categories.get("experience") if isinstance(categories, dict) else None
+    checks = category.get("checks", []) if isinstance(category, dict) else result.get("checks", [])
+    checks = checks if isinstance(checks, list) else []
+    check = next((c for c in checks if isinstance(c, dict) and c.get("key") == "contract_experience"), {})
+    coverage = check.get("coverage") if isinstance(check.get("coverage"), dict) else {}
+    return {"status": check.get("search_status", ""),
+            "algorithm_version": check.get("algorithm_version"),
+            "coverage_complete": coverage.get("complete"),
+            "message": check.get("detail", "")}
+
+
 def document_check_category_summaries(result: dict) -> dict:
     stored = result.get("category_results") if isinstance(result, dict) else None
     if isinstance(stored, dict):
@@ -10639,7 +10665,7 @@ def _schedule_contract_experience_retry(submission_id: str) -> bool:
     return True
 
 
-def contract_experience_worker(submission_ids: list[str]) -> None:
+def contract_experience_worker(submission_ids: list[str], *, force: bool = False, stop_event=None) -> None:
     try:
         for submission_id in submission_ids:
             try:
@@ -10656,16 +10682,24 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                     existing = json.loads(row["stored_result"] or "{}")
                 except (TypeError, ValueError):
                     existing = {}
-                if _stored_experience_is_fresh(existing):
+                old_experience = (existing.get("category_results") or {}).get("experience") or {}
+                old_check = next((c for c in old_experience.get("checks", existing.get("checks", []))
+                                  if isinstance(c, dict) and c.get("key") == "contract_experience"), {})
+                historical = int(old_check.get("algorithm_version") or 0) <= 3 and old_check.get("search_status") in {"found", "none"}
+                # A version bump is not permission to rewrite historical checks.
+                # Partial runs require an explicit restart, not an endless timer.
+                if not force and (historical or old_check.get("search_status") == "partial" or _stored_experience_is_fresh(existing)):
                     continue
                 search = search_supplier_contract_experience(
-                    row["supplier_code"], row["dk_code"], row["date_published"] or "", submission_id
+                    row["supplier_code"], row["dk_code"], row["date_published"] or "", submission_id,
+                    algorithm_version=4, stop_event=stop_event,
                 )
                 check = {"key": "contract_experience", "label": "Договори постачальника в Prozorro",
                          "status": "neutral", "detail": f"{search['symbol']} · {search['message']}",
                          "rows": search.get("candidates") or [], "search_status": search.get("status"),
                          "cutoff_note": search.get("cutoff_note", ""),
-                         "algorithm_version": CONTRACT_EXPERIENCE_ALGORITHM_VERSION}
+                         "algorithm_version": search.get("algorithm_version", CONTRACT_EXPERIENCE_ALGORITHM_VERSION),
+                         "coverage": search.get("coverage", {}), "restart": search.get("restart", {})}
                 current = {"submission_id": submission_id, "supplier_name": row["supplier_name"],
                            "supplier_code": row["supplier_code"], "pretty_id": row["pretty_id"],
                            "checks": [check], "selected_categories": ["experience"],
@@ -10673,6 +10707,8 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                            "counts": {"ok": 0, "warning": 0, "error": 0, "neutral": 1},
                            "ready": True, "notice": ""}
                 _store_document_check_result(submission_id, current, "PQM background contract search")
+                if stop_event is not None and stop_event.is_set():
+                    break
                 if search.get("status") == "unavailable":
                     _schedule_contract_experience_retry(submission_id)
                 else:

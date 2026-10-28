@@ -69,7 +69,7 @@ class SandboxNazkRecoveryIntegrityTests(unittest.TestCase):
         integrated = next(item for item in contracts
                           if item["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
         current = contracts[-1]
-        self.assertEqual(len(contracts), 33)
+        self.assertEqual(len(contracts), 34)
         self.assertEqual(integrated["baseline_sha"], "990483222f7e65517befc285516a9d80aee2580d")
         self.assertEqual(set(integrated["approved_scope"]) - set(recovery_v2["approved_scope"]),
                          guard.DST_RECOVERY_QUALIFICATION_SCOPE)

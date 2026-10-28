@@ -19,8 +19,8 @@ class SandboxNazkRecoveryQualificationIntegrityTests(unittest.TestCase):
                              if c["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
         integrated = next(c for c in contracts
                           if c["variant_id"] == guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID)
-        alignment = contracts[-1]
-        self.assertEqual(len(contracts), 33)
+        alignment = next(c for c in contracts if c["variant_id"] == guard.DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID)
+        self.assertEqual(len(contracts), 34)
         self.assertEqual(integrated_v3["variant_id"], guard.DST_RECOVERY_QUALIFICATION_VARIANT_ID)
         self.assertEqual(integrated_v3["baseline_sha"], "990483222f7e65517befc285516a9d80aee2580d")
         self.assertEqual(integrated["variant_id"], guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID)
@@ -47,7 +47,7 @@ class SandboxNazkRecoveryQualificationIntegrityTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw_v4).hexdigest(),
                          guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256)
         self.assertEqual(alignment["variant_id"], guard.DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID)
-        self.assertTrue(guard.manifest_tree_matches(alignment))
+        self.assertTrue(guard.manifest_tree_matches(alignment, guard.experience_parent_root()))
         self.assertEqual(alignment["historical_manifest_sha256"][
             "test_sandbox_dst_hotfix_recovery_integrated_v4.json"],
             guard.DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256)

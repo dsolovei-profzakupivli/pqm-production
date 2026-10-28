@@ -26,7 +26,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
         with patch.object(server, "_contract_experience_http_json",
                           side_effect=[search, self.detail("c1"), self.detail("c2"), self.detail("c3")]):
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["symbol"], "+")
         self.assertEqual(len(result["candidates"]), 3)
@@ -57,7 +57,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
                 search, self.detail("late", "2026-08-26T10:00:00+03:00"),
                 self.detail("breach", termination="Розірвано через порушення")]):
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "none")
         self.assertEqual(result["symbol"], "−")
         self.assertEqual(result["candidates"], [])
@@ -75,7 +75,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
         with patch.object(server, "_contract_experience_http_json",
                           side_effect=[search, *details]) as fetch:
             result = server.search_supplier_contract_experience(
-                "31280027", "44110000-4", "2026-08-27T00:00:00+03:00")
+                "31280027", "44110000-4", "2026-08-27T00:00:00+03:00", algorithm_version=3)
         self.assertEqual([item["contract_id"] for item in result["candidates"]],
                          ["UA-2025-07-03-010253-a-a1", "UA-2025-06-06-006327-a-a1"])
         self.assertIn("/api/contracts/UA-2025-07-03-010253-a-a1", fetch.call_args_list[1].args[0])
@@ -83,9 +83,9 @@ class ContractExperienceSearchTests(unittest.TestCase):
     def test_api_error_is_neutral_and_cached(self):
         with patch.object(server, "_contract_experience_http_json", side_effect=OSError("offline")) as fetch:
             first = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
             second = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(first["status"], "unavailable")
         self.assertEqual(first["symbol"], "−")
         self.assertEqual(second, first)
@@ -118,7 +118,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
         with patch.object(server, "_contract_experience_http_json",
                           side_effect=[search, self.detail("exact")]) as fetch:
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["candidates"][0]["discovery_mode"], "exact")
         self.assertEqual(fetch.call_count, 2)
@@ -128,7 +128,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
         with patch.object(server, "_contract_experience_http_json",
                           side_effect=self.fallback_responses()) as fetch:
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "found")
         row = result["candidates"][0]
         self.assertEqual(row["discovery_mode"], "fallback")
@@ -141,14 +141,14 @@ class ContractExperienceSearchTests(unittest.TestCase):
         responses = self.fallback_responses(supplier="87654321")
         with patch.object(server, "_contract_experience_http_json", side_effect=responses):
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "none")
 
     def test_fallback_rejects_unrelated_cpv(self):
         with patch.object(server, "_contract_experience_http_json",
                           side_effect=self.fallback_responses(candidate_cpv="34351100-3")):
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "none")
 
     def test_lot_resolution_uses_only_award_lot_items(self):
@@ -158,7 +158,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
         )
         with patch.object(server, "_contract_experience_http_json", side_effect=responses):
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["candidates"][0]["resolved_cpvs"], ["44191200-7"])
 
@@ -170,7 +170,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
         with patch.object(server, "_contract_experience_http_json",
                           side_effect=[search, OSError("one detail failed"), self.detail("good")]):
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "found")
         self.assertEqual([row["contract_id"] for row in result["candidates"]], ["UA-CONTRACT-good"])
 
@@ -183,7 +183,7 @@ class ContractExperienceSearchTests(unittest.TestCase):
         with patch.object(server, "_contract_experience_http_json",
                           side_effect=[search, OSError("a"), OSError("b"), empty_fallback]):
             result = server.search_supplier_contract_experience(
-                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00")
+                "12345678", "44190000-8", "2026-08-25T12:00:00+03:00", algorithm_version=3)
         self.assertEqual(result["status"], "unavailable")
 
     def test_cpv_policy_normalizes_and_uses_one_configured_prefix(self):

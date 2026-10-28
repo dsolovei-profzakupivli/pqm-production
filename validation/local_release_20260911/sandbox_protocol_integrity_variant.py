@@ -621,6 +621,7 @@ def load_contracts():
     contracts.append(load_dst_recovery_qualification_contract(contracts[-1]))
     contracts.append(load_dst_recovery_qualification_test_fix_contract(contracts[-1]))
     contracts.append(load_dst_recovery_integrity_alignment_contract(contracts[-1]))
+    contracts.append(load_experience_v4_contract(contracts[-1]))
     return contracts
 
 
@@ -956,7 +957,7 @@ def sha256(data):
 
 def canonical_content(relative, content):
     """Normalize checkout line endings, but never normalize binary templates."""
-    if not relative.endswith((".docx", ".webp", ".png", ".jpg", ".jpeg", ".gif", ".zip")):
+    if not relative.endswith((".docx", ".webp", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".gz")):
         content = content.replace(b"\r\n", b"\n")
     if relative == "validation/local_release_20260911/sandbox_protocol_integrity_variant.py":
         # Avoid a self-referential digest while still pinning all loader logic.
@@ -968,6 +969,8 @@ def canonical_content(relative, content):
                          b'DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
         content = re.sub(rb'DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT_SHA256 = "[0-9a-f]{64}"',
                          b'DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
+        content = re.sub(rb'EXPERIENCE_V4_CONTRACT_SHA256 = "[0-9a-f]{64}"',
+                         b'EXPERIENCE_V4_CONTRACT_SHA256 = "<pinned-manifest-sha256>"', content)
     return content
 
 
@@ -1090,9 +1093,7 @@ def _nazk_server_historical_projection_matches(content, contract, projection_nam
 
 def nazk_server_projection_hashes(content, contract=None):
     """Return exact historical projections only when the approved delta is intact."""
-    contract = contract or next((item for item in load_contracts()
-                                 if item.get("variant_id") ==
-                                 DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID), None)
+    contract = contract or load_contracts()[-1]
     if not contract or not contract.get("server_projection"):
         return None
     if not manifest_tree_matches(contract):
@@ -1869,7 +1870,7 @@ def dst_recovery_v2_root():
         source = ROOT / relative
         target = tree / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        target.write_bytes(experience_parent_bytes(relative))
     with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v2_parent_overrides.zip") as archive:
         for relative in archive.namelist():
             target = tree / relative
@@ -1905,7 +1906,7 @@ def dst_recovery_v4_root():
         source = ROOT / relative
         target = tree / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        target.write_bytes(experience_parent_bytes(relative))
     with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v4_tree_overrides.zip") as archive:
         for relative in archive.namelist():
             target = tree / relative
@@ -1936,7 +1937,7 @@ def dst_parent_root():
         for name in names:
             target=parent/name
             target.parent.mkdir(parents=True,exist_ok=True)
-            target.write_bytes(archive.read(name) if name in available else (ROOT/name).read_bytes())
+            target.write_bytes(archive.read(name) if name in available else experience_parent_bytes(name))
     # V5 precedes the DST baseline and had two unchanged files omitted from
     # the later parent archive. Restore those exact V5 bytes for history checks.
     with zipfile.ZipFile(DST_RECOVERY_PARENT_OVERRIDES) as archive:
@@ -1950,3 +1951,69 @@ def dst_parent_root():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(archive.read("operational_tasks.py"))
     return parent
+
+
+# Additive experience v4. Historical contracts/hashes above are unchanged.
+EXPERIENCE_V4_CONTRACT_SHA256 = "eecccef2c810b62c88e4c860958e5c8fb8147681063160bce253f2834f992f19"
+EXPERIENCE_V4_ID = "sandbox-experience-search-v4-c246edef"
+EXPERIENCE_V4_SCOPE = {"bounded-cpv-family-search-with-honest-coverage", "canonical-exact-and-fallback-predicates",
+                       "literal-supplier-identifiers", "preserve-historical-v3-with-explicit-restart",
+                       "neutral-partial-presentation-and-persistence", "offline-19-case-regression-and-adversarial-bounds"}
+EXPERIENCE_V4_PRODUCTS = {"contract_experience_v4.py", "experience_cpv_codes.json", "test_contract_experience_v4.py",
+                          "test_contract_experience_v4_integrity.py", "experience_v4_fixtures/audit.json.gz"}
+EXPERIENCE_V4_OVERRIDES = {"server.py", "app.js", "test_sandbox_appeals_scenario_api_integrity.py",
+                           "test_sandbox_nazk_appeals_stabilization_integrity.py", "test_sandbox_dst_hotfix_integrity.py",
+                           "test_sandbox_nazk_preview_integrity.py", "test_sandbox_nazk_recovery_integrity.py",
+                           "test_sandbox_nazk_recovery_qualification_integrity.py",
+                           "validation/local_release_20260911/sandbox_protocol_integrity_variant.py"}
+_EXPERIENCE_PARENT_TEMP = None
+
+
+def load_experience_v4_contract(previous):
+    path = ROOT / "test_contract_experience_v4_integrity.json"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    if sha256(raw) != EXPERIENCE_V4_CONTRACT_SHA256:
+        raise AssertionError("Experience v4 manifest changed")
+    contract = json.loads(raw)
+    if (contract["variant_id"] != EXPERIENCE_V4_ID or
+            contract["baseline_sha"] != "c246edefaa676d137d3f38d40f18d039f7b5bac2" or
+            set(contract["approved_scope"]) != set(previous["approved_scope"]) | EXPERIENCE_V4_SCOPE or
+            contract["parent_manifest_sha256"] != DST_RECOVERY_INTEGRITY_ALIGNMENT_CONTRACT_SHA256):
+        raise AssertionError("Experience v4 scope or immutable parent changed")
+    for section in ("product_files", "guarded_files", "protected_files"):
+        additions = EXPERIENCE_V4_PRODUCTS if section == "product_files" else {
+            "experience_v4_fixtures/parent_overrides.zip",
+            "validation/local_release_20260911/test_contract_experience_search.py"} if section == "guarded_files" else set()
+        if set(contract[section]) != set(previous[section]) | additions:
+            raise AssertionError("Experience v4 file set changed")
+        for relative in set(previous[section]) - EXPERIENCE_V4_OVERRIDES:
+            if contract[section][relative] != previous[section][relative]:
+                raise AssertionError("Experience v4 changed unrelated pinned bytes: " + relative)
+    for relative, expected in contract["historical_manifest_sha256"].items():
+        if sha256((ROOT / relative).read_bytes().replace(b"\r\n", b"\n")) != expected:
+            raise AssertionError("Historical manifest changed: " + relative)
+    return contract
+
+
+def experience_parent_bytes(relative):
+    """Exact baseline bytes for historical fixtures; never mask current checks."""
+    with zipfile.ZipFile(ROOT / "experience_v4_fixtures/parent_overrides.zip") as archive:
+        if relative in archive.namelist():
+            return archive.read(relative)
+    return (ROOT / relative).read_bytes()
+
+
+def experience_parent_root():
+    global _EXPERIENCE_PARENT_TEMP
+    if _EXPERIENCE_PARENT_TEMP is not None:
+        return Path(_EXPERIENCE_PARENT_TEMP.name)
+    import tempfile
+    _EXPERIENCE_PARENT_TEMP = tempfile.TemporaryDirectory(prefix="pqm-experience-parent-", dir=ROOT / "validation")
+    tree = Path(_EXPERIENCE_PARENT_TEMP.name)
+    contract = next(c for c in load_contracts() if c["variant_id"] == DST_RECOVERY_INTEGRITY_ALIGNMENT_VARIANT_ID)
+    names = set().union(*(set(contract.get(k, {})) for k in ("product_files", "guarded_files", "protected_files")))
+    for relative in names:
+        target = tree / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(experience_parent_bytes(relative))
+    return tree
