@@ -39,11 +39,15 @@ jobs:
         shell: bash
         env:
           NODE_PATH: ${{ runner.temp }}/pqm-playwright/node_modules
+          PQM_BROWSER_EVIDENCE_DIR: ${{ runner.temp }}/pqm-chat-messages-evidence
         run: |
+          set -euo pipefail
           test "$(git rev-parse HEAD)" = "$(cat ci-evidence/tested-sha.txt)"
+          mkdir -p "$PQM_BROWSER_EVIDENCE_DIR"
           node validation/appeals_justification_browser.cjs
           node validation/appeals_declension_card_browser.cjs
           node validation/protocol_names_card_browser.cjs
+          node validation/chat_messages_browser.cjs
       - name: Build release image
         shell: bash
         run: |

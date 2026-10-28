@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('fs'),path=require('path'),http=require('http'),assert=require('assert/strict');
 const {chromium}=require('playwright');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'evidence');
+const root=path.resolve(__dirname,'..'),out=process.env.PQM_BROWSER_EVIDENCE_DIR||path.join(root,'evidence');
 const html=fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'');
 const bootstrap=`
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],API='/api';

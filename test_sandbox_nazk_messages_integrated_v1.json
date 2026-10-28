@@ -9,6 +9,7 @@
     "preserve_historical_manifests_and_exact_mutation_guards"
   ],
   "files": {
+    ".github/workflows/release-checks.yml": "ce0ce1ff1a68b8581707a945e7c762ca122cc7fc9dc438f9399b012e4bd7ac50",
     "app.js": "de93439c293a399c792c709112bb19af5849d505e710c95a039fa20f5f29f042",
     "artifacts/nazk_authority_request_samples/Запит_до_НАЗК_ФОП_Салій_зразок.docx": "3933a251a7ad3384292fbd645845b7dd4f8fc48db316cf130f6deceffb9f7247",
     "artifacts/nazk_authority_request_samples/Запит_до_НАЗК_юридична_особа_синтетичний_зразок.docx": "684a77fa979b1d3e39b5a01ff22a0b7ade280c9b6cd10017f893ea156d4985c2",
@@ -39,7 +40,7 @@
     "test_sandbox_messages_integrity_v1.json": "1bb3bdbe99b3f041b6bc6dbdfaf4768a5b21f75c84d7f4a6a61351726a731143",
     "test_sandbox_nazk_appeals_stabilization_integrity.py": "f92462ff3ab32c3f3254e6c707c3212e3bc4fd944c3a747dfeb1329b10a63902",
     "test_sandbox_nazk_appeals_stabilization_v3_integrity.py": "e0636982ac04957edf3068e3c2b16192628b1ab1e64de0f039e2900f3a513e0f",
-    "test_sandbox_nazk_messages_integrated_integrity.py": "331e12eb83ad50badfc59ff534fadf1379c3dc2743937f1bbfa684be47b60fa2",
+    "test_sandbox_nazk_messages_integrated_integrity.py": "0b8bf6e8717d3c82e8e7c1e9b48357828c8d0719f0f0e7a435771df2c6c92189",
     "test_sandbox_nazk_preview_integrity.py": "7a8a59fe4153c7682e77cd945a40754e0da57339de163f38f510ec04a2a85dae",
     "test_sandbox_nazk_recovery_integrity.py": "3182a296d583f8340cfba3edac98ce5e716dab6ba67a5381ea96a7a25ef7dee3",
     "test_sandbox_nazk_recovery_qualification_integrity.py": "d33d7174455a7bc52812f40a4df7a8a3586e4027721cc8fcef50401372fc1bbc",
@@ -47,7 +48,7 @@
     "test_sandbox_smoke_nazk_authority_v1.json": "2f7e9d77e79dba530f629a26dda0190ca4b99b13f4fe6dd3f2e3ec2cc7a069a7",
     "test_sandbox_web_smoke_nazk_authority_integrity.py": "f3b1a31a9e30c1328321fe38382c0d2560907ce93ad764b5504cfaa7ee45fae6",
     "test_sandbox_web_smoke_nazk_authority_v1.json": "11568322cdba00e178fe9de42d0fcc60009bd75648bcf5e7da4cf01f834b3acf",
-    "validation/chat_messages_browser.cjs": "18d45d957b23eb4bce906558794a39c84afbac66346a38a9c303a42d811f13a0",
+    "validation/chat_messages_browser.cjs": "d4cb7bcd44d3e04aa62f2218dabc5bcdbc236dec50fca0b218e3d8ac00f0813c",
     "validation/fixtures/messages_parent_c246edef.zip": "2fc0787617767048d92870559d4654dd989e356a898ef58c06015453ebaf71ad",
     "validation/fixtures/messages_v1_test_parent.zip": "b4985d7d629b6503bd47cd76f99b570f75c32f2285e360b6f6274dd2f924dab5",
     "validation/fixtures/nazk_authority_parent_c246.zip": "b521d0f2b75a9feafa6bd8bbaa99fd8031e385aa0db8637d6d593bd3267f5ff8",
@@ -63,5 +64,5 @@
     "validation/web_smoke.py": "e59790a36cc4cc24f1476597800c4d96f8c7536eda212530a33bc5a3b9ff39e6"
   },
   "integrity_test_file": "test_sandbox_nazk_messages_integrated_integrity.py",
-  "integrity_test_sha256": "331e12eb83ad50badfc59ff534fadf1379c3dc2743937f1bbfa684be47b60fa2"
+  "integrity_test_sha256": "0b8bf6e8717d3c82e8e7c1e9b48357828c8d0719f0f0e7a435771df2c6c92189"
 }

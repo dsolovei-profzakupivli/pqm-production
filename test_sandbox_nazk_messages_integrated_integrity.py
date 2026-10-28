@@ -8,13 +8,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST_NAME = 'test_sandbox_nazk_messages_integrated_v1.json'
-MANIFEST_SHA256 = '74c50657b7475a43c445d7321376541a06151191f57dbdac616ccb4167fa6a5e'
+MANIFEST_SHA256 = '09974dd9d59b41439b873a334325d9aa33e755d81d8c5e357992696b5556d41e'
 VARIANT_ID = 'pqm-sandbox-nazk-messages-integrated-v1'
 BASELINE_SHA = 'c246edefaa676d137d3f38d40f18d039f7b5bac2'
 NAZK_CANDIDATE_SHA = 'd0bb9eaa323210183081c6605bd292d6443d5f70'
 MESSAGES_CANDIDATE_SHA = 'aa350c5cf65adf3d436c9d64d43efae82b8cd846'
 INTEGRITY_TEST = 'test_sandbox_nazk_messages_integrated_integrity.py'
 EXPECTED_FILES = {
+    '.github/workflows/release-checks.yml',
     'app.js',
     'artifacts/nazk_authority_request_samples/Запит_до_НАЗК_ФОП_Салій_зразок.docx',
     'artifacts/nazk_authority_request_samples/Запит_до_НАЗК_юридична_особа_синтетичний_зразок.docx',
@@ -68,7 +69,7 @@ EXPECTED_FILES = {
     'validation/sandbox_smoke.py',
     'validation/web_smoke.py',
 }
-TEXT_SUFFIXES = {'.css', '.html', '.js', '.json', '.md', '.py', '.txt', '.yaml', '.yml'}
+TEXT_SUFFIXES = {'.cjs', '.css', '.html', '.js', '.json', '.md', '.py', '.txt', '.yaml', '.yml'}
 
 
 def digest(content):
