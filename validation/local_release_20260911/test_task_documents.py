@@ -229,6 +229,7 @@ class TaskDocumentTests(unittest.TestCase):
             'warning', 'decline_p49_1_2', 'decline_p49_3', 'application_protocol',
             'nazk_supplier_request', 'amcu_exclusion_protocol',
             'termination_exclusion_protocol', 'decline_individual_review',
+            'nazk_authority_request',
         })
         self.assertTrue(by_key[td.KEY]['validation']['can_activate_canonical'])
         amcu_runtime=by_key[td.AMCU_PROTOCOL_KEY]['validation']

@@ -21,7 +21,7 @@ class NazkPreviewIntegrityTests(unittest.TestCase):
         previous=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V11_ID)
         preview=next(c for c in contracts if c['variant_id']==integrity.PREVIEW_VARIANT_ID)
         scenario=next(c for c in contracts if c['variant_id']==integrity.UI_CANDIDATE_V12_ID)
-        self.assertEqual(len(contracts),33)
+        self.assertEqual(len(contracts),35)
         self.assertEqual(current['variant_id'],integrity.STABILIZATION_VARIANT_ID)
         self.assertEqual(current['baseline_sha'],integrity.SCROLL_BASELINE)
         self.assertEqual(current['baseline_sha'],integrity.APPEALS_API_BASELINE)

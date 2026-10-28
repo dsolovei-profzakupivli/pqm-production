@@ -1,0 +1,31 @@
+{
+  "variant_id": "pqm_sandbox_nazk_authority_request_v1",
+  "baseline_sha": "c246edefaa676d137d3f38d40f18d039f7b5bac2",
+  "product_files": {
+    "app.js": "f4ad6b1ccfa5d1ff009949ed0144f27877318da0118fb982429ffd0a1714f0ec",
+    "metadata/runtime_templates.v1.json": "9377079f4c45d535600bb508bd78f420d73583e5e0810c89f449e8d38cffa1b5",
+    "metadata/template_fields.v1.json": "82b2b147e988513379540ea77979b0e2d401f58c7c5b9f3cc5a0a542b966acbc",
+    "operational_tasks.py": "ff5b0bcc70cd3d5bc466ead21ff0c1d1a8e8f23a9c1d18c9e5d3736818f3f91c",
+    "protocol_template.py": "3a170052383d554bad01da7572f7cf3d039e5c399a1bc50162a9091bf974155f",
+    "server.py": "c87feb434f539bb47686d3a2aaba33cb7fcffec25df5a604109b36745c462597",
+    "task_documents.py": "480642806e15f2645185df07e4083492770dac58a5b73e1c4320117be01a1a8b"
+  },
+  "approved_documents": {
+    "templates/nazk_authority_request.docx": "c5649e036601364eb9a3fbe37cd49cfea0a4b9d3c8f9696ca0684f490b6801f5",
+    "templates/nazk_supplier_request.docx": "1be3b5804af401eb8a87a7b35c9a798850ddaf3b11b08495c763ba2eccb83b77",
+    "artifacts/nazk_authority_request_samples/Запит_до_НАЗК_ФОП_Салій_зразок.docx": "3933a251a7ad3384292fbd645845b7dd4f8fc48db316cf130f6deceffb9f7247",
+    "artifacts/nazk_authority_request_samples/Запит_до_НАЗК_юридична_особа_синтетичний_зразок.docx": "684a77fa979b1d3e39b5a01ff22a0b7ade280c9b6cd10017f893ea156d4985c2",
+    "artifacts/rendered/Запит_до_НАЗК_ФОП_Салій_зразок.pdf": "d4c07697095701fb7a93dcfe27375efd0315ab03de081b8039177892c0b824f6",
+    "artifacts/rendered/Запит_до_НАЗК_юридична_особа_синтетичний_зразок.pdf": "3b7b2139726190061d162121fedf3744d54c7440ca244b1405cdbb05240005ee",
+    "artifacts/rendered/nazk_authority_request.pdf": "21ed90acb10dfdcd4d853b1dfbbf6be5cc92449c48f1cd2180472ce32fa11bc5"
+  },
+  "guarded_files": {
+    "nazk_workflow.py": "84d4011450f481dd59a0996d707c9d4fed4cbf2b16de9c503539b488743c9023",
+    "supplier_activity.py": "fcaa076eb3df8051c2ac9fbf0bb8d562f6e6947eacab195f1d63d8377b4452a5",
+    "scheduler_runtime.py": "c2f38141b2f44e32ca94c71f5f0306a2172a69ca265d1c33a935ef88c1bfa752",
+    "validation/fixtures/nazk_authority_parent_c246.zip": "b521d0f2b75a9feafa6bd8bbaa99fd8031e385aa0db8637d6d593bd3267f5ff8",
+    "validation/local_release_20260911/test_task_documents.py": "3b0fb0fd0ba1e168baa600f1d3db70625f4bd98441fdc59083df97764b1a91ef",
+    "validation/local_release_20260911/test_nazk_authority_request.py": "4602437637b8df0cf0ef0aca78c69b70662955c431f60fab1bd95e37ab647b59",
+    "validation/run_local_release.py": "a245e909dedab9d5a170a9de1421f091729ec5e102a356aac9d577c27b8eafef"
+  }
+}

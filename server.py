@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import background_jobs
 import auth_access
+import chat_annotations
 import table_widths
 import protocol_supplier_names
 import document_quotes
@@ -425,7 +426,7 @@ def auth_accounts() -> dict[str, dict]:
 
 
 def mutation_allowed(role: str, method: str, path: str) -> bool:
-    if path in {"/api/account", "/api/account/avatar"} or path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
+    if path in {"/api/account", "/api/account/avatar"} or path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read|messages/\d+/marks)", path):
         return role in AUTH_ROLES
     # Account-owned presentation preferences only; never a business-data mutation.
     if method == 'POST' and path == '/api/history-columns' and role in AUTH_ROLES:
@@ -1662,6 +1663,7 @@ def init_db() -> None:
             con.execute("ALTER TABLE supplier_nazk_check_documents ADD COLUMN prozorro_document_id TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS ix_supplier_nazk_documents_submission ON supplier_nazk_check_documents(submission_id)")
         auth_access.migrate(con)
+        chat_annotations.migrate(con)
         table_widths.migrate(con)
         formed_protocols.migrate(con)
         operational_tasks.migrate(con)
@@ -10816,7 +10818,8 @@ class Handler(BaseHTTPRequestHandler):
             if session and session["expires_at"] > time.time() and accounts.get(session["username"], {}).get("active", False):
                 seen_now = time.time(); session["last_seen"] = seen_now
                 if (seen_now - float(session.get("last_seen_persisted") or 0) >= 60
-                        and not (self.command == "GET" and path == "/api/operational-tasks/nazk-preview")):
+                        and not (self.command == "GET" and (path == "/api/operational-tasks/nazk-preview"
+                             or re.fullmatch(r"/api/chats/\d+/messages",path)))):
                     session["last_seen_persisted"] = seen_now
                     try:
                         with db() as con:
@@ -11141,22 +11144,26 @@ class Handler(BaseHTTPRequestHandler):
             chat_id=int(message_match.group(1))
             with db() as con:
                 if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
-                rows=con.execute("SELECT * FROM chat_messages WHERE chat_id=? ORDER BY id LIMIT 300",(chat_id,)).fetchall()
+                try:
+                    rows,pagination,known_updates=chat_annotations.select_messages(con,chat_id,self.auth_user,urllib.parse.parse_qs(parsed.query))
+                except chat_annotations.ChatError as exc:
+                    return self.send_json({'error':str(exc)},exc.status)
                 positions={r["username"]:int(r["last_read_message_id"] or 0) for r in con.execute(
                     "SELECT username,last_read_message_id FROM chat_members WHERE chat_id=?",(chat_id,))}
                 items=[]
-                for row in rows:
+                for row in [*rows,*known_updates]:
                     item=dict(row); reads=[v for k,v in positions.items() if k!=row["sender_username"]]
                     item["read_by_all"]=bool(reads) and all(v>=row["id"] for v in reads)
                     item["attachments"]=[dict(x) for x in con.execute(
                         "SELECT id,filename,content_type,size FROM chat_attachments WHERE message_id=?",(row["id"],))]
+                    item["marks"]=chat_annotations.marks(con,row["id"])
                     item["submission"]=None
                     if row["submission_id"]:
-                        submission=con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,f.pretty_id framework_pretty_id
+                        submission=con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,f.dk_code,f.pretty_id framework_pretty_id
                           FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id WHERE s.id=?""",(row["submission_id"],)).fetchone()
                         item["submission"]=dict(submission) if submission else {"id":row["submission_id"]}
                     items.append(item)
-                return self.send_json({"items":items})
+                return self.send_json({"items":items[:len(rows)],"updates":items[len(rows):],**pagination})
         attachment_match=re.fullmatch(r"/api/chats/attachments/(\d+)",parsed.path)
         if attachment_match:
             with db() as con:
@@ -12113,6 +12120,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'document':document,'documents':docs,'event':event},201)
             except KeyError:return self.send_json({'error':'Задачу не знайдено'},404)
             except (ValueError,OSError) as exc:return self.send_json({'error':str(exc)},422)
+        generate_authority=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/nazk-authority-request",parsed.path)
+        if generate_authority:
+            try:
+                payload=self.read_json()
+                if payload:raise ValueError('Дія не приймає template key, path або document context від клієнта')
+                schema=pqm_schema_metadata()
+                with db() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    item=operational_tasks.detail(con,generate_authority.group(1))
+                    document=task_documents.generate_authority(con,item,schema,GENERATED_DOCUMENTS_DIR,self.auth_user)
+                    docs=task_documents.documents(con,item['id'])
+                    event=dict(con.execute('SELECT * FROM operational_task_events WHERE task_id=? ORDER BY id DESC LIMIT 1',(item['id'],)).fetchone())
+                    event['metadata']=json.loads(event['metadata'])
+                return self.send_json({'document':document,'documents':docs,'event':event},201)
+            except KeyError:return self.send_json({'error':'Задачу не знайдено'},404)
+            except (ValueError,OSError) as exc:return self.send_json({'error':str(exc)},422)
         generate_amcu=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/(amcu-exclusion-protocol|termination-exclusion-protocol)",parsed.path)
         if generate_amcu:
             try:
@@ -12242,6 +12265,16 @@ class Handler(BaseHTTPRequestHandler):
                 con.executemany("INSERT INTO chat_members(chat_id,username,joined_at) VALUES (?,?,?)",
                     [(chat_id,name,stamp) for name in all_members])
             return self.send_json({"id":chat_id},201)
+        mark_match=re.fullmatch(r"/api/chats/(\d+)/messages/(\d+)/marks",parsed.path)
+        if mark_match:
+            payload=self.read_json()
+            if not isinstance(payload,dict): return self.send_json({'error':'Некоректна позначка'},400)
+            try:
+                with db() as con:
+                    result=chat_annotations.change(con,int(mark_match[1]),int(mark_match[2]),self.auth_user,payload)
+                return self.send_json({'marks':result})
+            except chat_annotations.ChatError as exc:
+                return self.send_json({'error':str(exc)},exc.status)
         send_match=re.fullmatch(r"/api/chats/(\d+)/messages",parsed.path)
         if send_match:
             chat_id=int(send_match.group(1)); payload=self.read_json(); body=str(payload.get("body") or "").strip()[:10000]
@@ -12265,11 +12298,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"id":message_id},201)
         read_match=re.fullmatch(r"/api/chats/(\d+)/read",parsed.path)
         if read_match:
-            chat_id=int(read_match.group(1))
+            chat_id=int(read_match.group(1)); payload=self.read_json()
+            if not isinstance(payload,dict) or ('message_id' in payload and (type(payload['message_id']) is not int or payload['message_id']<0)):
+                return self.send_json({'error':'Некоректне повідомлення'},400)
             with db() as con:
                 if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
                 latest=con.execute("SELECT COALESCE(MAX(id),0) FROM chat_messages WHERE chat_id=?",(chat_id,)).fetchone()[0]
-                con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
+                latest=min(latest,payload.get('message_id',latest))
+                con.execute("UPDATE chat_members SET last_read_message_id=MAX(last_read_message_id,?) WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
             return self.send_json({"read":True,"message_id":latest})
         if parsed.path == '/api/history-columns':
             try:
