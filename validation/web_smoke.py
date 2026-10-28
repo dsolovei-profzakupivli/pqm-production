@@ -79,7 +79,7 @@ class WebAcceptance(unittest.TestCase):
         templates=self.request('/api/admin/templates')[1]
         expected_template_keys = {
             'warning', 'decline_p49_1_2', 'decline_p49_3', 'application_protocol',
-            'nazk_supplier_request', 'amcu_exclusion_protocol', 'termination_exclusion_protocol',
+            'nazk_supplier_request', 'nazk_authority_request', 'amcu_exclusion_protocol', 'termination_exclusion_protocol',
             'decline_individual_review',
         }
         actual_template_keys = {item['key'] for item in templates['items']}
