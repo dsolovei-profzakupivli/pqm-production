@@ -12,7 +12,7 @@ ROOT=guard.ROOT
 class SandboxDstHotfixIntegrityTests(unittest.TestCase):
     def test_exact_new_tree_and_unchanged_historical_contracts(self):
         contracts=guard.load_contracts()
-        self.assertEqual(len(contracts),34)
+        self.assertEqual(len(contracts),35)
         current=next(c for c in contracts if c['variant_id']==guard.DST_VARIANT_ID)
         self.assertEqual(current['variant_id'],guard.DST_VARIANT_ID)
         self.assertEqual(current['baseline_sha'],'94c5e37693ef2855aaf9bc848ca2af1b3965cb25')

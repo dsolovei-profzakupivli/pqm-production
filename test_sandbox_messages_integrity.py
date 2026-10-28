@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import zipfile
 import messages_integrity as messages
+import messages_crlf_test_integrity as crlf_contract
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as guard
 
 ROOT=guard.ROOT
@@ -16,13 +17,15 @@ ROOT=guard.ROOT
 class MessagesIntegrityTests(unittest.TestCase):
     def test_exact_additive_variant_and_immutable_history(self):
         contracts=guard.load_contracts()
-        self.assertEqual(34,len(contracts))
-        current=contracts[-1]
+        self.assertEqual(35,len(contracts))
+        current=contracts[-2]
         self.assertEqual(messages.VARIANT,current['variant_id'])
         self.assertEqual(messages.BASELINE,current['baseline_sha'])
-        self.assertTrue(guard.manifest_tree_matches(current))
+        self.assertTrue(guard.manifest_tree_matches(current,crlf_contract.parent_tree(ROOT)))
+        self.assertFalse(guard.manifest_tree_matches(current))
+        self.assertTrue(guard.manifest_tree_matches(contracts[-1]))
         historical=messages.historical_guard(ROOT)
-        self.assertEqual(contracts[:-1],historical.load_contracts())
+        self.assertEqual(contracts[:-2],historical.load_contracts())
         self.assertTrue(historical.manifest_tree_matches(historical.load_contracts()[-1]))
         for path in ROOT.glob('*.json'):
             if path.name in current['parent_files']:

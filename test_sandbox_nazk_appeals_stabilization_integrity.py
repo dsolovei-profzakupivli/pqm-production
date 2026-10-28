@@ -21,7 +21,7 @@ class StabilizationIntegrityTests(unittest.TestCase):
                             if c["variant_id"] == integrity.APPEALS_API_VARIANT_ID)
 
     def test_manifest_composes_both_exact_children_without_rewriting_history(self):
-        self.assertEqual(len(self.contracts), 34)
+        self.assertEqual(len(self.contracts), 35)
         self.assertEqual(self.current["baseline_sha"],
                          "fc719b07f7ce6bd43fcdf9815795f0f2906901e8")
         self.assertEqual(set(self.current["approved_scope"]) - set(self.integrated["approved_scope"]),

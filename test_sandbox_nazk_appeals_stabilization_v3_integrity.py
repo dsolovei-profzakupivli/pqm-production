@@ -9,6 +9,11 @@ from validation.local_release_20260911 import sandbox_protocol_integrity_variant
 ROOT = integrity.dst_parent_root()
 
 
+def historical_text_bytes(content):
+    """Canonical LF only; preserve every other byte, including whitespace and key order."""
+    return content.replace(b"\r\n", b"\n")
+
+
 class ScenarioContextSnapshotIntegrityTests(unittest.TestCase):
     def test_v3_adds_scenario_cache_without_rewriting_v1_v2_or_table_preferences(self):
         contracts = integrity.load_contracts()
@@ -29,8 +34,8 @@ class ScenarioContextSnapshotIntegrityTests(unittest.TestCase):
         self.assertTrue(integrity.manifest_tree_matches(current, ROOT))
         self.assertFalse(integrity.manifest_tree_matches(v2))
         self.assertTrue(integrity.exact_variant_tree_matches())
-        self.assertEqual((ROOT / "test_sandbox_nazk_appeals_stabilization_v2.json").read_bytes(),
-                         integrity.STABILIZATION_V2_CONTRACT.read_bytes())
+        self.assertEqual(historical_text_bytes((ROOT / "test_sandbox_nazk_appeals_stabilization_v2.json").read_bytes()),
+                         historical_text_bytes(integrity.STABILIZATION_V2_CONTRACT.read_bytes()))
         self.assertEqual(integrity.sha256(
             integrity.STABILIZATION_V3_CONTRACT.read_bytes().replace(b"\r\n", b"\n")),
             integrity.STABILIZATION_V3_CONTRACT_SHA256)

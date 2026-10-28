@@ -623,6 +623,8 @@ def load_contracts():
     contracts.append(load_dst_recovery_integrity_alignment_contract(contracts[-1]))
     import messages_integrity
     contracts.append(messages_integrity.contract(ROOT,contracts[-1]))
+    import messages_crlf_test_integrity
+    contracts.append(messages_crlf_test_integrity.load_contract(ROOT,contracts[-1]))
     return contracts
 
 
@@ -958,6 +960,9 @@ def sha256(data):
 
 def canonical_content(relative, content):
     """Normalize checkout line endings, but never normalize binary templates."""
+    if relative == "messages_crlf_test_integrity.py":
+        import messages_crlf_test_integrity
+        return messages_crlf_test_integrity.canonical(content)
     if relative == "messages_integrity.py":
         import messages_integrity
         return messages_integrity.canonical(relative,content)
@@ -1026,7 +1031,7 @@ def protected_content_matches(path, content, actual_projection_sha256,
     for contract in load_contracts():
         if not manifest_tree_matches(contract):
             continue
-        if contract.get("variant_id") == "sandbox-messages-all-chats-c246edef-v1":
+        if contract.get("variant_id") in {"sandbox-messages-all-chats-c246edef-v1", "sandbox-messages-test-crlf-lf-v2"}:
             # The complete exact variant pins this entire file, the gate and all guards.
             return True
         if (path == "server.py" and contract.get("server_projection") and

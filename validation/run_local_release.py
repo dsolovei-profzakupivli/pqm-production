@@ -40,7 +40,8 @@ def main():
                      root/'validation/nazk_recovery_unit_smoke.py')
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
-        for fixture_name in ('messages_parent_c246edef.zip',
+        for fixture_name in ('messages_v1_test_parent.zip',
+                             'messages_parent_c246edef.zip',
                              'protocol_integrity_history.zip',
                              'nazk_integrity_baseline_de77401.zip',
                              'column_widths_baseline_4625498.zip',
