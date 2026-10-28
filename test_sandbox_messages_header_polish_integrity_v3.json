@@ -1,0 +1,14 @@
+{
+  "variant_id": "pqm-sandbox-messages-header-polish-v3",
+  "baseline_sha": "abb1964a8bf5b07c6882d1c119068bdbe7f8b9bf",
+  "files": {
+    "chat_annotations.css": "6efe23fc02f1135e0ba3f0aa8b1ae57ea4ded24b394a17a756ba8a3251c9ea7a",
+    "validation/chat_messages_browser.cjs": "84dfb8618917aa71bdca3d7c149c4ac6ce55bba809115fbe48278e50c982951d",
+    "validation/run_local_release.py": "f359860b85d537a6c410f63b6bae0e211426642067904a14f27c56a24b6d68c3",
+    "validation/run_messages_search_header_v2_integrity.py": "f7636ad3664ce958097455e624cc9a6b1a0008c46554365afd911681f53c20c8",
+    "validation/fixtures/messages_search_header_v2_overrides.zip": "58a8f3cab5308e9a2b90d6cf1603ed8eb84f1e9ea7a73854fa2c642276a8a221",
+    "test_sandbox_messages_header_polish_integrity_v3.py": "23dfd295575f9af3b89d14c7fd55227823293115340ba62f64d79d227110fbea"
+  },
+  "integrity_test_file": "test_sandbox_messages_header_polish_integrity_v3.py",
+  "integrity_test_sha256": "23dfd295575f9af3b89d14c7fd55227823293115340ba62f64d79d227110fbea"
+}
