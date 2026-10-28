@@ -16,13 +16,19 @@ class ChatAnnotationTests(unittest.TestCase):
         self.con = self.connect()
         self.con.execute('CREATE TABLE authorized_officers(id INTEGER PRIMARY KEY)')
         auth_access.migrate(self.con)
+        self.con.executescript('''
+          CREATE TABLE frameworks(id TEXT PRIMARY KEY,dk_code TEXT);
+          CREATE TABLE submissions(id TEXT PRIMARY KEY,supplier_name TEXT,supplier_code TEXT,framework_id TEXT);
+          INSERT INTO frameworks VALUES ('framework-target','15610000-7');
+          INSERT INTO submissions VALUES ('submission-target','ФОП Заклевський Віталій Леонідович','2908003312','framework-target');
+        ''')
         for id in (7, 42):
             self.con.execute('INSERT INTO chat_threads VALUES (?,?,?,?,?,?)',
                              (id, 'Довільний чат', 1, 'alice', 'old', 'old'))
             for user in ('alice','bob'):
                 self.con.execute('INSERT INTO chat_members VALUES (?,?,?,0)', (id,user,'old'))
             self.con.execute('INSERT INTO chat_messages VALUES (?,?,?,?,?,?)',
-                             (id,id,'alice','Перевірити заявку','000-id','original'))
+                             (id,id,'alice','Перевірити заявку','submission-target' if id==7 else '000-id','original'))
         self.con.commit()
         chat.migrate(self.con)
 
@@ -110,6 +116,21 @@ class ChatAnnotationTests(unittest.TestCase):
     def test_unicode_search_and_current_chat(self):
         self.assertEqual([7],[row['id'] for row in self.select(search='ПЕРЕВІРИТИ')[0]])
         self.assertEqual([],self.select(search='немає')[0])
+
+    def test_search_finds_linked_application_fields_across_unloaded_history(self):
+        # The target is older than the default first page and must be found by SQL search.
+        self.con.executemany('INSERT INTO chat_messages VALUES (?,7,?,?,?,?)',
+            [(100+i,'bob',f'Не пов’язане повідомлення {i}','','old') for i in range(210)])
+        self.con.commit()
+        for term in ('15610000-7','2908003312','Заклевський','Віталій','submission-target'):
+            rows,meta,_=self.select(search=term)
+            self.assertEqual([7],[row['id'] for row in rows],term)
+            self.assertEqual(1,meta['total'],term)
+        rows,_,_=self.select(search='15610000-7 * 2908003312 * Заклевський Віталій')
+        self.assertEqual([7],[row['id'] for row in rows])
+        self.assertEqual([],self.select(search='Заклевський',room=42)[0])
+        self.change({'kind':'support','active':True})
+        self.assertEqual([7],[row['id'] for row in self.select('support',search='2908003312')[0]])
 
     def test_annotation_survives_reconnect_and_is_shared(self):
         self.change({'kind':'support','active':True})

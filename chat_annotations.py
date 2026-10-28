@@ -1,5 +1,6 @@
 """Chat-scoped annotations. Reads never migrate, mark read, or mutate messages."""
 from datetime import datetime, timezone
+import re
 
 REACTIONS = {'support', 'seen'}
 WORK_STATES = {'working', 'done', ''}
@@ -101,10 +102,24 @@ def select_messages(con, chat_id, username, params):
         raise ChatError('Некоректна сторінка') from None
     where, args = ['m.chat_id=?'], [chat_id]
     query = str(params.get('search', [''])[0]).strip()[:200]
-    if query:
+    # Search every message in this chat before pagination. Each query token may
+    # match the message body or the structured application linked to it.
+    terms = re.findall(r'[^\W_]+(?:-[^\W_]+)*', query, flags=re.UNICODE)
+    if query and not terms:
+        terms = [query]
+    if terms:
         con.create_function('chat_casefold', 1, lambda value: str(value or '').casefold(), deterministic=True)
-        where.append('instr(chat_casefold(m.body),chat_casefold(?))>0')
-        args.append(query)
+        for term in terms[:24]:
+            folded = 'chat_casefold(?)'
+            where.append(f'''(instr(chat_casefold(m.body),{folded})>0
+              OR instr(chat_casefold(m.submission_id),{folded})>0
+              OR EXISTS (SELECT 1 FROM submissions s
+                LEFT JOIN frameworks f ON f.id=s.framework_id
+                WHERE s.id=m.submission_id AND (
+                  instr(chat_casefold(s.supplier_code),{folded})>0
+                  OR instr(chat_casefold(s.supplier_name),{folded})>0
+                  OR instr(chat_casefold(f.dk_code),{folded})>0)))''')
+            args.extend([term] * 5)
     if selected in REACTIONS:
         where.append('EXISTS (SELECT 1 FROM chat_reactions r WHERE r.message_id=m.id AND r.kind=?)')
         args.append(selected)

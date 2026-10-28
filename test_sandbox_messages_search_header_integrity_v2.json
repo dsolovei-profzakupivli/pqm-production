@@ -1,0 +1,18 @@
+{
+  "variant_id": "pqm-sandbox-messages-search-header-v2",
+  "baseline_sha": "eafa12a59ad5a382d1accd972bf50d0f26c8b8bc",
+  "files": {
+    "chat_annotations.css": "ab5290e7bec4171c557eb13fe3959dcf1d7cd63cd20c2852f00283773366983e",
+    "chat_annotations.py": "de1e83254ea22ea8d5c4823baad13df406bad60b49c0071688c707c823af5eb7",
+    "index.html": "0d54c2e0f0fb40720803dbc2d3154e8d661e2aa7a564f7800eec9c971e53bb0c",
+    "validation/chat_messages_browser.cjs": "4dcd25a5cb4e32b94f1c7bdb211e7434a68b3d044c4cdcf6ad227c6ca8c19f82",
+    "validation/fixtures/messages_integrated_v1_overrides.zip": "78287b12633f82c3a366e2377d35eec4a0b96ecba28f2bfd5ea3e79982ea7928",
+    "validation/local_release_20260911/test_chat_annotations.py": "eca36ae75222f2548f867dfa32277279a914db977a73bc405a49b9ad56da1f93",
+    "validation/local_release_20260911/test_chat_annotations_http.py": "42afa34cbe9fb6350a66e58e34f650c48d6a74700a84933e32cccde3707449a8",
+    "validation/run_integrated_messages_v1_integrity.py": "fb2c9811ae705ce122bcb881a2bf4f0b59e3faffb52dc9af5609fbdbdea89c63",
+    "validation/run_local_release.py": "e8a16b8a7c2f227e5b9792f578ae5b01dadb4f159dc163e4d4d04223fda2a990",
+    "test_sandbox_messages_search_header_integrity_v2.py": "151b2a203d6d546d46242479f5c82b2837b184e269308e7a6e456cee022f28e8"
+  },
+  "integrity_test_file": "test_sandbox_messages_search_header_integrity_v2.py",
+  "integrity_test_sha256": "151b2a203d6d546d46242479f5c82b2837b184e269308e7a6e456cee022f28e8"
+}

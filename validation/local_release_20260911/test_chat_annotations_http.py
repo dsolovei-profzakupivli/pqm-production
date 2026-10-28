@@ -103,6 +103,23 @@ class ChatAnnotationsHttpTests(unittest.TestCase):
         self.assertEqual(200,status);self.assertEqual([81],[row['id'] for row in data['items']])
         self.assertEqual('Перевірити',data['items'][0]['body']);self.assertEqual('old',data['items'][0]['created_at'])
 
+    def test_search_uses_linked_application_fields_without_cross_chat_leak(self):
+        with closing(sqlite3.connect(self.path)) as con:
+            con.executescript('''
+              INSERT INTO chat_messages VALUES (83,71,'bob','Історичне без реквізитів','target','old');
+              INSERT INTO chat_threads VALUES (72,'Інший чат',1,'alice','old','old');
+              INSERT INTO chat_members VALUES (72,'alice','old',0);
+              INSERT INTO chat_messages VALUES (84,72,'bob','Інше повідомлення','target','old');
+            ''');con.commit()
+        for term in ('03220000-9','00123456','СИНТЕТИЧНИЙ','target'):
+            status,data=self.call('/api/chats/71/messages?search='+term)
+            self.assertEqual(200,status,data)
+            self.assertEqual({81,83},{row['id'] for row in data['items']},term)
+        status,data=self.call('/api/chats/71/messages?mark=working&search=00123456')
+        self.assertEqual(200,status);self.assertEqual([],data['items'])
+        status,data=self.call('/api/chats/72/messages?search=00123456')
+        self.assertEqual(200,status);self.assertEqual([84],[row['id'] for row in data['items']])
+
     def test_session_authorized_get_does_not_persist_presence(self):
         with closing(sqlite3.connect(self.path)) as con:
             con.execute("INSERT INTO auth_users(username,password_hash,role,created_at,updated_at,created_by) VALUES ('alice','synthetic','officer','old','old','test')");con.commit()

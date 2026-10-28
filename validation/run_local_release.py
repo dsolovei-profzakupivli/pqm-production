@@ -33,6 +33,10 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_sandbox_nazk_recovery_integrity',
     'test_sandbox_nazk_recovery_qualification_integrity',
     'test_sandbox_nazk_scroll_integrity',
+    'test_sandbox_messages_integrity',
+    'test_sandbox_nazk_messages_integrated_integrity',
+    'test_nazk_authority_request_integrity',
+    'test_messages_historical_line_endings',
     'test_sandbox_personal_theme',
     'test_sandbox_ui_integrated_d457_integrity',
 }
@@ -70,7 +74,8 @@ def main():
         # destination/safety smoke helper; include it in the disposable tree
         # so exact-tree and adversarial mutation checks see the same fixture.
         for helper_name in ('sandbox_editable_smoke.py', 'nazk_scheduler_failure_smoke.py',
-                            'nazk_recovery_unit_smoke.py', 'sandbox_smoke.py', 'web_smoke.py'):
+                            'nazk_recovery_unit_smoke.py', 'sandbox_smoke.py', 'web_smoke.py',
+                            'run_integrated_messages_v1_integrity.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
@@ -93,7 +98,8 @@ def main():
                              'nazk_recovery_testfix_parent_override.zip',
                              'nazk_recovery_baseline_990483_server.py',
                              'nazk_recovery_test_v2_compat.zip',
-                             'nazk_recovery_v4_tree_overrides.zip')
+                             'nazk_recovery_v4_tree_overrides.zip',
+                             'messages_integrated_v1_overrides.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -147,6 +153,9 @@ def main():
             if mode=='historical_integrity' or not full_candidate_run:
                 return 0 if result.wasSuccessful() else 1
             candidate_ok=result.wasSuccessful()
+            v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_integrated_messages_v1_integrity.py')],
+                cwd=old_cwd, check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -165,7 +174,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
