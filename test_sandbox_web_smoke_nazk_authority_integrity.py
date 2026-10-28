@@ -23,6 +23,12 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def sha256_matches(data, expected):
+    lf = data.replace(b'\r\n', b'\n')
+    crlf = lf.replace(b'\n', b'\r\n')
+    return expected in {sha256(data), sha256(lf), sha256(crlf)}
+
+
 def smoke_path():
     candidates = []
     for entry in sys.path:
@@ -60,7 +66,7 @@ def expected_keys(source):
 def contract_matches(source, manifest):
     try:
         return (
-            sha256(source) == manifest['smoke_sha256']
+            sha256_matches(source, manifest['smoke_sha256'])
             and expected_keys(source) == set(manifest['expected_template_keys'])
             and sha256(ast.dump(method_node(source), include_attributes=False).encode())
                 == manifest['protected_method_ast_sha256']
@@ -72,7 +78,7 @@ def contract_matches(source, manifest):
 def read_manifest(root=ROOT):
     root = Path(root)
     raw = (root / MANIFEST_NAME).read_bytes()
-    if sha256(raw) != MANIFEST_SHA256:
+    if not sha256_matches(raw, MANIFEST_SHA256):
         raise AssertionError('web smoke additive manifest hash mismatch')
     manifest = json.loads(raw)
     if set(manifest) != {'variant_id', 'parent_sha', 'smoke_path', 'smoke_sha256',
@@ -84,6 +90,16 @@ def read_manifest(root=ROOT):
 
 
 class SandboxWebSmokeNazkAuthorityIntegrityTests(unittest.TestCase):
+    def test_lf_and_crlf_source_forms_are_equivalent_but_content_edits_are_not(self):
+        manifest = read_manifest()
+        source = smoke_path().read_bytes()
+        lf = source.replace(b'\r\n', b'\n')
+        crlf = lf.replace(b'\n', b'\r\n')
+        self.assertTrue(contract_matches(lf, manifest))
+        self.assertTrue(contract_matches(crlf, manifest))
+        self.assertFalse(contract_matches(source + b' ', manifest))
+        self.assertFalse(contract_matches(source[1:], manifest))
+
     def test_exact_additive_manifest_and_smoke_source(self):
         manifest = read_manifest()
         self.assertEqual(manifest['smoke_path'], 'validation/web_smoke.py')
@@ -118,6 +134,18 @@ class SandboxWebSmokeNazkAuthorityIntegrityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
             folder = Path(temporary)
             (folder / MANIFEST_NAME).write_bytes((ROOT / MANIFEST_NAME).read_bytes() + b' ')
+            with self.assertRaisesRegex(AssertionError, 'manifest hash mismatch'):
+                read_manifest(folder)
+
+    def test_changed_manifest_json_value_is_rejected(self):
+        read_manifest()
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            folder = Path(temporary)
+            raw = (ROOT / MANIFEST_NAME).read_bytes()
+            changed = raw.replace(b'sandbox-web-smoke-nazk-authority-v1',
+                                  b'sandbox-web-smoke-nazk-authority-v2', 1)
+            self.assertNotEqual(raw, changed)
+            (folder / MANIFEST_NAME).write_bytes(changed)
             with self.assertRaisesRegex(AssertionError, 'manifest hash mismatch'):
                 read_manifest(folder)
 

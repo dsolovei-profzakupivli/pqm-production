@@ -16,15 +16,25 @@ ROOT = history.ROOT
 MANIFEST_RELATIVE = 'validation/fixtures/nazk_authority_request_v1.json'
 MANIFEST_SHA256 = '81d7ccba8c000eb7bd585280e64db342b6c90d825fcf217ba0e7c0db37474eaf'
 BASELINE_ARCHIVE = 'validation/fixtures/nazk_authority_parent_c246.zip'
+TEXT_SUFFIXES = {'.css', '.html', '.js', '.json', '.md', '.py', '.txt', '.yaml', '.yml'}
 
 
 def sha256(content):
     return hashlib.sha256(content).hexdigest()
 
 
+def sha256_matches(content, expected, *, text=False):
+    hashes = {sha256(content)}
+    if text:
+        lf = content.replace(b'\r\n', b'\n')
+        crlf = lf.replace(b'\n', b'\r\n')
+        hashes.update((sha256(lf), sha256(crlf)))
+    return expected in hashes
+
+
 def read_manifest(root=ROOT):
     raw = (Path(root) / MANIFEST_RELATIVE).read_bytes()
-    if sha256(raw) != MANIFEST_SHA256:
+    if not sha256_matches(raw, MANIFEST_SHA256, text=True):
         raise AssertionError('NAZK authority-request additive manifest hash mismatch')
     manifest = json.loads(raw)
     if (manifest.get('variant_id') != 'pqm_sandbox_nazk_authority_request_v1'
@@ -37,10 +47,11 @@ def manifest_tree_matches(manifest, root):
     for section in ('product_files', 'approved_documents', 'guarded_files'):
         for relative, expected in manifest.get(section, {}).items():
             try:
-                actual = sha256((Path(root) / relative).read_bytes())
+                content = (Path(root) / relative).read_bytes()
             except OSError:
                 return False
-            if actual != expected:
+            if not sha256_matches(content, expected,
+                                  text=Path(relative).suffix.lower() in TEXT_SUFFIXES):
                 return False
     return True
 
@@ -53,6 +64,28 @@ def function_ast(source, names):
 
 
 class NazkAuthorityRequestIntegrityTests(unittest.TestCase):
+    def test_crlf_and_lf_have_the_same_pinned_text_identity(self):
+        manifest = read_manifest()
+        for section in ('product_files', 'approved_documents', 'guarded_files'):
+            for relative, expected in manifest[section].items():
+                if Path(relative).suffix.lower() not in TEXT_SUFFIXES:
+                    continue
+                content = (ROOT / relative).read_bytes()
+                lf = content.replace(b'\r\n', b'\n')
+                crlf = lf.replace(b'\n', b'\r\n')
+                with self.subTest(file=relative):
+                    self.assertTrue(sha256_matches(lf, expected, text=True))
+                    self.assertTrue(sha256_matches(crlf, expected, text=True))
+
+    def test_content_addition_deletion_and_json_value_mutation_are_rejected(self):
+        raw = (ROOT / MANIFEST_RELATIVE).read_bytes()
+        self.assertFalse(sha256_matches(raw + b'X', MANIFEST_SHA256, text=True))
+        self.assertFalse(sha256_matches(raw[1:], MANIFEST_SHA256, text=True))
+        changed_value = raw.replace(b'c246edefaa676d137d3f38d40f18d039f7b5bac2',
+                                    b'd246edefaa676d137d3f38d40f18d039f7b5bac2', 1)
+        self.assertNotEqual(raw, changed_value)
+        self.assertFalse(sha256_matches(changed_value, MANIFEST_SHA256, text=True))
+
     def test_exact_additive_manifest_and_approved_docx_gold_masters(self):
         manifest = read_manifest()
         self.assertEqual(set(manifest), {'variant_id', 'baseline_sha', 'product_files',
