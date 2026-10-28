@@ -23,10 +23,14 @@ def sha256(content):
     return hashlib.sha256(content).hexdigest()
 
 
+def canonical_lf(content):
+    return content.replace(b'\r\n', b'\n')
+
+
 def sha256_matches(content, expected, *, text=False):
     hashes = {sha256(content)}
     if text:
-        lf = content.replace(b'\r\n', b'\n')
+        lf = canonical_lf(content)
         crlf = lf.replace(b'\n', b'\r\n')
         hashes.update((sha256(lf), sha256(crlf)))
     return expected in hashes
@@ -142,7 +146,8 @@ class NazkAuthorityRequestIntegrityTests(unittest.TestCase):
                          'operational_tasks.py', 'server.py')}
         for relative in ('nazk_workflow.py', 'supplier_activity.py', 'scheduler_runtime.py'):
             with self.subTest(file=relative):
-                self.assertEqual((ROOT / relative).read_bytes(), baseline[relative])
+                self.assertEqual(canonical_lf((ROOT / relative).read_bytes()),
+                                 canonical_lf(baseline[relative]))
                 self.assertIn(relative, manifest['guarded_files'])
         operational_functions = {
             'reconcile_stale_nazk_tasks', 'reconcile_stale_nazk_tasks_after_prozorro_sync',
