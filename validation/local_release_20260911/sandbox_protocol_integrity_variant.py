@@ -621,6 +621,8 @@ def load_contracts():
     contracts.append(load_dst_recovery_qualification_contract(contracts[-1]))
     contracts.append(load_dst_recovery_qualification_test_fix_contract(contracts[-1]))
     contracts.append(load_dst_recovery_integrity_alignment_contract(contracts[-1]))
+    import messages_integrity
+    contracts.append(messages_integrity.contract(ROOT,contracts[-1]))
     return contracts
 
 
@@ -956,6 +958,9 @@ def sha256(data):
 
 def canonical_content(relative, content):
     """Normalize checkout line endings, but never normalize binary templates."""
+    if relative == "messages_integrity.py":
+        import messages_integrity
+        return messages_integrity.canonical(relative,content)
     if not relative.endswith((".docx", ".webp", ".png", ".jpg", ".jpeg", ".gif", ".zip")):
         content = content.replace(b"\r\n", b"\n")
     if relative == "validation/local_release_20260911/sandbox_protocol_integrity_variant.py":
@@ -1021,6 +1026,9 @@ def protected_content_matches(path, content, actual_projection_sha256,
     for contract in load_contracts():
         if not manifest_tree_matches(contract):
             continue
+        if contract.get("variant_id") == "sandbox-messages-all-chats-c246edef-v1":
+            # The complete exact variant pins this entire file, the gate and all guards.
+            return True
         if (path == "server.py" and contract.get("server_projection") and
                 _nazk_server_historical_projection_matches(
                     content, contract, projection_name, baseline_projection_sha256)):
@@ -1853,100 +1861,17 @@ _DST_RECOVERY_V2_TEMP = None
 _DST_RECOVERY_V4_TEMP = None
 
 def dst_recovery_v2_root():
-    """Rebuild the exact v2 recovery tree from its pinned files plus local overrides."""
-    global _DST_RECOVERY_V2_TEMP
-    if _DST_RECOVERY_V2_TEMP is not None:
-        return Path(_DST_RECOVERY_V2_TEMP.name)
-    import shutil
-    import tempfile
-    _DST_RECOVERY_V2_TEMP = tempfile.TemporaryDirectory(
-        prefix="pqm-dst-recovery-v2-", dir=ROOT / "validation")
-    tree = Path(_DST_RECOVERY_V2_TEMP.name)
-    v2 = next(c for c in load_contracts() if c["variant_id"] == DST_RECOVERY_VARIANT_ID)
-    names = set().union(*(set(v2.get(k, {})) for k in
-                          ("product_files", "guarded_files", "protected_files")))
-    for relative in names:
-        source = ROOT / relative
-        target = tree / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v2_parent_overrides.zip") as archive:
-        for relative in archive.namelist():
-            target = tree / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(archive.read(relative))
-    with zipfile.ZipFile(DST_RECOVERY_QUALIFICATION_TEST_FIX_FIXTURE) as archive:
-        for relative in archive.namelist():
-            target = tree / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(archive.read(relative))
-    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_test_v2_compat.zip") as archive:
-        for relative in archive.namelist():
-            target = tree / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(archive.read(relative))
-    return tree
+    """Reconstruct immutable history from exact parent bytes, not new UI files."""
+    import messages_integrity
+    return messages_integrity.historical_guard(ROOT).dst_recovery_v2_root()
 
 def dst_recovery_v4_root():
-    """Rebuild the exact published v4 tree for immutable historical checks."""
-    global _DST_RECOVERY_V4_TEMP
-    import shutil
-    import tempfile
-    if _DST_RECOVERY_V4_TEMP is not None:
-        return Path(_DST_RECOVERY_V4_TEMP.name)
-    _DST_RECOVERY_V4_TEMP = tempfile.TemporaryDirectory(
-        prefix="pqm-dst-recovery-v4-", dir=ROOT / "validation")
-    tree = Path(_DST_RECOVERY_V4_TEMP.name)
-    contract = next(c for c in load_contracts()
-                    if c["variant_id"] == DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID)
-    names = set().union(*(set(contract.get(k, {})) for k in
-                          ("product_files", "guarded_files", "protected_files")))
-    for relative in names:
-        source = ROOT / relative
-        target = tree / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v4_tree_overrides.zip") as archive:
-        for relative in archive.namelist():
-            target = tree / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(archive.read(relative))
-    return tree
+    """Reconstruct immutable history from exact parent bytes, not new UI files."""
+    import messages_integrity
+    return messages_integrity.historical_guard(ROOT).dst_recovery_v4_root()
 
 
 def dst_parent_root():
-    """Historical tests run on exact parent bytes, not relaxed current hashes."""
-    global _DST_PARENT_TEMP
-    if _DST_PARENT_TEMP is not None:
-        return Path(_DST_PARENT_TEMP.name)
-    import tempfile
-    _DST_PARENT_TEMP = tempfile.TemporaryDirectory(prefix="pqm-dst-parent-", dir=ROOT / "validation")
-    parent = Path(_DST_PARENT_TEMP.name)
-    previous = next(c for c in load_contracts() if c['variant_id'] == STABILIZATION_V5_VARIANT_ID)
-    historical = [c for c in load_contracts() if c['variant_id'] not in
-                  {DST_VARIANT_ID, DST_RECOVERY_VARIANT_ID,
-                   DST_RECOVERY_QUALIFICATION_VARIANT_ID,
-                   DST_RECOVERY_QUALIFICATION_TEST_FIX_VARIANT_ID}]
-    names = set().union(*(set(c.get(k, {})) for c in historical for k in ('product_files','guarded_files','protected_files')))
-    names.update(p.name for p in ROOT.glob('*.json') if p not in
-                 {DST_CONTRACT, DST_RECOVERY_CONTRACT, DST_RECOVERY_QUALIFICATION_CONTRACT,
-                  DST_RECOVERY_QUALIFICATION_TEST_FIX_CONTRACT})
-    with zipfile.ZipFile(ROOT/'validation/fixtures/dst_parent_94c5e37.zip') as archive:
-        available=set(archive.namelist())
-        for name in names:
-            target=parent/name
-            target.parent.mkdir(parents=True,exist_ok=True)
-            target.write_bytes(archive.read(name) if name in available else (ROOT/name).read_bytes())
-    # V5 precedes the DST baseline and had two unchanged files omitted from
-    # the later parent archive. Restore those exact V5 bytes for history checks.
-    with zipfile.ZipFile(DST_RECOVERY_PARENT_OVERRIDES) as archive:
-        for name in archive.namelist():
-            target=parent/name
-            target.parent.mkdir(parents=True,exist_ok=True)
-            target.write_bytes(archive.read(name))
-    # Restore operational_tasks.py before the qualification-loss behavior was added.
-    with zipfile.ZipFile(ROOT / "validation/fixtures/nazk_recovery_v2_parent_overrides.zip") as archive:
-        target = parent / "operational_tasks.py"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(archive.read("operational_tasks.py"))
-    return parent
+    """Reconstruct immutable history from exact parent bytes, not new UI files."""
+    import messages_integrity
+    return messages_integrity.historical_guard(ROOT).dst_parent_root()

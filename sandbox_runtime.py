@@ -505,7 +505,7 @@ def local_edit_allowed(method, path):
         'POST': (
             r'/api/account/avatar', r'/api/admin/users',
             r'/api/admin/users/[A-Za-z0-9._-]+/avatar', r'/api/admin/officers',
-            r'/api/chats', r'/api/chats/\d+/(?:messages|read)',
+            r'/api/chats', r'/api/chats/\d+/(?:messages|read|messages/\d+/marks)',
             r'/api/application-profiles', r'/api/history-columns',
             r'/api/admin/declension-overrides',
         ),

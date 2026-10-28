@@ -8,6 +8,8 @@ from pathlib import Path
 
 from validation.local_release_20260911 import sandbox_protocol_integrity_variant as guard
 
+import messages_integrity
+guard = messages_integrity.historical_guard(guard.ROOT)
 ROOT = guard.ROOT
 
 

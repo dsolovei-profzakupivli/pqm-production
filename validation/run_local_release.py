@@ -19,7 +19,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
         root=Path(tmp)
         for source in ROOT.iterdir():
-            if source.name.startswith('.') or source.name in {'data','validation','__pycache__','backups','output','logs'}:continue
+            if source.name.startswith('.') or source.name in {'data','validation','__pycache__','backups','output','logs','evidence'}:continue
             if source.is_dir():shutil.copytree(source,root/source.name)
             else:shutil.copy2(source,root/source.name)
         for source in (ROOT/'validation/local_release_20260911').glob('test_*.py'):
@@ -40,7 +40,8 @@ def main():
                      root/'validation/nazk_recovery_unit_smoke.py')
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
-        for fixture_name in ('protocol_integrity_history.zip',
+        for fixture_name in ('messages_parent_c246edef.zip',
+                             'protocol_integrity_history.zip',
                              'nazk_integrity_baseline_de77401.zip',
                              'column_widths_baseline_4625498.zip',
                              'nazk_preview_baseline_f394d4c.zip',
