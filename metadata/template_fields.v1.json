@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "revision": 33,
+  "revision": 34,
   "namespaces": [
     "supplier",
     "customer",
@@ -1377,7 +1377,8 @@
       "available_for": [
         "nazk_supplier_request",
         "amcu_exclusion_protocol",
-        "termination_exclusion_protocol"
+        "termination_exclusion_protocol",
+        "nazk_authority_request"
       ],
       "required_for": [
         "nazk_supplier_request"
@@ -1442,7 +1443,8 @@
       "available_for": [
         "nazk_supplier_request",
         "amcu_exclusion_protocol",
-        "termination_exclusion_protocol"
+        "termination_exclusion_protocol",
+        "nazk_authority_request"
       ],
       "required_for": [],
       "default_format": null,
@@ -1560,6 +1562,96 @@
       "active": true,
       "deprecated": false,
       "replacement_key": null
+    },
+    {
+      "available_for": [
+        "nazk_authority_request"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": null,
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null,
+      "key": "nazk.record.punishment",
+      "label": "Вид стягнення за Реєстром НАЗК",
+      "group": "НАЗК",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "schema_field",
+        "schema_field": "pqm.nazk_registry.punishment"
+      },
+      "description": "Вид стягнення з конкретного linked запису Реєстру НАЗК."
+    },
+    {
+      "available_for": [
+        "nazk_authority_request"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": null,
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null,
+      "key": "nazk.record.decision_number",
+      "label": "Номер судового рішення НАЗК",
+      "group": "НАЗК",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "schema_field",
+        "schema_field": "pqm.nazk_registry.sentence_number"
+      },
+      "description": "Номер судового рішення з sentenceNumber; не номер наказу НАЗК."
+    },
+    {
+      "available_for": [
+        "nazk_authority_request"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": null,
+      "nullable": true,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null,
+      "key": "nazk.record.court_name",
+      "label": "Найменування суду НАЗК",
+      "group": "НАЗК",
+      "value_type": "string",
+      "source_binding": {
+        "source_type": "schema_field",
+        "schema_field": "pqm.nazk_registry.court_name"
+      },
+      "description": "Найменування суду з конкретного linked запису Реєстру НАЗК."
+    },
+    {
+      "available_for": [
+        "nazk_authority_request"
+      ],
+      "required_for": [],
+      "default_format": null,
+      "example": "yes",
+      "nullable": false,
+      "active": true,
+      "deprecated": false,
+      "replacement_key": null,
+      "key": "nazk.record.has_source_url",
+      "label": "У linked записі є URL судового рішення",
+      "description": "Умовний прапорець для відображення посилання на судове рішення обраного запису НАЗК.",
+      "group": "НАЗК",
+      "value_type": "enum",
+      "enum_values": [
+        "yes",
+        "no"
+      ],
+      "source_binding": {
+        "source_type": "derived",
+        "description": "yes/no за непорожнім decision_url обраного linked запису.",
+        "dependencies": [],
+        "context_path": "task.authority_record_flags.has_source_url"
+      }
     }
   ],
   "audit": [

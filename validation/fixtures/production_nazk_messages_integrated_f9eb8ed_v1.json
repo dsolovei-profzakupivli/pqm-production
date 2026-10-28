@@ -1,0 +1,49 @@
+{
+  "contract_id": "pqm_production_nazk_messages_integrated_f9eb8ed_v1",
+  "baseline_sha": "f9eb8ed0feb29e57bbd95932a462b372f4cf634f",
+  "source_candidate_sha": "40da14517de6988f98dd5d49b1d9e1c21f928290",
+  "product_sha256": {
+    "app.js": "d047c5047312389829a6135ddd9f9786b7e754a5cee3c8ac6e7a8b38a7ad4013",
+    "chat_ui.js": "95d755efed0b74414425730fca34b466f1ad85ce260816669552f0fd47b9f892",
+    "chat_annotations.py": "de1e83254ea22ea8d5c4823baad13df406bad60b49c0071688c707c823af5eb7",
+    "chat_annotations.css": "6efe23fc02f1135e0ba3f0aa8b1ae57ea4ded24b394a17a756ba8a3251c9ea7a",
+    "index.html": "3187942c9fc471243b4938c9b94fc7c6827437ee3434beeb2cfdfffc6877749a",
+    "navigation.js": "a81ef866fa99e5f817fec236049de0ea6e35f4d59a5d5fa14d310bcfc50f499f",
+    "server.py": "8d95d3105d57f1d33c7ed602b8350574d2bf244351c3f8c387a40b5c8a174281",
+    "task_documents.py": "590295922be951dfb4f1f27713989b7c10acf03c14fa2506744674d85ab5f9f6",
+    "protocol_template.py": "74b86301c3b4397e2fc089cab3b1ac2de3dda26b9f1c37e250ac44a1f46eb5cc",
+    "metadata/runtime_templates.v1.json": "dd520c1269ff9aa99c505d95395143bea6d7e3eb3bad0e876fe82a4d40edf235",
+    "metadata/template_fields.v1.json": "60a007405b8c6a00759d0cca4747b41f083cd03959441cc3910ab7ad61b5850b",
+    "templates/nazk_authority_request.docx": "c5649e036601364eb9a3fbe37cd49cfea0a4b9d3c8f9696ca0684f490b6801f5"
+  },
+  "protected_sha256": {
+    "nazk_workflow.py": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3",
+    "scheduler_runtime.py": "1acfc7219fda370ad495dbe58611d98503b67bc45bca7535d5b2fcca8fbe3bcc",
+    "supplier_activity.py": "064e7d6fc70cbbddf8f9e78f60fd6e509191997197fbb7949122a279a984589b",
+    "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+    "operational_tasks.py": "726a10091d56fc560ac067a9e0230f6d04cfbeef48e15b4d2acf13aeccb0a46c",
+    "sandbox_runtime.py": "bfd39dea106d481a811d5abbd36cd7a7a316e80d8c4b6ae1d04a7109e94ba051",
+    "table_widths_ui.js": "a7f13dcc3d63cf338d7e3db6f20c5942e752c3bdfb9daf9c1df01b069019332e",
+    "templates/nazk_supplier_request.docx": "1be3b5804af401eb8a87a7b35c9a798850ddaf3b11b08495c763ba2eccb83b77"
+  },
+  "regression_sha256": {
+    "production_integrity_overlay.py": "812529b1029e6518402a90bc7b95c09d4b14c72a2030c17f0b094508c1dc9d6e",
+    "test_production_ui_release_integrity.py": "1de9d7275518fe5e84d7975a7a4d86cc9193fd75d54d5b0f1df013443e616c99",
+    "test_production_scenario_projection_integrity.py": "44978b569287004f15c0ae0e1ecf2b9547bbddc2c1b99833990a53655f56626d",
+    "test_production_nazk_recovery_integrity.py": "ab7d1678b49a99d428264f56f4bf63402c6722acddf29070d9b024e1bece40ab",
+    "test_production_nazk_recovery_followup_integrity.py": "21e0416794c36a4f6a9d3c51caa6e49d209d58e38c75c1641607e5edff220b2f",
+    "validation/local_release_20260911/test_chat_annotations.py": "eca36ae75222f2548f867dfa32277279a914db977a73bc405a49b9ad56da1f93",
+    "validation/local_release_20260911/test_chat_annotations_http.py": "d4ba7bd133f902f66eacadd5cb2254d791254307c32932f1b13238a630e997dd",
+    "validation/local_release_20260911/test_nazk_authority_request.py": "cc73a161fb683440f309140f5cf99462f96e80bcb25d92bfb9271aa75661f1c1",
+    "validation/local_release_20260911/test_task_documents.py": "728dd4206eb5468dfa1c07432a5cefdb4c768ad657952c1a459bac53288a01ed",
+    "validation/chat_messages_browser.cjs": "84dfb8618917aa71bdca3d7c149c4ac6ce55bba809115fbe48278e50c982951d",
+    "validation/sandbox_smoke.py": "19079879044f1c1ac2e953379c6368d32e3cc89dfb0450e399f09e6df3b6be91",
+    "validation/web_smoke.py": "eb86682b23b7831d64fb0e357db54be2a62d984da25666f4c414d273b096cce6",
+    "validation/fixtures/production_nazk_recovery_overlay_cbe1ec4.zip": "09d1f1cec428bd2bcfdbc236158a5f0466ab09038b3d8d0584f51b964dda8f7f"
+  },
+  "historical_overlay": {
+    "commit": "cbe1ec4b65bfc4b01285c20477d91974ccb411fe",
+    "archive": "validation/fixtures/production_nazk_recovery_overlay_cbe1ec4.zip",
+    "sha256": "09d1f1cec428bd2bcfdbc236158a5f0466ab09038b3d8d0584f51b964dda8f7f"
+  }
+}

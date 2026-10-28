@@ -185,7 +185,7 @@ class SandboxHTTP(unittest.TestCase):
         self.assertEqual({
             'amcu_exclusion_protocol', 'application_protocol',
             'decline_individual_review', 'decline_p49_1_2', 'decline_p49_3',
-            'nazk_supplier_request', 'termination_exclusion_protocol', 'warning',
+            'nazk_authority_request', 'nazk_supplier_request', 'termination_exclusion_protocol', 'warning',
         }, {item['key'] for item in template_items})
 
     def test_12_local_destination_preserves_auth_and_unknown_route_guard(self):

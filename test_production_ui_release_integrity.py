@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 import zipfile
 import unittest
+from production_integrity_overlay import historical_integrity_root
 
-ROOT=Path(__file__).resolve().parent
+ROOT=historical_integrity_root(Path(__file__).resolve().parent)
 CONTRACT=json.loads((ROOT/'validation/production_ui_baseline_contract.json').read_text())
 ACCOUNT_BASELINE=json.loads((ROOT/'validation/personal_theme_account_baseline.json').read_text())
 VARIANT=CONTRACT.get('approved_product_variants',{}).get('protocols_and_seasonal_cat')

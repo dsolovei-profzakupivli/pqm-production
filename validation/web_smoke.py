@@ -80,9 +80,9 @@ class WebAcceptance(unittest.TestCase):
         self.assertEqual({
             'amcu_exclusion_protocol', 'application_protocol',
             'decline_individual_review', 'decline_p49_1_2', 'decline_p49_3',
-            'nazk_supplier_request', 'termination_exclusion_protocol', 'warning',
+            'nazk_authority_request', 'nazk_supplier_request', 'termination_exclusion_protocol', 'warning',
         }, {item['key'] for item in templates['items']})
-        self.assertTrue({'amcu_exclusion_protocol','termination_exclusion_protocol','nazk_supplier_request'} <= {x['key'] for x in templates['items']})
+        self.assertTrue({'amcu_exclusion_protocol','termination_exclusion_protocol','nazk_supplier_request','nazk_authority_request'} <= {x['key'] for x in templates['items']})
         for item in templates['items']:
             self.assertEqual(200,self.request('/api/admin/templates/'+item['key']+'/download')[0])
         self.assertEqual(404,self.request('/api/nonexistent')[0])

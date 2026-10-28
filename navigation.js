@@ -8,7 +8,7 @@
   button.style.cssText='margin:4px 0;flex:0 0 auto';const header=document.querySelector('header.topbar');const backSlot=document.getElementById('pqmBackSlot');(backSlot||header)?.append(button);
   if(!button.isConnected)document.body.prepend(button);
   const dialog=document.getElementById('supplierProfileDialog'),dialogButton=button.cloneNode(true);dialogButton.id='pqmDialogBack';dialog.prepend(dialogButton);
-  function canShowBack(entry){return Boolean(entry?.previous)&&entry.route.module!=='applications'}
+  function canShowBack(entry){return Boolean(entry?.previous)&&(entry.route.module!=='applications'||Boolean(entry.route.chatApplication))}
   function update(){button.hidden=!canShowBack(current);button.disabled=restoring;
     // The sibling Back button is not part of a floating form or a nested task card.
     dialogButton.hidden=!current?.previous||dialog.dataset.detailWindow==='floating'||Boolean(document.getElementById('operationalTaskDialog')?.open);
@@ -20,6 +20,7 @@
   function restoreValues(items){for(const x of items||[]){const e=document.getElementById(x.id);if(!e)continue;e.value=x.value;if('checked'in e)e.checked=x.checked;if(x.selected)for(const o of e.options)o.selected=x.selected.includes(o.value)}}
   const models={
     applications:{get:()=>({page,sortKey,sortDirection,multiSort,officerFilter,categoryFilter,activeProfileId,activeRow,selected:[...selected],layout:profile().columns,kpis:profile().kpis,deepLinkSubmissionId,selections:Object.fromEntries(Object.entries(filterSelections).map(([k,v])=>[k,[...v]]))}),set:s=>{({page,sortKey,sortDirection,multiSort,officerFilter,categoryFilter,activeProfileId,activeRow,deepLinkSubmissionId}=s);selected.clear();(s.selected||[]).forEach(x=>selected.add(x));profile().columns=s.layout;profile().kpis=s.kpis;for(const [k,v]of Object.entries(s.selections)){filterSelections[k].clear();v.forEach(x=>filterSelections[k].add(x))}syncPrimaryFilters();renderProfiles()},load:()=>initializeApplicationsRegistry()},
+    messages:{get:()=>chatCaptureContext(),set:s=>chatRestoreContext(s),load:()=>activeChatId?openChat(activeChatId,{restore:true}):Promise.resolve()},
     history:{get:()=>({historyPage,historySorts,historyColumns}),set:s=>{({historyPage,historySorts,historyColumns}=s);drawHistorySort()},load:()=>loadApplicationHistory()},
     suppliers:{get:()=>({supplierRegistryPage,supplierRegistryRisk}),set:s=>{({supplierRegistryPage,supplierRegistryRisk}=s)},load:()=>loadQualifiedSuppliersFiltered()},
     frameworks:{get:()=>({frameworkPage,frameworkSort,frameworkDirection}),set:s=>{({frameworkPage,frameworkSort,frameworkDirection}=s)},load:()=>loadFrameworkAnalytics()},
@@ -34,6 +35,7 @@
   function enter(route){if(restoring)return;if(current&&JSON.stringify(current.route)===JSON.stringify(route))return;
     if(current?.fresh&&current.route.module===route.module&&!route.supplier&&!current.route.supplier){current.route=route;return}
     snapshot();const previous=current?.id||null;current={id:++serial,previous,route,fresh:true};const added=current;queueMicrotask(()=>added.fresh=false);entries.set(current.id,current);const url=new URL(location.href);url.searchParams.set('view',route.module);history.pushState({pqmNavigation:{session,id:current.id}},'',url);update()}
+  window.pqmNavigateChatApplication=async function(prepare){enter({module:'applications',chatApplication:true});originalModule('applications');return prepare()};
   const requestDialog=document.getElementById('requestDetailsDialog');
   const originalModule=showModule,originalTab=setAdminTab,originalSupplier=openSupplierProfile,originalReference=setReferenceTab,originalRequestById=openViolationReportById,originalRequestByIndex=openViolationReport;
   showModule=function(name){if(!moduleNames.includes(name))name='applications';enter({module:name,tab:name==='administration'?tab:null,...(name==='references'?{reference:referenceTab}:{})});if(dialog.open)dialog.close();if(requestDialog?.open)requestDialog.close();return originalModule(name)};

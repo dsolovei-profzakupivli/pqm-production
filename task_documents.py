@@ -20,8 +20,14 @@ from supplier_identity import (current_manager_rnokpp, document_name as supplier
 from docx_conditionals import render, condition_keys, retained_scalar_keys
 
 KEY='nazk_supplier_request'  # Server-owned action mapping, never supplied by client.
+AUTHORITY_KEY='nazk_authority_request'
 AMCU_PROTOCOL_KEY='amcu_exclusion_protocol'
 TERMINATION_PROTOCOL_KEY='termination_exclusion_protocol'
+AUTHORITY_OPTIONAL_RECORD_KEYS={
+    'nazk.record.offense','nazk.record.punishment','nazk.record.case_number',
+    'nazk.record.decision_date','nazk.record.effective_date',
+    'nazk.record.decision_number','nazk.record.court_name',
+}
 
 # The mapping describes how a placeholder is resolved; the active template,
 # not this mapping, decides which forms a document actually requires.
@@ -77,7 +83,7 @@ def public_document(row):
     if item.get('document_type')==AMCU_PROTOCOL_KEY:
         item['display_filename']=amcu_business_filename(item)
     item['download_url']=f"/api/operational-tasks/{item['task_id']}/documents/{item['id']}/download"
-    if item.get('document_type') in {AMCU_PROTOCOL_KEY,TERMINATION_PROTOCOL_KEY,KEY}:
+    if item.get('document_type') in {AMCU_PROTOCOL_KEY,TERMINATION_PROTOCOL_KEY,KEY,AUTHORITY_KEY}:
         item['pdf_url']=f"/api/operational-tasks/{item['task_id']}/documents/{item['id']}/pdf"
     return item
 
@@ -102,7 +108,30 @@ def amcu_business_filename(item,suffix='.docx'):
 def documents(con,task_id):
     return [public_document(r) for r in con.execute('SELECT * FROM generated_documents WHERE task_id=? ORDER BY created_at DESC,id DESC',(task_id,))]
 
-def resolve_context(con,item,fields,config,keys=None):
+def _authority_record(item):
+    records=list(item.get('nazk_records') or [])
+    if not records:raise ValueError('Неможливо сформувати запит до НАЗК: відсутній пов’язаний запис Реєстру')
+    ids=[str(record.get('source_id') or '').strip() for record in records]
+    if any(not source_id for source_id in ids) or len(ids)!=len(set(ids)):
+        raise ValueError('Неможливо визначити пов’язані записи НАЗК: відсутній або дубльований ID')
+    if len(records)==1:return records[0]
+    dated=[]
+    for record in records:
+        raw=str(record.get('sentence_date') or '').strip()[:10]
+        try:decision_date=datetime.strptime(raw,'%Y-%m-%d').date()
+        except ValueError:raise ValueError('Неможливо вибрати найновіший запис НАЗК: для одного з записів немає коректної дати судового рішення') from None
+        effective_raw=str(record.get('punishment_start') or '').strip()[:10]
+        try:effective_date=datetime.strptime(effective_raw,'%Y-%m-%d').date() if effective_raw else datetime.min.date()
+        except ValueError:effective_date=datetime.min.date()
+        dated.append((decision_date,effective_date,record))
+    newest=max((decision_date,effective_date) for decision_date,effective_date,_ in dated)
+    candidates=[record for decision_date,effective_date,record in dated if (decision_date,effective_date)==newest]
+    if len(candidates)!=1:
+        raise ValueError('Неможливо однозначно визначити найновіший запис НАЗК: дати пов’язаних записів збігаються')
+    return candidates[0]
+
+
+def resolve_context(con,item,fields,config,keys=None,document_type=KEY):
     if item['task_type']!='nazk_check':raise ValueError('Документ доступний тільки для НАЗК-перевірки')
     if item['status'] in operational_tasks.TERMINAL:raise ValueError('Для завершеної задачі формування недоступне')
     manager=item.get('current_manager') or {}
@@ -110,6 +139,10 @@ def resolve_context(con,item,fields,config,keys=None):
     if not item.get('task_person_is_current'):raise ValueError('Неможливо сформувати запит: особа задачі більше не є поточним керівником')
     if not item.get('effective_active_count'):raise ValueError('Неможливо сформувати запит: відсутні активні кваліфікації')
     if not item.get('nazk_records'):raise ValueError('Неможливо сформувати запит: відсутній пов’язаний запис Реєстру НАЗК')
+    if document_type==AUTHORITY_KEY:
+        selected=_authority_record(item)
+        item={**item,'nazk_records':[selected],
+              'authority_record_flags':{'has_source_url':'yes' if str(selected.get('decision_url') or selected.get('source_url') or '').strip() else 'no'}}
     code=re.sub(r'\D','',str(item['supplier_code']))
     row=con.execute('SELECT * FROM supplier_registry_summary WHERE DIGITS(supplier_code)=?',(code,)).fetchone()
     data=dict(row) if row else {}
@@ -145,11 +178,16 @@ def resolve_context(con,item,fields,config,keys=None):
         key=field['key']
         value=resolve_binding(field)
         if value is None or not str(value).strip():
+            if document_type==AUTHORITY_KEY and key in AUTHORITY_OPTIONAL_RECORD_KEYS:return '—'
             if key=='supplier.email':raise ValueError('Неможливо сформувати запит: в останній заявці постачальника не зазначено електронну адресу.')
             raise ValueError('Неможливо сформувати запит: не заповнено «'+field['label']+'» ('+key+')')
+        if document_type==AUTHORITY_KEY and key=='manager.rnokpp':
+            digits=re.sub(r'\D','',str(value))
+            if len(digits)!=10:raise ValueError('Формування запиту до НАЗК заблоковано: потрібен підтверджений РНОКПП перевірюваної особи з 10 цифр')
+            value=digits
         if field['value_type']=='enum' and field.get('enum_values') and value not in field['enum_values']:raise ValueError('Невідоме значення: '+key)
         return value
-    return derived_fields.resolve(keys or config['required_fields'],fields,KEY,base_resolver)
+    return derived_fields.resolve(keys or config['required_fields'],fields,document_type,base_resolver)
 
 
 def resolve_amcu_protocol_context(con,item,fields,keys):
@@ -406,20 +444,24 @@ def generate_amcu(con,item,schema,storage,actor,_document_type=AMCU_PROTOCOL_KEY
 def generate_termination(con,item,schema,storage,actor):
     return generate_amcu(con,item,schema,storage,actor,_document_type=TERMINATION_PROTOCOL_KEY)
 
-def prepared(con,item,schema):
-    config=template_runtime.registered(KEY)
+def _prepared_template(con,item,schema,document_type):
+    config=template_runtime.registered(document_type)
     if not config['active']:raise ValueError('Шаблон запиту неактивний')
     fields=template_catalog.validate(template_catalog.load(),schema)
-    source=template_runtime.template_path(KEY)
-    report=template_runtime.validate_template(KEY,fields)
-    required=set(config['required_fields'])|condition_keys(source,fields,KEY)
-    context=resolve_context(con,item,fields,config,sorted(required))
-    retained=retained_scalar_keys(source,fields,KEY,context)
+    source=template_runtime.template_path(document_type)
+    report=template_runtime.validate_template(document_type,fields)
+    required=set(config['required_fields'])|condition_keys(source,fields,document_type)
+    context=resolve_context(con,item,fields,config,sorted(required),document_type)
+    retained=retained_scalar_keys(source,fields,document_type,context)
     missing=retained-set(context)
-    if missing:context.update(resolve_context(con,item,fields,config,sorted(missing)))
-    metadata=document_metadata.resolve_all(con,KEY,fields,
-      lambda keys: resolve_context(con,item,fields,config,keys))
+    if missing:context.update(resolve_context(con,item,fields,config,sorted(missing),document_type))
+    metadata=document_metadata.resolve_all(con,document_type,fields,
+      lambda keys: resolve_context(con,item,fields,config,keys,document_type))
     return config,fields,context,metadata
+
+def prepared(con,item,schema):return _prepared_template(con,item,schema,KEY)
+
+def prepared_authority(con,item,schema):return _prepared_template(con,item,schema,AUTHORITY_KEY)
 
 def readiness(con,item,schema):
     declensions=nazk_declension_review(con,item)
@@ -428,36 +470,47 @@ def readiness(con,item,schema):
             'documents':documents(con,item['id'])}
     try:prepared(con,item,schema);result['ready']=True
     except (ValueError,OSError) as exc:result['errors']=[str(exc)]
+    authority={'ready':False,'errors':[],
+      'documents':[doc for doc in result['documents'] if doc['document_type']==AUTHORITY_KEY]}
+    try:prepared_authority(con,item,schema);authority['ready']=True
+    except (ValueError,OSError) as exc:authority['errors']=[str(exc)]
+    result['authority_request']=authority
     return result
 
-def generate(con,item,schema,storage,actor):
+def _generate_template(con,item,schema,storage,actor,document_type,event_type):
     """Caller holds BEGIN IMMEDIATE until commit, including task identity read."""
-    config,fields,context,metadata=prepared(con,item,schema)
-    source=template_runtime.template_path(KEY)
+    config,fields,context,metadata=_prepared_template(con,item,schema,document_type)
+    source=template_runtime.template_path(document_type)
     reference=hashlib.sha256(source.read_bytes()).hexdigest()
     stamp=datetime.now(timezone.utc).isoformat();day=datetime.now(ZoneInfo('Europe/Kyiv')).date().isoformat()
-    version=con.execute('SELECT COALESCE(MAX(version),0)+1 FROM generated_documents WHERE task_id=? AND document_type=? AND document_date=?',(item['id'],KEY,day)).fetchone()[0]
+    version=con.execute('SELECT COALESCE(MAX(version),0)+1 FROM generated_documents WHERE task_id=? AND document_type=? AND document_date=?',(item['id'],document_type,day)).fetchone()[0]
     docid=uuid.uuid4().hex
     code=re.sub(r'\D','',str(context['supplier.code']))
     filename=config['output_name_pattern'].format(supplier_code=code,date=day,version=version)
     filename=re.sub(r'[<>:"/\\|?*\x00-\x1f]','_',filename).strip(' .')
     storage=Path(storage);storage_name=docid+'/'+filename;target=storage/storage_name
     try:
-        render(source,target,context,fields,KEY)
+        render(source,target,context,fields,document_type)
         if reference!=hashlib.sha256(source.read_bytes()).hexdigest():raise ValueError('Шаблон змінився під час generation. Повторіть дію.')
         con.execute('''INSERT INTO generated_documents
           (id,task_id,supplier_code,document_type,template_key,template_reference,filename,storage_name,
            created_at,created_by,generation_provider,status,document_date,version,sha256,metadata_json)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (docid,item['id'],str(context['supplier.code']),KEY,KEY,reference,filename,storage_name,stamp,actor,
+            (docid,item['id'],str(context['supplier.code']),document_type,document_type,reference,filename,storage_name,stamp,actor,
              config['generation_provider'],'generated',day,version,hashlib.sha256(target.read_bytes()).hexdigest(),
              json.dumps(metadata,ensure_ascii=False)))
-        operational_tasks._event(con,item['id'],'supplier_request_generated',actor,metadata={'document_id':docid,'filename':filename,'template_reference':reference})
+        operational_tasks._event(con,item['id'],event_type,actor,metadata={'document_id':docid,'filename':filename,'template_reference':reference})
     except Exception:
         target.unlink(missing_ok=True)
         raise
     row=con.execute('SELECT * FROM generated_documents WHERE id=?',(docid,)).fetchone()
     return public_document(row)
+
+def generate(con,item,schema,storage,actor):
+    return _generate_template(con,item,schema,storage,actor,KEY,'supplier_request_generated')
+
+def generate_authority(con,item,schema,storage,actor):
+    return _generate_template(con,item,schema,storage,actor,AUTHORITY_KEY,'nazk_authority_request_generated')
 
 def download(con,task_id,doc_id,storage):
     row=con.execute('SELECT * FROM generated_documents WHERE id=? AND task_id=?',(doc_id,task_id)).fetchone()
@@ -471,6 +524,6 @@ def download(con,task_id,doc_id,storage):
 
 def amcu_pdf_source(con,task_id,doc_id,storage):
     row=con.execute('SELECT * FROM generated_documents WHERE id=? AND task_id=?',(doc_id,task_id)).fetchone()
-    if not row or row['document_type'] not in {AMCU_PROTOCOL_KEY,TERMINATION_PROTOCOL_KEY,KEY}:raise KeyError(doc_id)
+    if not row or row['document_type'] not in {AMCU_PROTOCOL_KEY,TERMINATION_PROTOCOL_KEY,KEY,AUTHORITY_KEY}:raise KeyError(doc_id)
     source,filename=download(con,task_id,doc_id,storage)
     return source,Path(filename).with_suffix('.pdf').name

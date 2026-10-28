@@ -3,8 +3,9 @@ import hashlib
 import json
 from pathlib import Path
 import unittest
+from production_integrity_overlay import historical_integrity_root
 
-ROOT = Path(__file__).resolve().parent
+ROOT = historical_integrity_root(Path(__file__).resolve().parent)
 MANIFEST_PATH = ROOT / "validation/production_nazk_recovery_autoclose_v1.json"
 MANIFEST_SHA256 = "bc01a5a66d7384ffddefb7347f2c4a6eb4e802a3b75aff707a920cca1536bf4d"
 EXPECTED_FILES = {

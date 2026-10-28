@@ -10,7 +10,7 @@ from zipfile import ZipFile, BadZipFile
 from lxml import etree
 
 NS = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-TOKEN = re.compile(r'\{\{\s*([a-z_]+(?:\.[a-z_]+)?)\s*\}\}')
+TOKEN = re.compile(r'\{\{\s*([a-z_]+(?:\.[a-z_]+)*)\s*\}\}')
 SCALARS = {'protocol_number', 'protocol_date', 'officer_name', 'officer_signature_name',
            'officer_verb', 'period_start', 'period_end', 'count_all', 'count_admitted', 'count_rejected'}
 GROUPS = ('applications_all', 'applications_admitted', 'applications_rejected')

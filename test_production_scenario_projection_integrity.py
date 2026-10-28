@@ -2,7 +2,7 @@
 import ast,copy,hashlib,json,unittest
 from pathlib import Path
 import test_production_ui_release_integrity as guard
-ROOT=Path(__file__).resolve().parent
+ROOT=guard.ROOT
 MANIFEST_SHA='fe87e329ff5b92d062dfa1bfa1ca77f671d0ddefd1e58742b2be4aaf391b07c1'
 class ScenarioProjectionIntegrityTests(unittest.TestCase):
  def test_exact_child_and_unchanged_historical_contracts(self):

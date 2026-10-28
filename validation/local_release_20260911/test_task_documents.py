@@ -228,7 +228,7 @@ class TaskDocumentTests(unittest.TestCase):
         self.assertEqual(set(by_key),{
             'warning','decline_p49_1_2','decline_p49_3','decline_individual_review',
             'application_protocol','nazk_supplier_request','amcu_exclusion_protocol',
-            'termination_exclusion_protocol',
+            'termination_exclusion_protocol','nazk_authority_request',
         })
         for key in by_key:
             with self.subTest(template=key):
