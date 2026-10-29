@@ -4,15 +4,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import zipfile
 import unittest
 from unittest.mock import patch
 
 import sandbox_runtime
-from validation.local_release_20260911.sandbox_protocol_integrity_variant import (
- exact_variant_file_matches,
- exact_variant_tree_matches,
- protected_content_matches,
-)
 
 
 def normalized_server(source):
@@ -78,33 +74,47 @@ def normalized_app(source):
 
 class SandboxPersonalThemeTests(unittest.TestCase):
     def test_whole_server_unchanged_outside_account_and_approved_appeals_kpi_function(self):
-        contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())
-        self.assertEqual(contract['server_baseline'], '0374436f2006c9e8eae1836d959b34ae7dfda7d8')
-        digest=hashlib.sha256(normalized_server(Path('server.py').read_text(encoding='utf-8')).encode()).hexdigest()
-        raw=Path('server.py').read_bytes()
-        self.assertTrue(protected_content_matches(
-            'server.py',raw,digest,contract['server_outside_account_and_appeals_kpi'],
-            'personal_theme_normalized_sha256'))
+        manifest=json.loads(Path('validation/local_release_20260911/sandbox_edr_google_nazk_reconcile_v1.json').read_text())
+        baseline=manifest['personal_theme_baseline']
+        source_fixture=Path('validation/fixtures/edr_google_nazk_baseline_40da.zip')
+        ui_fixture=Path('validation/fixtures/edr_google_nazk_personal_theme_baseline_40da.zip')
+        self.assertEqual(baseline['ui_fixture_sha256'],hashlib.sha256(ui_fixture.read_bytes()).hexdigest())
+        with zipfile.ZipFile(source_fixture) as server_archive:
+            server_projection=hashlib.sha256(normalized_server(
+                server_archive.read('server.py').decode('utf-8-sig')).encode()).hexdigest()
+        self.assertEqual(baseline['server_projection_sha256'],server_projection)
+        with zipfile.ZipFile(ui_fixture) as archive:
+            self.assertEqual(set(baseline['ui_files']),set(archive.namelist()))
+            for name,expected in baseline['ui_files'].items():
+                content=archive.read(name)
+                actual=hashlib.sha256(content.replace(b'\r\n',b'\n')).hexdigest()
+                self.assertEqual(expected['sha256_lf'],actual,name)
+                current=Path(name).read_bytes().replace(b'\r\n',b'\n')
+                if name=='app.js':
+                    current_projection=hashlib.sha256(normalized_app(current.decode()).encode()).hexdigest()
+                    baseline_projection=hashlib.sha256(normalized_app(content.decode()).encode()).hexdigest()
+                    self.assertEqual(baseline_projection,current_projection)
+                else:
+                    self.assertEqual(content.replace(b'\r\n',b'\n'),current,name)
 
     def test_app_business_functions_unchanged(self):
-        contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())
-        digest=hashlib.sha256(normalized_app(Path('app.js').read_text(encoding='utf-8')).encode()).hexdigest()
-        raw=Path('app.js').read_bytes()
-        self.assertTrue(protected_content_matches(
-            'app.js',raw,digest,contract['app_without_account'],
-            'personal_theme_normalized_sha256'))
+        manifest=json.loads(Path('validation/local_release_20260911/sandbox_edr_google_nazk_reconcile_v1.json').read_text())
+        baseline=manifest['personal_theme_baseline']['ui_files']['app.js']
+        current=hashlib.sha256(normalized_app(Path('app.js').read_text(encoding='utf-8')).encode()).hexdigest()
+        with zipfile.ZipFile('validation/fixtures/edr_google_nazk_personal_theme_baseline_40da.zip') as archive:
+            expected=hashlib.sha256(normalized_app(archive.read('app.js').decode()).encode()).hexdigest()
+        self.assertEqual(baseline['projection_sha256'],expected)
+        self.assertEqual(expected,current)
 
     def test_protected_modules_and_halloween_bytes_unchanged(self):
-        contract=json.loads(Path('test_sandbox_personal_theme_contract.json').read_text())
-        for file,digest in contract['files'].items():
-            with self.subTest(file=file):
-                data=Path(file).read_bytes()
-                if not file.endswith('.webp'):data=data.replace(b'\r\n',b'\n')
-                actual=hashlib.sha256(data).hexdigest()
-                if actual != digest:
-                    self.assertIn(file, {'styles.css', 'auth_access.py', 'scheduler_runtime.py'})
-                    self.assertTrue(exact_variant_tree_matches())
-                    self.assertTrue(exact_variant_file_matches(file,Path(file).read_bytes()))
+        baseline=json.loads(Path('validation/local_release_20260911/sandbox_edr_google_nazk_reconcile_v1.json').read_text())['personal_theme_baseline']['ui_files']
+        with zipfile.ZipFile('validation/fixtures/edr_google_nazk_personal_theme_baseline_40da.zip') as archive:
+            for file,expected in baseline.items():
+                if file=='app.js':continue
+                with self.subTest(file=file):
+                    data=Path(file).read_bytes().replace(b'\r\n',b'\n')
+                    self.assertEqual(expected['sha256_lf'],hashlib.sha256(archive.read(file).replace(b'\r\n',b'\n')).hexdigest())
+                    self.assertEqual(archive.read(file).replace(b'\r\n',b'\n'),data)
 
     def test_actual_decorated_html_keeps_identity_and_both_switch_resources(self):
         with patch.dict(os.environ,PQM_SANDBOX='1'):

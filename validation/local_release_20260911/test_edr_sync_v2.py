@@ -48,6 +48,12 @@ class EdrSyncV2Tests(unittest.TestCase):
         return sync.apply(con, source, source['source_fingerprint'], confirmed=True,
                           actor='test', synced_at='2026-09-16T12:00:00')
 
+    def test_google_text_supplier_code_preserves_leading_zero(self):
+        source = snapshot(row(code="00123456"))
+        self.assertEqual(source["rows"][0]["Код ЄДРПОУ"], "00123456")
+        self.assertEqual(source["rows"][0]["supplier_code"], "00123456")
+        self.assertEqual(sync.source_item(source["rows"][0])["supplier_code"], "00123456")
+
     def test_new_google_code_with_decided_application_creates_canonical_names(self):
         con = database()
         code = '46130719'
@@ -110,7 +116,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?)",
                     ('12345678', '✅ Зареєстровано', 'ФОП', 12, 'old'))
         values = row(checked='')
-        values[3] = values[4] = ''
+        values[3] = values[4] = values[11] = ''
         values[13] = values[14] = ''
         source = snapshot(values)
         source['rows'][0]['source_row'] = 99
@@ -121,8 +127,8 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_google_status_is_canonical_on_existing_profile_update(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
-                    ('12345678', 'Припинено', 'old'))
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,synced_at) VALUES(?,?,?,?)",
+                    ('12345678', 'Припинено', '2026-09-14', 'old'))
         source = snapshot(row(status='✅ Зареєстровано'))
         self.apply_observation(con, source)
         self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
@@ -130,8 +136,8 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_equivalent_google_status_does_not_bulk_normalize_legacy_profiles(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
-                    ('12345678', '✅Зареєстровано', 'old'))
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,synced_at) VALUES(?,?,?,?)",
+                    ('12345678', '✅Зареєстровано', '2026-09-14', 'old'))
         source = snapshot(row(status='Зареєстровано'))
         preview = sync.build_preview(con, source)
         self.assertEqual(preview['summary']['edr_status_changes'], 0)
@@ -182,7 +188,7 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_blank_source_profile_preservation_does_not_change_event_hash(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,synced_at) VALUES('12345678','KNOWN FULL NAME','old')")
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,edr_checked_at,synced_at) VALUES('12345678','KNOWN FULL NAME','2026-09-14','old')")
         values = row()
         values[13] = ''
         source = snapshot(values)
@@ -244,7 +250,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_preview_splits_identity_changes_from_representation_enrichments(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
-          (supplier_code,manager_name,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','old')""")
+          (supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','2026-09-14','old')""")
         con.execute("""INSERT INTO supplier_managers
           (supplier_code,manager_name,is_current,updated_at,created_at)
           VALUES ('12345678','ТКАЧЕНКО Н.М.',1,'old','old')""")
@@ -271,7 +277,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_enrichment_apply_does_not_call_change_or_nazk_refresh(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
-          (supplier_code,manager_name,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','old')""")
+          (supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','2026-09-14','old')""")
         con.execute("""INSERT INTO supplier_managers
           (supplier_code,manager_name,is_current,updated_at,created_at)
           VALUES ('12345678','ТКАЧЕНКО Н.М.',1,'old','old')""")
@@ -453,7 +459,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         import server
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
-          (supplier_code,manager_name,synced_at) VALUES ('12345678','ОСОБА А','old')""")
+          (supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','ОСОБА А','2026-09-14','old')""")
         con.execute("""INSERT INTO supplier_managers
           (supplier_code,manager_name,normalized_name,valid_from,valid_to,is_current,source,updated_at,created_at)
           VALUES ('12345678','ОСОБА А','особа а','2026-08-01',NULL,1,'ЄДР','2026-08-01','2026-08-01')""")
@@ -523,7 +529,7 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_manager_observed_at_comes_from_source(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,synced_at) VALUES ('12345678','СТАРИЙ','old')")
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','СТАРИЙ','2026-09-14','old')")
         seen = []
         source = snapshot(row())
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin",
@@ -548,7 +554,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(again["verification_events"], 0)
         self.assertEqual(again["changed_fields"], {})
 
-    def test_termination_clear_preserves_event(self):
+    def test_blank_termination_values_never_clear_confirmed_profile_data(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,
           termination_decision_details,edr_officer,synced_at) VALUES
@@ -556,9 +562,9 @@ class EdrSyncV2Tests(unittest.TestCase):
         source = snapshot(row(status="Зареєстровано"))
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin", synced_at="2026-09-15T18:00:00")
         profile = con.execute("SELECT termination_decision_details FROM supplier_edr_profiles").fetchone()[0]
-        self.assertEqual(profile, "")
-        self.assertEqual(result["termination_clears"], 1)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='termination_historical'").fetchone()[0], 1)
+        self.assertEqual(profile, "Запис № 7")
+        self.assertEqual(result["termination_clears"], 0)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='termination_historical'").fetchone()[0], 0)
 
     def test_status_and_marker(self):
         con = database()

@@ -138,12 +138,13 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         profile(self.con, status="Припинено")
         self.con.execute("""UPDATE supplier_edr_profiles SET termination_decision_details='Old G',
           termination_record_date='2026-08-01',termination_record_number='Old K',edr_notes='Old M'""")
-        preview, _ = observe(self.con, "25.09.2026", "Officer B")
+        preview, applied = observe(self.con, "25.09.2026", "Officer B")
         fields = self.con.execute("""SELECT termination_decision_details,termination_record_date,
           termination_record_number,edr_notes FROM supplier_edr_profiles""").fetchone()
-        self.assertEqual(tuple(fields), ("", "", "", ""))
-        self.assertEqual(preview["summary"]["google_mirror_clears"], 4)
-        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='termination_historical'").fetchone()[0], 1)
+        self.assertEqual(tuple(fields), ("Old G", "2026-08-01", "Old K", "Old M"))
+        self.assertEqual(preview["summary"]["google_mirror_clears"], 0)
+        self.assertEqual(applied["termination_clears"], 0)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='termination_historical'").fetchone()[0], 0)
         preview, _ = observe(self.con, "26.09.2026", "Officer B", **{"6": "New G", "9": "27.09.2026", "10": "New K", "12": "New M"})
         fields = self.con.execute("""SELECT termination_decision_details,termination_record_date,
           termination_record_number,edr_notes FROM supplier_edr_profiles""").fetchone()
@@ -152,10 +153,52 @@ class PermanentSyncSafetyTests(unittest.TestCase):
 
     def test_gjkm_only_can_mirror_without_verification_pair(self):
         profile(self.con)
-        preview, _ = observe(self.con, "", "", **{"12": "New M", "13": "", "14": ""})
-        self.assertEqual(preview["conflicts"], [])
-        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "")
+        self.con.execute("UPDATE supplier_edr_profiles SET edr_notes='Confirmed note'")
+        source = snapshot(row(checked="", officer="", manager=""))
+        source["rows"][0]["Примітки"] = "New M"
+        preview = sync.build_preview(self.con, source)
+        self.assertIn("verification_date_required", preview["conflicts"][0]["reasons"])
+        with self.assertRaises(ValueError):
+            sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                       actor="audit", synced_at="2026-09-25T12:00:00")
+        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "Confirmed note")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
+
+    def test_same_verification_day_with_changed_manager_requires_manual_review(self):
+        profile(self.con)
+        self.con.execute("UPDATE supplier_edr_profiles SET manager_name='Old Manager'")
+        source = snapshot(row(checked="20.09.2026", officer="Officer A", manager="New Manager"))
+        preview = sync.build_preview(self.con, source)
+        self.assertIn("same_verification_date_manager_conflict", preview["conflicts"][0]["reasons"])
+        self.assertEqual(preview["summary"]["same_date_conflict"], 1)
+        with self.assertRaises(ValueError):
+            sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                       actor="audit", synced_at="2026-09-25T12:00:00")
+        self.assertEqual(self.con.execute("SELECT manager_name FROM supplier_edr_profiles").fetchone()[0], "Old Manager")
+
+    def test_day_only_google_date_is_not_newer_than_same_day_pqm_timestamp(self):
+        profile(self.con)
+        self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at='2026-09-20T15:00:00+03:00',manager_name='Old Manager'")
+        source = snapshot(row(checked="20.09.2026", officer="Officer B", manager="New Manager"))
+        preview = sync.build_preview(self.con, source)
+        self.assertIn("same_verification_date_manager_conflict", preview["conflicts"][0]["reasons"])
+        with self.assertRaises(ValueError):
+            sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                       actor="audit", synced_at="2026-09-25T12:00:00")
+        stored = self.con.execute("SELECT manager_name,edr_checked_at FROM supplier_edr_profiles").fetchone()
+        self.assertEqual(tuple(stored), ("Old Manager", "2026-09-20T15:00:00+03:00"))
+
+    def test_missing_current_verification_date_does_not_replace_existing_facts(self):
+        self.con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_status,full_name,synced_at)
+          VALUES (?,?,?,?,?)""", (CODE, "Old Manager", "Зареєстровано", "Old legal name", "old"))
+        source = snapshot(row(checked="21.09.2026", officer="Officer B", manager="New Manager"))
+        preview = sync.build_preview(self.con, source)
+        self.assertIn("current_verification_date_missing", preview["conflicts"][0]["reasons"])
+        with self.assertRaises(ValueError):
+            sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                       actor="audit", synced_at="2026-09-25T12:00:00")
+        stored = self.con.execute("SELECT manager_name,full_name FROM supplier_edr_profiles").fetchone()
+        self.assertEqual(tuple(stored), ("Old Manager", "Old legal name"))
 
     def test_malformed_date_blocks_without_writes(self):
         profile(self.con)

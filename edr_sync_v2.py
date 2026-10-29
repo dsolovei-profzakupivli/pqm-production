@@ -660,7 +660,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         "termination_changes", "conflicts", "newer_verification_accepted",
         "initial_verification_accepted", "same_date_same_officer_equivalent",
         "same_datetime_officer_preserved",
-        "same_date_officer_update_accepted", "older_verification_preserved",
+        "same_date_officer_update_accepted", "same_date_conflict",
+        "older_verification_preserved",
         "blank_verification_preserved", "factual_status_protected",
         "google_mirror_updates", "google_mirror_clears",
     )}
@@ -687,6 +688,33 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         current_day = current.get("verification_date", "")
         current_officer = current.get("verification_officer_raw", "")
         datetime_gate = incoming_verification_gate(raw.get("Дата перевірки"), current_day)
+        current_manager = managers.get(code, {}).get("manager_name") or old.get("manager_name", "")
+        fact_values = (
+            ("manager_name", incoming["manager_name"], current_manager),
+            ("edr_status", incoming["edr_status"], old.get("edr_status", "")),
+            ("full_name", incoming["full_name"], old.get("full_name", "")),
+            ("short_name", incoming["short_name"], old.get("short_name", "")),
+            ("termination_decision_details", incoming["termination_decision_details"], old.get("termination_decision_details", "")),
+            ("termination_record_date", incoming["termination_record_date"], old.get("termination_record_date", "")),
+            ("termination_record_number", incoming["termination_record_number"], old.get("termination_record_number", "")),
+            ("edr_notes", incoming["edr_notes"], old.get("edr_notes", "")),
+            ("edr_officer", incoming["edr_officer"], current_officer),
+        )
+        changed_facts = [name for name, value, previous in fact_values
+                         if str(value or "").strip() and not _same(name, previous, value)]
+        same_calendar_day = bool(incoming_day and current_day and
+                                 normalized_date(incoming_day) == normalized_date(current_day))
+        incoming_manager_changed = bool(incoming["manager_name"] and current_manager and
+            normalize_person(incoming["manager_name"]) != normalize_person(current_manager))
+        # A manager change dated to the same calendar day remains a manual
+        # conflict even when one timestamp has finer precision. Only a later
+        # verification day is sufficient for this identity transition.
+        same_day_manager_conflict = bool(same_calendar_day and incoming_manager_changed)
+        has_existing_facts = bool(current_manager or any(
+            str(old.get(field) or "").strip() for field in (
+                "manager_name", "edr_status", "full_name", "short_name",
+                "termination_decision_details", "termination_record_date",
+                "termination_record_number", "edr_notes", "edr_officer")))
         sandbox_officer_incoming = bool(sandbox_mode and
             normalize_person(incoming["edr_officer"]) == normalize_person("Тестова УО SANDBOX"))
         if sandbox_officer_incoming and not sandbox_officer:
@@ -709,13 +737,19 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                 else "same_datetime_officer_preserved")
         else:
             verification_decision = "newer_verification_accepted" if current_day else "initial_verification_accepted"
+        if same_day_manager_conflict:
+            verification_decision = "same_date_conflict"
+            row_conflicts.append("same_verification_date_manager_conflict")
+        elif not incoming_day and changed_facts:
+            row_conflicts.append("verification_date_required")
+        elif not current_day and has_existing_facts and changed_facts:
+            row_conflicts.append("current_verification_date_missing")
         older = not datetime_gate["accepted"]
         protected_status = _protected_factual_at_or_after(ledger.get(code, []), normalized_date(incoming_day))
         status_protected = bool(not datetime_gate["accepted"] and incoming["edr_status"] and protected_status
                                 and not _same("edr_status", incoming["edr_status"], protected_status))
         summary[verification_decision] += 1
         summary["factual_status_protected"] += int(status_protected)
-        current_manager = managers.get(code, {}).get("manager_name") or ""
         changes = []
         manager_classification = {"kind": "same", "conflicting_evidence": []}
         if incoming["manager_name"] and not older:
@@ -746,20 +780,21 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         if old_current_name != new_current_name:
             summary["current_supplier_name_changes"] += 1
         termination_fields = ("termination_decision_details", "termination_record_date", "termination_record_number")
-        explicit_clear = any(old.get(field) and not incoming[field] for field in termination_fields)
+        # Blank Google cells are absence of evidence, never a deletion instruction.
+        explicit_clear = False
         termination_field_changes = [field for field in termination_fields
-            if not _same(field, old.get(field), incoming[field])]
+            if incoming[field] and not _same(field, old.get(field), incoming[field])]
         termination_changed = bool(termination_field_changes)
         if termination_changed and not older:
             changes.extend(field for field in termination_field_changes if field not in changes)
             summary["termination_changes"] += 1
-        if not older and not _same("edr_notes", old.get("edr_notes"), incoming["edr_notes"]):
+        if (not older and incoming["edr_notes"]
+                and not _same("edr_notes", old.get("edr_notes"), incoming["edr_notes"])):
             changes.append("edr_notes")
         mirror_fields = (*termination_fields, "edr_notes")
         summary["google_mirror_updates"] += sum(1 for field in mirror_fields if not older
             if not _same(field, old.get(field), incoming[field]) and incoming[field])
-        summary["google_mirror_clears"] += sum(1 for field in mirror_fields if not older
-            if not _same(field, old.get(field), incoming[field]) and not incoming[field])
+        summary["google_mirror_clears"] += 0
         snapshot_hash = row_snapshot_hash(incoming)
         pair_accepted = datetime_gate["accepted"]
         event_changed = bool(pair_accepted and not historical_normalization
@@ -1488,10 +1523,7 @@ def effective_profile_fields(plan: dict, old: dict) -> dict:
                   "termination_decision_details", "termination_record_date",
                   "termination_record_number", "edr_officer", "edr_notes"):
         value = item.get(field, "")
-        if field in {"termination_decision_details", "termination_record_date",
-                     "termination_record_number", "edr_notes"}:
-            effective[field] = value
-        elif field in {"edr_checked_at", "edr_officer"} and plan["verification_decision"] == "older_verification_preserved":
+        if field in {"edr_checked_at", "edr_officer"} and plan["verification_decision"] == "older_verification_preserved":
             effective[field] = (plan["current_verification_date"] if field == "edr_checked_at"
                                 else plan["current_verification_officer"])
         elif field in {"full_name", "short_name", "manager_name", "edr_status"} and (
@@ -1501,6 +1533,7 @@ def effective_profile_fields(plan: dict, old: dict) -> dict:
         elif field == "edr_status" and old.get(field) and _same(field, old.get(field), value):
             effective[field] = old[field]  # Legacy spelling is not migrated by an ordinary Apply.
         else:
+            # Empty Google cells never erase a previously confirmed PQM value.
             effective[field] = value if str(value or "").strip() else old.get(field, "")
     return effective
 
@@ -1520,7 +1553,8 @@ def preview_state_digest(preview: dict) -> str:
 def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, actor: str,
           synced_at: str, sync_manager=None, enrich_manager=None, establish_manager=None,
           reestablish_manager=None,
-          refresh_manager_controls=None, expected_state_digest: str | None = None,
+          refresh_manager_controls=None, reconcile_manager_nazk=None,
+          expected_state_digest: str | None = None,
           sandbox_mode: bool = False) -> dict:
     """Apply only a confirmed, unchanged snapshot; caller owns the transaction."""
     if not confirmed:
@@ -1541,6 +1575,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "manager_reestablishments": 0,
               "manager_removals": 0,
               "verification_events": 0,
+              "nazk_manager_reconciliations": 0,
               "termination_clears": 0, "termination_events": 0,
               "skipped_ineligible_new": 0, "changed_fields": {}}
     for plan in preview["items"]:
@@ -1639,5 +1674,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 counts["manager_identity_changes"] += 1
                 if refresh_manager_controls:
                     refresh_manager_controls(con, item["supplier_code"])
+                if reconcile_manager_nazk:
+                    reconcile_manager_nazk(con, item["supplier_code"])
+                    counts["nazk_manager_reconciliations"] += 1
     return {**counts, "source_fingerprint": expected_fingerprint,
             "processed": preview["summary"]["total_rows"], "preview_summary": preview["summary"]}

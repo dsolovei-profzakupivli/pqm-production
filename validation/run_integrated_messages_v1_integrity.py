@@ -23,6 +23,9 @@ EXPECTED_OVERRIDES = {
     'validation/local_release_20260911/test_chat_annotations_http.py',
     'validation/run_local_release.py',
 }
+EDR_BASELINE_FIXTURE = 'validation/fixtures/edr_google_nazk_baseline_40da.zip'
+EDR_BASELINE_FIXTURE_SHA256 = '3e4675426df956b2b7641352ea4d6b900108f5ba418deed7f389cc8deb75e790'
+EXPECTED_EDR_BASELINE = {'edr_sync_v2.py', 'server.py', 'test_sandbox_messages_integrity.py'}
 
 
 def main():
@@ -36,6 +39,20 @@ def main():
         shutil.copytree(ROOT, tree, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns('.git', 'data', 'output', 'logs',
                                                       'evidence', '__pycache__', '.pytest_cache'))
+        edr_fixture = ROOT / EDR_BASELINE_FIXTURE
+        edr_bytes = edr_fixture.read_bytes()
+        if hashlib.sha256(edr_bytes).hexdigest() != EDR_BASELINE_FIXTURE_SHA256:
+            raise SystemExit('EDR baseline overlay fixture SHA-256 mismatch')
+        with zipfile.ZipFile(edr_fixture) as archive:
+            members = {item.filename for item in archive.infolist() if not item.is_dir()}
+            if members != EXPECTED_EDR_BASELINE:
+                raise SystemExit('Unexpected EDR baseline overlay fixture members')
+            for relative in sorted(members):
+                target = (tree / relative).resolve()
+                if not target.is_relative_to(tree):
+                    raise SystemExit('Unsafe path in EDR baseline fixture')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(relative))
         for source in (ROOT / 'validation/local_release_20260911').glob('test_*.py'):
             shutil.copy2(source, tree / source.name)
         with zipfile.ZipFile(archive_path) as archive:

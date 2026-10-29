@@ -37,19 +37,25 @@ class ReadModelAcceptance(unittest.TestCase):
         # Internal controls contradict Prozorro: neither is evidence of admission.
         self.protocol(pending,'admit','2026-10-13T14:00:00+03:00','UO')
         self.protocol(rejected,'admit','2026-10-13T15:00:00+03:00','UO')
+        # A rejected application remains eligible for EDR refresh, but an
+        # undated Google row that changes facts must be blocked before Apply.
+        source=snapshot(row(code='00000002',checked='',officer=''))
+        before=self.con.total_changes
         for attempt in range(2):
-            source=snapshot(row(code='00000002',checked='',officer=''))
-            result=sync.apply(self.con,source,source['source_fingerprint'],confirmed=True,
-                              actor='fixture',synced_at=f'2026-10-13T20:0{attempt}:00+03:00')
-            self.assertEqual(result['verification_events'],0)
-            got=self.items()
-            self.assertFalse(got['00000001']['google_sync_eligible'])
-            self.assertTrue(got['00000002']['google_sync_eligible'])
-            for code in got:
-                self.assertEqual(got[code]['verification_date'],'')
-                self.assertEqual(got[code]['verification_officer'],'')
-                self.assertEqual(got[code]['freshness_marker'],'🟣 Неактуально')
-            self.assertFalse(sync.record_admission_event(self.con,rejected,'2026-10-13T20:00:00+03:00'))
+            preview=sync.build_preview(self.con,source)
+            self.assertIn('verification_date_required',preview['items'][0]['conflicts'])
+            with self.assertRaisesRegex(ValueError,'preview'):
+                sync.apply(self.con,source,source['source_fingerprint'],confirmed=True,
+                           actor='fixture',synced_at=f'2026-10-13T20:0{attempt}:00+03:00')
+            self.assertEqual(self.con.total_changes,before)
+        got=self.items()
+        self.assertFalse(got['00000001']['google_sync_eligible'])
+        self.assertTrue(got['00000002']['google_sync_eligible'])
+        for code in got:
+            self.assertEqual(got[code]['verification_date'],'')
+            self.assertEqual(got[code]['verification_officer'],'')
+            self.assertEqual(got[code]['freshness_marker'],'🟣 Неактуально')
+        self.assertFalse(sync.record_admission_event(self.con,rejected,'2026-10-13T20:00:00+03:00'))
         self.assertEqual(self.con.execute('SELECT COUNT(*) FROM supplier_edr_verification_events').fetchone()[0],0)
 
     def test_admission_and_repeat_keep_exact_decision_time_distinct_from_submission(self):

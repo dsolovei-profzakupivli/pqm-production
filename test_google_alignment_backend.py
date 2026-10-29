@@ -22,7 +22,10 @@ class GoogleAlignmentBackend(unittest.TestCase):
         before.pop('last_google_received_at')
         for stamp in ['2026-10-12T14:03:00Z','12.10.2026 17:02:59','']:
             source = snapshot(row(checked=stamp, officer='Other UO', manager='Other manager', status='Припинено'))
-            self.apply(source)
+            preview = sync.build_preview(self.con, source)
+            self.assertTrue(preview['conflicts'])
+            with self.assertRaises(ValueError):
+                self.apply(source)
             actual=dict(self.con.execute('SELECT * FROM supplier_edr_profiles').fetchone());actual.pop('last_google_received_at')
             self.assertEqual(actual,before)
         with self.assertRaises(ValueError):

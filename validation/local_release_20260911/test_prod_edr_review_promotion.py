@@ -9,7 +9,7 @@ except ImportError:
 
 
 class ProdEdrReviewPromotionTests(unittest.TestCase):
-    def test_complete_review_and_google_owned_clear_are_read_only(self):
+    def test_blank_google_owned_fields_are_preserved_in_review_without_preview_write(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
           (supplier_code,full_name,edr_status,edr_checked_at,edr_officer,
@@ -25,9 +25,8 @@ class ProdEdrReviewPromotionTests(unittest.TestCase):
         details = edr_sync_review.details(preview)
         self.assertEqual(con.total_changes, before)
         self.assertEqual(next(x for x in details if x['field'] == 'verification_pair')['action'], 'accept_google_pair')
-        self.assertEqual(next(x for x in details if x['field'] == 'termination_decision_details')['action'], 'clear')
-        self.assertEqual(next(x for x in details if x['field'] == 'edr_notes')['action'], 'clear')
-        self.assertEqual(edr_sync_review.summary_additions(preview, details)['m_note_clears'], 1)
+        self.assertFalse(any(x['field'] in {'termination_decision_details', 'edr_notes'} for x in details))
+        self.assertEqual(edr_sync_review.summary_additions(preview, details)['m_note_clears'], 0)
 
     def test_state_digest_rejects_stale_pqm_before_business_write(self):
         con = database()

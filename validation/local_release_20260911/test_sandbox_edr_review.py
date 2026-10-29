@@ -35,7 +35,7 @@ class SandboxEdrReviewTests(unittest.TestCase):
                              {'PQM_SANDBOX': '1', 'PQM_SANDBOX_EDR_GOOGLE': '0'}):
             self.assertTrue(server.google_integration_status()['enabled'])
 
-    def test_complete_detail_and_clear_without_preview_write(self):
+    def test_blank_google_owned_values_are_not_reviewed_as_clears(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
           (supplier_code,full_name,edr_status,edr_checked_at,edr_officer,
@@ -52,9 +52,8 @@ class SandboxEdrReviewTests(unittest.TestCase):
         details = sandbox_edr_review.details(preview)
         self.assertEqual(con.total_changes, before)
         self.assertEqual(next(x for x in details if x['field'] == 'verification_pair')['action'], 'accept_google_pair')
-        self.assertEqual(next(x for x in details if x['field'] == 'termination_decision_details')['action'], 'clear')
-        self.assertEqual(next(x for x in details if x['field'] == 'edr_notes')['action'], 'clear')
-        self.assertEqual(sandbox_edr_review.summary_additions(preview, details)['m_note_clears'], 1)
+        self.assertFalse(any(x['field'] in {'termination_decision_details', 'edr_notes'} for x in details))
+        self.assertEqual(sandbox_edr_review.summary_additions(preview, details)['m_note_clears'], 0)
         self.assertEqual(len(details), len(sandbox_edr_review.details(preview)))
 
     def test_state_digest_rejects_stale_pqm_before_business_write(self):

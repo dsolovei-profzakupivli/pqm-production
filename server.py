@@ -4728,6 +4728,41 @@ def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_c
     return len(rows)
 
 
+def reconcile_supplier_nazk_after_edr_manager_change(
+        con: sqlite3.Connection, supplier_code: str,
+        actor: str = "PQM confirmed EDR manager change") -> dict:
+    """Reconcile one supplier from persisted NAZK data after a verified manager change.
+
+    This path never fetches the NAZK registry. It closes tasks tied to a former
+    manager, closes stale tasks when effective qualifications are absent, then
+    reconciles and materializes the current manager's persisted registry matches
+    only when the supplier still has effective active qualifications.
+    """
+    code = re.sub(r"\D", "", str(supplier_code or ""))
+    if not code:
+        return {"skipped": "missing_supplier_code", "cancelled_old_manager": 0,
+                "cancelled_inactive_supplier": 0, "checks_created": 0,
+                "tasks_created": 0, "tasks_existing": 0}
+    cancelled_manager = operational_tasks.reconcile_irrelevant_nazk_managers(
+        con, actor=actor, supplier_codes=[code])
+    active = operational_tasks._active_application_map(con).get(code, [])
+    cancelled_inactive = operational_tasks.reconcile_stale_nazk_tasks(
+        con, actor=actor, supplier_codes=[code], active_applications={code: active})
+    if not active:
+        return {"skipped": "no_effective_active_qualifications",
+                "cancelled_old_manager": cancelled_manager["cancelled"],
+                "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+                "checks_created": 0, "tasks_created": 0, "tasks_existing": 0}
+    checks = reconcile_active_supplier_nazk(con, apply=True, supplier_codes=[code])
+    tasks = operational_tasks.materialize_nazk_tasks(
+        con, actor=actor, supplier_codes=[code], active_applications={code: active})
+    return {"skipped": None,
+            "cancelled_old_manager": cancelled_manager["cancelled"],
+            "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+            "checks_created": sum(bool(item.get("created")) for item in checks.get("items", [])),
+            "tasks_created": tasks["created"], "tasks_existing": tasks["existing"]}
+
+
 def sync_supplier_managers_from_edr() -> dict:
     """Idempotently seed/update manager history from the current EDR directory."""
     created = changed = unchanged = removed = missing = skipped_blank = 0
@@ -5080,6 +5115,7 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                 establish_manager=establish_current_supplier_manager,
                 reestablish_manager=reestablish_current_supplier_manager,
                 refresh_manager_controls=refresh_current_submission_nazk_controls,
+                reconcile_manager_nazk=reconcile_supplier_nazk_after_edr_manager_change,
                 expected_state_digest=expected_state_digest,
                 sandbox_mode=SANDBOX_MODE,
             )
