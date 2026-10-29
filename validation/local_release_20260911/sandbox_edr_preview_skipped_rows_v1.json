@@ -1,0 +1,56 @@
+{
+  "baseline": "6c310970a1d912cf7f8cfaa3fa802ceaec9685a4",
+  "contract": "sandbox-edr-preview-skipped-rows",
+  "files": {
+    "app.js": {
+      "sha256_lf": "57ffe79ab0033d4a325ebef57635e38546c6b0490e2f34417151daad4c013f46"
+    },
+    "edr_sync_v2.py": {
+      "sha256_lf": "7721ec654338b2e8f93d5719dff1678b3de470014c3e35f23796518bd69e953a"
+    },
+    "sandbox_edr_review.py": {
+      "sha256_lf": "a959c25cfc828dd829f8d06b8429d2ef56bfd5edd8270f813482c6e22c4233a2"
+    },
+    "server.py": {
+      "sha256_lf": "5ee1cba1b0ec96cbac088dc4c2c482e65cb57588fd2c14628ef9e08998638c6f"
+    },
+    "validation/local_release_20260911/test_edr_preview_skipped_rows.py": {
+      "sha256_lf": "d890fb4c5a3dfce7ebd62360c9645f7b2e4b0d74e4dfe842a258d1523824fa31"
+    },
+    "validation/run_local_release.py": {
+      "sha256_lf": "9e5c45fc3288968583abc6f104353f46b701b1c6f233e84c370e749dea1a2f0e"
+    },
+    "validation/run_google_edr_timezone_alias_v1_integrity.py": {
+      "sha256_lf": "bae88514834cc6bb2d9680d7e06b1ca379ddf6182523e91983bc407ab3d2d4e3"
+    },
+    "validation/fixtures/google_edr_timezone_alias_v1_baseline_6c310.zip": {
+      "sha256": "854794f04c376f3e019b8371c06b5dc041592a875df7c57760a2c9b98b47ffc6"
+    },
+    "validation/run_messages_integrated_v1_history.py": {
+      "sha256_lf": "6dbe8f1649b0865e9cd9346cbcd9a6f6e24dad727eea82f3ea7c7390e2b6d220"
+    },
+    "validation/fixtures/messages_integrated_v1_appjs_baseline_6c310.zip": {
+      "sha256": "3bf1aff4aa18d5dd917b417430fac963fca07f3c386f942621302af80c2d58d4"
+    }
+  },
+  "historical_contracts": {
+    "validation/local_release_20260911/sandbox_edr_google_nazk_reconcile_v1.json": "4959074e4cd87f0b7158b45d2aaddc7c3c9d1e38ff04bb5c7246d040bf9659d5",
+    "validation/local_release_20260911/sandbox_edr_google_nazk_contract_v2.json": "84b11fa0f453906aaa0138f1238f06c3843ac7105b4647f2504343e9b0e8ce10",
+    "validation/local_release_20260911/test_sandbox_edr_google_nazk_reconcile_integrity.py": "26620f8906dc7bdd035e58ca8f099b5ea13f296e359fa019c57f9d113c66ea14",
+    "validation/local_release_20260911/test_sandbox_edr_google_nazk_contract_v2_integrity.py": "318a44e6efca3a52cd629284b6fdc3c2821ae776019dca9c80a17e559583bd2e",
+    "validation/local_release_20260911/google_edr_timezone_alias_v1.json": "b311cfe9f17eaebbd992b28222ec6e1612c45c055e476ba4caebaf99fbed99d7",
+    "validation/local_release_20260911/test_google_edr_timezone_alias_integrity_v1.py": "28bfb64787206d8cdb80882c40e562fd3dbb39a58875f5c81d7f189176ec636a"
+  },
+  "normalization": "CRLF-to-LF only for text files",
+  "version": 1,
+  "behavior": {
+    "canonical_headers_a_to_o_are_still_exact": true,
+    "blank_or_date_only_timestamp_is_skipped_without_business_writes": true,
+    "sandbox_apply_skips_only_conflicting_rows_and_applies_independent_eligible_rows_atomically": true,
+    "production_apply_conflict_behavior_is_unchanged": true,
+    "google_mirror_g_j_k_m_requires_strictly_newer_exact_timestamp": true,
+    "nazk_reconciliation_requires_applied_manager_change": true,
+    "preview_is_read_only_and_apply_rechecks_source_fingerprint_and_pqm_digest": true,
+    "unverified_or_stale_manager_data_never_closes_nazk_tasks": true
+  }
+}

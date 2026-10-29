@@ -5065,6 +5065,7 @@ def supplier_edr_sync_preview() -> dict:
                 "previewed_at": preview["previewed_at"],
                 "summary": {**preview["summary"], **sandbox_edr_review.summary_additions(preview, details)},
                 "conflicts": preview["conflicts"], "conflicts_total": len(preview["conflicts"]),
+                "sandbox_partial_apply": True,
                 "details": details, "details_total": len(details),
                 "details_complete": True, "db_writes": 0, "google_writes": 0}
     details = edr_sync_review.details(preview)
@@ -5075,6 +5076,7 @@ def supplier_edr_sync_preview() -> dict:
         "summary": {**preview["summary"], **edr_sync_review.summary_additions(preview, details)},
         "conflicts": preview["conflicts"],
         "conflicts_total": len(preview["conflicts"]),
+        "sandbox_partial_apply": False,
         "details": details,
         "details_total": len(details),
         "details_complete": True,

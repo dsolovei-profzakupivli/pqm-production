@@ -33,6 +33,14 @@ TRACKED_FIELDS = (
     "manager_name", "edr_status", "full_name", "short_name",
     "termination_decision_details", "termination_record_date", "termination_record_number",
 )
+UNVERIFIED_TIMESTAMP_REASONS = frozenset({
+    "verification_date_required", "current_verification_date_missing",
+    "changed_values_without_verification_date", "changed_values_without_officer",
+    "verification_timestamp_required",
+    "manager_change_requires_strictly_newer_verification_timestamp",
+    "mirror_change_requires_strictly_newer_verification_timestamp",
+})
+SKIPPABLE_TIMESTAMP_GATE_REASONS = frozenset({"incoming_blank", "incoming_date_only"})
 
 
 def normalize_code(value) -> str:
@@ -204,8 +212,8 @@ def source_snapshot(values_by_sheet: dict[str, list[list]], *,
             if not any(padded):
                 continue
             item = dict(zip(HEADERS, padded))
-            # A truncated source row is not evidence that omitted cells are blank.
             item["_source_present_columns"] = min(len(raw), len(HEADERS))
+            # A truncated source row is not evidence that omitted cells are blank.
             if len(raw) > 8 and isinstance(raw[8], (int, float)) and not isinstance(raw[8], bool):
                 item[HEADERS[8]] = raw[8]
             item.update(source_sheet=sheet, source_row=row_number,
@@ -634,6 +642,8 @@ def canonical_sandbox_officer(con) -> str:
 
 def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
     """Return a factual field-level diff without issuing any SQL write."""
+    if tuple(snapshot.get("headers") or ()) != HEADERS:
+        raise ValueError("Google EDR source columns do not match the canonical A:O structure")
     rows = snapshot["rows"]
     eligible = _eligible_codes(con)
     profiles = _profiles(con)
@@ -671,6 +681,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         "blank_verification_preserved", "date_only_verification_preserved",
         "current_date_only_same_day_blocked", "factual_status_protected",
         "google_mirror_updates", "google_mirror_clears",
+        "eligible", "skipped", "conflict", "skipped_unverified_timestamp",
+        "skipped_ineligible",
     )}
     summary["total_rows"] = len(rows)
     sandbox_officer = canonical_sandbox_officer(con) if sandbox_mode else ""
@@ -695,7 +707,9 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         current_day = current.get("verification_date", "")
         current_officer = current.get("verification_officer_raw", "")
         current_gate_value = (current.get("selected_event") or {}).get("occurred_at") or current_day
-        datetime_gate = incoming_verification_gate(raw.get("Дата перевірки"), current_gate_value,
+        source_checked_at = raw.get("Дата перевірки")
+        gate_checked_at = source_checked_at if str(source_checked_at or "").strip() else None
+        datetime_gate = incoming_verification_gate(gate_checked_at, current_gate_value,
                                                    require_time=True)
         source_present_columns = incoming["source_present_columns"]
         source_missing_fields = [HEADERS[index] for index in (6, 8, 9, 10, 12)
@@ -797,7 +811,11 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         mirror_clear_fields = []
         for field in mirror_fields:
             header_index = mirror_columns[field]
-            if source_present_columns <= header_index:
+            # A row may be shorter because Sheets omits trailing empty cells.
+            # Canonical A:O headers were validated by source_snapshot; absent
+            # row cells are therefore blank values in the Sandbox source.
+            # Preserve the legacy strict row-width handling outside Sandbox.
+            if source_present_columns <= header_index and not sandbox_mode:
                 mirror_field_changes.append({"field": field, "current": old.get(field, "") or "",
                     "google": "", "planned": old.get(field, "") or "", "action": "blocked",
                     "reason": "missing_source_column"})
@@ -854,13 +872,36 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                                  else "malformed_verification_date")
         if datetime_gate["reason"] == "current_invalid":
             row_conflicts.append("malformed_current_verification_datetime")
-        for missing_header in source_missing_fields:
-            row_conflicts.append("missing_source_column:" + missing_header)
+        if not sandbox_mode:
+            for missing_header in source_missing_fields:
+                row_conflicts.append("missing_source_column:" + missing_header)
         if any(change["action"] == "blocked" and change["reason"] == "verification_timestamp_not_newer"
                for change in mirror_field_changes):
             row_conflicts.append("mirror_change_requires_strictly_newer_verification_timestamp")
         if str(raw.get("Дата запису") or "").strip() and not incoming["termination_record_date"]:
             row_conflicts.append("malformed_termination_record_date")
+
+        skip_reasons = []
+        if sandbox_mode and datetime_gate["reason"] in SKIPPABLE_TIMESTAMP_GATE_REASONS:
+            skip_reasons.append("verification_timestamp_unavailable")
+            # These describe why this row cannot contribute a business update.
+            # They are not data conflicts and must not stop independent rows.
+            row_conflicts = [reason for reason in row_conflicts
+                             if reason not in UNVERIFIED_TIMESTAMP_REASONS]
+        if not (code and (code in profiles or code in eligible)):
+            skip_reasons.append("supplier_not_apply_eligible")
+        if row_conflicts:
+            row_state = "conflict"
+            summary["conflict"] += 1
+        elif skip_reasons:
+            row_state = "skipped"
+            summary["skipped"] += 1
+            summary["skipped_unverified_timestamp"] += int(
+                "verification_timestamp_unavailable" in skip_reasons)
+            summary["skipped_ineligible"] += int("supplier_not_apply_eligible" in skip_reasons)
+        else:
+            row_state = "eligible"
+            summary["eligible"] += 1
         if row_conflicts:
             conflicts.append({"supplier_code": code, "source_sheet": incoming["source_sheet"],
                               "source_row": incoming["source_row"], "reasons": sorted(set(row_conflicts))})
@@ -869,6 +910,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                       "population": "eligible" if code in eligible else "legacy/needs_classification",
                       "existing_profile": code in profiles,
                       "apply_allowed": bool(code and (code in profiles or code in eligible)),
+                      "row_state": row_state, "skip_reasons": sorted(set(skip_reasons)),
                       "changed_fields": sorted(set(changes)), "verification_event_change": event_changed,
                       "datetime_gate": datetime_gate,
                       "manager_change_kind": manager_classification["kind"],
@@ -889,6 +931,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                       "factual_status_protected": status_protected,
                       "conflicts": sorted(set(row_conflicts)), "incoming": incoming})
     summary["conflicts"] = len(conflicts)
+    summary["conflict"] = len(conflicts)
     return {"source_fingerprint": snapshot["source_fingerprint"], "summary": summary,
             "items": items, "conflicts": conflicts, "duplicate_codes": duplicate_codes,
             "previewed_at": datetime.now().astimezone().isoformat()}
@@ -1595,7 +1638,8 @@ def preview_state_digest(preview: dict) -> str:
     business = [{key: plan.get(key) for key in (
         "supplier_code", "current_profile", "current_manager_name", "current_verification_date",
         "current_verification_officer", "verification_decision", "factual_status_protected",
-        "changed_fields", "verification_event_change", "conflicts", "incoming", "datetime_gate")}
+        "changed_fields", "verification_event_change", "conflicts", "incoming", "datetime_gate",
+        "row_state", "skip_reasons")}
         for plan in preview["items"]]
     encoded = json.dumps(business, ensure_ascii=False, sort_keys=True, default=str,
                          separators=(",", ":")).encode("utf-8")
@@ -1618,7 +1662,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
     preview = build_preview(con, snapshot, sandbox_mode=sandbox_mode)
     if expected_state_digest is not None and preview_state_digest(preview) != expected_state_digest:
         raise RuntimeError("PQM state changed after reviewed preview")
-    if preview["conflicts"]:
+    if preview["conflicts"] and not sandbox_mode:
         raise ValueError("Apply заблоковано: preview містить конфлікти")
     counts = {"inserted": 0, "updated_profiles": 0, "unchanged": 0,
               "received_suppliers": 0,
@@ -1630,9 +1674,20 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "google_mirror_clears": 0, "google_mirror_clear_events": 0,
               "nazk_manager_reconciliations": 0,
               "termination_clears": 0, "termination_events": 0,
+              "skipped_no_verification_timestamp": 0,
+              "skipped_conflicts": 0,
               "skipped_ineligible_new": 0, "changed_fields": {}}
     for plan in preview["items"]:
         item = plan["incoming"]
+        if sandbox_mode and plan.get("row_state") == "conflict":
+            counts["skipped_conflicts"] += 1
+            continue
+        if plan.get("row_state") == "skipped":
+            counts["skipped_no_verification_timestamp"] += int(
+                "verification_timestamp_unavailable" in plan.get("skip_reasons", []))
+            counts["skipped_ineligible_new"] += int(not plan["apply_allowed"])
+            # Undated rows leave profiles, receipts, history, and NAZK tasks untouched.
+            continue
         if not plan["apply_allowed"]:
             counts["skipped_ineligible_new"] += 1
             continue

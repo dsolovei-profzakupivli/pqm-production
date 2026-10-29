@@ -39,6 +39,7 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_sandbox_nazk_messages_integrated_integrity',
     'test_nazk_authority_request_integrity',
     'test_sandbox_edr_google_nazk_reconcile_integrity',
+    'test_google_edr_timezone_alias_integrity_v1',
     'test_messages_historical_line_endings',
     'test_sandbox_personal_theme',
     'test_sandbox_ui_integrated_d457_integrity',
@@ -81,7 +82,9 @@ def main():
                             'run_integrated_messages_v1_integrity.py',
                             'run_messages_search_header_v2_integrity.py',
                             'run_messages_header_polish_v3_integrity.py',
-                            'run_sandbox_edr_google_nazk_reconcile_v1_integrity.py'):
+                            'run_sandbox_edr_google_nazk_reconcile_v1_integrity.py',
+                            'run_google_edr_timezone_alias_v1_integrity.py',
+                            'run_messages_integrated_v1_history.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
@@ -112,7 +115,9 @@ def main():
                              'edr_google_nazk_baseline_40da.zip',
                              'edr_google_nazk_personal_theme_baseline_40da.zip',
                              'edr_google_nazk_reconcile_v1_candidate_a40aa70.zip',
-                             'edr_google_nazk_contract_v2_baseline_64f7fda.zip')
+                             'edr_google_nazk_contract_v2_baseline_64f7fda.zip',
+                             'google_edr_timezone_alias_v1_baseline_6c310.zip',
+                             'messages_integrated_v1_appjs_baseline_6c310.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -167,7 +172,7 @@ def main():
                 return 0 if result.wasSuccessful() else 1
             candidate_ok=result.wasSuccessful()
             v1_overlay=subprocess.run(
-                [sys.executable, str(ROOT/'validation/run_integrated_messages_v1_integrity.py')],
+                [sys.executable, str(ROOT/'validation/run_messages_integrated_v1_history.py')],
                 cwd=old_cwd, check=False)
             v2_overlay=subprocess.run(
                 [sys.executable, str(ROOT/'validation/run_messages_search_header_v2_integrity.py')],
@@ -177,6 +182,9 @@ def main():
                 cwd=old_cwd, check=False)
             edr_v1_overlay=subprocess.run(
                 [sys.executable, str(ROOT/'validation/run_sandbox_edr_google_nazk_reconcile_v1_integrity.py')],
+                cwd=old_cwd, check=False)
+            google_timezone_v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_google_edr_timezone_alias_v1_integrity.py')],
                 cwd=old_cwd, check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
@@ -196,7 +204,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
