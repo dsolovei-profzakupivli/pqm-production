@@ -4967,7 +4967,7 @@ def _supplier_edr_rows(sheet_name: str, gid: str) -> list[dict]:
 
 
 def _google_edr_sheet_values(sheet_name: str) -> list[list]:
-    """One grid read: literal displayed B and full numeric verification I together."""
+    """One grid read preserving row width and the displayed Kyiv verification timestamp."""
     if sheet_name not in {"ФОП", "ЮО"}:
         raise PermissionError("Unknown EDR source tab")
     if SANDBOX_MODE and SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID:
@@ -4976,7 +4976,7 @@ def _google_edr_sheet_values(sheet_name: str) -> list[list]:
         raise PermissionError("Google integration вимкнено адміністратором")
     params = urllib.parse.urlencode({
         "ranges": f"'{sheet_name}'!A:O", "includeGridData": "true",
-        "fields": "sheets(properties(title),data(startRow,startColumn,rowData(values(effectiveValue,formattedValue))))",
+        "fields": "properties(timeZone),sheets(properties(title),data(startRow,startColumn,rowData(values(effectiveValue,formattedValue))))",
     })
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{params}"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
@@ -4989,6 +4989,8 @@ def _google_edr_sheet_values(sheet_name: str) -> list[list]:
     sheets = body.get("sheets", [])
     if len(sheets) != 1 or sheets[0].get("properties", {}).get("title") != sheet_name:
         raise ValueError("Google EDR source tab identity mismatch")
+    if body.get("properties", {}).get("timeZone") != "Europe/Kyiv":
+        raise ValueError("Google EDR spreadsheet timezone must be Europe/Kyiv")
     rows = {}
     for data in sheets[0].get("data", []):
         if data.get("startColumn", 0) != 0:
@@ -4999,17 +5001,18 @@ def _google_edr_sheet_values(sheet_name: str) -> list[list]:
                 raise ValueError("Google EDR overlapping grid rows")
             cells = raw.get("values", [])
             values = []
-            for column in range(15):
-                cell = cells[column] if column < len(cells) else {}
+            for column, cell in enumerate(cells[:15]):
                 effective = cell.get("effectiveValue", {})
                 if "errorValue" in effective:
                     raise ValueError("Google EDR source contains a cell error")
-                if column == 8 and number > 0 and "numberValue" in effective:
-                    values.append(effective["numberValue"])
+                if column == 8 and number > 0:
+                    # The displayed value proves whether this is the new full
+                    # dd.MM.yyyy HH:mm:ss observation or a legacy date-only cell.
+                    values.append(cell.get("formattedValue", ""))
                 else:
                     values.append(cell.get("formattedValue", effective.get("stringValue", "")))
             rows[number] = values
-    return [rows.get(index, [""] * 15) for index in range(max(rows, default=-1) + 1)]
+    return [rows.get(index, []) for index in range(max(rows, default=-1) + 1)]
 
 
 def supplier_edr_source_snapshot() -> dict:

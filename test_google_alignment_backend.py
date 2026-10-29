@@ -54,7 +54,7 @@ class GoogleAlignmentBackend(unittest.TestCase):
         self.assertEqual(self.con.execute('SELECT last_google_received_at FROM supplier_edr_profiles').fetchone()[0], '')
         self.apply(source)
         profile = self.con.execute('SELECT full_name,short_name,edr_checked_at,edr_officer,last_google_received_at FROM supplier_edr_profiles').fetchone()
-        self.assertEqual(tuple(profile), ('ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА','2026-10-12T17:03:01.000+03:00','Checked UO','2026-10-13T10:00:00+03:00'))
+        self.assertEqual(tuple(profile), ('ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА','2026-10-12T17:03:01+03:00','Checked UO','2026-10-13T10:00:00+03:00'))
         self.assertEqual(self.apply(source)['verification_events'],0)
 
     def test_blank_names_preserve_prior_verified_names(self):
@@ -94,21 +94,22 @@ class GoogleAlignmentBackend(unittest.TestCase):
         self.assertIsInstance(raw['rows'][0]['Дата перевірки'],float)
         values[8] = str(values[8])
         self.assertNotEqual(raw['source_fingerprint'],snapshot(values)['source_fingerprint'])
-        self.assertTrue(sync.source_item(raw['rows'][0])['edr_checked_at'].endswith('17:03:19.000+03:00'))
+        self.assertTrue(sync.source_item(raw['rows'][0])['edr_checked_at'].endswith('17:03:19+03:00'))
 
     def test_grid_reader_preserves_literal_code_and_hidden_verification_seconds(self):
         import server
         header = {'values':[{'formattedValue':h} for h in sync.HEADERS]}
         cells = [{'formattedValue':''} for _ in range(15)]
         cells[1] = {'formattedValue':'00001234', 'effectiveValue':{'numberValue':1234}}
-        cells[8] = {'formattedValue':'12.10.2026', 'effectiveValue':{'numberValue':46307.71063657408}}
-        payload = {'sheets':[{'properties':{'title':'ЮО'}, 'data':[{'rowData':[header,{'values':cells}]}]}]}
+        cells[8] = {'formattedValue':'12.10.2026 17:03:19', 'effectiveValue':{'numberValue':46307.71063657408}}
+        payload = {'properties':{'timeZone':'Europe/Kyiv'},
+                   'sheets':[{'properties':{'title':'ЮО'}, 'data':[{'rowData':[header,{'values':cells}]}]}]}
         with patch.object(server,'SANDBOX_MODE',False), patch.object(server,'google_edr_effective_enabled',return_value=True), \
              patch.object(server,'_google_access_token',return_value='TEST_ONLY'), \
              patch.object(server.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(payload).encode())) as opener:
             values = server._google_edr_sheet_values('ЮО')
         self.assertEqual(values[1][1],'00001234')
-        self.assertEqual(values[1][8],46307.71063657408)
+        self.assertEqual(values[1][8],'12.10.2026 17:03:19')
         self.assertEqual(opener.call_count,1)
 
     def test_grid_reader_rejects_wrong_sandbox_destination_before_network(self):

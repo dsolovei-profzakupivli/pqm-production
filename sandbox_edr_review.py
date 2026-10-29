@@ -35,9 +35,12 @@ def details(preview: dict) -> list[dict]:
                 "google_value": {"date": incoming["edr_checked_at"], "officer": incoming["edr_officer"]},
                 "planned_pqm_value": {"date": incoming["edr_checked_at"], "officer": incoming["edr_officer"]},
                 "action": "accept_google_pair", "reason": plan["verification_decision"]})
+        mirror_decisions = {change["field"]: change for change in plan.get("mirror_field_changes", [])}
         for field in plan["changed_fields"]:
             if field in {"edr_checked_at", "edr_officer"}:
                 continue  # I/L is presented only as one indivisible pair.
+            if field in MIRROR_FIELDS:
+                continue
             current = (plan["current_manager_name"] if field == "manager_name"
                        else old.get(field, ""))
             google = incoming.get(field, "")
@@ -49,6 +52,12 @@ def details(preview: dict) -> list[dict]:
             result.append({**base, "field": field, "category": FIELD_GROUPS.get(field, "other"),
                 "current_pqm_value": current or "", "google_value": google or "",
                 "planned_pqm_value": planned or "", "action": action, "reason": reason})
+        for field, decision in mirror_decisions.items():
+            action = decision["action"] if plan["apply_allowed"] else "skipped_ineligible"
+            result.append({**base, "field": field, "category": FIELD_GROUPS[field],
+                "current_pqm_value": decision["current"], "google_value": decision["google"],
+                "planned_pqm_value": decision["planned"] if plan["apply_allowed"] else decision["current"],
+                "action": action, "reason": decision["reason"]})
         if plan["current_supplier_name"] != plan["planned_supplier_name"]:
             result.append({**base, "field": "current_supplier_name", "category": "names_manager",
                 "current_pqm_value": plan["current_supplier_name"],

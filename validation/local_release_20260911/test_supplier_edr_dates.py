@@ -5,7 +5,7 @@ from unittest.mock import patch
 import server
 import edr_sync_v2
 from validation.local_release_20260911.test_edr_sync_v2 import database
-from google_verification_contract import verification_timestamp
+from google_verification_contract import google_verification_timestamp, verification_timestamp
 
 
 class SupplierEdrDateTests(unittest.TestCase):
@@ -37,9 +37,9 @@ class SupplierEdrDateTests(unittest.TestCase):
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,synced_at) VALUES('30067771','17.08.2026','2026-08-21T00:00:00+00:00')")
         server.sync_current_supplier_manager(con,'30067771','ТКАЧ ОЛЕКСАНДР ВАСИЛЬОВИЧ','Google Sheets: ЮО','2026-08-21T00:00:00+00:00')
         con.commit()
-        cases=[('03.09.2026','2026-09-09T19:58:11+00:00','2026-09-09T19:58:11+00:00'),
-               ('03.09.2026','2026-09-10T10:00:00+00:00','2026-09-09T19:58:11+00:00'),
-               ('05.09.2026','2026-09-11T10:00:00+00:00','2026-09-11T10:00:00+00:00')]
+        cases=[('03.09.2026 17:03:01','2026-09-09T19:58:11+00:00','2026-09-09T19:58:11+00:00'),
+               ('03.09.2026 17:03:01','2026-09-10T10:00:00+00:00','2026-09-09T19:58:11+00:00'),
+               ('05.09.2026 17:03:02','2026-09-11T10:00:00+00:00','2026-09-11T10:00:00+00:00')]
         for date,stamp,expected_synced_at in cases:
             source_sheet=self.sheet(date=date)
             sheet_read=lambda name: source_sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
@@ -49,7 +49,7 @@ class SupplierEdrDateTests(unittest.TestCase):
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed',
                                  server.SUPPLIER_EDR_SYNC_STATE.get('error'))
                 row=con.execute('SELECT edr_checked_at,synced_at FROM supplier_edr_profiles').fetchone()
-                self.assertEqual(tuple(row),(verification_timestamp(date),expected_synced_at))
+                self.assertEqual(tuple(row),(google_verification_timestamp(date),expected_synced_at))
                 # A successful receipt advances even when equal I makes business data a no-op.
                 # The separate synced_at assertion above still preserves the original update time.
                 self.assertEqual(con.execute('SELECT last_google_received_at FROM supplier_edr_profiles').fetchone()[0],stamp)

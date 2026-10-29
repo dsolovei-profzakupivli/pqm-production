@@ -51,18 +51,77 @@ def verification_instant(value):
         return {"kind": "invalid", "value": None}
 
 
-def incoming_verification_gate(incoming, current):
+def _has_observation_time(value):
+    """Whether the source carries time-of-day precision, not merely a calendar date."""
+    if isinstance(value, datetime):
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (float, int)):
+        if not math.isfinite(value):
+            return False
+        millis = round((value % 1) * 86400000)
+        return millis % 86400000 != 0
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return bool(
+        re.fullmatch(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}", text)
+        or re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?", text)
+    )
+
+
+def google_verification_instant(value):
+    """Parse a current Google observation; legacy date-only cells are not instants."""
+    if isinstance(value, str):
+        text = value.strip()
+        date_only = bool(re.fullmatch(r"\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}", text))
+        full_timestamp = bool(
+            re.fullmatch(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}", text)
+            or re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?", text)
+        )
+        # A value that looks like a date plus an incomplete time is malformed,
+        # not a legacy date-only cell. Fail closed instead of silently downgrading it.
+        if not date_only and not full_timestamp:
+            return {"kind": "invalid", "value": None}
+    parsed = verification_instant(value)
+    if parsed["kind"] != "datetime":
+        return parsed
+    if not _has_observation_time(value):
+        return {"kind": "date_only", "value": None}
+    if isinstance(value, str):
+        text = value.strip()
+        if not (re.fullmatch(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}", text)
+                or re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?", text)):
+            return {"kind": "invalid", "value": None}
+    return parsed
+
+
+def incoming_verification_gate(incoming, current, *, require_time=False):
     """Shared directional gate: swap arguments for PQM→Google / Google→PQM."""
-    new, old = verification_instant(incoming), verification_instant(current)
+    new = google_verification_instant(incoming) if require_time else verification_instant(incoming)
+    old = verification_instant(current)
     if new["kind"] != "datetime":
         return {"accepted": False, "reason": "incoming_" + new["kind"]}
     if old["kind"] == "invalid":
         return {"accepted": False, "reason": "current_invalid"}
     if old["kind"] == "blank":
         return {"accepted": True, "reason": "initial"}
+    if require_time and not _has_observation_time(current):
+        new_day = new["value"].astimezone(KYIV).date()
+        old_day = old["value"].astimezone(KYIV).date()
+        if new_day <= old_day:
+            return {"accepted": False, "reason": "current_date_only_not_newer_by_day"}
+        return {"accepted": True, "reason": "newer_than_date_only"}
     if new["value"] > old["value"]:
         return {"accepted": True, "reason": "newer"}
     return {"accepted": False, "reason": "equal" if new["value"] == old["value"] else "older"}
+
+
+def google_verification_timestamp(value):
+    """Canonicalize a verified Google timestamp; do not invent time for date-only values."""
+    parsed = google_verification_instant(value)
+    return parsed["value"].astimezone(KYIV).isoformat(timespec="seconds") if parsed["kind"] == "datetime" else ""
 
 
 def verification_timestamp(value):

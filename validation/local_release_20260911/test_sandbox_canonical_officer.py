@@ -18,7 +18,7 @@ class SandboxCanonicalOfficerTests(unittest.TestCase):
             code = str(10000000 + i)
             con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,short_name,manager_name,edr_status,edr_checked_at,edr_officer,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (code, 'ПОВНА НАЗВА', 'СКОРОЧЕНА НАЗВА', '', 'Зареєстровано',
-                         '2026-07-22', current_officer, 'ФОП', i+2, 'test'))
+                         '2026-07-22T12:00:00+03:00', current_officer, 'ФОП', i+2, 'test'))
             rows.append(row(code=code, checked='22.07.2026', officer=OFFICER, manager=''))
         return con, snapshot(*rows)
 
@@ -46,7 +46,7 @@ class SandboxCanonicalOfficerTests(unittest.TestCase):
 
     def test_actual_new_check_by_canonical_sandbox_officer_is_normal_verification(self):
         con, source = self.fixture()
-        source['rows'][0]['Дата перевірки'] = '05.10.2026'
+        source['rows'][0]['Дата перевірки'] = '05.10.2026 17:03:19'
         plan = sync.build_preview(con, source, sandbox_mode=True)
         self.assertEqual(plan['summary']['conflicts'], 0)
         self.assertEqual(plan['summary']['verification_event_changes'], 1)
@@ -84,7 +84,7 @@ class SandboxCanonicalOfficerTests(unittest.TestCase):
     def test_nine_real_newer_verifications_stay_real(self):
         con, source = self.fixture(9)
         for raw in source['rows']:
-            raw['Дата перевірки'] = '05.10.2026'
+            raw['Дата перевірки'] = '05.10.2026 17:03:19'
             raw['УО'] = 'Світлана НАМЯСЕНКО'
         plan = sync.build_preview(con, source, sandbox_mode=True)
         self.assertEqual(plan['summary']['conflicts'], 0)

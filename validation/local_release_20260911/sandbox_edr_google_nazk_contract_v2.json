@@ -1,0 +1,106 @@
+{
+  "contract": "sandbox-edr-google-nazk-reconcile",
+  "version": 2,
+  "baseline": "a40aa70c55204d8cc3566b70ac43cdf01e3dce03",
+  "normalization": "CRLF-to-LF only for text files",
+  "files": {
+    "edr_sync_review.py": {
+      "sha256_lf": "f2dfad2e0447be128ead01e9bdd0ab3001d1a82262c918fe141c8f86e05304fa"
+    },
+    "edr_sync_v2.py": {
+      "sha256_lf": "d941e730648cd02f76bf943a3b737fc6038f7775d9d03a2fe80d73e66ac70b75"
+    },
+    "google_verification_contract.py": {
+      "sha256_lf": "018dc80271800fe27692ad62d0069e63107ecf419f99e99670a5e6bfca3b1f53"
+    },
+    "sandbox_edr_review.py": {
+      "sha256_lf": "1a207a03425cd8003c79f395a294fc825273857424075743cc0f6d8ff0376c52"
+    },
+    "server.py": {
+      "sha256_lf": "91b9008912ca16d86603e8f2d76a04729e00b722e53f0c678643a3300ffeafee"
+    },
+    "scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs": {
+      "sha256_lf": "b860b410265cb26a7be892fa7b0c6b461ca9c5507bf5573b4283039881fd3739"
+    },
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": {
+      "sha256_lf": "0bfc2545488454b9f487ba2eff979480959161ba01f70225a319d753222916b9"
+    },
+    "validation/local_release_20260911/test_edr_sync_v2.py": {
+      "sha256_lf": "d78623c44332dbc2081a6a815eebc67ef532c07f382bc8a184fe0a6c4ee716c0"
+    },
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py": {
+      "sha256_lf": "87ecc6f15c7c97d3afd9994cf63afa3e4692eb94349a154ad17bd7bd896ce87c"
+    },
+    "validation/local_release_20260911/test_prod_edr_review_promotion.py": {
+      "sha256_lf": "b825ca925aa5db6116290d30ed299ededd9f9b0e8ecfadbbf99549ad85db852a"
+    },
+    "validation/local_release_20260911/test_sandbox_edr_google_nazk_reconcile_integrity.py": {
+      "sha256_lf": "26620f8906dc7bdd035e58ca8f099b5ea13f296e359fa019c57f9d113c66ea14"
+    },
+    "validation/local_release_20260911/test_sandbox_edr_review.py": {
+      "sha256_lf": "54d283e44ab60e1306f2bb54450d2800677198467b2f3094a61f4b0926df23db"
+    },
+    "validation/local_release_20260911/sandbox_edr_google_nazk_reconcile_v1.json": {
+      "sha256_lf": "4959074e4cd87f0b7158b45d2aaddc7c3c9d1e38ff04bb5c7246d040bf9659d5"
+    },
+    "validation/run_local_release.py": {
+      "sha256_lf": "029356db1e1c62aa4be69f81532172eab5e9d940baffcdf181890ecee3a756f8"
+    },
+    "validation/run_sandbox_edr_google_nazk_reconcile_v1_integrity.py": {
+      "sha256_lf": "c4d2c5bb559bb20d81435a813c9d5dd91d5081180a9fb5fa0bacbd1798eef9f8"
+    },
+    "validation/fixtures/edr_google_nazk_reconcile_v1_candidate_a40aa70.zip": {
+      "sha256": "257ba6be4a159ee6a48a107f54ff63c5fb33150b4c2c4a83d46cb5c6e58dda11"
+    },
+    "test_google_alignment_backend.py": {
+      "sha256_lf": "c9a26c8c9a0df5c7bbadb32cab356ec7df9a871b2ba903579ad2587bed252c8b"
+    },
+    "validation/local_release_20260911/test_sandbox_canonical_officer.py": {
+      "sha256_lf": "77a65921835967f9ae77e5b3c4bf5a8925af44ff29a821af434c03e6b4c4bdd3"
+    },
+    "validation/local_release_20260911/test_single_supplier_edr_workflow.py": {
+      "sha256_lf": "c5ce8ed767fce7d7a4b00e6c63f5fdaa9eafcebab2471647efbe137e5a20151e"
+    },
+    "validation/local_release_20260911/test_supplier_edr_dates.py": {
+      "sha256_lf": "e054fe62c241e98cc0b2637fd1fcf20b80137baac911668bac1fa067de2f5cd8"
+    },
+    "validation/local_release_20260911/test_supplier_edr_filter.py": {
+      "sha256_lf": "67626cd8a6f2be2f6e19d48879d3d1861109c80f031650010e76ac57ac3bd4ee"
+    }
+  },
+  "behavior": {
+    "google_timestamp_format": "dd.MM.yyyy HH:mm:ss Europe/Kyiv",
+    "google_timestamp_freshness_source": "column I only; exact instant comparison",
+    "date_only_is_not_a_verification_instant": true,
+    "google_to_pqm_mapping": {
+      "G": "termination_decision_details",
+      "J": "termination_record_date",
+      "K": "termination_record_number",
+      "M": "edr_notes"
+    },
+    "google_to_pqm_full_mirror": [
+      "G",
+      "J",
+      "K",
+      "M"
+    ],
+    "newer_blank_is_explicit_clear": true,
+    "older_equal_missing_invalid_or_ambiguous_timestamp_blocks_business_fields": true,
+    "missing_source_column_is_not_blank": true,
+    "clear_history_includes_m": true,
+    "pqm_to_google_protected": [
+      "G",
+      "J",
+      "K",
+      "M"
+    ],
+    "pqm_to_google_F_allowed": true,
+    "google_to_pqm_F_ignored": true,
+    "preview_shows_old_and_new_for_clears": true,
+    "apply_rechecks_source_fingerprint_and_pqm_state_digest": true,
+    "apply_transactional_and_idempotent": true,
+    "manager_change_reconciliation_uses_cached_nazk_no_external_fetch": true,
+    "blank_or_unverified_manager_does_not_close_nazk_task": true,
+    "nazk_case_38261938_regression_preserves_history_and_deduplicates": true
+  }
+}

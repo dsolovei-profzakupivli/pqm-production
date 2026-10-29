@@ -145,7 +145,7 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
       daytime: {i: '2026-06-05', l: 'Officer A'}, final: ['2026-09-25', 'Officer B']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
       startingGjkm: ['Old G', '2026-09-20', 'Old K', 'Old M'],
-      // Business-field imports require a newer verification, not equal I.
+      // Newer verified Google observations fully mirror G/J/K/M, including clears.
       daytime: {i: '2026-09-21', g: 'Changed G', j: '', k: 'Changed K', m: ''},
       final: ['2026-09-21', 'Officer A']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
@@ -156,6 +156,9 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
   for (const [index, s] of scenarios.entries()) {
     // Round trips use the current merged writer, never the legacy date-only writer.
     const f = require('./mirror-alignment/engine-fixture.cjs')(environment), item = f.body.items[0];
+    const protectedGoogleColumns = [6, 9, 10, 12]; // G/J/K/M are Google-owned inputs.
+    const protectedGoogleValues = () => protectedGoogleColumns.map(column =>
+      clone(f.raw.get('1:2')[column]));
     // Test-call aliases only. PROD functions still execute their own pinned guards and helpers.
     if (environment === 'prod') for (const name of ['FullApplyPreview','FullApply'])
       f.context['pqmSandbox'+name] = f.context['pqmProd'+name];
@@ -169,9 +172,12 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
       setGoogleCell(f, column, s.startingGjkm[position]);
     }
     if (s.e) setGoogleCell(f, 4, s.e);
+    const protectedBeforeMorning = protectedGoogleValues();
     const morning = f.context.pqmSandboxFullApplyPreview();
     arm(f, morning);
     assert.equal(f.context.pqmSandboxFullApply().status, 'COMPLETE', index + 1);
+    assert.deepEqual(protectedGoogleValues(), protectedBeforeMorning,
+      `scenario ${index + 1}: PQM → Google must preserve Google-owned G/J/K/M`);
     if (index === 6) assert.equal(f.raw.get('1:2')[4].effectiveValue.stringValue, s.e);
     if (s.daytime) for (const [key, value] of Object.entries(s.daytime)) {
       const column = {i: 8, l: 11, g: 6, j: 9, k: 10, m: 12}[key];
@@ -191,7 +197,13 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
     assert.deepEqual([evening.date, evening.officer],
       [s.final[0] + 'T17:03:19.000+03:00', s.final[1]], `scenario ${index + 1}`);
     assert.equal(evening.second.verification_event_changes, 0, `scenario ${index + 1}: repeat evening`);
-    if (index === 5) assert.deepEqual(evening.gjkm, ['Changed G', '', 'Changed K', '']);
+    if (index === 5) {
+      assert.deepEqual(evening.gjkm, ['Changed G', '', 'Changed K', '']);
+      assert.equal(google.j, '', 'the verified Google J cell is intentionally empty');
+      assert.equal(google.m, '', 'the verified Google M cell is intentionally empty');
+      assert.equal(evening.gjkm[1], '', 'newer Google J blank clears PQM');
+      assert.equal(evening.gjkm[3], '', 'newer Google M blank clears PQM');
+    }
     if (index === 7) assert.equal(evening.status, 'Припинено');
     item.verification_date = evening.date; item.verification_officer = evening.officer;
     item.edr_status_current = evening.status;
@@ -207,7 +219,10 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
         `scenario ${index + 1}: next morning reverse I/L write`);
     }
     arm(f, next);
+    const protectedBeforeNextMorning = protectedGoogleValues();
     assert.equal(f.context.pqmSandboxFullApply().status, 'COMPLETE');
+    assert.deepEqual(protectedGoogleValues(), protectedBeforeNextMorning,
+      `scenario ${index + 1}: next PQM → Google cycle must preserve Google-owned G/J/K/M`);
     const stable = f.context.pqmSandboxFullApplyPreview();
     const finalPlan = f.context.pqmGooglePlan_(f.body, f.context.pqmGoogleSnapshot_('sandbox-id'));
     assert.ok(finalPlan.changes.every(change => !('8' in change.cells) && !('11' in change.cells)),

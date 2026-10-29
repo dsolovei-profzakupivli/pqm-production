@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import unittest
 from datetime import date, timedelta
@@ -32,7 +33,14 @@ def database():
 
 
 def row(code="12345678", status="Зареєстровано", checked="15.09.2026", officer="УО",
-        manager="НОВИЙ КЕРІВНИК"):
+        manager="НОВИЙ КЕРІВНИК", *, date_only=False):
+    # New synthetic observations carry a real Kyiv wall-clock timestamp.
+    # Legacy date-only inputs must opt in explicitly via date_only=True.
+    if checked and not date_only and isinstance(checked, str):
+        if len(checked) == 10 and checked[2] == ".":
+            checked = checked + " 12:00:00"
+        elif len(checked) == 10 and checked[4] == "-":
+            checked = checked + "T12:00:00"
     values = ["", code, "Заявка", manager, status, "Активний", "", "", checked,
               "", "", officer, "", "ПОВНА НАЗВА", "СКОРОЧЕНА НАЗВА"]
     return values
@@ -554,7 +562,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(again["verification_events"], 0)
         self.assertEqual(again["changed_fields"], {})
 
-    def test_blank_termination_values_never_clear_confirmed_profile_data(self):
+    def test_newer_blank_termination_cell_clears_and_archives_previous_value(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,
           termination_decision_details,edr_officer,synced_at) VALUES
@@ -562,9 +570,11 @@ class EdrSyncV2Tests(unittest.TestCase):
         source = snapshot(row(status="Зареєстровано"))
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin", synced_at="2026-09-15T18:00:00")
         profile = con.execute("SELECT termination_decision_details FROM supplier_edr_profiles").fetchone()[0]
-        self.assertEqual(profile, "Запис № 7")
-        self.assertEqual(result["termination_clears"], 0)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='termination_historical'").fetchone()[0], 0)
+        self.assertEqual(profile, "")
+        self.assertEqual(result["termination_clears"], 1)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='termination_historical'").fetchone()[0], 1)
+        event = con.execute("SELECT snapshot_json FROM supplier_edr_verification_events WHERE event_type='google_mirror_clear'").fetchone()
+        self.assertEqual(json.loads(event[0])["previous_values"]["termination_decision_details"], "Запис № 7")
 
     def test_status_and_marker(self):
         con = database()

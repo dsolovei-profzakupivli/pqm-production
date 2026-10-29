@@ -2,6 +2,7 @@
 import hashlib
 import json
 import ast
+import os
 import unittest
 from pathlib import Path
 import zipfile
@@ -26,10 +27,14 @@ def canonical_file(relative: str, value: bytes) -> bytes:
 
 
 def repository_root() -> Path:
+    configured = os.environ.get("PQM_RELEASE_SOURCE_ROOT")
+    if configured:
+        return Path(configured).resolve()
     here = Path(__file__).resolve()
-    if here.parent.name == "local_release_20260911":
-        return here.parents[2]
-    return here.parent
+    for candidate in (here.parent, *here.parents):
+        if (candidate / MANIFEST_RELATIVE).is_file() and (candidate / BASELINE_FIXTURE).is_file():
+            return candidate
+    raise RuntimeError("Cannot locate the exact EDR/NAZK integrity source root")
 
 
 class SandboxEdrGoogleNazkIntegrityTests(unittest.TestCase):
