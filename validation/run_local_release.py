@@ -111,7 +111,8 @@ def main():
                              'messages_header_polish_v3_baseline_40da.zip',
                              'edr_google_nazk_baseline_40da.zip',
                              'edr_google_nazk_personal_theme_baseline_40da.zip',
-                             'edr_google_nazk_reconcile_v1_candidate_a40aa70.zip')
+                             'edr_google_nazk_reconcile_v1_candidate_a40aa70.zip',
+                             'edr_google_nazk_contract_v2_baseline_64f7fda.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():

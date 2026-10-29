@@ -1,0 +1,36 @@
+{
+  "contract": "sandbox-google-edr-timezone-alias",
+  "version": 1,
+  "baseline": "64f7fda1660c228cbe49c502c6a053fb10c19db1",
+  "normalization": "CRLF-to-LF only for text files",
+  "files": {
+    "server.py": {
+      "sha256_lf": "7253b2c78e06fcfcb89ded356aa0f465b0260f2a14f9d423f307a58c7d1b7c91"
+    },
+    "validation/local_release_20260911/test_sandbox_edr_review.py": {
+      "sha256_lf": "634e57dc3dbe4a53ade0b5ef3d44b9a6b73245388dda139f29d196b6075c595f"
+    },
+    "validation/local_release_20260911/test_sandbox_edr_google_nazk_contract_v2_integrity.py": {
+      "sha256_lf": "318a44e6efca3a52cd629284b6fdc3c2821ae776019dca9c80a17e559583bd2e"
+    },
+    "validation/run_local_release.py": {
+      "sha256_lf": "e9b74c2652199065a48874e9cb4c620929f9b2115ac3c536e5d6dd4f6d6e7926"
+    },
+    "validation/fixtures/edr_google_nazk_contract_v2_baseline_64f7fda.zip": {
+      "sha256": "e818f9b9884c398f2fda8dae0ff732b50e948cb69764aa6c51a7afbb3883f152"
+    }
+  },
+  "behavior": {
+    "accepted_timezone_ids": [
+      "Europe/Kyiv",
+      "Europe/Kiev"
+    ],
+    "rejected_timezone_ids": [
+      "Etc/GMT",
+      "UTC",
+      "Europe/Moscow"
+    ],
+    "verification_timestamp_logic_changed": false,
+    "schema_or_database_changed": false
+  }
+}

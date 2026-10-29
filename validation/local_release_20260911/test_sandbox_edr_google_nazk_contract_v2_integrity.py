@@ -2,12 +2,16 @@
 import hashlib
 import json
 import unittest
+import tempfile
+import zipfile
 from pathlib import Path
 
 
 BASELINE = "a40aa70c55204d8cc3566b70ac43cdf01e3dce03"
 MANIFEST = Path("validation/local_release_20260911/sandbox_edr_google_nazk_contract_v2.json")
 MANIFEST_SHA256_LF = "84b11fa0f453906aaa0138f1238f06c3843ac7105b4647f2504343e9b0e8ce10"
+BASELINE_FIXTURE = Path("validation/fixtures/edr_google_nazk_contract_v2_baseline_64f7fda.zip")
+BASELINE_FIXTURE_SHA256 = "e818f9b9884c398f2fda8dae0ff732b50e948cb69764aa6c51a7afbb3883f152"
 
 
 def canonical(data: bytes, path: str) -> bytes:
@@ -27,6 +31,22 @@ class SandboxEdrGoogleNazkContractV2Integrity(unittest.TestCase):
         self.root = repository_root()
         self.manifest_bytes = canonical((self.root / MANIFEST).read_bytes(), str(MANIFEST))
         self.manifest = json.loads(self.manifest_bytes.decode("utf-8"))
+        self.baseline_temp = tempfile.TemporaryDirectory(prefix="edr-contract-v2-baseline-")
+        self.baseline_root = Path(self.baseline_temp.name).resolve()
+        fixture = self.root / BASELINE_FIXTURE
+        self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(), BASELINE_FIXTURE_SHA256)
+        with zipfile.ZipFile(fixture) as archive:
+            for member in archive.infolist():
+                destination = (self.baseline_root / member.filename).resolve()
+                if not destination.is_relative_to(self.baseline_root):
+                    self.fail("Unsafe path in EDR v2 baseline fixture")
+                if member.is_dir():
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(archive.read(member))
+
+    def tearDown(self):
+        self.baseline_temp.cleanup()
 
     def test_manifest_and_exact_candidate_scope(self):
         self.assertEqual(hashlib.sha256(self.manifest_bytes).hexdigest(), MANIFEST_SHA256_LF)
@@ -34,6 +54,8 @@ class SandboxEdrGoogleNazkContractV2Integrity(unittest.TestCase):
         self.assertEqual(self.manifest["contract"], "sandbox-edr-google-nazk-reconcile")
         self.assertEqual(self.manifest["version"], 2)
         self.assertEqual(self.manifest["normalization"], "CRLF-to-LF only for text files")
+        self.assertEqual(hashlib.sha256((self.baseline_root / "server.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest(),
+                         self.manifest["files"]["server.py"]["sha256_lf"])
         self.assertEqual(set(self.manifest["files"]), {
             "edr_sync_review.py", "edr_sync_v2.py", "google_verification_contract.py",
             "sandbox_edr_review.py", "server.py",
@@ -58,13 +80,13 @@ class SandboxEdrGoogleNazkContractV2Integrity(unittest.TestCase):
     def test_all_pinned_files_match_exact_bytes_after_line_ending_only_normalization(self):
         for relative, entry in self.manifest["files"].items():
             with self.subTest(path=relative):
-                content = canonical((self.root / relative).read_bytes(), relative)
+                content = canonical((self.baseline_root / relative).read_bytes(), relative)
                 key = "sha256" if Path(relative).suffix.lower() == ".zip" else "sha256_lf"
                 self.assertEqual(hashlib.sha256(content).hexdigest(), entry[key])
 
     def test_single_byte_append_delete_and_value_mutations_are_rejected(self):
         for relative, entry in self.manifest["files"].items():
-            original = canonical((self.root / relative).read_bytes(), relative)
+            original = canonical((self.baseline_root / relative).read_bytes(), relative)
             digest_key = "sha256" if Path(relative).suffix.lower() == ".zip" else "sha256_lf"
             pinned = entry[digest_key]
             mutations = (bytes([original[0] ^ 1]) + original[1:], original + b"\x00", original[:-1])

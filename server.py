@@ -4989,7 +4989,7 @@ def _google_edr_sheet_values(sheet_name: str) -> list[list]:
     sheets = body.get("sheets", [])
     if len(sheets) != 1 or sheets[0].get("properties", {}).get("title") != sheet_name:
         raise ValueError("Google EDR source tab identity mismatch")
-    if body.get("properties", {}).get("timeZone") != "Europe/Kyiv":
+    if body.get("properties", {}).get("timeZone") not in {"Europe/Kyiv", "Europe/Kiev"}:
         raise ValueError("Google EDR spreadsheet timezone must be Europe/Kyiv")
     rows = {}
     for data in sheets[0].get("data", []):

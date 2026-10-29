@@ -25,23 +25,29 @@ class SandboxEdrReviewTests(unittest.TestCase):
         cells = [{"formattedValue": str(index)} for index in range(8)]
         cells.append({"effectiveValue": {"numberValue": 46307.7106365741},
                       "formattedValue": "23.10.2026 17:03:19"})
-        body = {"properties": {"timeZone": "Europe/Kyiv"},
-                "sheets": [{"properties": {"title": "ФОП"}, "data": [
-                    {"startRow": 1, "startColumn": 0, "rowData": [{"values": cells}]}]}]}
-        with mock.patch.object(server, "google_edr_effective_enabled", return_value=True), \
-             mock.patch.object(server, "_google_access_token", return_value="synthetic"), \
-             mock.patch.object(server, "SANDBOX_MODE", False), \
-             mock.patch.object(server.urllib.request, "urlopen", return_value=Response(body)):
-            values = server._google_edr_sheet_values("ФОП")
-        self.assertEqual(len(values[1]), 9)
-        self.assertEqual(values[1][8], "23.10.2026 17:03:19")
-        wrong_zone = {**body, "properties": {"timeZone": "UTC"}}
-        with mock.patch.object(server, "google_edr_effective_enabled", return_value=True), \
-             mock.patch.object(server, "_google_access_token", return_value="synthetic"), \
-             mock.patch.object(server, "SANDBOX_MODE", False), \
-             mock.patch.object(server.urllib.request, "urlopen", return_value=Response(wrong_zone)):
-            with self.assertRaisesRegex(ValueError, "Europe/Kyiv"):
-                server._google_edr_sheet_values("ФОП")
+        for zone in ("Europe/Kyiv", "Europe/Kiev"):
+            body = {"properties": {"timeZone": zone},
+                    "sheets": [{"properties": {"title": "ФОП"}, "data": [
+                        {"startRow": 1, "startColumn": 0, "rowData": [{"values": cells}]}]}]}
+            with self.subTest(timezone=zone), \
+                 mock.patch.object(server, "google_edr_effective_enabled", return_value=True), \
+                 mock.patch.object(server, "_google_access_token", return_value="synthetic"), \
+                 mock.patch.object(server, "SANDBOX_MODE", False), \
+                 mock.patch.object(server.urllib.request, "urlopen", return_value=Response(body)):
+                values = server._google_edr_sheet_values("ФОП")
+            self.assertEqual(len(values[1]), 9)
+            self.assertEqual(values[1][8], "23.10.2026 17:03:19")
+        for zone in ("Etc/GMT", "UTC", "Europe/Moscow"):
+            wrong_zone = {"properties": {"timeZone": zone},
+                          "sheets": [{"properties": {"title": "ФОП"}, "data": [
+                              {"startRow": 1, "startColumn": 0, "rowData": [{"values": cells}]}]}]}
+            with self.subTest(rejected_timezone=zone), \
+                 mock.patch.object(server, "google_edr_effective_enabled", return_value=True), \
+                 mock.patch.object(server, "_google_access_token", return_value="synthetic"), \
+                 mock.patch.object(server, "SANDBOX_MODE", False), \
+                 mock.patch.object(server.urllib.request, "urlopen", return_value=Response(wrong_zone)):
+                with self.assertRaisesRegex(ValueError, "Europe/Kyiv"):
+                    server._google_edr_sheet_values("ФОП")
 
     def test_runtime_google_status_uses_sandbox_destination_scope(self):
         con = mock.MagicMock()
