@@ -246,6 +246,14 @@ SUPPLIER_EDR_SYNC_STATE = {"running": False, "message": "Довідник ЄДР
                            "started_at": None, "updated_at": None, "processed": 0,
                            "inserted": 0, "updated": 0, "error": None,
                            "last_completed_at": None, "last_result": None, "last_message": None}
+SUPPLIER_EDR_SYNC_START_LOCK = threading.Lock()
+
+
+def _release_supplier_edr_sync_start(run_id: str, error: Exception, result: str) -> None:
+    with SUPPLIER_EDR_SYNC_START_LOCK:
+        if SUPPLIER_EDR_SYNC_STATE.get("run_id") == run_id:
+            SUPPLIER_EDR_SYNC_STATE.update(running=False, error=str(error),
+                message=f"Синхронізацію не запущено: {error}", last_result=result)
 SUPPLIER_NAZK_REVIEW_SYNC_STATE = {"running": False, "message": "Перевірки НАЗК ще не синхронізували",
                                    "started_at": None, "updated_at": None, "processed": 0,
                                    "inserted": 0, "updated": 0, "error": None,
@@ -5219,6 +5227,7 @@ def _edr_monitoring_rows() -> list[dict]:
                   "last_admission_date": verification["last_admission_date"],
                   "latest_application_date": edr_sync_v2.normalized_date(application.get("latest_application_date")),
                   "verification_date": checked,
+                  "verification_timestamp": verification["verification_timestamp"],
                   "verification_officer": verification["verification_officer"],
                   "verification_officer_raw": officer_raw,
                   "verification_event_type": verification["verification_event_type"],
@@ -5710,6 +5719,8 @@ def list_qualified_suppliers(params: dict) -> dict:
         item["edr_freshness_marker"] = canonical_state.get("marker", "⚪ Не перевірено")
         item["edr_freshness_bucket"] = canonical_state.get("bucket", "not_checked")
         item["edr_verification_date"] = canonical_state.get("verification_date", "")
+        item["edr_verification_timestamp"] = (
+            verification.get("occurred_at", "") if verification else "")
         item["edr_verification_officer"] = canonical_state.get("verification_officer", "")
         item["last_registry_event"] = latest_registry_events.get(item.get("code"), {})
         item["amcu_match"] = bool(code and code in amcu_codes)
@@ -12288,29 +12299,40 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
-            if SUPPLIER_EDR_SYNC_STATE["running"]:
-                return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
             fingerprint = str(payload.get("source_fingerprint") or "").strip().lower()
             if payload.get("confirmed") is not True or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
                 return self.send_json({"error": "Спочатку виконайте preview і явно підтвердьте той самий source fingerprint"}, 409)
             state_digest = str(payload.get("state_digest") or "").strip().lower()
             if not re.fullmatch(r"[0-9a-f]{64}", state_digest):
                 return self.send_json({"error": "Потрібен digest переглянутого стану PQM"}, 409)
+            with SUPPLIER_EDR_SYNC_START_LOCK:
+                if SUPPLIER_EDR_SYNC_STATE["running"]:
+                    return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
+                run_id = uuid.uuid4().hex
+                SUPPLIER_EDR_SYNC_STATE.update(running=True, run_id=run_id,
+                    message="Перевірка даних перед синхронізацією…", started_at=now_iso(),
+                    updated_at=None, error=None)
             try:
                 current_source = supplier_edr_source_snapshot()
                 if current_source["source_fingerprint"] != fingerprint:
-                    return self.send_json({"error": "Google source змінився; виконайте новий Preview"}, 409)
+                    raise ValueError("Google source змінився; виконайте новий Preview")
                 with db() as con:
                     current_plan = edr_sync_v2.build_preview(con, current_source)
                 if (edr_sync_v2.preview_state_digest(current_plan) != state_digest
                         or current_plan["conflicts"]):
-                    return self.send_json({"error": "Стан PQM змінився або є конфлікти; виконайте новий Preview"}, 409)
-            except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
+                    raise ValueError("Стан PQM змінився або є конфлікти; виконайте новий Preview")
+            except (GooglePhaseError, ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+                _release_supplier_edr_sync_start(run_id, exc, "rejected")
                 return self.send_json({"error": str(exc)}, 409)
-            SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
-                                           started_at=now_iso(), updated_at=None, error=None)
-            threading.Thread(target=supplier_edr_sync_worker,
-                             args=(fingerprint, self.auth_user, state_digest), daemon=True).start()
+            except Exception as exc:
+                _release_supplier_edr_sync_start(run_id, exc, "failed")
+                raise
+            try:
+                threading.Thread(target=supplier_edr_sync_worker,
+                    args=(fingerprint, self.auth_user, state_digest), daemon=True).start()
+            except Exception as exc:
+                _release_supplier_edr_sync_start(run_id, exc, "failed")
+                return self.send_json({"error": "Не вдалося запустити синхронізацію ЄДР"}, 503)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-export":
             payload = self.read_json()

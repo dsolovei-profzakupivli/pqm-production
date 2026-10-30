@@ -1,0 +1,22 @@
+{
+  "contract_id": "pqm_production_edr_display_and_apply_toasts_1b3ff_v1",
+  "parent_sha": "1b3ff305d65d8c8548e7f645700ca20975456daa",
+  "product_sha256": {
+    "server.py": "afabb952723e8da6a7c742dc9299d360cec57d00f0b050877d5c6dba210f58c3",
+    "app.js": "dd80a4822fed6d4cf2c5b9c2a4d3146a91cac38e7338f5ff721c6a1eff820846"
+  },
+  "protected_sha256": {
+    "edr_sync_v2.py": "f2af88550e03c78af3bbfd646d4f7713667bb9d2c703cbd32ef325bd024b6a0b",
+    "google_verification_contract.py": "607d21191525ca7c570026cb814787781107210b1f3cc920c0f21d875e537d25",
+    "nazk_workflow.py": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3",
+    "scheduler_runtime.py": "1acfc7219fda370ad495dbe58611d98503b67bc45bca7535d5b2fcca8fbe3bcc",
+    "operational_tasks.py": "726a10091d56fc560ac067a9e0230f6d04cfbeef48e15b4d2acf13aeccb0a46c",
+    "validation/fixtures/production_edr_google_nazk_ea3079_v1.json": "ffbd92ff26994d2e1e278ea64b16126aeb1159164178377632467bd609ded3e3"
+  },
+  "regression_sha256": {
+    "validation/local_release_20260911/test_prod_edr_display_toasts.py": "e536a8cc2bfc836793c6a976b3a41e1f72fb50f8b6ae073467195f6771bbf553",
+    "validation/local_release_20260911/test_production_edr_google_nazk_integrity.py": "cfd5e4b16deb176a9e689dab74c4ecfb7763202f106d55b92c74ef98c9852ba7",
+    "validation/fixtures/production_edr_google_nazk_ea3079_tree_v1.zip": "442f30c31812dc747939b3d9f00769a3741ad102fa558a2aff64eae367a97bd0",
+    "validation/production_edr_display_toasts_browser.cjs": "630321a28fbf1437eb2af98fc4144e55be3aad9deb5af1d31d43f23693858f62"
+  }
+}

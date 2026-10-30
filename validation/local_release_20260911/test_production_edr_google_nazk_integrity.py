@@ -1,8 +1,12 @@
 """Additive integrity and mutation contract for the Production EDR/NAZK patch."""
 import hashlib
 import json
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
+import zipfile
+from contextlib import contextmanager
 
 ROOT = Path.cwd()
 MANIFEST = Path('validation/fixtures/production_edr_google_nazk_ea3079_v1.json')
@@ -31,6 +35,35 @@ def load_manifest():
 
 
 class ProductionEdrGoogleNazkIntegrityTests(unittest.TestCase):
+    @contextmanager
+    def historical_tree(self, manifest):
+        """Test the pinned pre-display tree from its immutable source overlay."""
+        archive_path = Path('validation/fixtures/production_edr_google_nazk_ea3079_tree_v1.zip')
+        archive_sha256 = '442f30c31812dc747939b3d9f00769a3741ad102fa558a2aff64eae367a97bd0'
+        raw = archive_path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != archive_sha256:
+            raise AssertionError('Historical EDR tree overlay hash mismatch')
+        expected = {**manifest['product_sha256'], **manifest['protected_sha256'],
+                    **manifest['regression_sha256']}
+        with tempfile.TemporaryDirectory(prefix='pqm-production-edr-integrity-v1-') as temp:
+            root = Path(temp)
+            for relative in expected:
+                if relative in {'server.py', 'app.js'}:
+                    continue
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(Path.cwd() / relative, destination)
+            with zipfile.ZipFile(archive_path) as archive:
+                if set(archive.namelist()) != {'server.py', 'app.js'}:
+                    raise AssertionError('Unexpected historical EDR tree overlay members')
+                for relative in ('server.py', 'app.js'):
+                    content = archive.read(relative)
+                    self.assertEqual(digest(content, relative), expected[relative])
+                    destination = root / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(content)
+            yield root
+
     def test_additive_manifest_pins_exact_product_and_regression_scope(self):
         manifest = load_manifest()
         self.assertEqual(set(manifest['product_sha256']), {
@@ -58,16 +91,17 @@ class ProductionEdrGoogleNazkIntegrityTests(unittest.TestCase):
         manifest = load_manifest()
         pinned = {**manifest['product_sha256'], **manifest['protected_sha256'],
                   **manifest['regression_sha256']}
-        for relative, expected in pinned.items():
-            with self.subTest(path=relative):
-                content = (ROOT / relative).read_bytes()
-                self.assertEqual(digest(content, relative), expected)
-                if content:
-                    changed = bytearray(content)
-                    changed[len(changed) // 2] ^= 1
-                    self.assertNotEqual(digest(bytes(changed), relative), expected)
-                    self.assertNotEqual(digest(content + b'X', relative), expected)
-                    self.assertNotEqual(digest(content[:-1], relative), expected)
+        with self.historical_tree(manifest) as root:
+            for relative, expected in pinned.items():
+                with self.subTest(path=relative):
+                    content = (root / relative).read_bytes()
+                    self.assertEqual(digest(content, relative), expected)
+                    if content:
+                        changed = bytearray(content)
+                        changed[len(changed) // 2] ^= 1
+                        self.assertNotEqual(digest(bytes(changed), relative), expected)
+                        self.assertNotEqual(digest(content + b'X', relative), expected)
+                        self.assertNotEqual(digest(content[:-1], relative), expected)
 
 
 if __name__ == '__main__':
