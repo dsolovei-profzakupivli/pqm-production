@@ -15,6 +15,10 @@ import unicodedata
 from datetime import date, datetime
 
 import supplier_activity
+from google_verification_contract import (
+    incoming_verification_gate, google_verification_timestamp,
+    verification_instant, verification_timestamp,
+)
 
 
 SHEETS = ("ФОП", "ЮО")
@@ -217,7 +221,10 @@ def source_item(row: dict) -> dict:
         "manager_name": str(row.get("ПІБ для перевірки") or "").strip(),
         # This Google-owned placeholder is not factual EDR evidence.
         "edr_status": "" if status == "Немає інформації" else status,
-        "edr_checked_at": normalized_date(row.get("Дата перевірки")),
+        # Keep the source value for the strict gate; only exact timestamps are
+        # persisted as instants. Date-only history is never assigned midnight.
+        "edr_checked_at": google_verification_timestamp(row.get("Дата перевірки")),
+        "edr_checked_at_source": row.get("Дата перевірки"),
         "termination_decision_details": str(row.get("Реквізити рішення про припинення") or "").strip(),
         "termination_record_date": normalized_date(row.get("Дата запису")),
         "termination_record_number": str(row.get("Номер запису") or "").strip(),
@@ -601,6 +608,8 @@ def _protected_factual_at_or_after(ledger: list[dict], day: str) -> str:
 
 def build_preview(con, snapshot: dict) -> dict:
     """Return a factual field-level diff without issuing any SQL write."""
+    if tuple(snapshot.get("headers") or ()) != HEADERS:
+        raise ValueError("Google EDR source columns do not match the canonical A:O structure")
     rows = snapshot["rows"]
     eligible = _eligible_codes(con)
     profiles = _profiles(con)
@@ -632,9 +641,12 @@ def build_preview(con, snapshot: dict) -> dict:
         "current_supplier_name_changes", "verification_event_changes",
         "termination_changes", "conflicts", "newer_verification_accepted",
         "initial_verification_accepted", "same_date_same_officer_equivalent",
-        "same_date_officer_update_accepted", "older_verification_preserved",
-        "blank_verification_preserved", "factual_status_protected",
+        "same_datetime_officer_preserved", "older_verification_preserved",
+        "blank_verification_preserved", "date_only_verification_preserved",
+        "current_date_only_same_day_blocked", "factual_status_protected",
         "google_mirror_updates", "google_mirror_clears",
+        "eligible", "skipped", "conflict", "skipped_unverified_timestamp",
+        "skipped_ineligible",
     )}
     summary["total_rows"] = len(rows)
     items, conflicts = [], []
@@ -652,29 +664,39 @@ def build_preview(con, snapshot: dict) -> dict:
         if legacy: summary["legacy_ineligible"] += 1
         old = profiles.get(code, {})
         current = verifications.get(code, {})
-        incoming_day = incoming["edr_checked_at"]
+        incoming_day = normalized_date(incoming["edr_checked_at"])
         current_day = current.get("verification_date", "")
         current_officer = current.get("verification_officer_raw", "")
-        if not incoming_day:
+        current_gate_value = (current.get("verification_timestamp") or old.get("edr_checked_at")
+                              or current_day)
+        raw_checked_at = incoming.get("edr_checked_at_source")
+        datetime_gate = incoming_verification_gate(
+            raw_checked_at if str(raw_checked_at or "").strip() else None,
+            current_gate_value, require_time=True)
+        if datetime_gate["reason"] in {"incoming_blank", "incoming_invalid", "current_invalid"}:
             verification_decision = "blank_verification_preserved"
-        elif current_day and incoming_day < current_day:
+        elif datetime_gate["reason"] == "incoming_date_only":
+            verification_decision = "date_only_verification_preserved"
+        elif datetime_gate["reason"] == "older":
             verification_decision = "older_verification_preserved"
-        elif current_day and incoming_day == current_day:
+        elif datetime_gate["reason"] == "current_date_only_not_newer_by_day":
+            verification_decision = "current_date_only_same_day_blocked"
+        elif datetime_gate["reason"] == "equal":
             verification_decision = ("same_date_same_officer_equivalent"
                 if normalize_person(incoming["edr_officer"]) == normalize_person(current_officer)
-                else "same_date_officer_update_accepted")
+                else "same_datetime_officer_preserved")
         else:
-            verification_decision = "newer_verification_accepted" if current_day else "initial_verification_accepted"
-        older = verification_decision == "older_verification_preserved"
+            verification_decision = "newer_verification_accepted" if current_gate_value else "initial_verification_accepted"
+        older = not datetime_gate["accepted"]
         protected_status = _protected_factual_at_or_after(ledger.get(code, []), incoming_day)
         status_protected = bool(incoming["edr_status"] and protected_status
                                 and not _same("edr_status", incoming["edr_status"], protected_status))
         summary[verification_decision] += 1
         summary["factual_status_protected"] += int(status_protected)
-        current_manager = managers.get(code, {}).get("manager_name") or ""
+        current_manager = managers.get(code, {}).get("manager_name") or old.get("manager_name", "") or ""
         changes = []
         manager_classification = {"kind": "same", "conflicting_evidence": []}
-        if incoming["manager_name"] and not older:
+        if incoming["manager_name"] and datetime_gate["accepted"]:
             manager_classification = classify_manager_transition(
                 managers.get(code, {}), known_managers.get(code, {}), incoming["manager_name"],
                 manager_evidence.get(code, ()), manager_history.get(code, ()))
@@ -691,52 +713,86 @@ def build_preview(con, snapshot: dict) -> dict:
                 else:
                     summary["manager_identity_changes"] += 1
                     summary["manager_changes"] += 1
-        if incoming["edr_status"] and not older and not status_protected and not _same("edr_status", old.get("edr_status"), incoming["edr_status"]):
+        if incoming["edr_status"] and datetime_gate["accepted"] and not status_protected and not _same("edr_status", old.get("edr_status"), incoming["edr_status"]):
             changes.append("edr_status"); summary["edr_status_changes"] += 1
-        if incoming["full_name"] and not older and not _same("full_name", old.get("full_name"), incoming["full_name"]):
+        if incoming["full_name"] and datetime_gate["accepted"] and not _same("full_name", old.get("full_name"), incoming["full_name"]):
             changes.append("full_name"); summary["full_name_changes"] += 1
-        if incoming["short_name"] and not older and not _same("short_name", old.get("short_name"), incoming["short_name"]):
+        if incoming["short_name"] and datetime_gate["accepted"] and not _same("short_name", old.get("short_name"), incoming["short_name"]):
             changes.append("short_name"); summary["short_name_changes"] += 1
         old_current_name = current_supplier_name(old.get("full_name"), applications.get(code))
-        new_current_name = current_supplier_name((incoming["full_name"] if not older else "") or old.get("full_name"), applications.get(code))
+        new_current_name = current_supplier_name((incoming["full_name"] if datetime_gate["accepted"] else "") or old.get("full_name"), applications.get(code))
         if old_current_name != new_current_name:
             summary["current_supplier_name_changes"] += 1
         termination_fields = ("termination_decision_details", "termination_record_date", "termination_record_number")
-        explicit_clear = any(old.get(field) and not incoming[field] for field in termination_fields)
-        termination_field_changes = [field for field in termination_fields
-            if not _same(field, old.get(field), incoming[field])]
-        termination_changed = bool(termination_field_changes)
-        if termination_changed:
-            changes.extend(field for field in termination_field_changes if field not in changes)
-            summary["termination_changes"] += 1
-        if not _same("edr_notes", old.get("edr_notes"), incoming["edr_notes"]):
-            changes.append("edr_notes")
         mirror_fields = (*termination_fields, "edr_notes")
-        summary["google_mirror_updates"] += sum(1 for field in mirror_fields
-            if not _same(field, old.get(field), incoming[field]) and incoming[field])
-        summary["google_mirror_clears"] += sum(1 for field in mirror_fields
-            if not _same(field, old.get(field), incoming[field]) and not incoming[field])
+        mirror_field_changes, mirror_clear_fields = [], []
+        for field in mirror_fields:
+            current_value = old.get(field, "") or ""
+            source_value = incoming[field]
+            if _same(field, current_value, source_value):
+                continue
+            if datetime_gate["accepted"]:
+                action = "clear" if not source_value else "update"
+                mirror_field_changes.append({"field": field, "current": current_value,
+                    "google": source_value or "", "planned": source_value or "", "action": action,
+                    "reason": "newer_google_verification"})
+                changes.append(field)
+                if action == "clear" and current_value:
+                    mirror_clear_fields.append(field)
+            elif datetime_gate["reason"] in {"incoming_blank", "incoming_date_only", "incoming_invalid"}:
+                mirror_field_changes.append({"field": field, "current": current_value,
+                    "google": source_value or "", "planned": current_value,
+                    "action": "skipped", "reason": "verification_timestamp_unavailable"})
+            else:
+                mirror_field_changes.append({"field": field, "current": current_value,
+                    "google": source_value or "", "planned": current_value,
+                    "action": "blocked", "reason": "verification_timestamp_not_newer"})
+                row_conflicts.append("mirror_change_requires_strictly_newer_verification_timestamp")
+        termination_field_changes = [field for field in termination_fields if field in changes]
+        if termination_field_changes:
+            summary["termination_changes"] += 1
+        explicit_clear = any(field in termination_fields for field in mirror_clear_fields)
+        summary["google_mirror_updates"] += sum(change["action"] == "update" for change in mirror_field_changes)
+        summary["google_mirror_clears"] += sum(change["action"] == "clear" for change in mirror_field_changes)
         snapshot_hash = row_snapshot_hash(incoming)
-        pair_accepted = verification_decision in {"newer_verification_accepted", "initial_verification_accepted",
-                                                  "same_date_officer_update_accepted"}
-        same_day_status_evidence = (verification_decision == "same_date_same_officer_equivalent"
-            and not protected_status and incoming["edr_status"]
-            and (not _same("edr_status", old.get("edr_status"), incoming["edr_status"])
-                 or incoming["edr_status"] in LEGACY_GOOGLE_FACTUAL_STATUSES))
-        event_changed = bool((pair_accepted or same_day_status_evidence)
+        event_changed = bool(datetime_gate["accepted"]
                              and incoming["edr_checked_at"] and incoming["edr_officer"]
                              and not _event_exists(con, code, snapshot_hash))
         if event_changed:
             summary["verification_event_changes"] += 1
         evidence_changes = any(field not in (*termination_fields, "edr_notes") for field in changes) or event_changed
-        if evidence_changes and not incoming["edr_checked_at"]:
-            row_conflicts.append("changed_values_without_verification_date")
         if evidence_changes and not incoming["edr_officer"]:
             row_conflicts.append("changed_values_without_officer")
-        if str(raw.get("Дата перевірки") or "").strip() and not incoming["edr_checked_at"]:
-            row_conflicts.append("malformed_verification_date")
+        if datetime_gate["reason"] == "current_invalid":
+            row_conflicts.append("malformed_current_verification_datetime")
+        if (datetime_gate["reason"] in {"older", "equal", "current_date_only_not_newer_by_day"}
+                and any(value and not _same(field, (current_manager if field == "manager_name" else old.get(field, "")), value)
+                        for field, value in (("manager_name", incoming["manager_name"]),
+                                              ("edr_status", incoming["edr_status"]),
+                                              ("full_name", incoming["full_name"]),
+                                              ("short_name", incoming["short_name"])))):
+            row_conflicts.append("source_business_values_not_newer_than_pqm")
+        has_existing_facts = bool(current_manager or any(str(old.get(field) or "").strip() for field in (
+            "edr_status", "full_name", "short_name", *termination_fields, "edr_notes", "edr_officer")))
+        any_effective_change = bool(changes or event_changed)
+        if (datetime_gate["accepted"] and not current_gate_value and has_existing_facts
+                and any_effective_change):
+            row_conflicts.append("current_verification_date_missing")
         if str(raw.get("Дата запису") or "").strip() and not incoming["termination_record_date"]:
             row_conflicts.append("malformed_termination_record_date")
+
+        skip_reasons = []
+        if datetime_gate["reason"] in {"incoming_blank", "incoming_date_only", "incoming_invalid"}:
+            skip_reasons.append("verification_timestamp_unavailable")
+            skip_reasons.append(datetime_gate["reason"])
+        if not (code and (code in profiles or code in eligible)):
+            skip_reasons.append("supplier_not_apply_eligible")
+        row_state = ("conflict" if row_conflicts else "skipped" if skip_reasons else "eligible")
+        summary[row_state] += 1
+        summary["skipped_unverified_timestamp"] += int(
+            row_state == "skipped" and "verification_timestamp_unavailable" in skip_reasons)
+        summary["skipped_ineligible"] += int(
+            row_state == "skipped" and "supplier_not_apply_eligible" in skip_reasons)
         if row_conflicts:
             conflicts.append({"supplier_code": code, "source_sheet": incoming["source_sheet"],
                               "source_row": incoming["source_row"], "reasons": sorted(set(row_conflicts))})
@@ -751,8 +807,13 @@ def build_preview(con, snapshot: dict) -> dict:
                       "manager_previous_name": manager_classification.get("previous_name", current_manager),
                       "manager_resolution_source": known_managers.get(code, {}).get("resolution_source", ""),
                       "manager_conflicting_evidence": manager_classification["conflicting_evidence"],
-                      "termination_explicit_clear": explicit_clear, "snapshot_hash": snapshot_hash,
+                       "termination_explicit_clear": explicit_clear,
+                       "mirror_field_changes": mirror_field_changes,
+                       "mirror_clear_fields": mirror_clear_fields,
+                       "snapshot_hash": snapshot_hash,
                       "verification_decision": verification_decision,
+                       "datetime_gate": datetime_gate,
+                       "row_state": row_state, "skip_reasons": sorted(set(skip_reasons)),
                       "current_verification_date": current_day,
                       "current_verification_officer": current_officer,
                       "current_profile": old, "current_manager_name": current_manager,
@@ -761,6 +822,7 @@ def build_preview(con, snapshot: dict) -> dict:
                       "factual_status_protected": status_protected,
                       "conflicts": sorted(set(row_conflicts)), "incoming": incoming})
     summary["conflicts"] = len(conflicts)
+    summary["conflict"] = len(conflicts)
     return {"source_fingerprint": snapshot["source_fingerprint"], "summary": summary,
             "items": items, "conflicts": conflicts, "duplicate_codes": duplicate_codes,
             "previewed_at": datetime.now().astimezone().isoformat()}
@@ -776,9 +838,9 @@ def current_verification_event(con, supplier_code: str) -> dict | None:
     if _table_exists(con, "supplier_edr_profiles"):
         profile = con.execute("""SELECT supplier_code,edr_checked_at,edr_officer,source_sheet,source_row,synced_at
           FROM supplier_edr_profiles WHERE supplier_code=?""", (code,)).fetchone()
-        if profile and normalized_date(profile["edr_checked_at"]):
+        if profile and verification_instant(profile["edr_checked_at"])["kind"] == "datetime":
             candidates.append({"supplier_code": code, "event_type": "google_clarity_profile",
-              "occurred_at": normalized_date(profile["edr_checked_at"]),
+              "occurred_at": str(profile["edr_checked_at"] or "").strip(),
               "officer": profile["edr_officer"] or "", "source": "Google/Clarity profile snapshot",
               "source_submission_id": "", "source_sheet": profile["source_sheet"] or "",
               "source_row": int(profile["source_row"] or 0), "created_at": profile["synced_at"] or ""})
@@ -795,8 +857,8 @@ def current_verification_event(con, supplier_code: str) -> dict | None:
       JOIN application_fields af ON af.submission_id=s.id
       {qualification_join}
       WHERE DIGITS(s.supplier_code)=? AND af.protocol_decision='admit'""", (code,)):
-        occurred = normalized_date(row[1])
-        if occurred:
+        occurred = str(row[1] or "").strip()
+        if verification_instant(occurred)["kind"] == "datetime":
             candidates.append({"supplier_code": code, "event_type": "admission",
               "occurred_at": occurred, "officer": row[2] or "", "source": "PQM application",
               "source_submission_id": row[0], "source_sheet": "", "source_row": 0})
@@ -818,7 +880,9 @@ def _verification_event_sort_key(item: dict) -> tuple:
         if (isinstance(evidence, dict) and evidence.get("same_day_officer_update") is True
                 and str(item.get("source") or "").startswith("Google Sheets: ")):
             priority = 5
-    return (normalized_date(item.get("occurred_at")), priority, int(item.get("id") or 0))
+    parsed = verification_instant(item.get("occurred_at"))
+    instant = parsed["value"].isoformat() if parsed["kind"] == "datetime" else ""
+    return (instant, priority, int(item.get("id") or 0))
 
 
 def projected_verification_officer(con, value: str) -> str:
@@ -858,12 +922,12 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
         for row in con.execute(f"""SELECT * FROM supplier_edr_verification_events
           WHERE supplier_code IN ({placeholders})""", batch):
             item = dict(row)
-            if normalized_date(item.get("occurred_at")):
+            if verification_instant(item.get("occurred_at"))["kind"] == "datetime":
                 candidates[item["supplier_code"]].append(item)
         for row in con.execute(f"""SELECT supplier_code,edr_checked_at,edr_officer,synced_at
           FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch):
-            checked = normalized_date(row["edr_checked_at"])
-            if checked:
+            checked = str(row["edr_checked_at"] or "").strip()
+            if verification_instant(checked)["kind"] == "datetime":
                 candidates[row["supplier_code"]].append({
                     "event_type": "google_clarity_profile", "occurred_at": checked,
                     "officer": row["edr_officer"] or "", "source": "Google/Clarity profile snapshot",
@@ -875,10 +939,11 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
           FROM submissions s JOIN application_fields af ON af.submission_id=s.id
           {qualification_join}
           WHERE af.protocol_decision='admit' AND s.supplier_code IN ({placeholders})""", batch):
-            code, checked = row["supplier_code"], normalized_date(row["raw_date"])
+            code, checked = row["supplier_code"], str(row["raw_date"] or "").strip()
             previous = admissions.get(code)
-            if checked and (not previous or (checked, row["submission_id"]) >
-                            (previous["occurred_at"], previous["submission_id"])):
+            if verification_instant(checked)["kind"] == "datetime" and (
+                    not previous or (verification_instant(checked)["value"], row["submission_id"]) >
+                    (verification_instant(previous["occurred_at"])["value"], previous["submission_id"])):
                 admissions[code] = {"occurred_at": checked, "submission_id": row["submission_id"],
                                     "officer": row["officer"] or ""}
     result = {}
@@ -890,7 +955,9 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
               "created_at": admission["submission_id"]})
         selected = max(candidates[code], key=_verification_event_sort_key) if candidates[code] else {}
         raw_officer = str(selected.get("officer") or "").strip()
-        result[code] = {"verification_date": normalized_date(selected.get("occurred_at")),
+        selected_at = str(selected.get("occurred_at") or "").strip()
+        result[code] = {"verification_date": normalized_date(selected_at),
+          "verification_timestamp": selected_at,
           "verification_officer": projected_verification_officer(con, raw_officer),
           "verification_officer_raw": raw_officer,
           "verification_event_type": selected.get("event_type", ""),
@@ -1248,6 +1315,11 @@ def materialize_effective_admission(con, contract_id: str, created_at: str) -> b
 def effective_profile_fields(plan: dict, old: dict) -> dict:
     """The one canonical field decision shared by Apply and SANDBOX review."""
     item = plan["incoming"]
+    if plan.get("datetime_gate", {}).get("accepted") is False:
+        return {field: old.get(field, "") for field in (
+            "full_name", "short_name", "manager_name", "edr_status", "edr_checked_at",
+            "termination_decision_details", "termination_record_date", "termination_record_number",
+            "edr_officer", "edr_notes")}
     effective = {}
     for field in ("full_name", "short_name", "manager_name", "edr_status", "edr_checked_at",
                   "termination_decision_details", "termination_record_date",
@@ -1255,6 +1327,8 @@ def effective_profile_fields(plan: dict, old: dict) -> dict:
         value = item.get(field, "")
         if field in {"termination_decision_details", "termination_record_date",
                      "termination_record_number", "edr_notes"}:
+            # Google-owned full mirror, including explicit clears, only after
+            # datetime_gate accepted a strictly newer source verification.
             effective[field] = value
         elif field in {"edr_checked_at", "edr_officer"} and plan["verification_decision"] == "older_verification_preserved":
             effective[field] = (plan["current_verification_date"] if field == "edr_checked_at"
@@ -1275,7 +1349,8 @@ def preview_state_digest(preview: dict) -> str:
     business = [{key: plan.get(key) for key in (
         "supplier_code", "current_profile", "current_manager_name", "current_verification_date",
         "current_verification_officer", "verification_decision", "factual_status_protected",
-        "changed_fields", "verification_event_change", "conflicts", "incoming")}
+        "changed_fields", "verification_event_change", "conflicts", "incoming",
+        "datetime_gate", "row_state", "skip_reasons")}
         for plan in preview["items"]]
     encoded = json.dumps(business, ensure_ascii=False, sort_keys=True, default=str,
                          separators=(",", ":")).encode("utf-8")
@@ -1285,7 +1360,8 @@ def preview_state_digest(preview: dict) -> str:
 def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, actor: str,
           synced_at: str, sync_manager=None, enrich_manager=None, establish_manager=None,
           reestablish_manager=None,
-          refresh_manager_controls=None, expected_state_digest: str | None = None) -> dict:
+          refresh_manager_controls=None, reconcile_manager_nazk=None,
+          expected_state_digest: str | None = None) -> dict:
     """Apply only a confirmed, unchanged snapshot; caller owns the transaction."""
     if not confirmed:
         raise PermissionError("Потрібне явне підтвердження застосування preview")
@@ -1304,10 +1380,20 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "manager_reestablishments": 0,
               "manager_removals": 0,
               "verification_events": 0,
+              "nazk_manager_reconciliations": 0,
               "termination_clears": 0, "termination_events": 0,
+              "skipped_no_verification_timestamp": 0, "skipped_conflicts": 0,
               "skipped_ineligible_new": 0, "changed_fields": {}}
     for plan in preview["items"]:
         item = plan["incoming"]
+        if plan.get("row_state") == "skipped":
+            counts["skipped_no_verification_timestamp"] += int(
+                "verification_timestamp_unavailable" in plan.get("skip_reasons", []))
+            counts["skipped_ineligible_new"] += int(not plan["apply_allowed"])
+            continue
+        if plan.get("row_state") == "conflict":
+            counts["skipped_conflicts"] += 1
+            continue
         if not plan["apply_allowed"]:
             counts["skipped_ineligible_new"] += 1
             continue
@@ -1366,27 +1452,30 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 changed_fields=plan["changed_fields"], snapshot=event_snapshot, created_at=synced_at))
         if plan["manager_change_kind"] == "representation_enrichment" and enrich_manager:
             result = enrich_manager(con, item["supplier_code"], effective["manager_name"],
-                                    f"Google Sheets: {item['source_sheet']}", item["edr_checked_at"])
+                                    f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
             if result.get("enriched"):
                 counts["manager_representation_enrichments"] += 1
         elif plan["manager_change_kind"] == "manager_reestablished" and (reestablish_manager or establish_manager):
             callback = reestablish_manager or establish_manager
             result = callback(con, item["supplier_code"], effective["manager_name"],
-                              f"Google Sheets: {item['source_sheet']}", item["edr_checked_at"])
+                              f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
             if result.get("reestablished") or result.get("established"):
                 counts["manager_reestablishments"] += 1
         elif plan["manager_change_kind"] == "missing_current_manager" and establish_manager:
             result = establish_manager(con, item["supplier_code"], effective["manager_name"],
-                                       f"Google Sheets: {item['source_sheet']}", item["edr_checked_at"])
+                                       f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
             if result.get("established"):
                 counts["newly_established_managers"] += 1
         elif plan["manager_change_kind"] == "real_identity_change" and sync_manager:
             result = sync_manager(con, item["supplier_code"], effective["manager_name"],
-                                  f"Google Sheets: {item['source_sheet']}", item["edr_checked_at"])
+                                  f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
             if result.get("changed"):
                 counts["manager_changes"] += 1
                 counts["manager_identity_changes"] += 1
                 if refresh_manager_controls:
                     refresh_manager_controls(con, item["supplier_code"])
+                if reconcile_manager_nazk:
+                    reconcile_manager_nazk(con, item["supplier_code"])
+                    counts["nazk_manager_reconciliations"] += 1
     return {**counts, "source_fingerprint": expected_fingerprint,
             "processed": preview["summary"]["total_rows"], "preview_summary": preview["summary"]}

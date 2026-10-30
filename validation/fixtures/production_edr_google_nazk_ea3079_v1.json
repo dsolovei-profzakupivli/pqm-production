@@ -1,0 +1,39 @@
+{
+  "contract_id": "pqm_production_edr_google_nazk_ea3079_v1",
+  "baseline_sha": "ea3079a85de5acff1157f067fa62bd9ecd346d04",
+  "source_candidate_sha": "40da14517de6988f98dd5d49b1d9e1c21f928290",
+  "product_sha256": {
+    "google_verification_contract.py": "607d21191525ca7c570026cb814787781107210b1f3cc920c0f21d875e537d25",
+    "edr_sync_v2.py": "f2af88550e03c78af3bbfd646d4f7713667bb9d2c703cbd32ef325bd024b6a0b",
+    "server.py": "849020f2e967627534b00632b04bd19648da750a7b178512f32c454b16078512",
+    "edr_sync_review.py": "c25dfa0f9cdf3972cd7a6a6aeea0019d12a6bfddcc5002a8ea1d4ad5bfd7f00f",
+    "app.js": "74613bd10918722035d148301d642d6406b63be2ea3c1fb3b229fbb8942a576d"
+  },
+  "protected_sha256": {
+    "nazk_workflow.py": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3",
+    "scheduler_runtime.py": "1acfc7219fda370ad495dbe58611d98503b67bc45bca7535d5b2fcca8fbe3bcc",
+    "operational_tasks.py": "726a10091d56fc560ac067a9e0230f6d04cfbeef48e15b4d2acf13aeccb0a46c",
+    "supplier_activity.py": "064e7d6fc70cbbddf8f9e78f60fd6e509191997197fbb7949122a279a984589b",
+    "templates/nazk_supplier_request.docx": "1be3b5804af401eb8a87a7b35c9a798850ddaf3b11b08495c763ba2eccb83b77",
+    "templates/nazk_authority_request.docx": "c5649e036601364eb9a3fbe37cd49cfea0a4b9d3c8f9696ca0684f490b6801f5"
+  },
+  "regression_sha256": {
+    "validation/local_release_20260911/test_edr_sync_v2.py": "b50b4110cb96333fab6d9ef8c92f66b6c12c28a6d8023b268a8a9d9cea4764d6",
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py": "f12610f0fbe46950ac1b1146e477aedcb8f3eba668fdf2ba2f8f4285d0d36b29",
+    "validation/local_release_20260911/test_production_nazk_messages_integrity.py": "b26655fcbc11fddb26487663e864b7c89fc7068805ce0823f98810615c8ed9a7",
+    "validation/local_release_20260911/test_single_supplier_edr_workflow.py": "6afe1fc21caa1149cc014f658b9488939b4d41e5ebef801f4d31cfa7a49c2b19",
+    "validation/local_release_20260911/test_prod_edr_review_promotion.py": "e8a4bfeaf4f18fff1928f258ced35f1b1faba78fe3ba574bc41d111f1fe8b182",
+    "validation/local_release_20260911/test_sandbox_edr_review.py": "66cbfc210eb5db6461305546edb4617641d46971140a69ebc16d15f20d5799d9",
+    "validation/local_release_20260911/test_supplier_edr_dates.py": "714e1efce21a921611de23bce2b9310d22396def1188f58af7e1a163f8957278",
+    "validation/local_release_20260911/test_supplier_edr_filter.py": "1310a8820f6abac8abb9b814877c1839051a2a94928ffff39ad329123abc5b45",
+    "validation/local_release_20260911/test_edr_preview_skip_contract.py": "c484f78c57fa19fbed836b9bfc876f107b28389f6ed8f48bc5c4e3c842f2f373",
+    "validation/local_release_20260911/test_google_verification_contract.py": "46f57b8407b1ac63ad7ceeae41e30435babeb4b4a93f3cd64461ac93c12216df",
+    "validation/local_release_20260911/test_production_edr_google_nazk_reconcile.py": "a1143eb6701ff5808e81da71955847551310931922643fe5b14f873e870287c2",
+    "validation/fixtures/production_nazk_messages_integrated_f9eb8ed_tree_v1.zip": "783324609e872a4ad23f7db39badb47d26294f09239af48634610cf9807a066d"
+  },
+  "historical_overlay": {
+    "commit": "ea3079a85de5acff1157f067fa62bd9ecd346d04",
+    "archive": "validation/fixtures/production_nazk_messages_integrated_f9eb8ed_tree_v1.zip",
+    "sha256": "783324609e872a4ad23f7db39badb47d26294f09239af48634610cf9807a066d"
+  }
+}

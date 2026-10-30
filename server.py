@@ -4268,6 +4268,50 @@ def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHE
         _raise_google_phase_error("sheets_values_read", exc)
 
 
+def _google_edr_sheet_values(sheet_name: str) -> list[list]:
+    """Read the canonical EDR grid while preserving its displayed check timestamp."""
+    if sheet_name not in SUPPLIER_EDR_SHEETS:
+        raise PermissionError("Unknown EDR source tab")
+    if not google_edr_effective_enabled():
+        raise PermissionError("Google integration вимкнено адміністратором")
+    params = urllib.parse.urlencode({
+        "ranges": f"'{sheet_name}'!A:O", "includeGridData": "true",
+        "fields": "properties(timeZone),sheets(properties(title),data(startRow,startColumn,rowData(values(effectiveValue,formattedValue))))",
+    })
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{params}"
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            body = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        _raise_google_phase_error("edr_grid_read", exc)
+    sheets = body.get("sheets", [])
+    if len(sheets) != 1 or sheets[0].get("properties", {}).get("title") != sheet_name:
+        raise ValueError("Google EDR source tab identity mismatch")
+    if body.get("properties", {}).get("timeZone") not in {"Europe/Kyiv", "Europe/Kiev"}:
+        raise ValueError("Google EDR spreadsheet timezone must be Europe/Kyiv")
+    rows = {}
+    for data in sheets[0].get("data", []):
+        if data.get("startColumn", 0) != 0:
+            raise ValueError("Google EDR source column mismatch")
+        for offset, raw in enumerate(data.get("rowData", [])):
+            number = data.get("startRow", 0) + offset
+            if number in rows:
+                raise ValueError("Google EDR overlapping grid rows")
+            values = []
+            for column, cell in enumerate(raw.get("values", [])[:15]):
+                effective = cell.get("effectiveValue", {})
+                if "errorValue" in effective:
+                    raise ValueError("Google EDR source contains a cell error")
+                if column == 8 and number > 0:
+                    values.append(cell.get("formattedValue", ""))
+                else:
+                    values.append(cell.get("formattedValue", effective.get("stringValue", "")))
+            rows[number] = values
+    return [rows.get(index, []) for index in range(max(rows, default=-1) + 1)]
+
+
 def sandbox_google_row_navigation_enabled() -> bool:
     """Keep the read-only card route's explicit availability contract separate
     from destination-based authorization of SANDBOX Google writes.
@@ -4496,6 +4540,40 @@ def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_c
     return len(rows)
 
 
+def reconcile_supplier_nazk_after_edr_manager_change(
+        con: sqlite3.Connection, supplier_code: str,
+        actor: str = "PQM confirmed EDR manager change") -> dict:
+    """Reconcile one supplier from persisted NAZK data after an applied manager change.
+
+    This path performs no registry fetch. Existing NAZK task history and the
+    operational task helpers remain the sole source of cancellation/materialization.
+    """
+    code = re.sub(r"\D", "", str(supplier_code or ""))
+    if not code:
+        return {"skipped": "missing_supplier_code", "cancelled_old_manager": 0,
+                "cancelled_inactive_supplier": 0, "checks_created": 0,
+                "tasks_created": 0, "tasks_existing": 0}
+    cancelled_manager = operational_tasks.reconcile_irrelevant_nazk_managers(
+        con, actor=actor, supplier_codes=[code])
+    active = operational_tasks._active_application_map(con).get(code, [])
+    cancelled_inactive = operational_tasks.reconcile_stale_nazk_tasks(
+        con, actor=actor, supplier_codes=[code], active_applications={code: active})
+    if not active:
+        return {"skipped": "no_effective_active_qualifications",
+                "cancelled_old_manager": cancelled_manager["cancelled"],
+                "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+                "checks_created": 0, "tasks_created": 0, "tasks_existing": 0}
+    checks = reconcile_active_supplier_nazk(
+        con, apply=True, supplier_codes=[code])
+    tasks = operational_tasks.materialize_nazk_tasks(
+        con, actor=actor, supplier_codes=[code], active_applications={code: active})
+    return {"skipped": None,
+            "cancelled_old_manager": cancelled_manager["cancelled"],
+            "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+            "checks_created": sum(bool(item.get("created")) for item in checks.get("items", [])),
+            "tasks_created": tasks["created"], "tasks_existing": tasks["existing"]}
+
+
 def sync_supplier_managers_from_edr() -> dict:
     """Idempotently seed/update manager history from the current EDR directory."""
     created = changed = unchanged = removed = missing = skipped_blank = 0
@@ -4702,7 +4780,7 @@ def _supplier_edr_rows(sheet_name: str, gid: str) -> list[dict]:
 def supplier_edr_source_snapshot() -> dict:
     """Read both canonical tabs and fingerprint their exact values as one revision."""
     return edr_sync_v2.source_snapshot({
-        sheet_name: _google_sheet_values(sheet_name)
+        sheet_name: _google_edr_sheet_values(sheet_name)
         for sheet_name in SUPPLIER_EDR_SHEETS
     }, spreadsheet_id=SUPPLIER_EDR_SHEET_ID)
 
@@ -4802,6 +4880,7 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                 establish_manager=establish_current_supplier_manager,
                 reestablish_manager=reestablish_current_supplier_manager,
                 refresh_manager_controls=refresh_current_submission_nazk_controls,
+                reconcile_manager_nazk=reconcile_supplier_nazk_after_edr_manager_change,
                 expected_state_digest=expected_state_digest,
             )
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,

@@ -31,7 +31,7 @@ def database():
     return con
 
 
-def row(code="12345678", status="Зареєстровано", checked="15.09.2026", officer="УО",
+def row(code="12345678", status="Зареєстровано", checked="15.09.2026 12:00:00", officer="УО",
         manager="НОВИЙ КЕРІВНИК"):
     values = ["", code, "Заявка", manager, status, "Активний", "", "", checked,
               "", "", officer, "", "ПОВНА НАЗВА", "СКОРОЧЕНА НАЗВА"]
@@ -54,7 +54,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('application-1', code, 'Заявка', '2026-09-01'))
         con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
                     ('application-1', 'admit', '2026-09-02', 'УО'))
-        google_row = row(code=code, checked='15.09.2026')
+        google_row = row(code=code, checked='15.09.2026 12:00:00')
         source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)],
                                        'ЮО': [list(sync.HEADERS), google_row]})
         plan = sync.build_preview(con, source)
@@ -105,9 +105,9 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_unrelated_row_move_does_not_migrate_legacy_status(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?)",
-                    ('12345678', '✅ Зареєстровано', 'ФОП', 12, 'old'))
-        values = row(checked='')
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?,?)",
+                    ('12345678', '✅ Зареєстровано', '2026-09-01', 'ФОП', 12, 'old'))
+        values = row(checked='15.09.2026 12:00:00')
         values[3] = values[4] = ''
         values[13] = values[14] = ''
         source = snapshot(values)
@@ -119,8 +119,8 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_google_status_is_canonical_on_existing_profile_update(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
-                    ('12345678', 'Припинено', 'old'))
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,synced_at) VALUES(?,?,?,?)",
+                    ('12345678', 'Припинено', '2026-09-14T09:00:00+03:00', 'old'))
         source = snapshot(row(status='✅ Зареєстровано'))
         self.apply_observation(con, source)
         self.assertEqual(con.execute('SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code=?',
@@ -128,8 +128,8 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_equivalent_google_status_does_not_bulk_normalize_legacy_profiles(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,synced_at) VALUES(?,?,?)",
-                    ('12345678', '✅Зареєстровано', 'old'))
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,synced_at) VALUES(?,?,?,?)",
+                    ('12345678', '✅Зареєстровано', '2026-09-14T09:00:00+03:00', 'old'))
         source = snapshot(row(status='Зареєстровано'))
         preview = sync.build_preview(con, source)
         self.assertEqual(preview['summary']['edr_status_changes'], 0)
@@ -158,9 +158,9 @@ class EdrSyncV2Tests(unittest.TestCase):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")
         self.apply_observation(con, snapshot(row()))
-        new_date = snapshot(row(checked='16.09.2026'))
+        new_date = snapshot(row(checked='16.09.2026 12:00:00'))
         self.assertEqual(self.apply_observation(con, new_date)['verification_events'], 1)
-        new_business = snapshot(row(checked='16.09.2026', status='Припинено'))
+        new_business = snapshot(row(checked='16.09.2026 12:00:01', status='Припинено'))
         self.assertEqual(self.apply_observation(con, new_business)['verification_events'], 1)
         self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_edr_verification_events').fetchone()[0], 3)
 
@@ -177,7 +177,7 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_blank_source_profile_preservation_does_not_change_event_hash(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,synced_at) VALUES('12345678','KNOWN FULL NAME','old')")
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,edr_checked_at,synced_at) VALUES('12345678','KNOWN FULL NAME','2026-09-14T09:00:00+03:00','old')")
         values = row()
         values[13] = ''
         source = snapshot(values)
@@ -239,7 +239,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_preview_splits_identity_changes_from_representation_enrichments(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
-          (supplier_code,manager_name,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','old')""")
+          (supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','2026-09-14T09:00:00+03:00','old')""")
         con.execute("""INSERT INTO supplier_managers
           (supplier_code,manager_name,is_current,updated_at,created_at)
           VALUES ('12345678','ТКАЧЕНКО Н.М.',1,'old','old')""")
@@ -252,7 +252,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_preview_uses_supplier_scoped_full_name_as_conflicting_evidence(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
-          (supplier_code,manager_name,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','old')""")
+          (supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','2026-09-14T09:00:00+03:00','old')""")
         con.execute("INSERT INTO submissions VALUES ('s1','12345678','OLD','2026-09-01')")
         con.execute("""ALTER TABLE application_fields ADD COLUMN manager_name TEXT DEFAULT ''""")
         con.execute("""INSERT INTO application_fields
@@ -266,7 +266,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_enrichment_apply_does_not_call_change_or_nazk_refresh(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
-          (supplier_code,manager_name,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','old')""")
+          (supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','2026-09-14T09:00:00+03:00','old')""")
         con.execute("""INSERT INTO supplier_managers
           (supplier_code,manager_name,is_current,updated_at,created_at)
           VALUES ('12345678','ТКАЧЕНКО Н.М.',1,'old','old')""")
@@ -284,7 +284,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_missing_manager_apply_creates_one_current_row_without_nazk_refresh(self):
         import server
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES ('12345678','old')")
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,synced_at) VALUES ('12345678','2026-09-14T09:00:00+03:00','old')")
         source = snapshot(row(manager="ЗАЙЧУК СЕРГІЙ ВАЛЕНТИНОВИЧ"))
         refreshes = []
         first = sync.apply(con, source, source["source_fingerprint"], confirmed=True,
@@ -324,7 +324,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("""INSERT INTO application_fields
           (submission_id,protocol_decision,manager_name,manager_name_source)
           VALUES ('s1','admit','ЗАЙЧУК СЕРГІЙ ВАЛЕНТИНОВИЧ','manual')""")
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES ('12345678','old')")
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,synced_at) VALUES ('12345678','2026-09-14T09:00:00+03:00','old')")
         source = snapshot(row(manager="ЗАЙЧУК СЕРГІЙ ВАЛЕНТИНОВИЧ"))
         preview = sync.build_preview(con, source)
         plan = preview["items"][0]
@@ -448,7 +448,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         import server
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
-          (supplier_code,manager_name,synced_at) VALUES ('12345678','ОСОБА А','old')""")
+          (supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','ОСОБА А','2026-08-01','old')""")
         con.execute("""INSERT INTO supplier_managers
           (supplier_code,manager_name,normalized_name,valid_from,valid_to,is_current,source,updated_at,created_at)
           VALUES ('12345678','ОСОБА А','особа а','2026-08-01',NULL,1,'ЄДР','2026-08-01','2026-08-01')""")
@@ -516,7 +516,7 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_manager_observed_at_comes_from_source(self):
         con = database()
-        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,synced_at) VALUES ('12345678','СТАРИЙ','old')")
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','СТАРИЙ','2026-09-14T09:00:00+03:00','old')")
         seen = []
         source = snapshot(row())
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin",

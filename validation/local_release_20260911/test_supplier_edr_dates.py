@@ -41,19 +41,19 @@ class SupplierEdrDateTests(unittest.TestCase):
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,synced_at) VALUES('30067771','17.08.2026','2026-08-21T00:00:00+00:00')")
         server.sync_current_supplier_manager(con,'30067771','ТКАЧ ОЛЕКСАНДР ВАСИЛЬОВИЧ','Google Sheets: ЮО','2026-08-21T00:00:00+00:00')
         con.commit()
-        cases=[('03.09.2026','2026-09-09T19:58:11+00:00','2026-09-09T19:58:11+00:00'),
-               ('03.09.2026','2026-09-10T10:00:00+00:00','2026-09-09T19:58:11+00:00'),
-               ('05.09.2026','2026-09-11T10:00:00+00:00','2026-09-11T10:00:00+00:00')]
+        cases=[('03.09.2026 22:58:11','2026-09-09T19:58:11+00:00','2026-09-09T19:58:11+00:00'),
+               ('04.09.2026 10:00:00','2026-09-10T10:00:00+00:00','2026-09-10T10:00:00+00:00'),
+               ('05.09.2026 10:00:00','2026-09-11T10:00:00+00:00','2026-09-11T10:00:00+00:00')]
         for date,stamp,expected_synced_at in cases:
             source_sheet=self.sheet(date=date)
             sheet_read=lambda name: source_sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
-            with patch.object(server,'db',return_value=con),patch.object(server,'_google_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'unused','ЮО':'unused'}),patch.object(server,'now_iso',return_value=stamp),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'refresh_current_submission_nazk_controls') as refresh:
+            with patch.object(server,'db',return_value=con),patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'unused','ЮО':'unused'}),patch.object(server,'now_iso',return_value=stamp),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'refresh_current_submission_nazk_controls') as refresh:
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed',
                                  server.SUPPLIER_EDR_SYNC_STATE.get('error'))
                 row=con.execute('SELECT edr_checked_at,synced_at FROM supplier_edr_profiles').fetchone()
-                self.assertEqual(tuple(row),(edr_sync_v2.normalized_date(date),expected_synced_at))
+                self.assertEqual(tuple(row),(edr_sync_v2.google_verification_timestamp(date),expected_synced_at))
                 self.assertEqual(con.execute('SELECT updated_at FROM supplier_managers').fetchone()[0],'2026-08-21T00:00:00+00:00')
                 refresh.assert_not_called()
 

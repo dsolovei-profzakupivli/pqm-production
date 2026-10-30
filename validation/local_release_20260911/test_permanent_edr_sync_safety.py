@@ -11,14 +11,19 @@ from test_edr_sync_v2 import database, row, snapshot
 CODE = "12345678"
 
 
-def profile(con, day="2026-09-20", officer="Officer A", status="Зареєстровано"):
+def profile(con, day="2026-09-20T09:00:00+03:00", officer="Officer A", status="Зареєстровано"):
     con.execute("""INSERT INTO supplier_edr_profiles
       (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
       VALUES (?,?,?,?,?)""", (CODE, status, day, officer, "old"))
 
 
 def observe(con, day, officer, status="Зареєстровано", **fields):
+    if day and len(day) == 10 and day[2] == ".":
+        day = day + " 09:00:00"
     values = row(status=status, checked=day, officer=officer, manager="")
+    # These cases exercise the verification pair/mirror behavior. Keep unrelated
+    # business-name fields neutral unless a test explicitly supplies them.
+    values[13] = values[14] = ""
     for index, value in fields.items():
         values[int(index)] = value
     source = snapshot(values)
@@ -56,8 +61,8 @@ class PermanentSyncSafetyTests(unittest.TestCase):
 
     def test_google_no_information_is_not_imported_as_factual_or_current_status(self):
         profile(self.con)
-        preview, result = observe(self.con, "20.09.2026", "Officer A", status="Немає інформації")
-        self.assertEqual(result["verification_events"], 0)
+        preview, result = observe(self.con, "20.09.2026 10:00:00", "Officer A", status="Немає інформації")
+        self.assertEqual(result["verification_events"], 1)
         self.assertEqual(preview["summary"]["edr_status_changes"], 0)
         self.assertEqual(self.con.execute("SELECT edr_status FROM supplier_edr_profiles").fetchone()[0],
                          "Зареєстровано")
@@ -78,7 +83,7 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         observe(self.con, "05.06.2026", "Officer B")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
         self.assertEqual(tuple(self.con.execute("SELECT edr_checked_at,edr_officer FROM supplier_edr_profiles").fetchone()),
-                         ("2026-09-20", "Officer A"))
+                         ("2026-09-20T09:00:00+03:00", "Officer A"))
 
     def test_newer_pair_accepted(self):
         profile(self.con)
@@ -101,10 +106,10 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         sync._insert_event(self.con, item={"supplier_code": CODE}, event_type="manual_edr",
           occurred_at="2026-09-20", officer="Officer A", source="PQM manual",
           changed_fields=[], snapshot={"edr_status": "Зареєстровано"}, created_at="old")
-        preview, result = observe(self.con, "20.09.2026", "Officer B")
+        preview, result = observe(self.con, "20.09.2026 10:00:00", "Officer B")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer B"))
         self.assertEqual(result["verification_events"], 1)
-        self.assertEqual(preview["summary"]["same_date_officer_update_accepted"], 1)
+        self.assertEqual(preview["summary"]["newer_verification_accepted"], 1)
 
     def test_older_larger_id_does_not_win(self):
         profile(self.con)
@@ -114,7 +119,7 @@ class PermanentSyncSafetyTests(unittest.TestCase):
           changed_fields=[], snapshot={"supplier_code": CODE, "edr_status": "Зареєстровано"}, created_at="later")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
 
-    def test_controlled_factual_wins_same_day_and_older_ordinary_status(self):
+    def test_stale_google_status_conflicts_with_controlled_factual_status(self):
         with patch.dict(os.environ, {"PQM_GOOGLE_REGISTRY_SPREADSHEET_ID": "SYNTHETIC_AUTHORIZED"}):
             for day in ("20.09.2026", "05.06.2026"):
                 con = database()
@@ -122,12 +127,15 @@ class PermanentSyncSafetyTests(unittest.TestCase):
                     sync.register_verification_sql_functions(con)
                     profile(con, status="Припинено")
                     legacy_event(con, status="Припинено")
-                    preview, _ = observe(con, day, "Officer B")
+                    source = snapshot(row(checked=day + " 09:00:00", officer="Officer B",
+                                          manager=""))
+                    source["rows"][0][13] = source["rows"][0][14] = ""
+                    preview = sync.build_preview(con, source)
                     ledger = [dict(event) for event in con.execute("SELECT * FROM supplier_edr_verification_events")]
                     self.assertEqual(sync.active_edr_status("2026-01-01", ledger), "Припинено")
                     self.assertEqual(preview["summary"]["factual_status_protected"], 1)
-                    if day == "20.09.2026":
-                        self.assertEqual(current(con), ("2026-09-20", "Officer B"))
+                    self.assertEqual(preview["summary"]["conflicts"], 1)
+                    self.assertEqual(current(con), ("2026-09-20", "Officer A"))
                 finally:
                     con.close()
 
@@ -147,27 +155,29 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         self.assertEqual(tuple(fields), ("New G", "2026-09-27", "New K", "New M"))
         self.assertEqual(preview["summary"]["google_mirror_updates"], 4)
 
-    def test_gjkm_only_can_mirror_without_verification_pair(self):
+    def test_gjkm_changes_are_skipped_without_exact_verification_timestamp(self):
         profile(self.con)
         preview, _ = observe(self.con, "", "", **{"12": "New M", "13": "", "14": ""})
         self.assertEqual(preview["conflicts"], [])
-        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "New M")
+        self.assertEqual(preview["summary"]["skipped"], 1)
+        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
 
     def test_malformed_date_blocks_without_writes(self):
         profile(self.con)
         source = snapshot(row(checked="not-a-date", officer="Officer B", manager=""))
         preview = sync.build_preview(self.con, source)
-        self.assertIn("malformed_verification_date", preview["conflicts"][0]["reasons"])
-        with self.assertRaises(ValueError):
-            sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
-                       actor="audit", synced_at="2026-09-25T12:00:00")
+        self.assertEqual(preview["conflicts"], [])
+        self.assertEqual(preview["summary"]["skipped"], 1)
+        result = sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                            actor="audit", synced_at="2026-09-25T12:00:00")
+        self.assertEqual(result["skipped_no_verification_timestamp"], 1)
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
 
     def test_malformed_google_record_date_cannot_look_like_intentional_clear(self):
         profile(self.con)
         self.con.execute("UPDATE supplier_edr_profiles SET termination_record_date='2026-08-01'")
-        source = snapshot(row(checked="20.09.2026", officer="Officer A", manager=""))
+        source = snapshot(row(checked="20.09.2026 09:00:00", officer="Officer A", manager=""))
         source["rows"][0]["Дата запису"] = "not-a-date"
         preview = sync.build_preview(self.con, source)
         self.assertIn("malformed_termination_record_date", preview["conflicts"][0]["reasons"])
@@ -179,10 +189,15 @@ class PermanentSyncSafetyTests(unittest.TestCase):
     def test_older_name_and_manager_do_not_replace_newer_profile(self):
         profile(self.con)
         self.con.execute("UPDATE supplier_edr_profiles SET full_name='Current',short_name='Current short',manager_name='Current manager'")
-        preview, _ = observe(self.con, "05.06.2026", "Officer B", **{"3": "Old manager", "13": "Old name", "14": "Old short"})
+        source = snapshot(row(checked="05.06.2026 09:00:00", officer="Officer B",
+                              manager="Old manager"))
+        source["rows"][0]["Повна назва з ЄДР"] = "Old name"
+        source["rows"][0]["Скорочена назва з ЄДР"] = "Old short"
+        preview = sync.build_preview(self.con, source)
         values = self.con.execute("SELECT full_name,short_name,manager_name FROM supplier_edr_profiles").fetchone()
         self.assertEqual(tuple(values), ("Current", "Current short", "Current manager"))
-        self.assertEqual(preview["items"][0]["manager_change_kind"], "same")
+        self.assertEqual(preview["items"][0]["row_state"], "conflict")
+        self.assertIn("source_business_values_not_newer_than_pqm", preview["conflicts"][0]["reasons"])
 
 
 if __name__ == "__main__":

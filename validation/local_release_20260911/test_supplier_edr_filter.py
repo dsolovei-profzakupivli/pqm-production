@@ -58,10 +58,10 @@ class SupplierEdrFilterTests(unittest.TestCase):
             # Actual importer, isolated DB and mocked read-only Sheets; no real sync.
             headers=list(edr_sync_v2.HEADERS);values=['']*len(headers)
             for key,value in {'Код ЄДРПОУ':code,'Статус в реєстрі (ЄДР)':'🔴 Припинено',
-                              'Дата перевірки':'07.09.2026','УО':'Тестова УО'}.items():values[headers.index(key)]=value
+                              'Дата перевірки':'10.09.2026 15:00:00','УО':'Тестова УО'}.items():values[headers.index(key)]=value
             sheet=[headers,values]
             sheet_read=lambda name: sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
-            with patch.object(server,'_google_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
+            with patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')
@@ -70,7 +70,8 @@ class SupplierEdrFilterTests(unittest.TestCase):
             data=self.listing(search=code,edr_status='🔴 Припинено')
             self.assertEqual(data['total'],1)
             self.assertEqual(data['items'][0]['edr_profile']['edr_status'],'Припинено')
-            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],'2026-09-07')
+            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],
+                             '2026-09-10T15:00:00+03:00')
         self.assertEqual(self.listing()['edr_statuses'],['Припинено'])
     def test_and_filters_empty_and_injection(self):
         self.assertEqual(self.listing(edr_status='Зареєстровано')['total'],2)

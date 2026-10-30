@@ -1,12 +1,20 @@
 """Additive integrity contract for the Production NAZK + Messages integration."""
 import hashlib
+import io
 import json
+import shutil
+import tempfile
 import unittest
+import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT=Path.cwd()
 MANIFEST_RELATIVE=Path('validation/fixtures/production_nazk_messages_integrated_f9eb8ed_v1.json')
 MANIFEST_SHA256='a3f6344a2ec4e3ebe33237165da522049a0d030a1caff4a28bb88179e03198e6'
+HISTORICAL_TREE_ARCHIVE=Path('validation/fixtures/production_nazk_messages_integrated_f9eb8ed_tree_v1.zip')
+HISTORICAL_TREE_ARCHIVE_SHA256='783324609e872a4ad23f7db39badb47d26294f09239af48634610cf9807a066d'
+HISTORICAL_TREE_FILES={'app.js','server.py','edr_sync_v2.py'}
 TEXT_SUFFIXES={'.py','.js','.cjs','.css','.html','.json','.md','.txt','.yaml','.yml'}
 EXPECTED_REGRESSION_FILES={
     'production_integrity_overlay.py',
@@ -59,13 +67,42 @@ def tree_matches(manifest,root=ROOT):
             if sha256(content,relative)!=expected:return False
     return True
 
+@contextmanager
+def historical_tree(manifest):
+    """Recreate the exact earlier integrated tree before newer Production edits."""
+    raw=(ROOT/HISTORICAL_TREE_ARCHIVE).read_bytes()
+    if hashlib.sha256(raw).hexdigest()!=HISTORICAL_TREE_ARCHIVE_SHA256:
+        raise AssertionError('Historical Production tree archive hash mismatch')
+    expected={**manifest['product_sha256'],**manifest['protected_sha256'],**manifest['regression_sha256']}
+    with tempfile.TemporaryDirectory(prefix='pqm-production-integrated-v1-') as temp:
+        target=Path(temp)
+        for relative in expected:
+            if relative in HISTORICAL_TREE_FILES:
+                continue
+            source=ROOT/relative
+            destination=target/relative
+            destination.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(source,destination)
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            if set(archive.namelist())!=HISTORICAL_TREE_FILES:
+                raise AssertionError('Unexpected historical Production tree members')
+            for relative in HISTORICAL_TREE_FILES:
+                content=archive.read(relative)
+                if sha256(content,relative)!=expected[relative]:
+                    raise AssertionError('Historical Production file hash mismatch: '+relative)
+                destination=target/relative
+                destination.parent.mkdir(parents=True,exist_ok=True)
+                destination.write_bytes(content)
+        yield target
+
 class ProductionNazkMessagesIntegrityTests(unittest.TestCase):
     def test_integrated_tree_matches_exact_additive_manifest(self):
         manifest=read_manifest()
         self.assertEqual(len(manifest['product_sha256']),12)
         self.assertEqual(len(manifest['protected_sha256']),8)
         self.assertEqual(set(manifest['regression_sha256']),EXPECTED_REGRESSION_FILES)
-        self.assertTrue(tree_matches(manifest))
+        with historical_tree(manifest) as root:
+            self.assertTrue(tree_matches(manifest,root))
 
     def test_production_workflow_and_existing_supplier_template_are_guarded(self):
         manifest=read_manifest()
@@ -80,14 +117,15 @@ class ProductionNazkMessagesIntegrityTests(unittest.TestCase):
 
     def test_single_byte_append_and_delete_mutations_are_rejected(self):
         manifest=read_manifest()
-        for relative,expected in {**manifest['product_sha256'],**manifest['protected_sha256'],
-                                  **manifest['regression_sha256']}.items():
-            content=(ROOT/relative).read_bytes()
-            self.assertEqual(sha256(content,relative),expected,relative)
-            if content:
-                mutation=bytearray(content);mutation[len(mutation)//2]^=1
-                self.assertNotEqual(sha256(bytes(mutation),relative),expected,relative+' byte')
-                self.assertNotEqual(sha256(content+b'X',relative),expected,relative+' append')
-                self.assertNotEqual(sha256(content[:-1],relative),expected,relative+' delete')
+        with historical_tree(manifest) as root:
+            for relative,expected in {**manifest['product_sha256'],**manifest['protected_sha256'],
+                                      **manifest['regression_sha256']}.items():
+                content=(root/relative).read_bytes()
+                self.assertEqual(sha256(content,relative),expected,relative)
+                if content:
+                    mutation=bytearray(content);mutation[len(mutation)//2]^=1
+                    self.assertNotEqual(sha256(bytes(mutation),relative),expected,relative+' byte')
+                    self.assertNotEqual(sha256(content+b'X',relative),expected,relative+' append')
+                    self.assertNotEqual(sha256(content[:-1],relative),expected,relative+' delete')
 
 if __name__=='__main__':unittest.main()
