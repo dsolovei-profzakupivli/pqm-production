@@ -1,0 +1,17 @@
+{
+  "contract_id": "pqm_production_edr_google_nazk_daily_sync_ea3079_v2",
+  "parent_sha": "f0eb3cb28f233d2a24d1f10e9ab2c8ee36ece0f4",
+  "scope": "synthetic daily-sync timestamp regression fixtures; no product behavior changes",
+  "historical_manifest_sha256": {
+    "validation/fixtures/production_edr_google_nazk_ea3079_v1.json": "ffbd92ff26994d2e1e278ea64b16126aeb1159164178377632467bd609ded3e3"
+  },
+  "regression_sha256": {
+    "scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs": "2f8f2f3ea92ee42a8b2ea7449d1caefadd49784e13406f3c87aef7d0dcc255bf",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "3af62cc13fd3b2ffbf85b1002f2caa4889ab4aec1ad1e4cbcd60ced20d63c67b"
+  },
+  "protected_sha256": {
+    "google_verification_contract.py": "607d21191525ca7c570026cb814787781107210b1f3cc920c0f21d875e537d25",
+    "edr_sync_v2.py": "f2af88550e03c78af3bbfd646d4f7713667bb9d2c703cbd32ef325bd024b6a0b",
+    "validation/local_release_20260911/daily_cycle_evening_fixture.py": "9b8d4cba11e70f732572da9032a2b759b47247813109e681b82889963b11f7cd"
+  }
+}
