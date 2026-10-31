@@ -25,8 +25,8 @@ def profile(con, day="2026-09-20", officer="Officer A", status="Зареєстр
       VALUES (?,?,?,?,?)""", (CODE, status, checked_at, officer, "old"))
 
 
-def observe(con, day, officer, status="Зареєстровано", **fields):
-    values = row(status=status, checked=day, officer=officer, manager="")
+def observe(con, day, officer, status="Зареєстровано", *, date_only=False, **fields):
+    values = row(status=status, checked=day, officer=officer, manager="", date_only=date_only)
     for index, value in fields.items():
         values[int(index)] = value
     source = snapshot(values)
@@ -71,12 +71,16 @@ class PermanentSyncSafetyTests(unittest.TestCase):
             "23.10.2026 17:03:19", "2026-10-23T14:03:19Z", require_time=True)["reason"], "equal")
         self.assertFalse(incoming_verification_gate(
             "23.10.2026 17:03:18", "23.10.2026 17:03:19", require_time=True)["accepted"])
-        self.assertEqual(google_verification_instant("23.10.2026")["kind"], "date_only")
+        self.assertEqual(google_verification_instant("23.10.2026")["kind"], "datetime")
+        date_source = snapshot(row(checked="23.10.2026", date_only=True))
+        self.assertEqual(sync.source_item(date_source["rows"][0])["edr_checked_at"], "2026-10-23")
         self.assertEqual(google_verification_instant("23.10.2026 17:03")["kind"], "invalid")
         for ambiguous in ("29.03.2026 03:30:00", "25.10.2026 03:30:00"):
             self.assertEqual(google_verification_instant(ambiguous)["kind"], "invalid")
-        self.assertFalse(incoming_verification_gate(
+        self.assertTrue(incoming_verification_gate(
             "20.09.2026 12:00:01", "2026-09-20", require_time=True)["accepted"])
+        self.assertEqual(incoming_verification_gate(
+            "20.09.2026 12:00:01", "2026-09-20", require_time=True)["reason"], "newer")
         self.assertTrue(incoming_verification_gate(
             "21.09.2026 00:00:00", "2026-09-20", require_time=True)["accepted"])
 
@@ -151,7 +155,7 @@ class PermanentSyncSafetyTests(unittest.TestCase):
                     sync.register_verification_sql_functions(con)
                     profile(con, status="Припинено")
                     legacy_event(con, status="Припинено")
-                    preview, _ = observe(con, day, "Officer B")
+                    preview, _ = observe(con, day, "Officer B", date_only=True)
                     ledger = [dict(event) for event in con.execute("SELECT * FROM supplier_edr_verification_events")]
                     self.assertEqual(sync.active_edr_status("2026-01-01", ledger), "Припинено")
                     self.assertEqual(preview["summary"]["factual_status_protected"], 1)
@@ -296,17 +300,62 @@ class PermanentSyncSafetyTests(unittest.TestCase):
                    actor="audit", synced_at="2026-09-25T12:00:00")
         self.assertEqual(self.con.execute("SELECT manager_name FROM supplier_edr_profiles").fetchone()[0], "New Manager")
 
-    def test_day_only_google_date_is_not_a_verification_timestamp(self):
+    def test_same_day_google_date_only_is_midnight_and_cannot_replace_later_check(self):
         profile(self.con)
         self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at='2026-09-20T15:00:00+03:00',manager_name='Old Manager'")
         source = snapshot(row(checked="20.09.2026", officer="Officer B", manager="New Manager", date_only=True))
         preview = sync.build_preview(self.con, source)
-        self.assertIn("verification_timestamp_required", preview["conflicts"][0]["reasons"])
+        self.assertEqual(preview["items"][0]["datetime_gate"]["reason"], "older")
+        self.assertIn("manager_change_requires_strictly_newer_verification_timestamp",
+                      preview["conflicts"][0]["reasons"])
+        self.assertNotIn("verification_timestamp_required", preview["conflicts"][0]["reasons"])
         with self.assertRaises(ValueError):
             sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
                        actor="audit", synced_at="2026-09-25T12:00:00")
         stored = self.con.execute("SELECT manager_name,edr_checked_at FROM supplier_edr_profiles").fetchone()
         self.assertEqual(tuple(stored), ("Old Manager", "2026-09-20T15:00:00+03:00"))
+
+    def test_newer_date_only_google_check_updates_facts_but_stays_date_only(self):
+        profile(self.con)
+        self.con.execute("UPDATE supplier_edr_profiles SET manager_name='Old Manager'")
+        source = snapshot(row(checked="21.09.2026", officer="Officer B", manager="New Manager",
+                             date_only=True))
+        preview = sync.build_preview(self.con, source)
+        self.assertEqual(preview["items"][0]["datetime_gate"], {"accepted": True, "reason": "newer"})
+        self.assertEqual(preview["summary"]["eligible"], 1)
+        applied = sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                             actor="audit", synced_at="2026-09-25T12:00:00")
+        stored = self.con.execute("SELECT manager_name,edr_checked_at,edr_officer FROM supplier_edr_profiles").fetchone()
+        self.assertEqual(tuple(stored), ("New Manager", "2026-09-21", "Officer B"))
+        self.assertEqual(applied["verification_events"], 1)
+
+    def test_equal_date_only_manager_or_status_difference_is_blocked(self):
+        for field, value in (("manager_name", "New Manager"), ("edr_status", "Припинено")):
+            with self.subTest(field=field):
+                con = database()
+                try:
+                    sync.register_verification_sql_functions(con)
+                    profile(con)
+                    con.execute("UPDATE supplier_edr_profiles SET edr_checked_at='2026-09-20',manager_name='Old Manager'")
+                    source_row = row(checked="20.09.2026", officer="Officer B", manager="Old Manager",
+                                     status="Зареєстровано", date_only=True)
+                    if field == "manager_name": source_row[3] = value
+                    else: source_row[4] = value
+                    source = snapshot(source_row)
+                    preview = sync.build_preview(con, source)
+                    self.assertEqual(preview["items"][0]["datetime_gate"]["reason"], "equal")
+                    self.assertTrue(preview["conflicts"])
+                    self.assertTrue(any("same_timestamp_verification_conflict" in reason or
+                                        "manager_change_requires_strictly_newer_verification_timestamp" in reason
+                                        for reason in preview["conflicts"][0]["reasons"]))
+                    before = tuple(con.execute("SELECT manager_name,edr_status,edr_checked_at FROM supplier_edr_profiles").fetchone())
+                    with self.assertRaises(ValueError):
+                        sync.apply(con, source, source["source_fingerprint"], confirmed=True,
+                                   actor="audit", synced_at="2026-09-25T12:00:00")
+                    after = tuple(con.execute("SELECT manager_name,edr_status,edr_checked_at FROM supplier_edr_profiles").fetchone())
+                    self.assertEqual(after, before)
+                finally:
+                    con.close()
 
     def test_missing_current_verification_date_does_not_replace_existing_facts(self):
         self.con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_status,full_name,synced_at)

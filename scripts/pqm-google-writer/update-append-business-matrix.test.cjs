@@ -195,18 +195,63 @@ test('equal precise timestamp with different manager is a blocking conflict', ()
   assert.equal(plan.changes.length, 0);
 });
 
-test('date-only cannot prove a newer verification; unrelated decided status can still be previewed', () => {
-  const item = makeItem({google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
-    google_sync_last_decided_application_decision: 'reject', google_sync_last_decided_application_date: '2026-10-12',
-    verification_date: '2026-10-11', verification_datetime_precision: 'day',
-    verification_officer: 'УО', verification_event_type: 'google_clarity'});
-  const values = Array(15).fill(''); Object.assign(values, {1: '12345678', 2: 'ТОВ Контроль', 3: 'Керівник А',
-    4: 'Зареєстровано', 5: 'Неактивний', 7: fnum('2026-10-10'), 8: fnum('2026-10-10T13:04:05+03:00'), 11: 'УО'});
-  const f = setup(item, {code: '12345678', values}); const plan = f.context.pqmGooglePlan_(f.body, f.tabs);
-  assert.equal(plan.counts.conflicts, 1); assert.equal(plan.issues[0].reason, 'date_only_cannot_prove_verification_order');
-  assert.equal(plan.changes.length, 1); assert.equal(plan.changes[0].cells[5], 'Активний');
-  assert.equal(plan.changes[0].cells[7], fnum('2026-10-12'));
-  assert.equal(plan.changes[0].cells[8], undefined); assert.equal(plan.changes[0].cells[11], undefined);
+test('date-only dates compare as Kyiv midnight in both directions without weakening equal-timestamp conflicts', () => {
+  const makePair = ({pqmDate, pqmPrecision = 'day', googleDate, googleFormat = 'dd.MM.yyyy',
+    googleManager = 'Керівник А', googleEdr = 'Зареєстровано', pqmManager = 'Керівник Б',
+    pqmEdr = 'Припинено'} = {}) => {
+    const item = makeItem({google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
+      google_sync_last_decided_application_decision: 'admit', verification_date: pqmDate,
+      verification_datetime_precision: pqmPrecision, verification_officer: 'УО PQM',
+      verification_event_type: 'google_clarity', current_manager_name: pqmManager, edr_status_current: pqmEdr});
+    const values = Array(15).fill(''); Object.assign(values, {1: '12345678', 2: 'ТОВ Контроль',
+      3: googleManager, 4: googleEdr, 5: 'Активний', 7: fnum('2026-10-10'),
+      8: typeof googleDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(googleDate) ? fnum(googleDate) : fnum(googleDate),
+      11: 'УО Google'});
+    const f = setup(item, {code: '12345678', values, dateFormat: 'dd.MM.yyyy', verificationDateFormat: googleFormat});
+    f.row.verificationDateFormat = googleFormat;
+    return {f, plan: f.context.pqmGooglePlan_(f.body, f.tabs)};
+  };
+
+  const pqmNextDay = makePair({pqmDate: '2026-10-30', googleDate: '2026-10-29T16:50:00+03:00'});
+  assert.equal(pqmNextDay.plan.counts.conflicts, 0);
+  assert.deepEqual(keys(pqmNextDay.plan.changes[0].cells), [3, 4, 8, 11]);
+  assert.equal(pqmNextDay.plan.changes[0].cells[3], 'Керівник Б');
+  assert.equal(pqmNextDay.plan.changes[0].cells[4], 'Припинено');
+  assert.equal(pqmNextDay.f.context.pqmGoogleMatrixVerification_('2026-10-30', 'day').kind, 'datetime');
+
+  const pqmSameDayLater = makePair({pqmDate: '2026-10-29T17:00:00+03:00', pqmPrecision: 'second',
+    googleDate: '2026-10-29'});
+  assert.equal(pqmSameDayLater.plan.counts.conflicts, 0);
+  assert.deepEqual(keys(pqmSameDayLater.plan.changes[0].cells), [3, 4, 8, 11]);
+
+  const googleSameDayLater = makePair({pqmDate: '2026-10-29', googleDate: '2026-10-29T16:50:00+03:00',
+    googleFormat: 'dd.MM.yyyy HH:mm:ss'});
+  assert.equal(googleSameDayLater.plan.counts.google_newer_preserved, 1);
+  assert.equal(googleSameDayLater.plan.changes.length, 0);
+
+  const googleNextDay = makePair({pqmDate: '2026-10-29T17:00:00+03:00', pqmPrecision: 'second',
+    googleDate: '2026-10-30', googleFormat: 'dd.MM.yyyy'});
+  assert.equal(googleNextDay.plan.counts.google_newer_preserved, 1);
+  assert.equal(googleNextDay.plan.changes.length, 0);
+
+  const equalSame = makePair({pqmDate: '2026-10-29', googleDate: '2026-10-29',
+    googleManager: 'Керівник Б', pqmManager: 'Керівник Б', googleEdr: 'Припинено', pqmEdr: 'Припинено',
+    googleFormat: 'dd.MM.yyyy'});
+  assert.equal(equalSame.plan.counts.conflicts, 0);
+  assert.equal(equalSame.plan.counts.unchanged, 1);
+
+  const equalDifferentManager = makePair({pqmDate: '2026-10-29', googleDate: '2026-10-29',
+    googleFormat: 'dd.MM.yyyy'});
+  assert.equal(equalDifferentManager.plan.counts.conflicts, 1);
+  assert.equal(equalDifferentManager.plan.issues[0].reason, 'same_timestamp_verification_conflict');
+  assert.equal(equalDifferentManager.plan.changes.length, 0);
+
+  const equalDifferentStatus = makePair({pqmDate: '2026-10-29', googleDate: '2026-10-29',
+    googleManager: 'Керівник Б', pqmManager: 'Керівник Б', googleEdr: 'Зареєстровано', pqmEdr: 'Припинено',
+    googleFormat: 'dd.MM.yyyy'});
+  assert.equal(equalDifferentStatus.plan.counts.conflicts, 1);
+  assert.equal(equalDifferentStatus.plan.issues[0].reason, 'same_timestamp_verification_conflict');
+  assert.equal(equalDifferentStatus.plan.changes.length, 0);
 });
 
 test('verification-pair conflict keeps independent F/H changes but removes all D/E/I/L writes', () => {

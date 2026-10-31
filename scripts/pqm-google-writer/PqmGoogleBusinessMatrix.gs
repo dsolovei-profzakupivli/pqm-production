@@ -23,10 +23,21 @@ function pqmGoogleTranslatedAppendFormula_(formula, templateRow, targetRow) {
 
 function pqmGoogleMatrixVerification_(value, precision) {
   if (pqmGoogleBlank_(value)) return {kind: 'blank'};
-  var date = pqmGoogleCalendarDate_(value);
-  if (precision === 'day' || (precision !== 'datetime' && typeof value === 'number' && Math.abs(value - Math.floor(value)) < 1e-9) ||
-      (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim()))) {
-    return date.kind === 'date' ? {kind: 'day', date: date.value} : {kind: 'invalid'};
+  var dateOnly = precision === 'day' ||
+    (precision !== 'datetime' && typeof value === 'number' && Math.abs(value - Math.floor(value)) < 1e-9) ||
+    (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim()));
+  if (dateOnly) {
+    // A date-only check is the same Kyiv-local midnight used by the Python
+    // Google → PQM gate. Keep date-only cells as dates when writing; only the
+    // comparison uses this midnight instant.
+    if (Object.prototype.toString.call(value) === '[object Date]') {
+      var dateInstant = pqmVerificationDatetime_(value);
+      return dateInstant.kind === 'datetime' ? dateInstant : {kind: 'invalid'};
+    }
+    var date = pqmGoogleCalendarDate_(value);
+    if (date.kind !== 'date') return {kind: 'invalid'};
+    var midnight = pqmVerificationDatetime_(date.value);
+    return midnight.kind === 'datetime' ? midnight : {kind: 'invalid'};
   }
   var instant = pqmVerificationDatetime_(value);
   return instant.kind === 'datetime' ? instant : {kind: instant.kind};

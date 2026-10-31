@@ -1,0 +1,43 @@
+{
+  "baseline": "97788b2549f08a7a15738bdeecc508ee3cf545ad",
+  "contract": "google-edr-date-only-midnight-v1",
+  "version": 1,
+  "comparison": "Europe/Kyiv local midnight for date-only; exact seconds for equal calendar dates; strict later-only replacement",
+  "storage": "Keep date-only source values as dates; no mass backfill or persisted precision marker",
+  "historical_contracts": {
+    "validation/local_release_20260911/google_edr_timezone_alias_v1.json": "b311cfe9f17eaebbd992b28222ec6e1612c45c055e476ba4caebaf99fbed99d7",
+    "validation/local_release_20260911/sandbox_edr_google_nazk_reconcile_v1.json": "4959074e4cd87f0b7158b45d2aaddc7c3c9d1e38ff04bb5c7246d040bf9659d5",
+    "validation/local_release_20260911/sandbox_edr_google_nazk_contract_v2.json": "84b11fa0f453906aaa0138f1238f06c3843ac7105b4647f2504343e9b0e8ce10",
+    "validation/local_release_20260911/test_google_edr_timezone_alias_integrity_v1.py": "28bfb64787206d8cdb80882c40e562fd3dbb39a58875f5c81d7f189176ec636a",
+    "validation/local_release_20260911/test_sandbox_edr_google_nazk_reconcile_integrity.py": "26620f8906dc7bdd035e58ca8f099b5ea13f296e359fa019c57f9d113c66ea14",
+    "validation/local_release_20260911/test_sandbox_edr_google_nazk_contract_v2_integrity.py": "318a44e6efca3a52cd629284b6fdc3c2821ae776019dca9c80a17e559583bd2e"
+  },
+  "mutation_targets": [
+    "edr_sync_v2.py",
+    "google_verification_contract.py",
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs",
+    "scripts/pqm-google-writer/sandbox-preview-audit.test.cjs",
+    "scripts/pqm-google-writer/update-append-business-matrix.test.cjs",
+    "test_google_verification_contract.py",
+    "validation/local_release_20260911/test_edr_sync_v2.py",
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py",
+    "validation/run_local_release.py",
+    "validation/run_date_only_previous_contract_overlays.py",
+    "validation/fixtures/edr_preview_skipped_v1_6b9830b.zip",
+    "validation/fixtures/google_writer_supplier_types_v1_97788.zip"
+  ],
+  "files": {
+    "edr_sync_v2.py": "265fea1978c5ff7938e0fff77af2b59f5812a4b9d0d560f656f8ef9770931911",
+    "google_verification_contract.py": "cded357168c112dc1117bfd6b5a5c2e144820bd6cfea80b56468d7f3cee4a0dd",
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs": "a52e4252f55d1d26e8fc168fdfb2176d13901600c25d7836f7b7ad2401cecedb",
+    "scripts/pqm-google-writer/sandbox-preview-audit.test.cjs": "4d098478ee1833daef19c1bb07e010a011d2295210bb376ca20d46d413c12197",
+    "scripts/pqm-google-writer/update-append-business-matrix.test.cjs": "a9f4df9dfa6ad73c337fec694582c28df95b7d0ee3ddf9f8a5f010f784e55e40",
+    "test_google_verification_contract.py": "673d4bb738f89a395b0950be773a207eb9a1bc034bed8fb2ed05455eec0c7592",
+    "validation/local_release_20260911/test_edr_sync_v2.py": "daef5c300d397991cc4ac360752509acae137a2fbe6e5818273ded4a7c830a0c",
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py": "bc25c838ac012a5b5cc8f2b0a559bbfe2c97a6cbe76fafecf63087b67461c8bc",
+    "validation/run_local_release.py": "94f68de12dcec5476e38e0d53cfc299b7486ee3e40d14504176022890718380b",
+    "validation/run_date_only_previous_contract_overlays.py": "91d2d9ce1d74febcc41a2a5009b0bf3513861d472b966d4f681a92b51402a5eb",
+    "validation/fixtures/edr_preview_skipped_v1_6b9830b.zip": "6188d492d9f95fb9d23f11a7660c8188fef4c210b610dbc20f0356e603540726",
+    "validation/fixtures/google_writer_supplier_types_v1_97788.zip": "95919f57f4df9e141fb1e4cb7461d2a26d506e64034b5e608fc6620f13b3c061"
+  }
+}

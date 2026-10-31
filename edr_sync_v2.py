@@ -40,7 +40,7 @@ UNVERIFIED_TIMESTAMP_REASONS = frozenset({
     "manager_change_requires_strictly_newer_verification_timestamp",
     "mirror_change_requires_strictly_newer_verification_timestamp",
 })
-SKIPPABLE_TIMESTAMP_GATE_REASONS = frozenset({"incoming_blank", "incoming_date_only"})
+SKIPPABLE_TIMESTAMP_GATE_REASONS = frozenset({"incoming_blank"})
 
 
 def normalize_code(value) -> str:
@@ -678,8 +678,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         "same_datetime_officer_preserved",
         "same_date_officer_update_accepted", "same_date_conflict",
         "older_verification_preserved",
-        "blank_verification_preserved", "date_only_verification_preserved",
-        "current_date_only_same_day_blocked", "factual_status_protected",
+        "blank_verification_preserved", "factual_status_protected",
         "google_mirror_updates", "google_mirror_clears",
         "eligible", "skipped", "conflict", "skipped_unverified_timestamp",
         "skipped_ineligible",
@@ -730,6 +729,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                          if str(value or "").strip() and not _same(name, previous, value)]
         incoming_manager_changed = bool(incoming["manager_name"] and current_manager and
             normalize_person(incoming["manager_name"]) != normalize_person(current_manager))
+        incoming_status_changed = bool(incoming["edr_status"] and old.get("edr_status") and
+            not _same("edr_status", incoming["edr_status"], old.get("edr_status")))
         has_existing_facts = bool(current_manager or any(
             str(old.get(field) or "").strip() for field in (
                 "manager_name", "edr_status", "full_name", "short_name",
@@ -749,12 +750,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
             incoming["edr_officer"] = current_officer
         if datetime_gate["reason"] in {"incoming_blank", "incoming_invalid", "current_invalid"}:
             verification_decision = "blank_verification_preserved"
-        elif datetime_gate["reason"] == "incoming_date_only":
-            verification_decision = "date_only_verification_preserved"
         elif datetime_gate["reason"] == "older":
             verification_decision = "older_verification_preserved"
-        elif datetime_gate["reason"] == "current_date_only_not_newer_by_day":
-            verification_decision = "current_date_only_same_day_blocked"
         elif datetime_gate["reason"] == "equal":
             verification_decision = ("same_date_same_officer_equivalent"
                 if normalize_person(incoming["edr_officer"]) == normalize_person(current_officer)
@@ -763,6 +760,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
             verification_decision = "newer_verification_accepted" if current_day else "initial_verification_accepted"
         if not datetime_gate["accepted"] and incoming_manager_changed:
             row_conflicts.append("manager_change_requires_strictly_newer_verification_timestamp")
+        if datetime_gate["reason"] == "equal" and incoming_status_changed:
+            row_conflicts.append("same_timestamp_verification_conflict")
         if not incoming_day and changed_facts:
             row_conflicts.append("verification_date_required")
         elif not current_day and has_existing_facts and changed_facts:
@@ -868,8 +867,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         if evidence_changes and not incoming["edr_officer"]:
             row_conflicts.append("changed_values_without_officer")
         if str(raw.get("Дата перевірки") or "").strip() and not incoming["edr_checked_at"]:
-            row_conflicts.append("verification_timestamp_required" if datetime_gate["reason"] == "incoming_date_only"
-                                 else "malformed_verification_date")
+            row_conflicts.append("malformed_verification_date")
         if datetime_gate["reason"] == "current_invalid":
             row_conflicts.append("malformed_current_verification_datetime")
         if not sandbox_mode:

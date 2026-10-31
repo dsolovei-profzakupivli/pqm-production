@@ -222,16 +222,18 @@ test('current E vocabulary, emoji equivalence, and unknown PQM status fail close
 
 test('same-day officer normalization and different Google officer both preserve Google L', () => {
   const fixture = tabs();
-  fixture['ФОП'].rows.push(row('1000000000', {2: 'Name', 4: 'Зареєстровано', 5: 'Активний', 7: 46287,
+  fixture['ФОП'].rows.push(row('1000000000', {2: 'Name', 3: 'Manager', 4: 'Зареєстровано', 5: 'Активний', 7: 46287,
     8: '22.09.2026', 11: '  Іван   ПЕТРЕНКО '}));
-  let plan = context.pqmGooglePlan_(body([item({verification_date: '2026-09-22',
+  let plan = context.pqmGooglePlan_(body([item({current_manager_name: 'Manager', edr_status_current: 'Зареєстровано',
+    verification_date: '2026-09-22',
     verification_officer: 'іван петренко'})]), fixture);
   assert.equal(plan.counts.unchanged, 1);
   assert.equal(plan.changes.length, 0);
-  plan = context.pqmGooglePlan_(body([item({verification_date: '2026-09-22',
+  plan = context.pqmGooglePlan_(body([item({current_manager_name: 'Manager', edr_status_current: 'Зареєстровано',
+    verification_date: '2026-09-22',
     verification_officer: 'Марія ПЕТРЕНКО'})]), fixture);
-  assert.equal(plan.counts.conflicts, 1);
-  assert.ok(plan.issues.some(issue => issue.reason === 'date_only_cannot_prove_verification_order'));
+  assert.equal(plan.counts.conflicts, 0);
+  assert.equal(plan.counts.same_date_google_officer_preserved, 1);
   assert.equal(plan.changes.length, 0);
 });
 

@@ -170,15 +170,22 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertIn('"source_row": 100', events[0]['snapshot_json'])
         self.assertEqual(con.execute('SELECT source_row FROM supplier_edr_profiles').fetchone()[0], 100)
 
-    def test_same_row_new_verification_or_business_snapshot_creates_event(self):
+    def test_same_timestamp_status_change_conflicts_until_a_newer_check(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")
         self.apply_observation(con, snapshot(row()))
         new_date = snapshot(row(checked='16.09.2026'))
         self.assertEqual(self.apply_observation(con, new_date)['verification_events'], 1)
         new_business = snapshot(row(checked='16.09.2026', status='Припинено'))
-        self.assertEqual(self.apply_observation(con, new_business)['verification_events'], 0)
+        before = con.total_changes
+        same_timestamp_preview = sync.build_preview(con, new_business)
+        self.assertEqual(same_timestamp_preview['conflicts'][0]['reasons'], ['same_timestamp_verification_conflict'])
+        with self.assertRaises(ValueError):
+            self.apply_observation(con, new_business)
+        self.assertEqual(con.total_changes, before)
         self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_edr_verification_events').fetchone()[0], 2)
+        self.assertEqual(con.execute("SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code='12345678'").fetchone()[0],
+                         'Зареєстровано')
         newer_business = snapshot(row(checked='16.09.2026 12:00:01', status='Припинено'))
         self.assertEqual(self.apply_observation(con, newer_business)['verification_events'], 1)
         self.assertEqual(con.execute('SELECT COUNT(*) FROM supplier_edr_verification_events').fetchone()[0], 3)
