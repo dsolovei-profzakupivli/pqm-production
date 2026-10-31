@@ -230,6 +230,32 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
     item.verification_date = evening.date; item.verification_officer = evening.officer;
     item.edr_status_current = evening.status;
     const plan = f.context.pqmGooglePlan_(f.body, f.context.pqmGoogleSnapshot_('sandbox-id'));
+    if (evening.status === 'Немає інформації' && plan.issues.some(issue => issue.supplier_code === item.supplier_code && issue.reason === 'unknown_edr_status')) {
+      // Active qualifications do not prove EDR registration. The writer must
+      // fail closed instead of publishing "Немає інформації" as an EDR status.
+      assert.equal(plan.counts.conflicts, 1,
+        `scenario ${index + 1}: ${JSON.stringify(plan.issues)} evening=${JSON.stringify(evening)} google=${JSON.stringify(google)}`);
+      assert.equal(plan.counts.errors + plan.counts.duplicate_keys, 0);
+      const statusIssues = plan.issues.filter(issue => issue.supplier_code === item.supplier_code);
+      assert.equal(statusIssues.length, 1);
+      assert.equal(statusIssues[0].reason, 'unknown_edr_status');
+      assert.ok(!plan.changes.some(change => Object.values(change.cells).includes('Немає інформації')));
+      const targetEntry = Object.entries(f.tabs).find(([, tab]) => tab.rows.some(row =>
+        String(row.codeDisplay || row.values[1] || '') === String(item.supplier_code)));
+      assert.ok(targetEntry, 'synthetic supplier must map to its existing Google row');
+      const [targetTab, targetData] = targetEntry;
+      const targetRowIndex = targetData.rows.findIndex(row =>
+        String(row.codeDisplay || row.values[1] || '') === String(item.supplier_code));
+      const targetRow = targetRowIndex + 2;
+      const statusBeforePlan = JSON.stringify(f.raw.get(targetData.id + ':' + targetRow)[4]);
+      const writesBeforePlan = f.writes.length;
+      assert.ok(!plan.changes.some(change => change.tab === targetTab && change.row === targetRow),
+        'unconfirmed EDR status must not produce a Google row write');
+      assert.equal(f.writes.length, writesBeforePlan, 'Preview planning must not write to Google');
+      assert.equal(JSON.stringify(f.raw.get(targetData.id + ':' + targetRow)[4]), statusBeforePlan,
+        'Google EDR status remains unchanged when PQM has no confirmed EDR information');
+      continue;
+    }
     assert.equal(plan.counts.conflicts + plan.counts.errors + plan.counts.duplicate_keys, 0,
       `scenario ${index + 1}: ${JSON.stringify(plan.issues)} evening=${JSON.stringify(evening)} google=${JSON.stringify(google)}`);
     const next = f.context.pqmSandboxFullApplyPreview();
