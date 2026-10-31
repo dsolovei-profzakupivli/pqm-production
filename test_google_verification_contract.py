@@ -62,13 +62,19 @@ class VerificationDatetimeContract(unittest.TestCase):
         self.assertEqual(serial["kind"], "datetime")
         self.assertEqual(google_verification_timestamp(46324), "2026-10-29")
 
-    def test_europe_kiev_alias_has_the_same_kyiv_wall_time(self):
-        kyiv = ZoneInfo("Europe/Kyiv")
-        kiev_alias = ZoneInfo("Europe/Kiev")
-        for value in (datetime(2026, 1, 15, 0, 0), datetime(2026, 7, 15, 0, 0)):
-            with self.subTest(date=value.date()):
-                self.assertEqual(value.replace(tzinfo=kyiv).utcoffset(),
-                                 value.replace(tzinfo=kiev_alias).utcoffset())
+    def test_date_only_kyiv_canonical_timezone_has_expected_seasonal_offsets(self):
+        # The product accepts Europe/Kiev as a Google timezone identifier, but
+        # uses only canonical Europe/Kyiv for date interpretation. Some slim
+        # Linux timezone databases omit the legacy Europe/Kiev alias link, so
+        # this regression guards the actual canonical date-only behavior.
+        for value, expected in (
+            ("15.01.2026", "2026-01-15T00:00:00+02:00"),
+            ("15.07.2026", "2026-07-15T00:00:00+03:00"),
+        ):
+            with self.subTest(date=value):
+                parsed = verification_instant(value)
+                self.assertEqual(parsed["kind"], "datetime")
+                self.assertEqual(parsed["value"].astimezone(ZoneInfo("Europe/Kyiv")).isoformat(), expected)
 
 
 if __name__ == '__main__':
