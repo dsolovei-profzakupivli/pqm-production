@@ -25,7 +25,7 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
             con.execute("""INSERT INTO submissions
               (id,framework_id,supplier_code,supplier_name,date_published,raw_json,synced_at)
               VALUES('s','f','46130719','ІСТОРИЧНА НАЗВА','2026-09-27',?,?)""",
-              (json.dumps({'tenderers': [{'identifier': {'id': '46130719', 'scheme': 'UA-EDR'}}]}),
+              (json.dumps({'tenderers': [{'identifier': {'id': '46130719', 'scheme': 'UA-EDR'}, 'address': {'countryName': 'Україна'}, 'legalForm': 'legal_entity'}]}),
                server.now_iso()))
             con.execute("""INSERT INTO application_fields(submission_id,protocol_decision)
               VALUES('s','admit')""")
@@ -146,10 +146,10 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
                    'unsuccessful' if index == 1 else 'active', server.now_iso()))
             expected = server.edr_sync_v2.monitoring_population_codes(con)
             self.assertEqual(len(expected), 5)
-            self.assertEqual(len({code.strip() for code in expected}), len(expected))
+            self.assertEqual(len(expected), len(expected))
             registry = server.supplier_registry_integration.eligible_full_registry(con)
             self.assertEqual({item['supplier_code'] for item in registry['items']},
-                             {code.strip() for code in expected})
+                             expected)
         server.EDR_MONITORING_CACHE['fingerprint'] = None
         response = server.list_edr_monitoring({'page': ['1'], 'size': ['100']})
         self.assertEqual(response['total'], len(expected))

@@ -7,7 +7,8 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const clone = value => JSON.parse(JSON.stringify(value));
-const source = ['PqmSandboxPreviewDependencies.gs', 'PqmSandboxControlledApply.gs',
+const source = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs',
+  'PqmSandboxControlledApply.gs',
   'PqmSandboxFullApply.gs', 'PqmSandboxAppendApply.gs']
   .map(name => fs.readFileSync(path.join(__dirname, name), 'utf8')).join('\n');
 
@@ -17,18 +18,27 @@ function fixture() {
   const tabs = Object.fromEntries(['ФОП', 'ЮО'].map((name, index) => [name, {
     id: index + 1, maxRows: 2, headers: [...context.PQM_GOOGLE_HEADERS],
     merges: [], protectedRanges: [], conditionalFormats: [], templateRowHeight: 30,
-    rows: [{values: Array(15).fill(''), formulas: Array(15).fill(''), codeDisplay: '', dateFormat: 'dd.MM.yyyy'}]
+    rows: [{values: Array(15).fill(''), formulas: Object.assign(Array(15).fill(''), {0: '=IF(B2="", "", 1)'}),
+      codeDisplay: '', dateFormat: 'dd.MM.yyyy'}]
   }]));
   tabs['ФОП'].rows[0].values[1] = '00000001';
   tabs['ФОП'].rows[0].codeDisplay = '00000001';
   tabs['ЮО'].rows[0].values[1] = '00000002';
   tabs['ЮО'].rows[0].codeDisplay = '00000002';
   const supplier = {supplier_code: '12345678', entity_type: 'individual_entrepreneur',
-    monitoring_eligible: true, google_sync_eligible: false, supplier_name: 'Supplier',
+    classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+    classification_reason: 'established_subject_nature', classification_reason_label: 'ФОП підтверджено',
+    target_sheet: 'ФОП', append_allowed: true,
+    monitoring_eligible: true, google_sync_eligible: false, google_writer_eligible: false,
+    google_sync_has_active_qualification: false, google_sync_has_admission_history: false,
+    google_sync_last_decided_application_decision: '', google_sync_last_decided_protocol_at: '',
+    google_sync_last_decided_protocol_officer: '', google_sync_last_decided_submission_id: '',
+    google_sync_latest_rejection_officer: '', supplier_name: 'Supplier',
     edr_status_current: 'Зареєстровано', prozorro_status_google: '✅ Активний',
     freshness_marker: 'fresh', last_application_date: '2026-09-20',
     google_sync_last_decided_application_date: null,
-    verification_date: '2026-09-20', verification_officer: 'Officer A'};
+    verification_date: '2026-09-20', verification_officer: 'Officer A', verification_event_type: null,
+    verification_datetime_precision: ''};
   const body = {count: 1, items: [supplier]};
   let writes = 0, prompts = [], locked = false, requests = [];
   const metadata = new Map([['ФОП:2', {cells: Array.from({length: 15}, () => ({
@@ -39,6 +49,12 @@ function fixture() {
   context.pqmGoogleSnapshot_ = () => clone(tabs);
   context.pqmSandboxControlledSpreadsheetId_ = () => 'SANDBOX_FIXTURE';
   context.Utilities = {DigestAlgorithm: {SHA_256: 'SHA_256'}, Charset: {UTF_8: 'UTF_8'},
+    formatDate: (date, zone) => {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {timeZone: zone,
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+        second: '2-digit', hourCycle: 'h23'}).formatToParts(date).map(part => [part.type, part.value]));
+      return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.000`;
+    },
     computeDigest: (_, value) => crypto.createHash('sha256').update(value).digest(),
     base64EncodeWebSafe: bytes => Buffer.from(bytes).toString('base64url')};
   context.SpreadsheetApp = {getUi: () => ({ButtonSet: {OK_CANCEL: 'OK_CANCEL'}, Button: {OK: 'OK'},
@@ -46,9 +62,15 @@ function fixture() {
   context.LockService = {getScriptLock: () => ({tryLock: () => {if (locked) return false; locked = true; return true;},
     releaseLock: () => {locked = false;}})};
   context.Sheets = {Spreadsheets: {get: (_, options) => {
-    const match = /^'(ФОП|ЮО)'!A(\d+):O\2$/.exec(options.ranges[0]);
-    assert.ok(match);
-    const state = metadata.get(match[1] + ':' + match[2]);
+    const full = /^'(ФОП|ЮО)'!A(\d+):O\2$/.exec(options.ranges[0]);
+    const formulaOnly = /^'(ФОП|ЮО)'!A(\d+):A\2$/.exec(options.ranges[0]);
+    assert.ok(full || formulaOnly);
+    if (formulaOnly) {
+      const tab = tabs[formulaOnly[1]], rowNumber = Number(formulaOnly[2]);
+      return {sheets: [{data: [{rowData: [{values: [{userEnteredValue: {
+        formulaValue: tab.rows[rowNumber - 2].formulas[0] || ''}}]}]}]}]};
+    }
+    const state = metadata.get(full[1] + ':' + full[2]);
     return {sheets: [{data: [{rowData: [{values: clone(state.cells)}],
       rowMetadata: [{pixelSize: state.height}]}]}]};
   }, batchUpdate: ({requests: batch}) => {
@@ -60,6 +82,8 @@ function fixture() {
         for (let i = range.startRowIndex; i < range.endRowIndex; i++) {
           while (tabs['ФОП'].rows.length <= i - 1) tabs['ФОП'].rows.push({values: Array(15).fill(''),
             formulas: Array(15).fill(''), codeDisplay: '', dateFormat: 'dd.MM.yyyy'});
+          tabs['ФОП'].rows[i - 1].formulas[0] = context.pqmGoogleTranslatedAppendFormula_(
+            tabs['ФОП'].rows[0].formulas[0], 2, i + 1);
           metadata.set('ФОП:' + (i + 1), clone(metadata.get('ФОП:2')));
         }
       }
@@ -82,6 +106,15 @@ function fixture() {
     arm: preview => {prompts = [preview.append_digest, context.PQM_SANDBOX_APPEND_CONFIRMATION];}};
 }
 
+function activate(f) {
+  Object.assign(f.supplier, {google_sync_eligible: true, google_writer_eligible: true,
+    google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
+    google_sync_last_decided_application_decision: 'admit', google_sync_last_decided_protocol_at: '2026-09-20',
+    google_sync_last_decided_application_date: '2026-09-20',
+    google_sync_last_decided_protocol_officer: 'Officer A', google_sync_last_decided_submission_id: 's1',
+    verification_datetime_precision: 'day', verification_event_type: 'admission'});
+}
+
 test('pending supplier cannot append; decision adds exactly one guarded row and next run is idempotent', () => {
   const f = fixture();
   const pending = f.context.pqmSandboxAppendPreview();
@@ -89,8 +122,7 @@ test('pending supplier cannot append; decision adds exactly one guarded row and 
   f.arm(pending);
   assert.throws(() => f.context.pqmSandboxAppendApply(), /stale or empty selection/);
   assert.equal(f.writes, 0);
-  f.supplier.google_sync_eligible = true;
-  f.supplier.google_sync_last_decided_application_date = '2026-09-20';
+  activate(f);
   const preview = f.context.pqmSandboxAppendPreview();
   assert.equal(preview.selected, 1);
   assert.equal(preview.google_writes, 0);
@@ -112,14 +144,12 @@ test('pending supplier cannot append; decision adds exactly one guarded row and 
 
 test('duplicate identity and moved Sheet row fail closed before append write', () => {
   const duplicate = fixture();
-  duplicate.supplier.google_sync_eligible = true;
-  duplicate.supplier.google_sync_last_decided_application_date = '2026-09-20';
+  activate(duplicate);
   duplicate.body.items.push({...duplicate.supplier}); duplicate.body.count++;
   assert.throws(() => duplicate.context.pqmSandboxAppendPreview(), /planner blocked/);
   assert.equal(duplicate.writes, 0);
   const moved = fixture();
-  moved.supplier.google_sync_eligible = true;
-  moved.supplier.google_sync_last_decided_application_date = '2026-09-20';
+  activate(moved);
   const preview = moved.context.pqmSandboxAppendPreview();
   moved.tabs['ФОП'].rows[0].codeDisplay = 'MOVED';
   moved.arm(preview);
@@ -129,7 +159,7 @@ test('duplicate identity and moved Sheet row fail closed before append write', (
 
 test('append AFTER read-back rejects formatting drift and never retries an uncertain write', () => {
   const f = fixture();
-  f.supplier.google_sync_eligible = true;
+  activate(f);
   f.supplier.google_sync_last_decided_application_date = '2026-09-20';
   const preview = f.context.pqmSandboxAppendPreview();
   const write = f.context.Sheets.Spreadsheets.batchUpdate;
@@ -146,7 +176,7 @@ test('append AFTER read-back rejects formatting drift and never retries an uncer
 
 test('pending follow-up does not advance H and stale append digest prevents writes', () => {
   const f = fixture();
-  f.supplier.google_sync_eligible = true;
+  activate(f);
   f.supplier.google_sync_last_decided_application_date = '2026-09-20';
   const preview = f.context.pqmSandboxAppendPreview();
   f.supplier.google_sync_last_decided_application_date = '2026-09-21';
@@ -163,7 +193,7 @@ test('pending follow-up does not advance H and stale append digest prevents writ
 
 test('append, daytime Google correction, evening real sync, next morning converge', () => {
   const f = fixture();
-  f.supplier.google_sync_eligible = true;
+  activate(f);
   f.supplier.google_sync_last_decided_application_date = '2026-09-20';
   const preview = f.context.pqmSandboxAppendPreview(); f.arm(preview);
   f.context.pqmSandboxAppendApply();

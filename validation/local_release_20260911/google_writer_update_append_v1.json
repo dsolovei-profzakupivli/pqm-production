@@ -1,0 +1,100 @@
+{
+  "baseline": "64f7fda1660c228cbe49c502c6a053fb10c19db1",
+  "contract": "pqm-google-writer-update-append",
+  "files": {
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs": {
+      "sha256_lf": "cd1bf98c8fafc4c4aef8ed4c243a87ac005990c490ad99bf623a443639979e1c"
+    },
+    "scripts/pqm-google-writer/PqmSandboxAppendApply.gs": {
+      "sha256_lf": "e202c605b2e3ed7d253cb13b7d6cf07dc21945665d0e56302e419784b7386c18"
+    },
+    "scripts/pqm-google-writer/PqmSandboxControlledApply.gs": {
+      "sha256_lf": "d9eab9690aed778f63158a1c50576ac6ee959aeb8bdcc5a2a5c7f69e71f47e11"
+    },
+    "scripts/pqm-google-writer/PqmSandboxExpandedChangeAudit.gs": {
+      "sha256_lf": "2af3dcce23e26837c43fde01ccf474f0323ad1867e0451723ad54fd0bbf22cef"
+    },
+    "scripts/pqm-google-writer/PqmSandboxFullApply.gs": {
+      "sha256_lf": "7fe4cc979fe99982aee35b7a314c8f0961c1e47fe791e8db064990dcf9865978"
+    },
+    "scripts/pqm-google-writer/PqmSandboxPreview.gs": {
+      "sha256_lf": "4d8771a7df8b7f180dc5728cb0ce513681cf23542c3cd61eeaa33f184953d575"
+    },
+    "scripts/pqm-google-writer/PqmSandboxPreviewDependencies.gs": {
+      "sha256_lf": "77b9f47472f84d4a5ec1c41f1742d3abea29178a8704b0d467c769f5400c286b"
+    },
+    "scripts/pqm-google-writer/PqmVerificationDatetime.gs": {
+      "sha256_lf": "36cfa03b9654edf305c75a1f735916969653aaff4a697ea9c31d122a3db59d08"
+    },
+    "scripts/pqm-google-writer/fixture-preview.json": {
+      "sha256_lf": "74e3bd40aeaa3f475386ef4f148f73ad58bdf5629af4f738438f98731f08d8c0"
+    },
+    "scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs": {
+      "sha256_lf": "76354532ef16a21d22a3f83584a296b03335c527d562032f05e79fceed48df78"
+    },
+    "scripts/pqm-google-writer/sandbox-controlled-apply.test.cjs": {
+      "sha256_lf": "1c2eb0c754d3aa4b3fcaf670f74b9824b78a6508f4d95f740abd6f16aae98961"
+    },
+    "scripts/pqm-google-writer/sandbox-expanded-change-audit.test.cjs": {
+      "sha256_lf": "9ed08e9d489e5208ece2a27eb26bc5180a0a17c3db26aaa119d9c8a0f0b32d84"
+    },
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": {
+      "sha256_lf": "9a2f973666b8f64fd88101345b1a477a8e0a32ca8961b21eafc114df2cdbc23e"
+    },
+    "scripts/pqm-google-writer/sandbox-guard-profiler.test.cjs": {
+      "sha256_lf": "ef3936b6d122d4d2b954a896cef8b2739c01943c927f5b2c9c463cea9b076c4c"
+    },
+    "scripts/pqm-google-writer/sandbox-preview-audit.test.cjs": {
+      "sha256_lf": "53daa779e54904a710564ad5297c273d47488c632c313a5dc0d0cabaefd4c6e1"
+    },
+    "scripts/pqm-google-writer/sandbox-temporal-guard.test.cjs": {
+      "sha256_lf": "45d0f940b09e9b1898e8a3642f6ae75c6f524c41f7e9dbfa0d470d51ea5ee25c"
+    },
+    "scripts/pqm-google-writer/update-append-business-matrix.test.cjs": {
+      "sha256_lf": "9709e1269a0d98e2a20971c44bab83c2fb888ab13e6f01db7d78ccded9a87eb9"
+    },
+    "supplier_registry_integration.py": {
+      "sha256_lf": "76280b18acf2c8aa88191c4dcfe48abc7f15bbff9bb92a67e7ae4df201ce6122"
+    }
+  },
+  "normalization": "CRLF-to-LF only for text files",
+  "version": 1,
+  "behavior": {
+    "business_columns_written": [
+      "C",
+      "D",
+      "E",
+      "F",
+      "H",
+      "I",
+      "L"
+    ],
+    "verification_pair_atomic": [
+      "D",
+      "E",
+      "I",
+      "L"
+    ],
+    "append_requires_decided_event": true,
+    "pending_never_append_or_update": true,
+    "post_admission_rejection_preserves_verification_pair": true,
+    "active_qualification_wins_over_later_rejection": true,
+    "exact_timestamp_timezone": "Europe/Kyiv",
+    "date_only_is_not_a_timestamp_ordering_proof": true,
+    "unowned_columns_never_written": [
+      "G",
+      "J",
+      "K",
+      "M",
+      "N",
+      "O",
+      "P"
+    ],
+    "identifier_is_text_and_preserves_leading_zeroes": true,
+    "append_formula_A_copied_from_audited_template": true,
+    "apply_requires_preview_ticket_and_digest_recheck": true,
+    "apply_uses_bounded_exact_cell_ranges": true,
+    "uncertain_write_is_not_retried_automatically": true,
+    "history_is_preserved": true
+  }
+}

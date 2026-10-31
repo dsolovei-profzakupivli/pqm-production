@@ -9,11 +9,15 @@ var PQM_GOOGLE_HEADERS = [
   'УО', 'Примітки', 'Повна назва з ЄДР', 'Скорочена назва з ЄДР'
 ];
 var PQM_GOOGLE_TABS = ['ФОП', 'ЮО'];
-var PQM_GOOGLE_OWNED = [0, 1, 2, 5, 7];
+var PQM_GOOGLE_OWNED = [1, 2, 3, 4, 5, 7, 8, 11];
+var PQM_GOOGLE_APPEND_OWNED = [1, 2, 3, 4, 5, 7, 8, 11];
 
 function pqmGoogleCounts_() {
   return {api_records: 0, matched: 0, appended: 0, updated: 0, unchanged: 0,
-    skipped: 0, conflicts: 0, duplicate_keys: 0, errors: 0};
+    skipped: 0, conflicts: 0, duplicate_keys: 0, errors: 0,
+    google_newer_preserved: 0, same_date_google_officer_preserved: 0,
+    same_date_equivalent: 0, pqm_newer_written: 0, google_blank_filled: 0,
+    pqm_blank_google_preserved: 0};
 }
 
 function pqmGoogleSchema_(body) {
@@ -41,7 +45,7 @@ function pqmGoogleDate_(s) {
 function pqmGoogleBlank_(v) { return v === null || v === undefined || (typeof v === 'string' && !v.trim()); }
 
 /** Pure planner. Snapshots contain headers, rows (values/formulas), id and maxRows. */
-function pqmGooglePlan_(body, tabs) {
+function pqmGoogleWriterLegacyPlan_(body, tabs) {
   pqmGoogleSchema_(body);
   var result = pqmGoogleCounts_(), perTab = {}, issues = [], changes = [], index = new Map(), apiKeys = new Map();
   result.api_records = body.items.length;
@@ -50,16 +54,25 @@ function pqmGooglePlan_(body, tabs) {
     var t = tabs[name]; perTab[name] = pqmGoogleCounts_();
     if (!t || JSON.stringify(t.headers) !== JSON.stringify(PQM_GOOGLE_HEADERS))
       throw new Error('PQM: header mismatch: ' + name);
+    if (!Number.isInteger(t.id) || t.id < 0 || PQM_GOOGLE_TABS.some(function(other) { return other !== name && tabs[other] && tabs[other].id === t.id; })) throw new Error('PQM: tab identity/configuration mismatch.');
     t.rows.forEach(function(row, i) {
       var raw = row.values[1];
       // Display text keeps leading zeroes in legacy numeric cells. Never rewrite B.
-      var key = String(row.codeDisplay === undefined ? (raw == null ? '' : raw) : row.codeDisplay).trim();
-      if (!key) return;
+      var key = String(row.codeDisplay === undefined ? (raw == null ? '' : raw) : row.codeDisplay);
+      if (!key.trim()) return;
       if (!index.has(key)) index.set(key, []);
       index.get(key).push({tab: name, row: i + 2, data: row});
     });
   });
-  body.items.forEach(function(x) { var k = x.supplier_code.trim(); apiKeys.set(k, (apiKeys.get(k) || 0) + 1); });
+  body.items.forEach(function(x) { var k = x.supplier_code; apiKeys.set(k, (apiKeys.get(k) || 0) + 1); });
+  // Diagnostic comparison only; original identifiers are never rewritten.
+  var textAliases = new Map(), identityConflicts = new Set();
+  new Set(Array.from(index.keys()).concat(Array.from(apiKeys.keys()))).forEach(function(k) {
+    var diagnosticKey = k.replace(/\s/g, '');
+    if (!textAliases.has(diagnosticKey)) textAliases.set(diagnosticKey, []);
+    textAliases.get(diagnosticKey).push(k);
+  });
+  textAliases.forEach(function(keys) { if (keys.length > 1) keys.forEach(function(k) { identityConflicts.add(k); }); });
   var duplicates = new Set();
   index.forEach(function(v, k) { if (v.length > 1) duplicates.add(k); });
   apiKeys.forEach(function(v, k) { if (v > 1) duplicates.add(k); });
@@ -68,7 +81,7 @@ function pqmGooglePlan_(body, tabs) {
     issue('duplicate_key', k);
     PQM_GOOGLE_TABS.forEach(function(t) {
       if ((index.get(k) || []).some(function(r) { return r.tab === t; }) || body.items.some(function(x) {
-        return x.supplier_code.trim() === k && (x.entity_type === 'legal_entity' ? 'ЮО' : x.entity_type === 'individual_entrepreneur' ? 'ФОП' : '') === t;
+        return x.supplier_code === k && (x.entity_type === 'legal_entity' ? 'ЮО' : x.entity_type === 'individual_entrepreneur' ? 'ФОП' : '') === t;
       })) perTab[t].duplicate_keys++;
     });
   });
@@ -81,10 +94,15 @@ function pqmGooglePlan_(body, tabs) {
   var nextRows = {};
   PQM_GOOGLE_TABS.forEach(function(t) { nextRows[t] = tabs[t].rows.length + 2; });
   body.items.forEach(function(x) {
-    var key = x.supplier_code.trim();
+    var key = x.supplier_code;
     var name = x.entity_type === 'individual_entrepreneur' ? 'ФОП' : x.entity_type === 'legal_entity' ? 'ЮО' : null;
     function count(k) { result[k]++; if (name) perTab[name][k]++; }
     if (name) perTab[name].api_records++;
+    if (identityConflicts.has(key)) { count('conflicts'); issue('identifier_text_conflict', key, name); return; }
+    // Shared classification contract is included in Preview/Apply state digest.
+    if (x.entity_type === 'foreign_legal_entity') { count('skipped'); issue('nonresident_append_blocked', key); return; }
+    if (x.entity_type === 'unknown' || x.classification_status === 'conflict') { count('conflicts'); issue(x.classification_reason || 'entity_type_unresolved', key); issues[issues.length-1].message = x.classification_reason_label || 'Потрібна перевірка типу постачальника'; return; }
+    if (x.classification_version !== 'subject-nature-20261030-v2' || x.classification_status !== 'resolved' || x.append_allowed !== true) { count('conflicts'); issue('classification_contract_unverified', key, name); return; }
     if (duplicates.has(key)) { count('conflicts'); return; }
     if (!name) { count('skipped'); return; }
     var found = (index.get(key) || [])[0];
@@ -129,6 +147,11 @@ function pqmGooglePlan_(body, tabs) {
     } else count('unchanged');
   });
   return {counts: result, per_tab: perTab, issues: issues, gaps: gaps, changes: changes};
+}
+
+function pqmGooglePlan_(body, tabs, options) {
+  if (typeof pqmGoogleBusinessPlan_ === 'function') return pqmGoogleBusinessPlan_(body, tabs, options);
+  return pqmGoogleWriterLegacyPlan_(body, tabs);
 }
 
 function pqmGoogleFetch_() {

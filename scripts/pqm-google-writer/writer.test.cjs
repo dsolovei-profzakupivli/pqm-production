@@ -17,9 +17,17 @@ function tabs() {
   }]));
 }
 function item(overrides = {}) {
-  return {supplier_code: '00110183', entity_type: 'legal_entity', supplier_name: 'new',
+  const result = {supplier_code: '00110183', entity_type: 'legal_entity', supplier_name: 'new',
+    classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+    classification_reason: 'established_subject_nature',
+    classification_reason_label: 'Тип підтверджено у fixture', target_sheet: 'ЮО', append_allowed: true,
     monitoring_eligible: true, freshness_marker: 'EXACT marker', prozorro_status_google: '✅ Активний',
     last_application_date: '2026-09-16', ...overrides};
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'target_sheet')) {
+    result.target_sheet = result.entity_type === 'individual_entrepreneur' ? 'ФОП' :
+      result.entity_type === 'legal_entity' ? 'ЮО' : null;
+  }
+  return result;
 }
 function body(items) { return {count: items.length, items}; }
 function applyPlan(plan, t) {
@@ -102,24 +110,25 @@ test('46130719 routes to one ЮО append; repeat does not duplicate and preserve
 test('routing, foreign/unknown, leading zero identity, and counts', () => {
   const plan = p.plan(body([item(), item({supplier_code:'0012345678',entity_type:'individual_entrepreneur'}),
     item({supplier_code:'US-7',entity_type:'foreign_legal_entity'}),item({supplier_code:'X',entity_type:'unknown'})]), tabs());
-  assert.equal(plan.counts.updated,2); assert.equal(plan.counts.skipped,2);
+  assert.equal(plan.counts.updated,2); assert.equal(plan.counts.skipped,1); assert.equal(plan.counts.conflicts,1);
   assert.equal(plan.per_tab['ФОП'].updated,1); assert.equal(plan.per_tab['ЮО'].updated,1);
   assert.equal(plan.changes[0].cells[1],undefined);
+  assert.ok(plan.issues.some(x=>x.reason==='established_subject_nature'&&x.message==='Тип підтверджено у fixture'));
 });
 test('only A/C/F/H update; Google fields, key and missing supplier preserved', () => {
   const t=tabs(), r=t['ЮО'].rows[0];
-  [3,4,6,8,9,10,11,12,13,14].forEach(c=> {r.values[c]='manual'+c;r.formulas[c]='=MANUAL()';});
+  [6,9,10,12,13,14].forEach(c=> {r.values[c]='manual'+c;r.formulas[c]='=MANUAL()';});
   t['ЮО'].rows.push(row('missing','keep')); const before=clone(t);
   const plan=p.plan(body([item()]),t); assert.deepEqual(Object.keys(plan.changes[0].cells),['0','2','5','7']);
-  applyPlan(plan,t); [1,3,4,6,8,9,10,11,12,13,14].forEach(c=>assert.equal(r.values[c],before['ЮО'].rows[0].values[c]));
+  applyPlan(plan,t); [1,6,9,10,12,13,14].forEach(c=>assert.equal(r.values[c],before['ЮО'].rows[0].values[c]));
   assert.deepEqual(t['ЮО'].rows[1],before['ЮО'].rows[1]);
 });
 test('blank API preserves all existing values',()=>{
   const plan=p.plan(body([item({supplier_name:' ',freshness_marker:null,prozorro_status_google:'',last_application_date:null})]),tabs());
   assert.equal(plan.counts.unchanged,1); assert.equal(plan.changes.length,0);
 });
-test('every owned formula including B conflicts even for blank incoming',()=>{
-  for(const c of [0,1,2,5,7]) {const t=tabs();t['ЮО'].rows[0].formulas[c]='=A1';
+test('every owned formula conflicts before any write even for blank incoming',()=>{
+  for(const c of [1,2,3,4,5,7,8,11]) {const t=tabs();t['ЮО'].rows[0].formulas[c]='=A1';
     const plan=p.plan(body([item({freshness_marker:''})]),t);assert.equal(plan.counts.conflicts,1);assert.equal(plan.changes.length,0);}
 });
 test('eligible append, ineligible skip, existing ineligible update, no N/O generation',()=>{
@@ -138,9 +147,10 @@ test('duplicates within tab, across tabs, API duplicates and routing mismatch co
     assert.equal(plan.counts.duplicate_keys,mode==='routing'?0:1);
   }
 });
-test('exact trimmed codes never pad or normalize',()=>{
+test('identifiers retain exact text; whitespace aliases block matching without normalization',()=>{
   const plan=p.plan(body([item({supplier_code:' 00110183 '}),item({supplier_code:'110183'})]),tabs());
-  assert.equal(plan.counts.matched,1);assert.equal(plan.counts.appended,1);assert.equal(plan.changes[1].cells[1],'110183');
+  assert.equal(plan.counts.matched,0);assert.equal(plan.counts.appended,1);assert.equal(plan.counts.conflicts,1);
+  assert.equal(plan.changes[0].cells[1],'110183');assert.ok(plan.issues.some(x=>x.reason==='identifier_text_conflict'));
 });
 test('invalid calendar date cannot overwrite H; marker copied without calculation',()=>{
   const t=tabs();t['ЮО'].rows[0].values[7]=45000;
@@ -173,7 +183,7 @@ test('dry-run zero writes; Apply atomic batch under lock; repeat preview unchang
   const t=tabs(), r=runtime(body([item(),item({supplier_code:'new'})]),t);
   const preview=r.p.writer();assert.equal(r.stats().writes,0);assert.equal(preview.dry_run,true);
   const applied=r.p.writer({apply:true,expectedDigest:preview.digest});assert.equal(applied.dry_run,false);assert.equal(r.stats().writes,1);
-  assert.equal(r.p.writer().counts.unchanged,2);assert.equal(r.stats().releases,3);
+  assert.equal(r.p.writer().counts.appended,0);assert.equal(r.stats().releases,3);
 });
 test('emitted requests preserve manual cells and inherited validation after mock Apply',()=>{
   const t=tabs();t['ЮО'].rows[0].values[12]='manual note';t['ЮО'].rows[0].values[13]='manual N';
@@ -219,9 +229,9 @@ test('preview menu requires explicit Apply; cancel performs zero writes',()=>{
   r.p.menu({clarityChecker:'fixtureClarity',dateAndOfficer:'fixtureDate',organizationEditor:'fixtureEditor'});
   assert.deepEqual(r.stats().menu,['⚙️ Робота з даними',['PQM → Google','pqmGooglePreview'],'|',['🏢 Заповнити дані з файлу ClarityChecker','fixtureClarity'],'|',['📆 Оновити Дату та УО для виділених рядків','fixtureDate'],'|',['✏️ Редактор ЮО','fixtureEditor']]);
 });
-test('missing template and template owned formula prevent append; merged owned cells conflict',()=>{
+test('missing template and merged owned cells prevent unsafe changes',()=>{
   const t=tabs();t['ЮО'].rows=[];assert.equal(p.plan(body([item()]),t).counts.conflicts,1);
-  t['ЮО'].rows=[row('existing')];t['ЮО'].rows[0].formulas[0]='=NOW()';assert.equal(p.plan(body([item()]),t).counts.conflicts,1);
+  t['ЮО'].rows=[row('existing')];t['ЮО'].rows[0].formulas[3]='=MANUAL()';assert.equal(p.plan(body([item()]),t).counts.conflicts,1);
   t['ЮО'].rows=[row('00110183')];t['ЮО'].merges=[{startRowIndex:1,endRowIndex:2,startColumnIndex:0,endColumnIndex:3}];assert.equal(p.plan(body([item()]),t).counts.conflicts,1);
 });
 test('snapshot retains numeric formatted identity, serial dates and formula metadata',()=>{

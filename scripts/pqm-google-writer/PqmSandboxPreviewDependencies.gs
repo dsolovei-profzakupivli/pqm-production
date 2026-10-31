@@ -5,8 +5,8 @@ var PQM_GOOGLE_HEADERS = [
   'УО', 'Примітки', 'Повна назва з ЄДР', 'Скорочена назва з ЄДР'
 ];
 var PQM_GOOGLE_TABS = ['ФОП', 'ЮО'];
-var PQM_GOOGLE_OWNED = [1, 2, 4, 5, 7, 8, 11];
-var PQM_GOOGLE_APPEND_OWNED = [1, 2, 4, 5, 7, 8, 11];
+var PQM_GOOGLE_OWNED = [1, 2, 3, 4, 5, 7, 8, 11];
+var PQM_GOOGLE_APPEND_OWNED = [1, 2, 3, 4, 5, 7, 8, 11];
 var PQM_GOOGLE_SNAPSHOT_CHUNK_ROWS = 500;
 
 function pqmGoogleCounts_() {
@@ -87,6 +87,35 @@ function pqmGoogleEdrCurrentStatus_(value) {
   return PQM_GOOGLE_EDR_CURRENT_STATUSES.indexOf(text) >= 0 ? text : null;
 }
 
+function pqmGoogleProzorroCategory_(value) {
+  if (pqmGoogleBlank_(value)) return '';
+  var text = String(value).normalize('NFC').trim()
+    .replace(/^[^\p{L}\p{N}]+/u, '').trim().replace(/\s+/g, ' ')
+    .toLocaleLowerCase('uk-UA');
+  var categories = {'активний': 'active', 'неактивний': 'inactive',
+    'призупинений': 'suspended', 'ще не в реєстрі': 'not_yet'};
+  return categories[text] || null;
+}
+
+function pqmGoogleProtected_(tab, row, columns) {
+  return (tab.protectedRanges || []).some(function(protection) {
+    if (protection.warningOnly || protection.requestingUserCanEdit === true) return false;
+    var range = protection.range || {}, index = row - 1;
+    if (index < (range.startRowIndex || 0) ||
+        index >= (range.endRowIndex === undefined ? Infinity : range.endRowIndex)) return false;
+    return columns.some(function(column) {
+      if (column < (range.startColumnIndex || 0) ||
+          column >= (range.endColumnIndex === undefined ? Infinity : range.endColumnIndex)) return false;
+      return !(protection.unprotectedRanges || []).some(function(exception) {
+        return index >= (exception.startRowIndex || 0) &&
+          index < (exception.endRowIndex === undefined ? Infinity : exception.endRowIndex) &&
+          column >= (exception.startColumnIndex || 0) &&
+          column < (exception.endColumnIndex === undefined ? Infinity : exception.endColumnIndex);
+      });
+    });
+  });
+}
+
 function pqmGoogleEdrPreserveInformation_(value) {
   if (pqmGoogleBlank_(value)) return false;
   return String(value).trim().replace(/^[^\p{L}\p{N}]+/u, '').trim()
@@ -97,7 +126,8 @@ function pqmGoogleOfficerComparable_(value) {
   return String(value || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('uk-UA');
 }
 
-function pqmGooglePlan_(body, tabs) {
+// Legacy planner retained for integrity review; the business matrix is canonical.
+function pqmGoogleLegacyPlan_(body, tabs) {
   pqmGoogleSchema_(body);
   var result = pqmGoogleCounts_(), perTab = {}, issues = [], changes = [], index = new Map(), apiKeys = new Map();
   result.api_records = body.items.length;
@@ -105,15 +135,24 @@ function pqmGooglePlan_(body, tabs) {
   PQM_GOOGLE_TABS.forEach(function(name) {
     var t = tabs[name]; perTab[name] = pqmGoogleCounts_();
     if (!t || JSON.stringify(t.headers) !== JSON.stringify(PQM_GOOGLE_HEADERS)) throw new Error('PQM: header mismatch: ' + name);
+    if (!Number.isInteger(t.id) || t.id < 0 || PQM_GOOGLE_TABS.some(function(other) { return other !== name && tabs[other] && tabs[other].id === t.id; })) throw new Error('PQM: tab identity/configuration mismatch.');
     t.rows.forEach(function(row, i) {
       var raw = row.values[1];
-      var key = String(row.codeDisplay === undefined ? (raw == null ? '' : raw) : row.codeDisplay).trim();
-      if (!key) return;
+      var key = String(row.codeDisplay === undefined ? (raw == null ? '' : raw) : row.codeDisplay);
+      if (!key.trim()) return;
       if (!index.has(key)) index.set(key, []);
       index.get(key).push({tab: name, row: i + 2, data: row});
     });
   });
-  body.items.forEach(function(x) { var k = x.supplier_code.trim(); apiKeys.set(k, (apiKeys.get(k) || 0) + 1); });
+  body.items.forEach(function(x) { var k = x.supplier_code; apiKeys.set(k, (apiKeys.get(k) || 0) + 1); });
+  // Diagnostic comparison only; original identifiers are never rewritten.
+  var textAliases = new Map(), identityConflicts = new Set();
+  new Set(Array.from(index.keys()).concat(Array.from(apiKeys.keys()))).forEach(function(k) {
+    var diagnosticKey = k.replace(/\s/g, '');
+    if (!textAliases.has(diagnosticKey)) textAliases.set(diagnosticKey, []);
+    textAliases.get(diagnosticKey).push(k);
+  });
+  textAliases.forEach(function(keys) { if (keys.length > 1) keys.forEach(function(k) { identityConflicts.add(k); }); });
   var duplicates = new Set();
   index.forEach(function(v, k) { if (v.length > 1) duplicates.add(k); });
   apiKeys.forEach(function(v, k) { if (v > 1) duplicates.add(k); });
@@ -122,7 +161,7 @@ function pqmGooglePlan_(body, tabs) {
     issue('duplicate_key', k);
     PQM_GOOGLE_TABS.forEach(function(t) {
       if ((index.get(k) || []).some(function(r) { return r.tab === t; }) || body.items.some(function(x) {
-        return x.supplier_code.trim() === k && (x.entity_type === 'legal_entity' ? 'ЮО' : x.entity_type === 'individual_entrepreneur' ? 'ФОП' : '') === t;
+        return x.supplier_code === k && (x.entity_type === 'legal_entity' ? 'ЮО' : x.entity_type === 'individual_entrepreneur' ? 'ФОП' : '') === t;
       })) perTab[t].duplicate_keys++;
     });
   });
@@ -134,10 +173,15 @@ function pqmGooglePlan_(body, tabs) {
   var nextRows = {};
   PQM_GOOGLE_TABS.forEach(function(t) { nextRows[t] = tabs[t].rows.length + 2; });
   body.items.forEach(function(x) {
-    var key = x.supplier_code.trim();
+    var key = x.supplier_code;
     var name = x.entity_type === 'individual_entrepreneur' ? 'ФОП' : x.entity_type === 'legal_entity' ? 'ЮО' : null;
     function count(k) { result[k]++; if (name) perTab[name][k]++; }
     if (name) perTab[name].api_records++;
+    if (identityConflicts.has(key)) { count('conflicts'); issue('identifier_text_conflict', key, name); return; }
+    // Shared classification contract is included in Preview/Apply state digest.
+    if (x.entity_type === 'foreign_legal_entity') { count('skipped'); issue('nonresident_append_blocked', key); return; }
+    if (x.entity_type === 'unknown' || x.classification_status === 'conflict') { count('conflicts'); issue(x.classification_reason || 'entity_type_unresolved', key); issues[issues.length-1].message = x.classification_reason_label || 'Потрібна перевірка типу постачальника'; return; }
+    if (x.classification_version !== 'subject-nature-20261030-v2' || x.classification_status !== 'resolved' || x.append_allowed !== true) { count('conflicts'); issue('classification_contract_unverified', key, name); return; }
     if (!x.google_sync_eligible) { count('skipped'); return; }
     if (duplicates.has(key)) { count('conflicts'); return; }
     if (!name) { count('skipped'); return; }
@@ -249,6 +293,11 @@ function pqmGooglePlan_(body, tabs) {
   return {counts: result, per_tab: perTab, issues: issues, gaps: gaps, changes: changes};
 }
 
+// Standalone compatibility for the classification planner test. In the full
+// Apps Script project the canonical business planner is declared separately;
+// never shadow it with this fallback.
+if (typeof pqmGooglePlan_ === 'undefined') pqmGooglePlan_ = pqmGoogleLegacyPlan_;
+
 function pqmGoogleSnapshot_(spreadsheetId) {
   var metadata = Sheets.Spreadsheets.get(spreadsheetId, {
     includeGridData: false,
@@ -354,7 +403,7 @@ function pqmSandboxDebugHeaders() {
 }
 
 function pqmGooglePlanAggregate_(plan) {
-  var letters={1:'B',2:'C',4:'E',5:'F',7:'H',8:'I',11:'L'}, out={by_tab:{},by_column:{},by_action:{},by_reason:{},by_combination:{},unchanged:plan.counts.unchanged};
+  var letters={1:'B',2:'C',3:'D',4:'E',5:'F',7:'H',8:'I',11:'L'}, out={by_tab:{},by_column:{},by_action:{},by_reason:{},by_combination:{},unchanged:plan.counts.unchanged};
   plan.changes.forEach(function(change){
     var action=change.append?'append':'update', cols=Object.keys(change.cells).map(function(c){return letters[Number(c)];}).sort().join('+')||'(none)';
     out.by_tab[change.tab]=(out.by_tab[change.tab]||0)+1;
@@ -367,7 +416,7 @@ function pqmGooglePlanAggregate_(plan) {
 
 /* Aggregate-only diagnostic.  It deliberately retains no sheet or PQM values. */
 function pqmGooglePlanComparisonAudit_(plan, tabs) {
-  var letters = {1:'B',2:'C',4:'E',5:'F',7:'H',8:'I',11:'L'};
+  var letters = {1:'B',2:'C',3:'D',4:'E',5:'F',7:'H',8:'I',11:'L'};
   var out = {planned_matched_cells: 0, planned_append_cells: 0,
     value_mismatch: 0, date_format_only: 0, current_value_types: {}};
   plan.changes.forEach(function(change) {
@@ -467,10 +516,10 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
     var bRanges=chunks.map(function(x){return esc+'!B'+x.start+':B'+x.end;});
     if(bRanges.length)displayValues=batchValues(bRanges,'FORMATTED_VALUE','formatted_code_B',count-1,count-1);
     var formulaColumns=[{letter:'A',column:0},{letter:'B',column:1},{letter:'C',column:2},
-      {letter:'E',column:4},{letter:'F',column:5},{letter:'L',column:11}];
+      {letter:'D',column:3},{letter:'E',column:4},{letter:'F',column:5},{letter:'L',column:11}];
     var formulaRanges=[];
     chunks.forEach(function(x){formulaColumns.forEach(function(c){formulaRanges.push(esc+'!'+c.letter+x.start+':'+c.letter+x.end);});});
-    if(formulaRanges.length)formulaValues=batchValues(formulaRanges,'FORMULA','formula_values_A_B_C_E_F_L',(count-1)*6,(count-1)*6);
+    if(formulaRanges.length)formulaValues=batchValues(formulaRanges,'FORMULA','formula_values_A_B_C_D_E_F_L',(count-1)*7,(count-1)*7);
     for(var hStart=0;hStart<chunks.length;hStart+=PQM_GOOGLE_SNAPSHOT_H_BATCH_RANGES){
       var hPart=chunks.slice(hStart,hStart+PQM_GOOGLE_SNAPSHOT_H_BATCH_RANGES);
       var hRanges=[]; hPart.forEach(function(x){hRanges.push(esc+'!H'+x.start+':H'+x.end,esc+'!I'+x.start+':I'+x.end);});
@@ -494,7 +543,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
       for(var i=0;i<values.length;i++){var r=blank(),v=values[i]||[];for(var c=0;c<15;c++)r.values[c]=v[c]===undefined?'':v[c];if(v.length)highest=Math.max(highest,start+i);rows[start+i-2]=r;}
       var display=displayValues[chunkIndex].values||[];
       display.forEach(function(v,i){var r=rows[start+i-2]||(rows[start+i-2]=blank());r.codeDisplay=v&&v[0]!==undefined?String(v[0]):'';});
-      var formulaResult={valueRanges:formulaValues.slice(chunkIndex*6,chunkIndex*6+6)};
+      var formulaResult={valueRanges:formulaValues.slice(chunkIndex*7,chunkIndex*7+7)};
       var suspicious=[];
       formulaColumns.forEach(function(x,j){
         var valueRows=formulaResult.valueRanges[j].values||[],found=false;
@@ -518,7 +567,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
       gridData.forEach(function(data){applyGrid(data,[7,8]);});
       if(suspicious.length){
         var suspectRanges=suspicious.map(function(x){return esc+'!'+x.letter+start+':'+x.letter+end;});
-        var fallback=pqmGoogleSnapshotProfileCall_(profile,'formula_disambiguation_A_B_C_E_F_L',end-start+1,(end-start+1)*suspicious.length,suspicious.length,function(){
+        var fallback=pqmGoogleSnapshotProfileCall_(profile,'formula_disambiguation_A_B_C_D_E_F_L',end-start+1,(end-start+1)*suspicious.length,suspicious.length,function(){
           return Sheets.Spreadsheets.get(spreadsheetId,{ranges:suspectRanges,includeGridData:true,
             fields:'sheets(data(startRow,startColumn,rowData(values(userEnteredValue(formulaValue)))))'});
         });

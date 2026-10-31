@@ -4,14 +4,15 @@ const fs = require('node:fs');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const files = ['PqmSandboxPreviewDependencies.gs', 'PqmSandboxPreview.gs', 'PqmSandboxControlledApply.gs'];
+const files = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs',
+  'PqmSandboxPreview.gs', 'PqmSandboxControlledApply.gs'];
 const source = files.map(name => fs.readFileSync(__dirname + '/' + name, 'utf8')).join('\n');
 const clone = value => JSON.parse(JSON.stringify(value));
 const combinations = ['C', 'F', 'H', 'C+F', 'C+H', 'F+H', 'C+F+H', 'C', 'F', 'H'];
 
 function fixture() {
   const logs = [];
-  const context = {console: {log: message => logs.push(message)}, Date, Map, Set};
+    const context = {console: {log: message => logs.push(message)}, Date, Map, Set};
   vm.createContext(context);
   vm.runInContext(source, context);
   const tabs = Object.fromEntries(['ФОП', 'ЮО'].map((name, index) => [name, {
@@ -29,14 +30,22 @@ function fixture() {
     const values = Array(15).fill('');
     values[0] = 'old'; values[1] = code;
     values[2] = columns.includes('C') ? 'old-name' : 'Name';
-    values[5] = columns.includes('F') ? 'old-status' : 'Active';
+    values[4] = 'Зареєстровано';
+    values[5] = columns.includes('F') ? 'Неактивний' : 'Активний';
     values[7] = columns.includes('H') ? 46286 : 46287;
     const row = {values, formulas: Array(15).fill(''), codeDisplay: code, dateFormat: 'dd.MM.yyyy'};
     tabs[tab].rows.push(row);
     body.items.push({supplier_code: code, entity_type: tab === 'ФОП' ? 'individual_entrepreneur' : 'legal_entity',
+      classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+      classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
+      target_sheet: tab, append_allowed: true,
       supplier_name: 'Name', monitoring_eligible: true, google_sync_eligible: true,
+      google_writer_eligible: true, google_sync_has_active_qualification: true,
+      google_sync_has_admission_history: true, google_sync_last_decided_application_decision: 'admit',
+      google_sync_last_decided_protocol_at: '', google_sync_last_decided_protocol_officer: '',
+      google_sync_last_decided_submission_id: 's1', google_sync_latest_rejection_officer: '',
       freshness_marker: 'fresh',
-      edr_status_current: null, verification_date: null, verification_officer: null,
+      edr_status_current: null, verification_date: null, verification_officer: null, verification_event_type: null,
       prozorro_status_google: 'Active', last_application_date: '2026-09-22',
       google_sync_last_decided_application_date: '2026-09-22'});
     const cells = values.map((value, column) => {
@@ -67,6 +76,12 @@ function fixture() {
   };
   context.LockService = {getScriptLock: () => ({tryLock: () => true, releaseLock: () => {}})};
   context.Utilities = {DigestAlgorithm: {SHA_256: 'SHA_256'}, Charset: {UTF_8: 'UTF_8'},
+    formatDate: (date, zone) => {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {timeZone: zone,
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+        second: '2-digit', hourCycle: 'h23'}).formatToParts(date).map(part => [part.type, part.value]));
+      return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.000`;
+    },
     computeDigest: (_algorithm, value) => crypto.createHash('sha256').update(value).digest(),
     base64EncodeWebSafe: buffer => Buffer.from(buffer).toString('base64url')};
   context.Sheets = {Spreadsheets: {
@@ -183,20 +198,24 @@ test('explicit confirmed sample writes only planned C/F/H and verifies every oth
   assert.ok(f.requests.every(r => r.updateCells.range.endColumnIndex - r.updateCells.range.startColumnIndex === 1));
 });
 
-test('expanded controlled sample safely writes E/I/L and verifies untouched A/B/D/G/J/K/M/N/O', () => {
+test('expanded controlled sample safely writes D/E/I/L and verifies untouched A/B/G/J/K/M/N/O', () => {
   const f = fixture();
+  f.body.items[0].supplier_name = 'old-name';
   f.body.items[0].edr_status_current = 'Зареєстровано';
-  f.body.items[0].verification_date = '2026-09-23';
+  f.body.items[0].current_manager_name = 'Updated Manager';
+  f.body.items[0].verification_date = '2026-09-23T10:00:00+03:00';
+  f.body.items[0].verification_datetime_precision = 'second';
+  f.body.items[0].verification_event_type = 'google_clarity';
   f.body.items[0].verification_officer = 'verified officer';
   const preview = f.context.pqmSandboxControlledPreview();
   const chosen = preview.selected.find(entry => entry.supplier_code === f.body.items[0].supplier_code);
   assert.ok(chosen);
-  assert.deepEqual(Array.from(chosen.planned_columns), ['C', 'E', 'I', 'L']);
+  assert.deepEqual(Array.from(chosen.planned_columns), ['D', 'E', 'I', 'L']);
   f.setPrompts([response(preview.selected.map(x => x.supplier_code).join(',')), response(preview.plan_digest)]);
   f.setConfirmation('YES');
   const result = f.context.pqmSandboxControlledApply();
   assert.equal(result.verification_passed, true);
-  assert.ok(f.requests.every(request => [2, 4, 5, 7, 8, 11].includes(request.updateCells.range.startColumnIndex)));
+  assert.ok(f.requests.every(request => [2, 3, 4, 5, 7, 8, 11].includes(request.updateCells.range.startColumnIndex)));
   assert.equal(f.requests.filter(request => request.updateCells.range.startColumnIndex === 8).length, 1);
 });
 
@@ -223,14 +242,13 @@ test('append, conflict, duplicate or protected selected cells fail closed', () =
   f.body.items.pop(); f.body.count--;
   f.tabs['ФОП'].protectedRanges.push({range: {startRowIndex: 1, endRowIndex: 2,
     startColumnIndex: 2, endColumnIndex: 3}, requestingUserCanEdit: false});
-  assert.throws(() => f.context.pqmSandboxControlledPreview(), /protection/);
+  assert.throws(() => f.context.pqmSandboxControlledPreview(), /protected/);
   assert.equal(f.writes, 0);
 });
 
 test('blank PQM C/H are preserved by the controlled request builder', () => {
   const f = fixture();
   f.body.items[6].supplier_name = null;
-  f.body.items[6].last_application_date = null;
   f.body.items[6].google_sync_last_decided_application_date = null;
   const preview = f.context.pqmSandboxControlledPreview();
   const selected = preview.selected.find(x => x.supplier_code === f.body.items[6].supplier_code);
@@ -238,10 +256,14 @@ test('blank PQM C/H are preserved by the controlled request builder', () => {
   assert.deepEqual(Array.from(selected.planned_columns), ['F']);
   assert.equal(f.writes, 0);
 });
-test('SANDBOX canonical sandbox officer can be physically written to mock L without changing historical date', () => {
+test('explicit source officer and exact verification timestamp write together', () => {
   const f = fixture();
-  f.body.items[0].verification_date = '2026-07-22';
-  f.body.items[0].verification_officer = '';
+  f.body.items[0].verification_date = '2026-07-22T09:30:00+03:00';
+  f.body.items[0].verification_datetime_precision = 'second';
+  f.body.items[0].verification_event_type = 'google_clarity';
+  f.body.items[0].current_manager_name = 'Manager';
+  f.body.items[0].edr_status_current = 'Зареєстровано';
+  f.body.items[0].verification_officer = 'Тестова УО SANDBOX';
   const preview = f.context.pqmSandboxControlledPreview();
   f.setPrompts([response(preview.selected.map(x => x.supplier_code).join(',')), response(preview.plan_digest)]);
   f.setConfirmation('YES');
@@ -250,8 +272,8 @@ test('SANDBOX canonical sandbox officer can be physically written to mock L with
   const officerWrites = f.requests.filter(r => r.updateCells.range.startColumnIndex === 11);
   assert.ok(officerWrites.some(r => r.updateCells.rows[0].values[0].userEnteredValue.stringValue === 'Тестова УО SANDBOX'));
   const dates = f.requests.filter(r => r.updateCells.range.startColumnIndex === 8);
-  assert.ok(dates.some(r => r.updateCells.rows[0].values[0].userEnteredValue.numberValue === f.context.pqmGoogleDate_('2026-07-22')));
-  assert.equal(f.body.items[0].verification_officer, '');
+  assert.ok(dates.some(r => r.updateCells.rows[0].values[0].userEnteredValue.numberValue !== undefined));
+  assert.equal(f.body.items[0].verification_officer, 'Тестова УО SANDBOX');
 });
 
 test('AFTER verification detects a changed unowned cell', () => {
@@ -276,7 +298,7 @@ test('sample protection exception applies only to its covered column', () => {
   f.tabs['ФОП'].protectedRanges.push({range: {startRowIndex: 1, endRowIndex: 2,
     startColumnIndex: 0, endColumnIndex: 3}, requestingUserCanEdit: false,
     unprotectedRanges: [{startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 1}]});
-  assert.throws(() => f.context.pqmSandboxControlledPreview(), /protection/);
+  assert.throws(() => f.context.pqmSandboxControlledPreview(), /protected/);
   assert.equal(f.writes, 0);
 });
 

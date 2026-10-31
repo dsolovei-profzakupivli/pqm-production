@@ -208,16 +208,15 @@ class EdrMonitoringTests(unittest.TestCase):
             self.assertEqual(server.edr_monitoring_filtered_codes(params),['46130719'])
 
     def test_missing_names_filter_combines_with_existing_filters_and_exact_export_codes(self):
-        rows = [dict(self.rows()[0], supplier_code="46130719", edr_full_name=" — ",
+        rows = [dict(self.rows()[0], entity_type="legal_entity", supplier_code="46130719", edr_full_name=" — ",
                      edr_short_name="null", prozorro_status="Активний"),
-                dict(self.rows()[0], supplier_code="33333333", edr_full_name="Назва",
+                dict(self.rows()[0], entity_type="legal_entity", supplier_code="33333333", edr_full_name="Назва",
                      edr_short_name=" ", prozorro_status="Неактивний"),
-                dict(self.rows()[0], supplier_code="44444444", edr_full_name="Назва",
+                dict(self.rows()[0], entity_type="legal_entity", supplier_code="44444444", edr_full_name="Назва",
                      edr_short_name="Коротка", prozorro_status="Активний")]
         params = {"edr_names": ["missing_any"], "prozorro_status": ["Активний"],
                   "application_from": ["2026-09-01"], "entity_type": ["legal_entity"]}
-        with patch.object(server, "_edr_monitoring_rows", return_value=rows), \
-             patch.object(server, "supplier_entity_type", return_value="legal_entity"):
+        with patch.object(server, "_edr_monitoring_rows", return_value=rows):
             listing = server.list_edr_monitoring(params)
             codes = server.edr_monitoring_filtered_codes(params)
             exported = list(csv.reader(io.StringIO(

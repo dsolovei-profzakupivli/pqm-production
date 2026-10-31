@@ -39,6 +39,12 @@ function pqmSandboxExpandedAuditProzorro_(value) {
     text : 'other';
 }
 
+function pqmSandboxExpandedAuditVerificationDate_(state) {
+  if (state.kind === 'day') return state.date;
+  if (state.kind !== 'datetime') return null;
+  return Utilities.formatDate(new Date(state.value), 'Europe/Kyiv', "yyyy-MM-dd'T'HH:mm:ss.SSS").slice(0, 10);
+}
+
 function pqmSandboxExpandedAudit_(body, tabs, todayIso) {
   var plan = pqmGooglePlan_(body, tabs);
   var output = {dry_run: true, google_writes: 0, full_apply_plan_created: false,
@@ -59,6 +65,7 @@ function pqmSandboxExpandedAudit_(body, tabs, todayIso) {
     i: {planned: 0, google_blank_to_pqm_date: 0,
       google_nonblank_same_calendar_not_planned: 0,
       google_nonblank_different_calendar: 0, pqm_newer: 0, pqm_older: 0,
+      precision_ambiguous: 0,
       same_day_representation_planned: 0, google_invalid_to_valid: 0,
       pqm_blank_google_nonblank_preserved: 0, blank_pqm_writes: 0,
       min_pqm_date: null, max_pqm_date: null, future_pqm_dates: 0,
@@ -105,16 +112,20 @@ function pqmSandboxExpandedAudit_(body, tabs, todayIso) {
     if (matches.length !== 1 || !target || matches[0].tab !== target) return;
     var match = matches[0], key = target + ':' + match.row;
     var current = byRow.get(key).values, cells = planned.get(key) || {};
-    var pqmI = pqmGoogleCalendarDate_(item.verification_date);
-    var googleI = pqmGoogleCalendarDate_(current[8]);
+    var pqmI = pqmGoogleMatrixVerification_(item.verification_date,
+      item.verification_datetime_precision || '');
+    var googlePrecision = /H|h/.test(String(byRow.get(key).verificationDateFormat || '')) ? 'datetime' : 'day';
+    var googleI = pqmGoogleMatrixVerification_(current[8], googlePrecision);
     if (pqmI.kind === 'invalid') output.i.invalid_pqm_dates++;
-    if (pqmI.kind === 'date') {
-      if (output.i.min_pqm_date === null || pqmI.value < output.i.min_pqm_date) output.i.min_pqm_date = pqmI.value;
-      if (output.i.max_pqm_date === null || pqmI.value > output.i.max_pqm_date) output.i.max_pqm_date = pqmI.value;
-      if (pqmI.value > todayIso) output.i.future_pqm_dates++;
+    var pqmCalendar = pqmSandboxExpandedAuditVerificationDate_(pqmI);
+    var googleCalendar = pqmSandboxExpandedAuditVerificationDate_(googleI);
+    if (pqmCalendar) {
+      if (output.i.min_pqm_date === null || pqmCalendar < output.i.min_pqm_date) output.i.min_pqm_date = pqmCalendar;
+      if (output.i.max_pqm_date === null || pqmCalendar > output.i.max_pqm_date) output.i.max_pqm_date = pqmCalendar;
+      if (pqmCalendar > todayIso) output.i.future_pqm_dates++;
     }
     if (pqmI.kind === 'blank' && googleI.kind !== 'blank') output.i.pqm_blank_google_nonblank_preserved++;
-    if (pqmI.kind === 'date' && googleI.kind === 'date' && pqmI.value === googleI.value &&
+    if (pqmCalendar && googleCalendar && pqmCalendar === googleCalendar &&
         !Object.prototype.hasOwnProperty.call(cells, '8')) output.i.google_nonblank_same_calendar_not_planned++;
     if (pqmGoogleBlank_(item.verification_officer) && !pqmGoogleBlank_(current[11])) {
       output.l.pqm_blank_google_nonblank_preserved++;
@@ -155,11 +166,13 @@ function pqmSandboxExpandedAudit_(body, tabs, todayIso) {
           pqmSandboxExpandedAuditEventType_(item.verification_event_type));
       }
       else if (googleI.kind === 'invalid') output.i.google_invalid_to_valid++;
-      else if (pqmI.kind === 'date' && googleI.value === pqmI.value) output.i.same_day_representation_planned++;
-      else if (pqmI.kind === 'date') {
-        output.i.google_nonblank_different_calendar++;
+      else if ((pqmI.kind === 'day' || pqmI.kind === 'datetime') &&
+          (googleI.kind === 'day' || googleI.kind === 'datetime')) {
+        if (pqmCalendar && googleCalendar && pqmCalendar !== googleCalendar) output.i.google_nonblank_different_calendar++;
         var eventType = pqmSandboxExpandedAuditEventType_(item.verification_event_type);
-        if (pqmI.value > googleI.value) {
+        if (pqmI.kind !== googleI.kind) output.i.precision_ambiguous++;
+        else if (pqmI.value === googleI.value) output.i.same_day_representation_planned++;
+        else if (pqmI.value > googleI.value) {
           output.i.pqm_newer++;
           pqmSandboxExpandedAuditIncrement_(output.i.newer_by_event_type, eventType);
         } else {
@@ -167,13 +180,13 @@ function pqmSandboxExpandedAudit_(body, tabs, todayIso) {
           pqmSandboxExpandedAuditIncrement_(output.i.older_by_event_type, eventType);
           var lastApplication = pqmGoogleCalendarDate_(item.last_application_date);
           var lastApproved = pqmGoogleCalendarDate_(item.last_approved_application_date);
-          if (lastApplication.kind === 'date') {
-            if (googleI.value === lastApplication.value) output.i.older_google_i_equals_last_application_date++;
-            if (googleI.value > lastApplication.value) output.i.older_google_i_after_last_application_date++;
+          if (lastApplication.kind === 'date' && googleCalendar) {
+            if (googleCalendar === lastApplication.value) output.i.older_google_i_equals_last_application_date++;
+            if (googleCalendar > lastApplication.value) output.i.older_google_i_after_last_application_date++;
           }
-          if (lastApproved.kind === 'date') {
-            if (googleI.value === lastApproved.value) output.i.older_google_i_equals_last_approved_application_date++;
-            if (googleI.value > lastApproved.value) output.i.older_google_i_after_last_approved_application_date++;
+          if (lastApproved.kind === 'date' && googleCalendar) {
+            if (googleCalendar === lastApproved.value) output.i.older_google_i_equals_last_approved_application_date++;
+            if (googleCalendar > lastApproved.value) output.i.older_google_i_after_last_approved_application_date++;
           }
         }
       }
@@ -192,7 +205,7 @@ function pqmSandboxExpandedAudit_(body, tabs, todayIso) {
         output.l.google_nonblank_different_officer++;
         var relation = pqmI.kind === 'blank' ? 'pqm_blank' :
           googleI.kind === 'blank' ? 'google_blank' :
-          pqmI.kind !== 'date' || googleI.kind !== 'date' ? 'invalid_date' :
+          pqmI.kind !== googleI.kind || (pqmI.kind !== 'datetime' && pqmI.kind !== 'day') ? 'invalid_date' :
           pqmI.value < googleI.value ? 'pqm_older' :
           pqmI.value > googleI.value ? 'pqm_newer' : 'same_date';
         output.l.different_officer_by_i_relation[relation]++;

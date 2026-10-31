@@ -6,7 +6,9 @@ function pqmSandboxAppendLoad_(id) {
   var body = pqmSandboxFetchRegistry_(), tabs = pqmGoogleSnapshot_(id);
   var plan = pqmGooglePlan_(body, tabs);
   if (plan.counts.conflicts || plan.counts.duplicate_keys || plan.counts.errors) {
-    throw new Error('PQM SANDBOX APPEND: planner blocked; zero writes.');
+    var reasons = Array.from(new Set((plan.issues || []).map(function(issue) { return issue.reason; }).filter(Boolean)));
+    throw new Error('PQM SANDBOX APPEND: planner blocked; zero writes' +
+      (reasons.length ? ' (' + reasons.join(', ') + ')' : '') + '.');
   }
   var selected = plan.changes.filter(function(change) { return change.append; })
     .slice(0, PQM_SANDBOX_APPEND_MAX_ROWS);
@@ -31,7 +33,7 @@ function pqmSandboxAppendRange_(id, row, column, height, width) {
 }
 
 function pqmSandboxAppendRequests_(selected, tabs) {
-  var requests = [], allowed = [1, 2, 4, 5, 7, 8, 11];
+  var requests = [], allowed = [1, 2, 3, 4, 5, 7, 8, 11];
   PQM_GOOGLE_TABS.forEach(function(name) {
     var tab = tabs[name], additions = selected.filter(function(change) { return change.tab === name; });
     if (!additions.length) return;
@@ -47,6 +49,10 @@ function pqmSandboxAppendRequests_(selected, tabs) {
       requests.push({copyPaste: {source: pqmSandboxAppendRange_(tab.id, template, 0, 1, 15),
         destination: pqmSandboxAppendRange_(tab.id, first, 0, additions.length, 15), pasteType: type}});
     });
+    // Only the audited row-local A formula is copied; template business values
+    // and all Google-owned/manual cells remain untouched.
+    requests.push({copyPaste: {source: pqmSandboxAppendRange_(tab.id, template, 0, 1, 1),
+      destination: pqmSandboxAppendRange_(tab.id, first, 0, additions.length, 1), pasteType: 'PASTE_FORMULA'}});
     requests.push({updateDimensionProperties: {range: {sheetId: tab.id, dimension: 'ROWS',
       startIndex: first - 1, endIndex: last}, properties: {pixelSize: tab.templateRowHeight}, fields: 'pixelSize'}});
     tab.conditionalFormats.forEach(function(rule, index) {
@@ -64,7 +70,8 @@ function pqmSandboxAppendRequests_(selected, tabs) {
         if (!Object.prototype.hasOwnProperty.call(change.cells, column)) return;
         var value = change.cells[column], isDate = column === 7 || column === 8;
         var cell = {userEnteredValue: isDate ? {numberValue: value} : {stringValue: value}};
-        if (isDate) cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
+        if (isDate) cell.userEnteredFormat = {numberFormat: {type: column === 8 ? 'DATE_TIME' : 'DATE',
+          pattern: column === 8 ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy'}};
         if (column === 1) cell.userEnteredFormat = {numberFormat: {type: 'TEXT', pattern: '@'}};
         requests.push({updateCells: {range: pqmSandboxAppendRange_(tab.id, change.row, column, 1, 1),
           rows: [{values: [cell]}], fields: 'userEnteredValue' +
@@ -102,8 +109,10 @@ function pqmSandboxAppendVerifyMetadata_(id, selected, templates) {
       var actualFormat = JSON.parse(JSON.stringify(actual.userEnteredFormat || {}));
       if ([1, 7, 8].indexOf(column) >= 0 && Object.prototype.hasOwnProperty.call(change.cells, column)) {
         delete expectedFormat.numberFormat;
-        if (!actualFormat.numberFormat || actualFormat.numberFormat.pattern !==
-            (column === 1 ? '@' : 'dd.MM.yyyy')) throw new Error('PQM SANDBOX APPEND: date/code format mismatch.');
+        var expectedPattern = column === 1 ? '@' : column === 8 ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy';
+        if (!actualFormat.numberFormat || actualFormat.numberFormat.pattern !== expectedPattern) {
+          throw new Error('PQM SANDBOX APPEND: date/code format mismatch.');
+        }
         delete actualFormat.numberFormat;
       }
       if (JSON.stringify(expectedFormat) !== JSON.stringify(actualFormat)) {
@@ -119,18 +128,31 @@ function pqmSandboxAppendVerify_(id, selected, before) {
     var oldTab = before[change.tab], newTab = after[change.tab], row = newTab && newTab.rows[change.row - 2];
     if (!row || String(row.codeDisplay || '').trim() !== change.cells[1] ||
         oldTab.rows.length >= newTab.rows.length ||
-        [6, 9, 10, 12].some(function(column) { return !pqmGoogleBlank_(row.values[column]); })) {
+        [6, 9, 10, 12, 13, 14].some(function(column) { return !pqmGoogleBlank_(row.values[column]); })) {
       throw new Error('PQM SANDBOX APPEND: AFTER verification failed; new Preview required.');
     }
     Object.keys(change.cells).forEach(function(column) {
       var actual = row.values[column], expected = change.cells[column];
       if (Number(column) === 7 || Number(column) === 8) {
-        if (pqmGoogleCalendarDate_(actual).value !== pqmGoogleCalendarDate_(expected).value)
+        if (Number(column) === 8 ? pqmGoogleMatrixVerification_(actual, '').value !==
+            pqmGoogleMatrixVerification_(expected, '').value :
+            pqmGoogleCalendarDate_(actual).value !== pqmGoogleCalendarDate_(expected).value)
           throw new Error('PQM SANDBOX APPEND: AFTER date mismatch; new Preview required.');
       } else if (String(actual) !== String(expected)) {
         throw new Error('PQM SANDBOX APPEND: AFTER value mismatch; new Preview required.');
       }
     });
+  });
+  selected.forEach(function(change) {
+    var after = Sheets.Spreadsheets.get(id, {ranges: ["'" + change.tab.replace(/'/g, "''") + "'!A" + change.row + ':A' + change.row],
+      includeGridData: true, fields: 'sheets(data(rowData(values(userEnteredValue(formulaValue)))))'});
+    var formula = (((((after.sheets || [])[0] || {}).data || [])[0] || {}).rowData || [])[0];
+    formula = formula && formula.values && formula.values[0] && formula.values[0].userEnteredValue &&
+      formula.values[0].userEnteredValue.formulaValue;
+    var template = before[change.tab].rows[before[change.tab].rows.length - 1];
+    var templateRow = before[change.tab].rows.length + 1;
+    var expected = pqmGoogleTranslatedAppendFormula_(template.formulas[0], templateRow, change.row);
+    if (formula !== expected) throw new Error('PQM SANDBOX APPEND: A formula mismatch after append; new Preview required.');
   });
   return after;
 }

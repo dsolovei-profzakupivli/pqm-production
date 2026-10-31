@@ -19,7 +19,7 @@ class NazkTaskPersonRelevanceTests(unittest.TestCase):
           CREATE TABLE framework_officers(framework_id TEXT,marketplace_url TEXT);
           CREATE TABLE registry_contracts(id TEXT PRIMARY KEY,qualification_id TEXT,framework_id TEXT,supplier_code TEXT,status TEXT,raw_json TEXT DEFAULT '{}');
           CREATE TABLE supplier_edr_profiles(supplier_code TEXT,full_name TEXT,short_name TEXT);
-          CREATE TABLE amcu_registry(row_key TEXT,offender_code TEXT,decision_date TEXT);
+          CREATE TABLE amcu_registry(row_key TEXT PRIMARY KEY,offender_code TEXT,decision_date TEXT);
           CREATE TABLE supplier_managers(id INTEGER PRIMARY KEY,supplier_code TEXT,manager_name TEXT,normalized_name TEXT,manager_tax_id TEXT,is_current INTEGER);
           CREATE TABLE supplier_nazk_checks(id INTEGER PRIMARY KEY,supplier_code TEXT,manager_id INTEGER,manager_name TEXT,workflow_status TEXT,result TEXT,started_at TEXT,completed_at TEXT,updated_at TEXT);
           CREATE TABLE supplier_nazk_check_matches(check_id INTEGER,nazk_source_id TEXT,match_status TEXT);

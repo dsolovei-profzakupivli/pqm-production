@@ -1,0 +1,35 @@
+// Pure VM only. No real Google/PQM calls or script properties.
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),crypto=require('node:crypto');
+const root=path.resolve(__dirname,'..');let passed=0;
+const files=['PqmGoogleWriter.gs','PqmSandboxPreviewDependencies.gs'];
+function ctx(file){const c=vm.createContext({console});vm.runInContext(fs.readFileSync(path.join(root,'scripts/pqm-google-writer',file),'utf8'),c);return c;}
+function baseline(file){const c=vm.createContext({console});const raw=JSON.parse(fs.readFileSync(path.join(root,'validation/fixtures/supplier_classification_parent_6b9830b.json'),'utf8'));assert.equal(raw.baseline,'6b9830b010ddd2339e316775572d88c630cdfb6b');vm.runInContext(raw.sources[file],c);return c;}
+function item(code,type='individual_entrepreneur'){return{supplier_code:code,entity_type:type,monitoring_eligible:true,google_sync_eligible:true,supplier_name:'Синтетичний постачальник',latest_submission_name:'ФОП Тест',current_manager_name:'Тест',prozorro_status_google:'Активний',prozorro_status_canonical:'Активний',edr_status_current:'Зареєстровано',freshness_marker:'🟢 (<30 днів)',last_application_date:'2026-10-01',google_sync_last_decided_application_date:'2026-10-01',verification_date:null,verification_officer:null,classification_version:'subject-nature-20261030-v2',classification_status:'resolved',append_allowed:true};}
+function tabs(c){return Object.fromEntries(['ФОП','ЮО'].map((n,i)=>[n,{id:101+i,headers:Array.from(c.PQM_GOOGLE_HEADERS),maxRows:30,templateRowHeight:22,protectedRanges:[],conditionalFormats:[],merges:[],rows:[{values:['','template'+i,'Template','','Зареєстровано','Активний','','','','','','','','',''],codeDisplay:'template'+i,formulas:Array(15).fill(''),dateFormat:'dd.MM.yyyy'}]}]));}
+const test=(name,f)=>{f();passed++};
+for(const file of files){const c=ctx(file);const plan=(x,t=tabs(c))=>c.pqmGooglePlan_({count:1,items:[x]},t);
+ for(const code of ['СР919350','СР 918414','НВ411323','МЮ397338','КР935355','кн015121','ВО599107','001234567','0012345678','  АБ 000007  '])test(file+' literal FOP '+code,()=>{const p=plan(item(code));assert.equal(p.changes[0].tab,'ФОП');assert.equal(p.changes[0].cells[1],code);assert.equal(p.counts.appended,1)});
+ for(const code of ['00123456','541645372','9462717843','BRANCH 001'])test(file+' other nature '+code,()=>{const p=plan(item(code,'legal_entity'));assert.equal(p.changes[0].tab,'ЮО');assert.equal(p.changes[0].cells[1],code)});
+ test(file+' unresolved blocks with reason',()=>{const x=item('001234567','unknown');x.classification_status='needs_review';x.classification_reason='subject_nature_not_established';x.append_allowed=false;const p=plan(x);assert.equal(p.changes.length,0);assert.equal(p.counts.conflicts,1);assert.equal(p.issues[0].reason,x.classification_reason)});
+ test(file+' foreign shown separately no APPEND',()=>{const p=plan(item('00123456','foreign_legal_entity'));assert.equal(p.changes.length,0);assert.equal(p.issues[0].reason,'nonresident_append_blocked')});
+ test(file+' old API cannot authorize classification',()=>{const x=item('001234567');delete x.classification_version;const p=plan(x);assert.equal(p.changes.length,0);assert.equal(p.issues[0].reason,'classification_contract_unverified')});
+ test(file+' conflict cannot be hidden by type field',()=>{const x=item('001234567');x.classification_status='conflict';x.classification_reason='subject_nature_evidence_conflict';assert.equal(plan(x).changes.length,0)});
+ test(file+' duplicate exact identity blocked',()=>{const x=item('СР919350');const p=c.pqmGooglePlan_({count:2,items:[x,x]},tabs(c));assert.equal(p.changes.length,0);assert.equal(p.counts.duplicate_keys,1)});
+ test(file+' whitespace variants are conflict not merged or appended',()=>{const t=tabs(c);t['ФОП'].rows[0].codeDisplay='СР 918414';t['ФОП'].rows[0].values[1]='СР 918414';const p=plan(item('СР918414'),t);assert.equal(p.changes.length,0);assert(p.issues.some(x=>x.reason==='identifier_text_conflict'))});
+ test(file+' native tab ids must be distinct',()=>{const t=tabs(c);t['ЮО'].id=t['ФОП'].id;assert.throws(()=>plan(item('001234567'),t),/tab identity/)});
+ test(file+' existing other tab never moved silently',()=>{const t=tabs(c);t['ЮО'].rows[0].codeDisplay='СР919350';assert(plan(item('СР919350'),t).issues.some(x=>x.reason==='routing_mismatch'))});
+ test(file+' second APPEND creates no duplicate',()=>{const x=item('СР 918414'),t=tabs(c),first=plan(x,t);const cells=Array(15).fill('');for(const[k,v]of Object.entries(first.changes[0].cells))cells[Number(k)]=v;t['ФОП'].rows.push({values:cells,codeDisplay:x.supplier_code,formulas:Array(15).fill(''),dateFormat:'dd.MM.yyyy'});const second=plan(x,t);assert.equal(second.counts.appended,0);assert.equal(second.counts.matched,1)});
+ test(file+' full APPEND column/timestamp/officer matrix unchanged',()=>{const x=item('00123456','legal_entity');const p=plan(x),old=baseline(file);const oldPlan=old.pqmGooglePlan_({count:1,items:[x]},tabs(old));assert.equal(JSON.stringify(p.changes),JSON.stringify(oldPlan.changes))});
+ test(file+' full UPDATE column/timestamp/officer matrix unchanged',()=>{const x=item('00123456','legal_entity'),t=tabs(c),old=baseline(file);t['ЮО'].rows[0].codeDisplay=x.supplier_code;t['ЮО'].rows[0].values[1]=x.supplier_code;const p=plan(x,t),oldPlan=old.pqmGooglePlan_({count:1,items:[x]},t);assert.equal(JSON.stringify(p.changes),JSON.stringify(oldPlan.changes))});
+}
+// Existing writer entry point: Preview/Apply re-fetch and digest the same data.
+{const c=ctx('PqmGoogleWriter.gs');let body={count:1,items:[item('СР 918414')]},t=tabs(c),writes=0;
+ c.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})};
+ c.SpreadsheetApp={getActiveSpreadsheet:()=>({getId:()=> 'SYNTHETIC_ONLY'})};
+ c.Utilities={DigestAlgorithm:{SHA_256:'SHA_256'},Charset:{UTF_8:'UTF_8'},computeDigest:(_,s)=>crypto.createHash('sha256').update(s).digest(),base64EncodeWebSafe:x=>Buffer.from(x).toString('base64url')};
+ c.Sheets={Spreadsheets:{batchUpdate(){writes++}}};c.pqmGoogleFetch_=()=>body;c.pqmGoogleSnapshot_=()=>t;
+ test('country/nature change invalidates Preview digest before Apply',()=>{const preview=c.pqmGoogleWriter();body.items[0].classification_status='conflict';body.items[0].append_allowed=false;assert.throws(()=>c.pqmGoogleWriter({apply:true,expectedDigest:preview.digest}),/stale/);assert.equal(writes,0)});
+ test('fresh Preview and Apply share resolved classifier and native tab',()=>{body={count:1,items:[item('541645372','legal_entity')]};const p=c.pqmGoogleWriter();const a=c.pqmGoogleWriter({apply:true,expectedDigest:p.digest});assert.equal(a.changes[0].tab,'ЮО');assert.equal(writes,1)});
+ test('native sheet identity drift invalidates digest before write',()=>{const p=c.pqmGoogleWriter();t['ЮО'].id=999;assert.throws(()=>c.pqmGoogleWriter({apply:true,expectedDigest:p.digest}),/stale/);assert.equal(writes,1)});
+}
+console.log(`${passed}/${passed} pure synthetic planner checks PASS`);

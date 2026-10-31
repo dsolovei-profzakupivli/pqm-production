@@ -6,6 +6,7 @@ import re
 import threading
 
 import edr_sync_v2
+import supplier_classification
 
 
 ENTITY_TYPES = {
@@ -28,7 +29,7 @@ def _chunks(values):
 
 
 def _identity_code(value):
-    return re.sub(r"\D", "", str(value or ""))
+    return str(value or "")
 
 
 def _current_names(con, supplier_codes, profile_columns):
@@ -42,7 +43,7 @@ def _current_names(con, supplier_codes, profile_columns):
               FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch):
                 if row["full_name"]:
                     names[_identity_code(row["supplier_code"])] = row["full_name"]
-    return {str(code).strip(): names.get(_identity_code(code)) for code in supplier_codes}
+    return {str(code): names.get(_identity_code(code)) for code in supplier_codes}
 
 
 def _current_verification_events(con, supplier_codes):
@@ -107,7 +108,7 @@ def _build_full_registry(con):
       WHERE TRIM(COALESCE(s.supplier_code,''))<>''
         AND s.id=(SELECT sx.id FROM submissions sx WHERE sx.supplier_code=s.supplier_code
           ORDER BY sx.date_published DESC,sx.id DESC LIMIT 1)"""):
-        row = dict(raw); code = str(row["supplier_code"] or "").strip()
+        row = dict(raw); code = str(row["supplier_code"] or "")
         prior = latest.get(code)
         row_key = (str(row.get("date_published") or row.get("synced_at") or ""), str(row.get("id") or ""))
         prior_key = ((str(prior.get("date_published") or prior.get("synced_at") or ""), str(prior.get("id") or ""))
@@ -120,57 +121,80 @@ def _build_full_registry(con):
       LEFT JOIN application_fields af ON af.submission_id=s.id
       WHERE q.status='active'
       ORDER BY s.date_published DESC,s.id DESC"""):
-        row = dict(raw); code = str(row["supplier_code"] or "").strip()
+        row = dict(raw); code = str(row["supplier_code"] or "")
         approved.setdefault(code, row)
     for raw in con.execute(edr_sync_v2.DECIDED_APPLICATIONS_SQL
                            + " ORDER BY s.date_published DESC,s.id DESC"):
-        row = dict(raw); code = str(row["supplier_code"] or "").strip()
+        row = dict(raw); code = str(row["supplier_code"] or "")
         decided.setdefault(code, row)
     for row in con.execute("""SELECT s.supplier_code,s.supplier_name FROM submissions s
       JOIN qualifications q ON q.id=s.qualification_id
       WHERE q.status IN ('active','unsuccessful')
       ORDER BY s.date_published DESC,s.id DESC"""):
-        decided_names.setdefault(str(row["supplier_code"] or "").strip(), str(row["supplier_name"] or "").strip())
-    summaries = {str(row["supplier_code"] or "").strip(): dict(row) for row in con.execute(
+        decided_names.setdefault(str(row["supplier_code"] or ""), str(row["supplier_name"] or "").strip())
+    # Decision provenance is separate from the latest submission and current
+    # qualification aggregate. The Google writer needs it to distinguish a
+    # first rejection from a rejection after an admission.
+    latest_decisions = {}
+    admission_history = set()
+    last_rejection_officers = {}
+    submission_columns = {row[1] for row in con.execute("PRAGMA table_info(submissions)")}
+    qualification_columns = {row[1] for row in con.execute("PRAGMA table_info(qualifications)")}
+    application_columns = {row[1] for row in con.execute("PRAGMA table_info(application_fields)")}
+    decision_date_expr = "NULLIF(q.decision_date,'')" if "decision_date" in qualification_columns else "NULL"
+    protocol_date_expr = "NULLIF(af.protocol_date,'')" if "protocol_date" in application_columns else "NULL"
+    protocol_decision_expr = "LOWER(TRIM(COALESCE(af.protocol_decision,'')))" if "protocol_decision" in application_columns else "''"
+    protocol_officer_expr = "NULLIF(TRIM(af.protocol_officer),'')" if "protocol_officer" in application_columns else "NULL"
+    decided_link = "q.id=s.qualification_id" if "qualification_id" in submission_columns else "q.submission_id=s.id"
+    for raw in con.execute(f"""SELECT s.supplier_code,s.id,s.date_published,q.status,
+      {protocol_decision_expr} protocol_decision,{decision_date_expr} qualification_decision_date,
+      {protocol_date_expr} protocol_date,{protocol_officer_expr} protocol_officer
+      FROM submissions s JOIN qualifications q ON {decided_link}
+      LEFT JOIN application_fields af ON af.submission_id=s.id
+      WHERE TRIM(COALESCE(s.supplier_code,''))<>''
+      ORDER BY COALESCE(NULLIF(s.date_published,''),'') DESC,s.id DESC"""):
+        event = dict(raw)
+        code = str(event.get("supplier_code") or "")
+        if not code:
+            continue
+        raw_decision = str(event.get("protocol_decision") or "").lower()
+        decision = ("" if event.get("status") == "pending" else
+                    "admit" if event.get("status") == "active" else
+                    "reject" if event.get("status") == "unsuccessful" else
+                    raw_decision if raw_decision in {"admit", "reject"} else "")
+        if not decision:
+            continue
+        event_at = event.get("protocol_date") or event.get("qualification_decision_date") or ""
+        projected = {
+            "decision": decision,
+            "application_date": str(event.get("date_published") or "")[:10] or None,
+            "protocol_at": str(event_at or ""),
+            "officer": str(event.get("protocol_officer") or "").strip(),
+            "submission_id": str(event.get("id") or ""),
+        }
+        latest_decisions.setdefault(code, projected)
+        if decision == "admit":
+            admission_history.add(code)
+        elif code not in last_rejection_officers:
+            last_rejection_officers[code] = projected["officer"]
+    summaries = {str(row["supplier_code"] or ""): dict(row) for row in con.execute(
         "SELECT supplier_code,supplier_name FROM supplier_registry_summary")}
     profile_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_edr_profiles)")}
     full_name_expr = "full_name" if "full_name" in profile_columns else "'' full_name"
     edr_status_expr = "edr_status" if "edr_status" in profile_columns else "'' edr_status"
-    profiles = {str(row["supplier_code"] or "").strip(): dict(row) for row in con.execute(
+    profiles = {str(row["supplier_code"] or ""): dict(row) for row in con.execute(
         f"SELECT supplier_code,manager_name,source_sheet,{edr_status_expr},{full_name_expr} FROM supplier_edr_profiles")}
-    # Profile codes may have lost passport characters while submissions retain
-    # their literal representation.  Link only an unambiguous domestic pair;
-    # literal identity always wins and foreign schemes can never use this path.
-    profile_by_digits = {}
-    for profile_code in profiles:
-        digits = _identity_code(profile_code)
-        if digits:
-            profile_by_digits.setdefault(digits, []).append(profile_code)
-    submission_by_digits = {}
-    for submission_code, application in latest.items():
-        digits = _identity_code(submission_code)
-        scheme = str(application.get("identifier_scheme") or "").strip().upper()
-        if digits and (not scheme or scheme in {"UA-EDR", "UA-IPN"}):
-            submission_by_digits.setdefault(digits, []).append(submission_code)
-    linked_profiles = {}
-    for submission_code in latest:
-        if submission_code in profiles:
-            linked_profiles[submission_code] = profiles[submission_code]
-            continue
-        digits = _identity_code(submission_code)
-        candidates = profile_by_digits.get(digits, []) if digits else []
-        submission_candidates = submission_by_digits.get(digits, []) if digits else []
-        if len(candidates) == 1 and len(submission_candidates) == 1:
-            linked_profiles[submission_code] = profiles[candidates[0]]
+    linked_profiles = {code: profiles[code] for code in latest if code in profiles}
+    supplier_types = supplier_classification.build_index(con)
     managers = {}
     for row in con.execute("""SELECT supplier_code,manager_name FROM supplier_managers
       WHERE is_current=1 ORDER BY COALESCE(NULLIF(updated_at,''),created_at) DESC,id DESC"""):
-        managers.setdefault(str(row["supplier_code"] or "").strip(), str(row["manager_name"] or "").strip())
+        managers.setdefault(str(row["supplier_code"] or ""), str(row["manager_name"] or "").strip())
     statuses = edr_sync_v2.canonical_prozorro_statuses(con, latest)
     google_statuses = {}
     eligibility_raw_codes = {}
     for raw_code, status in edr_sync_v2.monitoring_eligibility(con).items():
-        code = str(raw_code).strip()
+        code = str(raw_code)
         if code in eligibility_raw_codes and raw_code != eligibility_raw_codes[code]:
             raise ValueError(f"Ambiguous supplier code after outer whitespace strip: {code!r}")
         eligibility_raw_codes[code] = raw_code
@@ -184,22 +208,9 @@ def _build_full_registry(con):
     for code in sorted(latest):
         application = latest[code]; acceptance = approved.get(code); profile = linked_profiles.get(code, {})
         canonical_status = statuses[code]
-        scheme = str(application.get("identifier_scheme") or "").strip().upper()
-        source = str(profile.get("source_sheet") or "").strip().upper()
-        if scheme and scheme not in {"UA-EDR", "UA-IPN"}:
-            entity_type = "foreign_legal_entity"
-        elif source == "ФОП":
-            entity_type = "individual_entrepreneur"
-        elif source == "ЮО":
-            entity_type = "legal_entity"
-        elif scheme == "UA-IPN":
-            entity_type = "individual_entrepreneur"
-        elif scheme == "UA-EDR" and re.fullmatch(r"\d{8}", code):
-            # A literal, eight-digit UA-EDR identifier is sufficient to route
-            # a new legal entity before its first Google EDR profile exists.
-            entity_type = "legal_entity"
-        else:
-            entity_type = "unknown"
+        classification = supplier_classification.resolve(supplier_types, code)
+        entity_type = classification["entity_type"]
+        latest_decision = latest_decisions.get(code, {})
         supplier_name = names.get(code) or decided_names.get(code, "")
         current_manager = (managers.get(code) or str(profile.get("manager_name") or "").strip()
           or str(application.get("application_manager_name") or "").strip())
@@ -208,7 +219,7 @@ def _build_full_registry(con):
             current_manager = str(application.get("supplier_name") or "").strip()
         items.append({
             "supplier_code": code,
-            "entity_type": entity_type,
+            **supplier_classification.public_fields(classification),
             "supplier_name": supplier_name,
             "latest_submission_name": decided_names.get(code, ""),
             "current_manager_name": current_manager,
@@ -222,11 +233,19 @@ def _build_full_registry(con):
                 factual_edr_events.get(code, []), str(profile.get("edr_status") or "")),
             "monitoring_eligible": code in monitoring_codes,
             "google_sync_eligible": code in google_statuses,
+            "google_writer_eligible": bool(latest_decision),
+            "google_sync_has_active_qualification": code in qualification_dates,
+            "google_sync_has_admission_history": code in admission_history,
             "freshness_marker": edr_sync_v2.marker_for_status(
                 canonical_status, verification["verification_date"]),
             "last_application_date": str(decided.get(code, {}).get("date_published") or "")[:10] or None,
             "google_sync_last_decided_application_date": (
-                str(decided.get(code, {}).get("date_published") or "")[:10] or None),
+                latest_decision.get("application_date") or str(decided.get(code, {}).get("date_published") or "")[:10] or None),
+            "google_sync_last_decided_application_decision": latest_decision.get("decision", ""),
+            "google_sync_last_decided_protocol_at": latest_decision.get("protocol_at", ""),
+            "google_sync_last_decided_protocol_officer": latest_decision.get("officer", ""),
+            "google_sync_last_decided_submission_id": latest_decision.get("submission_id", ""),
+            "google_sync_latest_rejection_officer": last_rejection_officers.get(code, ""),
             "last_approved_application_date": str(acceptance.get("date_published") or "")[:10] if acceptance else None,
             "last_approved_application_uo": (str(acceptance.get("protocol_officer") or "").strip()
               if acceptance else "") or "НЕ ВИЗНАЧЕНО",
@@ -262,5 +281,5 @@ def full_registry(con):
 def eligible_full_registry(con):
     """Expose only the shared qualification-status population to Google."""
     result = full_registry(con)
-    items = [item for item in result["items"] if item["google_sync_eligible"]]
+    items = [item for item in result["items"] if item.get("google_writer_eligible")]
     return {"generated_at": result["generated_at"], "count": len(items), "items": items}

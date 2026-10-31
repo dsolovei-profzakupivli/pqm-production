@@ -3,9 +3,9 @@ var PQM_SANDBOX_CONTROLLED_SPREADSHEET_ID = '1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnj
 var PQM_SANDBOX_CONTROLLED_MIN_ROWS = 8;
 var PQM_SANDBOX_CONTROLLED_MAX_ROWS = 10;
 var PQM_SANDBOX_CONTROLLED_GUARD_CACHE_SECONDS = 21600;
-var PQM_SANDBOX_CONTROLLED_COLUMNS = {2: 'C', 4: 'E', 5: 'F', 7: 'H', 8: 'I', 11: 'L'};
+var PQM_SANDBOX_CONTROLLED_COLUMNS = {2: 'C', 3: 'D', 4: 'E', 5: 'F', 7: 'H', 8: 'I', 11: 'L'};
 var PQM_SANDBOX_CONTROLLED_DESIRED_COMBINATIONS = [
-  'C', 'F', 'H', 'C+F', 'C+H', 'F+H', 'C+F+H'
+  'C', 'D', 'E', 'F', 'H', 'I', 'L', 'C+F', 'C+H', 'F+H', 'C+F+H', 'D+E+I+L'
 ];
 
 function pqmSandboxControlledSpreadsheetId_() {
@@ -58,8 +58,8 @@ function pqmSandboxControlledFail_(reason, entry, oldDigest, newDigest) {
   console.log(JSON.stringify({reason: reason,
     tab: entry && (entry.tab === 'ФОП' || entry.tab === 'ЮО') ? entry.tab : null,
     row: entry && Number.isInteger(entry.row) ? entry.row : null,
-    planned_columns: entry && Array.isArray(entry.planned_columns) ?
-      entry.planned_columns.filter(function(column) { return ['C', 'E', 'F', 'H', 'I', 'L'].indexOf(column) >= 0; }) : [],
+      planned_columns: entry && Array.isArray(entry.planned_columns) ?
+      entry.planned_columns.filter(function(column) { return ['C', 'D', 'E', 'F', 'H', 'I', 'L'].indexOf(column) >= 0; }) : [],
     old_digest_prefix: prefix(oldDigest), new_digest_prefix: prefix(newDigest)}));
   throw new Error('PQM SANDBOX: ' + reason + '; no writes.');
 }
@@ -76,7 +76,9 @@ function pqmSandboxControlledPlan_(body, tabs) {
   var plan = pqmGooglePlan_(body, tabs);
   if (plan.counts.appended || plan.counts.conflicts || plan.counts.duplicate_keys || plan.counts.errors ||
       plan.changes.some(function(change) { return change.append; })) {
-    throw new Error('PQM SANDBOX: plan contains append, conflict, duplicate or error.');
+    var reasons = Array.from(new Set((plan.issues || []).map(function(issue) { return issue.reason; }).filter(Boolean)));
+    throw new Error('PQM SANDBOX: plan contains append, conflict, duplicate or error' +
+      (reasons.length ? ' (' + reasons.join(', ') + ')' : '') + '.');
   }
   return plan;
 }
@@ -205,6 +207,14 @@ function pqmSandboxControlledPqmState_(item) {
   return {supplier_code: item.supplier_code, entity_type: item.entity_type,
     monitoring_eligible: item.monitoring_eligible,
     google_sync_eligible: item.google_sync_eligible,
+    google_writer_eligible: item.google_writer_eligible,
+    google_sync_has_active_qualification: item.google_sync_has_active_qualification,
+    google_sync_has_admission_history: item.google_sync_has_admission_history,
+    google_sync_last_decided_application_decision: item.google_sync_last_decided_application_decision,
+    google_sync_last_decided_protocol_at: item.google_sync_last_decided_protocol_at,
+    google_sync_last_decided_protocol_officer: item.google_sync_last_decided_protocol_officer,
+    google_sync_latest_rejection_officer: item.google_sync_latest_rejection_officer,
+    verification_event_type: item.verification_event_type,
     supplier_name: blankAsNull(item.supplier_name),
     edr_status_current: blankAsNull(item.edr_status_current),
     prozorro_status_google: blankAsNull(item.prozorro_status_google),
@@ -331,7 +341,8 @@ function pqmSandboxControlledRequests_(selected, tabs) {
       if (pqmGoogleBlank_(value)) throw new Error('PQM SANDBOX: blank planned value.');
       var dateColumn = column === 7 || column === 8;
       var cell = {userEnteredValue: dateColumn ? {numberValue: value} : {stringValue: value}};
-      if (dateColumn) cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
+      if (dateColumn) cell.userEnteredFormat = {numberFormat: {type: column === 8 ? 'DATE_TIME' : 'DATE',
+        pattern: column === 8 ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy'}};
       requests.push({updateCells: {
         range: {sheetId: tabs[entry.tab].id, startRowIndex: entry.row - 1,
           endRowIndex: entry.row, startColumnIndex: column, endColumnIndex: column + 1},
@@ -340,7 +351,7 @@ function pqmSandboxControlledRequests_(selected, tabs) {
       }});
     });
   });
-  if (!requests.length || requests.length > PQM_SANDBOX_CONTROLLED_MAX_ROWS * 6) {
+  if (!requests.length || requests.length > PQM_SANDBOX_CONTROLLED_MAX_ROWS * 7) {
     throw new Error('PQM SANDBOX: controlled write limit exceeded.');
   }
   return requests;
@@ -364,7 +375,8 @@ function pqmSandboxControlledVerify_(selected, before, after) {
       var entered = actual.userEnteredValue || {};
       var equal = (column === 7 || column === 8) ? entered.numberValue === expected : entered.stringValue === expected;
       if (column === 7 || column === 8) {
-        equal = equal && (((actual.userEnteredFormat || {}).numberFormat || {}).pattern === 'dd.MM.yyyy');
+        equal = equal && (((actual.userEnteredFormat || {}).numberFormat || {}).pattern ===
+          (column === 8 ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy'));
       }
       if (!equal) failures.push({row: entry.row, tab: entry.tab, column: column + 1,
         reason: 'planned_cell_not_expected'});
@@ -412,7 +424,7 @@ function pqmSandboxControlledApply() {
       pqmSandboxControlledDigest_(codes.slice().sort()));
   }
   var answer = ui.alert('PQM SANDBOX controlled Apply',
-    'Write only the planned C/E/F/H/I/L cells in ' + codes.length +
+    'Write only the planned C/D/E/F/H/I/L cells in ' + codes.length +
       ' explicitly selected rows? This does not run Apply for the full registry.', ui.ButtonSet.YES_NO);
   if (answer !== ui.Button.YES) return {cancelled: true, google_writes: 0};
 

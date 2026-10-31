@@ -1,4 +1,5 @@
 import re
+import json
 import sqlite3
 import unittest
 from datetime import date
@@ -37,9 +38,14 @@ class SupplierEdrFilterTests(unittest.TestCase):
             self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,synced_at) VALUES(?,'✅ Зареєстровано','03.09.2026','2026-09-09T19:58:00Z')",(code,))
         self.con.commit()
         self.mock=patch.object(server,'db',return_value=self.con);self.mock.start();self.addCleanup(self.mock.stop)
+    def primary_subject(self,code):
+        # Explicit synthetic nature and country; format alone is not evidence.
+        kind='individual_entrepreneur' if code in ('3038301896','303-830-1896') else 'legal_entity'
+        return json.dumps({'tenderers':[{'identifier':{'id':code},'address':{'countryName':'Україна'},'legalForm':kind}]})
     def add_current_contract(self,code):
         self.con.execute("INSERT OR IGNORE INTO frameworks(id,pretty_id,status,raw_json,synced_at) VALUES('current-filter-fixture','current-filter-fixture','active','{}','fixture')")
         self.con.execute("INSERT INTO registry_contracts(id,framework_id,supplier_code,status,raw_json,synced_at) VALUES(?,'current-filter-fixture',?,'active','{}','fixture')",('rc-'+code,code))
+        self.con.execute("INSERT INTO submissions(id,framework_id,supplier_code,raw_json,synced_at) VALUES(?,'current-filter-fixture',?,?,'fixture')",('primary-'+code,code,self.primary_subject(code)))
     def listing(self,**params):return server.list_qualified_suppliers({k:[str(v)] for k,v in params.items()})
     def test_all_known_legacy_statuses_match_canonical_filter_without_changing_storage(self):
         pairs=(
@@ -208,6 +214,7 @@ class SupplierEdrFilterTests(unittest.TestCase):
 
     def test_export_uses_application_manager_fallback(self):
         self.con.execute("INSERT INTO submissions(id,framework_id,qualification_id,supplier_code,supplier_name,date_published,documents_json,raw_json,synced_at) VALUES('manager-fallback','current-filter-fixture','qm','30067771','APPLICATION NAME','2026-09-05','[]','{}','fixture')")
+        self.con.execute("UPDATE submissions SET raw_json=? WHERE id='manager-fallback'",(self.primary_subject('30067771'),))
         self.con.execute("INSERT INTO application_fields(submission_id,manager_name,protocol_decision) VALUES('manager-fallback','КЕРІВНИК ІЗ ЗАЯВКИ','admit')")
         self.con.commit()
         rows=server.build_supplier_edr_export_rows('ЮО',today=__import__('datetime').date(2026,9,15),

@@ -4,7 +4,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 
-const source = ['PqmSandboxPreviewDependencies.gs', 'PqmSandboxPreview.gs',
+const source = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs', 'PqmSandboxPreview.gs',
   'PqmSandboxControlledApply.gs', 'PqmSandboxFullApply.gs']
   .map(name => fs.readFileSync(__dirname + '/' + name, 'utf8')).join('\n');
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -23,7 +23,7 @@ function fixture(settings = {}) {
   const row = code => {
     const values = Array(15).fill('');
     values[0] = 'untouched-marker'; values[1] = code;
-    values[2] = 'Verified'; values[5] = 'Active'; values[7] = 46287;
+    values[2] = 'Verified'; values[5] = 'Активний'; values[7] = 46287;
     return values;
   };
   const tabNames = ['ФОП', 'ЮО'];
@@ -56,7 +56,7 @@ function fixture(settings = {}) {
       if (options.fields.includes('formulaValue')) {
         assert.doesNotMatch(options.fields, /formattedValue|effectiveValue|dataValidation|note/);
         return {sheets: [{data: Array.from(options.ranges, range => {
-          const letter = range.split('!')[1][0], column = {A: 0, B: 1, C: 2, E: 4, F: 5, L: 11}[letter];
+          const letter = range.split('!')[1][0], column = {A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, L: 11}[letter];
           assert.ok(column !== undefined);
           return {startRow: Number(match[3]) - 1, startColumn: column,
             rowData: Number(match[3]) === 2 ? [{values: [formulaCell(match[1], column)]}] : []};
@@ -88,7 +88,7 @@ function fixture(settings = {}) {
           return {values: start === 2 ? [[displays[name] || rows[name][1]]] : []};
         }
         assert.equal(options.valueRenderOption, 'FORMULA');
-        const column = {A: 0, B: 1, C: 2, E: 4, F: 5, L: 11}[m[2]];
+        const column = {A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, L: 11}[m[2]];
         assert.ok(column !== undefined);
         return {values: start === 2 ? [[formulas[name]?.[column] || rows[name][column]]] : []};
       })};
@@ -96,10 +96,17 @@ function fixture(settings = {}) {
   }};
   context.pqmSandboxFetchRegistry_ = () => ({count: 2, items: tabNames.map((name, index) => ({
     supplier_code: displays[name] || String(rows[name][1]), entity_type: index ? 'legal_entity' : 'individual_entrepreneur',
+    classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+    classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
+    target_sheet: name, append_allowed: true,
     monitoring_eligible: true, google_sync_eligible: true,
+    google_writer_eligible: true, google_sync_has_active_qualification: true,
+    google_sync_has_admission_history: true, google_sync_last_decided_application_decision: 'admit',
+    google_sync_last_decided_protocol_at: '', google_sync_last_decided_protocol_officer: '',
+    google_sync_last_decided_submission_id: 's1', google_sync_latest_rejection_officer: '',
     freshness_marker: 'fresh', supplier_name: 'Verified',
-    edr_status_current: null, verification_date: null, verification_officer: null,
-    prozorro_status_google: 'Active', last_application_date: '2026-09-22',
+    edr_status_current: null, verification_date: null, verification_officer: null, verification_event_type: null,
+    prozorro_status_google: 'Активний', last_application_date: '2026-09-22',
     google_sync_last_decided_application_date: '2026-09-22'
   }))});
   return {context, calls, logs, id, rows, formulas, displays};
@@ -119,12 +126,12 @@ test('profiler repeats the exact initial Google read paths and never invokes a w
   assert.equal(diagnostic.phases.header_values_A1_O1, undefined);
   assert.equal(diagnostic.phases.data_values_A_O.calls, 2);
   assert.equal(diagnostic.phases.formatted_code_B.calls, 2);
-  assert.equal(diagnostic.phases.formula_values_A_B_C_E_F_L.calls, 2);
+  assert.equal(diagnostic.phases.formula_values_A_B_C_D_E_F_L.calls, 2);
   assert.equal(diagnostic.phases.grid_metadata_H_I.calls, 2);
   assert.equal(diagnostic.phases.template_row_height.calls, 2);
   assert.equal(diagnostic.phases.data_values_A_O.requested_cells, 90);
   assert.equal(diagnostic.phases.grid_metadata_H_I.requested_cells, 8);
-  assert.equal(diagnostic.phases.formula_disambiguation_A_B_C_E_F_L, undefined);
+  assert.equal(diagnostic.phases.formula_disambiguation_A_B_C_D_E_F_L, undefined);
   assert.ok(f.calls.every(call => !JSON.stringify(call).includes('!A2:H3')));
   assert.equal(typeof diagnostic.phases.google_state_digest.total_ms, 'number');
   assert.equal(f.logs.length, 1);
@@ -146,8 +153,8 @@ test('narrow snapshot preserves formatted B, exact formulas and H format with ol
   assert.deepEqual(Array.from(fop.formulas).filter(Boolean),
     ['=NOW()', '=TEXT(1)', '=LOWER("X")', '=UPPER("active")', '=DATE(2026,9,22)']);
   assert.equal(phases.grid_metadata_H_I.calls, 2);
-  assert.equal(phases.formula_disambiguation_A_B_C_E_F_L.calls, 1);
-  assert.equal(phases.formula_disambiguation_A_B_C_E_F_L.requested_cells, 8);
+  assert.equal(phases.formula_disambiguation_A_B_C_D_E_F_L.calls, 1);
+  assert.equal(phases.formula_disambiguation_A_B_C_D_E_F_L.requested_cells, 8);
 
   const expected = {};
   ['ФОП', 'ЮО'].forEach((name, index) => {
@@ -171,8 +178,8 @@ test('literal text beginning with equal sign is disambiguated and never mistaken
   const phases = {}, tabs = f.context.pqmGoogleSnapshot_(f.id, phases);
   assert.equal(tabs['ФОП'].rows[0].values[2], '=literal text');
   assert.equal(tabs['ФОП'].rows[0].formulas[2], '');
-  assert.equal(phases.formula_disambiguation_A_B_C_E_F_L.calls, 1);
-  assert.equal(phases.formula_disambiguation_A_B_C_E_F_L.requested_cells, 2);
+  assert.equal(phases.formula_disambiguation_A_B_C_D_E_F_L.calls, 1);
+  assert.equal(phases.formula_disambiguation_A_B_C_D_E_F_L.requested_cells, 2);
 });
 
 test('optimized snapshot detects E/I/L formulas and planner fails closed', () => {
@@ -193,8 +200,8 @@ test('B literal text beginning with equal sign triggers only targeted clarificat
   const phases = {}, tabs = f.context.pqmGoogleSnapshot_(f.id, phases);
   assert.equal(tabs['ФОП'].rows[0].codeDisplay, '=literal-code');
   assert.equal(tabs['ФОП'].rows[0].formulas[1], '');
-  assert.equal(phases.formula_disambiguation_A_B_C_E_F_L.calls, 1);
-  assert.equal(phases.formula_disambiguation_A_B_C_E_F_L.requested_cells, 2);
+  assert.equal(phases.formula_disambiguation_A_B_C_D_E_F_L.calls, 1);
+  assert.equal(phases.formula_disambiguation_A_B_C_D_E_F_L.requested_cells, 2);
   assert.equal(phases.grid_metadata_H_I.calls, 2);
 });
 
@@ -250,7 +257,7 @@ test('large snapshot batches reads into at most 17 bounded requests', () => {
   assert.ok(values.filter(call => call.options.valueRenderOption === 'UNFORMATTED_VALUE')
     .every(call => call.options.ranges.length <= 4));
   assert.ok(values.filter(call => call.options.valueRenderOption === 'FORMULA')
-    .every(call => call.options.ranges.length <= 48));
+    .every(call => call.options.ranges.length <= 56));
   const grids = f.calls.filter(call => call.api === 'Spreadsheets.get' &&
     call.options.includeGridData && call.options.ranges[0].includes('!H'));
   assert.equal(grids.length, 4);

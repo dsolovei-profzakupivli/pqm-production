@@ -22,7 +22,7 @@ function pqmSandboxFullEntries_(plan, tabs) {
     var code = row && String(row.codeDisplay || '').trim();
     var columns = pqmSandboxControlledColumns_(change);
     if (!tab || !row || !code || change.append || change.row < 2 || change.row > tab.maxRows ||
-        seen[change.tab + ':' + change.row] || columns.some(function(column) { return [2, 4, 5, 7, 8, 11].indexOf(column) < 0; })) {
+        seen[change.tab + ':' + change.row] || columns.some(function(column) { return [2, 3, 4, 5, 7, 8, 11].indexOf(column) < 0; })) {
       throw new Error('PQM SANDBOX FULL: invalid matched-only plan; no writes.');
     }
     seen[change.tab + ':' + change.row] = true;
@@ -97,7 +97,7 @@ function pqmSandboxFullLoad_(spreadsheetId) {
 function pqmSandboxFullApplyPreview() {
   var id = pqmSandboxControlledSpreadsheetId_();
   var started = Date.now(), loaded = pqmSandboxFullLoad_(id);
-  var byColumn = {C: 0, E: 0, F: 0, H: 0, I: 0, L: 0}, total = 0;
+  var byColumn = {C: 0, D: 0, E: 0, F: 0, H: 0, I: 0, L: 0}, total = 0;
   loaded.entries.forEach(function(entry) {
     entry.columns.forEach(function(column) {
       byColumn[PQM_SANDBOX_CONTROLLED_COLUMNS[column]]++;
@@ -135,7 +135,7 @@ function pqmSandboxExpandedImpactPreview() {
   var body = pqmSandboxFetchRegistry_();
   var tabs = pqmGoogleSnapshot_(id);
   var plan = pqmGooglePlan_(body, tabs);
-  var byColumn = {C: 0, E: 0, F: 0, H: 0, I: 0, L: 0};
+  var byColumn = {C: 0, D: 0, E: 0, F: 0, H: 0, I: 0, L: 0};
   var matchedCells = 0;
   plan.changes.forEach(function(change) {
     if (change.append) return;
@@ -217,7 +217,7 @@ function pqmSandboxFullBeforeCheck_(chunk, rawRows, tabs) {
       var cell = cells[column] || {}, actual = pqmSandboxFullCellValue_(cell);
       var planned = expected.values[column] === undefined ? '' : expected.values[column];
       if (actual !== planned) throw new Error('PQM SANDBOX FULL: ROW_STATE_CHANGED; no further writes.');
-      if ([0, 1, 2, 4, 5, 7, 8, 11].indexOf(column) >= 0 &&
+      if ([0, 1, 2, 3, 4, 5, 7, 8, 11].indexOf(column) >= 0 &&
           ((cell.userEnteredValue || {}).formulaValue || '') !== (expected.formulas[column] || '')) {
         throw new Error('PQM SANDBOX FULL: FORMULA_STATE_CHANGED; no further writes.');
       }
@@ -241,7 +241,8 @@ function pqmSandboxFullRequests_(chunk, tabs) {
       if (pqmGoogleBlank_(value)) throw new Error('PQM SANDBOX FULL: blank planned value; no further writes.');
       var dateColumn = column === 7 || column === 8;
       var cell = {userEnteredValue: dateColumn ? {numberValue: value} : {stringValue: value}};
-      if (dateColumn) cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
+      if (dateColumn) cell.userEnteredFormat = {numberFormat: {type: column === 8 ? 'DATE_TIME' : 'DATE',
+        pattern: column === 8 ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy'}};
       requests.push({updateCells: {range: {sheetId: tabs[entry.tab].id,
         startRowIndex: entry.row - 1, endRowIndex: entry.row,
         startColumnIndex: column, endColumnIndex: column + 1},

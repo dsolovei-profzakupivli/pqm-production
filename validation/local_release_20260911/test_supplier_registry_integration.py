@@ -38,9 +38,12 @@ class FullSupplierRegistryTests(unittest.TestCase):
           (json.dumps({'qualificationPeriod':{'endDate':'2099-01-01'}}),))
         self.addCleanup(self.con.close)
 
-    def add(self,code,name,date,scheme='UA-EDR',qualification=None,officer='',manager='',source='',contract=None):
+    def add(self,code,name,date,scheme='UA-EDR',qualification=None,officer='',manager='',source='',contract=None,country='Україна'):
         sid=f's{self.con.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]+1}'
-        raw=json.dumps({'tenderers':[{'identifier':{'id':code,'scheme':scheme}}]})
+        # Explicit synthetic primary evidence, not an inference from code/scheme.
+        organization={'identifier':{'id':code,'scheme':scheme},'name':name,'address':{'countryName':country}}
+        if source in {'ЮО','ФОП'}:organization['legalForm']='legal_entity' if source=='ЮО' else 'individual_entrepreneur'
+        raw=json.dumps({'tenderers':[organization]})
         self.con.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',(sid,code,name,date,'active',raw,date,None))
         self.con.execute('INSERT INTO application_fields(submission_id,manager_name,protocol_officer) VALUES(?,?,?)',(sid,manager,officer))
         if qualification:
@@ -68,18 +71,19 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.add('2981209581 ', 'OUTER SPACE', '2026-09-23', qualification='active')
         result = integration.eligible_full_registry(self.con)
         actual = {item['supplier_code'] for item in result['items']}
-        expected = {code.strip() for code in integration.edr_sync_v2.monitoring_population_codes(self.con)}
+        expected = set(integration.edr_sync_v2.monitoring_population_codes(self.con))
         self.assertEqual(actual, expected)
         self.assertEqual(result['count'], len(expected))
-        self.assertEqual(actual, {'00000001', 'AB-008', '2981209581'})
+        self.assertEqual(actual, {'00000001', 'AB-008', '2981209581 '})
         self.assertFalse(actual.intersection(endpoint_only))
         self.assertTrue(all(item['google_sync_eligible'] for item in result['items']))
 
     def test_endpoint_rejects_outer_whitespace_identity_collision(self):
         self.add('2981209581 ', 'FIRST', '2026-09-20', qualification='active')
         self.add('2981209581', 'SECOND', '2026-09-21', qualification='unsuccessful')
-        with self.assertRaisesRegex(ValueError, 'Ambiguous supplier code'):
-            integration.eligible_full_registry(self.con)
+        result=integration.eligible_full_registry(self.con)
+        self.assertEqual({x['supplier_code'] for x in result['items']},{'2981209581 ','2981209581'})
+        self.assertTrue(all(x['classification_reason']=='identifier_text_conflict' and not x['append_allowed'] for x in result['items']))
 
     def test_shared_literal_qualification_eligibility_and_active_priority(self):
         cases = {
@@ -105,9 +109,9 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(endpoint['00000006']['google_sync_eligible'], True)
         self.assertNotIn('PENDING-X', endpoint)
 
-    def test_new_confirmed_ua_edr_routes_to_legal_entity_without_profile(self):
+    def test_ua_edr_format_alone_does_not_establish_legal_nature(self):
         self.add('46130719', 'NEW LEGAL ENTITY', '2026-09-27', scheme='UA-EDR')
-        self.assertEqual(self.items()['46130719']['entity_type'], 'legal_entity')
+        self.assertEqual(self.items()['46130719']['entity_type'], 'unknown')
         self.assertFalse(self.items()['46130719']['monitoring_eligible'])
         self.add('12345678', 'UNCONFIRMED', '2026-09-27', scheme='')
         self.assertEqual(self.items()['12345678']['entity_type'], 'unknown')
@@ -279,7 +283,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
         foreign='39-3448689'
         domestic='393448689'
         self.add(blank,'BLANK','2026-01-01',source='ЮО')
-        self.add(foreign,'FOREIGN','2026-01-01',scheme='US-EIN',source='ЮО')
+        self.add(foreign,'FOREIGN','2026-01-01',scheme='US-EIN',source='ЮО',country='Сполучені Штати Америки')
         self.add(domestic,'DOMESTIC','2026-01-01',source='ФОП')
         self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at='2026-02-01',edr_officer='Domestic UO' WHERE supplier_code=?",(domestic,))
         projected=integration.edr_sync_v2.current_verification_projections(self.con,[blank,foreign,domestic])
@@ -305,7 +309,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
             self.add(code, ' LATEST NAME ', '2026-02-01')
         self.add('EMPTY-ID', '', '2026-02-01', qualification='unsuccessful')
         items = self.items()
-        for code in ('2981209581', 'СР 918414', '00123456', 'AB-008'):
+        for code in ('2981209581 ', 'СР 918414', '00123456', 'AB-008'):
             self.assertEqual(items[code]['supplier_name'], 'OLDER')
             self.assertEqual(items[code]['latest_submission_name'], 'OLDER')
         self.assertEqual(items['EMPTY-ID']['latest_submission_name'], '')
@@ -348,7 +352,7 @@ class FullSupplierRegistryTests(unittest.TestCase):
     def test_entity_identity_string_and_safe_unknown(self):
         self.add('01234567','LEGAL','2026-01-01',source='ЮО',manager='LEGAL MANAGER')
         self.add('1234567890','FOP','2026-01-01',source='ФОП',manager='FOP PERSON')
-        self.add('9462717843','FOREIGN','2026-01-01',scheme='PL-NIP',source='ЮО')
+        self.add('9462717843','FOREIGN','2026-01-01',scheme='PL-NIP',source='ЮО',country='Республіка Польща')
         self.add('9876543210','UNKNOWN TEN DIGITS','2026-01-01',scheme='UA-EDR')
         got=self.items()
         self.assertIsInstance(got['01234567']['supplier_code'],str)
@@ -358,13 +362,13 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(got['9462717843']['entity_type'],'foreign_legal_entity')
         self.assertEqual(got['9876543210']['entity_type'],'unknown')
 
-    def test_unique_digits_profile_fallback_preserves_submission_literal_and_fop_type(self):
+    def test_digits_profile_is_not_proof_of_literal_passport_fop_type(self):
         self.add('AB-123456789','FOP LITERAL','2026-01-01',source='')
         self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('123456789','M','ФОП')")
         got=self.items()
         self.assertIn('AB-123456789',got)
         self.assertEqual(got['AB-123456789']['supplier_code'],'AB-123456789')
-        self.assertEqual(got['AB-123456789']['entity_type'],'individual_entrepreneur')
+        self.assertEqual(got['AB-123456789']['entity_type'],'unknown')
 
     def test_digits_fallback_rejects_profile_and_submission_collisions_and_empty_digits(self):
         self.add('X-123456789','ONE','2026-01-01')
@@ -379,14 +383,14 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(got['NO-DIGITS']['entity_type'],'unknown')
 
     def test_foreign_scheme_never_uses_digits_profile_fallback(self):
-        self.add('39-3448689','FOREIGN','2026-01-01',scheme='PL-NIP')
+        self.add('39-3448689','FOREIGN','2026-01-01',scheme='PL-NIP',country='Республіка Польща')
         self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('393448689','M','ФОП')")
         self.assertEqual(self.items()['39-3448689']['entity_type'],'foreign_legal_entity')
 
-    def test_unique_digits_profile_fallback_honors_yuo(self):
+    def test_digits_profile_tab_alone_does_not_establish_subject_type(self):
         self.add('AA-123456788','LEGAL','2026-01-01')
         self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,source_sheet) VALUES('123456788','M','ЮО')")
-        self.assertEqual(self.items()['AA-123456788']['entity_type'],'legal_entity')
+        self.assertEqual(self.items()['AA-123456788']['entity_type'],'unknown')
 
     def test_unknown_officer_and_one_row_per_supplier(self):
         self.add('11111111','OLD','2026-01-01',qualification='active',source='ЮО')

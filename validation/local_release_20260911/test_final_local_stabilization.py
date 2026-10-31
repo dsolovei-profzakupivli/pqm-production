@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import unittest
 import urllib.error
@@ -18,6 +19,14 @@ class FinalLocalStabilizationTests(unittest.TestCase):
     def tearDown(self):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
+
+    def seed_export_fop_primary_evidence(self):
+        """These export fixtures explicitly represent FOP, not a code heuristic."""
+        with server.db() as con:
+            for row in con.execute('SELECT id,supplier_code FROM submissions').fetchall():
+                payload={'tenderers':[{'identifier':{'id':row['supplier_code']},
+                    'address':{'countryName':'Україна'},'legalForm':'individual_entrepreneur'}]}
+                con.execute('UPDATE submissions SET raw_json=? WHERE id=?',(json.dumps(payload),row['id']))
 
     def seed_application(self, submission_id, status, framework_officer, protocol_officer=""):
         with server.db() as con:
@@ -88,6 +97,7 @@ class FinalLocalStabilizationTests(unittest.TestCase):
             con.execute("""INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status,
               milestones_json,raw_json,synced_at) VALUES
               ('rc-export','f-export','q-export','1234567890','active','[]','{}',?)""", (server.now_iso(),))
+        self.seed_export_fop_primary_evidence()
         rows = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20))
         self.assertEqual(list(rows[0]), server.EDR_EXPORT_HEADERS)
         self.assertEqual(rows[0]["Код ЄДРПОУ"], "1234567890")
@@ -110,6 +120,7 @@ class FinalLocalStabilizationTests(unittest.TestCase):
             con.execute("""INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status,
               milestones_json,raw_json,synced_at) VALUES
               ('rc-old','f-pop','q-old','1111111111','terminated','[]','{}',?)""", (server.now_iso(),))
+        self.seed_export_fop_primary_evidence()
         default_rows = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20))
         self.assertNotIn("1111111111", {row["Код ЄДРПОУ"] for row in default_rows})
         selected = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20), filters={
@@ -132,6 +143,7 @@ class FinalLocalStabilizationTests(unittest.TestCase):
             con.execute("""INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status,
               milestones_json,raw_json,synced_at) VALUES
               ('rc-multi','f-multi','q-active','3069605914','active','[]','{}',?)""", (server.now_iso(),))
+        self.seed_export_fop_primary_evidence()
         rows = server.build_supplier_edr_export_rows("ФОП", today=date(2026, 8, 20))
         row = next(item for item in rows if item["Код ЄДРПОУ"] == "3069605914")
         self.assertEqual(row["Стара Назва"], "ФОП МЕЛЬНИЧЕНКО ІВАН РОМАНОВИЧ")

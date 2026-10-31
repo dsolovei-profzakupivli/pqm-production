@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const {spawnSync} = require('node:child_process');
 
-const source = ['PqmSandboxPreviewDependencies.gs', 'PqmSandboxPreview.gs',
+const source = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs', 'PqmSandboxPreview.gs',
   'PqmSandboxControlledApply.gs', 'PqmSandboxFullApply.gs']
   .map(name => fs.readFileSync(__dirname + '/' + name, 'utf8')).join('\n');
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -28,17 +28,29 @@ function fixture() {
     const row = tab.rows.length + 2;
     const values = Array(15).fill('');
     values[0] = 'old'; values[1] = code; values[2] = 'old-name';
-    values[5] = 'old-status'; values[7] = serial - 1;
-    tab.rows.push({values, formulas: Array(15).fill(''), codeDisplay: code, dateFormat: 'dd.MM.yyyy'});
+    values[4] = 'Зареєстровано'; values[5] = 'Неактивний'; values[7] = serial - 1;
+    const formulas = Array(15).fill(''); formulas[0] = `=IF(B${row}="", "", 1)`;
+    tab.rows.push({values, formulas, codeDisplay: code, dateFormat: 'dd.MM.yyyy'});
     body.items.push({supplier_code: code, entity_type: name === 'ФОП' ? 'individual_entrepreneur' : 'legal_entity',
+      classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+      classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
+      target_sheet: name, append_allowed: true,
       monitoring_eligible: true, google_sync_eligible: true,
+      google_writer_eligible: true, google_sync_has_active_qualification: true,
+      google_sync_has_admission_history: true, google_sync_last_decided_application_decision: 'admit',
+      google_sync_last_decided_protocol_at: '', google_sync_last_decided_protocol_officer: '',
+      google_sync_last_decided_submission_id: 's' + i, google_sync_latest_rejection_officer: '',
       freshness_marker: 'fresh', supplier_name: 'verified-name',
-      edr_status_current: null, verification_date: null, verification_officer: null,
+      edr_status_current: null, verification_date: null, verification_officer: null, verification_event_type: null,
       prozorro_status_google: 'Active', last_application_date: '2026-09-22',
       google_sync_last_decided_application_date: '2026-09-22'});
     raw.set(tab.id + ':' + row, values.map((value, column) => {
       const v = typeof value === 'number' ? {numberValue: value} : {stringValue: value};
       const cell = {userEnteredValue: clone(v), effectiveValue: clone(v), formattedValue: String(value)};
+      if (column === 0) {
+        cell.userEnteredValue = {formulaValue: formulas[0]};
+        cell.effectiveValue = {numberValue: 1}; cell.formattedValue = '1';
+      }
       if (column === 7) cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
       return cell;
     }));
@@ -66,6 +78,12 @@ function fixture() {
     return result;
   };
   context.Utilities = {DigestAlgorithm: {SHA_256: 'SHA_256'}, Charset: {UTF_8: 'UTF_8'},
+    formatDate: (date, zone) => {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {timeZone: zone,
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+        second: '2-digit', hourCycle: 'h23'}).formatToParts(date).map(part => [part.type, part.value]));
+      return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.000`;
+    },
     computeDigest: (_, value) => crypto.createHash('sha256').update(value).digest(),
     base64EncodeWebSafe: buffer => Buffer.from(buffer).toString('base64url')};
   context.SpreadsheetApp = {
@@ -97,7 +115,7 @@ function fixture() {
       next.forEach(request => {
         assert.deepEqual(Object.keys(request), ['updateCells']);
         const update = request.updateCells, range = update.range;
-        assert.ok([2, 4, 5, 7, 8, 11].includes(range.startColumnIndex));
+        assert.ok([2, 3, 4, 5, 7, 8, 11].includes(range.startColumnIndex));
         const cell = raw.get(range.sheetId + ':' + (range.startRowIndex + 1))[range.startColumnIndex];
         cell.userEnteredValue = clone(update.rows[0].values[0].userEnteredValue);
         cell.effectiveValue = clone(cell.userEnteredValue);
@@ -128,7 +146,11 @@ function setGoogleCell(f, column, value) {
   cell.userEnteredValue = clone(entered);
   cell.effectiveValue = clone(entered);
   cell.formattedValue = String(value);
-  if (column === 8) cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
+  if (column === 8) {
+    const dateTime = typeof value === 'number' && Math.abs(value - Math.floor(value)) > 1e-9;
+    cell.userEnteredFormat = {numberFormat: {type: dateTime ? 'DATE_TIME' : 'DATE',
+      pattern: dateTime ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy'}};
+  }
 }
 
 for (const environment of ['prod', 'sandbox']) test(environment + ': eight complete merged daily cycles converge across real morning and evening code', () => {
@@ -162,7 +184,7 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
     // Test-call aliases only. PROD functions still execute their own pinned guards and helpers.
     if (environment === 'prod') for (const name of ['FullApplyPreview','FullApply'])
       f.context['pqmSandbox'+name] = f.context['pqmProd'+name];
-    f.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 6;
+    f.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 400;
     f.context.PQM_PROD_FULL_CHUNK_MAX_CELLS = 6;
     item.verification_date = s.pqm + 'T17:03:19+03:00'; item.verification_officer = s.po;
     item.edr_status_current = s.factual || 'Зареєстровано';
@@ -233,12 +255,15 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
 test('pending-only supplier stays out of morning queue until a decision; pending follow-up keeps H', () => {
   const f = fixture();
   const first = {...f.body.items[0], supplier_code: '9999999999',
-    google_sync_eligible: false, monitoring_eligible: true, last_application_date: '2026-09-20',
+    google_sync_eligible: false, google_writer_eligible: false, monitoring_eligible: true, last_application_date: '2026-09-20',
     google_sync_last_decided_application_date: null};
   f.body.items.push(first); f.body.count++;
   let plan = f.context.pqmGooglePlan_(f.body, f.context.pqmGoogleSnapshot_('sandbox-id'));
   assert.equal(plan.changes.some(x => x.append && x.cells[1] === first.supplier_code), false);
   first.google_sync_eligible = true;
+  first.google_writer_eligible = true; first.google_sync_last_decided_application_decision = 'reject';
+  first.google_sync_has_active_qualification = false; first.google_sync_has_admission_history = false;
+  first.google_sync_latest_rejection_officer = 'Officer A';
   first.last_application_date = '2026-09-20';
   first.google_sync_last_decided_application_date = '2026-09-20';
   plan = f.context.pqmGooglePlan_(f.body, f.context.pqmGoogleSnapshot_('sandbox-id'));
@@ -255,26 +280,30 @@ test('pending-only supplier stays out of morning queue until a decision; pending
 
 test('morning I/L planner keeps the evidence pair chronological and preserves Google same-day corrections', () => {
   const cases = [
-    {name: 'Google blank', google: '', googleOfficer: '', pqm: '2026-09-20', pqmOfficer: 'Officer A',
+    {name: 'Google blank', google: '', googleOfficer: '', pqm: '2026-09-20T10:00:00+03:00', pqmOfficer: 'Officer A',
       planned: true, reason: 'google_blank_filled'},
-    {name: 'PQM newer', google: '2026-06-05', googleOfficer: 'Officer B', pqm: '2026-09-20', pqmOfficer: 'Officer A',
+    {name: 'PQM newer', google: '2026-06-05T10:00:00+03:00', googleOfficer: 'Officer B', pqm: '2026-09-20T10:00:00+03:00', pqmOfficer: 'Officer A',
       planned: true, reason: 'pqm_newer_written'},
-    {name: 'same pair', google: '2026-09-20', googleOfficer: 'Officer A', pqm: '2026-09-20', pqmOfficer: 'Officer A',
+    {name: 'same pair', google: '2026-09-20T10:00:00+03:00', googleOfficer: 'Officer A', pqm: '2026-09-20T10:00:00+03:00', pqmOfficer: 'Officer A',
       planned: false, reason: 'same_date_equivalent'},
-    {name: 'same-day Google officer', google: '2026-09-20', googleOfficer: 'Officer B', pqm: '2026-09-20', pqmOfficer: 'Officer A',
+    {name: 'same instant Google officer', google: '2026-09-20T10:00:00+03:00', googleOfficer: 'Officer B', pqm: '2026-09-20T10:00:00+03:00', pqmOfficer: 'Officer A',
       planned: false, reason: 'same_date_google_officer_preserved'},
-    {name: 'Google newer', google: '2026-09-25', googleOfficer: 'Officer B', pqm: '2026-09-20', pqmOfficer: 'Officer A',
+    {name: 'Google newer', google: '2026-09-25T10:00:00+03:00', googleOfficer: 'Officer B', pqm: '2026-09-20T10:00:00+03:00', pqmOfficer: 'Officer A',
       planned: false, reason: 'google_newer_preserved'},
-    {name: 'PQM blank', google: '2026-09-25', googleOfficer: 'Officer B', pqm: null, pqmOfficer: null,
+    {name: 'PQM blank', google: '2026-09-25T10:00:00+03:00', googleOfficer: 'Officer B', pqm: null, pqmOfficer: null,
       planned: false, reason: 'pqm_blank_google_preserved'}
   ];
   for (const item of cases) {
     const f = fixture(), incoming = f.body.items[0];
-    f.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 6;
+    f.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 400;
     incoming.verification_date = item.pqm;
     incoming.verification_officer = item.pqmOfficer;
-    setGoogleCell(f, 8, item.google ? f.context.pqmGoogleDate_(item.google) : '');
+    incoming.current_manager_name = 'Manager A'; incoming.edr_status_current = 'Зареєстровано';
+    incoming.verification_datetime_precision = item.pqm ? 'second' : '';
+    incoming.verification_event_type = 'google_clarity';
+    setGoogleCell(f, 8, item.google ? f.context.pqmVerificationSerial_(Date.parse(item.google)) : '');
     setGoogleCell(f, 11, item.googleOfficer);
+    if (item.name === 'same pair' || item.name === 'same instant Google officer') setGoogleCell(f, 3, 'Manager A');
     const original = clone([f.raw.get('1:2')[8], f.raw.get('1:2')[11]]);
     const preview = f.context.pqmSandboxFullApplyPreview();
     assert.equal(preview.verification_pair_decisions[item.reason], 1, item.name + ' preview reason');
@@ -288,7 +317,8 @@ test('morning I/L planner keeps the evidence pair chronological and preserves Go
     assert.equal(applied.status, 'COMPLETE', item.name);
     if (!item.planned) assert.deepEqual(clone([f.raw.get('1:2')[8], f.raw.get('1:2')[11]]), original, item.name);
     else {
-      assert.equal(f.raw.get('1:2')[8].effectiveValue.numberValue, f.context.pqmGoogleDate_(item.pqm), item.name);
+      assert.equal(f.context.pqmVerificationDatetime_(f.raw.get('1:2')[8].effectiveValue.numberValue).value,
+        Date.parse(item.pqm), item.name);
       assert.equal(f.raw.get('1:2')[11].effectiveValue.stringValue, item.pqmOfficer, item.name);
     }
   }
@@ -327,7 +357,7 @@ test('four Apps Script sources parse together; Full Preview is aggregate-only an
   assert.equal(p.skipped, 0);
   assert.equal(p.appended + p.conflicts + p.duplicate_keys + p.errors, 0);
   assert.equal(p.total_planned_cells, 24);
-  assert.deepEqual(Object.fromEntries(Object.entries(p.changes_by_column)), {C: 8, E: 0, F: 8, H: 8, I: 0, L: 0});
+  assert.deepEqual(Object.fromEntries(Object.entries(p.changes_by_column)), {C: 8, D: 0, E: 0, F: 8, H: 8, I: 0, L: 0});
   assert.equal(f.writes, 0);
   assert.equal(JSON.stringify(p).includes('verified-name'), false);
   assert.equal(JSON.stringify(p).includes(f.body.items[0].supplier_code), false);
@@ -335,12 +365,16 @@ test('four Apps Script sources parse together; Full Preview is aggregate-only an
 
 test('expanded impact Preview is aggregate-only, zero-write and exposes blockers', () => {
   const f = fixture();
+  f.body.items[0].supplier_name = 'old-name';
   f.body.items[0].edr_status_current = 'Зареєстровано';
-  f.body.items[0].verification_date = '2026-09-23';
+  f.body.items[0].current_manager_name = 'Updated Manager';
+  f.body.items[0].verification_date = '2026-09-23T10:00:00+03:00';
+  f.body.items[0].verification_datetime_precision = 'second';
+  f.body.items[0].verification_event_type = 'google_clarity';
   f.body.items[0].verification_officer = 'verified officer';
   const impact = f.context.pqmSandboxExpandedImpactPreview();
   assert.deepEqual(Object.fromEntries(Object.entries(impact.changes_by_column)),
-    {C: 8, E: 1, F: 8, H: 8, I: 1, L: 1});
+    {C: 7, D: 1, E: 1, F: 8, H: 8, I: 1, L: 1});
   assert.equal(impact.total_planned_matched_cells, 27);
   assert.equal(impact.a_writes, 0);
   assert.equal(impact.formulas_touched, 0);
@@ -494,35 +528,39 @@ test('successful run writes only C/F/H in bounded chunks and preserves A and oth
   assert.equal(f.context.pqmSandboxFullApplyPreview().total_planned_cells, 0);
 });
 
-test('expanded Full Apply writes E/I/L with C/F/H and preserves every untouched cell', () => {
+test('expanded Full Apply writes D/E/I/L with C/F/H and preserves every untouched cell', () => {
   const f = fixture();
   f.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 400;
   f.body.items[0].edr_status_current = 'Зареєстровано';
-  f.body.items[0].verification_date = '2026-09-23';
+  f.body.items[0].current_manager_name = 'Updated Manager';
+  f.body.items[0].verification_date = '2026-09-23T10:00:00+03:00';
+  f.body.items[0].verification_datetime_precision = 'second';
+  f.body.items[0].verification_event_type = 'google_clarity';
   f.body.items[0].verification_officer = 'verified officer';
   const before = clone(f.raw.get('1:2'));
   const preview = f.context.pqmSandboxFullApplyPreview();
   assert.deepEqual(Object.fromEntries(Object.entries(preview.changes_by_column)),
-    {C: 8, E: 1, F: 8, H: 8, I: 1, L: 1});
+    {C: 8, D: 1, E: 1, F: 8, H: 8, I: 1, L: 1});
   arm(f, preview);
   const result = f.context.pqmSandboxFullApply();
   assert.equal(result.status, 'COMPLETE');
-  assert.equal(result.cells_written, 27);
-  assert.equal(result.cells_verified, 27);
+  assert.equal(result.cells_written, 28);
+  assert.equal(result.cells_verified, 28);
   assert.equal(f.context.pqmSandboxFullApplyPreview().total_planned_cells, 0);
-  for (const column of [0, 1, 3, 6, 9, 10, 12, 13, 14]) {
+  for (const column of [0, 1, 6, 9, 10, 12, 13, 14]) {
     assert.deepEqual(f.raw.get('1:2')[column], before[column]);
   }
-  assert.ok(f.requests.flat().every(request => [2, 4, 5, 7, 8, 11].includes(request.updateCells.range.startColumnIndex)));
+  assert.ok(f.requests.flat().every(request => [2, 3, 4, 5, 7, 8, 11].includes(request.updateCells.range.startColumnIndex)));
   const dateWrite = f.requests.flat().find(request => request.updateCells.range.startColumnIndex === 8);
-  assert.equal(dateWrite.updateCells.rows[0].values[0].userEnteredValue.numberValue,
-    f.context.pqmGoogleDate_('2026-09-23'));
+  assert.equal(f.context.pqmVerificationDatetime_(dateWrite.updateCells.rows[0].values[0].userEnteredValue.numberValue).value,
+    Date.parse('2026-09-23T10:00:00+03:00'));
 });
 
 test('blank E/I/L preserve existing Google values and stale I format fails before write', () => {
   const f = fixture();
   const row = f.raw.get('1:2');
   row[4].userEnteredValue.stringValue = 'Припинено'; row[4].effectiveValue.stringValue = 'Припинено';
+  row[5].userEnteredValue.stringValue = 'Активний'; row[5].effectiveValue.stringValue = 'Активний';
   row[8].userEnteredValue.numberValue = 46287; row[8].effectiveValue.numberValue = 46287;
   delete row[8].userEnteredValue.stringValue; delete row[8].effectiveValue.stringValue;
   row[8].userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
@@ -534,10 +572,18 @@ test('blank E/I/L preserve existing Google values and stale I format fails befor
   assert.equal(f.context.pqmSandboxFullApply().status, 'COMPLETE');
   assert.deepEqual(clone([row[4], row[8], row[11]]), original);
 
-  const g = fixture(), stale = g.context.pqmSandboxFullApplyPreview();
-  g.beforeRead(n => {if (n === 1) g.raw.get('1:2')[8].userEnteredFormat = {numberFormat: {pattern: 'yyyy-mm-dd'}};});
-  arm(g, stale);
-  assert.equal(g.context.pqmSandboxFullApply().status, 'CHUNK_FAILED_NEW_PREVIEW_REQUIRED');
+  const g = fixture();
+  g.body.items[0].current_manager_name = 'Manager';
+  g.body.items[0].edr_status_current = 'Зареєстровано';
+  g.body.items[0].verification_date = '2026-10-01T10:00:00+03:00';
+  g.body.items[0].verification_datetime_precision = 'second';
+  g.body.items[0].verification_event_type = 'google_clarity';
+  g.body.items[0].verification_officer = 'Officer A';
+  g.raw.get('1:2')[8].userEnteredValue.numberValue = 46287;
+  g.raw.get('1:2')[8].effectiveValue.numberValue = 46287;
+  delete g.raw.get('1:2')[8].userEnteredValue.stringValue; delete g.raw.get('1:2')[8].effectiveValue.stringValue;
+  g.raw.get('1:2')[8].userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
+  assert.throws(() => g.context.pqmSandboxFullApplyPreview(), /BLOCKED_/);
   assert.equal(g.writes, 0);
 });
 

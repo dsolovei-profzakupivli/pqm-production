@@ -12,6 +12,7 @@ import navigation_settings
 import supplier_activity
 import nazk_preview
 import supplier_registry_integration
+import supplier_classification
 import legacy_google_verification_preview
 import legacy_google_verification_overlap_audit
 import legacy_google_factual_edr_audit
@@ -4824,13 +4825,14 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
     canonical_states = {}
     registry_member_codes = set()
     with db() as con:
+        supplier_types = supplier_classification.build_index(con)
         for raw in con.execute("SELECT * FROM supplier_edr_profiles"):
-            item = dict(raw); code = _digits(item.get("supplier_code")); supplier_codes.add(code); profiles[code] = item
+            item = dict(raw); code = str(item.get("supplier_code") or ""); supplier_codes.add(code); profiles[code] = item
         for raw in con.execute("""SELECT s.supplier_code,s.supplier_name,s.date_published,s.synced_at,s.id,
           COALESCE(af.manager_name,'') manager_name FROM submissions s
           LEFT JOIN application_fields af ON af.submission_id=s.id
           ORDER BY COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC"""):
-            item = dict(raw); code = _digits(item.get("supplier_code"))
+            item = dict(raw); code = str(item.get("supplier_code") or "")
             if code:
                 supplier_codes.add(code); latest.setdefault(code, item)
         managers = {code: item.get("manager_name", "")
@@ -4838,7 +4840,7 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
         for raw in con.execute("""SELECT s.supplier_code,q.status,
           COALESCE(NULLIF(q.decision_date,''),s.date_published) event_date
           FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id"""):
-            code = _digits(raw["supplier_code"])
+            code = str(raw["supplier_code"] or "")
             if not code:
                 continue
             active[code] = active.get(code, 0) + (1 if raw["status"] == "active" else 0)
@@ -4849,16 +4851,22 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
                    NULLIF(json_extract(rc.raw_json,'$.date'),''),rc.synced_at) event_date
           FROM registry_contracts rc LEFT JOIN qualifications q ON q.id=rc.qualification_id
           WHERE COALESCE(rc.supplier_code,'')<>''"""):
-            code = _digits(raw["supplier_code"])
+            code = str(raw["supplier_code"] or "")
             if not code:
                 continue
             registry_member_codes.add(code)
             if raw["status"] == "active" and str(raw["event_date"] or "") > admitted_dates.get(code, ""):
                 admitted_dates[code] = str(raw["event_date"] or "")
         has_code_filter = "supplier_codes" in (filters or {})
-        requested_codes = {_digits(code) for code in (filters or {}).get("supplier_codes", set()) if _digits(code)}
+        requested_codes = {str(code) for code in (filters or {}).get("supplier_codes", set()) if str(code or "").strip()}
         export_codes = requested_codes if has_code_filter else registry_member_codes
-        canonical_states = edr_sync_v2.canonical_supplier_edr_states(con, export_codes, today=today)
+        statuses = edr_sync_v2.canonical_prozorro_statuses(con, export_codes)
+        verifications = edr_sync_v2.current_verification_projections(con, export_codes)
+        canonical_states = {code: {
+          "prozorro_status": statuses[code],
+          "verification_event": verifications[code]["selected_event"],
+          "bucket": edr_sync_v2.freshness_state(statuses[code], verifications[code]["verification_date"], today=today)["bucket"]
+        } for code in export_codes}
     rows = []
     # The export contract is authoritative historical register membership, not
     # the current active count and not the potentially stale
@@ -4878,12 +4886,11 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
           "active_count": active.get(code, 0)})
     result = []
     for row in rows:
-        source_type = str(row["source_sheet"] or "").strip().upper()
         name = str(row["full_name"] or row["latest_name"] or "")
-        inferred_fop = bool(re.search(r"\bФОП\b|ФІЗИЧНА\s+ОСОБА[\s-]*ПІДПРИЄМЕЦЬ", name, re.I))
-        canonical_type = supplier_entity_type(row["code"])
-        actual_type = source_type if source_type in {"ФОП", "ЮО"} else (
-            "ФОП" if canonical_type == "individual_entrepreneur" or inferred_fop else "ЮО")
+        classification = supplier_classification.resolve(supplier_types, row["code"])
+        actual_type = classification["target_sheet"]
+        if not classification["append_allowed"]:
+            continue
         if sheet_type != "ALL" and actual_type != sheet_type:
             continue
         state = canonical_states.get(row["code"], {})
@@ -5427,6 +5434,7 @@ def _edr_monitoring_rows() -> list[dict]:
                 if edr_sync_v2.normalized_date(item.get("occurred_at")):
                     ledger.setdefault(code, []).append(item)
             population = edr_sync_v2.monitoring_population_codes(con)
+            supplier_types = supplier_classification.build_index(con)
             card_identities = set(profiles) | set(registry) | set(latest_app)
             card_variants = {}
             for literal in card_identities:
@@ -5446,6 +5454,7 @@ def _edr_monitoring_rows() -> list[dict]:
                     status, active_qualification_dates.get(code, ""), ledger.get(code, []),
                     profile.get("edr_status", ""))
                 rows.append({"supplier_code": code,
+                  **supplier_classification.public_fields(supplier_classification.resolve(supplier_types, code)),
                   "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
                       and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
@@ -5503,14 +5512,14 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     full_completeness, short_completeness = value("edr_full_name"), value("edr_short_name")
     if full_completeness not in {"", "filled", "missing"} or short_completeness not in {"", "filled", "missing"}:
         raise ValueError("Невідомий фільтр заповненості назви ЄДР")
-    if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
+    if entity_type and entity_type not in supplier_classification.ENTITY_TYPES:
         raise ValueError("Невідомий тип постачальника")
     result = []
     dk_map = _edr_monitoring_dk_map() if dk_code else {}
     for row in rows:
         if search and search not in " ".join((row["supplier_code"], row["supplier_name"], row["manager_name"], str(row.get("google_note") or ""))).casefold(): continue
         if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
-        if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
+        if entity_type and row.get("entity_type", "unknown") != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
         if edr_statuses and _edr_monitoring_status(row["edr_status"]) not in edr_statuses: continue
         full_name = bool(_edr_monitoring_name(row.get("edr_full_name")))
@@ -5551,7 +5560,7 @@ def _edr_monitoring_filters(params: dict, *, include_freshness: bool = True) -> 
         where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR INSTR(CASEFOLD(manager_name),?)>0 OR INSTR(CASEFOLD(COALESCE(google_note,'')),?)>0)")
         args.extend([search] * 4)
     if entity_type:
-        if entity_type not in {"individual_entrepreneur", "legal_entity"}:
+        if entity_type not in supplier_classification.ENTITY_TYPES:
             raise ValueError("Невідомий тип постачальника")
         where.append("SUPPLIER_ENTITY_TYPE(supplier_code)=?"); args.append(entity_type)
     if prozorro_statuses:
@@ -5647,7 +5656,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     admission_from = params.get("admission_from", [""])[0].strip()
     admission_to = params.get("admission_to", [""])[0].strip()
     include_codes = params.get("_include_codes", [""])[0] == "1"
-    if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
+    if entity_type and entity_type not in supplier_classification.ENTITY_TYPES:
         raise ValueError("Невідомий тип постачальника")
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
@@ -5757,7 +5766,9 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     source_args = [*selection_args, *dk_args, *dk_args, *framework_ids]
     query_args = source_args + args
     with (nullcontext(connection) if connection is not None else db()) as con:
-        con.create_function("SUPPLIER_ENTITY_TYPE", 1, lambda code: supplier_entity_type(str(code or "")), deterministic=True)
+        supplier_types = supplier_classification.build_index(con)
+        con.create_function("SUPPLIER_ENTITY_TYPE", 1,
+          lambda code: supplier_classification.resolve(supplier_types, code)["entity_type"], deterministic=True)
         canonical_states = (edr_sync_v2.canonical_supplier_edr_states(con)
                             if freshness or verification_from or verification_to
                             or admission_from or admission_to else {})
@@ -5933,6 +5944,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
                 }
     items = [dict(row) for row in rows]
     for item in items:
+        item.update(supplier_classification.public_fields(supplier_classification.resolve(supplier_types, item["code"])))
         for key in ("__total", "__active_total", "__registered_total", "__not_registered"):
             item.pop(key, None)
         application_stats = page_application_stats.get(item.get("code"), {})

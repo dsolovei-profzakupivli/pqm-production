@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const source = ['PqmSandboxPreviewDependencies.gs', 'PqmSandboxPreview.gs',
+const source = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs', 'PqmSandboxPreview.gs',
   'PqmSandboxControlledApply.gs', 'PqmSandboxFullApply.gs',
   'PqmSandboxExpandedChangeAudit.gs']
   .map(name => fs.readFileSync(__dirname + '/' + name, 'utf8')).join('\n');
@@ -14,6 +14,13 @@ function fixture() {
   const context = {console: {log: text => logs.push(text)}, Date, Map, Set};
   vm.createContext(context);
   vm.runInContext(source, context);
+  context.Utilities = {formatDate(date, zone, pattern) {
+    if (pattern === 'yyyy-MM-dd') return '2026-09-23';
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {timeZone: zone,
+      year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit',
+      second:'2-digit', hourCycle:'h23'}).formatToParts(date).map(part => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.000`;
+  }};
   const tabs = Object.fromEntries(['ФОП', 'ЮО'].map((name, index) => [name, {
     id: index + 1, maxRows: 20, templateRowHeight: 25,
     headers: Array.from(context.PQM_GOOGLE_HEADERS), rows: [], merges: [],
@@ -27,19 +34,22 @@ function fixture() {
       dateFormat: 'dd.MM.yyyy', verificationDateFormat: 'dd.MM.yyyy'};
   }
   const day = context.pqmGoogleDate_('2026-09-22');
-  tabs['ФОП'].rows.push(row('1000000000', {2: 'Name', 4: 'Припинено',
+  tabs['ФОП'].rows.push(row('1000000000', {2: 'Name', 3:'Old Manager', 4: 'Припинено',
     5: 'Неактивний', 7: day - 1}));
-  tabs['ЮО'].rows.push(row('20000000', {2: 'Name', 4: 'Зареєстровано',
-    5: 'Активний', 7: day, 8: day, 11: 'Officer'}));
+  const exactSep22 = context.pqmVerificationSerial_(Date.parse('2026-09-22T10:00:00+03:00'));
+  const legalRow = row('20000000', {2: 'Name', 3:'Manager B', 4: 'Зареєстровано',
+    5: 'Активний', 7: day, 8: exactSep22, 11: 'Officer'});
+  legalRow.verificationDateFormat = 'dd.MM.yyyy HH:mm:ss';
+  tabs['ЮО'].rows.push(legalRow);
   tabs['ФОП'].rows.push(row('3000000000', {2: 'Name', 4: '',
     5: 'Ще не в реєстрі', 7: day, 8: day, 11: 'Preserve'}));
   const items = [
     {supplier_code: '1000000000', entity_type: 'individual_entrepreneur',
-      edr_status_current: 'Зареєстровано', prozorro_status_google: 'Активний',
-      last_application_date: '2026-09-22', verification_date: '2026-09-22',
+      edr_status_current: 'Зареєстровано', current_manager_name:'Manager A', prozorro_status_google: 'Активний',
+      last_application_date: '2026-09-22', verification_date: '2026-09-22T10:00:00+03:00',
       verification_officer: 'Officer', verification_event_type: 'admission'},
     {supplier_code: '20000000', entity_type: 'legal_entity',
-      edr_status_current: 'Неактуально', prozorro_status_google: 'Неактивний',
+      edr_status_current: 'Зареєстровано', current_manager_name:'Manager B', prozorro_status_google: 'Неактивний',
       last_application_date: '2026-09-22', verification_date: '2026-09-22',
       verification_officer: ' officer ', verification_event_type: 'google_clarity'},
     {supplier_code: '3000000000', entity_type: 'individual_entrepreneur',
@@ -47,15 +57,23 @@ function fixture() {
       last_application_date: '2026-09-22', verification_date: null,
       verification_officer: null}
   ].map(item => ({...item,
+    classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+    classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
+    target_sheet: item.entity_type === 'individual_entrepreneur' ? 'ФОП' : 'ЮО', append_allowed: true,
     google_sync_last_decided_application_date: item.last_application_date,
     supplier_name: 'Name', freshness_marker: null,
-    monitoring_eligible: true, google_sync_eligible: true}));
+    monitoring_eligible: true, google_sync_eligible: true,
+    google_writer_eligible: item.supplier_code !== '3000000000', google_sync_has_active_qualification: item.prozorro_status_google === 'Активний',
+    google_sync_has_admission_history: item.prozorro_status_google !== 'Ще не в реєстрі',
+    google_sync_last_decided_application_decision: 'admit', google_sync_last_decided_protocol_at: '',
+    verification_event_type: item.verification_event_type || null,
+    google_sync_last_decided_protocol_officer: item.verification_officer || '',
+    google_sync_last_decided_submission_id: 's1', google_sync_latest_rejection_officer: ''}));
   const body = {count: items.length, items};
   let writes = 0;
   context.pqmSandboxControlledSpreadsheetId_ = () => 'sandbox-id';
   context.pqmSandboxFetchRegistry_ = () => body;
   context.pqmGoogleSnapshot_ = () => tabs;
-  context.Utilities = {formatDate: () => '2026-09-23'};
   context.Sheets = {Spreadsheets: {batchUpdate: () => {writes++;}}};
   return {context, body, tabs, logs, get writes() {return writes;}};
 }
@@ -65,9 +83,9 @@ test('read-only aggregate audit classifies E/I/L/F/H without identities or cell 
   const output = f.context.pqmSandboxExpandedChangeAudit();
   assert.equal(output.google_writes, 0);
   assert.equal(output.full_apply_plan_created, false);
-  assert.equal(output.e.planned, 2);
+  assert.equal(output.e.planned, 1);
   assert.equal(output.e.transitions['Припинено -> Зареєстровано'], 1);
-  assert.equal(output.e.transitions['Зареєстровано -> Неактуально'], 1);
+  assert.equal(output.e.transitions['Зареєстровано -> Неактуально'], undefined);
   assert.equal(output.i.planned, 1);
   assert.equal(output.i.google_blank_to_pqm_date, 1);
   assert.equal(output.i.google_nonblank_same_calendar_not_planned, 1);
@@ -107,10 +125,14 @@ test('audit flags unknown E vocabulary and future or invalid I without logging r
 
 test('I provenance groups and L correlation distinguish older and newer PQM events', () => {
   const f = fixture();
-  const day = f.context.pqmGoogleDate_('2026-09-23');
-  f.tabs['ФОП'].rows[0].values[8] = day;
+  const googleNewer = f.context.pqmVerificationSerial_(Date.parse('2026-09-22T10:00:00+03:00'));
+  f.tabs['ФОП'].rows[0].values[8] = googleNewer;
+  f.tabs['ФОП'].rows[0].verificationDateFormat = 'dd.MM.yyyy HH:mm:ss';
   f.tabs['ФОП'].rows[0].values[11] = 'Earlier officer';
-  f.body.items[1].verification_date = '2026-09-23';
+  Object.assign(f.body.items[0], {verification_date:'2026-09-23T10:00:00+03:00',
+    verification_datetime_precision:'second', google_sync_has_active_qualification:true,
+    prozorro_status_google:'Активний', verification_officer:'Newer Officer',
+    verification_event_type:'google_clarity'});
   const output = f.context.pqmSandboxExpandedChangeAudit();
   assert.equal(output.i.pqm_older, 0);
   assert.equal(output.i.pqm_newer, 1);
@@ -118,29 +140,32 @@ test('I provenance groups and L correlation distinguish older and newer PQM even
   assert.equal(output.i.newer_by_event_type.google_clarity, 1);
   assert.equal(output.l.different_officer_by_i_relation.pqm_older, 0);
   assert.equal(output.l.different_officer_by_i_relation.pqm_newer, 1);
-  assert.equal(output.verification_pair_decisions.google_newer_preserved, 1);
+  assert.equal(output.verification_pair_decisions.google_newer_preserved, 0);
   assert.equal(output.verification_pair_decisions.pqm_newer_written, 1);
   assert.equal(f.writes, 0);
 });
 
 test('release-candidate E other, chronology and same-date officer stay aggregate-only', () => {
   const f = fixture();
-  const day = f.context.pqmGoogleDate_('2026-09-22');
   f.tabs['ФОП'].rows[0].values[4] = '🟡 Немає інформації';
-  f.tabs['ФОП'].rows[0].values[8] = day - 1;
+  f.tabs['ФОП'].rows[0].values[8] = f.context.pqmVerificationSerial_(Date.parse('2026-09-21T10:00:00+03:00'));
+  f.tabs['ФОП'].rows[0].verificationDateFormat = 'dd.MM.yyyy HH:mm:ss';
   f.tabs['ФОП'].rows[0].values[11] = 'Earlier officer';
-  f.body.items[1].verification_officer = 'Different officer';
-  f.body.items[1].verification_event_type = 'legacy_google_registry';
+  Object.assign(f.body.items[0], {verification_date:'2026-09-22T10:00:00+03:00',
+    verification_datetime_precision:'second', verification_officer:'Different officer',
+    verification_event_type:'legacy_google_registry', google_sync_has_active_qualification:true,
+    prozorro_status_google:'Активний'});
   const output = f.context.pqmSandboxExpandedChangeAudit();
   assert.equal(f.context.pqmSandboxExpandedAuditGoogleOther_('🟡 Немає інформації'), 'Немає інформації');
   assert.equal(output.e.other_google_source_values['Немає інформації -> Зареєстровано'], undefined);
-  assert.equal(output.e.planned, 1); // preserved Google E is not a planned write
-  assert.equal(output.i.newer_by_event_type.admission, 1);
-  assert.equal(output.l.newer_by_event_type.admission, 1);
-  assert.equal(output.l.newer_with_i_write, 1);
+  assert.equal(output.e.planned, 0); // neither the manual marker nor the verification pair is overwritten
+  assert.equal(output.i.newer_by_event_type.admission, undefined);
+  assert.equal(output.l.newer_by_event_type.admission, undefined);
+  assert.equal(output.l.newer_with_i_write, 0);
   assert.equal(output.l.newer_without_i_write, 0);
   assert.equal(output.l.same_date_by_event_type.legacy_google_registry, undefined);
-  assert.equal(output.verification_pair_decisions.same_date_google_officer_preserved, 1);
+  assert.equal(output.conflicts, 2);
+  assert.equal(output.verification_pair_decisions.pqm_newer_written, 0);
   assert.equal(output.h.source_field, 'last_application_date');
   assert.equal(output.h.pqm_newer, 1);
   assert.equal(f.writes, 0);

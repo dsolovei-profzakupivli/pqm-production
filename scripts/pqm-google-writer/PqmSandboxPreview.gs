@@ -59,7 +59,7 @@ function pqmSandboxFetchRegistry_() {
 }
 
 function pqmSandboxPreviewChanges_(plan, tabs) {
-  var letters = {1: 'B', 2: 'C', 4: 'E', 5: 'F', 7: 'H', 8: 'I', 11: 'L'};
+  var letters = {1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 7: 'H', 8: 'I', 11: 'L'};
   var changes = [];
 
   plan.changes.forEach(function(change) {
@@ -84,7 +84,11 @@ function pqmSandboxPreviewChanges_(plan, tabs) {
           : (tabs[change.tab].rows[change.row - 2] || {values: []}).values[column],
         proposed_value: change.cells[column],
         action: change.append ? 'append' : 'update',
-        reason: 'PQM-owned nonblank field'
+        source_event: change.source_event || null,
+        pqm_verification_timestamp: change.source_timestamps && change.source_timestamps.pqm_verification,
+        google_verification_timestamp: change.source_timestamps && change.source_timestamps.google_verification,
+        verification_precision: change.source_timestamps && change.source_timestamps.precision,
+        reason: change.source_event || 'confirmed PQM business event'
       });
     });
   });

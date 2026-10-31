@@ -40,9 +40,12 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_nazk_authority_request_integrity',
     'test_sandbox_edr_google_nazk_reconcile_integrity',
     'test_google_edr_timezone_alias_integrity_v1',
+    'test_edr_preview_skipped_integrity',
     'test_messages_historical_line_endings',
     'test_sandbox_personal_theme',
     'test_sandbox_ui_integrated_d457_integrity',
+    'test_supplier_classification_integrity',
+    'test_google_writer_update_append_integrity',
 }
 
 def selected_suite(suite,mode):
@@ -83,14 +86,16 @@ def main():
                             'run_messages_search_header_v2_integrity.py',
                             'run_messages_header_polish_v3_integrity.py',
                             'run_sandbox_edr_google_nazk_reconcile_v1_integrity.py',
-                            'run_google_edr_timezone_alias_v1_integrity.py',
+                            'run_google_edr_timezone_alias_v1_integrity.py', 'supplier_classification_planner.cjs', 'run_local_release.py', 'run_classification_parent_integrity.py',
+                            'run_integrated_source_integrity_overlays.py',
                             'run_messages_integrated_v1_history.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
-        fixture_names=('messages_v1_test_parent.zip',
+        fixture_names=('supplier_classification_parent_integrity_6b9830b.zip', 'supplier_classification_parent_6b9830b.json', 'messages_v1_test_parent.zip',
+                             'integrated_classification_v1_overlay_6b9830b.zip', 'integrated_writer_v1_overlay_64f7fda.zip',
                              'messages_parent_c246edef.zip',
                              'protocol_integrity_history.zip',
                              'nazk_authority_parent_c246.zip',
@@ -175,7 +180,7 @@ def main():
                 [sys.executable, str(ROOT/'validation/run_messages_integrated_v1_history.py')],
                 cwd=old_cwd, check=False)
             v2_overlay=subprocess.run(
-                [sys.executable, str(ROOT/'validation/run_messages_search_header_v2_integrity.py')],
+                [sys.executable, str(ROOT/'validation/run_classification_parent_integrity.py'),'--messages-v2'],
                 cwd=old_cwd, check=False)
             v3_overlay=subprocess.run(
                 [sys.executable, str(ROOT/'validation/run_messages_header_polish_v3_integrity.py')],
@@ -186,6 +191,12 @@ def main():
             google_timezone_v1_overlay=subprocess.run(
                 [sys.executable, str(ROOT/'validation/run_google_edr_timezone_alias_v1_integrity.py')],
                 cwd=old_cwd, check=False)
+            classification_parent_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_classification_parent_integrity.py')],
+                cwd=old_cwd,check=False)
+            source_integrity_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_source_integrity_overlays.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -204,7 +215,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and source_integrity_overlays.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
