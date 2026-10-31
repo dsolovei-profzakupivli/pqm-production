@@ -76,7 +76,9 @@ class FactualEdrAuditTests(unittest.TestCase):
         self.assertEqual(result["legacy_event_db_total"], 1)
         self.assertEqual(result["by_google_factual_status"]["Припинено"]
                          ["A_after_latest_qualification_active"], 2)
-        self.assertEqual(result["pqm_to_google_e_overwrite_risk"]["to_registered"], 5)
+        # The projection has no registered transition when no eligible EDR
+        # evidence exists; zero Counter buckets are omitted from the payload.
+        self.assertEqual(result["pqm_to_google_e_overwrite_risk"].get("to_registered", 0), 0)
         self.assertEqual((result["db_writes"], result["google_writes"],
                           self.con.total_changes-before), (0, 0, 0))
         self.assertNotIn("Test Officer", str(result))
@@ -187,7 +189,7 @@ class FactualEdrAuditTests(unittest.TestCase):
         ledger = [{"id": 1, "event_type": "legacy_google_registry",
                    "occurred_at": "2026-09-20", "snapshot_json": '{"edr_status":"Припинено"}'}]
         self.assertEqual(audit.edr_sync_v2.active_edr_status("2026-09-01", ledger),
-                         "Зареєстровано")
+                         "Немає інформації")
 
 
 if __name__ == "__main__":

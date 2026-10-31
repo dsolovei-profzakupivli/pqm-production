@@ -177,21 +177,21 @@ class FactualEdrPreviewTests(unittest.TestCase):
         for status in sorted(edr_sync_v2.LEGACY_GOOGLE_FACTUAL_STATUSES):
             ledger = [legacy_ledger(status)]
             self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", ledger), status)
-            self.assertEqual(edr_sync_v2.active_edr_status("2026-09-21", ledger), "Зареєстровано")
+            self.assertEqual(edr_sync_v2.active_edr_status("2026-09-21", ledger), status)
             self.assertEqual(edr_sync_v2.operational_edr_status("Неактивний", "2026-09-01", ledger),
                              "Неактуально")
         for bad in (None, "Неактуально", "Зареєстровано", "Невідомо"):
             ledger = [legacy_ledger(bad)]
-            self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", ledger), "Зареєстровано")
+            self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", ledger), "Немає інформації")
         missing_provenance = legacy_ledger("Припинено")
         missing_provenance["snapshot_json"] = json.dumps({"factual_edr_status": "Припинено"},
                                                          ensure_ascii=False)
         self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", [missing_provenance]),
-                         "Зареєстровано")
+                         "Немає інформації")
         self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", [
             legacy_ledger("Припинено"),
             {"id": 2, "event_type": "manual_edr", "occurred_at": "2026-09-20",
-             "snapshot_json": '{"edr_status":"Зареєстровано"}'}]), "Припинено")
+             "snapshot_json": '{"edr_status":"Зареєстровано"}'}]), "Зареєстровано")
         self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", [
             legacy_ledger("Припинено"),
             {"id": 3, "event_type": "manual_edr", "occurred_at": "2026-09-21",
@@ -201,7 +201,7 @@ class FactualEdrPreviewTests(unittest.TestCase):
         self.insert(event("001", status="Припинено"), event("002", status=None, event_id=2))
         rows = [dict(row) for row in self.con.execute("SELECT * FROM supplier_edr_verification_events")]
         api = preview.supplier_registry_integration._factual_edr_events(self.con, ["001", "002"])
-        for code, expected in (("001", "Припинено"), ("002", "Зареєстровано")):
+        for code, expected in (("001", "Припинено"), ("002", "Немає інформації")):
             ui_ledger = [row for row in rows if row["supplier_code"] == code]
             self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", ui_ledger), expected)
             self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", api[code]), expected)

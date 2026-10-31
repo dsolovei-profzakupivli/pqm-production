@@ -46,6 +46,7 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_sandbox_ui_integrated_d457_integrity',
     'test_supplier_classification_integrity',
     'test_google_writer_update_append_integrity',
+    'test_google_writer_supplier_types_integrity',
 }
 
 def selected_suite(suite,mode):
@@ -95,6 +96,7 @@ def main():
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
         fixture_names=('supplier_classification_parent_integrity_6b9830b.zip', 'supplier_classification_parent_6b9830b.json', 'messages_v1_test_parent.zip',
+                             'google_writer_supplier_types_integration_v1_97788.zip',
                              'integrated_classification_v1_overlay_6b9830b.zip', 'integrated_writer_v1_overlay_64f7fda.zip',
                              'messages_parent_c246edef.zip',
                              'protocol_integrity_history.zip',

@@ -183,14 +183,14 @@ class FullSupplierRegistryTests(unittest.TestCase):
         self.assertEqual(item['prozorro_status'],'🟢 Активний')
         self.assertEqual(item['prozorro_status_google'],'✅ Активний')
         self.assertEqual(item['supplier_code'],'00000001')
-        self.assertEqual(item['edr_status_current'],'Зареєстровано')
+        self.assertEqual(item['edr_status_current'],'Немає інформації')
 
     def test_active_edr_status_uses_shared_projection_and_later_factual_check(self):
         code='46244393'
         self.add(code,'SUPPLIER','2026-09-22',qualification='active',contract='active',source='ЮО')
         self.con.execute("UPDATE supplier_edr_profiles SET edr_status='Припинено',edr_checked_at='2026-09-01' WHERE supplier_code=?",(code,))
         item=self.items()[code]
-        self.assertEqual(item['edr_status_current'],'Зареєстровано')
+        self.assertEqual(item['edr_status_current'],'Припинено')
         self.assertEqual(item['last_application_date'],'2026-09-22')
         self.assertEqual(item['verification_date'],verification_timestamp('2026-09-01'))
         self.assertEqual(item['verification_officer'],'')
@@ -245,11 +245,47 @@ class FullSupplierRegistryTests(unittest.TestCase):
                   contract='active',source='ЮО')
                 item=self.items()[code]
                 self.assertEqual(item['prozorro_status_canonical'],'Активний')
-                self.assertEqual(item['edr_status_current'],'Зареєстровано')
+                self.assertEqual(item['edr_status_current'],'Немає інформації')
                 self.assertNotIn('✅',item['edr_status_current'])
                 self.assertEqual(item['last_application_date'],'2026-09-22')
                 self.assertEqual(item['verification_date'],'')
                 self.assertEqual(item['verification_officer'],'')
+
+    def test_01756131_active_prozorro_preserves_edr_termination_until_new_admission(self):
+        import server
+        code='01756131'
+        sid=self.add(code,'SYNTHETIC SUPPLIER','2026-09-01',qualification='active',
+                     contract='active',source='ЮО',officer='Authorized UO')
+        self.con.execute("UPDATE supplier_edr_profiles SET edr_status='Припинено',edr_checked_at='2026-08-20' WHERE supplier_code=?",(code,))
+        first=self.items()[code]
+        self.assertEqual(first['prozorro_status_canonical'],'Активний')
+        self.assertEqual(first['edr_status_current'],'Припинено')
+
+        with patch.object(server,'db',return_value=self.con), \
+             patch.object(server,'_edr_monitoring_revision',return_value=('edr-status',id(self.con))):
+            server.EDR_MONITORING_CACHE.update(fingerprint=None,rows=[])
+            table={row['supplier_code']:row for row in server._edr_monitoring_rows()}
+        self.assertEqual(table[code]['prozorro_status'],'Активний')
+        self.assertEqual(table[code]['edr_status'],'Припинено')
+        canonical=integration.edr_sync_v2.canonical_supplier_edr_states(self.con,[code])[code]
+        self.assertEqual(canonical['edr_status_current'],'Припинено')
+
+        self.con.execute("UPDATE application_fields SET protocol_decision='admit',protocol_date='2026-09-25',protocol_officer='Authorized UO' WHERE submission_id=?",(sid,))
+        after_admission=self.items()[code]
+        self.assertEqual(after_admission['prozorro_status_canonical'],'Активний')
+        self.assertEqual(after_admission['edr_status_current'],'Зареєстровано')
+
+    def test_unchecked_newer_admission_does_not_erase_last_confirmed_edr_admission(self):
+        code='00001756'
+        first=self.add(code,'SYNTHETIC SUPPLIER','2026-08-01',qualification='active',
+                       contract='active',source='ЮО')
+        self.con.execute("UPDATE application_fields SET protocol_decision='admit',protocol_date='2026-08-01',protocol_officer='Authorized UO' WHERE submission_id=?",(first,))
+        second=self.add(code,'SYNTHETIC SUPPLIER','2026-09-01',qualification='active',
+                        contract='active',source='ЮО')
+        self.con.execute("UPDATE application_fields SET protocol_decision='admit',protocol_date='2026-09-01',protocol_officer='' WHERE submission_id=?",(second,))
+        item=self.items()[code]
+        self.assertEqual(item['prozorro_status_canonical'],'Активний')
+        self.assertEqual(item['edr_status_current'],'Зареєстровано')
 
     def test_ui_and_api_verification_projection_parity_across_sources(self):
         import server

@@ -5452,7 +5452,9 @@ def _edr_monitoring_rows() -> list[dict]:
                 officer_raw = verification["verification_officer_raw"]
                 displayed_edr_status = edr_sync_v2.operational_edr_status(
                     status, active_qualification_dates.get(code, ""), ledger.get(code, []),
-                    profile.get("edr_status", ""))
+                    profile.get("edr_status", ""), profile.get("edr_checked_at", ""),
+                    verification.get("edr_admission_date", ""),
+                    verification.get("edr_admission_officer", ""))
                 rows.append({"supplier_code": code,
                   **supplier_classification.public_fields(supplier_classification.resolve(supplier_types, code)),
                   "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
@@ -5963,7 +5965,8 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
                        "verification_event_type": verification.get("event_type") or ""}
         item["name"] = edr_sync_v2.current_supplier_name(profile.get("full_name"), item.get("name"))
         item["edr_profile"] = ({**profile,
-            "edr_status": edr_sync_v2.compatible_edr_status(profile.get("edr_status"))}
+            "edr_status": canonical_state.get("edr_status_current",
+                edr_sync_v2.compatible_edr_status(profile.get("edr_status")))}
             if profile else profile)
         item["current_manager"] = (known_managers.get(code) or {}).get("manager_name", "")
         item["current_manager_source"] = (known_managers.get(code) or {}).get("resolution_source", "")
@@ -6320,6 +6323,9 @@ def supplier_profile(supplier_code: str) -> dict:
     with db() as event_con:
         canonical_edr = edr_sync_v2.canonical_supplier_edr_states(event_con, [code]).get(code, {})
         verification = canonical_edr.get("verification_event")
+        if profile_data:
+            profile_data["edr_status"] = canonical_edr.get(
+                "edr_status_current", profile_data.get("edr_status", ""))
     if verification:
         profile_data.update(edr_checked_at=verification.get("occurred_at") or "",
                             edr_officer=verification.get("officer") or "",

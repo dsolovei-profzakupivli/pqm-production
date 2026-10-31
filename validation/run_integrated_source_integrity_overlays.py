@@ -9,6 +9,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 OVERLAYS = (
+    ("writer_classification_integration", "validation/fixtures/google_writer_supplier_types_integration_v1_97788.zip",
+     "722ee7b875e22c7e1725b6c9790b85756a10f74d8dacbfd6c437ea8841ad6ebf",
+     "test_google_writer_supplier_types_integrity.py"),
     ("classification", "validation/fixtures/integrated_classification_v1_overlay_6b9830b.zip",
      "2f671afe120e52b169bc354ee568a9af19c32772b105061835f40fb1146b5166",
      "test_supplier_classification_integrity.py"),

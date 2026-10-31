@@ -182,8 +182,9 @@ def _build_full_registry(con):
     profile_columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_edr_profiles)")}
     full_name_expr = "full_name" if "full_name" in profile_columns else "'' full_name"
     edr_status_expr = "edr_status" if "edr_status" in profile_columns else "'' edr_status"
+    edr_checked_expr = "edr_checked_at" if "edr_checked_at" in profile_columns else "'' edr_checked_at"
     profiles = {str(row["supplier_code"] or ""): dict(row) for row in con.execute(
-        f"SELECT supplier_code,manager_name,source_sheet,{edr_status_expr},{full_name_expr} FROM supplier_edr_profiles")}
+        f"SELECT supplier_code,manager_name,source_sheet,{edr_status_expr},{edr_checked_expr},{full_name_expr} FROM supplier_edr_profiles")}
     linked_profiles = {code: profiles[code] for code in latest if code in profiles}
     supplier_types = supplier_classification.build_index(con)
     managers = {}
@@ -230,7 +231,10 @@ def _build_full_registry(con):
             "prozorro_status_google": edr_sync_v2.google_prozorro_presentation(canonical_status),
             "edr_status_current": edr_sync_v2.operational_edr_status(
                 canonical_status, qualification_dates.get(code, ""),
-                factual_edr_events.get(code, []), str(profile.get("edr_status") or "")),
+                factual_edr_events.get(code, []), str(profile.get("edr_status") or ""),
+                str(profile.get("edr_checked_at") or ""),
+                verification.get("edr_admission_date", ""),
+                verification.get("edr_admission_officer", "")),
             "monitoring_eligible": code in monitoring_codes,
             "google_sync_eligible": code in google_statuses,
             "google_writer_eligible": bool(latest_decision),

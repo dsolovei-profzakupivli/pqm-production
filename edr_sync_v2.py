@@ -1045,11 +1045,17 @@ def projected_verification_officer(con, value: str, event_type: str = '') -> str
     return " ".join([*(part.lower().capitalize() for part in parts[:-1]), parts[-1].upper()])
 
 
+def _has_edr_checking_officer(value: str) -> bool:
+    normalized = clean(value).casefold()
+    return bool(normalized) and normalized not in {"не визначено", "не призначено"}
+
+
 def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
     """UI-compatible current verification selection by literal supplier identity."""
     codes = {str(code) for code in supplier_codes if str(code or "").strip()}
     candidates = {code: [] for code in codes}
     admissions = {}
+    edr_admissions = {}
     qualification_link = ("qualification_id" in _columns(con, "submissions")
                           and _table_exists(con, "qualifications"))
     qualification_join = "LEFT JOIN qualifications q ON q.id=s.qualification_id" if qualification_link else ""
@@ -1083,9 +1089,16 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
                             (verification_instant(previous["occurred_at"])['value'], previous["submission_id"])):
                 admissions[code] = {"occurred_at": checked, "submission_id": row["submission_id"],
                                     "officer": row["officer"] or ""}
+            previous_edr = edr_admissions.get(code)
+            if (checked and _has_edr_checking_officer(row["officer"] or "") and
+                (not previous_edr or (verification_instant(checked)['value'], row["submission_id"]) >
+                 (verification_instant(previous_edr["occurred_at"])['value'], previous_edr["submission_id"]))):
+                edr_admissions[code] = {"occurred_at": checked, "submission_id": row["submission_id"],
+                                        "officer": row["officer"] or ""}
     result = {}
     for code in codes:
         admission = admissions.get(code)
+        edr_admission = edr_admissions.get(code)
         if admission:
             candidates[code].append({"event_type": "admission", "occurred_at": admission["occurred_at"],
               "officer": admission["officer"], "source": "PQM application",
@@ -1104,6 +1117,9 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
           "verification_event_type": selected.get("event_type", ""),
           "verification_source": selected.get("source", ""),
           "last_admission_date": admission["occurred_at"] if admission else "",
+          "last_admission_officer": admission["officer"] if admission else "",
+          "edr_admission_date": edr_admission["occurred_at"] if edr_admission else "",
+          "edr_admission_officer": edr_admission["officer"] if edr_admission else "",
           "selected_event": selected}
     return result
 
@@ -1146,47 +1162,72 @@ def _legacy_google_factual_status(item: dict, snapshot: dict, checked_day: str) 
     return status
 
 
-def active_edr_status(qualification_date: str, ledger: list[dict]) -> str:
-    """Status-only read model for a currently active qualification.
+def active_edr_status(qualification_date: str, ledger: list[dict], profile_status: str = "",
+                      profile_checked_at: str = "", admission_date: str = "",
+                      admission_officer: str = "") -> str:
+    """Resolve EDR status from the latest established status event.
 
-    Qualification activity supplies the default. Only a recorded EDR check
-    proven later than the active qualification can supersede it. Neither the
-    profile snapshot nor admission metadata is used to manufacture a check.
+    Active qualifications determine Prozorro activity; they are not an EDR
+    status event. A dated admission protocol with a responsible officer records
+    the admission-time EDR check as "Зареєстровано". Otherwise keep the newest
+    valid factual check/profile status, or report no information.
     """
-    qualified_day = normalized_date(qualification_date)
-    checks = []
-    if qualified_day:
-        for item in ledger:
-            kind = str(item.get("event_type") or "")
-            if kind not in {"manual_edr", "google_clarity", "legacy_google_registry"}:
-                continue
-            checked_day = normalized_date(item.get("occurred_at"))
-            if not checked_day or checked_day <= qualified_day:
-                continue
-            try:
-                snapshot = json.loads(item.get("snapshot_json") or "{}")
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(snapshot, dict):
-                continue
-            if kind == "legacy_google_registry":
-                status = _legacy_google_factual_status(item, snapshot, checked_day)
-                if not status:
-                    continue  # I/L-only or invalid legacy evidence never changes E.
-                priority = 3  # Controlled factual evidence wins an ordinary same-day check.
-            else:
-                status = compatible_edr_status(snapshot.get("edr_status"))
-                priority = 2 if kind == "manual_edr" else 1
-            if status and status != "Немає інформації":
-                checks.append((checked_day, priority, int(item.get("id") or 0), status))
-    return compatible_edr_status(max(checks)[3]) if checks else "Зареєстровано"
+    candidates = []
+    for item in ledger or []:
+        kind = str(item.get("event_type") or "")
+        if kind not in {"manual_edr", "google_clarity", "legacy_google_registry"}:
+            continue
+        checked_day = normalized_date(item.get("occurred_at"))
+        if not checked_day:
+            continue
+        try:
+            snapshot = json.loads(item.get("snapshot_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(snapshot, dict):
+            continue
+        if kind == "legacy_google_registry":
+            status = _legacy_google_factual_status(item, snapshot, checked_day)
+            if not status:
+                continue  # I/L-only or invalid legacy evidence never changes E.
+        else:
+            status = compatible_edr_status(snapshot.get("edr_status"))
+        if status and status != "Немає інформації":
+            candidates.append({**item, "event_type": kind, "occurred_at": item.get("occurred_at"),
+                               "resolved_edr_status": status})
+
+    stored_status = compatible_edr_status(profile_status)
+    profile_day = normalized_date(profile_checked_at)
+    if stored_status and stored_status != "Немає інформації" and profile_day:
+        candidates.append({"event_type": "google_clarity_profile", "occurred_at": profile_checked_at,
+                           "resolved_edr_status": stored_status})
+
+    admission_day = normalized_date(admission_date)
+    if admission_day and _has_edr_checking_officer(admission_officer):
+        candidates.append({"event_type": "admission", "occurred_at": admission_date,
+                           "resolved_edr_status": "Зареєстровано"})
+
+    if candidates:
+        # Date is compared first; existing event priority resolves same-day
+        # evidence, with a recorded check taking precedence over an admission.
+        latest = max(candidates, key=lambda item: (
+            normalized_date(item.get("occurred_at")),
+            *_verification_event_sort_key(item),
+        ))
+        return compatible_edr_status(latest["resolved_edr_status"])
+    if stored_status:
+        return stored_status
+    return "Немає інформації"
 
 
 def operational_edr_status(prozorro_status: str, qualification_date: str,
-                           ledger: list[dict], profile_status: str = "") -> str:
+                           ledger: list[dict], profile_status: str = "",
+                           profile_checked_at: str = "", admission_date: str = "",
+                           admission_officer: str = "") -> str:
     """Current operational status; persisted factual evidence stays untouched."""
     if prozorro_status == "Активний":
-        return active_edr_status(qualification_date, ledger)
+        return active_edr_status(qualification_date, ledger, profile_status,
+                                 profile_checked_at, admission_date, admission_officer)
     if prozorro_status in {"Неактивний", "Ще не в реєстрі"}:
         return "Неактуально"
     # The suspended-state rule is unchanged by the current business decision.
@@ -1265,14 +1306,18 @@ def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None =
             item = dict(row); code = normalize_code(item.get("supplier_code"))
             if code in codes and _is_verification_event(item):
                 events.setdefault(code, []).append(item)
+    profile_states = {}
     if _table_exists(con, "supplier_edr_profiles"):
         profile_filter, profile_args = "", ()
         if requested:
             profile_filter = " WHERE supplier_code IN (" + ",".join("?" for _ in requested) + ")"
             profile_args = tuple(requested)
+        profile_columns = _columns(con, "supplier_edr_profiles")
+        status_expr = "edr_status" if "edr_status" in profile_columns else "'' edr_status"
         for row in con.execute("""SELECT supplier_code,edr_checked_at,edr_officer,source_sheet,
-          source_row,synced_at FROM supplier_edr_profiles""" + profile_filter, profile_args):
+          source_row,synced_at,""" + status_expr + " FROM supplier_edr_profiles" + profile_filter, profile_args):
             code = normalize_code(row[0]); occurred = verification_timestamp(row[1])
+            profile_states[code] = {"edr_checked_at": row[1] or "", "edr_status": row[6] or ""}
             if code in codes and occurred:
                 events.setdefault(code, []).append({"supplier_code": code,
                   "event_type": "google_clarity_profile", "occurred_at": occurred,
@@ -1318,9 +1363,19 @@ def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None =
         admission_dates = [normalized_date(item.get("occurred_at")) for item in candidates
                            if item.get("event_type") == "admission"
                            and normalized_date(item.get("occurred_at"))]
+        latest_admission = max((item for item in candidates if item.get("event_type") == "admission"
+                                and normalized_date(item.get("occurred_at"))
+                                and _has_edr_checking_officer(item.get("officer", ""))),
+                               key=_verification_event_sort_key, default={})
         status = statuses.get(code, "Ще не в реєстрі")
         freshness = freshness_state(status, (verification or {}).get("occurred_at", ""), today)
-        result[code] = {"prozorro_status": status, "verification_event": verification,
+        profile = profile_states.get(code, {})
+        edr_status_current = operational_edr_status(
+            status, "", candidates, profile.get("edr_status", ""),
+            profile.get("edr_checked_at", ""), latest_admission.get("occurred_at", ""),
+            latest_admission.get("officer", ""))
+        result[code] = {"prozorro_status": status, "edr_status_current": edr_status_current,
+          "verification_event": verification,
           "verification_date": (verification or {}).get("occurred_at", ""),
           "verification_officer": (verification or {}).get("officer", ""),
           "last_admission_date": max(admission_dates, default=""), **freshness}

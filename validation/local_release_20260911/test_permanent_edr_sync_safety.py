@@ -89,7 +89,7 @@ class PermanentSyncSafetyTests(unittest.TestCase):
                          "Зареєстровано")
         self.assertEqual(sync.active_edr_status("2026-01-01", [{
             "event_type": "google_clarity", "occurred_at": "2026-09-20",
-            "snapshot_json": json.dumps({"edr_status": "Немає інформації"})}]), "Зареєстровано")
+            "snapshot_json": json.dumps({"edr_status": "Немає інформації"})}]), "Немає інформації")
 
     def test_older_preserves_profile_only_current_pair(self):
         profile(self.con)

@@ -66,7 +66,7 @@ class FactualEdrApplyTests(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT count(*) FROM supplier_edr_verification_events").fetchone()[0], 1)
         row = dict(self.con.execute("SELECT * FROM supplier_edr_verification_events").fetchone())
         self.assertEqual(edr_sync_v2.active_edr_status("2026-09-01", [row]), "Припинено")
-        self.assertEqual(edr_sync_v2.active_edr_status("2026-09-21", [row]), "Зареєстровано")
+        self.assertEqual(edr_sync_v2.active_edr_status("2026-09-21", [row]), "Припинено")
         self.assertEqual(edr_sync_v2.operational_edr_status("Неактивний", "2026-09-01", [row]), "Неактуально")
         self.assertEqual(self.con.execute("SELECT edr_status FROM supplier_edr_profiles").fetchone()[0],
                          "Зареєстровано")
