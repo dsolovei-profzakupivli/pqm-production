@@ -44,6 +44,7 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_edr_preview_skipped_rows',
     'test_google_writer_supplier_types_integrity',
     'test_google_edr_date_only_midnight_integrity_v1',
+    'test_date_only_edr_status_integrated_integrity_v1',
     'test_edr_status_evidence_integrity_v1',
     'test_messages_historical_line_endings',
     'test_sandbox_personal_theme',
@@ -133,7 +134,8 @@ def main():
                              'edr_preview_skipped_v1_6b9830b.zip',
                              'google_writer_supplier_types_v1_97788.zip',
                              'google_edr_date_only_midnight_v1_97788.zip',
-                             'edr_status_evidence_v1_15b8.zip')
+                             'edr_status_evidence_v1_15b8.zip',
+                             'date_only_edr_status_integrated_v1_12329.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():

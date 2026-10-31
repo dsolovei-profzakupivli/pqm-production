@@ -148,13 +148,14 @@ function pqmSandboxExpandedAudit_(body, tabs, todayIso) {
       output.e.planned++;
       if (pqmE === 'blank') output.e.pqm_blank_writes++;
       var googleE = pqmSandboxExpandedAuditStatus_(current[4], 'edr');
+      var plannedE = pqmSandboxExpandedAuditStatus_(cells[4], 'edr');
       pqmSandboxExpandedAuditMatrix_(output.e.transitions,
-        googleE, pqmE);
+        googleE, plannedE);
       pqmSandboxExpandedAuditIncrement_(output.e.transitions_by_prozorro,
-        googleE + ' -> ' + pqmE + ' | ' + prozorroState);
+        googleE + ' -> ' + plannedE + ' | ' + prozorroState);
       if (googleE === 'other') {
         pqmSandboxExpandedAuditIncrement_(output.e.other_google_source_values,
-          pqmSandboxExpandedAuditGoogleOther_(current[4]) + ' -> ' + pqmE);
+          pqmSandboxExpandedAuditGoogleOther_(current[4]) + ' -> ' + plannedE);
       }
     }
     if (Object.prototype.hasOwnProperty.call(cells, '8')) {

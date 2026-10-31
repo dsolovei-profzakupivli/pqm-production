@@ -31,6 +31,10 @@ OVERLAYS = (
     ("edr_status_v1_15b8", "validation/fixtures/edr_status_evidence_v1_15b8.zip",
      "772a73e079027a2c45024bc61bac20f5a178ffd962f953372dbbfb80f4b0aec0",
      ("validation.local_release_20260911.test_edr_status_evidence_integrity_v1",), ()),
+    ("date_only_status_integrated_v1_12329",
+     "validation/fixtures/date_only_edr_status_integrated_v1_12329.zip",
+     "05d2359d57155097d3f87e0fb26fdd222fc9aa2e808250ac6f03a1da1e3d12a8",
+     ("test_date_only_edr_status_integrated_integrity_v1",), ()),
 )
 
 
@@ -73,6 +77,7 @@ def main():
             manifest_relative = {
                 "date_only_v1_97788": "google_edr_date_only_midnight_v1.json",
                 "edr_status_v1_15b8": "validation/local_release_20260911/edr_status_evidence_v1.json",
+                "date_only_status_integrated_v1_12329": "date_only_edr_status_integrated_v1.json",
             }.get(name)
             if manifest_relative:
                 manifest = json.loads((target / manifest_relative).read_text(encoding="utf-8"))

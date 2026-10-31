@@ -83,9 +83,10 @@ test('read-only aggregate audit classifies E/I/L/F/H without identities or cell 
   const output = f.context.pqmSandboxExpandedChangeAudit();
   assert.equal(output.google_writes, 0);
   assert.equal(output.full_apply_plan_created, false);
-  assert.equal(output.e.planned, 1);
+  assert.equal(output.e.planned, 2);
   assert.equal(output.e.transitions['Припинено -> Зареєстровано'], 1);
-  assert.equal(output.e.transitions['Зареєстровано -> Неактуально'], undefined);
+  assert.equal(output.e.transitions['Зареєстровано -> Неактуально'], 1);
+  assert.equal(output.e.transitions['Зареєстровано -> Зареєстровано'], undefined);
   assert.equal(output.i.planned, 1);
   assert.equal(output.i.google_blank_to_pqm_date, 1);
   assert.equal(output.i.google_nonblank_same_calendar_not_planned, 1);
@@ -140,7 +141,8 @@ test('I provenance groups and L correlation distinguish older and newer PQM even
   assert.equal(output.i.newer_by_event_type.google_clarity, 1);
   assert.equal(output.l.different_officer_by_i_relation.pqm_older, 0);
   assert.equal(output.l.different_officer_by_i_relation.pqm_newer, 1);
-  assert.equal(output.verification_pair_decisions.google_newer_preserved, 0);
+  assert.equal(output.verification_pair_decisions.google_newer_preserved, 1,
+    'Google 10:00 is newer than the same-day PQM date-only midnight');
   assert.equal(output.verification_pair_decisions.pqm_newer_written, 1);
   assert.equal(f.writes, 0);
 });
@@ -158,13 +160,17 @@ test('release-candidate E other, chronology and same-date officer stay aggregate
   const output = f.context.pqmSandboxExpandedChangeAudit();
   assert.equal(f.context.pqmSandboxExpandedAuditGoogleOther_('🟡 Немає інформації'), 'Немає інформації');
   assert.equal(output.e.other_google_source_values['Немає інформації -> Зареєстровано'], undefined);
-  assert.equal(output.e.planned, 0); // neither the manual marker nor the verification pair is overwritten
+  assert.equal(output.e.planned, 1, 'inactive qualification independently plans Неактуально');
+  assert.equal(output.e.transitions['Зареєстровано -> Неактуально'], 1);
+  assert.equal(output.e.transitions['🟡 Немає інформації -> Зареєстровано'], undefined);
   assert.equal(output.i.newer_by_event_type.admission, undefined);
   assert.equal(output.l.newer_by_event_type.admission, undefined);
   assert.equal(output.l.newer_with_i_write, 0);
   assert.equal(output.l.newer_without_i_write, 0);
   assert.equal(output.l.same_date_by_event_type.legacy_google_registry, undefined);
-  assert.equal(output.conflicts, 2);
+  assert.equal(output.conflicts, 1, 'only the manual Google information marker blocks this fixture');
+  assert.equal(output.verification_pair_decisions.google_newer_preserved, 1,
+    'the same-day exact Google check is later than PQM midnight');
   assert.equal(output.verification_pair_decisions.pqm_newer_written, 0);
   assert.equal(output.h.source_field, 'last_application_date');
   assert.equal(output.h.pqm_newer, 1);

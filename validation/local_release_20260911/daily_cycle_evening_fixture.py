@@ -37,6 +37,19 @@ def run(payload):
     source = snapshot(values)
     first = sync.build_preview(con, source)
     if first["conflicts"]:
+        if payload.get("expect_conflict"):
+            before_profile = dict(con.execute(
+                "SELECT * FROM supplier_edr_profiles WHERE supplier_code=?", (code,)).fetchone())
+            before_events = [dict(x) for x in con.execute(
+                "SELECT * FROM supplier_edr_verification_events ORDER BY id")]
+            current = sync.current_verification_projections(con, [code])[code]
+            return {"conflicts": first["conflicts"], "summary": first["summary"],
+              "date": current["verification_date"], "officer": current["verification_officer"],
+              "profile_unchanged": before_profile == dict(con.execute(
+                "SELECT * FROM supplier_edr_profiles WHERE supplier_code=?", (code,)).fetchone()),
+              "events_unchanged": before_events == [dict(x) for x in con.execute(
+                "SELECT * FROM supplier_edr_verification_events ORDER BY id")],
+              "apply_skipped": True}
         raise AssertionError(first["conflicts"])
     sync.apply(con, source, source["source_fingerprint"], confirmed=True,
                actor="fixture", synced_at="2026-09-25T12:00:00")

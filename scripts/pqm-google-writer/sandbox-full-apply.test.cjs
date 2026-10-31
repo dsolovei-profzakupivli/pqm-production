@@ -213,9 +213,18 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
       env: {...process.env, PYTHONIOENCODING: 'utf-8',
         PQM_GOOGLE_REGISTRY_SPREADSHEET_ID: 'SYNTHETIC_AUTHORIZED'},
       input: JSON.stringify({pqm_date: item.verification_date, pqm_officer: s.po, pqm_status: s.factual || 'Зареєстровано',
-        factual: s.factual, pqm_gjkm: s.startingGjkm, google})});
+        factual: s.factual, pqm_gjkm: s.startingGjkm, google, expect_conflict: index === 7})});
     assert.equal(run.status, 0, `scenario ${index + 1}: ${run.stderr}`);
     const evening = JSON.parse(run.stdout);
+    if (index === 7) {
+      assert.equal(evening.apply_skipped, true, 'same-timestamp conflicting EDR status blocks Apply');
+      assert.equal(evening.conflicts.length, 1, 'the actual same-timestamp discrepancy is reported');
+      assert.equal(evening.profile_unchanged, true, 'conflict does not mutate PQM profile');
+      assert.equal(evening.events_unchanged, true, 'conflict does not append a verification event');
+      assert.equal(evening.date, item.verification_date.replace(/([+-]\d\d:\d\d)$/, '.000$1'));
+      assert.equal(evening.officer, s.po);
+      continue;
+    }
     assert.deepEqual([evening.date, evening.officer],
       [s.final[0] + 'T17:03:19.000+03:00', s.final[1]], `scenario ${index + 1}`);
     assert.equal(evening.second.verification_event_changes, 0, `scenario ${index + 1}: repeat evening`);
@@ -582,7 +591,7 @@ test('expanded Full Apply writes D/E/I/L with C/F/H and preserves every untouche
     Date.parse('2026-09-23T10:00:00+03:00'));
 });
 
-test('blank E/I/L preserve existing Google values and stale I format fails before write', () => {
+test('blank E/I/L preserve Google values; older date-only I does not block newer PQM evidence', () => {
   const f = fixture();
   const row = f.raw.get('1:2');
   row[4].userEnteredValue.stringValue = 'Припинено'; row[4].effectiveValue.stringValue = 'Припинено';
@@ -609,8 +618,19 @@ test('blank E/I/L preserve existing Google values and stale I format fails befor
   g.raw.get('1:2')[8].effectiveValue.numberValue = 46287;
   delete g.raw.get('1:2')[8].userEnteredValue.stringValue; delete g.raw.get('1:2')[8].effectiveValue.stringValue;
   g.raw.get('1:2')[8].userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
-  assert.throws(() => g.context.pqmSandboxFullApplyPreview(), /BLOCKED_/);
-  assert.equal(g.writes, 0);
+  g.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 400;
+  const newerPreview = g.context.pqmSandboxFullApplyPreview();
+  assert.ok(newerPreview.total_planned_cells > 0,
+    'the 2026-10-01 precise PQM check is newer than Google date-only 2026-09-22');
+  assert.equal(newerPreview.changes_by_column.I, 1);
+  assert.equal(newerPreview.changes_by_column.E, 1);
+  arm(g, newerPreview);
+  const applied = g.context.pqmSandboxFullApply();
+  assert.equal(applied.status, 'COMPLETE', JSON.stringify(applied));
+  const resulting = g.raw.get('1:2');
+  assert.equal(resulting[4].effectiveValue.stringValue, 'Зареєстровано');
+  assert.equal(g.context.pqmVerificationDatetime_(resulting[8].effectiveValue.numberValue).value,
+    Date.parse('2026-10-01T10:00:00+03:00'));
 });
 
 test('PQM snapshot remains frozen within one Apply; next Preview sees later PQM changes', () => {

@@ -134,12 +134,37 @@ test('pending supplier cannot append; decision adds exactly one guarded row and 
   assert.equal(f.tabs['ФОП'].rows[1].values[4], 'Зареєстровано');
   assert.equal(f.tabs['ФОП'].rows[1].values[7], f.context.pqmGoogleDate_('2026-09-20'));
   assert.equal(f.tabs['ФОП'].rows[1].values[8], f.context.pqmGoogleDate_('2026-09-20'));
+  assert.equal(f.tabs['ФОП'].rows[1].values[3], '', 'Sandbox may have no manager on either side');
   assert.equal(f.tabs['ФОП'].rows[1].values[11], 'Officer A');
-  assert.equal(f.context.pqmSandboxAppendPreview().selected, 0);
+  const repeated = f.context.pqmSandboxAppendPreview();
+  assert.equal(repeated.selected, 0);
+  f.arm(repeated);
+  assert.throws(() => f.context.pqmSandboxAppendApply(), /stale or empty selection/);
+  assert.equal(f.writes, 1, 'repeat Apply is a no-op and does not append a duplicate');
   assert.deepEqual([6, 9, 10, 12].map(i => f.tabs['ФОП'].rows[1].values[i]), ['', '', '', '']);
   assert.ok(f.requests.some(request => request.copyPaste && request.copyPaste.pasteType === 'PASTE_FORMAT'));
   assert.ok(f.requests.some(request => request.copyPaste && request.copyPaste.pasteType === 'PASTE_DATA_VALIDATION'));
   assert.ok(f.requests.some(request => request.updateDimensionProperties));
+
+  // A manager missing on only one side is still an incomplete/conflicting D/E/I/L group.
+  for (const managerCase of [
+    {pqm: '', google: 'Google Manager'},
+    {pqm: 'PQM Manager', google: ''}
+  ]) {
+    const g = fixture(); activate(g);
+    g.supplier.current_manager_name = managerCase.pqm;
+    const existing = g.tabs['ФОП'].rows[0];
+    existing.codeDisplay = '12345678'; existing.values[1] = '12345678';
+    existing.values[3] = managerCase.google;
+    existing.values[4] = 'Зареєстровано'; existing.values[5] = 'Активний';
+    existing.values[8] = g.context.pqmGoogleDate_('2026-09-20');
+    existing.values[11] = 'Officer A'; existing.verificationDateFormat = 'dd.MM.yyyy';
+    const plan = g.context.pqmGooglePlan_(g.body, g.context.pqmGoogleSnapshot_('SANDBOX_FIXTURE'));
+    assert.ok(plan.issues.some(issue => issue.reason === 'same_timestamp_verification_group_incomplete'));
+    assert.equal(plan.changes.some(change => change.cells[3] || change.cells[4] ||
+      change.cells[8] || change.cells[11]), false);
+    assert.equal(g.writes, 0);
+  }
 });
 
 test('duplicate identity and moved Sheet row fail closed before append write', () => {
@@ -172,6 +197,11 @@ test('append AFTER read-back rejects formatting drift and never retries an uncer
   assert.equal(f.writes, 1);
   assert.equal(f.context.pqmSandboxAppendPreview().selected, 0,
     'after uncertain read-back, new Preview observes the appended identity');
+  const repeat = f.context.pqmSandboxAppendPreview();
+  f.arm(repeat);
+  assert.throws(() => f.context.pqmSandboxAppendApply(), /stale or empty selection/);
+  assert.equal(f.writes, 1, 'uncertain APPEND is not repeated');
+  assert.equal(f.tabs['ФОП'].rows.filter(row => row.codeDisplay === '12345678').length, 1);
 });
 
 test('pending follow-up does not advance H and stale append digest prevents writes', () => {

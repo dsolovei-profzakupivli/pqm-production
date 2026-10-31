@@ -304,12 +304,14 @@ function pqmGoogleBusinessPlan_(body, tabs, options) {
             }
           } else if (verification.value === googleVerification.value) {
             var equalEdr = pqmGoogleEdrCurrentStatus_(item.edr_status_current);
-            if (!equalEdr || pqmGoogleBlank_(item.current_manager_name) || pqmGoogleBlank_(item.verification_officer)) {
+            var pqmManagerBlank = pqmGoogleBlank_(item.current_manager_name);
+            var googleManagerBlank = pqmGoogleBlank_(found.data.values[3]);
+            if (!equalEdr || pqmManagerBlank !== googleManagerBlank || pqmGoogleBlank_(item.verification_officer)) {
               blockVerificationPair(); count('conflicts'); issue('same_timestamp_verification_group_incomplete', key, tabName);
             } else if (pqmGoogleEdrPreserveInformation_(found.data.values[4])) {
               blockVerificationPair(); count('conflicts'); issue('manual_edr_information_marker_blocks_verification_pair', key, tabName);
             } else {
-              var managerConflict = !pqmGoogleBlank_(item.current_manager_name) &&
+              var managerConflict = !pqmManagerBlank &&
                 pqmGoogleOfficerComparable_(item.current_manager_name) !== pqmGoogleOfficerComparable_(found.data.values[3]);
               var statusConflict = !equalEdr || equalEdr !== pqmGoogleEdrCurrentStatus_(found.data.values[4]);
               var officerConflict = !pqmGoogleBlank_(item.verification_officer) &&
