@@ -2,7 +2,7 @@
   "contract": "pqm-supplier-classification-and-writer-v3",
   "version": 3,
   "parent": "12f5eadc63199342209af33c60a5de4f868ec566",
-  "normalization": "CRLF-to-LF only for listed text files; binary files exact bytes; test self-hash normalizes its manifest pin to zeroes",
+  "normalization": "Candidate text files: CRLF-to-LF; binary files: exact bytes; historical checkout portability: exact pinned Git blob IDs for the listed text paths",
   "files": {
     "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs": "664e8adfee20a3157ff67a630806e275064fd570d089c58567379353b01be207",
     "scripts/pqm-google-writer/PqmGoogleWriter.gs": "fc0c96c667f7ef66e0c54b4d1a8c3c335e11b4f2380ce7efce1a555d83285927",
@@ -18,7 +18,7 @@
     "scripts/pqm-google-writer/writer.test.cjs": "24626016901a7d9d16ca37deca5107d6863caeb532ca2a9a78d0e5ec7de72cf4",
     "supplier_classification.py": "f2c244f08b71d235212d52bbac9f63f1abc0b8348c6ddf830dcd3e950e9b9d40",
     "test_supplier_classification.py": "cdcee9041788c732e7057322fff509e46784b4245958c2bf30694cb2659cd07a",
-    "test_supplier_classification_v3_integrity.py": "618b62f77f2f89c4901879ac967e68641824223cd46ddabeb0b9fb3d822c67af",
+    "test_supplier_classification_v3_integrity.py": "af1d0119ce847215f61273606def97e9292282718a842af513851e4d8ca62f18",
     "validation/supplier_classification_planner.cjs": "eeb92da9ec4f4047c0e097ecc6c14fa4f43dbd91ef91043e4d8cdad0b7d42c03",
     "validation/run_local_release.py": "a967d969224b5106b2b2d1be2e5bf18e4158d88ade698d5a79e651435bcf18e2",
     "validation/run_date_only_status_integrated_v2_history.py": "a137fb03ecf39785ecb0c3314b49ee5c7f3b5bbfaa8edf6da8803a553fde7dc3",
