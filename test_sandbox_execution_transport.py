@@ -75,6 +75,57 @@ class SandboxExecutionTransportTests(unittest.TestCase):
             self.assertEqual(len(self.calls),1)
             self.assertFalse(runtime._egress.active)
 
+    def test_credential_permission_policy_accepts_only_private_or_render_secret_modes(self):
+        policy=execution._credential_mode_allowed
+        self.assertTrue(policy(0o100600,render_managed=False))
+        self.assertTrue(policy(0o100400,render_managed=False))
+        self.assertTrue(policy(0o100640,render_managed=True))
+        self.assertFalse(policy(0o100640,render_managed=False))
+        for mode in (0o100644,0o100660,0o100666,0o100777):
+            with self.subTest(mode=oct(mode)):
+                self.assertFalse(policy(mode,render_managed=True))
+                self.assertFalse(policy(mode,render_managed=False))
+
+    @unittest.skipUnless(os.name != 'nt','POSIX file permission and atomic-copy contract runs in Linux container Gate')
+    def test_render_secret_0640_is_copied_atomically_to_private_ephemeral_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'secrets'
+            root.mkdir(mode=0o700)
+            path=root/'credential.json'
+            raw=json.dumps({'environment':'SANDBOX','gcp_project_id':'sandbox-only',
+                'scopes':sorted(execution.PROJECT_SCOPES),'client_id':'offline','client_secret':'offline',
+                'refresh_token':'offline'}).encode()
+            path.write_bytes(raw);path.chmod(0o640)
+            with patch.object(execution,'RENDER_SECRET_DIR',root), \
+                 patch.object(execution,'_private_credential_copy',wraps=execution._private_credential_copy) as staged:
+                value=execution._load_execution_credential(path)
+            staged.assert_called_once_with(raw)
+            self.assertEqual(value['environment'],'SANDBOX')
+            self.assertEqual(path.stat().st_mode & 0o777,0o640)
+
+    @unittest.skipUnless(os.name != 'nt','POSIX file permission enforcement runs in Linux container Gate')
+    def test_group_readable_non_render_and_unsafe_render_modes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'secrets';root.mkdir()
+            private=Path(directory)/'outside.json'
+            private.write_text('{}',encoding='utf-8')
+            private.chmod(0o640)
+            with self.assertRaises(ValueError):execution._load_execution_credential(private)
+            unsafe=root/'unsafe.json';unsafe.write_text('{}',encoding='utf-8');unsafe.chmod(0o644)
+            with patch.object(execution,'RENDER_SECRET_DIR',root):
+                with self.assertRaises(ValueError):execution._load_execution_credential(unsafe)
+
+    def test_credential_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'target.json';target.write_text('{}',encoding='utf-8')
+            link=Path(directory)/'link.json'
+            try:
+                link.symlink_to(target)
+            except (OSError,NotImplementedError):
+                self.skipTest('Symlink creation is unavailable to this test user')
+            with self.assertRaises((OSError,ValueError)):
+                execution._load_execution_credential(link)
+
     def test_invalid_endpoint_variants_are_rejected_before_network(self):
         valid=self.request()
         for url in ('https://evil.example/token','http://script.googleapis.com/v1/scripts/'+self.deployment+':run',

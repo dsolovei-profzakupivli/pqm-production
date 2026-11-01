@@ -10,6 +10,8 @@ import math
 import os
 import re
 import sqlite3
+import stat
+import tempfile
 import threading
 import urllib.request
 import urllib.parse
@@ -34,6 +36,127 @@ PROJECT_SCOPES = frozenset({
     'https://www.googleapis.com/auth/script.container.ui',
     'https://www.googleapis.com/auth/userinfo.email',
 })
+RENDER_SECRET_DIR = Path('/etc/secrets')
+
+
+def _credential_mode_allowed(mode, *, render_managed):
+    """Private local files are 0600/0400; only Render's secret mount may be 0640."""
+    permissions = stat.S_IMODE(mode)
+    return permissions in (0o600, 0o400) or (render_managed and permissions == 0o640)
+
+
+def _is_render_secret_path(path, secret_dir=None):
+    secret_dir = Path(secret_dir or RENDER_SECRET_DIR)
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    root = Path(os.path.abspath(os.fspath(secret_dir)))
+    if candidate.parent != root or candidate.name in ('', '.', '..'):
+        return False
+    try:
+        root_stat = os.lstat(root)
+        if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+            return False
+        # Reject a symlinked parent component as well as a symlinked credential file.
+        if root.parent != root and stat.S_ISLNK(os.lstat(root.parent).st_mode):
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _open_regular_nofollow(path, flags):
+    nofollow = getattr(os, 'O_NOFOLLOW', 0)
+    cloexec = getattr(os, 'O_CLOEXEC', 0)
+    fd = os.open(os.fspath(path), flags | nofollow | cloexec)
+    try:
+        opened = os.fstat(fd)
+        named = os.lstat(path)
+        if (not stat.S_ISREG(opened.st_mode) or stat.S_ISLNK(named.st_mode) or
+                (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+            raise ValueError('Credential file identity rejected')
+        return fd, opened
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _private_credential_copy(raw):
+    """Atomically stage bytes in a process-private ephemeral directory (0600 file)."""
+    temp_root = Path(tempfile.gettempdir())
+    root_stat = os.lstat(temp_root)
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+        raise ValueError('Private temporary root rejected')
+    directory = Path(tempfile.mkdtemp(prefix='pqm-execution-oauth-', dir=temp_root))
+    temporary = directory / 'credential.tmp'
+    final = directory / 'credential.json'
+    try:
+        os.chmod(directory, 0o700)
+        directory_stat = os.lstat(directory)
+        if (not stat.S_ISDIR(directory_stat.st_mode) or stat.S_ISLNK(directory_stat.st_mode) or
+                (hasattr(os, 'getuid') and directory_stat.st_uid != os.getuid()) or
+                stat.S_IMODE(directory_stat.st_mode) != 0o700):
+            raise ValueError('Private temporary directory rejected')
+        fd = os.open(os.fspath(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0), 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, 'wb', closefd=False) as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temporary, final)
+        fd, copied = _open_regular_nofollow(final, os.O_RDONLY)
+        try:
+            if (stat.S_IMODE(copied.st_mode) != 0o600 or
+                    (hasattr(os, 'getuid') and copied.st_uid != os.getuid())):
+                raise ValueError('Private temporary credential rejected')
+            with os.fdopen(fd, 'rb', closefd=False) as stream:
+                staged = stream.read(65537)
+            if staged != raw or len(staged) > 65536:
+                raise ValueError('Private credential copy verification failed')
+            return staged
+        finally:
+            os.close(fd)
+    finally:
+        for path in (temporary, final):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        try:
+            os.rmdir(directory)
+        except OSError:
+            # Never follow or recursively remove an unexpected replacement.
+            pass
+
+
+def _load_execution_credential(path):
+    render_managed = _is_render_secret_path(path)
+    fd, before = _open_regular_nofollow(path, os.O_RDONLY)
+    try:
+        if os.name != 'nt' and not _credential_mode_allowed(before.st_mode, render_managed=render_managed):
+            raise ValueError('Credential permissions are not private')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            raw = stream.read(65537)
+        after = os.fstat(fd)
+        named_after = os.lstat(path)
+        if (len(raw) > 65536 or
+                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or
+                stat.S_ISLNK(named_after.st_mode) or
+                (after.st_dev, after.st_ino) != (named_after.st_dev, named_after.st_ino)):
+            raise ValueError('Credential file changed while reading')
+    finally:
+        os.close(fd)
+    if os.name != 'nt' and stat.S_IMODE(before.st_mode) == 0o640:
+        if not render_managed:
+            raise ValueError('Group-readable credential is not a Render Secret File')
+        raw = _private_credential_copy(raw)
+    value = json.loads(raw.decode('utf-8'))
+    if not isinstance(value, dict):
+        raise ValueError('Credential JSON object required')
+    return value
 
 
 class ExecutionConfigurationError(ValueError):
@@ -77,10 +200,7 @@ class DedicatedTokenProvider:
         if self.cached and self.cached['expires_at'] - self.clock().timestamp() > 400:
             return self.cached
         try:
-            if os.name != 'nt' and os.stat(self.path).st_mode & 0o077:
-                raise ValueError('Credential permissions are not private')
-            with open(self.path, encoding='utf-8') as stream:
-                value = json.load(stream)
+            value = _load_execution_credential(self.path)
             if (value.get('environment') != environment or value.get('gcp_project_id') != self.project_id or
                     value.get('type') == 'service_account' or
                     not PROJECT_SCOPES.issubset(set(value.get('scopes', [])))):
