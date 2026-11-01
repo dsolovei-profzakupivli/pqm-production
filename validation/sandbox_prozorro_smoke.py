@@ -146,7 +146,11 @@ class ManualHTTP(base.SandboxHTTP):
         self.assertEqual(403,self.request('/api/sync','viewer','POST',{})[0])
         self.assertEqual(403,self.request('/api/sync','officer','POST',{})[0])
         self.assertEqual(401,self.request('/api/sync',None,'POST',{})[0])
-        for role,payload in [('admin',{'framework_id':'sandbox-framework'}),('admin',{})]:
+        unconfirmed=self.request('/api/sync','admin','POST',{'framework_id':'sandbox-framework'})
+        self.assertEqual(400,unconfirmed[0])
+        self.assertEqual('Потрібне явне підтвердження ручного оновлення Prozorro',unconfirmed[1]['error'])
+        for role,payload in [('admin',{'confirmed':True,'framework_id':'sandbox-framework'}),
+                             ('admin',{'confirmed':True})]:
             self.assertEqual(202,self.request('/api/sync',role,'POST',payload)[0])
             self.assertEqual(409,self.request('/api/sync',role,'POST',payload)[0])
             deadline=time.monotonic()+20
