@@ -2,10 +2,12 @@
 import io
 import json
 import os
+import stat
 import tempfile
 import unittest
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import google_writer_execution as execution
 import sandbox_runtime as runtime
@@ -91,17 +93,138 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)/'secrets'
             root.mkdir(mode=0o700)
+            temp_root=Path(directory)/'private-temp'
+            temp_root.mkdir(mode=0o700)
             path=root/'credential.json'
             raw=json.dumps({'environment':'SANDBOX','gcp_project_id':'sandbox-only',
                 'scopes':sorted(execution.PROJECT_SCOPES),'client_id':'offline','client_secret':'offline',
                 'refresh_token':'offline'}).encode()
             path.write_bytes(raw);path.chmod(0o640)
             with patch.object(execution,'RENDER_SECRET_DIR',root), \
+                 patch.object(execution.tempfile,'gettempdir',return_value=str(temp_root)), \
                  patch.object(execution,'_private_credential_copy',wraps=execution._private_credential_copy) as staged:
                 value=execution._load_execution_credential(path)
             staged.assert_called_once_with(raw)
             self.assertEqual(value['environment'],'SANDBOX')
             self.assertEqual(path.stat().st_mode & 0o777,0o640)
+            self.assertEqual(list(temp_root.iterdir()),[])
+
+    @unittest.skipUnless(os.name != 'nt','Render Secret File symlink contract runs in Linux container Gate')
+    def test_render_versioned_secret_symlink_is_pinned_and_staged_privately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'secrets';root.mkdir(mode=0o700)
+            version=root/'..2026_11_01_21_12_41.1089918540';version.mkdir(mode=0o700)
+            target=version/'pqm-sandbox-execution.json'
+            raw=json.dumps({'environment':'SANDBOX','gcp_project_id':'sandbox-only',
+                'scopes':sorted(execution.PROJECT_SCOPES),'client_id':'offline','client_secret':'offline',
+                'refresh_token':'offline'}).encode()
+            target.write_bytes(raw);target.chmod(0o640)
+            link=root/'pqm-sandbox-execution.json'
+            link.symlink_to(Path(version.name)/target.name)
+            opened_modes=[]
+            real_open=execution._open_regular_nofollow
+            def record_private_copy(path, flags):
+                fd, info=real_open(path,flags)
+                if Path(path).name=='credential.json' and 'pqm-execution-oauth-' in str(path):
+                    opened_modes.append(stat.S_IMODE(info.st_mode))
+                return fd,info
+            with patch.object(execution,'RENDER_SECRET_DIR',root), \
+                 patch.object(execution.os.path,'ismount',return_value=True), \
+                 patch.object(execution.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY)), \
+                 patch.object(execution,'_open_regular_nofollow',side_effect=record_private_copy), \
+                 patch.object(execution,'_private_credential_copy',wraps=execution._private_credential_copy) as staged:
+                value=execution._load_execution_credential(link)
+            self.assertEqual(value['environment'],'SANDBOX')
+            staged.assert_called_once_with(raw)
+            self.assertEqual(opened_modes,[0o600])
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(target.read_bytes(),raw)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode),0o640)
+
+    @unittest.skipUnless(os.name != 'nt','Render Secret File symlink contract runs in Linux container Gate')
+    def test_render_secret_symlink_rejects_escape_nested_links_cycles_and_unsafe_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);root=base/'secrets';root.mkdir(mode=0o700)
+            version=root/'..2026';version.mkdir(mode=0o700)
+            target=version/'credential.json';target.write_text('{}',encoding='utf-8');target.chmod(0o640)
+            link=root/'credential.json'
+            escapes=base/'outside.json';escapes.write_text('{}',encoding='utf-8');escapes.chmod(0o640)
+            nested=base/'nested';nested.mkdir();(nested/'credential.json').write_text('{}',encoding='utf-8')
+            cases=[('escape',Path(os.path.relpath(escapes,root))),
+                   ('parent traversal',Path('../outside.json'))]
+            with patch.object(execution,'RENDER_SECRET_DIR',root), \
+                 patch.object(execution.os.path,'ismount',return_value=True), \
+                 patch.object(execution.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+                for label,destination in cases:
+                    with self.subTest(label=label):
+                        if link.exists() or link.is_symlink():link.unlink()
+                        link.symlink_to(destination)
+                        with self.assertRaises((OSError,ValueError)):
+                            execution._load_execution_credential(link)
+                nested_link=version/'nested-link';nested_link.symlink_to(nested,target_is_directory=True)
+                if link.exists() or link.is_symlink():link.unlink()
+                link.symlink_to(Path(version.name)/'nested-link'/'credential.json')
+                with self.assertRaises((OSError,ValueError)):
+                    execution._load_execution_credential(link)
+                if link.exists() or link.is_symlink():link.unlink()
+                link.symlink_to(link.name)
+                with self.assertRaises((OSError,ValueError)):
+                    execution._load_execution_credential(link)
+                if link.exists() or link.is_symlink():link.unlink()
+                link.symlink_to(Path(version.name)/target.name)
+                for mode in (0o644,0o660,0o666,0o777):
+                    with self.subTest(mode=oct(mode)):
+                        target.chmod(mode)
+                        with self.assertRaises(ValueError):
+                            execution._load_execution_credential(link)
+                target.chmod(0o640)
+                with patch.object(execution.os,'statvfs',return_value=SimpleNamespace(f_flag=0)):
+                    with self.assertRaises(ValueError):
+                        execution._load_execution_credential(link)
+
+    @unittest.skipUnless(os.name != 'nt','Render Secret File TOCTOU checks run in Linux container Gate')
+    def test_render_secret_symlink_replacement_during_read_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'secrets';root.mkdir(mode=0o700)
+            version=root/'..version';version.mkdir(mode=0o700)
+            first=version/'credential.json';first.write_text('{}',encoding='utf-8');first.chmod(0o640)
+            second=version/'replacement.json';second.write_text('{"replacement":true}',encoding='utf-8');second.chmod(0o640)
+            link=root/'credential.json';link.symlink_to(Path(version.name)/first.name)
+            real_read=execution.os.read;swapped=False
+            def read_then_swap(fd,size):
+                nonlocal swapped
+                data=real_read(fd,size)
+                if not swapped:
+                    swapped=True
+                    link.unlink();link.symlink_to(Path(version.name)/second.name)
+                return data
+            with patch.object(execution,'RENDER_SECRET_DIR',root), \
+                 patch.object(execution.os.path,'ismount',return_value=True), \
+                 patch.object(execution.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY)), \
+                 patch.object(execution.os,'read',side_effect=read_then_swap):
+                with self.assertRaises(ValueError):execution._load_execution_credential(link)
+
+    @unittest.skipUnless(os.name != 'nt','Render Secret File TOCTOU checks run in Linux container Gate')
+    def test_render_secret_target_replacement_during_read_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'secrets';root.mkdir(mode=0o700)
+            version=root/'..version';version.mkdir(mode=0o700)
+            target=version/'credential.json';target.write_text('{}',encoding='utf-8');target.chmod(0o640)
+            link=root/'credential.json';link.symlink_to(Path(version.name)/target.name)
+            real_read=execution.os.read;swapped=False
+            def read_then_replace(fd,size):
+                nonlocal swapped
+                data=real_read(fd,size)
+                if not swapped:
+                    swapped=True
+                    moved=version/'old.json';target.replace(moved)
+                    target.write_text('{"replacement":true}',encoding='utf-8');target.chmod(0o640)
+                return data
+            with patch.object(execution,'RENDER_SECRET_DIR',root), \
+                 patch.object(execution.os.path,'ismount',return_value=True), \
+                 patch.object(execution.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY)), \
+                 patch.object(execution.os,'read',side_effect=read_then_replace):
+                with self.assertRaises(ValueError):execution._load_execution_credential(link)
 
     @unittest.skipUnless(os.name != 'nt','POSIX file permission enforcement runs in Linux container Gate')
     def test_group_readable_non_render_and_unsafe_render_modes_are_rejected(self):

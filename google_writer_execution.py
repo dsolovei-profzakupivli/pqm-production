@@ -79,6 +79,162 @@ def _open_regular_nofollow(path, flags):
         raise
 
 
+def _render_secret_mount_open(root):
+    """Open the trusted, read-only Render Secret Files mount without following links."""
+    nofollow = getattr(os, 'O_NOFOLLOW', 0)
+    directory = getattr(os, 'O_DIRECTORY', 0)
+    cloexec = getattr(os, 'O_CLOEXEC', 0)
+    root_fd = os.open(os.fspath(root), os.O_RDONLY | directory | nofollow | cloexec)
+    try:
+        opened = os.fstat(root_fd)
+        named = os.lstat(root)
+        if (not stat.S_ISDIR(opened.st_mode) or stat.S_ISLNK(named.st_mode) or
+                (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) or
+                not os.path.ismount(root) or
+                not (os.statvfs(root).f_flag & getattr(os, 'ST_RDONLY', 1))):
+            raise ValueError('Render Secret Files mount is not trusted')
+        if root.parent != root and stat.S_ISLNK(os.lstat(root.parent).st_mode):
+            raise ValueError('Render Secret Files parent is not trusted')
+        return root_fd, opened
+    except Exception:
+        os.close(root_fd)
+        raise
+
+
+def _render_secret_target_parts(target, root):
+    """Accept only a canonical target path contained beneath the mounted secret dir."""
+    root_text = os.path.abspath(os.fspath(root))
+    target_text = os.fspath(target)
+    if os.path.isabs(target_text):
+        if any(part in ('.', '..') for part in target_text.split(os.sep)):
+            raise ValueError('Render Secret File target path is not canonical')
+        normalized = os.path.normpath(target_text)
+        try:
+            if os.path.commonpath((root_text, normalized)) != root_text:
+                raise ValueError('Render Secret File target escapes mount')
+        except ValueError:
+            raise ValueError('Render Secret File target escapes mount') from None
+        relative = os.path.relpath(normalized, root_text)
+    else:
+        relative = target_text
+    parts = relative.split(os.sep)
+    if (not relative or relative in ('.', '..') or
+            any(part in ('', '.', '..') for part in parts) or
+            any('\\' in part or '\x00' in part for part in parts)):
+        raise ValueError('Render Secret File target path is not canonical')
+    return parts
+
+
+def _open_render_secret_target(root_fd, parts):
+    """Open each target component relative to pinned directory FDs, never following links."""
+    nofollow = getattr(os, 'O_NOFOLLOW', 0)
+    directory = getattr(os, 'O_DIRECTORY', 0)
+    cloexec = getattr(os, 'O_CLOEXEC', 0)
+    directory_fds = []
+    current_fd = root_fd
+    directory_ids = []
+    try:
+        for part in parts[:-1]:
+            named = os.stat(part, dir_fd=current_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode) or stat.S_ISLNK(named.st_mode):
+                raise ValueError('Nested Render Secret File symlink rejected')
+            child_fd = os.open(part, os.O_RDONLY | directory | nofollow | cloexec,
+                               dir_fd=current_fd)
+            opened = os.fstat(child_fd)
+            if (not stat.S_ISDIR(opened.st_mode) or
+                    (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+                os.close(child_fd)
+                raise ValueError('Render Secret File directory changed while opening')
+            directory_fds.append(child_fd)
+            directory_ids.append((opened.st_dev, opened.st_ino))
+            current_fd = child_fd
+        named = os.stat(parts[-1], dir_fd=current_fd, follow_symlinks=False)
+        if not stat.S_ISREG(named.st_mode) or stat.S_ISLNK(named.st_mode):
+            raise ValueError('Render Secret File target must be a regular file')
+        target_fd = os.open(parts[-1], os.O_RDONLY | nofollow | cloexec, dir_fd=current_fd)
+        opened = os.fstat(target_fd)
+        if (not stat.S_ISREG(opened.st_mode) or
+                (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+            os.close(target_fd)
+            raise ValueError('Render Secret File target changed while opening')
+        return target_fd, opened, directory_fds, tuple(directory_ids)
+    except Exception:
+        for fd in reversed(directory_fds):
+            os.close(fd)
+        raise
+
+
+def _read_bounded_fd(fd, limit):
+    chunks = []
+    remaining = limit
+    while remaining:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b''.join(chunks)
+
+
+def _read_render_secret_symlink(path):
+    """Read one Render-managed link, pinning and rechecking both link and target identity."""
+    root = Path(os.path.abspath(os.fspath(RENDER_SECRET_DIR)))
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    if not _is_render_secret_path(candidate, root) or os.name == 'nt':
+        raise ValueError('Credential symlink is not a Render Secret File')
+    root_fd, root_before = _render_secret_mount_open(root)
+    target_fd = None
+    directory_fds = []
+    try:
+        link_name = candidate.name
+        link_before = os.stat(link_name, dir_fd=root_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(link_before.st_mode):
+            raise ValueError('Render Secret File link changed before reading')
+        target_text = os.readlink(link_name, dir_fd=root_fd)
+        parts = _render_secret_target_parts(target_text, root)
+        target_fd, target_before, directory_fds, directory_ids = _open_render_secret_target(root_fd, parts)
+        if (target_before.st_dev != root_before.st_dev or
+                not _credential_mode_allowed(target_before.st_mode, render_managed=True)):
+            raise ValueError('Render Secret File target permissions are not allowed')
+        raw = _read_bounded_fd(target_fd, 65537)
+        target_after = os.fstat(target_fd)
+        if (len(raw) > 65536 or len(raw) != target_before.st_size or
+                (target_before.st_dev, target_before.st_ino, target_before.st_size,
+                 target_before.st_mtime_ns, target_before.st_ctime_ns) !=
+                (target_after.st_dev, target_after.st_ino, target_after.st_size,
+                 target_after.st_mtime_ns, target_after.st_ctime_ns)):
+            raise ValueError('Render Secret File target changed while reading')
+        link_after = os.stat(link_name, dir_fd=root_fd, follow_symlinks=False)
+        if ((link_before.st_dev, link_before.st_ino) != (link_after.st_dev, link_after.st_ino) or
+                not stat.S_ISLNK(link_after.st_mode) or
+                os.readlink(link_name, dir_fd=root_fd) != target_text):
+            raise ValueError('Render Secret File link changed while reading')
+        target_check_fd, target_check, check_fds, check_ids = _open_render_secret_target(root_fd, parts)
+        try:
+            if ((target_after.st_dev, target_after.st_ino) !=
+                    (target_check.st_dev, target_check.st_ino) or directory_ids != check_ids):
+                raise ValueError('Render Secret File target identity changed while reading')
+        finally:
+            os.close(target_check_fd)
+            for fd in reversed(check_fds):
+                os.close(fd)
+        root_after = os.fstat(root_fd)
+        root_named_after = os.lstat(root)
+        if ((root_before.st_dev, root_before.st_ino) != (root_after.st_dev, root_after.st_ino) or
+                (root_after.st_dev, root_after.st_ino) !=
+                (root_named_after.st_dev, root_named_after.st_ino) or
+                not os.path.ismount(root) or
+                not (os.statvfs(root).f_flag & getattr(os, 'ST_RDONLY', 1))):
+            raise ValueError('Render Secret Files mount changed while reading')
+        return raw, target_before
+    finally:
+        if target_fd is not None:
+            os.close(target_fd)
+        for fd in reversed(directory_fds):
+            os.close(fd)
+        os.close(root_fd)
+
+
 def _private_credential_copy(raw):
     """Atomically stage bytes in a process-private ephemeral directory (0600 file)."""
     temp_root = Path(tempfile.gettempdir())
@@ -133,23 +289,28 @@ def _private_credential_copy(raw):
 
 def _load_execution_credential(path):
     render_managed = _is_render_secret_path(path)
-    fd, before = _open_regular_nofollow(path, os.O_RDONLY)
-    try:
-        if os.name != 'nt' and not _credential_mode_allowed(before.st_mode, render_managed=render_managed):
-            raise ValueError('Credential permissions are not private')
-        with os.fdopen(fd, 'rb', closefd=False) as stream:
-            raw = stream.read(65537)
-        after = os.fstat(fd)
-        named_after = os.lstat(path)
-        if (len(raw) > 65536 or
-                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
-                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or
-                stat.S_ISLNK(named_after.st_mode) or
-                (after.st_dev, after.st_ino) != (named_after.st_dev, named_after.st_ino)):
-            raise ValueError('Credential file changed while reading')
-    finally:
-        os.close(fd)
-    if os.name != 'nt' and stat.S_IMODE(before.st_mode) == 0o640:
+    if os.name != 'nt' and render_managed and stat.S_ISLNK(os.lstat(path).st_mode):
+        raw, before = _read_render_secret_symlink(path)
+        render_symlink = True
+    else:
+        fd, before = _open_regular_nofollow(path, os.O_RDONLY)
+        try:
+            if os.name != 'nt' and not _credential_mode_allowed(before.st_mode, render_managed=render_managed):
+                raise ValueError('Credential permissions are not private')
+            with os.fdopen(fd, 'rb', closefd=False) as stream:
+                raw = stream.read(65537)
+            after = os.fstat(fd)
+            named_after = os.lstat(path)
+            if (len(raw) > 65536 or len(raw) != before.st_size or
+                    (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or
+                    stat.S_ISLNK(named_after.st_mode) or
+                    (after.st_dev, after.st_ino) != (named_after.st_dev, named_after.st_ino)):
+                raise ValueError('Credential file changed while reading')
+        finally:
+            os.close(fd)
+        render_symlink = False
+    if os.name != 'nt' and (render_symlink or stat.S_IMODE(before.st_mode) == 0o640):
         if not render_managed:
             raise ValueError('Group-readable credential is not a Render Secret File')
         raw = _private_credential_copy(raw)
