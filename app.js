@@ -1255,6 +1255,7 @@ const manualSubjectTypes={individual_entrepreneur:'ФОП',legal_entity:'Юри�
 const manualResidencies={UA:'Україна',nonresident:'Нерезидент',unknown:'Не визначено'};
 let manualClassificationState=null,manualClassificationBulkItems=[];
 function manualClassificationOptions(values,selected){return Object.entries(values).map(([key,label])=>`<option value="${esc(key)}" ${key===selected?'selected':''}>${esc(label)}</option>`).join('')}
+function manualClassificationErrorMessage(error){return Number(error?.httpStatus)===404?'Сервер Sandbox не підтримує збереження типу постачальника. Оновіть сторінку після оновлення Sandbox.':(error?.message||'Не вдалося зберегти тип постачальника.')}
 function manualClassificationFields(subject='unknown',residency='unknown'){return `<div class="manual-classification-fields"><label>Тип суб’єкта<select id="manualClassificationSubject">${manualClassificationOptions(manualSubjectTypes,subject)}</select></label><label>Резидентство<select id="manualClassificationResidency">${manualClassificationOptions(manualResidencies,residency)}</select></label></div>`}
 async function openManualClassification(code){
  if(currentMe?.permissions?.['suppliers.classification']!==true)return;
@@ -1271,13 +1272,13 @@ async function saveManualClassification(){
  if(manual&&!window.confirm(`Для ${state.code} вже є ручне рішення. Замінити його?`))return;
  const button=$('#manualClassificationSave');button.disabled=true;
  try{await request(`${API}/suppliers/${encodeURIComponent(state.code)}/classification`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation:'set',expected_revision:Number(state.data.effective?.revision||0),subject_type:subject,residency,confirm_replace:Boolean(manual)})});$('#manualClassificationDialog').close();toast('Тип постачальника збережено','success');await loadEdrMonitoring()}
- catch(error){toast(error.message,'error');if(error.httpStatus===409)toast('Класифікацію вже змінено. Відкрийте її повторно перед збереженням.','warning');button.disabled=false}
+ catch(error){toast(manualClassificationErrorMessage(error),'error');if(error.httpStatus===409)toast('Класифікацію вже змінено. Відкрийте її повторно перед збереженням.','warning');button.disabled=false}
 }
 async function cancelManualClassification(){
  const state=manualClassificationState;if(!state?.data.manual)return;if(!window.confirm(`Повернути автоматичну класифікацію для ${state.code}?`))return;
  const button=$('#manualClassificationCancelDecision');button.disabled=true;
  try{await request(`${API}/suppliers/${encodeURIComponent(state.code)}/classification`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation:'cancel',expected_revision:Number(state.data.effective?.revision||0)})});$('#manualClassificationDialog').close();toast('Ручне рішення скасовано','success');await loadEdrMonitoring()}
- catch(error){toast(error.message,'error');button.disabled=false}
+ catch(error){toast(manualClassificationErrorMessage(error),'error');button.disabled=false}
 }
 function openManualClassificationBulk(){
  if(currentMe?.permissions?.['suppliers.classification']!==true||!edrMonitoringSelected.size)return;
@@ -1289,13 +1290,13 @@ async function previewManualClassificationBulk(){
  const codes=[...edrMonitoringSelected].sort(),subject=$('#manualClassificationSubject')?.value,residency=$('#manualClassificationResidency')?.value,body=$('#manualClassificationBulkPreviewResult'),apply=$('#manualClassificationBulkApply');if(!codes.length)return;
  body.innerHTML='<p class="muted">Формування попереднього перегляду…</p>';apply.disabled=true;
  try{const result=await request(`${API}/supplier-classifications/bulk/preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({supplier_codes:codes,subject_type:subject,residency})});manualClassificationBulkItems=result.items||[];const replaces=Number(result.manual_replacements||0);body.innerHTML=`<p>До зміни: <strong>${manualClassificationBulkItems.length}</strong> · заміна чинних ручних рішень: <strong>${replaces}</strong></p><div class="manual-classification-preview-list">${manualClassificationBulkItems.map(x=>`<p><code>${esc(x.supplier_code)}</code> · ${esc(x.previous_type_label)} / ${esc(x.previous_group_label)} → <strong>${esc(x.new_type_label)} / ${esc(x.new_group_label)}</strong></p>`).join('')}</div>${replaces?'<label class="manual-classification-confirm"><input id="manualClassificationConfirmReplace" type="checkbox"> Підтверджую заміну чинних ручних рішень у наведеному списку</label>':''}`;apply.disabled=!manualClassificationBulkItems.length||(replaces&&!$('#manualClassificationConfirmReplace')?.checked);const confirm=$('#manualClassificationConfirmReplace');if(confirm)confirm.onchange=()=>{apply.disabled=!confirm.checked};}
- catch(error){manualClassificationBulkItems=[];body.innerHTML=`<p class="request-warning">${esc(error.message)}</p>`}
+ catch(error){manualClassificationBulkItems=[];body.innerHTML=`<p class="request-warning">${esc(manualClassificationErrorMessage(error))}</p>`}
 }
 async function applyManualClassificationBulk(){
  if(!manualClassificationBulkItems.length)return;const replaces=manualClassificationBulkItems.some(x=>x.manual_decision_exists);if(replaces&&!$('#manualClassificationConfirmReplace')?.checked)return;
  const subject=$('#manualClassificationSubject').value,residency=$('#manualClassificationResidency').value,button=$('#manualClassificationBulkApply');button.disabled=true;
  try{const result=await request(`${API}/supplier-classifications/bulk/apply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_replace:replaces,decisions:manualClassificationBulkItems.map(x=>({supplier_code:x.supplier_code,expected_revision:x.expected_revision,subject_type:subject,residency}))})});$('#manualClassificationBulkDialog').close();toast(`Оновлено рішень: ${result.changed_count}`,'success');await loadEdrMonitoring()}
- catch(error){toast(error.message,'error');if(error.httpStatus===409)toast('Дані змінилися після попереднього перегляду. Сформуйте його повторно.','warning');button.disabled=false}
+ catch(error){toast(manualClassificationErrorMessage(error),'error');if(error.httpStatus===409)toast('Дані змінилися після попереднього перегляду. Сформуйте його повторно.','warning');button.disabled=false}
 }
 const edrFreshnessLabels={not_current:'🟣 Неактуально',lt30:'🟢 <30 днів',gt30:'🟡 >30 днів',gt60:'🟠 >60 днів',gt90:'🔴 >90 днів',not_checked:'⚪ Не перевірено'};
 function formatEdrTerminationDetails(item){const detail=String(item.termination_details||'').trim().replace(/(?<!,)\s+Запис №/u,', Запис №');const date=String(item.termination_record_date||'').trim(),localized=/^\d{4}-\d{2}-\d{2}$/.test(date)?`${date.slice(8,10)}.${date.slice(5,7)}.${date.slice(0,4)}`:'';const extras=[date,item.termination_record_number].map(value=>String(value||'').trim()).filter(value=>value&&!detail.includes(value)&&(value!==date||!localized||!detail.includes(localized)));return[detail,...extras].filter(Boolean).join(' · ')}

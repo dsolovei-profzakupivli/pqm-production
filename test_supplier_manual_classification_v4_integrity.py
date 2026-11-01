@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).parent
 MANIFEST = ROOT / "supplier_manual_classification_v4_contract.json"
-PINNED_MANIFEST_SHA256 = "8a8f0933241ff3672fca39964c9a50e8bf52ad7aa265798a85d007d09f849410"
+PINNED_MANIFEST_SHA256 = "1539ce02ddab5e3c5a0ad3ce8bb87f571cc2e3d8048b91e81b28883621197ff6"
 SELF_FILE = "test_supplier_manual_classification_v4_integrity.py"
 TEXT_SUFFIXES = {".py", ".js", ".cjs", ".gs", ".html", ".css", ".json", ".md", ".sql", ".txt", ".yml", ".yaml"}
 

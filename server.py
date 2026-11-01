@@ -12814,6 +12814,68 @@ class Handler(BaseHTTPRequestHandler):
             if not start_amcu_registry_refresh(raw, str(payload.get("filename") or filename or "АМКУ.xlsx")):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
+        classification_single = re.fullmatch(r"/api/suppliers/([^/]+)/classification", parsed.path)
+        classification_bulk_preview = parsed.path == "/api/supplier-classifications/bulk/preview"
+        classification_bulk_apply = parsed.path == "/api/supplier-classifications/bulk/apply"
+        if classification_single or classification_bulk_preview or classification_bulk_apply:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 1_000_000:
+                    return self.send_json({"error": "Розмір запиту класифікації некоректний"}, 413)
+                payload = self.read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Некоректний запит класифікації")
+                if classification_bulk_preview:
+                    if set(payload) != {"supplier_codes", "subject_type", "residency"}:
+                        raise ValueError("Набір полів попереднього перегляду некоректний")
+                    with db() as con:
+                        rows = supplier_manual_classification.preview_many(
+                            con, payload["supplier_codes"], payload["subject_type"], payload["residency"])
+                    return self.send_json({"items": rows, "selected_count": len(rows),
+                        "manual_replacements": sum(bool(row["manual_decision_exists"]) for row in rows)})
+                if self.auth_officer_id is None:
+                    return self.send_json({"error": "Для рішення потрібно визначити УО в обліковому записі"}, 403)
+                with db() as con:
+                    officer = con.execute("SELECT full_name,active FROM authorized_officers WHERE id=?",
+                                          (self.auth_officer_id,)).fetchone()
+                    if not officer or not officer["active"]:
+                        return self.send_json({"error": "УО не знайдено або її обліковий запис неактивний"}, 403)
+                    if classification_single:
+                        if set(payload) - {"operation", "expected_revision", "subject_type", "residency", "confirm_replace"}:
+                            raise ValueError("Набір полів рішення некоректний")
+                        code = urllib.parse.unquote(classification_single.group(1))
+                        operation = payload.get("operation")
+                        cancel = operation == "cancel"
+                        if operation not in {"set", "cancel"}:
+                            raise ValueError("Невідома дія з ручною класифікацією")
+                        decisions = [{"supplier_code": code,
+                                      "expected_revision": payload.get("expected_revision"),
+                                      **({} if cancel else {"subject_type": payload.get("subject_type"),
+                                                           "residency": payload.get("residency")})}]
+                        confirm_replace = payload.get("confirm_replace") is True
+                    else:
+                        if set(payload) - {"decisions", "confirm_replace"} or not isinstance(payload.get("decisions"), list):
+                            raise ValueError("Набір полів масового рішення некоректний")
+                        decisions = payload["decisions"]
+                        cancel = False
+                        confirm_replace = payload.get("confirm_replace") is True
+                    result = supplier_manual_classification.save_many(
+                        con, decisions, actor=self.auth_user, officer_id=self.auth_officer_id,
+                        officer_name=officer["full_name"], confirm_replace=confirm_replace, cancel=cancel)
+                if classification_single:
+                    code = urllib.parse.unquote(classification_single.group(1))
+                    return self.send_json({"saved": True, "item": result[0],
+                                           "classification": supplier_classification_details(code)})
+                return self.send_json({"saved": True, "items": result, "changed_count": sum(x["changed"] for x in result)})
+            except supplier_manual_classification.RevisionConflict as exc:
+                return self.send_json({"error": str(exc), "code": "classification_revision_conflict",
+                                       "current_revision": exc.current_revision}, 409)
+            except supplier_manual_classification.ExistingManualDecision as exc:
+                return self.send_json({"error": str(exc), "code": "manual_classification_exists"}, 409)
+            except KeyError as exc:
+                return self.send_json({"error": "Постачальника не знайдено", "supplier_code": str(exc.args[0])}, 404)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
         return self.send_error(404)
 
     def _do_PATCH(self):
@@ -13069,68 +13131,6 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("Невідома дія supplier-level перевірки НАЗК")
                 return self.send_json(result)
             except (TypeError, ValueError) as exc:
-                return self.send_json({"error": str(exc)}, 400)
-        classification_single = re.fullmatch(r"/api/suppliers/([^/]+)/classification", parsed.path)
-        classification_bulk_preview = parsed.path == "/api/supplier-classifications/bulk/preview"
-        classification_bulk_apply = parsed.path == "/api/supplier-classifications/bulk/apply"
-        if classification_single or classification_bulk_preview or classification_bulk_apply:
-            try:
-                size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 1_000_000:
-                    return self.send_json({"error": "Розмір запиту класифікації некоректний"}, 413)
-                payload = self.read_json()
-                if not isinstance(payload, dict):
-                    raise ValueError("Некоректний запит класифікації")
-                if classification_bulk_preview:
-                    if set(payload) != {"supplier_codes", "subject_type", "residency"}:
-                        raise ValueError("Набір полів попереднього перегляду некоректний")
-                    with db() as con:
-                        rows = supplier_manual_classification.preview_many(
-                            con, payload["supplier_codes"], payload["subject_type"], payload["residency"])
-                    return self.send_json({"items": rows, "selected_count": len(rows),
-                        "manual_replacements": sum(bool(row["manual_decision_exists"]) for row in rows)})
-                if self.auth_officer_id is None:
-                    return self.send_json({"error": "Для рішення потрібно визначити УО в обліковому записі"}, 403)
-                with db() as con:
-                    officer = con.execute("SELECT full_name,active FROM authorized_officers WHERE id=?",
-                                          (self.auth_officer_id,)).fetchone()
-                    if not officer or not officer["active"]:
-                        return self.send_json({"error": "УО не знайдено або її обліковий запис неактивний"}, 403)
-                    if classification_single:
-                        if set(payload) - {"operation", "expected_revision", "subject_type", "residency", "confirm_replace"}:
-                            raise ValueError("Набір полів рішення некоректний")
-                        code = urllib.parse.unquote(classification_single.group(1))
-                        operation = payload.get("operation")
-                        cancel = operation == "cancel"
-                        if operation not in {"set", "cancel"}:
-                            raise ValueError("Невідома дія з ручною класифікацією")
-                        decisions = [{"supplier_code": code,
-                                      "expected_revision": payload.get("expected_revision"),
-                                      **({} if cancel else {"subject_type": payload.get("subject_type"),
-                                                           "residency": payload.get("residency")})}]
-                        confirm_replace = payload.get("confirm_replace") is True
-                    else:
-                        if set(payload) - {"decisions", "confirm_replace"} or not isinstance(payload.get("decisions"), list):
-                            raise ValueError("Набір полів масового рішення некоректний")
-                        decisions = payload["decisions"]
-                        cancel = False
-                        confirm_replace = payload.get("confirm_replace") is True
-                    result = supplier_manual_classification.save_many(
-                        con, decisions, actor=self.auth_user, officer_id=self.auth_officer_id,
-                        officer_name=officer["full_name"], confirm_replace=confirm_replace, cancel=cancel)
-                if classification_single:
-                    code = urllib.parse.unquote(classification_single.group(1))
-                    return self.send_json({"saved": True, "item": result[0],
-                                           "classification": supplier_classification_details(code)})
-                return self.send_json({"saved": True, "items": result, "changed_count": sum(x["changed"] for x in result)})
-            except supplier_manual_classification.RevisionConflict as exc:
-                return self.send_json({"error": str(exc), "code": "classification_revision_conflict",
-                                       "current_revision": exc.current_revision}, 409)
-            except supplier_manual_classification.ExistingManualDecision as exc:
-                return self.send_json({"error": str(exc), "code": "manual_classification_exists"}, 409)
-            except KeyError as exc:
-                return self.send_json({"error": "Постачальника не знайдено", "supplier_code": str(exc.args[0])}, 404)
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 return self.send_json({"error": str(exc)}, 400)
         supplier_note_match = re.fullmatch(r"/api/suppliers/([^/]+)/note", parsed.path)
         if supplier_note_match:

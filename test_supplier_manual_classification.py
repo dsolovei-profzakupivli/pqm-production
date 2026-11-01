@@ -1,8 +1,13 @@
+import base64
+import gc
+import http.client
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import supplier_manual_classification as manual
 import supplier_classification
@@ -184,6 +189,80 @@ class ManualClassificationTests(unittest.TestCase):
         self.assertTrue(rights['suppliers.classification'])
         viewer_rights = auth_access.effective(self.con, 'viewer@test', 'viewer')['permissions']
         self.assertFalse(viewer_rights['suppliers.classification'])
+
+
+class ManualClassificationHttpTests(unittest.TestCase):
+    def test_ui_translates_classification_route_404_to_safe_guidance(self):
+        source = (Path(__file__).parent / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('function manualClassificationErrorMessage(error)', source)
+        self.assertIn('Number(error?.httpStatus)===404', source)
+        self.assertIn('Сервер Sandbox не підтримує збереження типу постачальника.', source)
+
+    def test_admin_post_saves_manual_classification_through_real_http_route(self):
+        import server
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temp_dir:
+            database_path = Path(temp_dir) / 'manual-classification-http.sqlite3'
+            with patch.object(server, 'DB_PATH', database_path), \
+                    patch.object(server, 'AUTH_ENABLED', True), \
+                    patch.object(server, 'SANDBOX_MODE', False), \
+                    patch.object(server, 'SAFE_MODE', False):
+                server.init_db()
+                con = server.db()
+                try:
+                    con.execute("""INSERT INTO authorized_officers
+                      (id,full_name,role,active,created_at,updated_at)
+                      VALUES (42,'Synthetic Officer','УО',1,'test','test')""")
+                    con.execute("""INSERT INTO auth_users
+                      (username,password_hash,role,officer_id,active,created_at,updated_at,created_by)
+                      VALUES ('sandbox.admin',?,'admin',42,1,'test','test','test')""",
+                      (server.hash_password('Synthetic-only-password'),))
+                    con.execute("""INSERT INTO frameworks
+                      (id,pretty_id,raw_json,synced_at) VALUES ('synthetic','UA-F-SYNTHETIC','{}','test')""")
+                    con.execute("""INSERT INTO submissions
+                      (id,framework_id,supplier_name,supplier_code,date_published,raw_json,synced_at)
+                      VALUES ('synthetic-submission','synthetic','Synthetic FOP','3519700322',
+                        '2026-10-31T10:00:00Z',?,'test')""", (
+                            json.dumps({'tenderers': [{'identifier': {'id': '3519700322'},
+                                'address': {'countryName': 'Україна'}, 'name': 'Synthetic FOP'}]}),))
+                    con.commit()
+                finally:
+                    con.close()
+
+                httpd = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    client = http.client.HTTPConnection('127.0.0.1', httpd.server_address[1], timeout=10)
+                    client.request('POST', '/api/suppliers/3519700322/classification',
+                        body=json.dumps({'operation': 'set', 'expected_revision': 0,
+                                         'subject_type': 'individual_entrepreneur', 'residency': 'UA'}),
+                        headers={'Content-Type': 'application/json',
+                                 'Authorization': 'Basic ' + base64.b64encode(
+                                     b'sandbox.admin:Synthetic-only-password').decode('ascii')})
+                    response = client.getresponse()
+                    payload = json.loads(response.read())
+                    client.close()
+
+                    self.assertEqual(response.status, 200, payload)
+                    self.assertTrue(payload['saved'])
+                    self.assertEqual(payload['classification']['effective']['google_group'], 'fop')
+                    self.assertEqual(payload['classification']['effective']['revision'], 1)
+                    con = server.db()
+                    try:
+                        saved = con.execute("""SELECT subject_type,residency,google_group,revision,is_active
+                          FROM supplier_manual_classifications WHERE supplier_code='3519700322'""").fetchone()
+                        event_count = con.execute("""SELECT COUNT(*) FROM supplier_manual_classification_events
+                          WHERE supplier_code='3519700322'""").fetchone()[0]
+                    finally:
+                        con.close()
+                    self.assertEqual(tuple(saved), ('individual_entrepreneur', 'UA', 'fop', 1, 1))
+                    self.assertEqual(event_count, 1)
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+                    thread.join(timeout=5)
+                    gc.collect()
 
 
 if __name__ == '__main__':
