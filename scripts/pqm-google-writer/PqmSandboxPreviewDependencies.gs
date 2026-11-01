@@ -179,7 +179,11 @@ function pqmGoogleLegacyPlan_(body, tabs) {
     if (name) perTab[name].api_records++;
     if (identityConflicts.has(key)) { count('conflicts'); issue('identifier_text_conflict', key, name); return; }
     // Shared classification contract is included in Preview/Apply state digest.
-    if (x.entity_type === 'foreign_legal_entity') { count('skipped'); issue('nonresident_append_blocked', key); return; }
+    if (x.entity_type === 'foreign_legal_entity') {
+      var nonresidentRows = index.get(key) || [];
+      if (nonresidentRows.length) { count('conflicts'); issue('nonresident_existing_tab_conflict', key, nonresidentRows[0].tab); return; }
+      count('skipped'); issue('nonresident_append_blocked', key); return;
+    }
     if (x.entity_type === 'unknown' || x.classification_status === 'conflict') { count('conflicts'); issue(x.classification_reason || 'entity_type_unresolved', key); issues[issues.length-1].message = x.classification_reason_label || 'Потрібна перевірка типу постачальника'; return; }
     if (x.classification_version !== 'subject-nature-20261031-v3' || x.classification_status !== 'resolved' || x.append_allowed !== true) { count('conflicts'); issue('classification_contract_unverified', key, name); return; }
     if (!x.google_sync_eligible) { count('skipped'); return; }

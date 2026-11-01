@@ -7,6 +7,7 @@ import threading
 
 import edr_sync_v2
 import supplier_classification
+import supplier_manual_classification
 
 
 ENTITY_TYPES = {
@@ -187,6 +188,7 @@ def _build_full_registry(con):
         f"SELECT supplier_code,manager_name,source_sheet,{edr_status_expr},{edr_checked_expr},{full_name_expr} FROM supplier_edr_profiles")}
     linked_profiles = {code: profiles[code] for code in latest if code in profiles}
     supplier_types = supplier_classification.build_index(con)
+    manual_types = supplier_manual_classification.build_index(con)
     managers = {}
     for row in con.execute("""SELECT supplier_code,manager_name FROM supplier_managers
       WHERE is_current=1 ORDER BY COALESCE(NULLIF(updated_at,''),created_at) DESC,id DESC"""):
@@ -209,7 +211,8 @@ def _build_full_registry(con):
     for code in sorted(latest):
         application = latest[code]; acceptance = approved.get(code); profile = linked_profiles.get(code, {})
         canonical_status = statuses[code]
-        classification = supplier_classification.resolve(supplier_types, code)
+        classification = supplier_manual_classification.apply_effective(
+            supplier_classification.resolve(supplier_types, code), manual_types.get(code))
         entity_type = classification["entity_type"]
         latest_decision = latest_decisions.get(code, {})
         supplier_name = names.get(code) or decided_names.get(code, "")

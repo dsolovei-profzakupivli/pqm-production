@@ -13,6 +13,7 @@ import supplier_activity
 import nazk_preview
 import supplier_registry_integration
 import supplier_classification
+import supplier_manual_classification
 import legacy_google_verification_preview
 import legacy_google_verification_overlap_audit
 import legacy_google_factual_edr_audit
@@ -453,6 +454,8 @@ def mutation_allowed(role: str, method: str, path: str) -> bool:
         r"^/api/violation-reports/[^/]+/documents/(?:customer|supplier)/[^/]+$",
         r"^/api/suppliers/[^/]+/nazk-check$",
         r"^/api/suppliers/[^/]+/note$",
+        r"^/api/suppliers/[^/]+/classification$",
+        r"^/api/supplier-classifications/bulk/(?:preview|apply)$",
         r"^/api/application-profiles(?:/[^/]+)?$",
         r"^/api/applications/[^/]+/remark-selections$",
     )
@@ -1548,6 +1551,7 @@ def init_db() -> None:
             if column not in edr_columns:
                 con.execute(f"ALTER TABLE supplier_edr_profiles ADD COLUMN {column} TEXT DEFAULT ''")
         edr_sync_v2.migrate(con)
+        supplier_manual_classification.ensure_schema(con)
         if con.execute("SELECT COUNT(*) FROM remarks_catalog").fetchone()[0] == 0:
             con.executemany("INSERT INTO remarks_catalog(point,text,tag,category,active,updated_at) VALUES (?,?,?,?,1,?)",
                             [(point, text, tag, "", now_iso()) for point, text, tag in DEFAULT_REMARKS])
@@ -4826,6 +4830,7 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
     registry_member_codes = set()
     with db() as con:
         supplier_types = supplier_classification.build_index(con)
+        manual_types = supplier_manual_classification.build_index(con)
         for raw in con.execute("SELECT * FROM supplier_edr_profiles"):
             item = dict(raw); code = str(item.get("supplier_code") or ""); supplier_codes.add(code); profiles[code] = item
         for raw in con.execute("""SELECT s.supplier_code,s.supplier_name,s.date_published,s.synced_at,s.id,
@@ -4887,7 +4892,8 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
     result = []
     for row in rows:
         name = str(row["full_name"] or row["latest_name"] or "")
-        classification = supplier_classification.resolve(supplier_types, row["code"])
+        classification = supplier_manual_classification.apply_effective(
+            supplier_classification.resolve(supplier_types, row["code"]), manual_types.get(row["code"]))
         actual_type = classification["target_sheet"]
         if not classification["append_allowed"]:
             continue
@@ -5435,6 +5441,7 @@ def _edr_monitoring_rows() -> list[dict]:
                     ledger.setdefault(code, []).append(item)
             population = edr_sync_v2.monitoring_population_codes(con)
             supplier_types = supplier_classification.build_index(con)
+            manual_types = supplier_manual_classification.build_index(con)
             card_identities = set(profiles) | set(registry) | set(latest_app)
             card_variants = {}
             for literal in card_identities:
@@ -5456,7 +5463,8 @@ def _edr_monitoring_rows() -> list[dict]:
                     verification.get("edr_admission_date", ""),
                     verification.get("edr_admission_officer", ""))
                 rows.append({"supplier_code": code,
-                  **supplier_classification.public_fields(supplier_classification.resolve(supplier_types, code)),
+                  **supplier_classification.public_fields(supplier_manual_classification.apply_effective(
+                      supplier_classification.resolve(supplier_types, code), manual_types.get(code))),
                   "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
                       and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
@@ -5769,8 +5777,11 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     query_args = source_args + args
     with (nullcontext(connection) if connection is not None else db()) as con:
         supplier_types = supplier_classification.build_index(con)
+        manual_types = supplier_manual_classification.build_index(con)
         con.create_function("SUPPLIER_ENTITY_TYPE", 1,
-          lambda code: supplier_classification.resolve(supplier_types, code)["entity_type"], deterministic=True)
+          lambda code: supplier_manual_classification.apply_effective(
+              supplier_classification.resolve(supplier_types, code),
+              manual_types.get(str(code or "")))["entity_type"], deterministic=True)
         canonical_states = (edr_sync_v2.canonical_supplier_edr_states(con)
                             if freshness or verification_from or verification_to
                             or admission_from or admission_to else {})
@@ -6084,6 +6095,18 @@ def latest_supplier_submission_name(con, code):
       ORDER BY julianday(date_published) DESC,id DESC LIMIT 1''',(code,)).fetchone()
     return row[0] if row else ''
 
+
+def supplier_classification_details(supplier_code: str) -> dict:
+    code = supplier_manual_classification._clean_code(supplier_code)
+    with db() as con:
+        if code not in supplier_manual_classification.known_codes(con):
+            raise KeyError(code)
+        automatic = supplier_classification.resolve(supplier_classification.build_index(con), code)
+        manual_row = supplier_manual_classification.current_record(con, code)
+        result = supplier_manual_classification.detail(automatic, dict(manual_row) if manual_row else None)
+        result["history"] = supplier_manual_classification.history(con, code)
+        return result
+
 def supplier_profile(supplier_code: str) -> dict:
     """Full local PQM/Bids/registry card for one supplier."""
     code = re.sub(r"\D", "", urllib.parse.unquote(supplier_code or ""))
@@ -6330,7 +6353,9 @@ def supplier_profile(supplier_code: str) -> dict:
         profile_data.update(edr_checked_at=verification.get("occurred_at") or "",
                             edr_officer=verification.get("officer") or "",
                             verification_event_type=verification.get("event_type") or "")
+    classification_details = supplier_classification_details(code)
     return {"code": code, "latest_submission_name": latest_submission_name, "summary": dict(summary) if summary else {}, "edr_profile": profile_data,
+            "supplier_classification": classification_details,
             "edr_canonical": canonical_edr,
             "supplier_note": dict(supplier_note) if supplier_note else {"supplier_code": code, "note": "", "updated_at": None, "updated_by": ""},
             "current_manager": dict(current_manager_row) if current_manager_row else {},
@@ -11445,6 +11470,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(supplier_profile(code))
             except KeyError:
                 return self.send_json({"error": "Постачальника не знайдено"}, 404)
+        if parsed.path.startswith("/api/supplier-classifications/"):
+            code = urllib.parse.unquote(parsed.path.removeprefix("/api/supplier-classifications/"))
+            try:
+                return self.send_json(supplier_classification_details(code))
+            except KeyError:
+                return self.send_json({"error": "Постачальника не знайдено"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path.startswith("/api/supplier-procurements/"):
             code = parsed.path.removeprefix("/api/supplier-procurements/")
             try:
@@ -13036,6 +13069,68 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("Невідома дія supplier-level перевірки НАЗК")
                 return self.send_json(result)
             except (TypeError, ValueError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        classification_single = re.fullmatch(r"/api/suppliers/([^/]+)/classification", parsed.path)
+        classification_bulk_preview = parsed.path == "/api/supplier-classifications/bulk/preview"
+        classification_bulk_apply = parsed.path == "/api/supplier-classifications/bulk/apply"
+        if classification_single or classification_bulk_preview or classification_bulk_apply:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 1_000_000:
+                    return self.send_json({"error": "Розмір запиту класифікації некоректний"}, 413)
+                payload = self.read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Некоректний запит класифікації")
+                if classification_bulk_preview:
+                    if set(payload) != {"supplier_codes", "subject_type", "residency"}:
+                        raise ValueError("Набір полів попереднього перегляду некоректний")
+                    with db() as con:
+                        rows = supplier_manual_classification.preview_many(
+                            con, payload["supplier_codes"], payload["subject_type"], payload["residency"])
+                    return self.send_json({"items": rows, "selected_count": len(rows),
+                        "manual_replacements": sum(bool(row["manual_decision_exists"]) for row in rows)})
+                if self.auth_officer_id is None:
+                    return self.send_json({"error": "Для рішення потрібно визначити УО в обліковому записі"}, 403)
+                with db() as con:
+                    officer = con.execute("SELECT full_name,active FROM authorized_officers WHERE id=?",
+                                          (self.auth_officer_id,)).fetchone()
+                    if not officer or not officer["active"]:
+                        return self.send_json({"error": "УО не знайдено або її обліковий запис неактивний"}, 403)
+                    if classification_single:
+                        if set(payload) - {"operation", "expected_revision", "subject_type", "residency", "confirm_replace"}:
+                            raise ValueError("Набір полів рішення некоректний")
+                        code = urllib.parse.unquote(classification_single.group(1))
+                        operation = payload.get("operation")
+                        cancel = operation == "cancel"
+                        if operation not in {"set", "cancel"}:
+                            raise ValueError("Невідома дія з ручною класифікацією")
+                        decisions = [{"supplier_code": code,
+                                      "expected_revision": payload.get("expected_revision"),
+                                      **({} if cancel else {"subject_type": payload.get("subject_type"),
+                                                           "residency": payload.get("residency")})}]
+                        confirm_replace = payload.get("confirm_replace") is True
+                    else:
+                        if set(payload) - {"decisions", "confirm_replace"} or not isinstance(payload.get("decisions"), list):
+                            raise ValueError("Набір полів масового рішення некоректний")
+                        decisions = payload["decisions"]
+                        cancel = False
+                        confirm_replace = payload.get("confirm_replace") is True
+                    result = supplier_manual_classification.save_many(
+                        con, decisions, actor=self.auth_user, officer_id=self.auth_officer_id,
+                        officer_name=officer["full_name"], confirm_replace=confirm_replace, cancel=cancel)
+                if classification_single:
+                    code = urllib.parse.unquote(classification_single.group(1))
+                    return self.send_json({"saved": True, "item": result[0],
+                                           "classification": supplier_classification_details(code)})
+                return self.send_json({"saved": True, "items": result, "changed_count": sum(x["changed"] for x in result)})
+            except supplier_manual_classification.RevisionConflict as exc:
+                return self.send_json({"error": str(exc), "code": "classification_revision_conflict",
+                                       "current_revision": exc.current_revision}, 409)
+            except supplier_manual_classification.ExistingManualDecision as exc:
+                return self.send_json({"error": str(exc), "code": "manual_classification_exists"}, 409)
+            except KeyError as exc:
+                return self.send_json({"error": "Постачальника не знайдено", "supplier_code": str(exc.args[0])}, 404)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 return self.send_json({"error": str(exc)}, 400)
         supplier_note_match = re.fullmatch(r"/api/suppliers/([^/]+)/note", parsed.path)
         if supplier_note_match:

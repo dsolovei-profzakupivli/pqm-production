@@ -67,7 +67,8 @@ def main():
                 target.write_bytes(archive.read(relative))
         env = os.environ.copy()
         env.pop('PQM_RELEASE_SOURCE_ROOT', None)
-        env['PYTHONPATH'] = str(tree)
+        inherited_pythonpath = env.get('PYTHONPATH', '')
+        env['PYTHONPATH'] = str(tree) + (os.pathsep + inherited_pythonpath if inherited_pythonpath else '')
         return subprocess.run(
             [sys.executable, '-m', 'unittest',
              'test_sandbox_messages_integrity',

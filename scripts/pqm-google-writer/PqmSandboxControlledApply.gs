@@ -205,6 +205,12 @@ function pqmSandboxControlledPqmState_(item) {
   var date = pqmGoogleCalendarDate_(item.google_sync_last_decided_application_date);
   var verificationDate = pqmGoogleCalendarDate_(item.verification_date);
   return {supplier_code: item.supplier_code, entity_type: item.entity_type,
+    classification_source: item.classification_source || 'automatic_v3',
+    effective_subject_type: item.effective_subject_type || 'unknown',
+    residency_status: item.residency_status || 'unknown',
+    google_sheet_group: item.google_sheet_group || 'unresolved',
+    manual_classification_revision: Number.isSafeInteger(item.manual_classification_revision) ?
+      item.manual_classification_revision : 0,
     monitoring_eligible: item.monitoring_eligible,
     google_sync_eligible: item.google_sync_eligible,
     google_writer_eligible: item.google_writer_eligible,

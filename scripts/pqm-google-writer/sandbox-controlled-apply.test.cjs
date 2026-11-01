@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const files = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs',
-  'PqmSandboxPreview.gs', 'PqmSandboxControlledApply.gs'];
+  'PqmSandboxPreview.gs', 'PqmSandboxControlledApply.gs', 'PqmSandboxFullApply.gs'];
 const source = files.map(name => fs.readFileSync(__dirname + '/' + name, 'utf8')).join('\n');
 const clone = value => JSON.parse(JSON.stringify(value));
 const combinations = ['C', 'F', 'H', 'C+F', 'C+H', 'F+H', 'C+F+H', 'C', 'F', 'H'];
@@ -391,6 +391,66 @@ test('freshness-marker-only payload change does not alter controlled plan digest
   const after = f.context.pqmSandboxControlledPreview();
   assert.equal(before.plan_digest, after.plan_digest);
   assert.ok(after.selected.every(entry => !entry.planned_columns.includes('A')));
+  assert.equal(f.writes, 0);
+});
+
+test('manual classification revision invalidates the controlled Preview digest', () => {
+  const f = fixture(), item = f.body.items[0];
+  Object.assign(item, {classification_source: 'automatic_v3', effective_subject_type: 'individual_entrepreneur',
+    residency_status: 'UA', google_sheet_group: 'fop', manual_classification_revision: 0,
+    manual_classification: null});
+  const before = f.context.pqmSandboxControlledDigest_(f.context.pqmSandboxControlledPqmState_(item));
+  Object.assign(item, {classification_source: 'manual', effective_subject_type: 'legal_entity',
+    google_sheet_group: 'legal_other', manual_classification_revision: 1,
+    manual_classification: {revision: 1, subject_type: 'legal_entity', residency: 'UA'}});
+  const after = f.context.pqmSandboxControlledDigest_(f.context.pqmSandboxControlledPqmState_(item));
+  assert.notEqual(after, before, 'a decision made after Preview changes the ticketed PQM state');
+  assert.equal(f.writes, 0);
+});
+
+test('manual classification revision invalidates the full writer Preview ticket', () => {
+  const f = fixture(), item = f.body.items[0];
+  Object.assign(item, {classification_source: 'automatic_v3', effective_subject_type: 'individual_entrepreneur',
+    residency_status: 'UA', google_sheet_group: 'fop', manual_classification_revision: 0,
+    manual_classification: null});
+  const plan1 = f.context.pqmGooglePlan_(f.body, f.tabs);
+  const before = f.context.pqmSandboxFullState_(f.body, f.tabs, plan1);
+  Object.assign(item, {classification_source: 'manual', manual_classification_revision: 1,
+    manual_classification: {revision: 1, subject_type: 'individual_entrepreneur', residency: 'UA'}});
+  const plan2 = f.context.pqmGooglePlan_(f.body, f.tabs);
+  const after = f.context.pqmSandboxFullState_(f.body, f.tabs, plan2);
+  assert.notEqual(after.payload_digest, before.payload_digest);
+  assert.equal(after.changes_digest, before.changes_digest, 'same-tab decision keeps the planned writes unchanged');
+  assert.notEqual(f.context.pqmSandboxFullDigest_(after), f.context.pqmSandboxFullDigest_(before));
+  assert.equal(f.writes, 0);
+});
+
+test('manual routing to another existing tab is a conflict and never a move or append', () => {
+  const f = fixture(), item = f.body.items[0];
+  Object.assign(item, {entity_type: 'legal_entity', classification_status: 'resolved',
+    classification_reason: 'manual_classification_confirmed', classification_reason_label: 'Manual decision',
+    target_sheet: 'ЮО', append_allowed: true, classification_source: 'manual',
+    effective_subject_type: 'legal_entity', residency_status: 'UA', google_sheet_group: 'legal_other',
+    manual_classification_revision: 1,
+    manual_classification: {revision: 1, subject_type: 'legal_entity', residency: 'UA'}});
+  const plan = f.context.pqmGooglePlan_(f.body, f.tabs);
+  assert.equal(plan.counts.conflicts, 1);
+  assert.ok(plan.issues.some(issue => issue.reason === 'routing_mismatch'));
+  assert.equal(plan.changes.some(change => change.append), false);
+  assert.equal(f.writes, 0);
+});
+
+test('nonresident already in a current tab is a conflict without update or append', () => {
+  const f = fixture(), item = f.body.items[0];
+  Object.assign(item, {entity_type: 'foreign_legal_entity', classification_status: 'nonresident',
+    classification_reason: 'manual_nonresident_append_blocked', target_sheet: null, append_allowed: false,
+    classification_source: 'manual', effective_subject_type: 'legal_entity', residency_status: 'nonresident',
+    google_sheet_group: 'nonresident', manual_classification_revision: 1,
+    manual_classification: {revision: 1, subject_type: 'legal_entity', residency: 'nonresident'}});
+  const plan = f.context.pqmGooglePlan_(f.body, f.tabs);
+  assert.equal(plan.counts.conflicts, 1);
+  assert.ok(plan.issues.some(issue => issue.reason === 'nonresident_existing_tab_conflict'));
+  assert.equal(plan.changes.length, 9);
   assert.equal(f.writes, 0);
 });
 

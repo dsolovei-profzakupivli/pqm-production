@@ -75,6 +75,34 @@ function pqmGoogleBusinessSchema_(items) {
           return !Object.prototype.hasOwnProperty.call(item, key) ||
             (item[key] !== null && typeof item[key] !== 'string');
         })) throw new Error('PQM: business/classification schema mismatch.');
+    if (Object.prototype.hasOwnProperty.call(item, 'manual_classification_revision')) {
+      var subject = item.effective_subject_type, residency = item.residency_status;
+      var group = item.google_sheet_group, source = item.classification_source;
+      var validSubjects = ['individual_entrepreneur', 'legal_entity', 'branch',
+        'representative_office', 'joint_activity', 'association', 'other', 'unknown'];
+      var expectedGroup = residency === 'nonresident' ? 'nonresident' :
+        residency === 'UA' && subject === 'individual_entrepreneur' ? 'fop' :
+        residency === 'UA' && validSubjects.indexOf(subject) >= 0 && subject !== 'unknown' ? 'legal_other' :
+        'unresolved';
+      if (!Number.isSafeInteger(item.manual_classification_revision) || item.manual_classification_revision < 0 ||
+          ['UA', 'nonresident', 'unknown'].indexOf(residency) < 0 ||
+          validSubjects.indexOf(subject) < 0 || group !== expectedGroup ||
+          ['automatic_v3', 'manual'].indexOf(source) < 0 ||
+          (source === 'manual' && (!item.manual_classification ||
+            item.manual_classification.revision !== item.manual_classification_revision)) ||
+          (source === 'automatic_v3' && item.manual_classification !== null)) {
+        throw new Error('PQM: manual classification contract mismatch.');
+      }
+      var expectedEntity = group === 'fop' ? 'individual_entrepreneur' :
+        group === 'legal_other' ? 'legal_entity' : group === 'nonresident' ? 'foreign_legal_entity' : 'unknown';
+      var expectedStatus = group === 'fop' || group === 'legal_other' ? 'resolved' :
+        group === 'nonresident' ? 'nonresident' : 'needs_review';
+      var expectedTab = group === 'fop' ? 'ФОП' : group === 'legal_other' ? 'ЮО' : null;
+      if (item.entity_type !== expectedEntity || item.classification_status !== expectedStatus ||
+          item.target_sheet !== expectedTab || item.append_allowed !== (expectedTab !== null)) {
+        throw new Error('PQM: effective classification routing mismatch.');
+      }
+    }
   });
 }
 
@@ -118,6 +146,11 @@ function pqmGoogleBusinessPlan_(body, tabs, options) {
     if (tabName) perTab[tabName].api_records++;
     if (identityConflicts.has(key)) { count('conflicts'); issue('identifier_text_conflict', key, tabName); return; }
     if (item.classification_status === 'nonresident' || item.entity_type === 'foreign_legal_entity') {
+      var existingNonresidentRows = index.get(key) || [];
+      if (existingNonresidentRows.length) {
+        count('conflicts'); issue('nonresident_existing_tab_conflict', key, existingNonresidentRows[0].tab,
+          'Нерезидент уже є у чинній вкладці; автоматичне переміщення або оновлення заборонено'); return;
+      }
       count('skipped'); issue('nonresident_append_blocked', key, null, item.classification_reason_label || 'Нерезидент: автоматичне додавання поки вимкнено'); return;
     }
     if (item.entity_type === 'unknown' || item.classification_status === 'conflict' ||

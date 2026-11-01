@@ -43,6 +43,10 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_edr_preview_skipped_integrity',
     'test_edr_preview_skipped_rows',
     'test_google_writer_supplier_types_integrity',
+    # v3's exact-tree contract is executed only against its original pinned
+    # commit by the overlay runner below; the current candidate has additive
+    # manual-classification changes to files pinned by that historical tree.
+    'test_supplier_classification_v3_integrity',
     'test_google_edr_date_only_midnight_integrity_v1',
     'test_date_only_edr_status_integrated_integrity_v1',
     'test_date_only_edr_status_integrated_integrity_v2',
@@ -98,7 +102,8 @@ def main():
                             'run_integrated_source_integrity_overlays.py',
                             'run_messages_integrated_v1_history.py',
                             'run_date_only_previous_contract_overlays.py',
-                            'run_date_only_status_integrated_v2_history.py'):
+                            'run_date_only_status_integrated_v2_history.py',
+                            'run_supplier_classification_v3_integrity.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
@@ -211,6 +216,9 @@ def main():
             classification_parent_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_classification_parent_integrity.py')],
                 cwd=old_cwd,check=False)
+            classification_v3_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_supplier_classification_v3_integrity.py')],
+                cwd=old_cwd,check=False)
             source_integrity_overlays=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_integrated_source_integrity_overlays.py')],
                 cwd=old_cwd,check=False)
@@ -238,7 +246,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
