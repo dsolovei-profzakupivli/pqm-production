@@ -2285,16 +2285,20 @@ def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error:
 
 
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
-                        trigger: str = "manual", expected_revision=None) -> bool:
+                        trigger: str = "manual", expected_revision=None,
+                        manual_authorized: bool = False, actor: str = "") -> bool:
     """Claim process and SQLite job locks before starting any Prozorro refresh."""
-    if background_jobs.disabled():
+    manual_override = (manual_authorized is True and trigger == "manual" and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
         return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with SYNC_STATE_LOCK:
         if SYNC_STATE.get("running"):
             return False
-        owner = scheduler_runtime.claim(DB_PATH, "prozorro", trigger=trigger, expected_revision=expected_revision)
+        owner = scheduler_runtime.claim(DB_PATH, "prozorro", trigger=trigger, expected_revision=expected_revision,
+                                        manual_authorized=manual_override, actor=actor)
         if not owner:
             return False
         SYNC_STATE.update(running=True, mode=mode, started_at=now_iso(), message=message)
@@ -2320,7 +2324,7 @@ def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
     except Exception:
         with SYNC_STATE_LOCK:
             SYNC_STATE.update(running=False, message="Не вдалося запустити синхронізацію", updated_at=now_iso())
-        scheduler_runtime.release(DB_PATH, "prozorro", owner)
+        _finish_scheduler_lease("prozorro", owner, "error", "worker_start_failed")
         raise
     return True
 
@@ -2346,10 +2350,39 @@ def sync_status_payload() -> dict:
     thread = SCHEDULER_THREADS.get('prozorro')
     enabled = bool(configured.get('prozorro'))
     alive = bool(enabled and thread and thread.is_alive())
+    run = scheduler_execution_snapshot("prozorro")
     payload.update(scheduler_enabled=enabled, scheduler_running=alive,
                    scheduler_heartbeat_at=SCHEDULER_HEARTBEATS.get('prozorro'),
-                   next_run_at=payload.get('next_run_at') if alive else None)
+                   next_run_at=payload.get('next_run_at') if alive else None,
+                   last_started_at=run.get("last_started_at"),
+                   last_finished_at=run.get("last_finished_at"),
+                   last_status=run.get("last_status"), last_trigger=run.get("last_trigger"),
+                   last_actor=run.get("last_actor"), last_error=run.get("last_error"))
     return payload
+
+
+def scheduler_execution_snapshot(job_key: str) -> dict:
+    """Read the persisted last-run state and actor without opening a write connection."""
+    defaults = {key: False for key in SCHEDULER_TARGETS}
+    item = next((row for row in scheduler_runtime.state(DB_PATH, defaults)
+                 if row.get("job") == job_key), {})
+    result = {key: item.get(key) for key in
+              ("last_started_at", "last_finished_at", "last_status", "last_trigger", "last_error")}
+    result["last_actor"] = ""
+    owner = str(item.get("last_owner") or "")
+    if owner:
+        audit_id = f"manual-operation:{job_key}:{owner}"
+        uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
+        try:
+            with closing(sqlite3.connect(uri, uri=True, timeout=5)) as con:
+                con.execute("PRAGMA query_only=ON")
+                row = con.execute("""SELECT changed_by FROM audit_log
+                  WHERE submission_id=? AND field_name='background_job.started' ORDER BY id DESC LIMIT 1""",
+                  (audit_id,)).fetchone()
+            result["last_actor"] = row[0] if row else ""
+        except sqlite3.Error:
+            result["last_actor"] = ""
+    return result
 
 
 
@@ -2416,6 +2449,8 @@ def scheduler_admin_model(job_key):
             "last_started_at": row['last_started_at'] if row else None,
             "last_finished_at": row['last_finished_at'] if row else None,
             "last_status": row['last_status'] if row else 'never',
+            "last_trigger": row['last_trigger'] if row else '',
+            "last_error": row['last_error'] if row else '',
             "duration_seconds": duration, "history": history}
 
 
@@ -2443,6 +2478,8 @@ def scheduler_admin_change(job_key, payload, *, apply=False, actor=''):
             raise scheduler_runtime.RevisionConflict('Schedule changed; preview again')
         settings = (scheduler_runtime.rollback_payload(con, job_key, payload['rollback'])
                     if 'rollback' in payload else payload['settings'])
+        if apply and background_jobs.disabled() and settings.get('enabled') is True:
+            raise ValueError('Global background-job interlock keeps automatic schedules disabled')
         if 'rollback' in payload and payload['rollback'] != model['revision']:
             raise ValueError('Rollback must use the current revision')
         if apply:
@@ -2723,15 +2760,20 @@ def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
         sandbox_runtime.attest_internal_target(DB_PATH)
         if not sandbox_runtime.scheduler_job_allowed(job_key):
             raise ValueError("SANDBOX scheduler target is not attested")
+    if background_jobs.disabled() and enabled:
+        raise ValueError("Global background-job interlock keeps automatic schedules disabled")
     before, _ = effective_scheduler_settings()
     old_enabled = bool(before[job_key])
     if SANDBOX_MODE:
-        if old_enabled != bool(enabled):
+        with db() as con:
+            old_configured = bool(scheduler_runtime.schedule_model(
+                con, job_key, default_enabled=False)["enabled"])
+        if old_configured != bool(enabled):
             with db() as con:
-                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor, default_enabled=old_enabled)
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor, default_enabled=old_configured)
                 con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
                   VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
-                  "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
+                  "scheduler_job.enabled", "enabled" if old_configured else "disabled",
                   "enabled" if enabled else "disabled"))
         # Persist first: a newly registered thread must see its own effective
         # setting, and a disabled job must never get another scheduled run.
@@ -2775,13 +2817,17 @@ def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
         thread = SCHEDULER_THREADS.get(key)
         row['running'] = bool(configured[key] and key in registered and thread and thread.is_alive())
         row['heartbeat_at'] = SCHEDULER_HEARTBEATS.get(key)
+        row['configured_enabled'] = bool(row.get('schedule_model', {}).get('enabled', False))
         if not row['running']:
             row['enabled'] = False
             row['next_run'] = None
-        row["configured_enabled"] = configured[key]
         row["registered"] = key in registered
         row["configuration_source"] = sources[key]
         row["manageable"] = (not SANDBOX_MODE or sandbox_runtime.scheduler_job_allowed(key))
+    actors = {key: scheduler_execution_snapshot(key).get("last_actor", "")
+              for key in scheduler_runtime.SCHEDULES}
+    for row in rows:
+        row["last_actor"] = actors.get(row["job"], "")
     return rows
 
 
@@ -2809,8 +2855,7 @@ def google_writer_client():
     return client
 
 
-def google_writer_available():
-    if background_jobs.disabled(): return False
+def google_writer_manual_available():
     if not google_edr_effective_enabled() or (SAFE_MODE and not SANDBOX_MODE): return False
     expected_service = 'srv-dalfd77f3r2c7392uub0' if SANDBOX_MODE else 'srv-da7vmitg1s2s73fim0p0'
     if os.getenv('RENDER_SERVICE_ID') != expected_service: return False
@@ -2820,6 +2865,11 @@ def google_writer_available():
         google_writer_client()
         return True
     except (ValueError,OSError): return False
+
+
+def google_writer_available():
+    """Availability for automatic scheduler execution only."""
+    return not background_jobs.disabled() and google_writer_manual_available()
 
 
 def google_writer_service():
@@ -2835,9 +2885,12 @@ def google_writer_service():
 
 def google_writer_status():
     service = GOOGLE_WRITER_SCHEDULER
-    return google_writer_execution.status(DB_PATH,google_writer_environment(),available=google_writer_available(),
+    manual_available = google_writer_manual_available()
+    return {**google_writer_execution.status(DB_PATH,google_writer_environment(),available=manual_available,
         running=bool(service and service.thread and service.thread.is_alive()),
-        heartbeat=service.heartbeat if service else None)
+        heartbeat=service.heartbeat if service else None),
+        "manual_available": manual_available,
+        "automation_blocked": background_jobs.disabled()}
 
 
 def decision_label(status: str | None) -> str:
@@ -4793,7 +4846,7 @@ def sync_supplier_managers_from_edr() -> dict:
 def supplier_edr_sync_status() -> dict:
     with db() as con:
         total = int(con.execute("SELECT COUNT(*) FROM supplier_edr_profiles").fetchone()[0])
-        last = con.execute("""SELECT started_at,finished_at,status,processed,inserted,updated,error
+        last = con.execute("""SELECT started_at,finished_at,status,processed,inserted,updated,error,actor,trigger
           FROM supplier_edr_sync_log ORDER BY id DESC LIMIT 1""").fetchone()
     return {"total": total, "last": dict(last) if last else None, "oauth": google_oauth_status(),
             "source_url": f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit",
@@ -5116,8 +5169,9 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                                        started_at=started_at, updated_at=None, processed=0,
                                        inserted=0, updated=0, error=None)
         with db() as con:
-            log_id = con.execute("INSERT INTO supplier_edr_sync_log(started_at,status) VALUES (?,?)",
-                                 (started_at, "running")).lastrowid
+            edr_sync_v2.migrate(con)
+            log_id = con.execute("INSERT INTO supplier_edr_sync_log(started_at,status,actor,trigger) VALUES (?,?,?,?)",
+                                 (started_at, "running", actor, "manual")).lastrowid
         snapshot = supplier_edr_source_snapshot()
         if snapshot["source_fingerprint"] != expected_fingerprint:
             raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
@@ -6738,16 +6792,21 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
                         VIOLATION_SYNC_STATE['errors'], VIOLATION_SYNC_STATE['message'].startswith('Помилка'))
 
 
-def start_violation_reports_sync(*, trigger: str = "manual", expected_revision=None) -> bool:
+def start_violation_reports_sync(*, trigger: str = "manual", expected_revision=None,
+                                 manual_authorized: bool = False, actor: str = "") -> bool:
     """Share process and SQLite locks between manual and scheduled refreshes."""
-    if background_jobs.disabled():
+    manual_override = (manual_authorized is True and trigger == "manual" and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
         return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
     with VIOLATION_SYNC_LOCK:
         if VIOLATION_SYNC_STATE["running"]:
             return False
-        owner = scheduler_runtime.claim(DB_PATH, "violation_reports", trigger=trigger, expected_revision=expected_revision)
+        owner = scheduler_runtime.claim(DB_PATH, "violation_reports", trigger=trigger,
+                                        expected_revision=expected_revision,
+                                        manual_authorized=manual_override, actor=actor)
         if not owner:
             return False
         VIOLATION_SYNC_STATE.update(running=True, message="Отримання переліку звернень…",
@@ -6768,14 +6827,17 @@ def start_violation_reports_sync(*, trigger: str = "manual", expected_revision=N
         try:
             threading.Thread(target=guarded_worker, daemon=True).start()
         except Exception:
-            scheduler_runtime.release(DB_PATH, "violation_reports", owner)
             VIOLATION_SYNC_STATE["running"] = False
+            _finish_scheduler_lease("violation_reports", owner, "error", "worker_start_failed")
             raise
         return True
 
 
-def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=None) -> bool:
-    if background_jobs.disabled():
+def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=None,
+                                manual_authorized: bool = False, actor: str = "") -> bool:
+    manual_override = (manual_authorized is True and trigger == "manual" and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
         return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
@@ -6784,7 +6846,8 @@ def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=No
     nazk_lease_seconds = 1200
     owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger,
                                     expected_revision=expected_revision,
-                                    lease_seconds=nazk_lease_seconds)
+                                    lease_seconds=nazk_lease_seconds,
+                                    manual_authorized=manual_override, actor=actor)
     if not owner:
         return False
     heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner,
@@ -6812,13 +6875,13 @@ def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=No
     try:
         heartbeat.__enter__()
         if start_reference_refresh(DB_PATH, "nazk", on_complete=completed, on_error=failed,
-                                   lease_owner=owner):
+                                   lease_owner=owner, manual_authorized=manual_override):
             return True
     except Exception:
-        scheduler_runtime.release(DB_PATH, "nazk_registry", owner)
+        _finish_scheduler_lease("nazk_registry", owner, "error", "manual_refresh_start_failed")
         heartbeat.__exit__(None, None, None)
         raise
-    scheduler_runtime.release(DB_PATH, "nazk_registry", owner)
+    _finish_scheduler_lease("nazk_registry", owner, "error", "manual_refresh_unavailable")
     heartbeat.__exit__(None, None, None)
     return False
 
@@ -6947,7 +7010,8 @@ def list_violation_reports(params: dict) -> dict:
     return {"items": items, "total": total, "pending": pending, "satisfied": satisfied, "declined": declined, "page": page, "size": size,
             "pages": (total + size - 1) // size, "statuses": statuses, "reasons": reasons,
             "authorities": authorities,
-            "sync": dict(VIOLATION_SYNC_STATE)}
+            "sync": {**dict(VIOLATION_SYNC_STATE),
+                     **scheduler_execution_snapshot("violation_reports")}}
 
 
 VIOLATION_REVIEW_FIELDS = {
@@ -11308,6 +11372,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({
                 "environment": PQM_ENV,
                 "sandbox_mode": SANDBOX_MODE,
+                "background_jobs": background_jobs.status(),
                 "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
                 "sandbox_documents": SANDBOX_MODE and sandbox_runtime.sandbox_documents.enabled(),
                 "sandbox_amcu_read": SANDBOX_MODE and sandbox_runtime.sandbox_amcu.enabled(),
@@ -11709,7 +11774,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(remarks_catalog(force=query.get("refresh") == ["1"],
                 include_inactive=self.auth_role == 'admin' and query.get('all') == ['1']))
         if parsed.path == "/api/reference-status":
-            return self.send_json(reference_status(DB_PATH))
+            refs = reference_status(DB_PATH)
+            refs["nazk"]["manual_operation"] = scheduler_execution_snapshot("nazk_registry")
+            return self.send_json(refs)
         if parsed.path == '/api/google-writer/status':
             data=google_writer_status()
             permissions=getattr(self,'auth_access',{}).get('permissions',{})
@@ -12163,22 +12230,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
             payload = self.read_json()
             try:
-                if not google_writer_available(): raise ValueError('Захищений Execution API канал ще не підготовлено')
+                if not google_writer_manual_available(): raise ValueError('Захищений Execution API канал ще не підготовлено')
                 client = google_writer_client()
                 if parsed.path.endswith('/preview'):
                     if set(payload) != {'request_id'}: raise ValueError('Unexpected Preview fields')
-                    result = client.invoke('preview',payload['request_id'],self.auth_user)
+                    result = client.invoke('preview',payload['request_id'],self.auth_user,
+                                           manual_authorized=True)
                     return self.send_json({'status':result['status'],'counts':result['counts'],
                         'ticket':google_writer_execution.preview_ticket(client,payload['request_id'],self.auth_user,result['digest'])})
                 if set(payload) != {'ticket','confirmed'} or payload['confirmed'] is not True:
                     raise ValueError('Потрібне явне підтвердження переглянутого Preview')
                 ticket = google_writer_execution.verify_ticket(client,payload['ticket'],self.auth_user)
-                claimed = google_writer_execution.claim_run(DB_PATH,google_writer_environment(),ticket['request_id'],self.auth_user,'manual')
+                claimed = google_writer_execution.claim_run(DB_PATH,google_writer_environment(),
+                    ticket['request_id'],self.auth_user,'manual',manual_authorized=True)
                 if not claimed['claimed']:
                     return self.send_json(claimed,200 if claimed['status'] in {'complete','partial','failed_safe'} else 409)
                 try:
                     threading.Thread(target=google_writer_execution.execute_claimed,
-                        args=(DB_PATH,client,ticket['request_id'],self.auth_user),kwargs={'digest':ticket['digest'],'guard':google_writer_available},
+                        args=(DB_PATH,client,ticket['request_id'],self.auth_user),
+                        kwargs={'digest':ticket['digest'],'guard':google_writer_manual_available,
+                                'manual_authorized':True},
                         name='pqm-google-writer-worker',daemon=True).start()
                 except Exception:
                     google_writer_execution.finish_run(DB_PATH,ticket['request_id'],'failed_safe',{'status':'WORKER_START_FAILED'})
@@ -12543,25 +12614,38 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, ConnectionError) as exc:
                 return self.send_json({"error": str(exc)}, 503)
         if parsed.path == "/api/sync":
-            framework_id = self.read_json().get("framework_id")
+            payload = self.read_json()
+            if (not isinstance(payload, dict) or payload.get("confirmed") is not True or
+                    set(payload) - {"confirmed", "framework_id"}):
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення Prozorro"}, 400)
+            framework_id = payload.get("framework_id")
             if framework_id:
                 if not start_prozorro_sync(sync_worker, mode="single",
                                            message="Підготовка синхронізації відбору…",
-                                           args=(framework_id,)):
+                                           args=(framework_id,), manual_authorized=True,
+                                           actor=self.auth_user):
                     return self.send_json(SYNC_STATE, 409)
                 return self.send_json({"started": True, "framework_id": framework_id}, 202)
             if not start_prozorro_sync(sync_all_worker, mode="full",
-                                       message="Пошук активних і закритих відборів…"):
+                                       message="Пошук активних і закритих відборів…",
+                                       manual_authorized=True, actor=self.auth_user):
                 return self.send_json(SYNC_STATE, 409)
             return self.send_json({"started": True, "scope": "active_and_closed"}, 202)
         if parsed.path == "/api/frameworks/refresh":
+            payload = self.read_json()
+            if payload != {"confirmed": True}:
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення відборів"}, 400)
             if not start_prozorro_sync(refresh_framework_metadata_worker,
                                        mode="framework_metadata",
-                                       message="Отримання актуальних відборів із Prozorro…"):
+                                       message="Отримання актуальних відборів із Prozorro…",
+                                       manual_authorized=True, actor=self.auth_user):
                 return self.send_json(SYNC_STATE, 409)
             return self.send_json({"started": True, "scope": "framework_metadata"}, 202)
         if parsed.path == "/api/violation-reports/sync":
-            if not start_violation_reports_sync():
+            payload = self.read_json()
+            if payload != {"confirmed": True}:
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення звернень"}, 400)
+            if not start_violation_reports_sync(manual_authorized=True, actor=self.auth_user):
                 return self.send_json(VIOLATION_SYNC_STATE, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/bids-sync":
@@ -12787,7 +12871,11 @@ class Handler(BaseHTTPRequestHandler):
                 temporary.unlink(missing_ok=True)
             return self.send_json({"saved": True, "item": response_item})
         if parsed.path == "/api/nazk-registry/refresh":
-            if not start_nazk_registry_refresh(trigger="manual"):
+            payload = self.read_json()
+            if payload != {"confirmed": True}:
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення НАЗК"}, 400)
+            if not start_nazk_registry_refresh(trigger="manual", manual_authorized=True,
+                                              actor=self.auth_user):
                 return self.send_json({"error": "Оновлення довідника НАЗК уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/refresh":

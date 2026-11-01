@@ -8,18 +8,18 @@ async function loadGoogleWriterJob(){
     if(run){run.disabled=googleWriterBusy||!data.can_execute||!data.channel_ready||data.blocked;
       run.title=!data.can_execute?'Недостатньо прав':!data.channel_ready?'Execution API канал ще не підготовлено':data.blocked?'Активний запуск або невизначений результат; потрібна перевірка':'';}
     const message=document.getElementById('pqmGoogleWriterMessage');
-    if(message)message.textContent=data.blocked?'Запуск або результат потребує перевірки':data.channel_ready?'Доступний ручний Preview → Apply':'Execution API ще не підготовлено';
+    if(message)message.textContent=data.blocked?'Запуск або результат потребує перевірки':data.channel_ready?(data.automation_blocked?'Автоматику вимкнено · ручний Preview → Apply доступний':'Доступний ручний Preview → Apply'):'Execution API ще не підготовлено';
     const root=document.getElementById('schedulerJobs');if(!root)return data;
     let card=document.getElementById('googleWriterJobCard');
     if(!card){card=document.createElement('article');card.id='googleWriterJobCard';card.className='scheduler-job';root.append(card);}
-    card.innerHTML=`<header><strong>PQM → Google Sheets</strong><span>${data.configured_enabled?'Розклад увімкнено':'Розклад вимкнено'}</span></header>
+    card.innerHTML=`<header><strong>PQM → Google Sheets</strong><span>${data.automation_blocked?(data.configured_enabled?'Розклад збережено · заблоковано':'Розклад вимкнено'):data.configured_enabled?'Розклад увімкнено':'Розклад вимкнено'}</span></header>
       <dl><div><dt>Розклад</dt><dd>${esc(data.schedule)} · Europe/Kyiv</dd></div><div><dt>Останній результат</dt><dd>${esc(data.last_status)} · ${esc(data.last_finished_at?displayDate(data.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(data.next_run?displayDate(data.next_run):'—')}</dd></div></dl>
-      <p class="muted">${data.channel_ready?'':'Захищений канал ще не підготовлено. '}${data.blocked?'Активний запуск / outcome unknown — новий Apply заблоковано.':''}</p>
-      ${data.can_manage?`<label><input id="googleWriterEnabled" type="checkbox" ${data.configured_enabled?'checked':''} ${!data.channel_ready&&!data.configured_enabled?'disabled':''}> Увімкнено</label>
-      <label>Година <input id="googleWriterHour" type="number" min="0" max="23" value="${data.hour}"></label>
-      <label>Хвилина <input id="googleWriterMinute" type="number" min="0" max="59" value="${data.minute}"></label>
-      <footer><button id="googleWriterSchedulePreview" class="ghost" type="button">Переглянути розклад</button><button id="googleWriterScheduleApply" class="ghost" type="button" disabled>Застосувати розклад</button></footer><p id="googleWriterScheduleResult" class="muted"></p>`:''}
-      <details><summary>Журнал запусків</summary><ul>${data.runs.map(row=>`<li>${esc(displayDate(row.started_at))} · ${esc(row.trigger)} · ${esc(row.status)} · ${esc(JSON.stringify(row.result?.counts||{}))}</li>`).join('')||'<li>Запусків ще не було</li>'}</ul></details>`;
+      <p class="muted">${data.channel_ready?'':'Захищений канал ще не підготовлено. '}${data.automation_blocked?'Глобальна автоматика заблокована; ручний запуск не змінює розклад. ':''}${data.blocked?'Активний запуск / outcome unknown — новий Apply заблоковано.':''}</p>
+      ${data.can_manage?`<label><input id="googleWriterEnabled" type="checkbox" ${data.configured_enabled?'checked':''} ${!data.channel_ready||(data.automation_blocked&&!data.configured_enabled)?'disabled':''}> Автоматичний розклад</label>
+      <label>Година <input id="googleWriterHour" type="number" min="0" max="23" value="${data.hour}" ${data.automation_blocked?'disabled':''}></label>
+      <label>Хвилина <input id="googleWriterMinute" type="number" min="0" max="59" value="${data.minute}" ${data.automation_blocked?'disabled':''}></label>
+      <footer><button id="googleWriterSchedulePreview" class="ghost" type="button" ${!data.channel_ready||(data.automation_blocked&&!data.configured_enabled)?'disabled':''}>Переглянути розклад</button><button id="googleWriterScheduleApply" class="ghost" type="button" disabled>Застосувати розклад</button></footer><p id="googleWriterScheduleResult" class="muted"></p>`:''}
+      <details><summary>Журнал запусків</summary><ul>${data.runs.map(row=>`<li>${esc(displayDate(row.started_at))} · ${esc(row.trigger)} · ${esc(row.actor||'')} · ${esc(row.status)} · ${esc(JSON.stringify(row.result?.counts||{}))}</li>`).join('')||'<li>Запусків ще не було</li>'}</ul></details>`;
     googleWriterSchedulePreview=null;
     if(data.can_manage){
       for(const id of ['googleWriterEnabled','googleWriterHour','googleWriterMinute'])document.getElementById(id).oninput=()=>{googleWriterSchedulePreview=null;document.getElementById('googleWriterScheduleApply').disabled=true;};

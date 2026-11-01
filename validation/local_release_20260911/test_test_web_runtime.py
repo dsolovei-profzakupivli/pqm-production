@@ -154,7 +154,10 @@ class TestWebRuntimeTests(unittest.TestCase):
         javascript = (Path(__file__).resolve().parent / "app.js").read_text(encoding="utf-8")
         self.assertIn("threading.Thread(target=bids_update_worker, daemon=True)", source)
         self.assertIn("worker.start()", source)
-        self.assertIn("start_nazk_registry_refresh(trigger=\"manual\")", source)
+        self.assertIn(
+            'start_nazk_registry_refresh(trigger="manual", manual_authorized=True,',
+            source,
+        )
         self.assertIn("if(state?.status==='running')", javascript)
         self.assertIn("transient poll failure", javascript)
 

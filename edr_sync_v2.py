@@ -340,6 +340,8 @@ def migrate(con) -> None:
         "source_fingerprint": "TEXT DEFAULT ''",
         "unchanged": "INTEGER DEFAULT 0",
         "details_json": "TEXT DEFAULT '{}'",
+        "actor": "TEXT NOT NULL DEFAULT ''",
+        "trigger": "TEXT NOT NULL DEFAULT 'manual'",
     }
     for name, definition in additions.items():
         if name not in log_columns:

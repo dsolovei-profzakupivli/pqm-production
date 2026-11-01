@@ -315,8 +315,11 @@ def rollback_payload(con, job_key, revision):
 
 def claim(db_path, job_key: str, *, trigger: str, now: datetime | None = None,
           lease_seconds: int = 180, owner_id: str | None = None,
-          expected_revision: int | None = None) -> str | None:
-    if background_jobs.disabled():
+          expected_revision: int | None = None, manual_authorized: bool = False,
+          actor: str = "") -> str | None:
+    manual_override = (manual_authorized is True and trigger == "manual" and
+                       isinstance(actor, str) and bool(actor.strip()) and len(actor) <= 128)
+    if background_jobs.disabled() and not manual_override:
         return None
     if job_key not in SCHEDULES:
         raise ValueError(f"Unknown scheduler job: {job_key}")
@@ -346,6 +349,13 @@ def claim(db_path, job_key: str, *, trigger: str, now: datetime | None = None,
         con.execute("""UPDATE scheduler_job_state SET last_started_at=?,last_status='running',last_error='',
                        last_trigger=?,last_owner=?,updated_at=? WHERE job_key=?""",
                     (_iso(stamp), trigger, owner, _iso(stamp), job_key))
+        if manual_override:
+            # The lease claim and attributed audit event are one transaction.
+            # A manual entrypoint cannot run without an authenticated actor record.
+            con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+              VALUES(?,?,?,?,?,?)""",
+              (f"manual-operation:{job_key}:{owner}", _iso(stamp), actor.strip(),
+               "background_job.started", None, job_key))
         con.commit()
     return owner
 
@@ -433,6 +443,21 @@ def finish(db_path, job_key: str, owner_id: str, *, status: str = "ok", error: s
         con.execute("DELETE FROM scheduler_job_leases WHERE job_key=? AND owner_id=?", (job_key, owner_id))
         con.execute("""UPDATE scheduler_job_state SET last_finished_at=?,last_status=?,last_error=?,
                        updated_at=? WHERE job_key=?""", (_iso(stamp), status, str(error or ""), _iso(stamp), job_key))
+        audit_id = f"manual-operation:{job_key}:{owner_id}"
+        try:
+            manual_start = con.execute("""SELECT changed_by FROM audit_log
+              WHERE submission_id=? AND field_name='background_job.started' ORDER BY id DESC LIMIT 1""",
+              (audit_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).casefold():
+                raise
+            manual_start = None
+        if manual_start:
+            # Detailed error is retained in scheduler_job_state; keep the audit
+            # event concise and avoid copying an external error payload here.
+            con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
+              VALUES(?,?,?,?,?,?)""",
+              (audit_id, _iso(stamp), manual_start[0], "background_job.finished", status, job_key))
         con.commit()
     return True
 

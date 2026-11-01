@@ -298,10 +298,11 @@ def refresh_nazk(db_path, on_complete=None, on_error=None, *, lease_owner=None):
 
 
 def start_reference_refresh(db_path, source, raw=None, filename="", on_complete=None, on_error=None,
-                             *, lease_owner=None):
+                             *, lease_owner=None, manual_authorized=False):
     """Claim a reference refresh and defer heavy work until after HTTP 202 is flushed."""
     import background_jobs
-    if background_jobs.disabled():
+    manual_override = (manual_authorized is True and source == "nazk" and bool(lease_owner))
+    if background_jobs.disabled() and not manual_override:
         return False
     if source not in {"nazk", "amcu"}:
         raise ValueError("Невідомий довідник")

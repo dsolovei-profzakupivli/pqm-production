@@ -123,8 +123,11 @@ class ExecutionClient:
                 not isinstance(self.shared_secret, str) or len(self.shared_secret) < 32):
             raise ExecutionConfigurationError('Execution channel not independently configured and attested')
 
-    def invoke(self, action, request_id, actor, *, trigger='manual', digest=None):
-        if background_jobs.disabled():
+    def invoke(self, action, request_id, actor, *, trigger='manual', digest=None,
+               manual_authorized=False):
+        manual_override = (manual_authorized is True and trigger == 'manual' and
+                           isinstance(actor, str) and bool(actor.strip()))
+        if background_jobs.disabled() and not manual_override:
             raise ExecutionConfigurationError('Background jobs disabled')
         self.validate()
         if action not in {'preview', 'apply'} or trigger not in {'manual', 'scheduled'}:
@@ -247,8 +250,11 @@ def save_settings(con, payload, expected_revision, actor, now=None):
     return settings(con)
 
 
-def claim_run(path, environment, request_id, actor, trigger, revision=None, now=None):
-    if background_jobs.disabled():
+def claim_run(path, environment, request_id, actor, trigger, revision=None, now=None,
+              manual_authorized=False):
+    manual_override = (manual_authorized is True and trigger == 'manual' and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
         return {'claimed': False, 'status': 'background_jobs_disabled'}
     if environment not in IDENTITIES or trigger not in {'manual','scheduled'} or not re.fullmatch('[0-9a-f]{32}',request_id):
         raise ValueError('Invalid run identity')
@@ -277,16 +283,22 @@ def finish_run(path, request_id, status, result):
                     (status,datetime.now(timezone.utc).isoformat(),json.dumps(result),request_id))
 
 
-def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest=None, guard=lambda:True):
+def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest=None,
+                    guard=lambda:True, manual_authorized=False):
     """One common writer for manual and scheduled calls, no automatic retry."""
-    if background_jobs.disabled():
+    manual_override = (manual_authorized is True and trigger == 'manual' and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
         return {'status': 'BACKGROUND_JOBS_DISABLED'}
     try:
         if not guard(): raise ExecutionConfigurationError('Execution guard changed before preview')
         if digest is None:
-            digest = client.invoke('preview',request_id,actor,trigger=trigger)['digest']
-        if background_jobs.disabled() or not guard(): raise ExecutionConfigurationError('Execution guard changed before Apply')
-        result = client.invoke('apply',request_id,actor,trigger=trigger,digest=digest)
+            digest = client.invoke('preview',request_id,actor,trigger=trigger,
+                                   manual_authorized=manual_override)['digest']
+        if (background_jobs.disabled() and not manual_override) or not guard():
+            raise ExecutionConfigurationError('Execution guard changed before Apply')
+        result = client.invoke('apply',request_id,actor,trigger=trigger,digest=digest,
+                               manual_authorized=manual_override)
         status = 'complete' if result['status']=='COMPLETE' else 'partial' if result['status'] in {'COMPLETE_WITH_CONFLICTS','PARTIAL_SAFE_OPERATIONS_REMAIN'} else 'outcome_unknown'
         finish_run(path,request_id,status,result)
         return result
