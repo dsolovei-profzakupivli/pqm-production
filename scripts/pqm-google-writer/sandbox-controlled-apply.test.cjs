@@ -36,7 +36,7 @@ function fixture() {
     const row = {values, formulas: Array(15).fill(''), codeDisplay: code, dateFormat: 'dd.MM.yyyy'};
     tabs[tab].rows.push(row);
     body.items.push({supplier_code: code, entity_type: tab === 'ФОП' ? 'individual_entrepreneur' : 'legal_entity',
-      classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+      classification_version: 'subject-nature-20261031-v3', classification_status: 'resolved',
       classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
       target_sheet: tab, append_allowed: true,
       supplier_name: 'Name', monitoring_eligible: true, google_sync_eligible: true,

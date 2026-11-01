@@ -45,6 +45,8 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_google_writer_supplier_types_integrity',
     'test_google_edr_date_only_midnight_integrity_v1',
     'test_date_only_edr_status_integrated_integrity_v1',
+    'test_date_only_edr_status_integrated_integrity_v2',
+    'validation.local_release_20260911.test_date_only_edr_status_integrated_integrity_v2',
     'test_edr_status_evidence_integrity_v1',
     'test_messages_historical_line_endings',
     'test_sandbox_personal_theme',
@@ -95,7 +97,8 @@ def main():
                             'run_google_edr_timezone_alias_v1_integrity.py', 'supplier_classification_planner.cjs', 'run_local_release.py', 'run_classification_parent_integrity.py',
                             'run_integrated_source_integrity_overlays.py',
                             'run_messages_integrated_v1_history.py',
-                            'run_date_only_previous_contract_overlays.py'):
+                            'run_date_only_previous_contract_overlays.py',
+                            'run_date_only_status_integrated_v2_history.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
@@ -135,7 +138,8 @@ def main():
                              'google_writer_supplier_types_v1_97788.zip',
                              'google_edr_date_only_midnight_v1_97788.zip',
                              'edr_status_evidence_v1_15b8.zip',
-                             'date_only_edr_status_integrated_v1_12329.zip')
+                             'date_only_edr_status_integrated_v1_12329.zip',
+                             'date_only_status_integrated_v2_a1f8.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -213,6 +217,9 @@ def main():
             date_only_previous_contract_overlays=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_date_only_previous_contract_overlays.py')],
                 cwd=old_cwd,check=False)
+            date_only_status_v2_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_date_only_status_integrated_v2_history.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -231,7 +238,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

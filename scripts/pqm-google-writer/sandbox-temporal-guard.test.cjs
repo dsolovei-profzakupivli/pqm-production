@@ -21,7 +21,7 @@ function fixture(code,status,googleDate,pqmDate='2026-07-22'){
     verification_date:pqmDate,verification_officer:'PQM officer',verification_event_type:'google_clarity',
     prozorro_status_google:'Активний',last_application_date:'2026-09-22',
     google_sync_last_decided_application_date:'2026-09-22'}]};
-  Object.assign(body.items[0],{classification_version:'subject-nature-20261030-v2',
+  Object.assign(body.items[0],{classification_version:'subject-nature-20261031-v3',
     classification_status:'resolved',classification_reason:'established_subject_nature',
     classification_reason_label:'Тип підтверджено у fixture',target_sheet:'ЮО',append_allowed:true});
   return {c,tabs,body,plan:()=>c.pqmGoogleBusinessPlan_(body,tabs)};

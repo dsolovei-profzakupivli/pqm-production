@@ -32,7 +32,7 @@ function fixture() {
     const formulas = Array(15).fill(''); formulas[0] = `=IF(B${row}="", "", 1)`;
     tab.rows.push({values, formulas, codeDisplay: code, dateFormat: 'dd.MM.yyyy'});
     body.items.push({supplier_code: code, entity_type: name === 'ФОП' ? 'individual_entrepreneur' : 'legal_entity',
-      classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+      classification_version: 'subject-nature-20261031-v3', classification_status: 'resolved',
       classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
       target_sheet: name, append_allowed: true,
       monitoring_eligible: true, google_sync_eligible: true,

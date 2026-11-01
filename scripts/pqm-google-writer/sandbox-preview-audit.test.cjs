@@ -32,7 +32,7 @@ function tabs() {
 function body(items) { return {count: items.length, items}; }
 function item(overrides) {
   const result = Object.assign({supplier_code: '1000000000', entity_type: 'individual_entrepreneur',
-    classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+    classification_version: 'subject-nature-20261031-v3', classification_status: 'resolved',
     classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
     target_sheet: 'ФОП', append_allowed: true,
     supplier_name: 'Name', monitoring_eligible: true, google_sync_eligible: true,

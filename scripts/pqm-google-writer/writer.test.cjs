@@ -18,7 +18,7 @@ function tabs() {
 }
 function item(overrides = {}) {
   const result = {supplier_code: '00110183', entity_type: 'legal_entity', supplier_name: 'new',
-    classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+    classification_version: 'subject-nature-20261031-v3', classification_status: 'resolved',
     classification_reason: 'established_subject_nature',
     classification_reason_label: 'Тип підтверджено у fixture', target_sheet: 'ЮО', append_allowed: true,
     monitoring_eligible: true, freshness_marker: 'EXACT marker', prozorro_status_google: '✅ Активний',

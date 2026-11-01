@@ -127,7 +127,7 @@ function pqmGoogleBusinessPlan_(body, tabs, options) {
     }
     var expectedTab = item.entity_type === 'individual_entrepreneur' ? 'ФОП' :
       item.entity_type === 'legal_entity' ? 'ЮО' : null;
-    if (item.classification_version !== 'subject-nature-20261030-v2' ||
+    if (item.classification_version !== 'subject-nature-20261031-v3' ||
         item.classification_status !== 'resolved' || item.append_allowed !== true ||
         !expectedTab || item.target_sheet !== expectedTab) {
       count('conflicts'); issue('classification_contract_unverified', key, tabName,

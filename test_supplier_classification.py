@@ -62,9 +62,71 @@ class SupplierClassificationTests(unittest.TestCase):
     def test_declared_names_are_anchored(self):
         self.assertEqual(sc.classify('00123456',org('00123456',name='ТОВ «ФОП СЕРВІС»'))['target_sheet'],'ЮО')
         self.assertFalse(sc.classify('00123456',org('00123456',name='ФОПСЕРВІС'))['append_allowed'])
+    def test_fop_unicode_dashes_case_repetition_and_common_typo(self):
+        names=[
+            'Фізична особа – підприємець Парійчук',
+            'Фізична особа — підприємець Парійчук',
+            'ФІЗИЧНА   ОСОБА - ПІДПРИЄМЕЦЬ Парійчук',
+            'Фізична фізична особа – підприємець Парійчук',
+            'Фізична осова – підприємець Парійчук',
+        ]
+        for name in names:
+            with self.subTest(name=name):
+                x=sc.classify('3837111149',org('3837111149',name=name))
+                self.assertEqual(x['entity_type'],'individual_entrepreneur')
+                self.assertEqual(x['target_sheet'],'ФОП')
+                self.assertTrue(x['append_allowed'])
+    def test_fop_name_with_one_omitted_marker_needs_supporting_numeric_format(self):
+        x=sc.classify('3837111149',org('3837111149',name='Фізична підприємець Парійчук'))
+        self.assertEqual(x['entity_type'],'individual_entrepreneur')
+        passport=sc.classify('СР 918414',org('СР 918414',name='Фізична підприємець Парійчук'))
+        self.assertEqual(passport['entity_type'],'unknown')
+        self.assertFalse(passport['append_allowed'])
+    def test_structured_fop_form_normalizes_dashes_and_spaces(self):
+        for form in ['Фізична особа – підприємець','Фізична особа — підприємець',
+                     'фізична  особа-підприємець']:
+            with self.subTest(form=form):
+                x=sc.classify('СР 918414',org('СР 918414',name='Підприємець Тест',legalForm=form))
+                self.assertEqual(x['entity_type'],'individual_entrepreneur')
+    def test_expanded_confirmed_non_fop_forms_route_to_legal_tab(self):
+        cases=[
+            ('00182863','АКЦІОНЕРНЕ ТОВАРИСТВО «ЖИТОМИРСЬКИЙ МАСЛОЗАВОД»'),
+            ('00182863','АТ «ЖИТОМИРСЬКИЙ МАСЛОЗАВОД»'),
+            ('00123456','Товариство з обмеженою відповідальністю «Тест»'),
+            ('00123456','Відокремлений структурний підрозділ «Тест»'),
+            ('00123456','Представництво компанії «Тест»'),
+            ('541645372','ДОГОВІР ПРО СПІЛЬНУ ДІЯЛЬНІСТЬ'),
+            ('00123456','Об’єднання учасників «Тест»'),
+        ]
+        for code,name in cases:
+            with self.subTest(code=code,name=name):
+                x=sc.classify(code,org(code,name=name))
+                self.assertEqual(x['entity_type'],'legal_entity')
+                self.assertEqual(x['target_sheet'],'ЮО')
+                self.assertTrue(x['append_allowed'])
+    def test_form_aliases_and_name_conflicts_are_not_silenced(self):
+        x=sc.classify('00123456',org('00123456',name='ФОП Тест',legalForm='акціонерне товариство'))
+        self.assertEqual(x['classification_status'],'conflict')
+        self.assertEqual(x['classification_reason'],'subject_nature_evidence_conflict')
+        self.assertFalse(x['append_allowed'])
+    def test_latest_submission_only_no_automatic_historical_evidence(self):
+        with sqlite3.connect(':memory:') as con:
+            con.executescript('CREATE TABLE submissions(id TEXT,supplier_code TEXT,raw_json TEXT,date_published TEXT)')
+            con.execute('INSERT INTO submissions VALUES(?,?,?,?)',('older','3837111149',json.dumps({'tenderers':[org('3837111149',name='ФОП Парійчук')]}),'2024-07-29'))
+            con.execute('INSERT INTO submissions VALUES(?,?,?,?)',('newer','3837111149',json.dumps({'tenderers':[org('3837111149',name='Учасник без типу')]}),'2026-10-01'))
+            result=sc.build_index(con)['3837111149']
+            self.assertEqual(result['classification_reason'],'subject_nature_not_established')
+            self.assertFalse(result['append_allowed'])
     def test_ambiguous_abbreviations_do_not_establish_nature(self):
-        for name in ['ПП Синтетичний','ФГ Синтетичний']:
+        for name in ['СПД Синтетичний','Суб’єкт Синтетичний']:
             self.assertFalse(sc.classify('00123456',org('00123456',name=name))['append_allowed'])
+    def test_confirmed_private_and_farm_enterprise_names_route_as_non_fop(self):
+        for name in ['ПП Синтетичний','Приватне підприємство Синтетичний',
+                     'ФГ Синтетичний','Фермерське господарство Синтетичний']:
+            with self.subTest(name=name):
+                result=sc.classify('00123456',org('00123456',name=name))
+                self.assertEqual(result['entity_type'],'legal_entity')
+                self.assertEqual(result['target_sheet'],'ЮО')
     def test_index_get_reads_only_and_refreshes_synthetic_memory(self):
         with sqlite3.connect(':memory:') as con:
             con.executescript('CREATE TABLE submissions(id TEXT,supplier_code TEXT,raw_json TEXT,date_published TEXT)')

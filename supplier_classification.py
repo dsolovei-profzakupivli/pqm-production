@@ -8,8 +8,9 @@ import json
 from pathlib import Path
 import re
 import threading
+import unicodedata
 
-VERSION = 'subject-nature-20261030-v2'
+VERSION = 'subject-nature-20261031-v3'
 ENTITY_TYPES = frozenset({'legal_entity','individual_entrepreneur','foreign_legal_entity','unknown'})
 _COUNTRIES = json.loads(Path(__file__).with_name('supplier_country_catalog.json').read_text(encoding='utf-8'))['countries']
 _ALIASES = {}
@@ -20,14 +21,87 @@ _ALIASES.update({'украина':'UA','ukr':'UA'})
 _FORMS={'legal_entity':'legal_entity','legalentity':'legal_entity','юо':'legal_entity',
         'юридична особа':'legal_entity','individual_entrepreneur':'individual_entrepreneur',
         'privateentrepreneur':'individual_entrepreneur','фоп':'individual_entrepreneur',
-        'фізична особа-підприємець':'individual_entrepreneur',
+        'фізична особа підприємець':'individual_entrepreneur',
+        'фіз особа підприємець':'individual_entrepreneur',
         'joint_activity':'legal_entity','спільна діяльність':'legal_entity',
+        'договір про спільну діяльність':'legal_entity',
         'branch':'legal_entity','representative_office':'legal_entity',
-        'філія':'legal_entity','представництво':'legal_entity','other_organization':'legal_entity'}
-_FOP_NAME=re.compile(r'^(?:ФОП(?=\s|[«"\'])|ФІЗИЧНА\s+ОСОБА[\s-]*ПІДПРИЄМЕЦЬ(?=\s|[«"\']|$))',re.I)
-_OTHER_NAME=re.compile(r'^(?:(?:ТОВ|ТЗОВ|ПРАТ|ПАТ|АТ|ДП|КП|КНП)(?=\s|[«"\'])|ТОВАРИСТВО\b|(?:ПРИВАТНЕ|ДЕРЖАВНЕ|КОМУНАЛЬНЕ|КАЗЕННЕ|КОЛЕКТИВНЕ)\s+(?:ПІДПРИЄМСТВО|АКЦІОНЕРНЕ|НЕКОМЕРЦІЙНЕ)|ПУБЛІЧНЕ\s+АКЦІОНЕРНЕ|ФІЛІЯ\b|ПРЕДСТАВНИЦТВО\b|ДОГОВІР\s+ПРО\s+СПІЛЬНУ\s+ДІЯЛЬНІСТЬ\b|СПІЛЬНА\s+ДІЯЛЬНІСТЬ\b)',re.I)
+        'філія':'legal_entity','відокремлений підрозділ':'legal_entity',
+        'представництво':'legal_entity','обʼєднання учасників':'legal_entity',
+        'обєднання учасників':'legal_entity','об єднання учасників':'legal_entity',
+        'other_organization':'legal_entity',
+        'товариство з обмеженою відповідальністю':'legal_entity',
+        'акціонерне товариство':'legal_entity','публічне акціонерне товариство':'legal_entity',
+        'приватне акціонерне товариство':'legal_entity','приватне підприємство':'legal_entity',
+        'державне підприємство':'legal_entity','комунальне підприємство':'legal_entity',
+        'казенне підприємство':'legal_entity','пп':'legal_entity','фг':'legal_entity',
+        'фермерське господарство':'legal_entity'}
+_DASHES = dict.fromkeys(map(ord, '‐‑‒–—―−'), ' ')
+_OTHER_NAME=re.compile(
+    r'^(?:(?:тов|тзов|прат|пат|ат|дп|кп|кнп|пп|фг)(?:\s|$)|'
+    r'товариств\w*\b|акціонерн\w*\s+товариств\w*\b|'
+    r'(?:приватн\w*|державн\w*|комунальн\w*|казенн\w*|колективн\w*)\s+'
+    r'(?:підприємств\w*|акціонерн\w*|некомерційн\w*)|'
+    r'публічн\w*\s+акціонерн\w*|філі\w*\b|відокремлен\w*(?:\s+\w+){0,2}\s+підрозділ\w*\b|'
+    r'представництв\w*\b|договір\w*\s+про\s+спільн\w*\s+діяльн\w*\b|'
+    r'спільн\w*\s+діяльн\w*\b|фермерськ\w*\s+господарств\w*\b|'
+    r'об\s*єднан\w*\s+учасник\w*\b)',re.I)
 _LOCK=threading.Lock()
 _CACHE={'revision':None,'index':None}
+
+def _normalized_name(value):
+    """Normalize punctuation only for evidence matching; retain source text elsewhere."""
+    if not isinstance(value,str):return []
+    text=unicodedata.normalize('NFKC',value).casefold().translate(_DASHES)
+    # Apostrophe variants in Ukrainian words are spelling variants, not token boundaries.
+    text=re.sub(r"['’‘ʼ`´]",'',text)
+    tokens=re.findall(r'[^\W_]+',text,flags=re.UNICODE)
+    # Repeated adjacent words are common copy/paste noise in Prozorro names.
+    collapsed=[]
+    for token in tokens:
+        if not collapsed or token!=collapsed[-1]:collapsed.append(token)
+    return collapsed
+
+def _edit_distance_at_most_one(left,right):
+    if left==right:return True
+    if abs(len(left)-len(right))>1:return False
+    i=j=errors=0
+    while i<len(left) and j<len(right):
+        if left[i]==right[j]:i+=1;j+=1;continue
+        errors+=1
+        if errors>1:return False
+        if len(left)>len(right):i+=1
+        elif len(right)>len(left):j+=1
+        else:i+=1;j+=1
+    return errors+(i<len(left) or j<len(right))<=1
+
+def _word_matches(token,canonical,root):
+    return token.startswith(root) or _edit_distance_at_most_one(token,canonical)
+
+def _fop_name_evidence(name,identifier_format_hint):
+    tokens=_normalized_name(name)
+    if not tokens:return False
+    numeric_support=identifier_format_hint in {'ten_digits','nine_digits'}
+    if tokens[0]=='фоп' or (numeric_support and _edit_distance_at_most_one(tokens[0],'фоп')):return True
+    # Full FOP phrase: punctuation/dash normalization, duplicate-word collapse,
+    # inflection and one-character transcription errors in each explicit marker.
+    if len(tokens)>=3 and _word_matches(tokens[0],'фізична','фізичн') and \
+       _word_matches(tokens[1],'особа','особ') and _word_matches(tokens[2],'підприємець','підпри'):
+        return True
+    # If a numeric Ukrainian identifier accompanies the explicit physical-person
+    # and entrepreneur markers, tolerate one omitted middle word.
+    if numeric_support and len(tokens)>=2:
+        return ((_word_matches(tokens[0],'фізична','фізичн') and
+                 _word_matches(tokens[1],'підприємець','підпри')) or
+                (_word_matches(tokens[0],'особа','особ') and
+                 _word_matches(tokens[1],'підприємець','підпри')))
+    return False
+
+def _normalized_form_key(value):
+    if isinstance(value,str):
+        literal=unicodedata.normalize('NFKC',value).casefold().strip()
+        if literal in _FORMS:return literal
+    return ' '.join(_normalized_name(value))
 
 def classify(identifier, organization=None, *, source=''):
     org=organization if isinstance(organization,dict) else {}
@@ -62,15 +136,23 @@ def classify(identifier, organization=None, *, source=''):
     for key in ['legalForm','legalFormCode','organizationType','typeOfEntity']:
         raw=org.get(key)
         if raw in (None,''):continue
-        form=_FORMS.get(' '.join(raw.casefold().split())) if isinstance(raw,str) else None
+        normalized_form=_normalized_form_key(raw) if isinstance(raw,str) else ''
+        form=_FORMS.get(normalized_form)
+        if form is None and isinstance(raw,str):
+            if _fop_name_evidence(raw,'passport_or_other'):
+                form='individual_entrepreneur'
+            elif _OTHER_NAME.match(normalized_form):
+                form='legal_entity'
         if not form:return conflict('unrecognized_explicit_legal_form')
         evidence.append((form,'primary.'+key))
     primary_id=org.get('identifier') if isinstance(org.get('identifier'),dict) else {}
     for key,name in [('identifier.legalName',primary_id.get('legalName')),('name',org.get('name'))]:
         if not isinstance(name,str):continue
-        text=' '.join(name.strip(' «»"\'').split())
-        if _FOP_NAME.search(text):evidence.append(('individual_entrepreneur','primary.'+key))
-        if _OTHER_NAME.search(text):evidence.append(('legal_entity','primary.'+key))
+        tokens=_normalized_name(name)
+        normalized_name=' '.join(tokens)
+        if _fop_name_evidence(name,result['identifier_format_hint']):
+            evidence.append(('individual_entrepreneur','primary.'+key))
+        if _OTHER_NAME.match(normalized_name):evidence.append(('legal_entity','primary.'+key))
     kinds={kind for kind,_ in evidence}
     result['subject_nature_sources']=[src for _,src in evidence]
     if len(kinds)>1:return conflict('subject_nature_evidence_conflict')

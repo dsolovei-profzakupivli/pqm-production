@@ -57,7 +57,7 @@ function fixture() {
       last_application_date: '2026-09-22', verification_date: null,
       verification_officer: null}
   ].map(item => ({...item,
-    classification_version: 'subject-nature-20261030-v2', classification_status: 'resolved',
+    classification_version: 'subject-nature-20261031-v3', classification_status: 'resolved',
     classification_reason: 'established_subject_nature', classification_reason_label: 'Тип підтверджено у fixture',
     target_sheet: item.entity_type === 'individual_entrepreneur' ? 'ФОП' : 'ЮО', append_allowed: true,
     google_sync_last_decided_application_date: item.last_application_date,
