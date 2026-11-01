@@ -142,6 +142,7 @@ def main():
                              'edr_preview_skipped_v1_6b9830b.zip',
                              'google_writer_supplier_types_v1_97788.zip',
                              'google_edr_date_only_midnight_v1_97788.zip',
+                             'supplier_classification_v3_baseline_59177.zip',
                              'edr_status_evidence_v1_15b8.zip',
                              'date_only_edr_status_integrated_v1_12329.zip',
                              'date_only_status_integrated_v2_a1f8.zip')

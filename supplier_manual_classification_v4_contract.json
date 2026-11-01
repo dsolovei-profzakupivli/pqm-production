@@ -21,11 +21,12 @@
     "supplier_classification.py": "f2c244f08b71d235212d52bbac9f63f1abc0b8348c6ddf830dcd3e950e9b9d40",
     "supplier_classification_v3_contract.json": "86a5bedaba128eb1e9871f8ad2ff4d0906ce92343ec92d9e3bcd2c91862170a6",
     "test_supplier_classification_v3_integrity.py": "d84dd322b126859e6f7db7d157fb295462fd41d4bd5071e66c18451560a3d62a",
-    "test_supplier_manual_classification_v4_integrity.py": "4619892fd547c23ea9067680ac2fec8c7d920fa7d75a57466d60f6177074fcab",
-    "validation/run_local_release.py": "8af54712aebd585ce6a5bb926c91f651c1889db09e832afdbca54df2e83d2077",
-    "validation/run_supplier_classification_v3_integrity.py": "00a8f4c05fc7c3e500da0fb6ef78008d5b5921c628b649c6e761d7a2c1120bf8",
+    "test_supplier_manual_classification_v4_integrity.py": "208347fae9b341bde5f13983f41fcbaf94b7f792601ea127ad2e2b66463f5015",
+    "validation/run_local_release.py": "5bfac145865396cc04e462e8f4874c7f3328f7eec1220690a0d5e4b4aefbb845",
+    "validation/run_supplier_classification_v3_integrity.py": "2745b56838a2be6cffb815e0d76196756981cbe6e82b9ebd072225f5222dd183",
     "validation/run_messages_integrated_v1_history.py": "cd3d7bd834867ddac31cc55905f07d06f8a9ebae364c49ad057bbd4b0aabd81a",
-    "validation/run_integrated_messages_v1_integrity.py": "72a91dce66dc577891c8a80bfda349e73709c27a9cc057e3c4e4ea7dcdc35500"
+    "validation/run_integrated_messages_v1_integrity.py": "72a91dce66dc577891c8a80bfda349e73709c27a9cc057e3c4e4ea7dcdc35500",
+    "validation/fixtures/supplier_classification_v3_baseline_59177.zip": "49445ff35cb5f77c77095c96b8fb4f06de358b81c40b3ccd7dc0753b8c855bf8"
   },
   "mutation_targets": [
     "app.js",
@@ -48,6 +49,7 @@
     "validation/run_integrated_messages_v1_integrity.py",
     "validation/run_local_release.py",
     "validation/run_messages_integrated_v1_history.py",
-    "validation/run_supplier_classification_v3_integrity.py"
+    "validation/run_supplier_classification_v3_integrity.py",
+    "validation/fixtures/supplier_classification_v3_baseline_59177.zip"
   ]
 }

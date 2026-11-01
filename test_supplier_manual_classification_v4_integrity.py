@@ -1,14 +1,17 @@
 """Additive integrity contract for manual supplier classification v4."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
+import sys
 import unittest
 
 
 ROOT = Path(__file__).parent
 MANIFEST = ROOT / "supplier_manual_classification_v4_contract.json"
-PINNED_MANIFEST_SHA256 = "b9354eb168992e78170bfefa226cdbef2a004f4bfb304829e2b496e559774f54"
+PINNED_MANIFEST_SHA256 = "8a8f0933241ff3672fca39964c9a50e8bf52ad7aa265798a85d007d09f849410"
 SELF_FILE = "test_supplier_manual_classification_v4_integrity.py"
 TEXT_SUFFIXES = {".py", ".js", ".cjs", ".gs", ".html", ".css", ".json", ".md", ".sql", ".txt", ".yml", ".yaml"}
 
@@ -75,10 +78,31 @@ class SupplierManualClassificationV4IntegrityTests(unittest.TestCase):
     def test_v3_integrity_runner_uses_exact_baseline_tree(self):
         runner = (ROOT / "validation/run_supplier_classification_v3_integrity.py").read_text(encoding="utf-8")
         self.assertIn('BASELINE = "59177be3e98540c53484962cc7f349a157e7b0bf"', runner)
-        self.assertIn('["git", "archive", "--format=zip"', runner)
+        self.assertIn('FIXTURE_RELATIVE = Path("validation/fixtures/supplier_classification_v3_baseline_59177.zip")', runner)
+        self.assertIn('FIXTURE_SHA256 = "49445ff35cb5f77c77095c96b8fb4f06de358b81c40b3ccd7dc0753b8c855bf8"', runner)
         self.assertIn('"test_supplier_classification_v3_integrity"', runner)
         self.assertIn('manifest["historical_manifests"]', runner)
         self.assertIn('path.write_bytes(lf)', runner)
+        self.assertNotIn('["git"', runner)
+
+    def test_v3_integrity_runner_executes_without_git(self):
+        runner = ROOT / "validation/run_supplier_classification_v3_integrity.py"
+        env = os.environ.copy()
+        env["PATH"] = ""
+        env.pop("PQM_RELEASE_SOURCE_ROOT", None)
+        result = subprocess.run(
+            [sys.executable, "-B", str(runner)],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("Ran 5 tests", output)
+        self.assertIn("OK", output)
 
     def test_messages_history_runner_uses_exact_parent_and_isolated_dependencies(self):
         runner = (ROOT / "validation/run_messages_integrated_v1_history.py").read_text(encoding="utf-8")
