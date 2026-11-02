@@ -37,6 +37,8 @@ PROJECT_SCOPES = frozenset({
     'https://www.googleapis.com/auth/userinfo.email',
 })
 RENDER_SECRET_DIR = Path('/etc/secrets')
+RENDER_SECRET_VERSION_POINTER = '..data'
+RENDER_SECRET_VERSION_DIR_RE = re.compile(r'\.\.[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}\.[0-9]+')
 
 
 def _credential_mode_allowed(mode, *, render_managed):
@@ -177,7 +179,7 @@ def _read_bounded_fd(fd, limit):
 
 
 def _read_render_secret_symlink(path):
-    """Read one Render-managed link, pinning and rechecking both link and target identity."""
+    """Read a direct secret link or Render's pinned ..data/versioned-dir projection."""
     root = Path(os.path.abspath(os.fspath(RENDER_SECRET_DIR)))
     candidate = Path(os.path.abspath(os.fspath(path)))
     if not _is_render_secret_path(candidate, root) or os.name == 'nt':
@@ -191,7 +193,21 @@ def _read_render_secret_symlink(path):
         if not stat.S_ISLNK(link_before.st_mode):
             raise ValueError('Render Secret File link changed before reading')
         target_text = os.readlink(link_name, dir_fd=root_fd)
-        parts = _render_secret_target_parts(target_text, root)
+        version_pointer_before = None
+        version_pointer_text = None
+        versioned_target = target_text == f'{RENDER_SECRET_VERSION_POINTER}/{link_name}'
+        if versioned_target:
+            version_pointer_before = os.stat(RENDER_SECRET_VERSION_POINTER, dir_fd=root_fd,
+                                             follow_symlinks=False)
+            if not stat.S_ISLNK(version_pointer_before.st_mode):
+                raise ValueError('Render Secret version pointer is not a symlink')
+            version_pointer_text = os.readlink(RENDER_SECRET_VERSION_POINTER, dir_fd=root_fd)
+            if (not RENDER_SECRET_VERSION_DIR_RE.fullmatch(version_pointer_text) or
+                    '/' in version_pointer_text or '\\' in version_pointer_text):
+                raise ValueError('Render Secret version pointer target rejected')
+            parts = [version_pointer_text, link_name]
+        else:
+            parts = _render_secret_target_parts(target_text, root)
         target_fd, target_before, directory_fds, directory_ids = _open_render_secret_target(root_fd, parts)
         if (target_before.st_dev != root_before.st_dev or
                 not _credential_mode_allowed(target_before.st_mode, render_managed=True)):
@@ -209,6 +225,14 @@ def _read_render_secret_symlink(path):
                 not stat.S_ISLNK(link_after.st_mode) or
                 os.readlink(link_name, dir_fd=root_fd) != target_text):
             raise ValueError('Render Secret File link changed while reading')
+        if versioned_target:
+            version_pointer_after = os.stat(RENDER_SECRET_VERSION_POINTER, dir_fd=root_fd,
+                                            follow_symlinks=False)
+            if ((version_pointer_before.st_dev, version_pointer_before.st_ino) !=
+                    (version_pointer_after.st_dev, version_pointer_after.st_ino) or
+                    not stat.S_ISLNK(version_pointer_after.st_mode) or
+                    os.readlink(RENDER_SECRET_VERSION_POINTER, dir_fd=root_fd) != version_pointer_text):
+                raise ValueError('Render Secret version pointer changed while reading')
         target_check_fd, target_check, check_fds, check_ids = _open_render_secret_target(root_fd, parts)
         try:
             if ((target_after.st_dev, target_after.st_ino) !=
