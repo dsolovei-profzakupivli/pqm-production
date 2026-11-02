@@ -38,6 +38,17 @@ function pqmSandboxControlledDigest_(value) {
   )).replace(/=+$/, '');
 }
 
+function pqmSandboxIsCanonicalDigest_(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value)) return false;
+  try {
+    var decoded = Utilities.base64DecodeWebSafe(value);
+    return decoded.length === 32 &&
+      Utilities.base64EncodeWebSafe(decoded).replace(/=+$/, '') === value;
+  } catch (_) {
+    return false;
+  }
+}
+
 function pqmSandboxControlledPlanDigest_(entries) {
   return pqmSandboxControlledDigest_(entries.slice().sort(function(a, b) {
     return a.code < b.code ? -1 : a.code > b.code ? 1 :

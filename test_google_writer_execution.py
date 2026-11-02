@@ -1,4 +1,6 @@
 import io
+import base64
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -11,6 +13,7 @@ import google_writer_execution as execution
 
 
 NOW=datetime(2026,10,13,4,0,tzinfo=timezone.utc)
+TEST_DIGEST=base64.urlsafe_b64encode(hashlib.sha256(b'PQM synthetic Preview digest').digest()).decode().rstrip('=')
 
 
 class ExecutionTransportTests(unittest.TestCase):
@@ -20,7 +23,7 @@ class ExecutionTransportTests(unittest.TestCase):
             self.calls.append((request,timeout))
             payload=json.loads(json.loads(request.data)['parameters'][0]['payload'])
             result={k:payload[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
-            result.update(status='PREVIEW' if payload['action']=='preview' else 'COMPLETE',digest='a'*64,counts={'update':2.0})
+            result.update(status='PREVIEW' if payload['action']=='preview' else 'COMPLETE',digest=TEST_DIGEST,counts={'update':2.0})
             return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
         token=lambda env:{'environment':env,'access_token':'TEST_ONLY_TOKEN','scopes':sorted(execution.PROJECT_SCOPES),'expires_at':NOW.timestamp()+3600}
         args={'configured':True,'opener':opener,'clock':lambda:NOW}|options
@@ -56,8 +59,8 @@ class ExecutionTransportTests(unittest.TestCase):
             self.assertEqual(self.calls,[])
 
     def test_ticket_actor_environment_tamper_and_expiry(self):
-        client=self.client();ticket=execution.preview_ticket(client,'a'*32,'uo','b'*64)
-        self.assertEqual(execution.verify_ticket(client,ticket,'uo')['digest'],'b'*64)
+        client=self.client();ticket=execution.preview_ticket(client,'a'*32,'uo',TEST_DIGEST)
+        self.assertEqual(execution.verify_ticket(client,ticket,'uo')['digest'],TEST_DIGEST)
         for user,value in [('other',ticket),('uo',ticket+'tamper')]:
             with self.assertRaises(ValueError):execution.verify_ticket(client,value,user)
         with self.assertRaises(ValueError):execution.verify_ticket(self.client('SANDBOX'),ticket,'uo')
@@ -68,7 +71,7 @@ class ExecutionTransportTests(unittest.TestCase):
         opener=Mock(side_effect=OSError('TEST_SECRET_DO_NOT_LEAK'))
         client=self.client(opener=opener)
         with self.assertRaisesRegex(execution.ExecutionOutcomeUnknown,'no automatic retry') as error:
-            client.invoke('apply','a'*32,'uo',digest='b'*64)
+            client.invoke('apply','a'*32,'uo',digest=TEST_DIGEST)
         self.assertNotIn('TEST_SECRET_DO_NOT_LEAK',str(error.exception));self.assertEqual(opener.call_count,1)
         with self.assertRaises(execution.ExecutionOutcomeUnknown):execution.NoRedirect().redirect_request(None,None,None,None,None,None)
 
@@ -122,14 +125,14 @@ class ExecutionStateTests(unittest.TestCase):
                 execution.save_settings(con,{'enabled':True,'hour':7,'minute':0},config['revision'],'admin')
                 revision=execution.settings(con)['revision']
             execution.claim_run(self.path,'PROD',run,'uo',trigger,revision)
-            client=Mock();client.invoke.side_effect=[{'digest':'c'*64},{'status':'PARTIAL_SAFE_OPERATIONS_REMAIN','counts':{'update':1}}]
+            client=Mock();client.invoke.side_effect=[{'digest':TEST_DIGEST},{'status':'PARTIAL_SAFE_OPERATIONS_REMAIN','counts':{'update':1}}]
             execution.execute_claimed(self.path,client,run,'uo',trigger=trigger)
             self.assertEqual([call.args[0] for call in client.invoke.call_args_list],['preview','apply'])
             self.assertEqual(execution.claim_run(self.path,'PROD',run,'uo',trigger)['status'],'partial')
 
     def test_guard_change_blocks_remote_apply(self):
         execution.claim_run(self.path,'PROD','a'*32,'uo','manual')
-        client=Mock();guard=Mock(side_effect=[True,False]);client.invoke.return_value={'digest':'b'*64}
+        client=Mock();guard=Mock(side_effect=[True,False]);client.invoke.return_value={'digest':TEST_DIGEST}
         self.assertEqual(execution.execute_claimed(self.path,client,'a'*32,'uo',guard=guard)['status'],'CONFIGURATION_REJECTED')
         self.assertEqual(client.invoke.call_count,1)
 
@@ -161,7 +164,7 @@ class ExecutionStateTests(unittest.TestCase):
             else: clock[0]=NOW+timedelta(hours=1)
         scheduler.wakeup.wait=wait
         def invoke(action,*args,**kwargs):
-            if action=='preview': return {'digest':'c'*64}
+            if action=='preview': return {'digest':TEST_DIGEST}
             # Editing the schedule during an active Apply must not clear its lane.
             with closing(sqlite3.connect(self.path)) as con,con:
                 execution.save_settings(con,{'enabled':False,'hour':8,'minute':0},2,'admin',clock[0])

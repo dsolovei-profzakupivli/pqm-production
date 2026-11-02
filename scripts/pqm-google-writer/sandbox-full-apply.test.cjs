@@ -9,8 +9,62 @@ const {spawnSync} = require('node:child_process');
 const source = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs', 'PqmSandboxPreview.gs',
   'PqmSandboxControlledApply.gs', 'PqmSandboxFullApply.gs']
   .map(name => fs.readFileSync(__dirname + '/' + name, 'utf8')).join('\n');
+const executionSource = [
+  fs.readFileSync(path.join(__dirname, 'mirror-alignment/sandbox/PqmSandboxControlledApply.gs'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'mirror-alignment/sandbox/PqmSandboxExecution.gs'), 'utf8')
+].join('\n');
 const clone = value => JSON.parse(JSON.stringify(value));
 function response(text) { return {getSelectedButton: () => 'OK', getResponseText: () => text}; }
+
+function executionFixture(planDigest) {
+  const properties = new Map([['PQM_EXECUTION_SHARED_SECRET', 'S'.repeat(40)] ]);
+  let applyCalls = 0, locked = false;
+  const context = {
+    Date,
+    PQM_MIRROR_ENV: {environment: 'SANDBOX', scriptId: 'script-sandbox', spreadsheetId: 'sheet-sandbox'},
+    Utilities: {
+      computeHmacSha256Signature: (value, secret) => crypto.createHmac('sha256', secret).update(value).digest(),
+      base64EncodeWebSafe: value => Buffer.from(value).toString('base64url'),
+      base64DecodeWebSafe: value => [...Buffer.from(value, 'base64url')]
+    },
+    PropertiesService: {getScriptProperties: () => ({
+      getProperty: key => properties.get(key) || null,
+      setProperty: (key, value) => {properties.set(key, value);},
+      getProperties: () => Object.fromEntries(properties)
+    })},
+    ScriptApp: {getScriptId: () => 'script-sandbox'},
+    SpreadsheetApp: {openById: id => ({getId: () => id})},
+    LockService: {getScriptLock: () => ({
+      tryLock: () => {if (locked) return false; locked = true; return true;},
+      releaseLock: () => {locked = false;}
+    })},
+    PQM_EXECUTION_CONTEXT_: null,
+    pqmSandboxControlledSpreadsheetId_: () => 'sheet-sandbox',
+    pqmSandboxFullLoad_: () => ({plan_digest: planDigest, plan: {counts: {
+      appended: 0, updated: 0, conflicts: 0, errors: 0, unchanged: 0
+    }}, state: {payload_digest: 'payload-digest'}}),
+    pqmSandboxDailySync: ({expectedDigest, payloadDigest}) => {
+      assert.equal(expectedDigest, planDigest);
+      assert.equal(payloadDigest, 'payload-digest');
+      applyCalls++;
+      return {status: 'COMPLETE', append: 0, update: 1, conflict: 0, error: 0,
+        remaining_safe: 0, batches: 1};
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(executionSource, context);
+  context.pqmSandboxControlledSpreadsheetId_ = () => 'sheet-sandbox';
+  function request(action, requestId, expectedDigest) {
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const payload = JSON.stringify({environment: 'SANDBOX', scriptId: 'script-sandbox',
+      spreadsheetId: 'sheet-sandbox', contract: 'pqm-mirror-datetime-v1', action,
+      requestId, actor: 'synthetic-admin', trigger: 'manual', issuedAt,
+      expiresAt: issuedAt + 300, expectedDigest});
+    const signature = crypto.createHmac('sha256', 'S'.repeat(40)).update(payload).digest('base64url');
+    return {payload, signature};
+  }
+  return {context, properties, request, get applyCalls() {return applyCalls;}};
+}
 
 function fixture() {
   const logs = [], context = {console: {log: text => logs.push(text)}, Date, Map, Set};
@@ -727,4 +781,37 @@ test('sandbox host and token guards remain the only source of registry credentia
   fetched = false;
   assert.throws(() => context.pqmSandboxFetchRegistry_(), /endpoint guard/);
   assert.equal(fetched, false);
+});
+
+test('Execution API keeps one canonical Preview digest through receipt and guarded Apply', () => {
+  const digest = crypto.createHash('sha256').update('synthetic canonical plan').digest('base64url');
+  assert.equal(digest.length, 43);
+  const f = executionFixture(digest);
+  const preview = f.context.pqmSandboxExecution(f.request('preview', 'a'.repeat(32)));
+  assert.equal(preview.digest, digest);
+  assert.equal(f.applyCalls, 0);
+
+  const result = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest));
+  assert.equal(result.digest, digest);
+  assert.equal(result.status, 'COMPLETE');
+  assert.equal(f.applyCalls, 1);
+  const replay = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest));
+  assert.deepEqual(clone(replay), clone(result));
+  assert.equal(f.applyCalls, 1);
+
+  const stale = crypto.createHash('sha256').update('different plan').digest('base64url');
+  assert.throws(() => f.context.pqmSandboxExecution(f.request('apply', 'c'.repeat(32), stale)),
+    /stale execution Preview; zero writes/);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const lastValue = alphabet.indexOf(digest.at(-1));
+  const nonCanonical = digest.slice(0, -1) + alphabet[lastValue ^ 1];
+  for (const invalid of ['a'.repeat(64), digest + '=', digest.slice(0, -1), nonCanonical]) {
+    assert.equal(f.context.pqmSandboxIsCanonicalDigest_(invalid), false);
+    assert.throws(() => f.context.pqmSandboxExecution(f.request('apply', 'd'.repeat(32), invalid)),
+      /identity or lifetime rejected/);
+  }
+  const tampered = f.request('preview', 'e'.repeat(32));
+  tampered.signature = 'A'.repeat(43);
+  assert.throws(() => f.context.pqmSandboxExecution(tampered), /execution authorization rejected/);
+  assert.equal(f.applyCalls, 1);
 });

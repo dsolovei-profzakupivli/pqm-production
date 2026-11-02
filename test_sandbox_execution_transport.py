@@ -1,5 +1,7 @@
 """Offline regressions for the real SANDBOX scoped Execution transport."""
 import io
+import base64
+import hashlib
 import json
 import os
 import stat
@@ -27,6 +29,7 @@ class SandboxExecutionTransportTests(unittest.TestCase):
             'scopes':sorted(execution.PROJECT_SCOPES),'expires_at':NOW.timestamp()+3600}
         self.client = execution.ExecutionClient('SANDBOX',self.deployment,'OFFLINE_SECRET_'+'x'*32,
             self.token,configured=True,clock=lambda:NOW)
+        self.preview_digest=base64.urlsafe_b64encode(hashlib.sha256(b'PQM synthetic Preview digest').digest()).decode().rstrip('=')
         self.calls = []
         self.network = patch.object(runtime.urllib.request,'build_opener').start().return_value
         self.network.open.side_effect = self.fake_open
@@ -41,7 +44,8 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         body=json.loads(request.data)
         message=json.loads(body['parameters'][0]['payload'])
         result={k:message[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
-        result.update(status='PREVIEW',digest='a'*64,counts={'update':0})
+        result.update(status='PREVIEW' if message['action']=='preview' else 'APPLIED',
+            digest=self.preview_digest,counts={'update':0})
         return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
 
     def request(self):
@@ -56,12 +60,62 @@ class SandboxExecutionTransportTests(unittest.TestCase):
     def test_default_adapter_preview_real_scoped_guard_no_apply_or_receipts(self):
         result=self.client.invoke('preview','a'*32,'uo')
         self.assertEqual(result['status'],'PREVIEW')
+        self.assertEqual(result['digest'],self.preview_digest)
         self.assertEqual(len(self.calls),1)
         message=json.loads(json.loads(self.calls[0].data)['parameters'][0]['payload'])
         self.assertEqual(message['action'],'preview')
         self.assertFalse(runtime._egress.active)
         self.assertIsNone(runtime._egress.execution_identity)
         self.assertNotIn('OFFLINE_TOKEN',json.dumps(result))
+
+    def test_preview_ticket_and_apply_preserve_canonical_base64url_digest(self):
+        preview=self.client.invoke('preview','a'*32,'uo')
+        ticket=execution.preview_ticket(self.client,'a'*32,'uo',preview['digest'])
+        verified=execution.verify_ticket(self.client,ticket,'uo')
+        self.assertEqual(verified['digest'],self.preview_digest)
+        self.client.invoke('apply','b'*32,'uo',digest=verified['digest'])
+        message=json.loads(json.loads(self.calls[-1].data)['parameters'][0]['payload'])
+        self.assertEqual(message['expectedDigest'],self.preview_digest)
+        self.assertEqual(len(self.calls),2)
+
+    def test_receipt_ticket_and_apply_reject_noncanonical_sha256_digests(self):
+        alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+        final=alphabet.index(self.preview_digest[-1])
+        noncanonical=self.preview_digest[:-1]+alphabet[final+1]
+        invalid=(None, 123, 'a'*64, self.preview_digest+'=', self.preview_digest[:-1],
+                 self.preview_digest[:-1]+'$', noncanonical)
+        for index,digest in enumerate(invalid):
+            with self.subTest(digest_kind=type(digest).__name__,index=index):
+                self.preview_digest=digest
+                with self.assertRaisesRegex(execution.ExecutionOutcomeUnknown,'Invalid Preview receipt'):
+                    self.client.invoke('preview',f'{index+1:032x}','uo')
+                ticket=execution.preview_ticket(self.client,f'{index+1:032x}','uo',digest)
+                with self.assertRaisesRegex(ValueError,'Reviewed Preview ticket is invalid or expired'):
+                    execution.verify_ticket(self.client,ticket,'uo')
+                with self.assertRaisesRegex(ValueError,'Reviewed Preview digest required'):
+                    self.client.invoke('apply',f'{index+1:032x}','uo',digest=digest)
+        self.assertEqual(len(self.calls),len(invalid))
+
+    def test_sandbox_egress_guard_accepts_only_canonical_apply_digest(self):
+        request=self.request()
+        body=json.loads(request.data)
+        envelope=body['parameters'][0]
+        payload=json.loads(envelope['payload'])
+        payload.update(action='apply',expectedDigest=self.preview_digest)
+        envelope['payload']=json.dumps(payload)
+        accepted=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
+        self.assertEqual(self.validate(accepted),'script.googleapis.com')
+        alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+        final=alphabet.index(self.preview_digest[-1])
+        invalid=(self.preview_digest+'=',self.preview_digest[:-1]+'$',
+                 self.preview_digest[:-1]+alphabet[final+1],'a'*64)
+        for digest in invalid:
+            with self.subTest(digest=digest):
+                payload['expectedDigest']=digest
+                envelope['payload']=json.dumps(payload)
+                changed=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
+                with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
+                    self.validate(changed)
 
     def test_oauth_refresh_default_adapter_uses_same_scoped_guard(self):
         with tempfile.TemporaryDirectory() as directory:

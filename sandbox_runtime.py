@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 from contextlib import closing
+from execution_digest import is_canonical_sha256_b64url
 import ipaddress
 import json
 import os
@@ -433,7 +434,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
                 payload['action'] not in ('preview', 'apply') or
-                (payload['action'] == 'apply' and not re.fullmatch(r'[a-f0-9]{64}', str(payload.get('expectedDigest', '')))) or
+                (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
                 not re.fullmatch(r'Bearer [A-Za-z0-9._~+/-]+=*', request.get_header('Authorization', ''))):
             raise ValueError()
     except (ValueError, KeyError, TypeError, IndexError):

@@ -13,9 +13,11 @@ FIXTURE = Path("validation/fixtures/messages_integrated_v1_appjs_baseline_6c310.
 FIXTURE_SHA256 = "3bf1aff4aa18d5dd917b417430fac963fca07f3c386f942621302af80c2d58d4"
 PARENT_FIXTURE = Path("validation/fixtures/messages_parent_c246edef.zip")
 PARENT_FIXTURE_SHA256 = "2fc0787617767048d92870559d4654dd989e356a898ef58c06015453ebaf71ad"
+SANDBOX_RUNTIME_FIXTURE = Path("sandbox_runtime_messages_integrated_v1_86ea864.py")
+SANDBOX_RUNTIME_SHA256 = "7ce145ff533c134440ad138651660e0c0434a1a7028ba4a7fd8698daf9407499"
 HISTORICAL_COMPONENTS = {
     "auth_access.py", "auth_ui.js", "scheduler_runtime.py", "nazk_workflow.py",
-    "google_writer_execution.py", "table_widths_ui.js", "violation_protocol_docx.py",
+    "google_writer_execution.py", "sandbox_runtime.py", "table_widths_ui.js", "violation_protocol_docx.py",
     "theme.css", "styles.css",
 }
 
@@ -54,6 +56,16 @@ def main() -> int:
                 if not target.is_relative_to(tree):
                     raise SystemExit("Unsafe Messages parent fixture path")
                 target.write_bytes(archive.read(relative))
+        # This historical integrated manifest pins the exact runtime source at
+        # 86ea864. Restore that one component so a later reviewed digest change
+        # is tested by its additive contract instead of rewriting v1 history.
+        runtime_bytes = SANDBOX_RUNTIME_FIXTURE.read_bytes()
+        if hashlib.sha256(runtime_bytes.replace(b"\r\n", b"\n")).hexdigest() != SANDBOX_RUNTIME_SHA256:
+            raise SystemExit("Messages v1 sandbox runtime baseline fixture SHA-256 mismatch")
+        runtime_target = (tree / "sandbox_runtime.py").resolve()
+        if not runtime_target.is_relative_to(tree):
+            raise SystemExit("Unsafe Messages v1 sandbox runtime fixture path")
+        runtime_target.write_bytes(runtime_bytes)
         with zipfile.ZipFile(archive_path) as archive:
             members = {item.filename for item in archive.infolist() if not item.is_dir()}
             if members != {"app.js"}:

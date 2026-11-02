@@ -20,7 +20,7 @@ function pqmSandboxExecution(envelope) {
       !Number.isInteger(request.issuedAt) || !Number.isInteger(request.expiresAt) ||
       request.issuedAt>now+30 || request.expiresAt<now || request.expiresAt-request.issuedAt>300 ||
       request.expiresAt<request.issuedAt ||
-      (request.action==='apply' && !/^[0-9a-f]{64}$/.test(request.expectedDigest || '')))
+      (request.action==='apply' && !pqmSandboxIsCanonicalDigest_(request.expectedDigest)))
     throw new Error('PQM: execution identity or lifetime rejected');
   if (PQM_EXECUTION_CONTEXT_) throw new Error('PQM: nested execution rejected');
   var lock = LockService.getScriptLock();

@@ -18,6 +18,7 @@ import urllib.parse
 import uuid
 from zoneinfo import ZoneInfo
 from pathlib import Path
+from execution_digest import is_canonical_sha256_b64url
 
 KYIV = ZoneInfo('Europe/Kyiv')
 JOB = 'google_writer'
@@ -439,7 +440,7 @@ class ExecutionClient:
             raise ValueError('Unsupported execution action')
         if not re.fullmatch(r'[0-9a-f]{32}', request_id) or not actor or len(actor) > 128:
             raise ValueError('Invalid execution identity')
-        if action == 'apply' and not re.fullmatch(r'[0-9a-f]{64}', str(digest or '')):
+        if action == 'apply' and not is_canonical_sha256_b64url(digest):
             raise ValueError('Reviewed Preview digest required')
         script, sheet, function = IDENTITIES[self.environment]
         issued = int(self.clock().timestamp())
@@ -474,7 +475,7 @@ class ExecutionClient:
                 result.get('scriptId') != script or result.get('spreadsheetId') != sheet or
                 result.get('contract') != CONTRACT or result.get('requestId') != request_id):
             raise ExecutionOutcomeUnknown('Execution response identity mismatch; reconciliation required')
-        if action == 'preview' and not re.fullmatch(r'[0-9a-f]{64}', str(result.get('digest', ''))):
+        if action == 'preview' and not is_canonical_sha256_b64url(result.get('digest')):
             raise ExecutionOutcomeUnknown('Invalid Preview receipt')
         # Return only technical receipts/counters; never remote errors, stack traces or secrets.
         safe = {key:result.get(key) for key in ('environment','scriptId','spreadsheetId','contract','requestId','status','digest')}
@@ -718,7 +719,7 @@ def verify_ticket(client,ticket,actor):
         if (value['environment']!=client.environment or value['actor']!=actor or
                 value['expires_at']<client.clock().timestamp() or
                 not re.fullmatch('[0-9a-f]{32}',value['request_id']) or
-                not re.fullmatch('[0-9a-f]{64}',value['digest'])):
+                not is_canonical_sha256_b64url(value['digest'])):
             raise ValueError('Ticket context mismatch')
         return value
     except Exception:
