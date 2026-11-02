@@ -194,9 +194,10 @@ class SandboxExecutionTransportTests(unittest.TestCase):
                         with self.assertRaises((OSError,ValueError)):
                             execution._load_execution_credential(source)
                 if data_link.exists() or data_link.is_symlink():data_link.unlink()
-                data_link.symlink_to(outside.name)
-                version_link=root/'..2026_11_01_21_12_41.1089918540'
+                version_link=root/'..2026_11_02_09_30_00.1089918541'
                 version_link.symlink_to(outside,target_is_directory=True)
+                data_link.symlink_to(version_link.name)
+                self.assertTrue(version_link.is_symlink())
                 with self.assertRaises((OSError,ValueError)):
                     execution._load_execution_credential(source)
 
