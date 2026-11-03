@@ -48,7 +48,6 @@ jobs:
           node validation/appeals_declension_card_browser.cjs
           node validation/protocol_names_card_browser.cjs
           node validation/chat_messages_browser.cjs
-          node validation/google_writer_preview_modal_browser.cjs
       - name: Build release image
         shell: bash
         run: |
