@@ -53,13 +53,46 @@ async function applyGoogleWriterSchedule(){
     googleWriterSchedulePreview=null;await loadGoogleWriterJob();toast('Збережено лише розклад; sync не запускався','success');
   }catch(error){googleWriterSchedulePreview=null;toast(error.message,'error');}
 }
+function confirmGoogleWriterPreview(preview){
+  const dialog=document.getElementById('googleWriterPreviewDialog');
+  const applyButton=document.getElementById('googleWriterPreviewApply');
+  if(!dialog||dialog.open)return Promise.resolve(false);
+  const counts=preview?.counts||{};
+  document.getElementById('googleWriterPreviewAppend').textContent=Number(counts.append||0).toLocaleString('uk-UA');
+  document.getElementById('googleWriterPreviewUpdate').textContent=Number(counts.update||0).toLocaleString('uk-UA');
+  document.getElementById('googleWriterPreviewConflict').textContent=Number(counts.conflict||0).toLocaleString('uk-UA');
+  applyButton.disabled=false;
+  return new Promise(resolve=>{
+    let applyRequested=false,settled=false;
+    const finish=value=>{if(settled)return;settled=true;resolve(value)};
+    const onApply=()=>{
+      if(applyRequested||settled)return;
+      applyRequested=true;applyButton.disabled=true;dialog.close('apply');
+    };
+    const onClose=()=>finish(dialog.returnValue==='apply'&&applyRequested);
+    const onBackdrop=event=>{if(event.target===dialog&&dialog.open)dialog.close('cancel')};
+    applyButton.addEventListener('click',onApply);
+    dialog.addEventListener('close',onClose,{once:true});
+    dialog.addEventListener('click',onBackdrop);
+    try{dialog.showModal()}catch(error){
+      applyButton.removeEventListener('click',onApply);
+      dialog.removeEventListener('close',onClose);
+      dialog.removeEventListener('click',onBackdrop);
+      finish(false);throw error;
+    }
+    dialog.addEventListener('close',()=>{
+      applyButton.removeEventListener('click',onApply);
+      dialog.removeEventListener('click',onBackdrop);
+    },{once:true});
+  });
+}
 async function manualGoogleWriter(){
   if(googleWriterBusy||!googleWriterJobState?.can_execute||!googleWriterJobState?.channel_ready||googleWriterJobState.blocked)return;
   googleWriterBusy=true;document.getElementById('pqmGoogleWriterRun').disabled=true;
   try{
     const request_id=crypto.randomUUID().replaceAll('-','');
     const preview=await request(`${API}/google-writer/preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id})});
-    if(!confirm(`PQM → Google Sheets: додати ${preview.counts.append||0}, оновити ${preview.counts.update||0}, конфліктів ${preview.counts.conflict||0}. Застосувати цей Preview?`))return;
+    if(!await confirmGoogleWriterPreview(preview))return;
     await request(`${API}/google-writer/apply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket:preview.ticket,confirmed:true})});
     toast('Запуск прийнято. Перевірте журнал; частковий результат не означає повний PASS.','success');
   }catch(error){toast(error.message,'error');}
