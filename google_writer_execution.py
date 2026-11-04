@@ -37,6 +37,18 @@ PROJECT_SCOPES = frozenset({
     'https://www.googleapis.com/auth/script.container.ui',
     'https://www.googleapis.com/auth/userinfo.email',
 })
+PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = '9be34ff2df1e661346176eeb'
+PARTIAL_RECONCILIATION_EVIDENCE = {
+    'initial_plan': {'append': 451, 'update': 2, 'conflict': 2},
+    'verified_append_rows': 50,
+    'append_value_mismatches': 0,
+    'duplicate_rows': 0,
+    'routing_mismatches': 0,
+    'protected_cell_mutations': 0,
+    'date_only_format_exceptions': 12,
+    'date_only_format_exceptions_approved': True,
+    'updates_disposition': 'RECOMPUTE_WITH_NEW_PREVIEW',
+}
 RENDER_SECRET_DIR = Path('/etc/secrets')
 RENDER_SECRET_VERSION_POINTER = '..data'
 RENDER_SECRET_VERSION_DIR_RE = re.compile(r'\.\.[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}\.[0-9]+')
@@ -430,24 +442,41 @@ class ExecutionClient:
             raise ExecutionConfigurationError('Execution channel not independently configured and attested')
 
     def invoke(self, action, request_id, actor, *, trigger='manual', digest=None,
-               manual_authorized=False):
+               manual_authorized=False, reconciliation_id=None,
+               request_fingerprint=None, evidence=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
         if background_jobs.disabled() and not manual_override:
             raise ExecutionConfigurationError('Background jobs disabled')
         self.validate()
-        if action not in {'preview', 'apply'} or trigger not in {'manual', 'scheduled'}:
+        if action not in {'preview', 'apply', 'reconcile_partial'} or trigger not in {'manual', 'scheduled'}:
             raise ValueError('Unsupported execution action')
         if not re.fullmatch(r'[0-9a-f]{32}', request_id) or not actor or len(actor) > 128:
             raise ValueError('Invalid execution identity')
         if action == 'apply' and not is_canonical_sha256_b64url(digest):
             raise ValueError('Reviewed Preview digest required')
+        evidence_digest = None
+        if action == 'reconcile_partial':
+            if trigger != 'manual' or manual_override is not True:
+                raise ValueError('Partial reconciliation is manual-admin only')
+            if (not isinstance(reconciliation_id, str) or
+                    not re.fullmatch(r'[0-9a-f]{32}', reconciliation_id) or
+                    request_fingerprint != PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT or
+                    evidence != PARTIAL_RECONCILIATION_EVIDENCE):
+                raise ValueError('Partial reconciliation evidence or identity rejected')
+            evidence_raw = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            evidence_digest = base64.urlsafe_b64encode(
+                hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode('ascii').rstrip('=')
         script, sheet, function = IDENTITIES[self.environment]
         issued = int(self.clock().timestamp())
         message = {'environment':self.environment, 'scriptId':script, 'spreadsheetId':sheet,
                    'contract':CONTRACT, 'action':action, 'requestId':request_id,
                    'actor':actor, 'trigger':trigger, 'issuedAt':issued, 'expiresAt':issued+300,
                    'expectedDigest':digest}
+        if action == 'reconcile_partial':
+            message.update(reconciliationId=reconciliation_id,
+                           requestFingerprint=request_fingerprint,
+                           evidence=evidence, evidenceDigest=evidence_digest)
         raw = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
         signature = base64.urlsafe_b64encode(hmac.new(self.shared_secret.encode(), raw.encode(), hashlib.sha256).digest()).decode().rstrip('=')
         token = self.token_provider(self.environment)
@@ -477,13 +506,175 @@ class ExecutionClient:
             raise ExecutionOutcomeUnknown('Execution response identity mismatch; reconciliation required')
         if action == 'preview' and not is_canonical_sha256_b64url(result.get('digest')):
             raise ExecutionOutcomeUnknown('Invalid Preview receipt')
+        if action == 'reconcile_partial' and (
+                result.get('status') != 'RECONCILED_PARTIAL' or
+                result.get('reconciliationId') != reconciliation_id or
+                result.get('requestFingerprint') != request_fingerprint or
+                result.get('evidenceDigest') != evidence_digest or
+                not is_canonical_sha256_b64url(result.get('digest'))):
+            raise ExecutionOutcomeUnknown('Invalid partial reconciliation receipt')
         # Return only technical receipts/counters; never remote errors, stack traces or secrets.
         safe = {key:result.get(key) for key in ('environment','scriptId','spreadsheetId','contract','requestId','status','digest')}
         counters = result.get('counts', {})
         if not isinstance(counters, dict) or any(type(v) not in (int,float) or not math.isfinite(v) or v < 0 or v != int(v) for v in counters.values()):
             raise ExecutionOutcomeUnknown('Invalid execution counters')
         safe['counts'] = {k:int(v) for k,v in counters.items() if k in {'append','update','conflict','error','remaining_safe','batches','skipped'}}
+        if action == 'reconcile_partial':
+            safe.update(reconciliationId=reconciliation_id,
+                        requestFingerprint=request_fingerprint,
+                        evidenceDigest=evidence_digest)
         return safe
+
+
+def request_id_fingerprint(request_id):
+    if not isinstance(request_id, str) or not re.fullmatch(r'[0-9a-f]{32}', request_id):
+        raise ValueError('Invalid request identity')
+    return hashlib.sha256(request_id.encode('utf-8')).hexdigest()[:24]
+
+
+def _reconciliation_time(now=None):
+    value = now or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        raise ValueError('Aware reconciliation clock required')
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def prepare_partial_reconciliation(path, environment, reconciliation_id,
+                                   request_fingerprint, actor, *, now=None):
+    """Persist a fail-closed reconciliation intent without releasing the unknown-run hold."""
+    if environment != 'SANDBOX':
+        raise PermissionError('Partial reconciliation is Sandbox-only')
+    if (not isinstance(reconciliation_id, str) or
+            not re.fullmatch(r'[0-9a-f]{32}', reconciliation_id) or
+            request_fingerprint != PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT or
+            not isinstance(actor, str) or not actor.strip() or len(actor) > 128):
+        raise ValueError('Partial reconciliation identity rejected')
+    stamp = _reconciliation_time(now)
+    evidence_raw = json.dumps(PARTIAL_RECONCILIATION_EVIDENCE, ensure_ascii=False,
+                              sort_keys=True, separators=(',', ':'))
+    evidence_digest = base64.urlsafe_b64encode(
+        hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode('ascii').rstrip('=')
+    with closing(sqlite3.connect(path, timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        con.row_factory = sqlite3.Row
+        known = con.execute('SELECT 1 FROM sqlite_master WHERE type=? AND name=?',
+                            ('table', 'google_writer_run_reconciliations')).fetchone()
+        if not known:
+            raise RuntimeError('Reconciliation storage is not initialized')
+        existing = con.execute('''SELECT reconciliation_id,request_id,environment,actor,
+                                         request_fingerprint,evidence_digest,evidence_json,state
+                                  FROM google_writer_run_reconciliations
+                                  WHERE request_fingerprint=? OR reconciliation_id=?''',
+                               (request_fingerprint, reconciliation_id)).fetchall()
+        if existing:
+            if len(existing) != 1:
+                raise RuntimeError('Conflicting reconciliation history exists')
+            prior = existing[0]
+            if (prior['reconciliation_id'],prior['environment'],prior['actor'],
+                    prior['request_fingerprint'],prior['evidence_digest'],prior['evidence_json']) != (
+                    reconciliation_id,'SANDBOX',actor,request_fingerprint,
+                    evidence_digest,evidence_raw):
+                raise RuntimeError('Existing reconciliation does not match this retry')
+            if prior['state'] not in {'prepared','reconciled_partial'}:
+                raise RuntimeError('Reconciliation history is in an unknown state')
+            run = con.execute('''SELECT status,result_json FROM google_writer_runs
+                                 WHERE request_id=? AND environment='SANDBOX' ''',
+                              (prior['request_id'],)).fetchone()
+            if prior['state'] == 'prepared':
+                unknown = con.execute('''SELECT request_id,status,result_json FROM google_writer_runs
+                                         WHERE environment='SANDBOX' AND status='outcome_unknown' ''').fetchall()
+                running = con.execute("SELECT COUNT(*) FROM google_writer_runs WHERE environment='SANDBOX' AND status='running'").fetchone()[0]
+                if (not run or run['status'] != 'outcome_unknown' or
+                        run['result_json'] != '{"status": "OUTCOME_UNKNOWN_HOLD_NO_RETRY"}' or
+                        len(unknown) != 1 or unknown[0]['request_id'] != prior['request_id'] or running):
+                    raise RuntimeError('Prepared reconciliation no longer matches the blocked run')
+            elif (not run or run['status'] != 'partial' or
+                    json.loads(run['result_json']).get('reconciliation_id') != reconciliation_id):
+                raise RuntimeError('Completed reconciliation conflicts with SQLite run state')
+            return {'request_id': prior['request_id'], 'reconciliation_id': reconciliation_id,
+                    'request_fingerprint': request_fingerprint, 'evidence_digest': evidence_digest,
+                    'state': prior['state'], 'idempotent': True}
+        unknown = con.execute('''SELECT request_id,environment,trigger,actor,revision,started_at,
+                                      finished_at,status,result_json
+                                 FROM google_writer_runs
+                                 WHERE environment='SANDBOX' AND status='outcome_unknown'
+                                 ORDER BY started_at''').fetchall()
+        running = con.execute("SELECT COUNT(*) FROM google_writer_runs WHERE environment='SANDBOX' AND status='running'").fetchone()[0]
+        if len(unknown) != 1 or running != 0:
+            raise RuntimeError('Sandbox run state is not uniquely reconcilable')
+        row = unknown[0]
+        if request_id_fingerprint(row['request_id']) != request_fingerprint:
+            raise PermissionError('Sandbox request fingerprint mismatch')
+        if row['trigger'] != 'manual' or row['result_json'] != '{"status": "OUTCOME_UNKNOWN_HOLD_NO_RETRY"}':
+            raise RuntimeError('Sandbox run record does not match the confirmed partial-run contract')
+        con.execute('''INSERT INTO google_writer_run_reconciliations(
+                         reconciliation_id,request_id,environment,actor,request_fingerprint,
+                         evidence_digest,evidence_json,state,prepared_at,original_status,
+                         original_result_json,original_actor,original_trigger,original_revision,original_started_at)
+                       VALUES(?,?,?,?,?,?,?,'prepared',?,?,?,?,?,?,?)''',
+                    (reconciliation_id,row['request_id'],'SANDBOX',actor,request_fingerprint,
+                     evidence_digest,evidence_raw,stamp,row['status'],row['result_json'],
+                     row['actor'],row['trigger'],row['revision'],row['started_at']))
+        return {'request_id': row['request_id'], 'reconciliation_id': reconciliation_id,
+                'request_fingerprint': request_fingerprint, 'evidence_digest': evidence_digest,
+                'state': 'prepared', 'idempotent': False}
+
+
+def finalize_partial_reconciliation(path, reconciliation_id, actor, receipt, *, now=None):
+    """Release the SQLite hold only after a verified Apps Script reconciliation receipt."""
+    if not isinstance(reconciliation_id, str) or not re.fullmatch(r'[0-9a-f]{32}', reconciliation_id):
+        raise ValueError('Invalid reconciliation identity')
+    stamp = _reconciliation_time(now)
+    with closing(sqlite3.connect(path, timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        con.row_factory = sqlite3.Row
+        audit = con.execute('SELECT * FROM google_writer_run_reconciliations WHERE reconciliation_id=?',
+                            (reconciliation_id,)).fetchone()
+        if not audit or audit['environment'] != 'SANDBOX' or audit['actor'] != actor:
+            raise PermissionError('Reconciliation audit identity mismatch')
+        required = {
+            'environment': 'SANDBOX', 'scriptId': IDENTITIES['SANDBOX'][0],
+            'spreadsheetId': IDENTITIES['SANDBOX'][1], 'contract': CONTRACT,
+            'requestId': audit['request_id'], 'status': 'RECONCILED_PARTIAL',
+            'reconciliationId': reconciliation_id,
+            'requestFingerprint': audit['request_fingerprint'],
+            'evidenceDigest': audit['evidence_digest']
+        }
+        if not isinstance(receipt, dict) or any(receipt.get(k) != v for k,v in required.items()) or not is_canonical_sha256_b64url(receipt.get('digest')):
+            raise PermissionError('Apps Script reconciliation receipt mismatch')
+        if audit['state'] == 'reconciled_partial':
+            run = con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=? AND environment=?',
+                              (audit['request_id'],'SANDBOX')).fetchone()
+            if (not run or run['status'] != 'partial' or
+                    json.loads(run['result_json']).get('reconciliation_id') != reconciliation_id):
+                raise RuntimeError('Completed reconciliation history conflicts with run state')
+            return {'status':'RECONCILED_PARTIAL','reconciliation_id':reconciliation_id,'idempotent':True}
+        if audit['state'] != 'prepared':
+            raise RuntimeError('Reconciliation is not prepared')
+        run = con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=? AND environment=?',
+                          (audit['request_id'],'SANDBOX')).fetchone()
+        if (not run or run['status'] != 'outcome_unknown' or
+                run['result_json'] != audit['original_result_json']):
+            raise RuntimeError('Original unknown run changed after preparation')
+        running = con.execute("SELECT COUNT(*) FROM google_writer_runs WHERE environment='SANDBOX' AND status='running'").fetchone()[0]
+        if running:
+            raise RuntimeError('A Sandbox run is active during reconciliation')
+        con.execute('''UPDATE google_writer_runs SET status='partial',finished_at=?,result_json=?
+                       WHERE request_id=? AND environment='SANDBOX' AND status='outcome_unknown'
+                         AND result_json=?''',
+                    (stamp,json.dumps({'status':'RECONCILED_PARTIAL','reconciliation_id':reconciliation_id,
+                                       'evidence_digest':audit['evidence_digest'],
+                                       'original_status':'outcome_unknown'},sort_keys=True),
+                     audit['request_id'],audit['original_result_json']))
+        if con.execute('SELECT changes()').fetchone()[0] != 1:
+            raise RuntimeError('Sandbox unknown-run compare-and-set failed')
+        con.execute('''UPDATE google_writer_run_reconciliations
+                       SET state='reconciled_partial',finished_at=?,apps_script_receipt_json=?
+                       WHERE reconciliation_id=? AND state='prepared' ''',
+                    (stamp,json.dumps(receipt,sort_keys=True,separators=(',',':')),reconciliation_id))
+        if con.execute('SELECT changes()').fetchone()[0] != 1:
+            raise RuntimeError('Reconciliation history compare-and-set failed')
+        return {'status':'RECONCILED_PARTIAL','reconciliation_id':reconciliation_id,'idempotent':False}
 
 
 def migrate(con):
@@ -503,6 +694,24 @@ def migrate(con):
         finished_at TEXT, status TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}');
       CREATE UNIQUE INDEX IF NOT EXISTS ix_google_writer_single_lane
         ON google_writer_runs(environment) WHERE status IN ('running','outcome_unknown');
+      CREATE TABLE IF NOT EXISTS google_writer_run_reconciliations(
+        reconciliation_id TEXT PRIMARY KEY CHECK(length(reconciliation_id)=32),
+        request_id TEXT NOT NULL UNIQUE,
+        environment TEXT NOT NULL CHECK(environment='SANDBOX'),
+        actor TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint)=24),
+        evidence_digest TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','reconciled_partial')),
+        prepared_at TEXT NOT NULL,
+        finished_at TEXT,
+        original_status TEXT NOT NULL,
+        original_result_json TEXT NOT NULL,
+        original_actor TEXT NOT NULL,
+        original_trigger TEXT NOT NULL,
+        original_revision INTEGER NOT NULL,
+        original_started_at TEXT NOT NULL,
+        apps_script_receipt_json TEXT NOT NULL DEFAULT '{}');
     ''')
 
 

@@ -6,6 +6,8 @@ for(const env of ['prod','sandbox']){
     for(const file of fs.readdirSync(dir).filter(f=>f.endsWith('.gs')))
       vm.runInContext(fs.readFileSync(path.join(dir,file),'utf8'),context,{filename:file});
     const cfg=context.PQM_MIRROR_ENV,secret='LOCAL_TEST_SECRET_NOT_A_CREDENTIAL_0123456789';
+    const planDigest=env==='prod'?'a'.repeat(64):crypto.createHash('sha256').update('sandbox plan').digest('base64url');
+    const staleDigest=env==='prod'?'d'.repeat(64):crypto.createHash('sha256').update('stale sandbox plan').digest('base64url');
     const properties=new Map([['PQM_EXECUTION_SHARED_SECRET',secret],
       [env==='prod'?'PQM_PROD_GOOGLE_REGISTRY_SPREADSHEET_ID':'PQM_SANDBOX_GOOGLE_REGISTRY_SPREADSHEET_ID',cfg.spreadsheetId]]);
     let opens=0,active=0,locks=0,releases=0,runs=0,available=true;
@@ -14,30 +16,31 @@ for(const env of ['prod','sandbox']){
     context.PropertiesService={getScriptProperties:()=>({getProperty:k=>properties.get(k)||null,
       setProperty:(k,v)=>properties.set(k,v),getProperties:()=>Object.fromEntries(properties)})};
     context.Utilities={computeHmacSha256Signature:(raw,key)=>crypto.createHmac('sha256',key).update(raw).digest(),
-      base64EncodeWebSafe:raw=>Buffer.from(raw).toString('base64url')};
+      base64EncodeWebSafe:raw=>Buffer.from(raw).toString('base64url'),
+      base64DecodeWebSafe:value=>Array.from(Buffer.from(value,'base64url'))};
     context.SpreadsheetApp={openById:id=>{opens++;assert.equal(id,cfg.spreadsheetId);return{getId:()=>id};},
       getActiveSpreadsheet:()=>{active++;throw new Error('Not available through Execution API');},
       getUi:()=>{throw new Error('No UI in headless execution');}};
     context.LockService={getScriptLock:()=>lock};
-    context[prefix+'FullLoad_']=()=>({plan_digest:'a'.repeat(64),state:{payload_digest:'b'.repeat(64)},
+    context[prefix+'FullLoad_']=()=>({plan_digest:planDigest,state:{payload_digest:'b'.repeat(64)},
       plan:{counts:{appended:1,updated:2,conflicts:0,errors:0,unchanged:3}}});
     context[prefix+'DailySync']=execution=>{runs++;assert.equal(execution.lock,lock);
-      assert.equal(execution.expectedDigest,'a'.repeat(64));
+      assert.equal(execution.expectedDigest,planDigest);
       return {status:'COMPLETE',append:1,update:2,conflict:0,error:0,remaining_safe:0,batches:1};};
     function envelope(action='preview',changes={}){
       const now=Math.floor(Date.now()/1000);
       const message={environment:cfg.environment,scriptId:cfg.scriptId,spreadsheetId:cfg.spreadsheetId,
         contract:'pqm-mirror-datetime-v1',action,requestId:'c'.repeat(32),actor:'test-uo',trigger:'manual',
-        issuedAt:now,expiresAt:now+300,expectedDigest:action==='apply'?'a'.repeat(64):null,...changes};
+        issuedAt:now,expiresAt:now+300,expectedDigest:action==='apply'?planDigest:null,...changes};
       const payload=JSON.stringify(message);return{payload,signature:crypto.createHmac('sha256',secret).update(payload).digest('base64url')};
     }
-    return{context,cfg,properties,envelope,call:e=>context[prefix+'Execution'](e),
+    return{context,cfg,properties,envelope,planDigest,call:e=>context[prefix+'Execution'](e),
       get opens(){return opens},get active(){return active},get releases(){return releases},get runs(){return runs},
       lockUnavailable(){available=false;}};
   }
   test(env+': explicit headless spreadsheet, Preview zero receipts/writer calls',()=>{
     const f=fixture(),before=JSON.stringify([...f.properties]);const result=f.call(f.envelope());
-    assert.equal(result.status,'PREVIEW');assert.equal(result.digest,'a'.repeat(64));
+    assert.equal(result.status,'PREVIEW');assert.equal(result.digest,f.planDigest);
     assert.equal(f.opens,1);assert.equal(f.active,0);assert.equal(f.runs,0);
     assert.equal(JSON.stringify([...f.properties]),before);assert.equal(f.context.PQM_EXECUTION_CONTEXT_,null);
   });
@@ -48,7 +51,7 @@ for(const env of ['prod','sandbox']){
     const f=fixture(),e=f.envelope();e.signature+='bad';assert.throws(()=>f.call(e),/authorization rejected/);assert.equal(f.opens,0);
   });
   test(env+': stale Preview and occupied ScriptLock mean no Apply',()=>{
-    const f=fixture();assert.throws(()=>f.call(f.envelope('apply',{expectedDigest:'d'.repeat(64)})),/stale/);assert.equal(f.runs,0);
+    const f=fixture();assert.throws(()=>f.call(f.envelope('apply',{expectedDigest:staleDigest})),/stale/);assert.equal(f.runs,0);
     const busy=fixture();busy.lockUnavailable();assert.throws(()=>busy.call(busy.envelope('apply')),/another writer/);assert.equal(busy.opens,0);
   });
   test(env+': Apply uses same DailySync engine once; repeat returns receipt without Apply',()=>{

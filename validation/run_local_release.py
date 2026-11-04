@@ -48,6 +48,9 @@ HISTORICAL_INTEGRITY_MODULES={
     # manual-classification changes to files pinned by that historical tree.
     'test_supplier_classification_v3_integrity',
     'test_supplier_manual_classification_v4_integrity',
+    # v1 remains byte-pinned to the original digest candidate and runs only
+    # through its exact-tree overlay; v2 protects later additive changes.
+    'test_preview_digest_contract_integrity_v1',
     'test_google_edr_date_only_midnight_integrity_v1',
     'test_date_only_edr_status_integrated_integrity_v1',
     'test_date_only_edr_status_integrated_integrity_v2',
@@ -105,7 +108,8 @@ def main():
                             'run_date_only_previous_contract_overlays.py',
                             'run_date_only_status_integrated_v2_history.py',
                             'run_supplier_classification_v3_integrity.py',
-                            'run_supplier_manual_classification_v4_integrity.py'):
+                            'run_supplier_manual_classification_v4_integrity.py',
+                            'run_preview_digest_contract_v1_integrity.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
@@ -148,7 +152,8 @@ def main():
                              'supplier_manual_classification_v4_baseline_e0fed.zip',
                              'edr_status_evidence_v1_15b8.zip',
                              'date_only_edr_status_integrated_v1_12329.zip',
-                             'date_only_status_integrated_v2_a1f8.zip')
+                             'date_only_status_integrated_v2_a1f8.zip',
+                             'preview_digest_contract_v1_baseline_3a63ac.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -235,6 +240,9 @@ def main():
             date_only_status_v2_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_date_only_status_integrated_v2_history.py')],
                 cwd=old_cwd,check=False)
+            preview_digest_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_preview_digest_contract_v1_integrity.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -253,7 +261,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

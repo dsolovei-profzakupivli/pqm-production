@@ -12225,6 +12225,47 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path.endswith('/apply'): google_writer_service().reschedule()
                 return self.send_json(result)
             except (ValueError,RuntimeError) as exc: return self.send_json({'error':str(exc)},409)
+        if parsed.path == '/api/admin/google-writer/reconcile-partial':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only reconciliation'},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'error':'Потрібні права адміністратора та Google writer'},403)
+            payload=self.read_json()
+            if (set(payload)!={'reconciliation_id','request_fingerprint','confirmed'} or
+                    payload.get('confirmed') is not True):
+                return self.send_json({'error':'Потрібне явне підтвердження reconciliation'},400)
+            try:
+                prepared=google_writer_execution.prepare_partial_reconciliation(
+                    DB_PATH,'SANDBOX',payload.get('reconciliation_id'),
+                    payload.get('request_fingerprint'),self.auth_user)
+            except (ValueError,PermissionError,RuntimeError) as exc:
+                return self.send_json({'error':str(exc),'reconciliation_id':payload.get('reconciliation_id'),
+                    'sqlite_hold_retained':True},409)
+            try:
+                client=google_writer_client()
+                receipt=client.invoke('reconcile_partial',prepared['request_id'],self.auth_user,
+                    trigger='manual',manual_authorized=True,
+                    reconciliation_id=prepared['reconciliation_id'],
+                    request_fingerprint=prepared['request_fingerprint'],
+                    evidence=google_writer_execution.PARTIAL_RECONCILIATION_EVIDENCE)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Apps Script reconciliation outcome unknown; retry same reconciliation_id only',
+                    'reconciliation_id':payload.get('reconciliation_id'),'sqlite_hold_retained':True,
+                    'do_not_retry_apply':True},503)
+            except google_writer_execution.ExecutionConfigurationError:
+                return self.send_json({'error':'Execution API unavailable; SQLite hold retained',
+                    'reconciliation_id':payload.get('reconciliation_id'),'sqlite_hold_retained':True,
+                    'do_not_retry_apply':True},503)
+            try:
+                result=google_writer_execution.finalize_partial_reconciliation(
+                    DB_PATH,prepared['reconciliation_id'],self.auth_user,receipt)
+                return self.send_json({**result,'evidence_digest':prepared['evidence_digest'],
+                    'apps_script_reconciled':True,'sqlite_reconciled':True})
+            except (ValueError,PermissionError,RuntimeError) as exc:
+                return self.send_json({'error':str(exc),'reconciliation_id':payload.get('reconciliation_id'),
+                    'apps_script_reconciled':True,'sqlite_finalization_confirmed':False,
+                    'retry_same_reconciliation_id_only':True,'do_not_retry_apply':True},503)
         if parsed.path in {'/api/google-writer/preview','/api/google-writer/apply'}:
             if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
                 return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)

@@ -14,7 +14,8 @@ function pqmSandboxExecution(envelope) {
   if (request.environment !== PQM_MIRROR_ENV.environment || request.scriptId !== PQM_MIRROR_ENV.scriptId ||
       ScriptApp.getScriptId() !== PQM_MIRROR_ENV.scriptId || request.spreadsheetId !== PQM_MIRROR_ENV.spreadsheetId ||
       request.contract !== 'pqm-mirror-datetime-v1' ||
-      ['preview','apply'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
+      ['preview','apply','reconcile_partial'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
+      (request.action==='reconcile_partial' && request.trigger!=='manual') ||
       !/^[0-9a-f]{32}$/.test(request.requestId || '') ||
       typeof request.actor !== 'string' || !request.actor || request.actor.length>128 ||
       !Number.isInteger(request.issuedAt) || !Number.isInteger(request.expiresAt) ||
@@ -37,6 +38,8 @@ function pqmSandboxExecution(envelope) {
         contract:request.contract,requestId:request.requestId,status:status,counts:counts || {},digest:digest || null};
     }
     var key='PQM_EXECUTION_RUN_'+request.requestId, stored=properties.getProperty(key);
+    if (request.action==='reconcile_partial')
+      return pqmSandboxReconcilePartial_(properties,request,receipt);
     if (stored) {
       var previous=JSON.parse(stored);
       if (previous.actor!==request.actor || previous.digest!==request.expectedDigest ||
@@ -75,4 +78,127 @@ function pqmSandboxExecution(envelope) {
     PQM_EXECUTION_CONTEXT_=null;
     lock.releaseLock();
   }
+}
+
+var PQM_SANDBOX_PARTIAL_RECONCILIATION_FINGERPRINT_='9be34ff2df1e661346176eeb';
+
+function pqmSandboxPartialReconciliationEvidence_() {
+  return {
+    initial_plan:{append:451,update:2,conflict:2},
+    verified_append_rows:50,
+    append_value_mismatches:0,
+    duplicate_rows:0,
+    routing_mismatches:0,
+    protected_cell_mutations:0,
+    date_only_format_exceptions:12,
+    date_only_format_exceptions_approved:true,
+    updates_disposition:'RECOMPUTE_WITH_NEW_PREVIEW'
+  };
+}
+
+function pqmSandboxCanonicalReconciliationJson_(value) {
+  if (Array.isArray(value)) return '['+value.map(pqmSandboxCanonicalReconciliationJson_).join(',')+']';
+  if (value && typeof value==='object') {
+    return '{'+Object.keys(value).sort().map(function(key) {
+      return JSON.stringify(key)+':'+pqmSandboxCanonicalReconciliationJson_(value[key]);
+    }).join(',')+'}';
+  }
+  return JSON.stringify(value);
+}
+
+function pqmSandboxReconciliationDigest_(value) {
+  return Utilities.base64EncodeWebSafe(Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,pqmSandboxCanonicalReconciliationJson_(value),Utilities.Charset.UTF_8
+  )).replace(/=+$/,'');
+}
+
+function pqmSandboxRequestFingerprint_(requestId) {
+  var bytes=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,requestId,Utilities.Charset.UTF_8);
+  return bytes.slice(0,12).map(function(value) {
+    var n=(value+256)%256;
+    return ('0'+n.toString(16)).slice(-2);
+  }).join('');
+}
+
+function pqmSandboxReconcilePartial_(properties,request,receipt) {
+  if (request.environment!=='SANDBOX' || PQM_MIRROR_ENV.environment!=='SANDBOX' ||
+      request.trigger!=='manual' || !/^[0-9a-f]{32}$/.test(request.reconciliationId||'') ||
+      request.expectedDigest!==null ||
+      request.requestFingerprint!==PQM_SANDBOX_PARTIAL_RECONCILIATION_FINGERPRINT_ ||
+      pqmSandboxRequestFingerprint_(request.requestId)!==request.requestFingerprint)
+    throw new Error('PQM: partial reconciliation identity rejected');
+  var expectedEvidence=pqmSandboxPartialReconciliationEvidence_();
+  if (pqmSandboxCanonicalReconciliationJson_(request.evidence)!==
+        pqmSandboxCanonicalReconciliationJson_(expectedEvidence) ||
+      !pqmSandboxIsCanonicalDigest_(request.evidenceDigest) ||
+      pqmSandboxReconciliationDigest_(expectedEvidence)!==request.evidenceDigest)
+    throw new Error('PQM: partial reconciliation evidence rejected');
+
+  var runKey='PQM_EXECUTION_RUN_'+request.requestId;
+  var eventKey='PQM_EXECUTION_RECONCILIATION_'+request.reconciliationId;
+  var marker=properties.getProperty('PQM_EXECUTION_UNCERTAIN');
+  var runRaw=properties.getProperty(runKey);
+  var run=null,eventRaw=properties.getProperty(eventKey),event=null;
+  try { if (runRaw) run=JSON.parse(runRaw); } catch (_) { run=null; }
+  try { if (eventRaw) event=JSON.parse(eventRaw); } catch (_) { event=null; }
+  if (!runRaw || !run || typeof run!=='object' || Array.isArray(run) ||
+      typeof run.actor!=='string' || !run.actor || run.trigger!=='manual' ||
+      !pqmSandboxIsCanonicalDigest_(run.digest))
+    throw new Error('PQM: partial reconciliation run record rejected');
+
+  if (eventRaw && (!event || event.reconciliationId!==request.reconciliationId ||
+      event.requestFingerprint!==request.requestFingerprint || event.evidenceDigest!==request.evidenceDigest ||
+      event.actor!==request.actor || event.requestId!==request.requestId ||
+      event.environment!=='SANDBOX' || typeof event.originalRunRecordRaw!=='string' ||
+      !['PREPARED','RECONCILED_PARTIAL'].includes(event.state)))
+    throw new Error('PQM: existing reconciliation record mismatch');
+
+  if (!event) {
+    if (marker!==request.requestId || run.result!==null && run.result!==undefined)
+      throw new Error('PQM: unresolved run state changed; reconciliation stopped');
+    event={state:'PREPARED',environment:'SANDBOX',requestId:request.requestId,
+      requestFingerprint:request.requestFingerprint,reconciliationId:request.reconciliationId,
+      evidenceDigest:request.evidenceDigest,evidence:expectedEvidence,actor:request.actor,
+      preparedAt:new Date().toISOString(),originalRunRecordRaw:runRaw};
+    properties.setProperty(eventKey,JSON.stringify(event));
+  }
+
+  if (event.state==='RECONCILED_PARTIAL') {
+    if (!run.reconciliation || run.reconciliation.reconciliationId!==request.reconciliationId ||
+        !run.result || run.result.status!=='RECONCILED_PARTIAL' ||
+        run.result.evidenceDigest!==request.evidenceDigest)
+      throw new Error('PQM: reconciled history is inconsistent');
+    if (marker && marker!==request.requestId)
+      throw new Error('PQM: a different uncertain run is active');
+    if (marker===request.requestId) properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
+    return run.result;
+  }
+
+  var originalRun;
+  try { originalRun=JSON.parse(event.originalRunRecordRaw); } catch (_) { originalRun=null; }
+  if (!originalRun || originalRun.result!==null && originalRun.result!==undefined ||
+      originalRun.actor!==run.actor || originalRun.digest!==run.digest || originalRun.trigger!==run.trigger)
+    throw new Error('PQM: original uncertain run evidence changed');
+  if (marker!==request.requestId)
+    throw new Error('PQM: uncertain marker changed; reconciliation stopped');
+
+  var result=receipt('RECONCILED_PARTIAL',{
+    verified_append_rows:50,unverified_original_updates:2,accepted_date_only_formats:12
+  },run.digest);
+  result.reconciliationId=request.reconciliationId;
+  result.requestFingerprint=request.requestFingerprint;
+  result.evidenceDigest=request.evidenceDigest;
+  run.reconciliation={reconciliationId:request.reconciliationId,
+    evidenceDigest:request.evidenceDigest,status:'RECONCILED_PARTIAL',
+    originalStatus:'outcome_unknown',recordedAt:new Date().toISOString()};
+  run.result=result;
+  properties.setProperty(runKey,JSON.stringify(run));
+  event.state='RECONCILED_PARTIAL';
+  event.reconciledAt=new Date().toISOString();
+  event.result=result;
+  properties.setProperty(eventKey,JSON.stringify(event));
+  if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')!==request.requestId)
+    throw new Error('PQM: uncertain marker changed before final release');
+  properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
+  return result;
 }
