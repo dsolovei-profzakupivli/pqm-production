@@ -44,8 +44,14 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         body=json.loads(request.data)
         message=json.loads(body['parameters'][0]['payload'])
         result={k:message[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
-        result.update(status='PREVIEW' if message['action']=='preview' else 'APPLIED',
-            digest=self.preview_digest,counts={'update':0})
+        status = {'preview':'PREVIEW','apply':'APPLIED',
+            'reconcile_partial':'RECONCILED_PARTIAL'}[message['action']]
+        result.update(status=status,digest=self.preview_digest,counts={'update':0})
+        if message['action']=='reconcile_partial':
+            evidence_raw=json.dumps(message['evidence'],ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            result.update(reconciliationId=message['reconciliationId'],
+                requestFingerprint=message['requestFingerprint'],
+                evidenceDigest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('='))
         return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
 
     def request(self):
@@ -116,6 +122,63 @@ class SandboxExecutionTransportTests(unittest.TestCase):
                 changed=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
                 with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
                     self.validate(changed)
+
+    def test_reconcile_partial_uses_scoped_guard_and_same_manual_request_contract(self):
+        request_id='a'*32
+        reconciliation_id='b'*32
+        fingerprint=hashlib.sha256(request_id.encode('utf-8')).hexdigest()[:24]
+        with patch.object(execution,'PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT',fingerprint), \
+                patch.object(runtime,'SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT',fingerprint):
+            result=self.client.invoke('reconcile_partial',request_id,'sandbox-admin',
+                trigger='manual',manual_authorized=True,reconciliation_id=reconciliation_id,
+                request_fingerprint=fingerprint,evidence=execution.PARTIAL_RECONCILIATION_EVIDENCE)
+        self.assertEqual(result['status'],'RECONCILED_PARTIAL')
+        self.assertEqual(result['reconciliationId'],reconciliation_id)
+        self.assertEqual(result['requestFingerprint'],fingerprint)
+        self.assertEqual(len(self.calls),1)
+        self.assertEqual(json.loads(json.loads(self.calls[0].data)['parameters'][0]['payload'])['action'],
+            'reconcile_partial')
+        self.assertFalse(runtime._egress.active)
+        self.assertIsNone(runtime._egress.execution_identity)
+
+    def test_reconcile_partial_guard_rejects_fingerprint_id_trigger_and_digest_mismatches(self):
+        request=self.request()
+        body=json.loads(request.data)
+        envelope=body['parameters'][0]
+        payload=json.loads(envelope['payload'])
+        request_id=payload['requestId']
+        fingerprint=hashlib.sha256(request_id.encode('utf-8')).hexdigest()[:24]
+        evidence_raw=json.dumps(execution.PARTIAL_RECONCILIATION_EVIDENCE,
+            ensure_ascii=False,sort_keys=True,separators=(',',':'))
+        evidence_digest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('=')
+        payload.update(action='reconcile_partial',trigger='manual',expectedDigest=None,
+            actor='sandbox-admin',reconciliationId='b'*32,requestFingerprint=fingerprint,
+            evidence=execution.PARTIAL_RECONCILIATION_EVIDENCE,evidenceDigest=evidence_digest)
+        with patch.object(runtime,'SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT',fingerprint):
+            valid=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+                headers=request.headers,method='POST')
+            self.assertEqual(self.validate(valid),'script.googleapis.com')
+            bad_cases=(
+                ('wrong_fingerprint',{'requestFingerprint':'0'*24}),
+                ('malformed_reconciliation_id',{'reconciliationId':'not-an-id'}),
+                ('scheduled_trigger',{'trigger':'scheduled'}),
+                ('non_null_expected_digest',{'expectedDigest':self.preview_digest}),
+                ('malformed_request_id',{'requestId':'not-an-id'}),
+                ('missing_evidence_digest',{'evidenceDigest':None}),
+                ('wrong_action',{'action':'arbitrary_action'}),
+            )
+            for name,override in bad_cases:
+                with self.subTest(name=name):
+                    altered=dict(payload); altered.update(override)
+                    envelope['payload']=json.dumps(altered)
+                    changed=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+                        headers=request.headers,method='POST')
+                    with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
+                        self.validate(changed)
+
+    def test_sandbox_partial_reconciliation_fingerprint_matches_execution_contract(self):
+        self.assertEqual(runtime.SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT,
+            execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT)
 
     def test_oauth_refresh_default_adapter_uses_same_scoped_guard(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 from contextlib import closing
 from execution_digest import is_canonical_sha256_b64url
+import hashlib
 import ipaddress
 import json
 import os
@@ -48,6 +49,7 @@ GOOGLE_SHEETS_HOST = 'sheets.googleapis.com'
 NAZK_HOST = 'corruptinfo.nazk.gov.ua'
 NAZK_PATH = '/ep/1.0/corrupt/getAllData'
 SANDBOX_EDR_SPREADSHEET_ID = '1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww'
+SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = '9be34ff2df1e661346176eeb'
 _original_getaddrinfo = socket.getaddrinfo
 
 
@@ -425,6 +427,21 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
         body = json.loads(request.data)
         envelope = body['parameters'][0]
         payload = json.loads(envelope['payload'])
+        action = payload.get('action') if isinstance(payload, dict) else None
+        reconciliation_allowed = action == 'reconcile_partial' and (
+            payload.get('trigger') == 'manual' and
+            payload.get('expectedDigest') is None and
+            isinstance(payload.get('actor'), str) and
+            bool(payload.get('actor').strip()) and len(payload.get('actor')) <= 128 and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('requestId')) and
+            isinstance(payload.get('reconciliationId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('reconciliationId')) and
+            payload.get('requestFingerprint') == SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT and
+            hashlib.sha256(payload['requestId'].encode('utf-8')).hexdigest()[:24] ==
+                SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT and
+            is_canonical_sha256_b64url(payload.get('evidenceDigest'))
+        )
         if (set(body) != {'function', 'devMode', 'parameters'} or
                 body['function'] != 'pqmSandboxExecution' or body['devMode'] is not False or
                 len(body['parameters']) != 1 or
@@ -433,7 +450,8 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                 payload['environment'] != environment or payload['scriptId'] != script_id or
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
-                payload['action'] not in ('preview', 'apply') or
+                action not in ('preview', 'apply', 'reconcile_partial') or
+                (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
                 not re.fullmatch(r'Bearer [A-Za-z0-9._~+/-]+=*', request.get_header('Authorization', ''))):
             raise ValueError()
