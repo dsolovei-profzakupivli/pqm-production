@@ -1,0 +1,44 @@
+{
+  "contract": "pqm-sandbox-partial-reconciliation-second-run",
+  "version": 1,
+  "baseline": "95bcbd0a4fffe40f65e8d4e03426612d3a1eeb87",
+  "expected_file_scope": [
+    "google_writer_execution.py",
+    "sandbox_runtime.py",
+    "server.py",
+    "test_google_writer_partial_reconciliation.py",
+    "test_sandbox_execution_transport.py",
+    "validation/run_local_release.py",
+    "validation/run_checkpointed_apply_v1_integrity.py",
+    "validation/fixtures/checkpointed_apply_v1_exact_c8a97d6.zip",
+    "test_partial_reconciliation_second_integrity_v1.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "2cd65129092a922748e2fe709e77131355ca976050451fa4df83c33137200ea9",
+    "sandbox_runtime.py": "5482e8dda80e8283f4017551c22d4b3a7aa4f6e03f8f04498d3cc51e5c8c1676",
+    "server.py": "5146898b06ade16a146527d22406279ecb2a83862adda7ccf647c79ceb8ecc38",
+    "test_google_writer_partial_reconciliation.py": "68f929c37e53e5682c555ef00d0f1b1721a00b8c73b8d68c017a01a33daabcd7",
+    "test_sandbox_execution_transport.py": "7d807de436c6149dac2b442350232c21e38c23db1c4867439e40f9ff937cc0ba",
+    "validation/run_local_release.py": "008e667e8ac20b95b85ee66abf3e3379ac1e0147c1d152502662574aa204c6da",
+    "validation/run_checkpointed_apply_v1_integrity.py": "6df7f0322731104f3b122ae3656b039ba0b1d647134f6423f446f11250112514",
+    "validation/fixtures/checkpointed_apply_v1_exact_c8a97d6.zip": "2b61d6fa37f681c732d90fcfcb8ff813ee75ba7983e115272b92fc2830f7ce39",
+    "test_partial_reconciliation_second_integrity_v1.py": "3bb1117ccc48344f486ce7fb660bffafffb60ab97507e6998ccdc55e15d43324"
+  },
+  "integrity_test_sha256_lf": "3bb1117ccc48344f486ce7fb660bffafffb60ab97507e6998ccdc55e15d43324",
+  "preserved_sources": {
+    "execution_apply_contract.py": "6481be09b1117eb7cb5e6df9b1055253c6c9accfb0975cfda86450cec3b58f48",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "c4532fcf4609f78075015bfc351c187a4eed3f95c677df1144638bc40652000f",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "570f589bfae82dc4968386ffcdcf379e09443a849246dd7c6c1a2736ae742549"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20260911/checkpointed_apply_v1.json": "fc8364697946ad8669c0f87f13112c6c9836007c5e3f40d58009fbe60f885b7e",
+    "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40"
+  },
+  "historical_checkpoint_fixture_sha256": "d9a5d1f50eaaf7a1fff88be47539bc73f0c22c65643517c3bace3785bf6e2852",
+  "scope_notes": [
+    "Second-run evidence is fingerprint-bound; first reconciliation history is retained.",
+    "Two original updates remain unverified.",
+    "Checkpoint apply remains enabled only for SANDBOX.",
+    "Historical checkpoint v1 is executed on its exact c8a97d6 baseline fixture."
+  ]
+}

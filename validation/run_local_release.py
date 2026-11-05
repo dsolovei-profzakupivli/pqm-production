@@ -43,6 +43,9 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_edr_preview_skipped_integrity',
     'test_edr_preview_skipped_rows',
     'test_google_writer_supplier_types_integrity',
+    # Checkpoint v1 pins its exact 95bc pre-reconciliation source tree; run it
+    # only against the immutable c8a97d6 fixture via the additive overlay.
+    'test_checkpointed_apply_integrity_v1',
     # v3's exact-tree contract is executed only against its original pinned
     # commit by the overlay runner below; the current candidate has additive
     # manual-classification changes to files pinned by that historical tree.
@@ -243,6 +246,9 @@ def main():
             preview_digest_v1_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_preview_digest_contract_v1_integrity.py')],
                 cwd=old_cwd,check=False)
+            checkpointed_apply_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_checkpointed_apply_v1_integrity.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -261,7 +267,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
