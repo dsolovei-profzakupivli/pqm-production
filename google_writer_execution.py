@@ -38,8 +38,9 @@ PROJECT_SCOPES = frozenset({
     'https://www.googleapis.com/auth/script.container.ui',
     'https://www.googleapis.com/auth/userinfo.email',
 })
-PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = '9be34ff2df1e661346176eeb'
-PARTIAL_RECONCILIATION_EVIDENCE = {
+_PARTIAL_RECONCILIATION_FIRST_FINGERPRINT = '9be34ff2df1e661346176eeb'
+_PARTIAL_RECONCILIATION_SECOND_FINGERPRINT = '18a4aba10c1c13ab3bf59f56'
+_PARTIAL_RECONCILIATION_FIRST_EVIDENCE = {
     'initial_plan': {'append': 451, 'update': 2, 'conflict': 2},
     'verified_append_rows': 50,
     'append_value_mismatches': 0,
@@ -50,6 +51,51 @@ PARTIAL_RECONCILIATION_EVIDENCE = {
     'date_only_format_exceptions_approved': True,
     'updates_disposition': 'RECOMPUTE_WITH_NEW_PREVIEW',
 }
+_PARTIAL_RECONCILIATION_SECOND_EVIDENCE = {
+    'initial_plan': {'append': 401, 'update': 2, 'conflict': 2},
+    'verified_append_rows': 50,
+    'verified_append_by_tab': {'ФОП': 46, 'ЮО': 4},
+    'append_value_mismatches': 0,
+    'duplicate_rows': 0,
+    'routing_mismatches': 0,
+    'protected_cell_mutations': 0,
+    'formula_a_v1_2_matches': 50,
+    'date_only_midnight_matches': 14,
+    'blank_source_sheet_blank_rows': 36,
+    'blank_sheet_source_date_state': {'empty_string': 36},
+    'blank_sheet_source_precision_state': {'missing': 36},
+    'required_diagnostic': 'pqm_sandbox_second_partial_apply_read_only_v3',
+    'updates_disposition': 'UNVERIFIED_NO_HISTORIC_PLAN',
+}
+PARTIAL_RECONCILIATION_PROFILES = {
+    _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT: {
+        'evidence': _PARTIAL_RECONCILIATION_FIRST_EVIDENCE,
+        'result_counts': {
+            'verified_append_rows': 50,
+            'unverified_original_updates': 2,
+            'accepted_date_only_formats': 12,
+        },
+    },
+    _PARTIAL_RECONCILIATION_SECOND_FINGERPRINT: {
+        'evidence': _PARTIAL_RECONCILIATION_SECOND_EVIDENCE,
+        'result_counts': {
+            'verified_append_rows': 50,
+            'unverified_original_updates': 2,
+            'verified_date_only_rows': 14,
+            'blank_source_sheet_blank_rows': 36,
+        },
+    },
+}
+# Backward-compatible aliases for the first reconciliation profile.
+PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT
+PARTIAL_RECONCILIATION_EVIDENCE = _PARTIAL_RECONCILIATION_FIRST_EVIDENCE
+
+
+def partial_reconciliation_profile(request_fingerprint):
+    """Return a fixed, Sandbox-only evidence profile; never accept caller-defined evidence."""
+    return PARTIAL_RECONCILIATION_PROFILES.get(request_fingerprint)
+
+
 RENDER_SECRET_DIR = Path('/etc/secrets')
 RENDER_SECRET_VERSION_POINTER = '..data'
 RENDER_SECRET_VERSION_DIR_RE = re.compile(r'\.\.[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}\.[0-9]+')
@@ -460,13 +506,15 @@ class ExecutionClient:
         if checkpoint_apply and (type(chunk_index) is not int or not 0 <= chunk_index <= 499):
             raise ValueError('Invalid Apply checkpoint index')
         evidence_digest = None
+        reconciliation_profile = None
         if action == 'reconcile_partial':
             if trigger != 'manual' or manual_override is not True:
                 raise ValueError('Partial reconciliation is manual-admin only')
+            reconciliation_profile = partial_reconciliation_profile(request_fingerprint)
             if (not isinstance(reconciliation_id, str) or
                     not re.fullmatch(r'[0-9a-f]{32}', reconciliation_id) or
-                    request_fingerprint != PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT or
-                    evidence != PARTIAL_RECONCILIATION_EVIDENCE):
+                    reconciliation_profile is None or
+                    evidence != reconciliation_profile['evidence']):
                 raise ValueError('Partial reconciliation evidence or identity rejected')
             evidence_raw = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             evidence_digest = base64.urlsafe_b64encode(
@@ -563,11 +611,13 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
         raise PermissionError('Partial reconciliation is Sandbox-only')
     if (not isinstance(reconciliation_id, str) or
             not re.fullmatch(r'[0-9a-f]{32}', reconciliation_id) or
-            request_fingerprint != PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT or
+            partial_reconciliation_profile(request_fingerprint) is None or
             not isinstance(actor, str) or not actor.strip() or len(actor) > 128):
         raise ValueError('Partial reconciliation identity rejected')
+    reconciliation_profile = partial_reconciliation_profile(request_fingerprint)
+    evidence = reconciliation_profile['evidence']
     stamp = _reconciliation_time(now)
-    evidence_raw = json.dumps(PARTIAL_RECONCILIATION_EVIDENCE, ensure_ascii=False,
+    evidence_raw = json.dumps(evidence, ensure_ascii=False,
                               sort_keys=True, separators=(',', ':'))
     evidence_digest = base64.urlsafe_b64encode(
         hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode('ascii').rstrip('=')
@@ -610,7 +660,7 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
                 raise RuntimeError('Completed reconciliation conflicts with SQLite run state')
             return {'request_id': prior['request_id'], 'reconciliation_id': reconciliation_id,
                     'request_fingerprint': request_fingerprint, 'evidence_digest': evidence_digest,
-                    'state': prior['state'], 'idempotent': True}
+                    'evidence': evidence, 'state': prior['state'], 'idempotent': True}
         unknown = con.execute('''SELECT request_id,environment,trigger,actor,revision,started_at,
                                       finished_at,status,result_json
                                  FROM google_writer_runs
@@ -634,6 +684,7 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
                      row['actor'],row['trigger'],row['revision'],row['started_at']))
         return {'request_id': row['request_id'], 'reconciliation_id': reconciliation_id,
                 'request_fingerprint': request_fingerprint, 'evidence_digest': evidence_digest,
+                'evidence': evidence,
                 'state': 'prepared', 'idempotent': False}
 
 

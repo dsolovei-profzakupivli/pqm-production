@@ -161,17 +161,31 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         request_id='a'*32
         reconciliation_id='b'*32
         fingerprint=hashlib.sha256(request_id.encode('utf-8')).hexdigest()[:24]
-        with patch.object(execution,'PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT',fingerprint), \
+        second_profile=execution.PARTIAL_RECONCILIATION_PROFILES[
+            '18a4aba10c1c13ab3bf59f56']
+        with patch.dict(execution.PARTIAL_RECONCILIATION_PROFILES,{fingerprint:second_profile}), \
+                patch.object(execution,'PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT',fingerprint), \
                 patch.object(runtime,'SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT',fingerprint):
             result=self.client.invoke('reconcile_partial',request_id,'sandbox-admin',
                 trigger='manual',manual_authorized=True,reconciliation_id=reconciliation_id,
-                request_fingerprint=fingerprint,evidence=execution.PARTIAL_RECONCILIATION_EVIDENCE)
+                request_fingerprint=fingerprint,evidence=second_profile['evidence'])
         self.assertEqual(result['status'],'RECONCILED_PARTIAL')
         self.assertEqual(result['reconciliationId'],reconciliation_id)
         self.assertEqual(result['requestFingerprint'],fingerprint)
         self.assertEqual(len(self.calls),1)
         self.assertEqual(json.loads(json.loads(self.calls[0].data)['parameters'][0]['payload'])['action'],
             'reconcile_partial')
+        self.assertEqual(json.loads(json.loads(self.calls[0].data)['parameters'][0]['payload'])['evidence'],
+            second_profile['evidence'])
+        changed_evidence=dict(second_profile['evidence'])
+        changed_evidence['duplicate_rows']=1
+        with patch.dict(execution.PARTIAL_RECONCILIATION_PROFILES,{fingerprint:second_profile}), \
+                patch.object(execution,'PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT',fingerprint):
+            with self.assertRaisesRegex(ValueError,'evidence or identity rejected'):
+                self.client.invoke('reconcile_partial',request_id,'sandbox-admin',
+                    trigger='manual',manual_authorized=True,reconciliation_id=reconciliation_id,
+                    request_fingerprint=fingerprint,evidence=changed_evidence)
+        self.assertEqual(len(self.calls),1,'rejected evidence must not reach the transport')
         self.assertFalse(runtime._egress.active)
         self.assertIsNone(runtime._egress.execution_identity)
 
@@ -213,6 +227,10 @@ class SandboxExecutionTransportTests(unittest.TestCase):
     def test_sandbox_partial_reconciliation_fingerprint_matches_execution_contract(self):
         self.assertEqual(runtime.SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT,
             execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT)
+        self.assertIn('18a4aba10c1c13ab3bf59f56',
+            execution.PARTIAL_RECONCILIATION_PROFILES)
+        self.assertIn('18a4aba10c1c13ab3bf59f56',
+            runtime.SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS)
 
     def test_oauth_refresh_default_adapter_uses_same_scoped_guard(self):
         with tempfile.TemporaryDirectory() as directory:

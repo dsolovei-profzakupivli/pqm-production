@@ -24,7 +24,12 @@ class PartialReconciliationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).parent)
         self.path = str(Path(self.temp.name) / 'sandbox.sqlite3')
         self.old_fingerprint = execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT
+        self.old_profiles = execution.PARTIAL_RECONCILIATION_PROFILES
         execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = execution.request_id_fingerprint(TEST_REQUEST_ID)
+        execution.PARTIAL_RECONCILIATION_PROFILES = dict(self.old_profiles)
+        execution.PARTIAL_RECONCILIATION_PROFILES[
+            execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT
+        ] = self.old_profiles[execution._PARTIAL_RECONCILIATION_FIRST_FINGERPRINT]
         with closing(sqlite3.connect(self.path)) as con, con:
             execution.migrate(con)
             con.execute('''INSERT INTO google_writer_runs(
@@ -36,6 +41,7 @@ class PartialReconciliationTests(unittest.TestCase):
 
     def tearDown(self):
         execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = self.old_fingerprint
+        execution.PARTIAL_RECONCILIATION_PROFILES = self.old_profiles
         self.temp.cleanup()
 
     def prepare(self, reconciliation_id=TEST_RECONCILIATION_ID, fingerprint=None):
@@ -45,6 +51,7 @@ class PartialReconciliationTests(unittest.TestCase):
             TEST_ACTOR,now=TEST_NOW)
 
     def receipt(self, prepared):
+        profile = execution.partial_reconciliation_profile(prepared['request_fingerprint'])
         return {
             'environment':'SANDBOX',
             'scriptId':execution.IDENTITIES['SANDBOX'][0],
@@ -56,8 +63,7 @@ class PartialReconciliationTests(unittest.TestCase):
             'requestFingerprint':prepared['request_fingerprint'],
             'evidenceDigest':prepared['evidence_digest'],
             'digest':TEST_DIGEST,
-            'counts':{'verified_append_rows':50,'unverified_original_updates':2,
-                      'accepted_date_only_formats':12}
+            'counts':profile['result_counts']
         }
 
     def state(self):
@@ -84,6 +90,41 @@ class PartialReconciliationTests(unittest.TestCase):
               execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT,TEST_ACTOR,now=TEST_NOW)
         self.assertEqual(self.state()[0][0],'outcome_unknown')
         self.assertIsNone(self.state()[1])
+
+    def test_second_run_profile_is_separate_and_preparation_keeps_hold(self):
+        test_fingerprint = execution.request_id_fingerprint(TEST_REQUEST_ID)
+        second_profile = execution.PARTIAL_RECONCILIATION_PROFILES[
+            '18a4aba10c1c13ab3bf59f56'
+        ]
+        profiles = dict(execution.PARTIAL_RECONCILIATION_PROFILES)
+        profiles[test_fingerprint] = second_profile
+        old_profiles = execution.PARTIAL_RECONCILIATION_PROFILES
+        execution.PARTIAL_RECONCILIATION_PROFILES = profiles
+        try:
+            prepared = self.prepare(fingerprint=test_fingerprint)
+            result = execution.finalize_partial_reconciliation(
+                self.path, TEST_RECONCILIATION_ID, TEST_ACTOR,
+                self.receipt(prepared), now=TEST_NOW)
+        finally:
+            execution.PARTIAL_RECONCILIATION_PROFILES = old_profiles
+        self.assertEqual(prepared['evidence'], second_profile['evidence'])
+        self.assertEqual(prepared['evidence']['initial_plan'],
+            {'append':401,'update':2,'conflict':2})
+        self.assertEqual(prepared['evidence']['verified_append_by_tab'], {'ФОП':46,'ЮО':4})
+        self.assertEqual(prepared['evidence']['blank_sheet_source_date_state'], {'empty_string':36})
+        self.assertEqual(prepared['evidence']['blank_sheet_source_precision_state'], {'missing':36})
+        self.assertEqual(prepared['evidence']['updates_disposition'], 'UNVERIFIED_NO_HISTORIC_PLAN')
+        self.assertEqual(prepared['state'], 'prepared')
+        self.assertEqual(result['status'], 'RECONCILED_PARTIAL')
+        run, audit = self.state()
+        self.assertEqual(run[0], 'partial')
+        self.assertEqual(audit[0:2], ('reconciled_partial', 'outcome_unknown'))
+        with closing(sqlite3.connect(self.path)) as con:
+            evidence_json = con.execute(
+                'SELECT evidence_json FROM google_writer_run_reconciliations WHERE request_id=?',
+                (TEST_REQUEST_ID,)).fetchone()[0]
+        self.assertEqual(json.loads(evidence_json), second_profile['evidence'])
+        self.assertEqual(json.loads(run[1])['original_status'], 'outcome_unknown')
 
     def test_concurrent_unknown_or_running_state_fails_closed(self):
         other='f'*32

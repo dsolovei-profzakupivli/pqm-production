@@ -51,6 +51,10 @@ NAZK_HOST = 'corruptinfo.nazk.gov.ua'
 NAZK_PATH = '/ep/1.0/corrupt/getAllData'
 SANDBOX_EDR_SPREADSHEET_ID = '1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww'
 SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = '9be34ff2df1e661346176eeb'
+SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS = frozenset({
+    SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT,
+    '18a4aba10c1c13ab3bf59f56',
+})
 _original_getaddrinfo = socket.getaddrinfo
 
 
@@ -429,6 +433,10 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
         envelope = body['parameters'][0]
         payload = json.loads(envelope['payload'])
         action = payload.get('action') if isinstance(payload, dict) else None
+        allowed_reconciliation_fingerprints = (
+            SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS |
+            {SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT}
+        )
         reconciliation_allowed = action == 'reconcile_partial' and (
             payload.get('trigger') == 'manual' and
             payload.get('expectedDigest') is None and
@@ -438,9 +446,9 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             re.fullmatch(r'[0-9a-f]{32}', payload.get('requestId')) and
             isinstance(payload.get('reconciliationId'), str) and
             re.fullmatch(r'[0-9a-f]{32}', payload.get('reconciliationId')) and
-            payload.get('requestFingerprint') == SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT and
+            payload.get('requestFingerprint') in allowed_reconciliation_fingerprints and
             hashlib.sha256(payload['requestId'].encode('utf-8')).hexdigest()[:24] ==
-                SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT and
+                payload.get('requestFingerprint') and
             is_canonical_sha256_b64url(payload.get('evidenceDigest'))
         )
         if (set(body) != {'function', 'devMode', 'parameters'} or

@@ -12248,7 +12248,7 @@ class Handler(BaseHTTPRequestHandler):
                     trigger='manual',manual_authorized=True,
                     reconciliation_id=prepared['reconciliation_id'],
                     request_fingerprint=prepared['request_fingerprint'],
-                    evidence=google_writer_execution.PARTIAL_RECONCILIATION_EVIDENCE)
+                    evidence=prepared['evidence'])
             except google_writer_execution.ExecutionOutcomeUnknown:
                 return self.send_json({'error':'Apps Script reconciliation outcome unknown; retry same reconciliation_id only',
                     'reconciliation_id':payload.get('reconciliation_id'),'sqlite_hold_retained':True,
