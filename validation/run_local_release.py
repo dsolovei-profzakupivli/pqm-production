@@ -112,7 +112,8 @@ def main():
                             'run_date_only_status_integrated_v2_history.py',
                             'run_supplier_classification_v3_integrity.py',
                             'run_supplier_manual_classification_v4_integrity.py',
-                            'run_preview_digest_contract_v1_integrity.py'):
+                            'run_preview_digest_contract_v1_integrity.py',
+                            'run_checkpointed_apply_v1_integrity.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
@@ -156,7 +157,8 @@ def main():
                              'edr_status_evidence_v1_15b8.zip',
                              'date_only_edr_status_integrated_v1_12329.zip',
                              'date_only_status_integrated_v2_a1f8.zip',
-                             'preview_digest_contract_v1_baseline_3a63ac.zip')
+                             'preview_digest_contract_v1_baseline_3a63ac.zip',
+                             'checkpointed_apply_v1_exact_c8a97d6.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():

@@ -8,7 +8,7 @@ import unittest
 
 
 MANIFEST = Path("validation/local_release_20260911/partial_reconciliation_second_run_v1.json")
-MANIFEST_SHA256 = "a69e5f9ed4cfa5f32f6d977f73e09acc1b1630e5838bc820165ed5b6eeb31e24"
+MANIFEST_SHA256 = "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3"
 TEST_FILE = "test_partial_reconciliation_second_integrity_v1.py"
 
 

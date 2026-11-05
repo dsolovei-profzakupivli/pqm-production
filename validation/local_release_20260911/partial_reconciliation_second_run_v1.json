@@ -19,7 +19,7 @@
     "server.py": "5146898b06ade16a146527d22406279ecb2a83862adda7ccf647c79ceb8ecc38",
     "test_google_writer_partial_reconciliation.py": "68f929c37e53e5682c555ef00d0f1b1721a00b8c73b8d68c017a01a33daabcd7",
     "test_sandbox_execution_transport.py": "7d807de436c6149dac2b442350232c21e38c23db1c4867439e40f9ff937cc0ba",
-    "validation/run_local_release.py": "008e667e8ac20b95b85ee66abf3e3379ac1e0147c1d152502662574aa204c6da",
+    "validation/run_local_release.py": "c3eabbdcf5a8fdcc04f40a7c00a23cd5143eda3991a4a2fcc48a9ba2b85b1abe",
     "validation/run_checkpointed_apply_v1_integrity.py": "6df7f0322731104f3b122ae3656b039ba0b1d647134f6423f446f11250112514",
     "validation/fixtures/checkpointed_apply_v1_exact_c8a97d6.zip": "2b61d6fa37f681c732d90fcfcb8ff813ee75ba7983e115272b92fc2830f7ce39",
     "test_partial_reconciliation_second_integrity_v1.py": "3bb1117ccc48344f486ce7fb660bffafffb60ab97507e6998ccdc55e15d43324"
