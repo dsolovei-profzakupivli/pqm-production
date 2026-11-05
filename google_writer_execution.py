@@ -19,6 +19,7 @@ import uuid
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from execution_digest import is_canonical_sha256_b64url
+from execution_apply_contract import checkpoint_apply_enabled
 
 KYIV = ZoneInfo('Europe/Kyiv')
 JOB = 'google_writer'
@@ -443,7 +444,7 @@ class ExecutionClient:
 
     def invoke(self, action, request_id, actor, *, trigger='manual', digest=None,
                manual_authorized=False, reconciliation_id=None,
-               request_fingerprint=None, evidence=None):
+               request_fingerprint=None, evidence=None, chunk_index=0):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
         if background_jobs.disabled() and not manual_override:
@@ -455,6 +456,9 @@ class ExecutionClient:
             raise ValueError('Invalid execution identity')
         if action == 'apply' and not is_canonical_sha256_b64url(digest):
             raise ValueError('Reviewed Preview digest required')
+        checkpoint_apply = action == 'apply' and checkpoint_apply_enabled(self.environment)
+        if checkpoint_apply and (type(chunk_index) is not int or not 0 <= chunk_index <= 499):
+            raise ValueError('Invalid Apply checkpoint index')
         evidence_digest = None
         if action == 'reconcile_partial':
             if trigger != 'manual' or manual_override is not True:
@@ -473,6 +477,8 @@ class ExecutionClient:
                    'contract':CONTRACT, 'action':action, 'requestId':request_id,
                    'actor':actor, 'trigger':trigger, 'issuedAt':issued, 'expiresAt':issued+300,
                    'expectedDigest':digest}
+        if checkpoint_apply:
+            message['chunkIndex'] = chunk_index
         if action == 'reconcile_partial':
             message.update(reconciliationId=reconciliation_id,
                            requestFingerprint=request_fingerprint,
@@ -506,6 +512,15 @@ class ExecutionClient:
             raise ExecutionOutcomeUnknown('Execution response identity mismatch; reconciliation required')
         if action == 'preview' and not is_canonical_sha256_b64url(result.get('digest')):
             raise ExecutionOutcomeUnknown('Invalid Preview receipt')
+        if action == 'apply' and checkpoint_apply_enabled(self.environment):
+            if (result.get('digest') != digest or type(result.get('chunkIndex')) is not int or
+                    result.get('chunkIndex') != chunk_index or
+                    type(result.get('nextChunk')) is not int or result.get('nextChunk') != chunk_index + 1 or
+                    type(result.get('more')) is not bool or
+                    result.get('phase') not in {'append','update'} or
+                    result.get('status') not in {'APPLY_CHUNK_VERIFIED','COMPLETE','COMPLETE_WITH_CONFLICTS'} or
+                    (result.get('status') == 'APPLY_CHUNK_VERIFIED') != result.get('more')):
+                raise ExecutionOutcomeUnknown('Invalid Apply checkpoint receipt')
         if action == 'reconcile_partial' and (
                 result.get('status') != 'RECONCILED_PARTIAL' or
                 result.get('reconciliationId') != reconciliation_id or
@@ -519,6 +534,8 @@ class ExecutionClient:
         if not isinstance(counters, dict) or any(type(v) not in (int,float) or not math.isfinite(v) or v < 0 or v != int(v) for v in counters.values()):
             raise ExecutionOutcomeUnknown('Invalid execution counters')
         safe['counts'] = {k:int(v) for k,v in counters.items() if k in {'append','update','conflict','error','remaining_safe','batches','skipped'}}
+        if action == 'apply' and checkpoint_apply_enabled(self.environment):
+            safe.update(chunkIndex=chunk_index,nextChunk=result['nextChunk'],more=result['more'],phase=result.get('phase'))
         if action == 'reconcile_partial':
             safe.update(reconciliationId=reconciliation_id,
                         requestFingerprint=request_fingerprint,
@@ -798,6 +815,58 @@ def finish_run(path, request_id, status, result):
                     (status,datetime.now(timezone.utc).isoformat(),json.dumps(result),request_id))
 
 
+def checkpoint_run(path, request_id, step_result):
+    """Persist only a remotely verified chunk receipt while the run remains held."""
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        row=con.execute("SELECT status,result_json FROM google_writer_runs WHERE request_id=? AND environment='SANDBOX'",
+                        (request_id,)).fetchone()
+        if not row or row[0] != 'running':
+            raise RuntimeError('Apply checkpoint no longer owns its run')
+        previous=json.loads(row[1] or '{}')
+        totals=previous.get('verified_totals',{'append':0,'update':0,'batches':0})
+        for key in ('append','update','batches'):
+            totals[key]=int(totals.get(key,0))+int(step_result.get('counts',{}).get(key,0))
+        progress={'status':'APPLY_PROGRESS_CHECKPOINTED','next_chunk':step_result['nextChunk'],
+                  'last_verified_chunk':step_result['chunkIndex'],'last_phase':step_result.get('phase'),
+                  'last_step_counts':step_result.get('counts',{}),'verified_totals':totals,
+                  'plan_digest':step_result.get('digest')}
+        con.execute("UPDATE google_writer_runs SET result_json=? WHERE request_id=? AND status='running'",
+                    (json.dumps(progress,sort_keys=True),request_id))
+
+
+def hold_unknown_run(path, request_id, *, attempted_chunk, digest):
+    """Retain verified local checkpoints while holding an ambiguous remote step."""
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        row=con.execute("SELECT status,result_json FROM google_writer_runs WHERE request_id=? AND environment='SANDBOX'",
+                        (request_id,)).fetchone()
+        if not row or row[0] != 'running':
+            raise RuntimeError('Apply outcome hold no longer owns its run')
+        previous=json.loads(row[1] or '{}')
+        if not isinstance(previous,dict): previous={}
+        held=previous|{'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY',
+            'outcome_unknown':True,'attempted_chunk':attempted_chunk,'plan_digest':digest}
+        con.execute("UPDATE google_writer_runs SET status='outcome_unknown',finished_at=?,result_json=? WHERE request_id=? AND status='running'",
+                    (datetime.now(timezone.utc).isoformat(),json.dumps(held,sort_keys=True),request_id))
+
+
+def finish_partial_after_checkpoints(path, request_id, *, verified_chunks, next_chunk, digest):
+    """Stop safely after verified work while retaining its durable progress record."""
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        row=con.execute("SELECT status,result_json FROM google_writer_runs WHERE request_id=? AND environment='SANDBOX'",
+                        (request_id,)).fetchone()
+        if not row or row[0] != 'running':
+            raise RuntimeError('Apply partial completion no longer owns its run')
+        previous=json.loads(row[1] or '{}')
+        if not isinstance(previous,dict): previous={}
+        stopped=previous|{'status':'HALTED_AFTER_VERIFIED_CHECKPOINTS',
+            'verified_chunks':verified_chunks,'next_chunk':next_chunk,'plan_digest':digest}
+        con.execute("UPDATE google_writer_runs SET status='partial',finished_at=?,result_json=? WHERE request_id=? AND status='running'",
+                    (datetime.now(timezone.utc).isoformat(),json.dumps(stopped,sort_keys=True),request_id))
+
+
 def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest=None,
                     guard=lambda:True, manual_authorized=False):
     """One common writer for manual and scheduled calls, no automatic retry."""
@@ -805,23 +874,45 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
                        isinstance(actor, str) and bool(actor.strip()))
     if background_jobs.disabled() and not manual_override:
         return {'status': 'BACKGROUND_JOBS_DISABLED'}
+    verified_steps=0
+    chunk_index=0
     try:
         if not guard(): raise ExecutionConfigurationError('Execution guard changed before preview')
         if digest is None:
             digest = client.invoke('preview',request_id,actor,trigger=trigger,
                                    manual_authorized=manual_override)['digest']
-        if (background_jobs.disabled() and not manual_override) or not guard():
-            raise ExecutionConfigurationError('Execution guard changed before Apply')
-        result = client.invoke('apply',request_id,actor,trigger=trigger,digest=digest,
-                               manual_authorized=manual_override)
-        status = 'complete' if result['status']=='COMPLETE' else 'partial' if result['status'] in {'COMPLETE_WITH_CONFLICTS','PARTIAL_SAFE_OPERATIONS_REMAIN'} else 'outcome_unknown'
-        finish_run(path,request_id,status,result)
-        return result
+        if not checkpoint_apply_enabled(getattr(client,'environment',None)):
+            if (background_jobs.disabled() and not manual_override) or not guard():
+                raise ExecutionConfigurationError('Execution guard changed before Apply')
+            result=client.invoke('apply',request_id,actor,trigger=trigger,digest=digest,
+                                 manual_authorized=manual_override)
+            status='complete' if result['status']=='COMPLETE' else 'partial' if result['status'] in {
+                'COMPLETE_WITH_CONFLICTS','PARTIAL_SAFE_OPERATIONS_REMAIN'} else 'outcome_unknown'
+            finish_run(path,request_id,status,result)
+            return result
+        while True:
+            if (background_jobs.disabled() and not manual_override) or not guard():
+                raise ExecutionConfigurationError('Execution guard changed before next Apply checkpoint')
+            result = client.invoke('apply',request_id,actor,trigger=trigger,digest=digest,
+                                   manual_authorized=manual_override,chunk_index=chunk_index)
+            if result['status']=='APPLY_CHUNK_VERIFIED':
+                checkpoint_run(path,request_id,result)
+                verified_steps+=1
+                chunk_index=result['nextChunk']
+                continue
+            status = 'complete' if result['status']=='COMPLETE' else 'partial'
+            finish_run(path,request_id,status,result)
+            return result
     except ExecutionConfigurationError:
+        if verified_steps:
+            finish_partial_after_checkpoints(path,request_id,verified_chunks=verified_steps,
+                next_chunk=chunk_index,digest=digest)
+            return {'status':'HALTED_AFTER_VERIFIED_CHECKPOINTS','verified_chunks':verified_steps,
+                    'next_chunk':chunk_index}
         finish_run(path,request_id,'failed_safe',{'status':'CONFIGURATION_REJECTED'})
         return {'status':'CONFIGURATION_REJECTED'}
     except Exception:
-        finish_run(path,request_id,'outcome_unknown',{'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY'})
+        hold_unknown_run(path,request_id,attempted_chunk=chunk_index,digest=digest)
         return {'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY'}
 
 

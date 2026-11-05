@@ -6,26 +6,38 @@ const vm = require('node:vm');
 const path = require('node:path');
 const {spawnSync} = require('node:child_process');
 
+const sandboxSourceDir = path.join(__dirname, 'mirror-alignment/sandbox');
 const source = ['PqmSandboxPreviewDependencies.gs', 'PqmGoogleBusinessMatrix.gs', 'PqmVerificationDatetime.gs', 'PqmSandboxPreview.gs',
   'PqmSandboxControlledApply.gs', 'PqmSandboxFullApply.gs']
-  .map(name => fs.readFileSync(__dirname + '/' + name, 'utf8')).join('\n');
+  .map(name => fs.readFileSync(path.join(__dirname, name), 'utf8')).join('\n');
+const v6Source = ['PqmEnvironmentGuard.gs', 'PqmSandboxPreviewDependencies.gs', 'PqmVerificationDatetime.gs',
+  'PqmSandboxPreview.gs', 'PqmSandboxControlledApply.gs', 'PqmSandboxAppendApply.gs',
+  'PqmSandboxFullApply.gs', 'PqmSandboxExecution.gs']
+  .map(name => fs.readFileSync(path.join(sandboxSourceDir, name), 'utf8')).join('\n');
 const executionSource = [
-  fs.readFileSync(path.join(__dirname, 'mirror-alignment/sandbox/PqmSandboxControlledApply.gs'), 'utf8'),
-  fs.readFileSync(path.join(__dirname, 'mirror-alignment/sandbox/PqmSandboxExecution.gs'), 'utf8')
+  fs.readFileSync(path.join(sandboxSourceDir, 'PqmSandboxAppendApply.gs'), 'utf8'),
+  fs.readFileSync(path.join(sandboxSourceDir, 'PqmSandboxFullApply.gs'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'mirror-alignment/shared/PqmExecutionCheckpoint.gs'), 'utf8'),
+  fs.readFileSync(path.join(sandboxSourceDir, 'PqmSandboxControlledApply.gs'), 'utf8'),
+  fs.readFileSync(path.join(sandboxSourceDir, 'PqmSandboxExecution.gs'), 'utf8'),
+  fs.readFileSync(path.join(sandboxSourceDir, 'PqmSandboxPreviewDependencies.gs'), 'utf8'),
+  fs.readFileSync(path.join(sandboxSourceDir, 'PqmVerificationDatetime.gs'), 'utf8'),
+  fs.readFileSync(path.join(sandboxSourceDir, 'PqmSandboxPreview.gs'), 'utf8')
 ].join('\n');
 const clone = value => JSON.parse(JSON.stringify(value));
 function response(text) { return {getSelectedButton: () => 'OK', getResponseText: () => text}; }
 
 function executionFixture(planDigest) {
   const properties = new Map([['PQM_EXECUTION_SHARED_SECRET', 'S'.repeat(40)] ]);
-  let applyCalls = 0, locked = false;
+  let applyCalls = 0, locked = false, failAfterWrite=false, sourceDigest='payload-digest', sheetDigest='sheet-state-0';
   const context = {
     Date,
     PQM_MIRROR_ENV: {environment: 'SANDBOX', scriptId: 'script-sandbox', spreadsheetId: 'sheet-sandbox'},
     Utilities: {
       computeHmacSha256Signature: (value, secret) => crypto.createHmac('sha256', secret).update(value).digest(),
       base64EncodeWebSafe: value => Buffer.from(value).toString('base64url'),
-      base64DecodeWebSafe: value => [...Buffer.from(value, 'base64url')]
+      base64DecodeWebSafe: value => [...Buffer.from(value, 'base64url')],
+      newBlob: value => ({getBytes: () => [...Buffer.from(value, 'utf8')]})
     },
     PropertiesService: {getScriptProperties: () => ({
       getProperty: key => properties.get(key) || null,
@@ -42,28 +54,189 @@ function executionFixture(planDigest) {
     pqmSandboxControlledSpreadsheetId_: () => 'sheet-sandbox',
     pqmSandboxFullLoad_: () => ({plan_digest: planDigest, plan: {counts: {
       appended: 0, updated: 0, conflicts: 0, errors: 0, unchanged: 0
-    }}, state: {payload_digest: 'payload-digest'}}),
-    pqmSandboxDailySync: ({expectedDigest, payloadDigest}) => {
-      assert.equal(expectedDigest, planDigest);
-      assert.equal(payloadDigest, 'payload-digest');
-      applyCalls++;
-      return {status: 'COMPLETE', append: 0, update: 1, conflict: 0, error: 0,
-        remaining_safe: 0, batches: 1};
-    }
+    }}, state: {payload_digest: sourceDigest, google_digest: sheetDigest}}),
+    pqmSandboxDailySync: () => {throw new Error('Legacy DailySync must not be used by checkpoint Apply');}
   };
   vm.createContext(context);
   vm.runInContext(executionSource, context);
+  context.PQM_GOOGLE_TABS=['ФОП','ЮО'];
+  context.pqmSandboxFullLoad_ = () => ({plan_digest: planDigest, plan: {counts: {
+    appended: 0, updated: 0, conflicts: 0, errors: 0, unchanged: 0
+  }}, state: {payload_digest: sourceDigest, google_digest: sheetDigest}});
   context.pqmSandboxControlledSpreadsheetId_ = () => 'sheet-sandbox';
-  function request(action, requestId, expectedDigest) {
+  context.pqmSandboxApplyCheckpointStep_ = (id, loaded, request, props, key, record, makeReceipt) => {
+    assert.equal(id,'sheet-sandbox');
+    assert.equal(loaded.state.payload_digest,sourceDigest);
+    assert.equal(loaded.state.google_digest,sheetDigest);
+    applyCalls++;
+    const index=request.chunkIndex;
+    if(failAfterWrite){
+      failAfterWrite=false;record.inflight=index;record.state='writing';
+      context.pqmExecutionCheckpointSave_(props,key,record,8000);
+      sheetDigest='sheet-state-unknown';
+      throw new Error('synthetic lost response after write');
+    }
+    const more=index===0;
+    const status=more?'APPLY_CHUNK_VERIFIED':'COMPLETE';
+    const counts={append:more?25:0,update:more?0:1,conflict:0,error:0,remaining_safe:more?1:0,batches:1};
+    const step={status,chunkIndex:index,nextChunk:index+1,more,phase:more?'append':'update',counts};
+    record.inflight=null;record.state=more?'ready':'complete';record.nextChunk=index+1;
+    record.steps=record.steps||[];record.steps.push(step);
+    record.aggregate=record.aggregate||{append:0,update:0,batches:0};
+    record.aggregate.append+=counts.append;record.aggregate.update+=counts.update;record.aggregate.batches++;
+    sheetDigest='sheet-state-'+(index+1);record.googleDigest=sheetDigest;
+    if(!more) record.result={...makeReceipt(status,{append:25,update:1,conflict:0,error:0,remaining_safe:0,batches:2},planDigest),
+      chunkIndex:index,nextChunk:index+1,more:false,phase:'update'};
+    context.pqmExecutionCheckpointSave_(props,key,record,8000);
+    return context.pqmExecutionCheckpointReceipt_(request,makeReceipt,step);
+  };
+  function request(action, requestId, expectedDigest, chunkIndex=0) {
     const issuedAt = Math.floor(Date.now() / 1000);
     const payload = JSON.stringify({environment: 'SANDBOX', scriptId: 'script-sandbox',
       spreadsheetId: 'sheet-sandbox', contract: 'pqm-mirror-datetime-v1', action,
       requestId, actor: 'synthetic-admin', trigger: 'manual', issuedAt,
-      expiresAt: issuedAt + 300, expectedDigest});
+      expiresAt: issuedAt + 300, expectedDigest,...(action==='apply'?{chunkIndex}:{})});
     const signature = crypto.createHmac('sha256', 'S'.repeat(40)).update(payload).digest('base64url');
     return {payload, signature};
   }
-  return {context, properties, request, get applyCalls() {return applyCalls;}};
+  return {context, properties, request, get applyCalls() {return applyCalls;},
+    setSourceDigest(value){sourceDigest=value;},setSheetDigest(value){sheetDigest=value;},
+    failAfterNextWrite(){failAfterWrite=true;}};
+}
+
+function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
+  const properties=new Map([['PQM_EXECUTION_SHARED_SECRET','S'.repeat(40)]]);
+  let locked=false,version=0,writes=0,loseNextResponse=false;
+  const queue=Array.from({length:totalAppends},(_,i)=>({tab:i%2?'ЮО':'ФОП',row:i+2,cells:{1:'code-'+i}}));
+  const context={Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
+    PQM_MIRROR_ENV:{environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox'},
+    Utilities:{computeHmacSha256Signature:(value,secret)=>crypto.createHmac('sha256',secret).update(value).digest(),
+      base64EncodeWebSafe:value=>Buffer.from(value).toString('base64url'),
+      base64DecodeWebSafe:value=>[...Buffer.from(value,'base64url')],
+      newBlob:value=>({getBytes:()=>[...Buffer.from(value,'utf8')]})},
+    PropertiesService:{getScriptProperties:()=>({getProperty:key=>properties.get(key)||null,
+      setProperty:(key,value)=>properties.set(key,value),getProperties:()=>Object.fromEntries(properties)})},
+    ScriptApp:{getScriptId:()=> 'script-sandbox'},SpreadsheetApp:{openById:id=>({getId:()=>id})},
+    LockService:{getScriptLock:()=>({tryLock:()=>{if(locked)return false;locked=true;return true;},releaseLock:()=>{locked=false;}})},
+    PQM_EXECUTION_CONTEXT_:null,pqmSandboxControlledSpreadsheetId_:()=> 'sheet-sandbox'};
+  vm.createContext(context);vm.runInContext(executionSource,context);
+  context.PQM_GOOGLE_TABS=['ФОП','ЮО'];
+  context.pqmSandboxControlledSpreadsheetId_=()=> 'sheet-sandbox';
+  const stateDigest=()=>JSON.stringify({version});
+  context.pqmSandboxFullLoad_=()=>({plan_digest:planDigest,
+    plan:{counts:{appended:queue.length,updated:0,conflicts:0,errors:0,unchanged:0}},
+    state:{payload_digest:'source-stable',google_digest:stateDigest()},body:{count:0,items:[]},tabs:{},entries:[]});
+  context.pqmSandboxCheckpointAdapter_=()=>({
+    appendLoad:(_id,_allowlist,loaded,limit)=>({selected:queue.slice(0,limit),tabs:{ФОП:{rows:[]},ЮО:{rows:[]}},
+      payload_digest:loaded.state.payload_digest,plan:loaded.plan}),
+    appendPrewriteGuard:()=>{},appendRowMetadata:()=>({cells:[],height:28}),
+    appendRequests:selected=>[{selected:selected}],
+    batchUpdate:request=>{writes++;queue.splice(0,request.requests[0].selected.length);version++;
+      if(loseNextResponse){loseNextResponse=false;throw new Error('synthetic response lost after successful write');}},
+    appendVerify:()=>{},appendVerifyMetadata:()=>{},fullChunks:()=>[],fetchRegistry:()=>({count:0,items:[]}),
+    appendPayloadDigest:()=> 'source-stable',protectionCheck:()=>{},readRows:()=>[],fullBeforeCheck:()=>{},
+    fullRequests:()=>[],controlledVerify:()=>({verification_passed:true}),snapshot:()=>({version}),
+    fullSheetState:tabs=>tabs,plan:()=>({counts:{appended:queue.length,updated:0,conflicts:0,errors:0}}),
+    controlledDigest:value=>JSON.stringify(value),rowState:value=>value});
+  const checkpointStep=context.pqmSandboxApplyCheckpointStep_;
+  context.pqmSandboxApplyCheckpointStep_=(...args)=>{
+    try{return checkpointStep(...args);}catch(error){context.lastCheckpointError=String(error);throw error;}
+  };
+  function request(action,requestId,expectedDigest,chunkIndex=0){
+    const issuedAt=Math.floor(Date.now()/1000),payload=JSON.stringify({environment:'SANDBOX',
+      scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox',contract:'pqm-mirror-datetime-v1',
+      action,requestId,actor:'synthetic-admin',trigger:'manual',issuedAt,expiresAt:issuedAt+300,
+      expectedDigest,...(action==='apply'?{chunkIndex}:{})});
+    return {payload,signature:crypto.createHmac('sha256','S'.repeat(40)).update(payload).digest('base64url')};
+  }
+  return {context,properties,request,get writes(){return writes;},get remaining(){return queue.length;},
+    loseNextResponse(){loseNextResponse=true;}};
+}
+
+function checkpointStepFixture(totalAppends=30, updateRows=1) {
+  const context={Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
+    console:{log(){}},PQM_MIRROR_ENV:{environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox'}};
+  vm.createContext(context);vm.runInContext(executionSource,context);
+  context.PQM_GOOGLE_TABS=['ФОП','ЮО'];
+  let appendQueue=Array.from({length:totalAppends},(_,i)=>({tab:i%2?'ЮО':'ФОП',row:i+2,cells:{1:'code-'+i}}));
+  let remainingUpdates=updateRows, version=0, writeKinds=[], verifiedAppend=0, metadataVerifyCalls=0;
+  const payloadDigest='pqm-source-stable';
+  context.Utilities={newBlob:value=>({getBytes:()=>Array.from(Buffer.from(value,'utf8'))})};
+  context.PQM_SANDBOX_EXECUTION_APPEND_PAGE_ROWS=25;
+  context.PQM_SANDBOX_EXECUTION_UPDATE_PAGE_ROWS=50;
+  context.PQM_SANDBOX_EXECUTION_UPDATE_PAGE_CELLS=100;
+  context.pqmSandboxAppendLoad_=(id,allowlist,full,limit)=>({
+    selected:appendQueue.slice(0,limit),tabs:{ФОП:{rows:[]},ЮО:{rows:[]}},payload_digest:payloadDigest,
+    plan:{counts:{conflicts:2,errors:0}}
+  });
+  context.pqmSandboxAppendPrewriteGuard_=()=>{};
+  context.pqmSandboxAppendRowMetadata_=()=>({cells:Array.from({length:15},()=>({})),height:28});
+  context.pqmSandboxAppendRequests_=(selected)=>[{kind:'append',selected:selected}];
+  context.pqmSandboxAppendVerify_=(id,selected)=>{verifiedAppend+=selected.length;};
+  context.pqmSandboxAppendVerifyMetadata_=()=>{metadataVerifyCalls++;};
+  context.pqmSandboxFullChunks_=()=>remainingUpdates?[[...Array.from({length:remainingUpdates},(_,i)=>({row:i+2,columns:[4]}))]]:[];
+  context.pqmSandboxFetchRegistry_=()=>({count:0,items:[]});
+  context.pqmSandboxAppendPayloadDigest_=()=>payloadDigest;
+  context.pqmSandboxControlledProtectionCheck_=()=>{};
+  context.pqmSandboxControlledReadRows_=(id,chunk)=>chunk.map(()=>({}));
+  context.pqmSandboxControlledRowState_=row=>row;
+  context.pqmSandboxFullBeforeCheck_=()=>{};
+  context.pqmSandboxFullRequests_=chunk=>[{kind:'update',rows:chunk.length}];
+  context.pqmSandboxControlledVerify_=()=>({verification_passed:true});
+  context.pqmSandboxFullSheetState_=tabs=>tabs;
+  context.pqmSandboxControlledDigest_=value=>JSON.stringify(value);
+  context.pqmGoogleSnapshot_=()=>({version:++version});
+  context.pqmGooglePlan_=()=>({counts:{appended:appendQueue.length,updated:remainingUpdates,
+    conflicts:2,errors:0}});
+  context.pqmMirrorSheetsBatchUpdate_=request=>{
+    const kind=request.requests[0].kind;writeKinds.push(kind);
+    if(kind==='append')appendQueue.splice(0,request.requests[0].selected.length);
+    else remainingUpdates=Math.max(0,remainingUpdates-(request.requests[0].rows||0));
+  };
+  context.pqmSandboxControlledDigest_ = value => JSON.stringify(value);
+  function loaded(){return {state:{payload_digest:payloadDigest,google_digest:JSON.stringify({version})},
+    plan:{counts:{conflicts:2,errors:0}},body:{count:0,items:[]},tabs:{},entries:[]};}
+  return {context,loaded,appendLeft:()=>appendQueue.length,writeKinds:()=>writeKinds.slice(),
+    get verifiedAppend(){return verifiedAppend;},get metadataVerifyCalls(){return metadataVerifyCalls;},
+    updateLeft:()=>remainingUpdates};
+}
+
+function v6PlannerFixture(items, rowsByTab={}) {
+  const context={Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,Intl,
+    console:{log(){}}};
+  vm.createContext(context);vm.runInContext(v6Source,context);
+  context.ScriptApp={getScriptId:()=>context.PQM_MIRROR_ENV.scriptId};
+  context.SpreadsheetApp={getActiveSpreadsheet:()=>({getId:()=>context.PQM_MIRROR_ENV.spreadsheetId})};
+  context.PropertiesService={getScriptProperties:()=>({getProperty:()=>null})};
+  context.PQM_GOOGLE_TABS=['ФОП','ЮО'];
+  context.Utilities={DigestAlgorithm:{SHA_256:'SHA_256'},Charset:{UTF_8:'UTF_8'},
+    formatDate:(date,zone,pattern)=>{
+      assert.equal(zone,'Europe/Kyiv');
+      const parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:zone,
+        year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',
+        hourCycle:'h23'}).formatToParts(date).map(part=>[part.type,part.value]));
+      return pattern.includes('T')?`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.000`:
+        `${parts.year}-${parts.month}-${parts.day}`;
+    },computeDigest:(_,value)=>crypto.createHash('sha256').update(value).digest(),
+    base64EncodeWebSafe:value=>Buffer.from(value).toString('base64url')};
+  const tabs=Object.fromEntries(['ФОП','ЮО'].map((name,index)=>[name,{
+    id:index+1,maxRows:100,headers:Array.from(context.PQM_GOOGLE_HEADERS),merges:[],protectedRanges:[],
+    conditionalFormats:[],templateRowHeight:28,formulaLocale:'uk_UA',rows:rowsByTab[name]||[]} ]));
+  const body={count:items.length,items};
+  return {context,tabs,body};
+}
+
+function v6Item(overrides={}) {
+  return {supplier_code:'0000000123',entity_type:'individual_entrepreneur',monitoring_eligible:true,
+    google_sync_eligible:true,supplier_name:'ФОП Тестовий',latest_submission_name:null,
+    current_manager_name:'Тестовий Керівник',edr_status_current:'Немає інформації',
+    prozorro_status_google:'Активний',freshness_marker:'fresh',last_application_date:null,
+    google_sync_last_decided_application_date:null,verification_date:null,verification_officer:null,
+    verification_datetime_precision:'unknown',...overrides};
+}
+
+function v6Row(values, formulas=Array(15).fill(''), codeDisplay=values[1]) {
+  return {values,formulas,codeDisplay,dateFormat:'dd.MM.yyyy',verificationDateFormat:'dd.MM.yyyy HH:mm:ss'};
 }
 
 function fixture() {
@@ -791,13 +964,21 @@ test('Execution API keeps one canonical Preview digest through receipt and guard
   assert.equal(preview.digest, digest);
   assert.equal(f.applyCalls, 0);
 
-  const result = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest));
+  const first = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest, 0));
+  assert.equal(first.digest, digest);
+  assert.equal(first.status, 'APPLY_CHUNK_VERIFIED');
+  assert.equal(first.more, true);
+  assert.equal(f.applyCalls, 1);
+  const replayedChunk = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest, 0));
+  assert.deepEqual(clone(replayedChunk), clone(first));
+  assert.equal(f.applyCalls, 1, 'verified duplicate chunk returns stored receipt without another write');
+  const result = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest, 1));
   assert.equal(result.digest, digest);
   assert.equal(result.status, 'COMPLETE');
-  assert.equal(f.applyCalls, 1);
-  const replay = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest));
+  assert.equal(f.applyCalls, 2);
+  const replay = f.context.pqmSandboxExecution(f.request('apply', 'b'.repeat(32), preview.digest, 1));
   assert.deepEqual(clone(replay), clone(result));
-  assert.equal(f.applyCalls, 1);
+  assert.equal(f.applyCalls, 2);
 
   const stale = crypto.createHash('sha256').update('different plan').digest('base64url');
   assert.throws(() => f.context.pqmSandboxExecution(f.request('apply', 'c'.repeat(32), stale)),
@@ -813,5 +994,191 @@ test('Execution API keeps one canonical Preview digest through receipt and guard
   const tampered = f.request('preview', 'e'.repeat(32));
   tampered.signature = 'A'.repeat(43);
   assert.throws(() => f.context.pqmSandboxExecution(tampered), /execution authorization rejected/);
-  assert.equal(f.applyCalls, 1);
+  assert.equal(f.applyCalls, 2);
+});
+
+test('Execution API holds after a lost chunk response and never repeats that write', () => {
+  const digest = crypto.createHash('sha256').update('synthetic canonical plan').digest('base64url');
+  const f = executionFixture(digest);
+  const preview = f.context.pqmSandboxExecution(f.request('preview', 'f'.repeat(32)));
+  f.failAfterNextWrite();
+  assert.throws(() => f.context.pqmSandboxExecution(f.request('apply','a'.repeat(32),preview.digest,0)),
+    /Apply may be partial/);
+  assert.equal(f.applyCalls,1);
+  assert.equal(f.properties.get('PQM_EXECUTION_UNCERTAIN'),'a'.repeat(32));
+  assert.throws(() => f.context.pqmSandboxExecution(f.request('apply','a'.repeat(32),preview.digest,0)),
+    /outcome uncertain/);
+  assert.equal(f.applyCalls,1,'uncertain chunk is not replayed');
+});
+
+test('Execution API stops before the next chunk if source or Google state changed', () => {
+  const digest = crypto.createHash('sha256').update('synthetic canonical plan').digest('base64url');
+  for (const changed of ['source','sheet']) {
+    const f=executionFixture(digest), preview=f.context.pqmSandboxExecution(f.request('preview','b'.repeat(32)));
+    const first=f.context.pqmSandboxExecution(f.request('apply','c'.repeat(32),preview.digest,0));
+    assert.equal(first.status,'APPLY_CHUNK_VERIFIED');
+    if(changed==='source')f.setSourceDigest('changed-source');
+    else f.setSheetDigest('changed-sheet');
+    assert.throws(()=>f.context.pqmSandboxExecution(f.request('apply','c'.repeat(32),preview.digest,1)),
+      /source or Google state changed/);
+    assert.equal(f.applyCalls,1,'changed inputs block the next write');
+    assert.equal(f.properties.has('PQM_EXECUTION_UNCERTAIN'),false,
+      'pre-write change is a safe stop, not an uncertain write');
+  }
+});
+
+test('checkpoint append metadata is verified with one batched Sheets metadata read', () => {
+  const f=executionFixture('A'.repeat(43)), calls=[];
+  const rows=(count)=>Array.from({length:count},()=>({values:Array.from({length:15},()=>({}))}));
+  f.context.Sheets={Spreadsheets:{get:(id,options)=>{
+    calls.push({id,options});
+    return {sheets:[
+      {properties:{title:'ФОП'},data:[{rowData:rows(2),rowMetadata:[{pixelSize:28},{pixelSize:28}]}]},
+      {properties:{title:'ЮО'},data:[{rowData:rows(1),rowMetadata:[{pixelSize:28}]}]}
+    ]};
+  }}};
+  const selected=[
+    {tab:'ФОП',row:2,cells:{}},{tab:'ФОП',row:3,cells:{}},{tab:'ЮО',row:2,cells:{}}
+  ];
+  const templates={ФОП:{cells:Array.from({length:15},()=>({})),height:28},
+    ЮО:{cells:Array.from({length:15},()=>({})),height:28}};
+  f.context.pqmSandboxAppendVerifyMetadata_('sheet-sandbox',selected,templates);
+  assert.equal(calls.length,1);
+  assert.deepEqual(Array.from(calls[0].options.ranges),["'ФОП'!A2:O3","'ЮО'!A2:O2"]);
+  assert.equal(calls[0].options.includeGridData,true);
+});
+
+test('bounded checkpoint steps confirm all APPEND pages before starting UPDATE', () => {
+  const f=checkpointStepFixture(30,1),props=new Map(),key='PQM_EXECUTION_RUN_'+('c'.repeat(32));
+  const record={payloadDigest:'pqm-source-stable',googleDigest:JSON.stringify({version:0}),
+    aggregate:{append:0,update:0,batches:0},steps:[],nextChunk:0,inflight:null,state:'ready'};
+  props.set(key,JSON.stringify(record));
+  const receipt=(status,counts,digest)=>({status,counts,digest});
+  function run(index){
+    const request={chunkIndex:index,expectedDigest:'Q'.repeat(43)};
+    return f.context.pqmSandboxApplyCheckpointStep_('sheet-sandbox',f.loaded(),request,
+      {setProperty:(k,v)=>props.set(k,v)},key,record,receipt);
+  }
+  const first=run(0);
+  assert.equal(first.status,'APPLY_CHUNK_VERIFIED');assert.equal(first.counts.append,25);
+  assert.equal(f.appendLeft(),5);assert.deepEqual(f.writeKinds(),['append']);
+  record.googleDigest=JSON.stringify({version:1});
+  const second=run(1);
+  assert.equal(second.status,'APPLY_CHUNK_VERIFIED');assert.equal(second.counts.append,5);
+  assert.equal(f.appendLeft(),0);assert.deepEqual(f.writeKinds(),['append','append']);
+  record.googleDigest=JSON.stringify({version:2});
+  const third=run(2);
+  assert.equal(third.status,'COMPLETE_WITH_CONFLICTS');assert.equal(third.phase,'update');
+  assert.equal(f.updateLeft(),0);assert.deepEqual(f.writeKinds(),['append','append','update']);
+  assert.equal(f.verifiedAppend,30);assert.equal(f.metadataVerifyCalls,2);
+  assert.equal(record.aggregate.append,30);assert.equal(record.aggregate.update,1);
+  assert.equal(record.steps.length,3);assert.equal(record.state,'complete');
+});
+
+test('shared checkpoint engine bounds UPDATE pages by rows and cells', () => {
+  const f=checkpointStepFixture(0,60),props=new Map(),key='PQM_EXECUTION_RUN_'+('d'.repeat(32));
+  const record={payloadDigest:'pqm-source-stable',googleDigest:JSON.stringify({version:0}),
+    aggregate:{append:0,update:0,batches:0},steps:[],nextChunk:0,inflight:null,state:'ready'};
+  const receipt=(status,counts,digest)=>({status,counts,digest});
+  function run(index){return f.context.pqmSandboxApplyCheckpointStep_('sheet-sandbox',f.loaded(),
+    {chunkIndex:index,expectedDigest:'R'.repeat(43)},{setProperty:(k,v)=>props.set(k,v)},key,record,receipt);}
+  const first=run(0);
+  assert.equal(first.status,'APPLY_CHUNK_VERIFIED');assert.equal(first.counts.update,50);
+  assert.equal(f.updateLeft(),10);assert.deepEqual(f.writeKinds(),['update']);
+  record.googleDigest=JSON.stringify({version:1});
+  const second=run(1);
+  assert.equal(second.status,'COMPLETE_WITH_CONFLICTS');assert.equal(second.counts.update,10);
+  assert.equal(f.updateLeft(),0);assert.deepEqual(f.writeKinds(),['update','update']);
+  assert.equal(record.aggregate.update,60);
+});
+
+test('Apps Script v6 normal Preview and APPEND plan retain formula A v1.2 and literal E status', () => {
+  const body={count:1,items:[v6Item()]};
+  const templateValues=Array(15).fill(''),templateFormulas=Array(15).fill('');
+  templateFormulas[0]='=IF(B2="","",1)';
+  const f=v6PlannerFixture(body.items,{ФОП:[v6Row(templateValues,templateFormulas,'')],ЮО:[]}),c=f.context;
+  c.pqmSandboxFetchRegistry_=()=>clone(body);
+  c.pqmGoogleSnapshot_=()=>clone(f.tabs);
+  c.pqmSandboxControlledProtectionCheck_=()=>{};
+  const preview=c.pqmSandboxFullApplyPreview();
+  assert.equal(preview.google_writes,0);
+  assert.equal(preview.appended,1,JSON.stringify(c.pqmGooglePlan_(body,f.tabs)));
+  assert.equal(preview.updated,0);
+  assert.equal(preview.conflicts,0);
+  assert.match(preview.plan_digest,/^[A-Za-z0-9_-]{43}$/);
+
+  c.pqmSandboxControlledDigest_=()=> 'synthetic-state-digest';
+  c.pqmSandboxFullState_=()=>({payload_digest:'stable-source'});
+  const plan=c.pqmGooglePlan_(body,f.tabs);
+  const loaded=c.pqmSandboxAppendLoad_('sheet-sandbox',undefined,
+    {body,tabs:f.tabs,plan},25);
+  assert.equal(loaded.selected.length,1);
+  const selected=loaded.selected[0];
+  assert.equal(selected.cells[1],'0000000123');
+  assert.equal(selected.cells[4],'Немає інформації');
+  assert.match(selected.cells[0],/^=IF\(/);
+  assert.match(selected.cells[0],/TODAY\(\)/);
+  assert.match(selected.cells[0],/REGEXREPLACE/);
+  assert.match(selected.cells[0],/ISDATE\(/);
+  assert.match(selected.cells[0],/⚪️\|⚪\|➖\|🟠\|🟢\|🔴/);
+
+  const requests=c.pqmSandboxAppendRequests_(loaded.selected,loaded.tabs);
+  const formulaWrite=requests.find(request=>request.updateCells &&
+    request.updateCells.range.startColumnIndex===0);
+  assert.ok(formulaWrite,'APPEND writes the planned formula into A');
+  assert.equal(formulaWrite.updateCells.rows[0].values[0].userEnteredValue.formulaValue,selected.cells[0]);
+  assert.ok(requests.some(request=>request.copyPaste && request.copyPaste.pasteType==='PASTE_FORMAT'));
+  assert.ok(requests.some(request=>request.copyPaste && request.copyPaste.pasteType==='PASTE_DATA_VALIDATION'));
+  assert.equal(requests.some(request=>request.copyPaste && request.copyPaste.pasteType==='PASTE_FORMULA'),false);
+});
+
+test('Apps Script v6 UPDATE preserves column A and existing E against Немає інформації', () => {
+  const item=v6Item({verification_date:'2026-11-01',verification_datetime_precision:'day',
+    verification_officer:'Тестовий Керівник'});
+  const values=Array(15).fill('');
+  values[0]='existing freshness value';values[1]=item.supplier_code;values[2]=item.supplier_name;
+  values[3]=item.current_manager_name;values[4]='Зареєстровано';values[5]='Активний';
+  values[8]='2026-10-31T12:00:00Z';values[11]=item.verification_officer;
+  const formulas=Array(15).fill('');formulas[0]='=TODAY()';
+  const f=v6PlannerFixture([item],{ФОП:[v6Row(values,formulas)],ЮО:[]});
+  const plan=f.context.pqmGooglePlan_(f.body,f.tabs);
+  assert.equal(plan.counts.updated,1);
+  assert.equal(plan.counts.conflicts,0);
+  assert.equal(plan.changes.length,1);
+  assert.equal(plan.changes[0].append,false);
+  assert.deepEqual(Object.keys(plan.changes[0].cells),['8']);
+  assert.equal(plan.changes[0].cells[8],Date.parse('2026-11-01T00:00:00Z')/86400000+25569,
+    'date-only is represented as midnight wall time in Europe/Kyiv');
+  assert.equal(plan.changes[0].cells[0],undefined,'UPDATE does not modify Google-owned A');
+  assert.equal(plan.changes[0].cells[4],undefined,'Немає інформації does not overwrite a nonblank E');
+});
+
+test('Apps Script v6 persists real checkpoint state across Execution API calls', () => {
+  const digest=crypto.createHash('sha256').update('v6 preview plan').digest('base64url');
+  const f=realCheckpointExecutionFixture(digest,30),id='e'.repeat(32);
+  const preview=f.context.pqmSandboxExecution(f.request('preview','f'.repeat(32)));
+  assert.equal(preview.status,'PREVIEW');assert.equal(preview.digest,digest);assert.equal(f.writes,0);
+  let first;try{first=f.context.pqmSandboxExecution(f.request('apply',id,digest,0));}
+  catch(error){assert.fail(String(error)+'; internal='+f.context.lastCheckpointError);}
+  assert.equal(first.status,'APPLY_CHUNK_VERIFIED');assert.equal(first.more,true);
+  assert.equal(first.counts.append,25);assert.equal(f.remaining,5);assert.equal(f.writes,1);
+  const stored=JSON.parse(f.properties.get('PQM_EXECUTION_RUN_'+id));
+  assert.equal(stored.state,'ready');assert.equal(stored.nextChunk,1);
+  const second=f.context.pqmSandboxExecution(f.request('apply',id,digest,1));
+  assert.equal(second.status,'COMPLETE');assert.equal(second.more,false);
+  assert.equal(second.counts.append,30);assert.equal(f.remaining,0);assert.equal(f.writes,2);
+  const replay=f.context.pqmSandboxExecution(f.request('apply',id,digest,1));
+  assert.deepEqual(clone(replay),clone(second));assert.equal(f.writes,2,'verified replay returns receipt without repeating a write');
+});
+
+test('Apps Script v6 does not replay a chunk when Execution API loses its response', () => {
+  const digest=crypto.createHash('sha256').update('v6 uncertain plan').digest('base64url');
+  const f=realCheckpointExecutionFixture(digest,30),id='a'.repeat(32);
+  f.context.pqmSandboxExecution(f.request('preview','b'.repeat(32)));
+  f.loseNextResponse();
+  assert.throws(()=>f.context.pqmSandboxExecution(f.request('apply',id,digest,0)),/Apply may be partial/);
+  assert.equal(f.writes,1);assert.equal(f.remaining,5);
+  assert.equal(f.properties.get('PQM_EXECUTION_UNCERTAIN'),id);
+  assert.throws(()=>f.context.pqmSandboxExecution(f.request('apply',id,digest,0)),/outcome uncertain/);
+  assert.equal(f.writes,1,'uncertain chunk remains held and is never replayed');
 });

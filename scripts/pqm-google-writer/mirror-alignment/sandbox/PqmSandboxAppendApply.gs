@@ -3,9 +3,11 @@ var PQM_SANDBOX_APPEND_MAX_ROWS = 50;
 var PQM_SANDBOX_APPEND_CODE_SCAN_ROWS = 1000;
 var PQM_SANDBOX_APPEND_CONFIRMATION = 'APPLY_SANDBOX_SUPPLIER_APPEND_MAX_50';
 
-function pqmSandboxAppendLoad_(id, allowlist) {
-  var body = pqmSandboxFetchRegistry_(), tabs = pqmGoogleSnapshot_(id);
-  var plan = pqmGooglePlan_(body, tabs);
+function pqmSandboxAppendLoad_(id, allowlist, fullLoaded, maxRows) {
+  var full = fullLoaded || null;
+  var body = full ? full.body : pqmSandboxFetchRegistry_();
+  var tabs = full ? full.tabs : pqmGoogleSnapshot_(id);
+  var plan = full ? full.plan : pqmGooglePlan_(body, tabs);
   var candidates = plan.changes.filter(function(change) { return change.append; });
   if (allowlist !== undefined) {
     if (!Array.isArray(allowlist) || !allowlist.length ||
@@ -19,11 +21,17 @@ function pqmSandboxAppendLoad_(id, allowlist) {
       return byCode[code];
     });
   }
-  var selected = candidates.slice(0, PQM_SANDBOX_APPEND_MAX_ROWS);
+  var limit = maxRows === undefined ? PQM_SANDBOX_APPEND_MAX_ROWS : maxRows;
+  if (!Number.isInteger(limit) || limit < 1 || limit > PQM_SANDBOX_APPEND_MAX_ROWS) {
+    throw new Error('PQM SANDBOX APPEND: invalid bounded page size.');
+  }
+  var selected = candidates.slice(0, limit);
   var next = {};
   PQM_GOOGLE_TABS.forEach(function(name) { next[name] = tabs[name].rows.length + 2; });
   selected = selected.map(function(change) {
-    return {tab: change.tab, row: next[change.tab]++, append: true, cells: change.cells};
+    var row = next[change.tab]++, cells = Object.assign({}, change.cells);
+    cells[0] = pqmGoogleFreshnessFormula_(row, tabs[change.tab].formulaLocale);
+    return {tab: change.tab, row: row, append: true, cells: cells};
   });
   var state = pqmSandboxFullState_(body, tabs, plan);
   var digest = pqmSandboxControlledDigest_({version: 1, spreadsheet_id: id,
@@ -133,17 +141,15 @@ function pqmSandboxAppendRange_(id, row, column, height, width) {
 }
 
 function pqmSandboxAppendRequests_(selected, tabs) {
-  var requests = [], allowed = [1, 2, 3, 4, 5, 7, 8, 11];
+  var requests = [], allowed = [0, 1, 2, 3, 4, 5, 7, 8, 11];
   PQM_GOOGLE_TABS.forEach(function(name) {
     var tab = tabs[name], additions = selected.filter(function(change) { return change.tab === name; });
     if (!additions.length) return;
     var first = additions[0].row, last = additions[additions.length - 1].row;
     var template = tab.rows.length + 1;
-    if (!pqmGoogleSafeAppendFormula_(tab.rows[tab.rows.length - 1].formulas[0], template)) {
-      throw new Error('PQM SANDBOX APPEND: unsafe formula A; zero writes.');
-    }
     if (first !== template + 1 || additions.some(function(change, index) {
       return change.row !== first + index || !change.append ||
+        change.cells[0] !== pqmGoogleFreshnessFormula_(change.row, tab.formulaLocale) ||
         Object.keys(change.cells).some(function(column) { return allowed.indexOf(Number(column)) < 0; });
     })) throw new Error('PQM SANDBOX APPEND: noncontiguous or unsafe plan; zero writes.');
     if (last > tab.maxRows) requests.push({appendDimension: {sheetId: tab.id,
@@ -155,9 +161,6 @@ function pqmSandboxAppendRequests_(selected, tabs) {
           destination: pqmSandboxAppendRange_(tab.id, first, span[0], additions.length, span[1]), pasteType: type}});
       });
     });
-    requests.push({copyPaste: {source: pqmSandboxAppendRange_(tab.id, template, 0, 1, 1),
-      destination: pqmSandboxAppendRange_(tab.id, first, 0, additions.length, 1),
-      pasteType: 'PASTE_FORMULA'}});
     requests.push({updateDimensionProperties: {range: {sheetId: tab.id, dimension: 'ROWS',
       startIndex: first - 1, endIndex: last}, properties: {pixelSize: tab.templateRowHeight}, fields: 'pixelSize'}});
     tab.conditionalFormats.forEach(function(rule, index) {
@@ -171,7 +174,10 @@ function pqmSandboxAppendRequests_(selected, tabs) {
       if (changed) requests.push({updateConditionalFormatRule: {sheetId: tab.id, index: index, rule: copy}});
     });
     additions.forEach(function(change) {
+      requests.push({updateCells: {range: pqmSandboxAppendRange_(tab.id, change.row, 0, 1, 1),
+        rows: [{values: [{userEnteredValue: {formulaValue: change.cells[0]}}]}], fields: 'userEnteredValue'}});
       allowed.forEach(function(column) {
+        if (column === 0) return;
         if (!Object.prototype.hasOwnProperty.call(change.cells, column)) return;
         var value = change.cells[column], isDate = column === 7 || column === 8;
         var cell = {userEnteredValue: isDate ? {numberValue: value} : {stringValue: value}};
@@ -200,27 +206,54 @@ function pqmSandboxAppendRowMetadata_(id, tab, row) {
 }
 
 function pqmSandboxAppendVerifyMetadata_(id, selected, templates) {
-  selected.forEach(function(change) {
-    var template = templates[change.tab];
-    var after = pqmSandboxAppendRowMetadata_(id, change.tab, change.row);
-    if (after.height !== template.height) throw new Error('PQM SANDBOX APPEND: row height mismatch.');
-    for (var column = 0; column < 15; column++) {
-      var expected = template.cells[column] || {}, actual = after.cells[column] || {};
-      if (JSON.stringify(expected.dataValidation || null) !== JSON.stringify(actual.dataValidation || null)) {
-        throw new Error('PQM SANDBOX APPEND: validation mismatch.');
-      }
-      var expectedFormat = JSON.parse(JSON.stringify(expected.userEnteredFormat || {}));
-      var actualFormat = JSON.parse(JSON.stringify(actual.userEnteredFormat || {}));
-      if ([1, 7, 8].indexOf(column) >= 0 && Object.prototype.hasOwnProperty.call(change.cells, column)) {
-        delete expectedFormat.numberFormat;
-        if (!actualFormat.numberFormat || actualFormat.numberFormat.pattern !==
-            (column === 1 ? '@' : column === 8 ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy')) throw new Error('PQM SANDBOX APPEND: date/code format mismatch.');
-        delete actualFormat.numberFormat;
-      }
-      if (JSON.stringify(expectedFormat) !== JSON.stringify(actualFormat)) {
-        throw new Error('PQM SANDBOX APPEND: format mismatch.');
-      }
+  var ranges = [], names = [];
+  PQM_GOOGLE_TABS.forEach(function(name) {
+    var rows = selected.filter(function(change) { return change.tab === name; });
+    if (!rows.length) return;
+    if (rows.some(function(change, index) { return change.row !== rows[0].row + index; })) {
+      throw new Error('PQM SANDBOX APPEND: metadata rows are not contiguous.');
     }
+    ranges.push("'" + name.replace(/'/g, "''") + "'!A" + rows[0].row + ':O' + rows[rows.length - 1].row);
+    names.push(name);
+  });
+  if (!ranges.length) return;
+  var response = Sheets.Spreadsheets.get(id, {ranges: ranges, includeGridData: true,
+    fields: 'sheets(properties(title),data(startRow,startColumn,rowData(values(userEnteredFormat,dataValidation)),rowMetadata(pixelSize)))'});
+  var byName = new Map((response.sheets || []).map(function(sheet) {
+    return [sheet.properties.title, sheet];
+  }));
+  names.forEach(function(name) {
+    var sheet = byName.get(name), data = sheet && sheet.data && sheet.data[0];
+    var rowData = data && data.rowData || [], rowMetadata = data && data.rowMetadata || [];
+    var rows = selected.filter(function(change) { return change.tab === name; });
+    if (rowData.length !== rows.length || rowMetadata.length !== rows.length) {
+      throw new Error('PQM SANDBOX APPEND: batched row metadata incomplete.');
+    }
+    rows.forEach(function(change, index) {
+      var template = templates[name], cells = rowData[index].values || [], height = rowMetadata[index].pixelSize;
+      if (!template || cells.length !== 15 || !Number.isInteger(height) || height !== template.height) {
+        throw new Error('PQM SANDBOX APPEND: row metadata mismatch.');
+      }
+      for (var column = 0; column < 15; column++) {
+        var expected = template.cells[column] || {}, actual = cells[column] || {};
+        if (JSON.stringify(expected.dataValidation || null) !== JSON.stringify(actual.dataValidation || null)) {
+          throw new Error('PQM SANDBOX APPEND: validation mismatch.');
+        }
+        var expectedFormat = JSON.parse(JSON.stringify(expected.userEnteredFormat || {}));
+        var actualFormat = JSON.parse(JSON.stringify(actual.userEnteredFormat || {}));
+        if ([1, 7, 8].indexOf(column) >= 0 && Object.prototype.hasOwnProperty.call(change.cells, column)) {
+          delete expectedFormat.numberFormat;
+          if (!actualFormat.numberFormat || actualFormat.numberFormat.pattern !==
+              (column === 1 ? '@' : column === 8 ? 'dd.MM.yyyy HH:mm:ss' : 'dd.MM.yyyy')) {
+            throw new Error('PQM SANDBOX APPEND: date/code format mismatch.');
+          }
+          delete actualFormat.numberFormat;
+        }
+        if (JSON.stringify(expectedFormat) !== JSON.stringify(actualFormat)) {
+          throw new Error('PQM SANDBOX APPEND: format mismatch.');
+        }
+      }
+    });
   });
 }
 
@@ -257,14 +290,14 @@ function pqmSandboxAppendVerify_(id, selected, before) {
     group.additions.forEach(function(change) {
       var offset = change.row - group.first, row = raw[offset] || [];
       var formulas = (formulaResponse.valueRanges[index].values || [])[offset] || [];
-      var template = before[group.name].rows.length + 1;
-      var expectedA = pqmGoogleTranslatedAppendFormula_(before[group.name].rows[before[group.name].rows.length-1].formulas[0], template, change.row);
+      var expectedA = pqmGoogleFreshnessFormula_(change.row, before[group.name].formulaLocale);
       if (formulas[0] !== expectedA) throw new Error('PQM SANDBOX APPEND: formula A mismatch; new Preview required.');
       if (String((codes[offset] || [])[0] || '').trim() !== String(change.cells[1]).trim() ||
           [6, 9, 10, 12, 13, 14].some(function(column) { return !pqmGoogleBlank_(row[column]); })) {
         throw new Error('PQM SANDBOX APPEND: AFTER verification failed; new Preview required.');
       }
       Object.keys(change.cells).forEach(function(column) {
+        if (Number(column) === 0) return; // Formula A is verified from FORMULA read-back above.
         var actual = row[column], expected = change.cells[column];
         if (Number(column) === 7 || Number(column) === 8) {
           var matches = Number(column) === 8 ?

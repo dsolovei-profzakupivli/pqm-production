@@ -21,7 +21,8 @@ function pqmSandboxExecution(envelope) {
       !Number.isInteger(request.issuedAt) || !Number.isInteger(request.expiresAt) ||
       request.issuedAt>now+30 || request.expiresAt<now || request.expiresAt-request.issuedAt>300 ||
       request.expiresAt<request.issuedAt ||
-      (request.action==='apply' && !pqmSandboxIsCanonicalDigest_(request.expectedDigest)))
+      (request.action==='apply' && (!pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
+        !Number.isInteger(request.chunkIndex) || request.chunkIndex<0 || request.chunkIndex>499)))
     throw new Error('PQM: execution identity or lifetime rejected');
   if (PQM_EXECUTION_CONTEXT_) throw new Error('PQM: nested execution rejected');
   var lock = LockService.getScriptLock();
@@ -45,32 +46,49 @@ function pqmSandboxExecution(envelope) {
       if (previous.actor!==request.actor || previous.digest!==request.expectedDigest ||
           previous.trigger!==request.trigger || request.action!=='apply')
         throw new Error('PQM: repeated execution identity rejected');
-      if (!previous.result) throw new Error('PQM: execution outcome uncertain; no retry');
-      return previous.result;
+      if (previous.state==='uncertain' || previous.inflight!==null) {
+        properties.setProperty('PQM_EXECUTION_UNCERTAIN',request.requestId);
+        throw new Error('PQM: execution chunk outcome uncertain; read-only reconciliation required');
+      }
+      if (request.chunkIndex<previous.nextChunk) {
+        var saved=previous.steps && previous.steps[request.chunkIndex];
+        if (!saved) throw new Error('PQM: verified chunk receipt unavailable; no retry');
+        if (!saved.more && previous.result) return previous.result;
+        return pqmExecutionCheckpointReceipt_(request,receipt,saved);
+      }
+      if (request.chunkIndex!==previous.nextChunk || previous.state==='complete')
+        throw new Error('PQM: unexpected Apply checkpoint sequence');
+    } else if (request.action==='apply' && request.chunkIndex!==0) {
+      throw new Error('PQM: Apply checkpoint must start at chunk zero');
     }
-    if (properties.getProperty('PQM_EXECUTION_UNCERTAIN'))
+    var uncertain=properties.getProperty('PQM_EXECUTION_UNCERTAIN');
+    if (uncertain && uncertain!==request.requestId)
       throw new Error('PQM: unresolved execution outcome; reconciliation required');
     var loaded=pqmSandboxFullLoad_(id);
     if (request.action==='preview') return receipt('PREVIEW', {
       append:loaded.plan.counts.appended,update:loaded.plan.counts.updated,
       conflict:loaded.plan.counts.conflicts,error:loaded.plan.counts.errors,skipped:loaded.plan.counts.unchanged
     },loaded.plan_digest);
-    if (loaded.plan_digest!==request.expectedDigest) throw new Error('PQM: stale execution Preview; zero writes');
+    if (!stored && loaded.plan_digest!==request.expectedDigest) throw new Error('PQM: stale execution Preview; zero writes');
+    if (stored && (loaded.state.payload_digest!==previous.payloadDigest ||
+        loaded.state.google_digest!==previous.googleDigest))
+      throw new Error('PQM: source or Google state changed since the last verified Apply chunk');
     // Bounded persistent receipts. Never evict a run and allow it to be applied twice.
-    var all=properties.getProperties();
-    if (Object.keys(all).filter(function(k){return k.indexOf('PQM_EXECUTION_RUN_')===0;}).length>=250)
+    var all=stored ? null : properties.getProperties();
+    if (!stored && Object.keys(all).filter(function(k){return k.indexOf('PQM_EXECUTION_RUN_')===0;}).length>=250)
       throw new Error('PQM: execution receipt capacity reached; audited maintenance required');
-    var record={actor:request.actor,trigger:request.trigger,digest:request.expectedDigest,result:null};
-    properties.setProperty(key,JSON.stringify(record));
+    var record=stored ? previous : {actor:request.actor,trigger:request.trigger,digest:request.expectedDigest,
+      result:null,state:'ready',nextChunk:0,inflight:null,payloadDigest:loaded.state.payload_digest,
+      googleDigest:loaded.state.google_digest,aggregate:{append:0,update:0,batches:0},steps:[]};
+    if (!stored) pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
     try {
-      var report=pqmSandboxDailySync({lock:lock,expectedDigest:request.expectedDigest,payloadDigest:loaded.state.payload_digest});
-      var result=receipt(report.status, {
-        append:report.append,update:report.update,conflict:report.conflict,error:report.error,
-        remaining_safe:report.remaining_safe,batches:report.batches
-      },request.expectedDigest);
-      record.result=result; properties.setProperty(key,JSON.stringify(record));
-      return result;
+      var result=pqmSandboxApplyCheckpointStep_(id,loaded,request,properties,key,record,receipt);
+      if (result.more) return result;
+      return record.result || result;
     } catch (_) {
+      record.state='uncertain';
+      record.uncertainChunk=request.chunkIndex;
+      try { pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES); } catch (ignored) {}
       properties.setProperty('PQM_EXECUTION_UNCERTAIN',request.requestId);
       throw new Error('PQM: Apply may be partial; no retry, reconcile using a read-only audit');
     }

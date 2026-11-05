@@ -44,14 +44,17 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         body=json.loads(request.data)
         message=json.loads(body['parameters'][0]['payload'])
         result={k:message[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
-        status = {'preview':'PREVIEW','apply':'APPLIED',
+        status={'preview':'PREVIEW','apply':'COMPLETE',
             'reconcile_partial':'RECONCILED_PARTIAL'}[message['action']]
         result.update(status=status,digest=self.preview_digest,counts={'update':0})
+        if message['action']=='apply':
+            result.update(chunkIndex=message['chunkIndex'],nextChunk=message['chunkIndex']+1,
+                more=False,phase='append')
         if message['action']=='reconcile_partial':
             evidence_raw=json.dumps(message['evidence'],ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            evidence_digest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('=')
             result.update(reconciliationId=message['reconciliationId'],
-                requestFingerprint=message['requestFingerprint'],
-                evidenceDigest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('='))
+                requestFingerprint=message['requestFingerprint'],evidenceDigest=evidence_digest)
         return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
 
     def request(self):
@@ -82,7 +85,26 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.client.invoke('apply','b'*32,'uo',digest=verified['digest'])
         message=json.loads(json.loads(self.calls[-1].data)['parameters'][0]['payload'])
         self.assertEqual(message['expectedDigest'],self.preview_digest)
+        self.assertEqual(message['chunkIndex'],0)
         self.assertEqual(len(self.calls),2)
+
+    def test_apply_checkpoint_receipt_is_bound_to_digest_and_chunk_index(self):
+        result=self.client.invoke('apply','b'*32,'uo',digest=self.preview_digest,chunk_index=7)
+        payload=json.loads(json.loads(self.calls[-1].data)['parameters'][0]['payload'])
+        self.assertEqual(payload['chunkIndex'],7)
+        self.assertEqual(payload['expectedDigest'],self.preview_digest)
+        self.assertEqual((result['chunkIndex'],result['nextChunk'],result['more']),(7,8,False))
+
+        original=self.network.open.side_effect
+        def wrong_receipt(request,timeout):
+            response=original(request,timeout)
+            body=json.loads(response.getvalue())
+            body['response']['result']['chunkIndex']=8
+            return io.BytesIO(json.dumps(body).encode())
+        self.network.open.side_effect=wrong_receipt
+        with self.assertRaisesRegex(execution.ExecutionOutcomeUnknown,'Invalid Apply checkpoint receipt'):
+            self.client.invoke('apply','c'*32,'uo',digest=self.preview_digest,chunk_index=2)
+        self.assertEqual(self.network.open.call_count,2,'invalid receipt is not retried')
 
     def test_receipt_ticket_and_apply_reject_noncanonical_sha256_digests(self):
         alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
@@ -108,6 +130,7 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         envelope=body['parameters'][0]
         payload=json.loads(envelope['payload'])
         payload.update(action='apply',expectedDigest=self.preview_digest)
+        payload['chunkIndex']=0
         envelope['payload']=json.dumps(payload)
         accepted=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
         self.assertEqual(self.validate(accepted),'script.googleapis.com')
@@ -118,6 +141,17 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         for digest in invalid:
             with self.subTest(digest=digest):
                 payload['expectedDigest']=digest
+                envelope['payload']=json.dumps(payload)
+                changed=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
+                with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
+                    self.validate(changed)
+        for invalid_index in (None, -1, 500, True, '0'):
+            with self.subTest(chunk_index=invalid_index):
+                payload['expectedDigest']=self.preview_digest
+                if invalid_index is None:
+                    payload.pop('chunkIndex',None)
+                else:
+                    payload['chunkIndex']=invalid_index
                 envelope['payload']=json.dumps(payload)
                 changed=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
                 with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):

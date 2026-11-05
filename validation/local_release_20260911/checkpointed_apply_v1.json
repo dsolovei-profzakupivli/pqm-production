@@ -1,0 +1,27 @@
+{
+  "contract": "pqm-sandbox-checkpointed-apply",
+  "version": 1,
+  "baseline": "dfaba3d1ff890f7565f83af7c73aaaf1e07a1a4b",
+  "files": {
+    "execution_apply_contract.py": "6481be09b1117eb7cb5e6df9b1055253c6c9accfb0975cfda86450cec3b58f48",
+    "google_writer_execution.py": "5417db968513155bb548d4e293320a09fd7485998ffbd5022f8a8b8886552ade",
+    "sandbox_runtime.py": "cd996b7bb3f766f647d7e2ed225392dacf7bebee7229115553df3d99b2a8ae78",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "c4532fcf4609f78075015bfc351c187a4eed3f95c677df1144638bc40652000f",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendApply.gs": "2fb9f34e30d00641c3f63437452c12b5eb94dc52a85c55118f0b44514036b1c9",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "570f589bfae82dc4968386ffcdcf379e09443a849246dd7c6c1a2736ae742549",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs": "c4204ea850872feb3e31937f66bffe13c9c4eba5aa3b9bbf521afc7f96612dda",
+    "test_google_writer_execution.py": "60edf95c48d9492f85c9562aa8ba3a18d2a9f54d6bc808ca4eda78022fffa0f0",
+    "test_sandbox_execution_transport.py": "1e81499ffe50b9a84e9968c6cfe54adc763f6970f2c5bf2a15e416c2727a5ca4",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "fa2ffb0b2b5ea244cb224e564f560a69230e72c6ab887c64ad30423d54b6f653",
+    "test_partial_apply_reconciliation_integrity_v2.py": "4e5446cf2af02cb403b77495ac1bf7c031f8cf5237d56f4bda447b57c57f42d2",
+    "test_checkpointed_apply_integrity_v1.py": "26e9082fb100b3ca188db8d96c719f1790e381872944becdee80e3ffd1a2567f",
+    "partial_apply_reconciliation_v2_exact_2ece9de.zip": "644a3defd3b7df4fd2368557c565dd8b8d9086ef9ce1b0935d578d70c0429b07",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmEnvironmentGuard.gs": "58fc29cf1228feb5ba0e7813745de8f54c3f75e07cf8a7730c2f1f692e15ee9e",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxControlledApply.gs": "655e4e01c1041c94ce97c4a8ff5183046b98fbf201827fcedc3e26cac9206d27",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxPreview.gs": "1e1c4afdd9aef689aa1966fd83c8b21bf1474627d01582c472c0d251a3617e53",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxPreviewDependencies.gs": "e74c435a5065fd67f98776df02c8098c9cb97f78bb74b6eeb1385390afd7cef5",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmVerificationDatetime.gs": "36cfa03b9654edf305c75a1f735916969653aaff4a697ea9c31d122a3db59d08"
+  },
+  "preserved_v2_manifest_sha256": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40",
+  "integrity_test_sha256_lf": "26e9082fb100b3ca188db8d96c719f1790e381872944becdee80e3ffd1a2567f"
+}

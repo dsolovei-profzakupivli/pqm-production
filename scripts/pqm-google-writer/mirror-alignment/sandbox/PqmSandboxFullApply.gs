@@ -3,6 +3,10 @@
 var PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 400;
 var PQM_SANDBOX_FULL_CHUNK_MAX_ROWS = 200;
 var PQM_SANDBOX_FULL_RUN_BUDGET_MS = 270000;
+var PQM_SANDBOX_EXECUTION_APPEND_PAGE_ROWS = 25;
+var PQM_SANDBOX_EXECUTION_UPDATE_PAGE_ROWS = 50;
+var PQM_SANDBOX_EXECUTION_UPDATE_PAGE_CELLS = 100;
+var PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES = 8000;
 
 function pqmSandboxFullTimed_(timing, key, action) {
   var started = Date.now();
@@ -430,4 +434,28 @@ function pqmSandboxDailySync(execution) {
   } finally {
     if (!borrowed) lock.releaseLock();
   }
+}
+
+/* Sandbox binds its existing guarded writer operations to the shared engine. */
+function pqmSandboxCheckpointAdapter_() {
+  return {
+    appendLoad:pqmSandboxAppendLoad_, appendPrewriteGuard:pqmSandboxAppendPrewriteGuard_,
+    appendRowMetadata:pqmSandboxAppendRowMetadata_, appendRequests:pqmSandboxAppendRequests_,
+    batchUpdate:pqmMirrorSheetsBatchUpdate_, appendVerify:pqmSandboxAppendVerify_,
+    appendVerifyMetadata:pqmSandboxAppendVerifyMetadata_, fullChunks:pqmSandboxFullChunks_,
+    fetchRegistry:pqmSandboxFetchRegistry_, appendPayloadDigest:pqmSandboxAppendPayloadDigest_,
+    protectionCheck:pqmSandboxControlledProtectionCheck_, readRows:pqmSandboxControlledReadRows_,
+    fullBeforeCheck:pqmSandboxFullBeforeCheck_, fullRequests:pqmSandboxFullRequests_,
+    controlledVerify:pqmSandboxControlledVerify_, snapshot:pqmGoogleSnapshot_,
+    fullSheetState:pqmSandboxFullSheetState_, plan:pqmGooglePlan_,
+    controlledDigest:pqmSandboxControlledDigest_, rowState:pqmSandboxControlledRowState_
+  };
+}
+
+function pqmSandboxApplyCheckpointStep_(id, loaded, request, properties, key, record, receipt) {
+  return pqmExecutionApplyCheckpointStep_(pqmSandboxCheckpointAdapter_(),id,loaded,request,
+    properties,key,record,receipt,{appendPageRows:PQM_SANDBOX_EXECUTION_APPEND_PAGE_ROWS,
+      updatePageRows:PQM_SANDBOX_EXECUTION_UPDATE_PAGE_ROWS,
+      updatePageCells:PQM_SANDBOX_EXECUTION_UPDATE_PAGE_CELLS,
+      maxBytes:PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES});
 }

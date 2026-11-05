@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 from contextlib import closing
 from execution_digest import is_canonical_sha256_b64url
+from execution_apply_contract import checkpoint_apply_enabled
 import hashlib
 import ipaddress
 import json
@@ -453,6 +454,9 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                 action not in ('preview', 'apply', 'reconcile_partial') or
                 (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
+                (checkpoint_apply_enabled(environment) and payload['action'] == 'apply' and
+                 (type(payload.get('chunkIndex')) is not int or not 0 <= payload['chunkIndex'] <= 499)) or
+                (checkpoint_apply_enabled(environment) and payload['action'] == 'preview' and 'chunkIndex' in payload) or
                 not re.fullmatch(r'Bearer [A-Za-z0-9._~+/-]+=*', request.get_header('Authorization', ''))):
             raise ValueError()
     except (ValueError, KeyError, TypeError, IndexError):

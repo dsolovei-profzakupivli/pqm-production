@@ -43,6 +43,31 @@ function pqmGoogleDate_(s) {
   return ms / 86400000 + 25569;
 }
 
+function pqmGoogleFormulaSeparator_(locale) {
+  var language = String(locale || '').toLowerCase().split(/[_-]/)[0];
+  return ['bg','cs','da','de','et','fi','fr','hr','hu','it','nl','no','pl','pt','ro','ru','sk','sl','sv','uk'].indexOf(language) >= 0 ? ';' : ',';
+}
+
+function pqmGoogleFreshnessFormula_(row, locale) {
+  if (!Number.isInteger(row) || row < 2 || typeof locale !== 'string' || !/^[a-z]{2}[-_][a-z]{2}$/i.test(locale)) {
+    throw new Error('PQM: formula row or spreadsheet locale unavailable.');
+  }
+  var separator = pqmGoogleFormulaSeparator_(locale);
+  var status = 'TRIM(REGEXREPLACE(F' + row + separator +
+    '"^(✅|⚪️|⚪|➖|🟠|🟢|🔴)\\s*"' + separator + '""' + '))', checked = 'I' + row;
+  var unknown = '\"⚠ Невідомий статус: \"&' + status;
+  var buckets = 'IF(TODAY()-INT(' + checked + ')<30' + separator + '\"🟢 <30 днів\"' + separator +
+    'IF(TODAY()-INT(' + checked + ')<60' + separator + '\"🟡 >30 днів\"' + separator +
+    'IF(TODAY()-INT(' + checked + ')<90' + separator + '\"🟠 >60 днів\"' + separator + '\"🔴 >90 днів\")))';
+  var invalid = 'OR(' + checked + '=\"\"' + separator + 'NOT(ISNUMBER(' + checked + '))' + separator +
+    'NOT(ISDATE(' + checked + '))' + separator + 'INT(' + checked + ')>TODAY())';
+  var active = 'IFERROR(IF(' + invalid + separator + '\"⚪ Не перевірено\"' + separator + buckets +
+    ')' + separator + '\"⚪ Не перевірено\")';
+  return '=IF(OR(' + status + '=\"Неактивний\"' + separator + status + '=\"Ще не в реєстрі\")' +
+    separator + '\"🟣 Неактуально\"' + separator + 'IF(OR(' + status + '=\"Активний\"' + separator +
+    status + '=\"Призупинений\")' + separator + active + separator + unknown + '))';
+}
+
 function pqmGoogleCalendarDate_(value) {
   if (pqmGoogleBlank_(value)) return {kind: 'blank', value: null};
   function iso(year, month, day) {
@@ -81,7 +106,8 @@ function pqmGoogleBlank_(v) {
 
 var PQM_GOOGLE_EDR_CURRENT_STATUSES = [
   'Неактуально', 'Зареєстровано', 'Припинено',
-  'В стані припинення', 'Порушено справу про банкрутство', 'Банкрут'
+  'В стані припинення', 'Порушено справу про банкрутство', 'Банкрут',
+  'Немає інформації'
 ];
 function pqmGoogleEdrCurrentStatus_(value) {
   if (pqmGoogleBlank_(value)) return '';
@@ -161,7 +187,8 @@ function pqmGooglePlan_(body, tabs, options) {
   var gaps = [];
   PQM_GOOGLE_TABS.forEach(function(name) {
     var t = tabs[name], template = t.rows[t.rows.length - 1];
-    if (template && template.formulas.some(Boolean)) gaps.push({tab: name, reason: 'append_formulas_not_audited_left_blank', row: t.rows.length + 1});
+    if (template && template.formulas.some(function(formula, column) { return column !== 0 && !!formula; }))
+      gaps.push({tab: name, reason: 'append_formulas_not_audited_left_blank', row: t.rows.length + 1});
   });
   var nextRows = {};
   PQM_GOOGLE_TABS.forEach(function(t) { nextRows[t] = tabs[t].rows.length + 2; });
@@ -179,10 +206,7 @@ function pqmGooglePlan_(body, tabs, options) {
     // Append is a distinct operation: existing identities are never updated,
     // even when their I is blank. Duplicate/routing checks above still apply.
     if (found && options.appendOnly === true) { count('unchanged'); return; }
-    var verificationValue = x.verification_datetime_precision === 'day' ? null : x.verification_date;
-    if (found && x.verification_datetime_precision === 'day') {
-      count('conflicts'); issue('verification_time_unavailable_calendar_only', key, name); return;
-    }
+    var verificationValue = x.verification_date;
     if (!found && x.verification_datetime_precision === 'day')
       gaps.push({tab:name, supplier_code:key, reason:'calendar_only_append_without_I_L'});
     if (found) {
@@ -213,8 +237,10 @@ function pqmGooglePlan_(body, tabs, options) {
       count('conflicts'); issue('formula_in_owned_cell', key, name); return;
     }
     if (!found && !tabs[name].rows.length) { count('conflicts'); issue('missing_append_template', key, name); return; }
-    if (!found && !pqmGoogleSafeAppendFormula_(tabs[name].rows[tabs[name].rows.length - 1].formulas[0], tabs[name].rows.length + 1)) {
-      count('conflicts'); issue('unsafe_or_missing_append_formula_A', key, name); return;
+    var appendFormulaA = null;
+    if (!found) {
+      try { appendFormulaA = pqmGoogleFreshnessFormula_(nextRows[name], tabs[name].formulaLocale); }
+      catch (_) { count('conflicts'); issue('append_formula_A_unavailable', key, name); return; }
     }
     if (!found && (!Number.isInteger(tabs[name].templateRowHeight) || tabs[name].templateRowHeight <= 0)) {
       count('conflicts'); issue('missing_template_row_height', key, name); return;
@@ -234,7 +260,7 @@ function pqmGooglePlan_(body, tabs, options) {
     }
     // All owned fields use the same full verification-instant gate.
     var cells = {};
-    if (!found) cells[1] = key;
+    if (!found) { cells[0] = appendFormulaA; cells[1] = key; }
     if (!found) {
       var initialDate = pqmVerificationDatetime_(verificationValue);
       if (initialDate.kind === 'invalid' ||
@@ -259,6 +285,7 @@ function pqmGooglePlan_(body, tabs, options) {
       if (c === '4') {
         value = pqmGoogleEdrCurrentStatus_(value);
         if (value === null) { invalidField = true; count('conflicts'); issue('unknown_edr_status', key, name); return; }
+        if (found && value === 'Немає інформації' && !pqmGoogleBlank_(found.data.values[c])) return;
       }
       if (c === '5') {
         var proposedStatus = pqmGoogleProzorroCategory_(value);
@@ -332,12 +359,13 @@ function pqmSandboxDebugHeaders() {
 }
 
 function pqmGooglePlanAggregate_(plan) {
-  var letters={1:'B',2:'C',3:'D',5:'F',7:'H',8:'I',11:'L'}, out={by_tab:{},by_column:{},by_action:{},by_reason:{},by_combination:{},unchanged:plan.counts.unchanged};
+  var letters={0:'A',1:'B',2:'C',3:'D',5:'F',7:'H',8:'I',11:'L'}, out={by_tab:{},by_column:{},by_action:{},by_reason:{},by_combination:{},unchanged:plan.counts.unchanged};
   plan.changes.forEach(function(change){
     var action=change.append?'append':'update', cols=Object.keys(change.cells).map(function(c){return letters[Number(c)];}).sort().join('+')||'(none)';
     out.by_tab[change.tab]=(out.by_tab[change.tab]||0)+1;
     out.by_action[action]=(out.by_action[action]||0)+1;
-    out.by_reason['PQM-owned nonblank field']=(out.by_reason['PQM-owned nonblank field']||0)+1;
+    var reason=Object.prototype.hasOwnProperty.call(change.cells,'0')?'Google Sheets-owned formula':'PQM-owned nonblank field';
+    out.by_reason[reason]=(out.by_reason[reason]||0)+1;
     out.by_combination[cols]=(out.by_combination[cols]||0)+1;
     Object.keys(change.cells).forEach(function(c){var k=letters[Number(c)];out.by_column[k]=(out.by_column[k]||0)+1;});
   }); return out;
@@ -409,8 +437,9 @@ function pqmGoogleSnapshotProfileCall_(profile, phase, rows, cells, ranges, acti
 function pqmGoogleSnapshot_(spreadsheetId, profile) {
   var meta = pqmGoogleSnapshotProfileCall_(profile,'sheet_metadata',0,0,0,function(){
     return Sheets.Spreadsheets.get(spreadsheetId, {includeGridData:false,
-      fields:'sheets(properties(title,sheetId,gridProperties(rowCount)),merges,protectedRanges,conditionalFormats)'});
+      fields:'properties(locale),sheets(properties(title,sheetId,gridProperties(rowCount)),merges,protectedRanges,conditionalFormats)'});
   });
+  var formulaLocale = meta.properties && meta.properties.locale;
   var byName={}; (meta.sheets||[]).forEach(function(s){byName[s.properties.title]=s;});
   var tabs={};
   function blank(){return {values:Array(15).fill(''),formulas:Array(15).fill(''),codeDisplay:'',dateFormat:'',verificationDateFormat:''};}
@@ -514,7 +543,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
       return Sheets.Spreadsheets.get(spreadsheetId,{ranges:[esc+'!A'+template+':A'+template],includeGridData:true,fields:'sheets(data(startRow,rowMetadata(pixelSize)))'});
     });
     var height=(((((h.sheets||[])[0]||{}).data||[])[0]||{}).rowMetadata||[])[0]||{};
-    tabs[name]={id:sheet.properties.sheetId,maxRows:count,headers:(header.values||[])[0]||[],rows:rows.slice(0,Math.max(0,highest-1)),templateRowHeight:height.pixelSize||null,conditionalFormats:sheet.conditionalFormats||[],merges:sheet.merges||[],protectedRanges:sheet.protectedRanges||[]};
+    tabs[name]={id:sheet.properties.sheetId,maxRows:count,headers:(header.values||[])[0]||[],rows:rows.slice(0,Math.max(0,highest-1)),templateRowHeight:height.pixelSize||null,formulaLocale:formulaLocale,conditionalFormats:sheet.conditionalFormats||[],merges:sheet.merges||[],protectedRanges:sheet.protectedRanges||[]};
   }); return tabs;
 }
 
@@ -544,3 +573,4 @@ function pqmGoogleTranslatedAppendFormula_(formula, template, target) {
     return ref.slice(0, ref.length - row.length) + String(Number(row) + target - template);
   });
 }
+

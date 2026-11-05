@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 import google_writer_execution as execution
+import execution_apply_contract
 
 
 NOW=datetime(2026,10,13,4,0,tzinfo=timezone.utc)
@@ -24,6 +25,9 @@ class ExecutionTransportTests(unittest.TestCase):
             payload=json.loads(json.loads(request.data)['parameters'][0]['payload'])
             result={k:payload[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
             result.update(status='PREVIEW' if payload['action']=='preview' else 'COMPLETE',digest=TEST_DIGEST,counts={'update':2.0})
+            if payload['action']=='apply' and execution_apply_contract.checkpoint_apply_enabled(payload['environment']):
+                result.update(chunkIndex=payload['chunkIndex'],nextChunk=payload['chunkIndex']+1,
+                    more=False,phase='update')
             return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
         token=lambda env:{'environment':env,'access_token':'TEST_ONLY_TOKEN','scopes':sorted(execution.PROJECT_SCOPES),'expires_at':NOW.timestamp()+3600}
         args={'configured':True,'opener':opener,'clock':lambda:NOW}|options
@@ -41,6 +45,25 @@ class ExecutionTransportTests(unittest.TestCase):
             self.assertEqual(message['spreadsheetId'],execution.IDENTITIES[environment][1])
             self.assertEqual(result['counts'],{'update':2})
             self.assertNotIn('TEST_ONLY_TOKEN',json.dumps(result))
+
+    def test_production_apply_keeps_legacy_single_call_receipt_contract(self):
+        client=self.client('PROD')
+        result=client.invoke('apply','f'*32,'uo',digest=TEST_DIGEST)
+        payload=json.loads(json.loads(self.calls[0][0].data)['parameters'][0]['payload'])
+        self.assertNotIn('chunkIndex',payload)
+        self.assertEqual(result['status'],'COMPLETE')
+        self.assertNotIn('nextChunk',result)
+
+    def test_shared_checkpoint_architecture_can_be_enabled_by_environment_only(self):
+        self.assertTrue(execution_apply_contract.checkpoint_apply_enabled('SANDBOX'))
+        self.assertFalse(execution_apply_contract.checkpoint_apply_enabled('PROD'))
+        with patch.object(execution_apply_contract,'CHECKPOINT_APPLY_ENVIRONMENTS',frozenset({'SANDBOX','PROD'})):
+            self.assertTrue(execution_apply_contract.checkpoint_apply_enabled('PROD'))
+            client=self.client('PROD')
+            result=client.invoke('apply','e'*32,'uo',digest=TEST_DIGEST,chunk_index=4)
+            payload=json.loads(json.loads(self.calls[0][0].data)['parameters'][0]['payload'])
+            self.assertEqual(payload['chunkIndex'],4)
+            self.assertEqual(result['nextChunk'],5)
 
     def test_disabled_channel_and_invalid_apply_never_touch_network(self):
         client=self.client(configured=False)
@@ -129,6 +152,79 @@ class ExecutionStateTests(unittest.TestCase):
             execution.execute_claimed(self.path,client,run,'uo',trigger=trigger)
             self.assertEqual([call.args[0] for call in client.invoke.call_args_list],['preview','apply'])
             self.assertEqual(execution.claim_run(self.path,'PROD',run,'uo',trigger)['status'],'partial')
+
+    def test_chunked_apply_persists_verified_checkpoints_and_advances_in_order(self):
+        run='c'*32
+        execution.claim_run(self.path,'SANDBOX',run,'uo','manual')
+        calls=[]
+        def invoke(action,*args,**kwargs):
+            if action=='preview': return {'digest':TEST_DIGEST}
+            calls.append(kwargs['chunk_index'])
+            if kwargs['chunk_index']==0:
+                return {'status':'APPLY_CHUNK_VERIFIED','digest':TEST_DIGEST,
+                    'chunkIndex':0,'nextChunk':1,'more':True,'phase':'append',
+                    'counts':{'append':25,'update':0,'batches':1}}
+            if kwargs['chunk_index']==1:
+                with closing(sqlite3.connect(self.path)) as con:
+                    row=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()
+                checkpoint=json.loads(row[1])
+                self.assertEqual(row[0],'running')
+                self.assertEqual(checkpoint['next_chunk'],1)
+                self.assertEqual(checkpoint['verified_totals']['append'],25)
+                return {'status':'APPLY_CHUNK_VERIFIED','digest':TEST_DIGEST,
+                    'chunkIndex':1,'nextChunk':2,'more':True,'phase':'append',
+                    'counts':{'append':10,'update':0,'batches':1}}
+            with closing(sqlite3.connect(self.path)) as con:
+                checkpoint=json.loads(con.execute('SELECT result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()[0])
+            self.assertEqual(checkpoint['verified_totals']['append'],35)
+            return {'status':'COMPLETE','digest':TEST_DIGEST,'chunkIndex':2,'nextChunk':3,
+                'more':False,'phase':'update','counts':{'append':35,'update':2,'batches':3}}
+        client=Mock();client.environment='SANDBOX';client.invoke.side_effect=invoke
+        result=execution.execute_claimed(self.path,client,run,'uo',manual_authorized=True)
+        self.assertEqual(calls,[0,1,2])
+        self.assertEqual(result['status'],'COMPLETE')
+        self.assertEqual([call.kwargs.get('chunk_index') for call in client.invoke.call_args_list if call.args[0]=='apply'],[0,1,2])
+        with closing(sqlite3.connect(self.path)) as con:
+            row=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()
+        self.assertEqual(row[0],'complete')
+        self.assertEqual(json.loads(row[1])['counts']['append'],35)
+
+    def test_lost_chunk_response_holds_run_and_preserves_verified_progress_without_retry(self):
+        run='d'*32
+        execution.claim_run(self.path,'SANDBOX',run,'uo','manual')
+        client=Mock();client.environment='SANDBOX';client.invoke.side_effect=[{'digest':TEST_DIGEST},
+            {'status':'APPLY_CHUNK_VERIFIED','digest':TEST_DIGEST,'chunkIndex':0,'nextChunk':1,
+             'more':True,'phase':'append','counts':{'append':25,'update':0,'batches':1}},
+            execution.ExecutionOutcomeUnknown('network response unavailable')]
+        result=execution.execute_claimed(self.path,client,run,'uo',manual_authorized=True)
+        self.assertEqual(result['status'],'OUTCOME_UNKNOWN_HOLD_NO_RETRY')
+        self.assertEqual(client.invoke.call_count,3)
+        with closing(sqlite3.connect(self.path)) as con:
+            row=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()
+        state=json.loads(row[1])
+        self.assertEqual(row[0],'outcome_unknown')
+        self.assertEqual(state['verified_totals']['append'],25)
+        self.assertEqual(state['next_chunk'],1)
+        self.assertEqual(state['attempted_chunk'],1)
+        self.assertFalse(execution.claim_run(self.path,'SANDBOX','e'*32,'uo','manual')['claimed'])
+
+    def test_guard_change_after_checkpoint_stops_before_next_chunk_and_keeps_progress(self):
+        run='f'*32
+        execution.claim_run(self.path,'SANDBOX',run,'uo','manual')
+        client=Mock();client.environment='SANDBOX';client.invoke.return_value={'status':'APPLY_CHUNK_VERIFIED','digest':TEST_DIGEST,
+            'chunkIndex':0,'nextChunk':1,'more':True,'phase':'append',
+            'counts':{'append':25,'update':0,'batches':1}}
+        guard=Mock(side_effect=[True,True,False])
+        result=execution.execute_claimed(self.path,client,run,'uo',digest=TEST_DIGEST,
+            guard=guard,manual_authorized=True)
+        self.assertEqual(result['status'],'HALTED_AFTER_VERIFIED_CHECKPOINTS')
+        self.assertEqual(client.invoke.call_count,1)
+        with closing(sqlite3.connect(self.path)) as con:
+            row=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()
+        state=json.loads(row[1])
+        self.assertEqual(row[0],'partial')
+        self.assertEqual(state['verified_totals']['append'],25)
+        self.assertEqual(state['next_chunk'],1)
 
     def test_guard_change_blocks_remote_apply(self):
         execution.claim_run(self.path,'PROD','a'*32,'uo','manual')
