@@ -6,9 +6,9 @@
   "files": {
     ".github/workflows/release-checks.yml": "ab3dbd174ea197a6e07e6a90b0ea551abb1e3079a8c27c256a8379ec0ab29f17",
     "validation/fixtures/release_checks_baseline_0347404.yml": "ce0ce1ff1a68b8581707a945e7c762ca122cc7fc9dc438f9399b012e4bd7ac50",
-    "validation/run_local_release.py": "00cf77c05dab5ebcedbaa7505fccc340f272477eaf046daa60f488125d48e45b",
+    "validation/run_local_release.py": "234d144c03ef4155672f0c559628783c2df499a0996713a91515d0617abd028f",
     "validation/run_messages_integrated_v1_history_addendum.py": "f9309aa914dc7845736c4867569ef734fa524c48ea980b8a83cdca352c8fec1e"
   },
-  "integrity_test_sha256_lf": "fb6d71c55efd861dd6eab3015c4d54fae02b94e06611bc98c01a87537b35f08b",
+  "integrity_test_sha256_lf": "9c41caafc5a8a662119029d361c83f227e16276b7e11a25f250651cea702fb94",
   "version": 1
 }

@@ -3,11 +3,12 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import tempfile
 import unittest
 
 
 MANIFEST = Path("validation/sandbox_preview_workflow_v1.json")
-MANIFEST_SHA256 = "0da1027b853a44dfcb599926c07c0c27d5f014b078e00114eec0392d3f21126d"
+MANIFEST_SHA256 = "4101c9c711ebf97634deb067711906511951d9f8a654872c01e23ac2604f58f4"
 BASELINE = "0347404ddddd67eae52a90810ccf6e00bff2683e"
 TEST_FILE = "test_sandbox_preview_workflow_integrity_v1.py"
 
@@ -65,6 +66,33 @@ class SandboxPreviewWorkflowIntegrityTests(unittest.TestCase):
             for changed in (bytes([raw[0] ^ 1]) + raw[1:], raw + b"\x00", raw[:-1]):
                 with self.subTest(path=relative, size=len(changed)):
                     self.assertNotEqual(hashlib.sha256(changed).hexdigest(), expected)
+
+    def test_candidate_manifests_are_copied_only_for_candidate_runs(self):
+        from validation.run_local_release import copy_candidate_manifests
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            historical_source = root / "historical"
+            historical_target = root / "historical-copy" / "validation"
+            (historical_source / "validation").mkdir(parents=True)
+            copy_candidate_manifests(historical_source, historical_target,
+                                     "historical_integrity")
+            self.assertFalse(historical_target.exists())
+
+            candidate_source = root / "candidate"
+            candidate_target = root / "candidate-copy" / "validation"
+            source_validation = candidate_source / "validation"
+            source_validation.mkdir(parents=True)
+            for name in ("sandbox_preview_append_only_v1.json",
+                         "sandbox_preview_workflow_v1.json"):
+                (source_validation / name).write_text(name, encoding="utf-8")
+            copy_candidate_manifests(candidate_source, candidate_target, "")
+            self.assertEqual({path.name for path in candidate_target.iterdir()}, {
+                "sandbox_preview_append_only_v1.json",
+                "sandbox_preview_workflow_v1.json",
+            })
+            for path in candidate_target.iterdir():
+                self.assertEqual(path.read_text(encoding="utf-8"), path.name)
 
 
 if __name__ == "__main__":

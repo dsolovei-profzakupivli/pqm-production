@@ -83,6 +83,15 @@ def selected_suite(suite,mode):
     visit(suite)
     return unittest.TestSuite(selected)
 
+def copy_candidate_manifests(source_root, validation_target, mode):
+    if mode == 'historical_integrity':
+        return
+    Path(validation_target).mkdir(parents=True, exist_ok=True)
+    for manifest_name in ('sandbox_preview_append_only_v1.json',
+                          'sandbox_preview_workflow_v1.json'):
+        shutil.copy2(Path(source_root)/'validation'/manifest_name,
+                     Path(validation_target)/manifest_name)
+
 def main():
     mode=os.environ.get('PQM_RELEASE_MODE','')
     full_candidate_run=not mode and len(sys.argv)==1
@@ -174,9 +183,7 @@ def main():
             shutil.copy2(fixture_source,fixture_target/fixture_name)
         validation_target=root/'validation'
         validation_target.mkdir(parents=True,exist_ok=True)
-        for manifest_name in ('sandbox_preview_append_only_v1.json',
-                              'sandbox_preview_workflow_v1.json'):
-            shutil.copy2(ROOT/'validation'/manifest_name, validation_target/manifest_name)
+        copy_candidate_manifests(ROOT, validation_target, mode)
         for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):
             shutil.copy2(ROOT/'validation'/helper, root/'validation'/helper)
         # The runner is itself pinned by the column-width integrity variant.
