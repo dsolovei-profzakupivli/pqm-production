@@ -179,6 +179,7 @@ function pqmSandboxCheckpointStepsValid_(record) {
 }
 
 var PQM_SANDBOX_PARTIAL_RECONCILIATION_FINGERPRINT_='9be34ff2df1e661346176eeb';
+var PQM_SANDBOX_PARTIAL_RECONCILIATION_APPEND_ONLY_FINGERPRINT_='30331b560493209210f1e507';
 
 function pqmSandboxPartialReconciliationEvidence_() {
   return {
@@ -192,6 +193,43 @@ function pqmSandboxPartialReconciliationEvidence_() {
     date_only_format_exceptions_approved:true,
     updates_disposition:'RECOMPUTE_WITH_NEW_PREVIEW'
   };
+}
+
+function pqmSandboxPartialReconciliationProfile_(fingerprint) {
+  if (fingerprint===PQM_SANDBOX_PARTIAL_RECONCILIATION_FINGERPRINT_) {
+    return {
+      evidence:pqmSandboxPartialReconciliationEvidence_(),
+      resultCounts:{verified_append_rows:50,unverified_original_updates:2,accepted_date_only_formats:12},
+      receiptFields:{}
+    };
+  }
+  if (fingerprint===PQM_SANDBOX_PARTIAL_RECONCILIATION_APPEND_ONLY_FINGERPRINT_) {
+    return {
+      evidence:{
+        evidence_version:1,
+        plan_scope:'APPEND_ONLY',
+        initial_plan:{append:351},
+        attempted_chunk:0,
+        checkpoint_present:false,
+        audit_type:'READ_ONLY_SAVED_PREVIEW_AND_SHEETS',
+        audit:{full_matches:25,partial_or_wrong_tab:0,missing:0,duplicates:0,
+          saved_preview_binding:'PASS',writes_performed:0},
+        recovery_disposition:'AUDIT_EVIDENCE_ONLY_NEW_PREVIEW_REQUIRED'
+      },
+      resultCounts:{audit_confirmed_existing_append_rows:25,checkpoint_receipts:0},
+      receiptFields:{checkpointPresent:false,resumeAuthorized:false,nextAction:'NEW_PREVIEW_REQUIRED'},
+      requireUncertainFirstChunk:true
+    };
+  }
+  return null;
+}
+
+function pqmSandboxAuditOnlyInitialRunValid_(run) {
+  return !!run && run.planScope==='APPEND_ONLY' && run.state==='uncertain' &&
+    run.uncertainChunk===0 && run.inflight===0 && run.nextChunk===0 &&
+    Array.isArray(run.steps) && run.steps.length===0 &&
+    !!run.aggregate && run.aggregate.append===0 && run.aggregate.update===0 &&
+    run.aggregate.batches===0 && run.result===null;
 }
 
 function pqmSandboxCanonicalReconciliationJson_(value) {
@@ -219,13 +257,14 @@ function pqmSandboxRequestFingerprint_(requestId) {
 }
 
 function pqmSandboxReconcilePartial_(properties,request,receipt) {
+  var profile=pqmSandboxPartialReconciliationProfile_(request.requestFingerprint);
   if (request.environment!=='SANDBOX' || PQM_MIRROR_ENV.environment!=='SANDBOX' ||
       request.trigger!=='manual' || !/^[0-9a-f]{32}$/.test(request.reconciliationId||'') ||
       request.expectedDigest!==null ||
-      request.requestFingerprint!==PQM_SANDBOX_PARTIAL_RECONCILIATION_FINGERPRINT_ ||
+      !profile ||
       pqmSandboxRequestFingerprint_(request.requestId)!==request.requestFingerprint)
     throw new Error('PQM: partial reconciliation identity rejected');
-  var expectedEvidence=pqmSandboxPartialReconciliationEvidence_();
+  var expectedEvidence=profile.evidence;
   if (pqmSandboxCanonicalReconciliationJson_(request.evidence)!==
         pqmSandboxCanonicalReconciliationJson_(expectedEvidence) ||
       !pqmSandboxIsCanonicalDigest_(request.evidenceDigest) ||
@@ -254,6 +293,8 @@ function pqmSandboxReconcilePartial_(properties,request,receipt) {
   if (!event) {
     if (marker!==request.requestId || run.result!==null && run.result!==undefined)
       throw new Error('PQM: unresolved run state changed; reconciliation stopped');
+    if (profile.requireUncertainFirstChunk && !pqmSandboxAuditOnlyInitialRunValid_(run))
+      throw new Error('PQM: APPEND_ONLY first-chunk state is not the expected no-checkpoint state');
     event={state:'PREPARED',environment:'SANDBOX',requestId:request.requestId,
       requestFingerprint:request.requestFingerprint,reconciliationId:request.reconciliationId,
       evidenceDigest:request.evidenceDigest,evidence:expectedEvidence,actor:request.actor,
@@ -277,18 +318,20 @@ function pqmSandboxReconcilePartial_(properties,request,receipt) {
   if (!originalRun || originalRun.result!==null && originalRun.result!==undefined ||
       originalRun.actor!==run.actor || originalRun.digest!==run.digest || originalRun.trigger!==run.trigger)
     throw new Error('PQM: original uncertain run evidence changed');
+  if (profile.requireUncertainFirstChunk && !pqmSandboxAuditOnlyInitialRunValid_(originalRun))
+    throw new Error('PQM: original APPEND_ONLY audit run did not have the expected no-checkpoint state');
   if (marker!==request.requestId)
     throw new Error('PQM: uncertain marker changed; reconciliation stopped');
 
-  var result=receipt('RECONCILED_PARTIAL',{
-    verified_append_rows:50,unverified_original_updates:2,accepted_date_only_formats:12
-  },run.digest);
+  var result=receipt('RECONCILED_PARTIAL',profile.resultCounts,run.digest);
+  Object.keys(profile.receiptFields).forEach(function(key) { result[key]=profile.receiptFields[key]; });
   result.reconciliationId=request.reconciliationId;
   result.requestFingerprint=request.requestFingerprint;
   result.evidenceDigest=request.evidenceDigest;
   run.reconciliation={reconciliationId:request.reconciliationId,
     evidenceDigest:request.evidenceDigest,status:'RECONCILED_PARTIAL',
     originalStatus:'outcome_unknown',recordedAt:new Date().toISOString()};
+  Object.keys(profile.receiptFields).forEach(function(key) { run.reconciliation[key]=profile.receiptFields[key]; });
   run.result=result;
   properties.setProperty(runKey,JSON.stringify(run));
   event.state='RECONCILED_PARTIAL';

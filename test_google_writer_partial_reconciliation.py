@@ -210,5 +210,140 @@ class PartialReconciliationTests(unittest.TestCase):
               request_fingerprint=execution.PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT,evidence=evidence)
 
 
+class AppendOnlyFirstChunkAuditReconciliationTests(unittest.TestCase):
+    request_id = 'ab1d69b6d7c6427f8abdffea35830948'
+    actor = 'original-sandbox-operator'
+    recon_id = 'f' * 32
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).parent, prefix='append-only-audit-recon-')
+        self.path = str(Path(self.temp.name) / 'sandbox.sqlite3')
+        with closing(sqlite3.connect(self.path)) as con, con:
+            execution.migrate(con)
+        self.profile = execution.partial_reconciliation_profile(
+            execution.request_id_fingerprint(self.request_id))
+        self.assertIsNotNone(self.profile)
+        self.details = self._details()
+        self.snapshot = execution.store_preview_plan(self.path, self.request_id, self.actor, self.details)
+        claimed = execution.claim_run(self.path, 'SANDBOX', self.request_id, self.actor, 'manual',
+            manual_authorized=True, plan_scope='APPEND_ONLY',
+            plan_digest=self.details['append_only_digest'], details_digest=self.snapshot['details_digest'])
+        self.assertTrue(claimed['claimed'])
+        execution.hold_unknown_run(self.path, self.request_id, attempted_chunk=0,
+            digest=self.details['append_only_digest'], checkpoint_digest=None)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _details(self):
+        full_digest = base64.urlsafe_b64encode(hashlib.sha256(b'full-preview').digest()).decode().rstrip('=')
+        append_digest = base64.urlsafe_b64encode(hashlib.sha256(b'append-only-preview').digest()).decode().rstrip('=')
+        appends = [{'operation':'APPEND','tab':'ФОП','cells':[{'column':'A','formula':True}]}
+                   for _ in range(351)]
+        return {'version':1,'environment':'SANDBOX','plan_digest':full_digest,
+            'append_only_digest':append_digest,'counts':{'append':351,'update':2,'conflict':2,'error':0},
+            'appends':appends,'updates':[{'operation':'UPDATE','cells':[]} for _ in range(2)],
+            'conflicts':[{'reason':'routing_mismatch'} for _ in range(2)],'errors':[]}
+
+    def _prepare(self):
+        fingerprint = execution.request_id_fingerprint(self.request_id)
+        return execution.prepare_partial_reconciliation(self.path,'SANDBOX',self.recon_id,
+            fingerprint,'sandbox-admin',now=TEST_NOW)
+
+    def _receipt(self, prepared):
+        return {'environment':'SANDBOX','scriptId':execution.IDENTITIES['SANDBOX'][0],
+            'spreadsheetId':execution.IDENTITIES['SANDBOX'][1],'contract':execution.CONTRACT,
+            'requestId':self.request_id,'status':'RECONCILED_PARTIAL','reconciliationId':self.recon_id,
+            'requestFingerprint':prepared['request_fingerprint'],'evidenceDigest':prepared['evidence_digest'],
+            'digest':self.details['append_only_digest'],'counts':self.profile['result_counts'],
+            **self.profile['receipt_fields']}
+
+    def _state(self):
+        with closing(sqlite3.connect(self.path)) as con:
+            run=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',
+                (self.request_id,)).fetchone()
+            recon=con.execute('''SELECT state,evidence_json,original_result_json,apps_script_receipt_json
+                FROM google_writer_run_reconciliations WHERE request_id=?''',(self.request_id,)).fetchone()
+        return run,recon
+
+    def test_audit_only_profile_is_bound_to_saved_snapshot_and_never_creates_checkpoint(self):
+        prepared=self._prepare()
+        self.assertEqual(prepared['evidence']['checkpoint_present'],False)
+        self.assertEqual(prepared['evidence']['audit']['full_matches'],25)
+        self.assertEqual(prepared['evidence']['initial_plan']['append'],351)
+        result=execution.finalize_partial_reconciliation(self.path,self.recon_id,'sandbox-admin',
+            self._receipt(prepared),now=TEST_NOW)
+        self.assertEqual(result['status'],'RECONCILED_PARTIAL')
+        run,recon=self._state()
+        self.assertEqual(run[0],'partial')
+        self.assertEqual(recon[0],'reconciled_partial')
+        evidence=json.loads(recon[1])
+        self.assertFalse(evidence['checkpoint_present'])
+        self.assertEqual(evidence['recovery_disposition'],'AUDIT_EVIDENCE_ONLY_NEW_PREVIEW_REQUIRED')
+        self.assertFalse(json.loads(recon[3])['checkpointPresent'])
+        self.assertFalse(json.loads(recon[3])['resumeAuthorized'])
+        retry=execution.prepare_partial_reconciliation(self.path,'SANDBOX',self.recon_id,
+            execution.request_id_fingerprint(self.request_id),'sandbox-admin',now=TEST_NOW)
+        self.assertTrue(retry['idempotent'])
+
+    def test_audit_only_profile_rejects_snapshot_or_checkpoint_binding_changes(self):
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute("UPDATE google_writer_runs SET result_json=json_set(result_json,'$.attempted_checkpoint_digest',?) WHERE request_id=?",
+                (TEST_DIGEST,self.request_id))
+        with self.assertRaises(RuntimeError): self._prepare()
+        self.assertIsNone(self._state()[1])
+
+    def test_audit_only_profile_rejects_changed_saved_preview_details(self):
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute("UPDATE google_writer_preview_plans SET details_json='{}' WHERE request_id=?",
+                (self.request_id,))
+        with self.assertRaises(RuntimeError): self._prepare()
+        self.assertIsNone(self._state()[1])
+
+    def test_execution_client_validates_audit_only_receipt_and_never_treats_it_as_resume(self):
+        prepared=self._prepare()
+        response_override={'counts':self.profile['result_counts'],**self.profile['receipt_fields']}
+        calls=[]
+        def opener(request, timeout):
+            calls.append((request,timeout))
+            body=json.loads(request.data)
+            message=json.loads(body['parameters'][0]['payload'])
+            receipt={key:message[key] for key in ('environment','scriptId','spreadsheetId','contract','requestId')}
+            receipt.update(status='RECONCILED_PARTIAL',digest=self.details['append_only_digest'],
+                reconciliationId=self.recon_id,requestFingerprint=prepared['request_fingerprint'],
+                evidenceDigest=prepared['evidence_digest'],**response_override)
+            return io.BytesIO(json.dumps({'done':True,'response':{'result':receipt}}).encode())
+        client=execution.ExecutionClient('SANDBOX','TEST_DEPLOYMENT_NOT_CLOUD',
+            'TEST_ONLY_SECRET_0123456789_ABCDEFGHIJ',
+            lambda env:{'environment':env,'access_token':'TEST_ONLY','scopes':sorted(execution.PROJECT_SCOPES),
+                'expires_at':TEST_NOW.timestamp()+3600},configured=True,opener=opener,clock=lambda:TEST_NOW)
+        result=client.invoke('reconcile_partial',self.request_id,'sandbox-admin',trigger='manual',
+            manual_authorized=True,reconciliation_id=self.recon_id,
+            request_fingerprint=prepared['request_fingerprint'],evidence=prepared['evidence'])
+        self.assertEqual(result['counts'],self.profile['result_counts'])
+        self.assertFalse(result['checkpointPresent'])
+        self.assertFalse(result['resumeAuthorized'])
+        self.assertEqual(result['nextAction'],'NEW_PREVIEW_REQUIRED')
+        self.assertEqual(len(calls),1)
+        response_override['counts']={'audit_confirmed_existing_append_rows':24,'checkpoint_receipts':0}
+        with self.assertRaises(execution.ExecutionOutcomeUnknown):
+            client.invoke('reconcile_partial',self.request_id,'sandbox-admin',trigger='manual',
+                manual_authorized=True,reconciliation_id=self.recon_id,
+                request_fingerprint=prepared['request_fingerprint'],evidence=prepared['evidence'])
+        self.assertEqual(len(calls),2)
+
+    def test_audit_only_finalize_rejects_wrong_audit_count_or_resume_claim(self):
+        prepared=self._prepare()
+        bad=self._receipt(prepared)
+        bad['counts']={'audit_confirmed_existing_append_rows':24,'checkpoint_receipts':0}
+        with self.assertRaises(PermissionError):
+            execution.finalize_partial_reconciliation(self.path,self.recon_id,'sandbox-admin',bad,now=TEST_NOW)
+        bad=self._receipt(prepared);bad['resumeAuthorized']=True
+        with self.assertRaises(PermissionError):
+            execution.finalize_partial_reconciliation(self.path,self.recon_id,'sandbox-admin',bad,now=TEST_NOW)
+        self.assertEqual(self._state()[0][0],'outcome_unknown')
+        self.assertEqual(self._state()[1][0],'prepared')
+
+
 if __name__ == '__main__':
     unittest.main()

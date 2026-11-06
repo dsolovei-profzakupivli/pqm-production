@@ -1,0 +1,23 @@
+{
+  "contract": "pqm-sandbox-partial-reconciliation-first-append-only",
+  "version": 1,
+  "baseline": "067e2e85f679b9333a854204bca1421fcd2ef426",
+  "normalization": "CRLF-to-LF only for text files",
+  "files": {
+    "google_writer_execution.py": "a53d5ec4059a01b054b5ac1b32e4aec3fba77ebb305dfa731bf8ba1c32c24c51",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "67ff589f7caff5dd6ee06a9b55f45088b7edbf903e59befe23a9b2a641b3336b",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs": "9a3dbad2002796c0ecfe5a1f0a6d26c2db85281424b39d91b25175ae054f73b6",
+    "test_google_writer_partial_reconciliation.py": "00d7e1babfc0b68cbd1e10d18b500dddf3fc32b29e5a1ff57d62ba40dd9c8068",
+    "test_partial_reconciliation_first_append_only_integrity_v1.py": "dbc937d03b646e8caf3616bb9f9631b5f1dd9c66ea287449a70e34b10b366e2c"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
+    "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40"
+  },
+  "scope_notes": [
+    "Only the fingerprint-bound first APPEND_ONLY audit-only profile is added.",
+    "Evidence is tied to the immutable 351-APPEND saved Preview and the 25-row read-only audit.",
+    "No checkpoint or resume authorization is manufactured; disposition requires NEW_PREVIEW_REQUIRED.",
+    "Existing first and second reconciliation profiles and their historical manifests remain intact."
+  ]
+}

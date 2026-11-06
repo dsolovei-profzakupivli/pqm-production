@@ -42,6 +42,7 @@ PROJECT_SCOPES = frozenset({
 })
 _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT = '9be34ff2df1e661346176eeb'
 _PARTIAL_RECONCILIATION_SECOND_FINGERPRINT = '18a4aba10c1c13ab3bf59f56'
+_PARTIAL_RECONCILIATION_FIRST_APPEND_ONLY_FINGERPRINT = '30331b560493209210f1e507'
 _PARTIAL_RECONCILIATION_FIRST_EVIDENCE = {
     'initial_plan': {'append': 451, 'update': 2, 'conflict': 2},
     'verified_append_rows': 50,
@@ -69,6 +70,23 @@ _PARTIAL_RECONCILIATION_SECOND_EVIDENCE = {
     'required_diagnostic': 'pqm_sandbox_second_partial_apply_read_only_v3',
     'updates_disposition': 'UNVERIFIED_NO_HISTORIC_PLAN',
 }
+_PARTIAL_RECONCILIATION_FIRST_APPEND_ONLY_EVIDENCE = {
+    'evidence_version': 1,
+    'plan_scope': 'APPEND_ONLY',
+    'initial_plan': {'append': 351},
+    'attempted_chunk': 0,
+    'checkpoint_present': False,
+    'audit_type': 'READ_ONLY_SAVED_PREVIEW_AND_SHEETS',
+    'audit': {
+        'full_matches': 25,
+        'partial_or_wrong_tab': 0,
+        'missing': 0,
+        'duplicates': 0,
+        'saved_preview_binding': 'PASS',
+        'writes_performed': 0,
+    },
+    'recovery_disposition': 'AUDIT_EVIDENCE_ONLY_NEW_PREVIEW_REQUIRED',
+}
 PARTIAL_RECONCILIATION_PROFILES = {
     _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT: {
         'evidence': _PARTIAL_RECONCILIATION_FIRST_EVIDENCE,
@@ -87,6 +105,19 @@ PARTIAL_RECONCILIATION_PROFILES = {
             'blank_source_sheet_blank_rows': 36,
         },
     },
+    _PARTIAL_RECONCILIATION_FIRST_APPEND_ONLY_FINGERPRINT: {
+        'evidence': _PARTIAL_RECONCILIATION_FIRST_APPEND_ONLY_EVIDENCE,
+        'result_counts': {
+            'audit_confirmed_existing_append_rows': 25,
+            'checkpoint_receipts': 0,
+        },
+        'receipt_fields': {
+            'checkpointPresent': False,
+            'resumeAuthorized': False,
+            'nextAction': 'NEW_PREVIEW_REQUIRED',
+        },
+        'require_saved_append_only_preview': True,
+    },
 }
 # Backward-compatible aliases for the first reconciliation profile.
 PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT
@@ -96,6 +127,63 @@ PARTIAL_RECONCILIATION_EVIDENCE = _PARTIAL_RECONCILIATION_FIRST_EVIDENCE
 def partial_reconciliation_profile(request_fingerprint):
     """Return a fixed, Sandbox-only evidence profile; never accept caller-defined evidence."""
     return PARTIAL_RECONCILIATION_PROFILES.get(request_fingerprint)
+
+
+def _validate_partial_reconciliation_saved_run(con, request_id, profile):
+    """Bind the special audit-only profile to the immutable saved APPEND_ONLY Preview."""
+    run = con.execute('''SELECT environment,actor,trigger,status,result_json
+                         FROM google_writer_runs WHERE request_id=?''', (request_id,)).fetchone()
+    if (not run or run[0] != 'SANDBOX' or run[2] != 'manual' or
+            run[3] != 'outcome_unknown'):
+        raise RuntimeError('APPEND_ONLY reconciliation run identity or status changed')
+    try:
+        state = json.loads(run[4] or '{}')
+    except (TypeError, json.JSONDecodeError):
+        raise RuntimeError('APPEND_ONLY reconciliation run state is invalid') from None
+    required_state = {
+        'status': 'OUTCOME_UNKNOWN_HOLD_NO_RETRY',
+        'outcome_unknown': True,
+        'attempted_chunk': 0,
+        'attempted_checkpoint_digest': None,
+        'plan_scope': 'APPEND_ONLY',
+    }
+    expected_state_keys = set(required_state) | {'plan_digest', 'details_digest'}
+    if (not isinstance(state, dict) or set(state) != expected_state_keys or
+            any(state.get(key) != value for key, value in required_state.items())):
+        raise RuntimeError('APPEND_ONLY reconciliation hold is not the expected no-checkpoint state')
+    snapshot = con.execute('''SELECT environment,actor,plan_digest,append_only_digest,
+                                     details_digest,details_json
+                              FROM google_writer_preview_plans WHERE request_id=?''',
+                           (request_id,)).fetchone()
+    if not snapshot or snapshot[0] != 'SANDBOX' or snapshot[1] != run[1]:
+        raise RuntimeError('Saved APPEND_ONLY Preview identity is unavailable')
+    if (not is_canonical_sha256_b64url(snapshot[2]) or
+            not is_canonical_sha256_b64url(snapshot[3]) or
+            not is_canonical_sha256_b64url(snapshot[4]) or
+            state.get('plan_digest') != snapshot[3] or
+            state.get('details_digest') != snapshot[4]):
+        raise RuntimeError('Saved APPEND_ONLY Preview digest binding changed')
+    try:
+        details = json.loads(snapshot[5])
+    except (TypeError, json.JSONDecodeError):
+        raise RuntimeError('Saved APPEND_ONLY Preview details are invalid') from None
+    if (_preview_details_digest(details) != snapshot[4] or
+            details.get('plan_digest') != snapshot[2] or
+            details.get('append_only_digest') != snapshot[3] or
+            details.get('environment') != 'SANDBOX' or details.get('version') != 1 or
+            not isinstance(details.get('appends'), list) or len(details['appends']) != 351 or
+            not isinstance(details.get('counts'), dict) or details['counts'].get('append') != 351 or
+            any(not isinstance(item, dict) or item.get('operation') != 'APPEND'
+                or not isinstance(item.get('cells'), list)
+                or any(not isinstance(cell, dict) or cell.get('column') not in {'A','B','C','D','E','F','H','I','L'}
+                       for cell in item['cells'])
+                or not any(isinstance(cell, dict) and cell.get('column') == 'A' and cell.get('formula') is True
+                           for cell in item['cells'])
+                for item in details['appends'])):
+        raise RuntimeError('Saved APPEND_ONLY Preview content does not match the fixed profile')
+    return {'request_id': request_id, 'plan_digest': snapshot[2],
+            'append_only_digest': snapshot[3], 'details_digest': snapshot[4],
+            'append_count': len(details['appends'])}
 
 
 RENDER_SECRET_DIR = Path('/etc/secrets')
@@ -657,12 +745,18 @@ class ExecutionClient:
                 result.get('evidenceDigest') != evidence_digest or
                 not is_canonical_sha256_b64url(result.get('digest'))):
             raise ExecutionOutcomeUnknown('Invalid partial reconciliation receipt')
+        if action == 'reconcile_partial' and reconciliation_profile.get('receipt_fields'):
+            if (result.get('counts') != reconciliation_profile['result_counts'] or
+                    any(result.get(key) != value for key, value in reconciliation_profile['receipt_fields'].items())):
+                raise ExecutionOutcomeUnknown('Invalid audit-only reconciliation disposition receipt')
         # Return only technical receipts/counters; never remote errors, stack traces or secrets.
         safe = {key:result.get(key) for key in ('environment','scriptId','spreadsheetId','contract','requestId','status','digest')}
         counters = result.get('counts', {})
         if not isinstance(counters, dict) or any(type(v) not in (int,float) or not math.isfinite(v) or v < 0 or v != int(v) for v in counters.values()):
             raise ExecutionOutcomeUnknown('Invalid execution counters')
-        safe['counts'] = {k:int(v) for k,v in counters.items() if k in {'append','update','conflict','error','remaining_safe','batches','skipped'}}
+        safe['counts'] = {k:int(v) for k,v in counters.items() if k in {
+            'append','update','conflict','error','remaining_safe','batches','skipped',
+            'audit_confirmed_existing_append_rows','checkpoint_receipts'}}
         if action == 'apply' and checkpoint_apply_enabled(self.environment):
             safe.update(chunkIndex=chunk_index,nextChunk=result['nextChunk'],more=result['more'],phase=result.get('phase'))
             if self.environment == 'SANDBOX':
@@ -677,6 +771,8 @@ class ExecutionClient:
             safe.update(reconciliationId=reconciliation_id,
                         requestFingerprint=request_fingerprint,
                         evidenceDigest=evidence_digest)
+            if reconciliation_profile.get('receipt_fields'):
+                safe.update(reconciliation_profile['receipt_fields'])
         return safe
 
 
@@ -848,6 +944,9 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
                     reconciliation_id,'SANDBOX',actor,request_fingerprint,
                     evidence_digest,evidence_raw):
                 raise RuntimeError('Existing reconciliation does not match this retry')
+            if (reconciliation_profile.get('require_saved_append_only_preview') and
+                    prior['state'] == 'prepared'):
+                _validate_partial_reconciliation_saved_run(con, prior['request_id'], reconciliation_profile)
             if prior['state'] not in {'prepared','reconciled_partial'}:
                 raise RuntimeError('Reconciliation history is in an unknown state')
             run = con.execute('''SELECT status,result_json FROM google_writer_runs
@@ -878,7 +977,11 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
         row = unknown[0]
         if request_id_fingerprint(row['request_id']) != request_fingerprint:
             raise PermissionError('Sandbox request fingerprint mismatch')
-        if row['trigger'] != 'manual' or row['result_json'] != '{"status": "OUTCOME_UNKNOWN_HOLD_NO_RETRY"}':
+        if row['trigger'] != 'manual':
+            raise RuntimeError('Sandbox run record does not match the confirmed partial-run contract')
+        if reconciliation_profile.get('require_saved_append_only_preview'):
+            _validate_partial_reconciliation_saved_run(con, row['request_id'], reconciliation_profile)
+        elif row['result_json'] != '{"status": "OUTCOME_UNKNOWN_HOLD_NO_RETRY"}':
             raise RuntimeError('Sandbox run record does not match the confirmed partial-run contract')
         con.execute('''INSERT INTO google_writer_run_reconciliations(
                          reconciliation_id,request_id,environment,actor,request_fingerprint,
@@ -916,6 +1019,14 @@ def finalize_partial_reconciliation(path, reconciliation_id, actor, receipt, *, 
         }
         if not isinstance(receipt, dict) or any(receipt.get(k) != v for k,v in required.items()) or not is_canonical_sha256_b64url(receipt.get('digest')):
             raise PermissionError('Apps Script reconciliation receipt mismatch')
+        profile = partial_reconciliation_profile(audit['request_fingerprint'])
+        if not profile:
+            raise PermissionError('Reconciliation profile is no longer supported')
+        expected_counts = profile['result_counts']
+        if receipt.get('counts') != expected_counts:
+            raise PermissionError('Apps Script reconciliation counters do not match the fixed profile')
+        if any(receipt.get(key) != value for key, value in profile.get('receipt_fields', {}).items()):
+            raise PermissionError('Apps Script reconciliation disposition does not match the fixed profile')
         if audit['state'] == 'reconciled_partial':
             run = con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=? AND environment=?',
                               (audit['request_id'],'SANDBOX')).fetchone()
