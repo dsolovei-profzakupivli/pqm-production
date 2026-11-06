@@ -65,6 +65,9 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_supplier_classification_integrity',
     'test_google_writer_update_append_integrity',
     'test_google_writer_supplier_types_integrity',
+    # These candidate-specific overlays run against their declared source
+    # pins outside the disposable product-test copy.
+    'test_partial_reconciliation_second_integrity_v1',
 }
 
 def selected_suite(suite,mode):
@@ -113,7 +116,9 @@ def main():
                             'run_supplier_classification_v3_integrity.py',
                             'run_supplier_manual_classification_v4_integrity.py',
                             'run_preview_digest_contract_v1_integrity.py',
-                            'run_checkpointed_apply_v1_integrity.py'):
+                            'run_checkpointed_apply_v1_integrity.py',
+                            'run_partial_reconciliation_second_v1_history.py',
+                            'run_messages_integrated_v1_history_addendum.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
@@ -158,7 +163,8 @@ def main():
                              'date_only_edr_status_integrated_v1_12329.zip',
                              'date_only_status_integrated_v2_a1f8.zip',
                              'preview_digest_contract_v1_baseline_3a63ac.zip',
-                             'checkpointed_apply_v1_exact_c8a97d6.zip')
+                             'checkpointed_apply_v1_exact_c8a97d6.zip',
+                             'release_checks_baseline_0347404.yml')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -166,6 +172,11 @@ def main():
                     continue
                 raise FileNotFoundError(f'Candidate release fixture missing: {fixture_name}')
             shutil.copy2(fixture_source,fixture_target/fixture_name)
+        validation_target=root/'validation'
+        validation_target.mkdir(parents=True,exist_ok=True)
+        for manifest_name in ('sandbox_preview_append_only_v1.json',
+                              'sandbox_preview_workflow_v1.json'):
+            shutil.copy2(ROOT/'validation'/manifest_name, validation_target/manifest_name)
         for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):
             shutil.copy2(ROOT/'validation'/helper, root/'validation'/helper)
         # The runner is itself pinned by the column-width integrity variant.
@@ -213,7 +224,7 @@ def main():
                 return 0 if result.wasSuccessful() else 1
             candidate_ok=result.wasSuccessful()
             v1_overlay=subprocess.run(
-                [sys.executable, str(ROOT/'validation/run_messages_integrated_v1_history.py')],
+                [sys.executable, str(ROOT/'validation/run_messages_integrated_v1_history_addendum.py')],
                 cwd=old_cwd, check=False)
             v2_overlay=subprocess.run(
                 [sys.executable, str(ROOT/'validation/run_classification_parent_integrity.py'),'--messages-v2'],
@@ -251,6 +262,9 @@ def main():
             checkpointed_apply_v1_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_checkpointed_apply_v1_integrity.py')],
                 cwd=old_cwd,check=False)
+            partial_reconciliation_second_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_partial_reconciliation_second_v1_history.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -269,7 +283,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

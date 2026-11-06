@@ -30,6 +30,7 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.client = execution.ExecutionClient('SANDBOX',self.deployment,'OFFLINE_SECRET_'+'x'*32,
             self.token,configured=True,clock=lambda:NOW)
         self.preview_digest=base64.urlsafe_b64encode(hashlib.sha256(b'PQM synthetic Preview digest').digest()).decode().rstrip('=')
+        self.append_only_digest=base64.urlsafe_b64encode(hashlib.sha256(b'PQM synthetic APPEND_ONLY digest').digest()).decode().rstrip('=')
         self.calls = []
         self.network = patch.object(runtime.urllib.request,'build_opener').start().return_value
         self.network.open.side_effect = self.fake_open
@@ -46,10 +47,16 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         result={k:message[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
         status={'preview':'PREVIEW','apply':'COMPLETE',
             'reconcile_partial':'RECONCILED_PARTIAL'}[message['action']]
-        result.update(status=status,digest=self.preview_digest,counts={'update':0})
+        counts={'append':0,'update':0,'conflict':0,'error':0}
+        result.update(status=status,digest=self.preview_digest,counts=counts)
+        if message['action']=='preview':
+            result['planDetails']={'version':1,'environment':'SANDBOX',
+                'plan_digest':self.preview_digest,'append_only_digest':self.append_only_digest,
+                'counts':counts,'appends':[],'updates':[],'conflicts':[],'errors':[]}
         if message['action']=='apply':
             result.update(chunkIndex=message['chunkIndex'],nextChunk=message['chunkIndex']+1,
-                more=False,phase='append')
+                more=False,phase='append',checkpointDigest=self.preview_digest,
+                planScope=message.get('planScope','ALL'))
         if message['action']=='reconcile_partial':
             evidence_raw=json.dumps(message['evidence'],ensure_ascii=False,sort_keys=True,separators=(',',':'))
             evidence_digest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('=')
@@ -89,7 +96,8 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.assertEqual(len(self.calls),2)
 
     def test_apply_checkpoint_receipt_is_bound_to_digest_and_chunk_index(self):
-        result=self.client.invoke('apply','b'*32,'uo',digest=self.preview_digest,chunk_index=7)
+        result=self.client.invoke('apply','b'*32,'uo',digest=self.preview_digest,chunk_index=7,
+            expected_checkpoint_digest=self.preview_digest)
         payload=json.loads(json.loads(self.calls[-1].data)['parameters'][0]['payload'])
         self.assertEqual(payload['chunkIndex'],7)
         self.assertEqual(payload['expectedDigest'],self.preview_digest)
@@ -103,7 +111,8 @@ class SandboxExecutionTransportTests(unittest.TestCase):
             return io.BytesIO(json.dumps(body).encode())
         self.network.open.side_effect=wrong_receipt
         with self.assertRaisesRegex(execution.ExecutionOutcomeUnknown,'Invalid Apply checkpoint receipt'):
-            self.client.invoke('apply','c'*32,'uo',digest=self.preview_digest,chunk_index=2)
+            self.client.invoke('apply','c'*32,'uo',digest=self.preview_digest,chunk_index=2,
+                expected_checkpoint_digest=self.preview_digest)
         self.assertEqual(self.network.open.call_count,2,'invalid receipt is not retried')
 
     def test_receipt_ticket_and_apply_reject_noncanonical_sha256_digests(self):
@@ -512,7 +521,7 @@ class SandboxExecutionTransportTests(unittest.TestCase):
 
     def test_prod_client_cannot_use_sandbox_transport(self):
         prod=execution.ExecutionClient('PROD',self.deployment,'offline_'+'x'*32,self.token,configured=True,clock=lambda:NOW)
-        with self.assertRaises(execution.ExecutionOutcomeUnknown):prod.invoke('preview','b'*32,'uo')
+        with self.assertRaises(execution.ExecutionPreflightError):prod.invoke('preview','b'*32,'uo')
         self.assertEqual(self.calls,[])
 
     def test_dns_and_connections_remain_closed_outside_scope(self):
