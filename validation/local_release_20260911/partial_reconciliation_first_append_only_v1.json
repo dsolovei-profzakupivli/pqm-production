@@ -8,9 +8,16 @@
     "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "67ff589f7caff5dd6ee06a9b55f45088b7edbf903e59befe23a9b2a641b3336b",
     "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs": "9a3dbad2002796c0ecfe5a1f0a6d26c2db85281424b39d91b25175ae054f73b6",
     "test_google_writer_partial_reconciliation.py": "00d7e1babfc0b68cbd1e10d18b500dddf3fc32b29e5a1ff57d62ba40dd9c8068",
-    "test_partial_reconciliation_first_append_only_integrity_v1.py": "dbc937d03b646e8caf3616bb9f9631b5f1dd9c66ea287449a70e34b10b366e2c"
+    "test_partial_reconciliation_first_append_only_integrity_v1.py": "0641b69d319ba4c2772b26d9dc1aaca071d809e3d6f43c23558c03053dfecd1c",
+    "validation/run_local_release.py": "e896f84dd312b25691174bb748417d21f5007e2337e31b0df407af2af755a4ea",
+    "validation/run_sandbox_preview_append_only_v1_history.py": "c956cc79418198fad78c744ad7395c0492bd992b41aea4dda00bfb056df1ffd5",
+    "validation/run_sandbox_preview_workflow_v1_history.py": "8ec15ff7d563fc5aeb1273866a871b4532c83671874151246f9045cd6298773b",
+    "validation/fixtures/sandbox_preview_append_only_v1_exact_067e2e8.zip": "2dd2362cffc25dfa64ab7ac0729547b3e654ae11044c3b29f197ff021cd9811b",
+    "validation/fixtures/sandbox_preview_workflow_v1_exact_067e2e8.zip": "c995751ff59f1cb3ea10d6e729f7d3a6f0e79d133bd4e809c5a91843d6c3600a"
   },
   "preserved_manifests": {
+    "validation/sandbox_preview_append_only_v1.json": "a6b8a92df5f267ff0846e099a7190424644fa65273b07fcc9177ee292e9b65fd",
+    "validation/sandbox_preview_workflow_v1.json": "4101c9c711ebf97634deb067711906511951d9f8a654872c01e23ac2604f58f4",
     "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
     "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40"
   },

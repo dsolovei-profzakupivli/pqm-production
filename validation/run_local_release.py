@@ -68,6 +68,11 @@ HISTORICAL_INTEGRITY_MODULES={
     # These candidate-specific overlays run against their declared source
     # pins outside the disposable product-test copy.
     'test_partial_reconciliation_second_integrity_v1',
+    # These v1 overlays keep their original exact-source pins and run against
+    # the immutable 067e2e8 fixture; the additive candidate overlay pins the
+    # current source and the historical-routing runners.
+    'test_sandbox_preview_append_only_integrity_v1',
+    'test_sandbox_preview_workflow_integrity_v1',
 }
 
 def selected_suite(suite,mode):
@@ -127,6 +132,8 @@ def main():
                             'run_preview_digest_contract_v1_integrity.py',
                             'run_checkpointed_apply_v1_integrity.py',
                             'run_partial_reconciliation_second_v1_history.py',
+                            'run_sandbox_preview_append_only_v1_history.py',
+                            'run_sandbox_preview_workflow_v1_history.py',
                             'run_messages_integrated_v1_history_addendum.py'):
             helper_source=ROOT/'validation'/helper_name
             if helper_source.is_file():
@@ -173,7 +180,9 @@ def main():
                              'date_only_status_integrated_v2_a1f8.zip',
                              'preview_digest_contract_v1_baseline_3a63ac.zip',
                              'checkpointed_apply_v1_exact_c8a97d6.zip',
-                             'release_checks_baseline_0347404.yml')
+                             'release_checks_baseline_0347404.yml',
+                             'sandbox_preview_append_only_v1_exact_067e2e8.zip',
+                             'sandbox_preview_workflow_v1_exact_067e2e8.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -272,6 +281,12 @@ def main():
             partial_reconciliation_second_v1_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_partial_reconciliation_second_v1_history.py')],
                 cwd=old_cwd,check=False)
+            sandbox_preview_append_only_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_sandbox_preview_append_only_v1_history.py')],
+                cwd=old_cwd,check=False)
+            sandbox_preview_workflow_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_sandbox_preview_workflow_v1_history.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -290,7 +305,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

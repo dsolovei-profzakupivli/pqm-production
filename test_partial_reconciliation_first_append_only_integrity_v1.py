@@ -8,7 +8,7 @@ import unittest
 
 
 MANIFEST = Path("validation/local_release_20260911/partial_reconciliation_first_append_only_v1.json")
-MANIFEST_SHA256 = "23354f89f8f74c620039b516534a920ce41645e491edf928dba796993f5699d3"
+MANIFEST_SHA256 = "bfab6425ec9bbad98bf36e85b4c96f018519b747548c44f8f6d7ec0a5f03a291"
 TEST_FILE = "test_partial_reconciliation_first_append_only_integrity_v1.py"
 
 
@@ -50,6 +50,11 @@ class FirstAppendOnlyReconciliationIntegrityTests(unittest.TestCase):
             "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs",
             "test_google_writer_partial_reconciliation.py",
             "test_partial_reconciliation_first_append_only_integrity_v1.py",
+            "validation/run_local_release.py",
+            "validation/run_sandbox_preview_append_only_v1_history.py",
+            "validation/run_sandbox_preview_workflow_v1_history.py",
+            "validation/fixtures/sandbox_preview_append_only_v1_exact_067e2e8.zip",
+            "validation/fixtures/sandbox_preview_workflow_v1_exact_067e2e8.zip",
         }
         self.assertEqual(set(self.manifest["files"]), scope)
         for relative, expected in self.manifest["files"].items():
@@ -60,6 +65,11 @@ class FirstAppendOnlyReconciliationIntegrityTests(unittest.TestCase):
         for relative, expected in self.manifest["preserved_manifests"].items():
             with self.subTest(historical_manifest=relative):
                 self.assertEqual(hashlib.sha256(canonical((self.root / relative).read_bytes())).hexdigest(), expected)
+        runner = canonical((self.root / "validation/run_local_release.py").read_bytes()).decode("utf-8")
+        self.assertIn("'test_sandbox_preview_append_only_integrity_v1'", runner)
+        self.assertIn("'test_sandbox_preview_workflow_integrity_v1'", runner)
+        self.assertIn("run_sandbox_preview_append_only_v1_history.py", runner)
+        self.assertIn("run_sandbox_preview_workflow_v1_history.py", runner)
 
     def test_fixed_profile_matches_confirmed_uncertain_no_checkpoint_audit(self):
         import google_writer_execution as execution
