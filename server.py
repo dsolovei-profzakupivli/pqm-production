@@ -2883,12 +2883,12 @@ def google_writer_service():
         return GOOGLE_WRITER_SCHEDULER
 
 
-def google_writer_status():
+def google_writer_status(actor=None):
     service = GOOGLE_WRITER_SCHEDULER
     manual_available = google_writer_manual_available()
     return {**google_writer_execution.status(DB_PATH,google_writer_environment(),available=manual_available,
         running=bool(service and service.thread and service.thread.is_alive()),
-        heartbeat=service.heartbeat if service else None),
+        heartbeat=service.heartbeat if service else None,actor=actor),
         "manual_available": manual_available,
         "automation_blocked": background_jobs.disabled()}
 
@@ -11778,11 +11778,110 @@ class Handler(BaseHTTPRequestHandler):
             refs["nazk"]["manual_operation"] = scheduler_execution_snapshot("nazk_registry")
             return self.send_json(refs)
         if parsed.path == '/api/google-writer/status':
-            data=google_writer_status()
+            data=google_writer_status(self.auth_user)
             permissions=getattr(self,'auth_access',{}).get('permissions',{})
             data.update(can_execute=bool(permissions.get('google.writer.execute')),
                         can_manage=bool(permissions.get('admin.manage')))
             return self.send_json(data)
+        if parsed.path == '/api/google-writer/resume-preview':
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only APPEND_ONLY continuation'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'request_id'}:
+                    raise ValueError('Only the saved run identity is accepted')
+                candidate=google_writer_execution.load_append_only_resume_candidate(
+                    DB_PATH,payload['request_id'],self.auth_user)
+                client=google_writer_client()
+                checked=client.invoke('resume_check',candidate['request_id'],self.auth_user,
+                    trigger='manual',digest=candidate['plan_digest'],plan_scope='APPEND_ONLY',
+                    manual_authorized=True,chunk_index=candidate['next_chunk'],
+                    expected_checkpoint_digest=candidate['checkpoint_digest'])
+                details=checked['planDetails']
+                details_digest=google_writer_execution._preview_details_digest(details)
+                if (checked.get('checkpointDigest')!=candidate['checkpoint_digest'] or
+                        checked.get('nextChunk')!=candidate['next_chunk'] or
+                        checked.get('counts',{}).get('append')!=len(details.get('appends',[])) or
+                        checked.get('counts',{}).get('update')!=0 or not details.get('appends')):
+                    raise ValueError('Saved checkpoint or remaining plan changed; continuation stopped')
+                ticket=google_writer_execution.append_only_resume_ticket(client,candidate['request_id'],
+                    self.auth_user,candidate['plan_digest'],candidate['next_chunk'],
+                    candidate['checkpoint_digest'],details_digest)
+                return self.send_json({'status':'RESUME_READY','scope':'APPEND_ONLY',
+                    'request_id':candidate['request_id'],'plan_digest':candidate['plan_digest'],
+                    'details_digest':details_digest,'checkpoint_digest':candidate['checkpoint_digest'],
+                    'next_chunk':candidate['next_chunk'],'counts':checked['counts'],
+                    'details':details,'ticket':ticket,'expires_in_seconds':300})
+            except (ValueError,google_writer_execution.ExecutionConfigurationError,
+                    google_writer_execution.ExecutionPreflightError) as exc:
+                return self.send_json({'error':str(exc),'write_attempted':False},409)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Read-only checkpoint status unavailable; no Apply was attempted',
+                    'write_attempted':False,'automatic_retry':False},503)
+        if parsed.path == '/api/google-writer/resume-append-only':
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only APPEND_ONLY continuation'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'ticket','confirmed'} or payload['confirmed'] is not True:
+                    raise ValueError('Explicit confirmation of the fresh continuation plan is required')
+                client=google_writer_client()
+                ticket=google_writer_execution.verify_append_only_resume_ticket(client,payload['ticket'],self.auth_user)
+                candidate=google_writer_execution.load_append_only_resume_candidate(
+                    DB_PATH,ticket['request_id'],self.auth_user)
+                if (candidate['plan_digest']!=ticket['digest'] or candidate['next_chunk']!=ticket['next_chunk'] or
+                        candidate['checkpoint_digest']!=ticket['checkpoint_digest']):
+                    raise ValueError('Saved checkpoint changed; obtain a new read-only continuation review')
+                checked=client.invoke('resume_check',candidate['request_id'],self.auth_user,
+                    trigger='manual',digest=candidate['plan_digest'],plan_scope='APPEND_ONLY',
+                    manual_authorized=True,chunk_index=candidate['next_chunk'],
+                    expected_checkpoint_digest=candidate['checkpoint_digest'])
+                details_digest=google_writer_execution._preview_details_digest(checked['planDetails'])
+                if (details_digest!=ticket['details_digest'] or checked.get('checkpointDigest')!=ticket['checkpoint_digest'] or
+                        checked.get('counts',{}).get('update')!=0 or checked.get('counts',{}).get('append')<=0):
+                    raise ValueError('Remaining plan changed; obtain a new read-only continuation review')
+                claimed=google_writer_execution.claim_append_only_resume(DB_PATH,candidate)
+                if not claimed['claimed']:
+                    return self.send_json({'error':'Continuation state changed or was already claimed',
+                        'status':claimed['status'],'automatic_retry':False},409)
+                worker=threading.Thread(target=google_writer_execution.execute_claimed,
+                    args=(DB_PATH,client,candidate['request_id'],self.auth_user),
+                    kwargs={'digest':candidate['plan_digest'],'guard':google_writer_manual_available,
+                        'manual_authorized':True,'plan_scope':'APPEND_ONLY','start_chunk':candidate['next_chunk'],
+                        'checkpoint_digest':candidate['checkpoint_digest']},
+                    name='pqm-google-writer-resume-worker',daemon=True)
+                try:
+                    worker.start()
+                except Exception:
+                    google_writer_execution.finish_partial_after_checkpoints(DB_PATH,candidate['request_id'],
+                        verified_chunks=candidate['next_chunk'],next_chunk=candidate['next_chunk'],
+                        digest=candidate['plan_digest'])
+                    raise ValueError('Resume worker did not start; saved verified checkpoint remains resumable') from None
+                return self.send_json({'started':True,'status':'APPEND_ONLY_RESUME_ACCEPTED',
+                    'request_id':candidate['request_id'],'next_chunk':candidate['next_chunk']},202)
+            except (ValueError,google_writer_execution.ExecutionConfigurationError,
+                    google_writer_execution.ExecutionPreflightError) as exc:
+                return self.send_json({'error':str(exc),'write_attempted':False},409)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Continuation preflight outcome unknown; no Apply was attempted',
+                    'write_attempted':False,'automatic_retry':False},503)
+        preview_details_match=re.fullmatch(r'/api/google-writer/preview-details/([0-9a-f]{32})',parsed.path)
+        if preview_details_match:
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only Preview details'},404)
+            query=urllib.parse.parse_qs(parsed.query)
+            plan_digest=(query.get('plan_digest') or [''])[0]
+            try:
+                snapshot=google_writer_execution.load_preview_plan(
+                    DB_PATH,preview_details_match.group(1),self.auth_user,plan_digest)
+                return self.send_json({'details':snapshot['details'],
+                    'details_digest':snapshot['details_digest'],'expires_at':snapshot['expires_at']})
+            except ValueError:
+                return self.send_json({'error':'Preview details are unavailable, stale or unauthorized'},404)
         if parsed.path == "/api/supplier-edr-sync-status":
             return self.send_json(supplier_edr_sync_status())
         if parsed.path == "/api/supplier-edr-export":
@@ -12277,26 +12376,69 @@ class Handler(BaseHTTPRequestHandler):
                     if set(payload) != {'request_id'}: raise ValueError('Unexpected Preview fields')
                     result = client.invoke('preview',payload['request_id'],self.auth_user,
                                            manual_authorized=True)
+                    if google_writer_environment()=='SANDBOX':
+                        snapshot=google_writer_execution.store_preview_plan(
+                            DB_PATH,payload['request_id'],self.auth_user,result.get('planDetails'))
+                        ticket=google_writer_execution.preview_ticket(client,payload['request_id'],
+                            self.auth_user,result['digest'],plan_scope='ALL',
+                            parent_digest=result['digest'],details_digest=snapshot['details_digest'])
+                        return self.send_json({'status':result['status'],'counts':result['counts'],
+                            'plan_digest':result['digest'],'details_digest':snapshot['details_digest'],
+                            'expires_at':snapshot['expires_at'],'ticket':ticket})
                     return self.send_json({'status':result['status'],'counts':result['counts'],
                         'ticket':google_writer_execution.preview_ticket(client,payload['request_id'],self.auth_user,result['digest'])})
                 if set(payload) != {'ticket','confirmed'} or payload['confirmed'] is not True:
                     raise ValueError('Потрібне явне підтвердження переглянутого Preview')
                 ticket = google_writer_execution.verify_ticket(client,payload['ticket'],self.auth_user)
+                if google_writer_environment()=='SANDBOX':
+                    if not all(key in ticket for key in ('scope','parent_digest','details_digest')):
+                        raise ValueError('Sandbox Preview ticket lacks the immutable plan binding')
+                    snapshot=google_writer_execution.load_preview_plan(DB_PATH,ticket['request_id'],
+                        self.auth_user,ticket['parent_digest'],details_digest=ticket['details_digest'])
+                    google_writer_execution.validate_preview_plan_scope(snapshot,ticket)
                 claimed = google_writer_execution.claim_run(DB_PATH,google_writer_environment(),
-                    ticket['request_id'],self.auth_user,'manual',manual_authorized=True)
+                    ticket['request_id'],self.auth_user,'manual',manual_authorized=True,
+                    plan_scope=ticket.get('scope','ALL'),plan_digest=ticket['digest'],
+                    details_digest=ticket.get('details_digest'))
                 if not claimed['claimed']:
                     return self.send_json(claimed,200 if claimed['status'] in {'complete','partial','failed_safe'} else 409)
                 try:
                     threading.Thread(target=google_writer_execution.execute_claimed,
                         args=(DB_PATH,client,ticket['request_id'],self.auth_user),
                         kwargs={'digest':ticket['digest'],'guard':google_writer_manual_available,
-                                'manual_authorized':True},
+                                'manual_authorized':True,'plan_scope':ticket.get('scope','ALL')},
                         name='pqm-google-writer-worker',daemon=True).start()
                 except Exception:
                     google_writer_execution.finish_run(DB_PATH,ticket['request_id'],'failed_safe',{'status':'WORKER_START_FAILED'})
                     raise ValueError('Не вдалося створити worker; Google не викликався') from None
                 return self.send_json({'started':True,'request_id':ticket['request_id']},202)
             except (ValueError,google_writer_execution.ExecutionOutcomeUnknown) as exc:
+                return self.send_json({'error':str(exc)},409)
+        if parsed.path == '/api/google-writer/preview-scope':
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only Preview scope'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            try:
+                payload=self.read_json()
+                if (not isinstance(payload,dict) or set(payload)!={'ticket','scope','confirmed'} or
+                        payload.get('confirmed') is not True or payload.get('scope')!='APPEND_ONLY'):
+                    return self.send_json({'error':'Explicit APPEND_ONLY selection is required'},400)
+                client=google_writer_client()
+                parent=google_writer_execution.verify_ticket(client,payload.get('ticket'),self.auth_user)
+                if (parent.get('scope')!='ALL' or parent.get('parent_digest')!=parent.get('digest') or
+                        not parent.get('details_digest')):
+                    return self.send_json({'error':'Only the original full Preview ticket can be scoped'},409)
+                snapshot=google_writer_execution.load_preview_plan(DB_PATH,parent['request_id'],
+                    self.auth_user,parent['parent_digest'],details_digest=parent['details_digest'])
+                scoped_counts=google_writer_execution.validate_preview_plan_scope(snapshot,parent)
+                ticket=google_writer_execution.preview_ticket(client,parent['request_id'],self.auth_user,
+                    snapshot['append_only_digest'],plan_scope='APPEND_ONLY',
+                    parent_digest=parent['parent_digest'],details_digest=parent['details_digest'])
+                scoped_counts=google_writer_execution.validate_preview_plan_scope(snapshot,
+                    google_writer_execution.verify_ticket(client,ticket,self.auth_user))
+                return self.send_json({'scope':'APPEND_ONLY','counts':scoped_counts,'ticket':ticket})
+            except (ValueError,google_writer_execution.ExecutionConfigurationError) as exc:
                 return self.send_json({'error':str(exc)},409)
         scheduler_toggle = re.fullmatch(r"/api/admin/scheduler-jobs/([a-z_]+)", parsed.path)
         if scheduler_toggle:

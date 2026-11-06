@@ -5,6 +5,8 @@ for(const env of ['prod','sandbox']){
     const context=vm.createContext({Date,Map,Set,console:{log(){}}});
     for(const file of fs.readdirSync(dir).filter(f=>f.endsWith('.gs')))
       vm.runInContext(fs.readFileSync(path.join(dir,file),'utf8'),context,{filename:file});
+    if(env==='sandbox')vm.runInContext(fs.readFileSync(path.join(__dirname,'shared/PqmExecutionCheckpoint.gs'),'utf8'),context,
+      {filename:'PqmExecutionCheckpoint.gs'});
     const cfg=context.PQM_MIRROR_ENV,secret='LOCAL_TEST_SECRET_NOT_A_CREDENTIAL_0123456789';
     const planDigest=env==='prod'?'a'.repeat(64):crypto.createHash('sha256').update('sandbox plan').digest('base64url');
     const staleDigest=env==='prod'?'d'.repeat(64):crypto.createHash('sha256').update('stale sandbox plan').digest('base64url');
@@ -12,26 +14,51 @@ for(const env of ['prod','sandbox']){
       [env==='prod'?'PQM_PROD_GOOGLE_REGISTRY_SPREADSHEET_ID':'PQM_SANDBOX_GOOGLE_REGISTRY_SPREADSHEET_ID',cfg.spreadsheetId]]);
     let opens=0,active=0,locks=0,releases=0,runs=0,available=true;
     const lock={tryLock(){locks++;return available;},releaseLock(){releases++;}};
+    context.PQM_TEST_LOCK=lock;
     context.ScriptApp={getScriptId:()=>cfg.scriptId};
     context.PropertiesService={getScriptProperties:()=>({getProperty:k=>properties.get(k)||null,
       setProperty:(k,v)=>properties.set(k,v),getProperties:()=>Object.fromEntries(properties)})};
-    context.Utilities={computeHmacSha256Signature:(raw,key)=>crypto.createHmac('sha256',key).update(raw).digest(),
+    context.Utilities={Charset:{UTF_8:'UTF_8'},DigestAlgorithm:{SHA_256:'SHA_256'},
+      computeDigest:(_algorithm,value)=>crypto.createHash('sha256').update(value,'utf8').digest(),
+      computeHmacSha256Signature:(raw,key,charset)=>{
+        if(env==='sandbox')assert.equal(charset,'UTF_8');return crypto.createHmac('sha256',key).update(raw,'utf8').digest();},
       base64EncodeWebSafe:raw=>Buffer.from(raw).toString('base64url'),
-      base64DecodeWebSafe:value=>Array.from(Buffer.from(value,'base64url'))};
+      base64DecodeWebSafe:value=>Array.from(Buffer.from(value,'base64url')),
+      newBlob:value=>({getBytes:()=>Array.from(Buffer.from(value,'utf8'))})};
     context.SpreadsheetApp={openById:id=>{opens++;assert.equal(id,cfg.spreadsheetId);return{getId:()=>id};},
       getActiveSpreadsheet:()=>{active++;throw new Error('Not available through Execution API');},
       getUi:()=>{throw new Error('No UI in headless execution');}};
     context.LockService={getScriptLock:()=>lock};
-    context[prefix+'FullLoad_']=()=>({plan_digest:planDigest,state:{payload_digest:'b'.repeat(64)},
+    context[prefix+'FullLoad_']=()=>({plan_digest:planDigest,append_only_digest:crypto.createHash('sha256').update('append').digest('base64url'),
+      state:{payload_digest:crypto.createHash('sha256').update('source').digest('base64url'),google_digest:crypto.createHash('sha256').update('sheet').digest('base64url')},
       plan:{counts:{appended:1,updated:2,conflicts:0,errors:0,unchanged:3}}});
+    if(env==='sandbox')context[prefix+'FullPreviewDetails_']=()=>({version:1,environment:'SANDBOX',
+      plan_digest:planDigest,append_only_digest:crypto.createHash('sha256').update('append').digest('base64url'),
+      counts:{append:1,update:2,conflict:0,error:0},appends:[{operation:'APPEND',cells:[
+        {column:'A',formula:true},{column:'B',formula:false}]}],
+      updates:[{operation:'UPDATE',cells:[{column:'E',formula:false}]},{operation:'UPDATE',cells:[{column:'I',formula:false}]}],
+      conflicts:[],errors:[]});
     context[prefix+'DailySync']=execution=>{runs++;assert.equal(execution.lock,lock);
       assert.equal(execution.expectedDigest,planDigest);
       return {status:'COMPLETE',append:1,update:2,conflict:0,error:0,remaining_safe:0,batches:1};};
+    if(env==='sandbox')vm.runInContext(`pqmSandboxApplyCheckpointStep_=function(id,loaded,request,properties,key,record,receipt){
+      pqmSandboxDailySync({lock:PQM_TEST_LOCK,expectedDigest:request.expectedDigest});
+      var step={status:'COMPLETE',chunkIndex:request.chunkIndex,nextChunk:request.chunkIndex+1,more:false,phase:'append',
+        counts:{append:1,update:2,conflict:0,error:0,remaining_safe:0,batches:1},verified:true,
+        digest:request.expectedDigest,planScope:request.planScope||'ALL',payloadDigest:record.payloadDigest,
+        googleDigest:record.googleDigest};
+      record.inflight=null;record.state='complete';record.nextChunk=step.nextChunk;record.steps=[step];
+      record.aggregate={append:1,update:2,batches:1};
+      step.checkpointDigest=pqmExecutionCheckpointStateDigest_(record);
+      pqmExecutionCheckpointSave_(properties,key,record,8000);
+      return pqmExecutionCheckpointReceipt_(request,receipt,step);
+    };`,context);
     function envelope(action='preview',changes={}){
       const now=Math.floor(Date.now()/1000);
       const message={environment:cfg.environment,scriptId:cfg.scriptId,spreadsheetId:cfg.spreadsheetId,
         contract:'pqm-mirror-datetime-v1',action,requestId:'c'.repeat(32),actor:'test-uo',trigger:'manual',
         issuedAt:now,expiresAt:now+300,expectedDigest:action==='apply'?planDigest:null,...changes};
+      if(env==='sandbox'&&action==='apply'&&!Number.isInteger(message.chunkIndex))message.chunkIndex=0;
       const payload=JSON.stringify(message);return{payload,signature:crypto.createHmac('sha256',secret).update(payload).digest('base64url')};
     }
     return{context,cfg,properties,envelope,planDigest,call:e=>context[prefix+'Execution'](e),
@@ -64,7 +91,7 @@ for(const env of ['prod','sandbox']){
     const f=fixture();let writes=0;
     f.context[prefix+'DailySync']=()=>{writes++;throw new Error('Simulated partial write');};
     assert.throws(()=>f.call(f.envelope('apply')),/may be partial/);assert.equal(writes,1);
-    assert.throws(()=>f.call(f.envelope('apply')),/no retry/);assert.equal(writes,1);
+    assert.throws(()=>f.call(f.envelope('apply')),/(no retry|uncertain)/);assert.equal(writes,1);
     assert.throws(()=>f.call(f.envelope('apply',{requestId:'d'.repeat(32)})),/unresolved/);assert.equal(writes,1);
     assert.equal(f.context.PQM_EXECUTION_CONTEXT_,null);
   });

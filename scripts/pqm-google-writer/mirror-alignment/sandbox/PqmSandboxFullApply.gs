@@ -92,13 +92,111 @@ function pqmSandboxFullLoad_(spreadsheetId) {
     throw new Error('PQM SANDBOX FULL: UNSAFE_PLANNED_COLUMN; no writes.');
   }
   var entries = pqmSandboxFullEntries_(plan, tabs);
+  if (plan.conflicts.length !== plan.counts.conflicts || plan.errors.length !== plan.counts.errors)
+    throw new Error('PQM SANDBOX FULL: plan detail counters do not match; no writes.');
   pqmSandboxControlledProtectionCheck_(entries, tabs);
   var guardStarted = Date.now(), state = pqmSandboxFullState_(body, tabs, plan, googlePhases);
   var guardMs = Date.now() - guardStarted;
+  var planDigest = pqmSandboxFullDigest_(state);
+  var appendChanges = plan.changes.filter(function(change) { return change.append; }).map(function(change) {
+    return {tab: change.tab, row: change.row, append: true, cells: change.cells};
+  });
+  var appendOnlyDigest = pqmSandboxFullDigest_({version: 1, state: {
+    scope: 'APPEND_ONLY', parent_plan_digest: planDigest,
+    payload_digest: state.payload_digest, google_digest: state.google_digest,
+    changes_digest: pqmSandboxControlledDigest_(appendChanges),
+    counts: {append: plan.counts.appended, update: 0,
+      conflict: plan.counts.conflicts, error: plan.counts.errors}
+  }});
   return {body: body, tabs: tabs, plan: plan, entries: entries, state: state,
-    plan_digest: pqmSandboxFullDigest_(state),
+    plan_digest: planDigest, append_only_digest: appendOnlyDigest,
     timing_ms: {pqm_fetch: fetchMs, google_snapshot: snapshotMs,
       planner: plannerMs, google_state_guard: guardMs, initial_google_phases: googlePhases}};
+}
+
+var PQM_SANDBOX_PREVIEW_CONFLICT_LABELS_ = {
+  duplicate_key: 'Дублікат коду постачальника', routing_mismatch: 'Тип постачальника не відповідає вкладці',
+  invalid_pqm_verification_date: 'Некоректна дата перевірки в PQM',
+  missing_google_verification_date: 'У Google Sheets відсутня дата перевірки',
+  invalid_google_verification_date: 'Некоректна дата перевірки в Google Sheets',
+  merged_owned_cell: 'Об’єднана клітинка у керованому діапазоні',
+  formula_in_owned_cell: 'Формула в клітинці, якою керує синхронізація',
+  missing_append_template: 'Немає шаблонного рядка для додавання',
+  append_formula_A_unavailable: 'Не вдалося побудувати формулу стовпця A',
+  missing_template_row_height: 'Не задана висота шаблонного рядка',
+  merged_append_template_or_destination: 'Об’єднаний діапазон у зоні нового рядка',
+  formula_in_append_template_owned_cell: 'Формула шаблону конфліктує з керованою клітинкою',
+  missing_verification_officer: 'Для дати перевірки не вказано відповідальну особу',
+  unknown_edr_status: 'Статус ЄДР не входить до дозволеного переліку',
+  unknown_prozorro_status: 'Статус Prozorro не вдалося класифікувати',
+  missing_append_name_or_status: 'Для нового рядка бракує обов’язкового поля',
+  protected_owned_cell: 'Запланована клітинка захищена',
+  invalid_initial_verification_pair: 'Початкова дата та відповідальна особа некоректні'
+};
+var PQM_SANDBOX_PREVIEW_ERROR_LABELS_ = {
+  invalid_date: 'Некоректна дата в даних PQM'
+};
+
+function pqmSandboxPreviewDisplayValue_(value, column) {
+  if (value === null || value === undefined || value === '') return '';
+  if (column === 7) {
+    var calendar = pqmGoogleCalendarDate_(value);
+    return calendar.kind === 'date' ? calendar.value : String(value);
+  }
+  if (column === 8) {
+    var verification = pqmVerificationDatetime_(value);
+    if (verification.kind === 'blank') return '';
+    if (verification.kind === 'datetime') return Utilities.formatDate(
+      new Date(verification.value), 'Europe/Kyiv', 'dd.MM.yyyy HH:mm:ss');
+    return String(value);
+  }
+  return typeof value === 'string' ? value : String(value);
+}
+
+function pqmSandboxFullPreviewDetails_(loaded) {
+  var items = new Map();
+  loaded.body.items.forEach(function(item) { items.set(item.supplier_code.trim(), item); });
+  var letters = 'ABCDEFGHIJKLMNO'.split('');
+  function supplier(code, tab, row) {
+    var item = items.get(code) || {}, sheetRow = loaded.tabs[tab].rows[row - 2];
+    return {code: code, name: item.supplier_name || item.latest_submission_name ||
+      (sheetRow && sheetRow.values[2]) || '', tab: tab, row: row};
+  }
+  function cells(change) {
+    var tab = loaded.tabs[change.tab], oldRow = change.append ? null : tab.rows[change.row - 2];
+    return Object.keys(change.cells).sort(function(a, b) { return Number(a) - Number(b); }).map(function(index) {
+      var column = Number(index), rawOld = oldRow ? oldRow.values[column] : '', rawNew = change.cells[index];
+      return {column: letters[column], old_value: pqmSandboxPreviewDisplayValue_(rawOld, column),
+        new_value: pqmSandboxPreviewDisplayValue_(rawNew, column),
+        formula: column === 0 && typeof rawNew === 'string' && rawNew.charAt(0) === '='};
+    });
+  }
+  var appends = [], updates = [];
+  loaded.plan.changes.forEach(function(change) {
+    var code = change.append ? String(change.cells[1] || '') :
+      String(loaded.tabs[change.tab].rows[change.row - 2].codeDisplay || '');
+    var entry = Object.assign(supplier(code, change.tab, change.row), {
+      operation: change.append ? 'APPEND' : 'UPDATE', cells: cells(change)
+    });
+    (change.append ? appends : updates).push(entry);
+  });
+  var conflicts = loaded.plan.conflicts.map(function(issue) {
+    var found = items.get(issue.supplier_code) || {};
+    return {code: issue.supplier_code, name: found.supplier_name || found.latest_submission_name || '',
+      tab: issue.tab || null, reason: issue.reason,
+      explanation: PQM_SANDBOX_PREVIEW_CONFLICT_LABELS_[issue.reason] || issue.reason};
+  });
+  var errors = loaded.plan.errors.map(function(issue) {
+    var found = items.get(issue.supplier_code) || {};
+    return {code: issue.supplier_code, name: found.supplier_name || found.latest_submission_name || '',
+      tab: issue.tab || null, reason: issue.reason,
+      explanation: PQM_SANDBOX_PREVIEW_ERROR_LABELS_[issue.reason] || issue.reason};
+  });
+  return {version: 1, environment: 'SANDBOX', plan_digest: loaded.plan_digest,
+    append_only_digest: loaded.append_only_digest, counts: {
+      append: loaded.plan.counts.appended, update: loaded.plan.counts.updated,
+      conflict: loaded.plan.counts.conflicts, error: loaded.plan.counts.errors
+    }, appends: appends, updates: updates, conflicts: conflicts, errors: errors};
 }
 
 function pqmSandboxFullApplyPreview() {

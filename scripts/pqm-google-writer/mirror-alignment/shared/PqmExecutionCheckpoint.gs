@@ -13,7 +13,22 @@ function pqmExecutionCheckpointReceipt_(request, receipt, step) {
   result.nextChunk = step.nextChunk;
   result.more = step.more;
   result.phase = step.phase;
+  result.checkpointDigest = step.checkpointDigest || null;
   return result;
+}
+
+function pqmExecutionCheckpointStateDigest_(record) {
+  var steps = (record.steps || []).map(function(step) {
+    var copy = {};
+    Object.keys(step).sort().forEach(function(key) {
+      if (key !== 'checkpointDigest') copy[key] = step[key];
+    });
+    return copy;
+  });
+  return pqmSandboxControlledDigest_({version: 2, actor: record.actor, trigger: record.trigger,
+    digest: record.digest, planScope: record.planScope, state: record.state,
+    nextChunk: record.nextChunk, inflight: record.inflight, payloadDigest: record.payloadDigest,
+    googleDigest: record.googleDigest, aggregate: record.aggregate, steps: steps});
 }
 
 function pqmExecutionUpdatePage_(chunks, maxRows, maxCells) {
@@ -38,11 +53,12 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
   }
 
   var append = adapter.appendLoad(id, undefined, loaded, limits.appendPageRows);
-  var phase = append.selected.length ? 'append' : 'update';
+  var appendOnly = request.planScope === 'APPEND_ONLY';
+  var phase = append.selected.length || appendOnly ? 'append' : 'update';
   var counts = {append: 0, update: 0, conflict: loaded.plan.counts.conflicts,
     error: loaded.plan.counts.errors, remaining_safe: 0, batches: 0};
 
-  if (phase === 'append') {
+  if (phase === 'append' && append.selected.length) {
     adapter.appendPrewriteGuard(id, append);
     var templates = {};
     append.selected.forEach(function(change) {
@@ -59,7 +75,7 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     adapter.appendVerifyMetadata(id, append.selected, templates);
     counts.append = append.selected.length;
     counts.batches = 1;
-  } else {
+  } else if (phase === 'update') {
     var chunks = adapter.fullChunks(loaded.entries);
     var chunk = pqmExecutionUpdatePage_(chunks, limits.updatePageRows, limits.updatePageCells);
     if (chunk.length) {
@@ -99,7 +115,7 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
   var afterPlan = adapter.plan(loaded.body, afterTabs);
   counts.conflict = afterPlan.counts.conflicts;
   counts.error = afterPlan.counts.errors;
-  counts.remaining_safe = afterPlan.counts.appended + afterPlan.counts.updated;
+  counts.remaining_safe = afterPlan.counts.appended + (appendOnly ? 0 : afterPlan.counts.updated);
   record.googleDigest = afterGoogleDigest;
   record.payloadDigest = loaded.state.payload_digest;
   record.aggregate = record.aggregate || {append: 0, update: 0, batches: 0};
@@ -114,7 +130,9 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     (counts.conflict || counts.error ? 'COMPLETE_WITH_CONFLICTS' : 'COMPLETE');
   var step = {status: finalStatus, chunkIndex: request.chunkIndex,
     nextChunk: record.nextChunk, more: counts.remaining_safe > 0, phase: phase,
-    counts: counts};
+    counts: counts, verified: true, digest: request.expectedDigest,
+    planScope: request.planScope || 'ALL', payloadDigest: record.payloadDigest,
+    googleDigest: afterGoogleDigest};
   record.steps.push(step);
   if (!step.more) {
     record.result = receipt(finalStatus, {
@@ -126,6 +144,11 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     record.result.nextChunk = step.nextChunk;
     record.result.more = false;
     record.result.phase = step.phase;
+  }
+  step.checkpointDigest = pqmExecutionCheckpointStateDigest_(record);
+  if (record.result) {
+    record.result.checkpointDigest = step.checkpointDigest;
+    record.result.planScope = request.planScope || 'ALL';
   }
   pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
   return pqmExecutionCheckpointReceipt_(request, receipt, step);
