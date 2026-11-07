@@ -241,6 +241,72 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.assertIn('18a4aba10c1c13ab3bf59f56',
             runtime.SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS)
 
+    def test_prepared_append_only_profile_fingerprint_reaches_only_reconciliation(self):
+        request_id='ab1d69b6d7c6427f8abdffea35830948'
+        reconciliation_id='23da3b07224e43bfa07725e41339a99f'
+        fingerprint=execution.request_id_fingerprint(request_id)
+        profile=execution.partial_reconciliation_profile(fingerprint)
+        self.assertEqual(fingerprint,'30331b560493209210f1e507')
+        self.assertIsNotNone(profile)
+        self.assertIn(fingerprint,runtime.SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS)
+
+        def reconciliation_response(request,timeout):
+            self.assertTrue(runtime._egress.active)
+            self.calls.append(request)
+            body=json.loads(request.data)
+            message=json.loads(body['parameters'][0]['payload'])
+            result={k:message[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
+            evidence_raw=json.dumps(message['evidence'],ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            evidence_digest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('=')
+            result.update(status='RECONCILED_PARTIAL',digest=self.preview_digest,
+                reconciliationId=message['reconciliationId'],requestFingerprint=message['requestFingerprint'],
+                evidenceDigest=evidence_digest,counts=profile['result_counts'],**profile['receipt_fields'])
+            return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
+
+        self.network.open.side_effect=reconciliation_response
+        result=self.client.invoke('reconcile_partial',request_id,'sandbox-admin',trigger='manual',
+            manual_authorized=True,reconciliation_id=reconciliation_id,
+            request_fingerprint=fingerprint,evidence=profile['evidence'])
+        self.assertEqual(result['status'],'RECONCILED_PARTIAL')
+        self.assertEqual(result['reconciliationId'],reconciliation_id)
+        self.assertEqual(len(self.calls),1)
+
+    def test_arbitrary_fingerprint_is_rejected_before_network_even_for_registered_profile(self):
+        request_id='c'*32
+        fingerprint=execution.request_id_fingerprint(request_id)
+        self.assertNotIn(fingerprint,runtime.SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS)
+        profile=execution.PARTIAL_RECONCILIATION_PROFILES['18a4aba10c1c13ab3bf59f56']
+        with patch.dict(execution.PARTIAL_RECONCILIATION_PROFILES,{fingerprint:profile}):
+            with self.assertRaises(execution.ExecutionOutcomeUnknown):
+                self.client.invoke('reconcile_partial',request_id,'sandbox-admin',trigger='manual',
+                    manual_authorized=True,reconciliation_id='d'*32,
+                    request_fingerprint=fingerprint,evidence=profile['evidence'])
+        self.network.open.assert_not_called()
+        self.assertEqual(self.calls,[])
+
+    def test_new_fingerprint_does_not_authorize_apply_or_resume(self):
+        request=self.request()
+        body=json.loads(request.data)
+        envelope=body['parameters'][0]
+        payload=json.loads(envelope['payload'])
+        fingerprint='30331b560493209210f1e507'
+
+        altered=dict(payload,action='apply',expectedDigest=None,chunkIndex=0,
+                     requestFingerprint=fingerprint,reconciliationId='23da3b07224e43bfa07725e41339a99f')
+        envelope['payload']=json.dumps(altered)
+        apply_request=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+            headers=request.headers,method='POST')
+        with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
+            self.validate(apply_request)
+
+        altered.update(action='resume_check',expectedDigest=self.preview_digest,
+            planScope='APPEND_ONLY',expectedCheckpointDigest=self.append_only_digest)
+        envelope['payload']=json.dumps(altered)
+        resume_request=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+            headers=request.headers,method='POST')
+        with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
+            self.validate(resume_request)
+
     def test_oauth_refresh_default_adapter_uses_same_scoped_guard(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'credential.json'
