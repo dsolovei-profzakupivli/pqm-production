@@ -142,6 +142,7 @@ def main():
                             'run_preview_digest_contract_v1_integrity.py',
                             'run_checkpointed_apply_v1_integrity.py',
                             'run_partial_reconciliation_second_v1_history.py',
+                            'run_partial_reconciliation_first_append_only_v1_history.py',
                             'run_sandbox_preview_append_only_v1_history.py',
                             'run_sandbox_preview_workflow_v1_history.py',
                             'run_messages_integrated_v1_history_addendum.py'):

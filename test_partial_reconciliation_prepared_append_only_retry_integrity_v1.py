@@ -10,7 +10,7 @@ import zipfile
 
 
 MANIFEST = Path("validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json")
-MANIFEST_SHA256 = "9ed6f41b53a99eb6b812e210a54fadf7410ce96cb6bc58bb5c6678a2352fd97b"
+MANIFEST_SHA256 = "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905"
 TEST_FILE = "test_partial_reconciliation_prepared_append_only_retry_integrity_v1.py"
 
 
@@ -87,7 +87,8 @@ class PreparedAppendOnlyRetryIntegrityTests(unittest.TestCase):
         self.assertIn("prior['evidence_json']", source)
         self.assertIn("prior['request_fingerprint']", source)
         self.assertIn("test_partial_reconciliation_first_append_only_integrity_v1", runner)
-        self.assertIn("run_partial_reconciliation_first_append_only_v1_history.py", runner)
+        helper_copy_block = runner.split("for helper_name in (", 1)[1].split("fixture_target=", 1)[0]
+        self.assertIn("'run_partial_reconciliation_first_append_only_v1_history.py'", helper_copy_block)
 
     def test_regression_cases_cover_http_503_retry_and_security_mismatches(self):
         tests = canonical((self.root / "test_google_writer_prepared_append_only_retry.py").read_bytes()).decode("utf-8")
