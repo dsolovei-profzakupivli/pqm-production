@@ -1,0 +1,27 @@
+{
+  "contract": "pqm-sandbox-prepared-append-only-retry",
+  "version": 1,
+  "baseline": "1fd48f48b974d86c99b5371e840e73b1b45cc2ce",
+  "normalization": "CRLF-to-LF only for text files",
+  "files": {
+    "google_writer_execution.py": "8d7bbd8ef9dd3d1cf676ce66791b7ced0605a90a5991bce97c3bf0b095043701",
+    "test_google_writer_prepared_append_only_retry.py": "b546814481fcb8c3846ed6fb9549e8fb27a026b83c93e05f0b661756b9d9e994",
+    "test_partial_reconciliation_prepared_append_only_retry_integrity_v1.py": "f5e118d4b5de97c524c41bef68f1e34e7cdd3d748b8837b4134a72ea7042b181",
+    "validation/run_local_release.py": "89a4879009610a53c1521e104088a97e2e27cd2cc830da1e30d64f450a1bf193",
+    "validation/run_partial_reconciliation_first_append_only_v1_history.py": "8f19c90d1b9e4b704901e160bc525a2146cd1c016e3e3fe1f78b24c4bb2a156b",
+    "validation/fixtures/partial_reconciliation_first_append_only_v1_exact_1fd48f4.zip": "f2a98f2d78c5b0e2735db61ead28a7f04d0d05c023f48e4eece6036ebfe1d879"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20260911/partial_reconciliation_first_append_only_v1.json": "bfab6425ec9bbad98bf36e85b4c96f018519b747548c44f8f6d7ec0a5f03a291",
+    "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
+    "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40",
+    "validation/sandbox_preview_append_only_v1.json": "a6b8a92df5f267ff0846e099a7190424644fa65273b07fcc9177ee292e9b65fd",
+    "validation/sandbox_preview_workflow_v1.json": "4101c9c711ebf97634deb067711906511951d9f8a654872c01e23ac2604f58f4"
+  },
+  "scope_notes": [
+    "The existing prepared intent is reused only when its ID, request fingerprint, fixed evidence, original run, saved Preview and empty receipt remain unchanged.",
+    "The APPEND_ONLY run payload keeps its extended digest-bound shape; the legacy minimal result_json contract remains unchanged for other profiles.",
+    "Historical first-profile source pins are run against the immutable 1fd48f4 fixture; their manifests and pins remain unchanged.",
+    "A retry dispatches reconcile_partial only. It does not invoke Apply, create a second SQLite intent, manufacture a checkpoint or alter the fixed evidence."
+  ]
+}

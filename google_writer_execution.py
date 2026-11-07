@@ -931,7 +931,10 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
         if not known:
             raise RuntimeError('Reconciliation storage is not initialized')
         existing = con.execute('''SELECT reconciliation_id,request_id,environment,actor,
-                                         request_fingerprint,evidence_digest,evidence_json,state
+                                         request_fingerprint,evidence_digest,evidence_json,state,
+                                         original_status,original_result_json,original_actor,
+                                         original_trigger,original_revision,original_started_at,
+                                         apps_script_receipt_json
                                   FROM google_writer_run_reconciliations
                                   WHERE request_fingerprint=? OR reconciliation_id=?''',
                                (request_fingerprint, reconciliation_id)).fetchall()
@@ -949,16 +952,36 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
                 _validate_partial_reconciliation_saved_run(con, prior['request_id'], reconciliation_profile)
             if prior['state'] not in {'prepared','reconciled_partial'}:
                 raise RuntimeError('Reconciliation history is in an unknown state')
-            run = con.execute('''SELECT status,result_json FROM google_writer_runs
+            run = con.execute('''SELECT status,result_json,actor,trigger,revision,started_at FROM google_writer_runs
                                  WHERE request_id=? AND environment='SANDBOX' ''',
                               (prior['request_id'],)).fetchone()
             if prior['state'] == 'prepared':
                 unknown = con.execute('''SELECT request_id,status,result_json FROM google_writer_runs
                                          WHERE environment='SANDBOX' AND status='outcome_unknown' ''').fetchall()
                 running = con.execute("SELECT COUNT(*) FROM google_writer_runs WHERE environment='SANDBOX' AND status='running'").fetchone()[0]
-                if (not run or run['status'] != 'outcome_unknown' or
-                        run['result_json'] != '{"status": "OUTCOME_UNKNOWN_HOLD_NO_RETRY"}' or
-                        len(unknown) != 1 or unknown[0]['request_id'] != prior['request_id'] or running):
+                original_identity_matches = bool(
+                    run and prior['original_status'] == 'outcome_unknown' and
+                    prior['original_result_json'] == run['result_json'] and
+                    prior['original_actor'] == run['actor'] and
+                    prior['original_trigger'] == run['trigger'] == 'manual' and
+                    prior['original_revision'] == run['revision'] and
+                    prior['original_started_at'] == run['started_at'])
+                if reconciliation_profile.get('require_saved_append_only_preview'):
+                    # The saved-Preview validator above checks the extended APPEND_ONLY
+                    # run payload and its digest binding. Revalidate the original run
+                    # snapshot without imposing the legacy minimal result_json shape.
+                    run_result_matches = bool(
+                        len(unknown) == 1 and original_identity_matches and
+                        run['status'] == 'outcome_unknown' and
+                        unknown[0]['result_json'] == prior['original_result_json'])
+                else:
+                    run_result_matches = bool(
+                        original_identity_matches and run['status'] == 'outcome_unknown' and
+                        run['result_json'] == '{"status": "OUTCOME_UNKNOWN_HOLD_NO_RETRY"}' and
+                        prior['original_result_json'] == '{"status": "OUTCOME_UNKNOWN_HOLD_NO_RETRY"}')
+                if (not run_result_matches or len(unknown) != 1 or
+                        unknown[0]['request_id'] != prior['request_id'] or running or
+                        prior['apps_script_receipt_json'] != '{}'):
                     raise RuntimeError('Prepared reconciliation no longer matches the blocked run')
             elif (not run or run['status'] != 'partial' or
                     json.loads(run['result_json']).get('reconciliation_id') != reconciliation_id):
