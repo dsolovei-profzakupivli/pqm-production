@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,11 +16,17 @@ class CardDeclensionGenerationTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.old_db = server.DB_PATH
         self.old_db_function = server.db
+        self.test_thread_id = threading.get_ident()
         self.connections = []
         server.DB_PATH = self.root / 'synthetic.sqlite3'
         def tracked_db():
             connection = self.old_db_function()
-            self.connections.append(connection)
+            # Background workers may outlive an earlier test and call db() while
+            # this fixture is active. Only close connections owned by this test
+            # thread; sqlite connections created in another thread cannot be
+            # closed here.
+            if threading.get_ident() == self.test_thread_id:
+                self.connections.append(connection)
             return connection
         server.db = tracked_db
         server.init_db()
@@ -35,10 +42,12 @@ class CardDeclensionGenerationTests(unittest.TestCase):
 
     def tearDown(self):
         server.db = self.old_db_function
-        for connection in self.connections:
-            connection.close()
-        server.DB_PATH = self.old_db
-        self.temp.cleanup()
+        try:
+            for connection in self.connections:
+                connection.close()
+        finally:
+            server.DB_PATH = self.old_db
+            self.temp.cleanup()
 
     def test_saved_card_forms_flow_into_new_docx_and_its_pdf_source(self):
         override_path = self.root / 'declension_overrides.csv'

@@ -19,7 +19,8 @@
     "validation/run_local_release.py",
     "validation/run_prepared_append_only_retry_v1_history.py",
     "validation/fixtures/prepared_append_only_retry_v1_exact_d386586.zip",
-    "test_google_writer_receipt_recovery_integrity_v1.py"
+    "test_google_writer_receipt_recovery_integrity_v1.py",
+    "validation/local_release_20260911/test_card_declension_generation.py"
   ],
   "files": {
     "google_writer_execution.py": "809e7fdf86b2486d6550257669a60c9ae3fc3a8cf7805d749714c41342163788",
@@ -34,10 +35,11 @@
     "test_google_writer_execution.py": "02f6e9fa68f5cf136ec879e0b05ab48a52a50f1c5193f1ba32c6810d2c1c39a3",
     "test_google_writer_durable_append_recovery.py": "a1a2840a991133c1528c4e7418ba8f7ca6a943d4c7b27c5b62ab0ba922f2de23",
     "test_manual_operation_interlock.py": "c37200e81d11e53b11440ce5d819b2573aa08c11f485291cd9c31a491cb465e2",
-    "validation/run_local_release.py": "9ea1f2b5a5bf994b6bca7d6cf9b3fe49ecb890e53da38c1ae36e9a40f327b8e9",
+    "validation/run_local_release.py": "c82a4ef95ee686f2e6eb8f3336a169eb89f81f55f95d5c3adc837ee5f0c8ff3a",
     "validation/run_prepared_append_only_retry_v1_history.py": "95589bf3c66ec3a7b15e2c873ef0af3f699c3f16968a74ed62c71d3321289676",
     "validation/fixtures/prepared_append_only_retry_v1_exact_d386586.zip": "39e4f53cb2af2c027140cc26f9890622daddf371aa8bd52c016ff808507eb43b",
-    "test_google_writer_receipt_recovery_integrity_v1.py": "3d03df2d359cf6a5f567759bbfa67d2965454efaebb50b96548995152feb39e7"
+    "test_google_writer_receipt_recovery_integrity_v1.py": "60a797bf95d414698175e4c676b1b2d650b657508d066e315aacc55d0bb684bf",
+    "validation/local_release_20260911/test_card_declension_generation.py": "de2dbf6f95680298ce6bc71f135b7ccc15f73b3210ca5330db8db900f7a7bfec"
   },
   "preserved_manifests": {
     "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",

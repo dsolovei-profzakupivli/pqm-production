@@ -10,7 +10,7 @@ import zipfile
 
 
 MANIFEST = Path("validation/local_release_20261108/google_writer_receipt_recovery_v1.json")
-MANIFEST_SHA256 = "1bf602126203ed397c120e24ab3883b0831015bc7cee97d05ecdba78273371ad"
+MANIFEST_SHA256 = "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b"
 TEST_FILE = "test_google_writer_receipt_recovery_integrity_v1.py"
 V1_MANIFEST = "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json"
 V1_FIXTURE = "validation/fixtures/prepared_append_only_retry_v1_exact_d386586.zip"
@@ -94,6 +94,12 @@ class GoogleWriterReceiptRecoveryIntegrityTests(unittest.TestCase):
         self.assertIn("endColumnIndex === 19", metadata_test)
         self.assertIn("column P is untouched", metadata_test)
         self.assertIn("UPDATE entries cannot be passed", metadata_test)
+
+    def test_legacy_document_fixture_restores_database_state_after_worker_activity(self):
+        fixture = canonical((self.root / "validation/local_release_20260911/test_card_declension_generation.py").read_bytes()).decode("utf-8")
+        self.assertIn("self.test_thread_id = threading.get_ident()", fixture)
+        self.assertIn("if threading.get_ident() == self.test_thread_id:", fixture)
+        self.assertIn("finally:\n            server.DB_PATH = self.old_db", fixture)
 
 
 if __name__ == "__main__":

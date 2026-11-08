@@ -199,7 +199,8 @@ def main():
                              'release_checks_baseline_0347404.yml',
                              'sandbox_preview_append_only_v1_exact_067e2e8.zip',
                              'sandbox_preview_workflow_v1_exact_067e2e8.zip',
-                             'partial_reconciliation_first_append_only_v1_exact_1fd48f4.zip')
+                             'partial_reconciliation_first_append_only_v1_exact_1fd48f4.zip',
+                              'prepared_append_only_retry_v1_exact_d386586.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
