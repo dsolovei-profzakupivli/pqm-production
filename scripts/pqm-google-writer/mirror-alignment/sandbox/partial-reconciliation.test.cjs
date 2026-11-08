@@ -231,6 +231,96 @@ test('audit-only reconciliation is idempotent for the same ID and never claims r
   assert.equal(f.spreadsheetWrites,0);
 });
 
+function legacyColumnIAuditFixture(overrides={}) {
+  const requestId='592128d9837d4b71bbeb330ef8aabf4b';
+  const reconciliationId='b'.repeat(32);
+  const fingerprint=crypto.createHash('sha256').update(requestId,'utf8').digest('hex').slice(0,24);
+  const context=vm.createContext({Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
+    console:{log(){}},Logger:{log(){}}});
+  for(const file of fs.readdirSync(dir).filter(name=>name.endsWith('.gs')))
+    vm.runInContext(fs.readFileSync(path.join(dir,file),'utf8'),context,{filename:file});
+  const cfg=context.PQM_MIRROR_ENV,secret='TEST_ONLY_LEGACY_AUDIT_SECRET_0123456789';
+  const eventKey='PQM_EXECUTION_RECONCILIATION_'+reconciliationId;
+  let marker=requestId,spreadsheetWrites=0,dailySyncCalls=0;
+  const run={actor:'original-sandbox-operator',trigger:'manual',digest,
+    planScope:'APPEND_ONLY',result:null,state:'uncertain',uncertainChunk:0,inflight:0,
+    nextChunk:0,steps:[],aggregate:{append:0,update:0,batches:0},...overrides.run};
+  const properties=new Map([
+    ['PQM_EXECUTION_SHARED_SECRET',secret],
+    ['PQM_SANDBOX_GOOGLE_REGISTRY_SPREADSHEET_ID',cfg.spreadsheetId],
+    ['PQM_EXECUTION_UNCERTAIN',marker],
+    ['PQM_EXECUTION_RUN_'+requestId,JSON.stringify(run)]
+  ]);
+  context.ScriptApp={getScriptId:()=>cfg.scriptId};
+  context.PropertiesService={getScriptProperties:()=>({
+    getProperty:key=>properties.has(key)?properties.get(key):null,
+    setProperty:(key,value)=>properties.set(key,value),
+    deleteProperty:key=>properties.delete(key),
+    getProperties:()=>Object.fromEntries(properties)
+  })};
+  context.Utilities={DigestAlgorithm:{SHA_256:'sha256'},Charset:{UTF_8:'utf8'},
+    computeDigest:(algorithm,value,charset)=>Array.from(crypto.createHash(algorithm).update(value,charset||'utf8').digest()),
+    base64DecodeWebSafe:value=>Array.from(Buffer.from(value,'base64url')),
+    computeHmacSha256Signature:(value,key)=>crypto.createHmac('sha256',key).update(value).digest(),
+    base64EncodeWebSafe:bytes=>Buffer.from(bytes).toString('base64url')};
+  context.SpreadsheetApp={openById:id=>({getId:()=>id,getRange(){spreadsheetWrites++;throw new Error('No Sheet writes permitted');}}),
+    getActiveSpreadsheet(){throw new Error('Active spreadsheet must not be used');}};
+  context.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})};
+  context.pqmSandboxDailySync=()=>{dailySyncCalls++;throw new Error('Apply must never run');};
+  const evidence=context.pqmSandboxPartialReconciliationProfile_(fingerprint).evidence;
+  const now=Math.floor(Date.now()/1000);
+  const message={environment:'SANDBOX',scriptId:cfg.scriptId,spreadsheetId:cfg.spreadsheetId,
+    contract:'pqm-mirror-datetime-v1',action:'reconcile_partial',requestId,actor:'sandbox-admin',trigger:'manual',
+    issuedAt:now,expiresAt:now+300,expectedDigest:null,reconciliationId,
+    requestFingerprint:fingerprint,evidence,evidenceDigest:context.pqmSandboxReconciliationDigest_(evidence)};
+  function envelope(changes={}) {
+    const payload=JSON.stringify({...message,...changes});
+    return {payload,signature:crypto.createHmac('sha256',secret).update(payload).digest('base64url')};
+  }
+  return {context,properties,message,envelope,eventKey,requestId,reconciliationId,
+    get marker(){return properties.get('PQM_EXECUTION_UNCERTAIN')||null;},
+    get spreadsheetWrites(){return spreadsheetWrites;},get dailySyncCalls(){return dailySyncCalls;}};
+}
+
+test('legacy 326 APPEND audit records exactly 20 full rows and five I-only partial rows',()=>{
+  const f=legacyColumnIAuditFixture();
+  assert.equal(f.message.requestFingerprint,'816c6424279bff220878b0c4');
+  const result=f.context.pqmSandboxExecution(f.envelope());
+  assert.equal(result.status,'RECONCILED_PARTIAL');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
+    {rows_found:25,fully_matching_rows:20,partial_rows:5,unverified_column_i_rows:5,checkpoint_receipts:0});
+  assert.deepEqual(JSON.parse(JSON.stringify(result.partialOperationNumbers)),[6,12,14,17,25]);
+  assert.equal(result.checkpointPresent,false);
+  assert.equal(result.resumeAuthorized,false);
+  assert.equal(result.nextAction,'NEW_PREVIEW_REQUIRED');
+  assert.equal(f.marker,null);
+  const event=JSON.parse(f.properties.get(f.eventKey));
+  assert.deepEqual(event.evidence.audit.partial_columns,{I:5});
+  assert.equal(event.evidence.audit.full_matches,20);
+  assert.equal(f.spreadsheetWrites,0);
+  assert.equal(f.dailySyncCalls,0);
+});
+
+test('legacy audit rejects another request, fingerprint, evidence, checkpoint, or marker',()=>{
+  for(const changes of [
+    {requestId:'c'.repeat(32)},
+    {requestFingerprint:'0'.repeat(24)},
+    {evidence:{...legacyColumnIAuditFixture().message.evidence,request_id:'c'.repeat(32)}},
+    {evidence:{...legacyColumnIAuditFixture().message.evidence,checkpoint_present:true}}
+  ]) {
+    const f=legacyColumnIAuditFixture();
+    assert.throws(()=>f.context.pqmSandboxExecution(f.envelope(changes)));
+    assert.equal(f.marker,f.requestId);
+    assert.equal(f.properties.has(f.eventKey),false);
+    assert.equal(f.spreadsheetWrites,0);
+  }
+  const changedMarker=legacyColumnIAuditFixture();
+  changedMarker.properties.set('PQM_EXECUTION_UNCERTAIN','d'.repeat(32));
+  assert.throws(()=>changedMarker.context.pqmSandboxExecution(changedMarker.envelope()));
+  assert.equal(changedMarker.properties.has(changedMarker.eventKey),false);
+  assert.equal(changedMarker.spreadsheetWrites,0);
+});
+
 test('prepared audit-only event revalidates its original no-checkpoint state before completing',()=>{
   const f=firstAppendOnlyChunkFixture();
   const run=JSON.parse(f.properties.get('PQM_EXECUTION_RUN_'+f.requestId));

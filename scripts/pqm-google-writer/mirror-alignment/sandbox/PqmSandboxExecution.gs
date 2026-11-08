@@ -359,6 +359,8 @@ function pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt)
 
 var PQM_SANDBOX_PARTIAL_RECONCILIATION_FINGERPRINT_='9be34ff2df1e661346176eeb';
 var PQM_SANDBOX_PARTIAL_RECONCILIATION_APPEND_ONLY_FINGERPRINT_='30331b560493209210f1e507';
+var PQM_SANDBOX_PARTIAL_RECONCILIATION_LEGACY_20261108_FINGERPRINT_='816c6424279bff220878b0c4';
+var PQM_SANDBOX_PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID_='592128d9837d4b71bbeb330ef8aabf4b';
 
 function pqmSandboxPartialReconciliationEvidence_() {
   return {
@@ -397,6 +399,30 @@ function pqmSandboxPartialReconciliationProfile_(fingerprint) {
       },
       resultCounts:{audit_confirmed_existing_append_rows:25,checkpoint_receipts:0},
       receiptFields:{checkpointPresent:false,resumeAuthorized:false,nextAction:'NEW_PREVIEW_REQUIRED'},
+      requireUncertainFirstChunk:true
+    };
+  }
+  if (fingerprint===PQM_SANDBOX_PARTIAL_RECONCILIATION_LEGACY_20261108_FINGERPRINT_) {
+    return {
+      expectedRequestId:PQM_SANDBOX_PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID_,
+      evidence:{
+        evidence_version:1,
+        request_id:PQM_SANDBOX_PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID_,
+        plan_scope:'APPEND_ONLY',
+        initial_plan:{append:326,update:2,conflict:2},
+        attempted_chunk:0,
+        checkpoint_present:false,
+        audit_type:'READ_ONLY_SAVED_PREVIEW_AND_LIVE_SHEETS',
+        audit:{rows_found:25,full_matches:20,partial_rows:5,
+          partial_operation_numbers:[6,12,14,17,25],partial_columns:{I:5},
+          missing:0,duplicates:0,wrong_tab:0,formula_a_matches:25,
+          protected_cell_mutations:0,saved_preview_binding:'PASS',writes_performed:0},
+        recovery_disposition:'PARTIAL_ROWS_I_UNVERIFIED_NO_REAPPEND_NEW_PREVIEW_REQUIRED'
+      },
+      resultCounts:{rows_found:25,fully_matching_rows:20,partial_rows:5,
+        unverified_column_i_rows:5,checkpoint_receipts:0},
+      receiptFields:{checkpointPresent:false,resumeAuthorized:false,
+        nextAction:'NEW_PREVIEW_REQUIRED',partialOperationNumbers:[6,12,14,17,25]},
       requireUncertainFirstChunk:true
     };
   }
@@ -441,6 +467,7 @@ function pqmSandboxReconcilePartial_(properties,request,receipt) {
       request.trigger!=='manual' || !/^[0-9a-f]{32}$/.test(request.reconciliationId||'') ||
       request.expectedDigest!==null ||
       !profile ||
+      (profile.expectedRequestId && request.requestId!==profile.expectedRequestId) ||
       pqmSandboxRequestFingerprint_(request.requestId)!==request.requestFingerprint)
     throw new Error('PQM: partial reconciliation identity rejected');
   var expectedEvidence=profile.evidence;

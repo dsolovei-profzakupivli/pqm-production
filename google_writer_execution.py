@@ -43,6 +43,8 @@ PROJECT_SCOPES = frozenset({
 _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT = '9be34ff2df1e661346176eeb'
 _PARTIAL_RECONCILIATION_SECOND_FINGERPRINT = '18a4aba10c1c13ab3bf59f56'
 _PARTIAL_RECONCILIATION_FIRST_APPEND_ONLY_FINGERPRINT = '30331b560493209210f1e507'
+_PARTIAL_RECONCILIATION_LEGACY_20261108_FINGERPRINT = '816c6424279bff220878b0c4'
+_PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID = '592128d9837d4b71bbeb330ef8aabf4b'
 _PARTIAL_RECONCILIATION_FIRST_EVIDENCE = {
     'initial_plan': {'append': 451, 'update': 2, 'conflict': 2},
     'verified_append_rows': 50,
@@ -87,6 +89,30 @@ _PARTIAL_RECONCILIATION_FIRST_APPEND_ONLY_EVIDENCE = {
     },
     'recovery_disposition': 'AUDIT_EVIDENCE_ONLY_NEW_PREVIEW_REQUIRED',
 }
+_PARTIAL_RECONCILIATION_LEGACY_20261108_EVIDENCE = {
+    'evidence_version': 1,
+    'request_id': _PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID,
+    'plan_scope': 'APPEND_ONLY',
+    'initial_plan': {'append': 326, 'update': 2, 'conflict': 2},
+    'attempted_chunk': 0,
+    'checkpoint_present': False,
+    'audit_type': 'READ_ONLY_SAVED_PREVIEW_AND_LIVE_SHEETS',
+    'audit': {
+        'rows_found': 25,
+        'full_matches': 20,
+        'partial_rows': 5,
+        'partial_operation_numbers': [6, 12, 14, 17, 25],
+        'partial_columns': {'I': 5},
+        'missing': 0,
+        'duplicates': 0,
+        'wrong_tab': 0,
+        'formula_a_matches': 25,
+        'protected_cell_mutations': 0,
+        'saved_preview_binding': 'PASS',
+        'writes_performed': 0,
+    },
+    'recovery_disposition': 'PARTIAL_ROWS_I_UNVERIFIED_NO_REAPPEND_NEW_PREVIEW_REQUIRED',
+}
 PARTIAL_RECONCILIATION_PROFILES = {
     _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT: {
         'evidence': _PARTIAL_RECONCILIATION_FIRST_EVIDENCE,
@@ -117,6 +143,30 @@ PARTIAL_RECONCILIATION_PROFILES = {
             'nextAction': 'NEW_PREVIEW_REQUIRED',
         },
         'require_saved_append_only_preview': True,
+        'expected_append_count': 351,
+    },
+    _PARTIAL_RECONCILIATION_LEGACY_20261108_FINGERPRINT: {
+        'request_id': _PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID,
+        'evidence': _PARTIAL_RECONCILIATION_LEGACY_20261108_EVIDENCE,
+        'result_counts': {
+            'rows_found': 25,
+            'fully_matching_rows': 20,
+            'partial_rows': 5,
+            'unverified_column_i_rows': 5,
+            'checkpoint_receipts': 0,
+        },
+        'receipt_fields': {
+            'checkpointPresent': False,
+            'resumeAuthorized': False,
+            'nextAction': 'NEW_PREVIEW_REQUIRED',
+            'partialOperationNumbers': [6, 12, 14, 17, 25],
+        },
+        'require_saved_append_only_preview': True,
+        'require_live_sheet_preflight': True,
+        'expected_append_count': 326,
+        'expected_plan_counts': {'append': 326, 'update': 2, 'conflict': 2, 'error': 0},
+        'expected_first_chunk_by_tab': {'ФОП': 17, 'ЮО': 8},
+        'expected_i_mismatch_operations': [6, 12, 14, 17, 25],
     },
 }
 # Backward-compatible aliases for the first reconciliation profile.
@@ -133,6 +183,8 @@ def _validate_partial_reconciliation_saved_run(con, request_id, profile):
     """Bind the special audit-only profile to the immutable saved APPEND_ONLY Preview."""
     run = con.execute('''SELECT environment,actor,trigger,status,result_json
                          FROM google_writer_runs WHERE request_id=?''', (request_id,)).fetchone()
+    if (profile.get('request_id') and request_id != profile['request_id']):
+        raise RuntimeError('APPEND_ONLY reconciliation request identity does not match its fixed profile')
     if (not run or run[0] != 'SANDBOX' or run[2] != 'manual' or
             run[3] != 'outcome_unknown'):
         raise RuntimeError('APPEND_ONLY reconciliation run identity or status changed')
@@ -167,12 +219,22 @@ def _validate_partial_reconciliation_saved_run(con, request_id, profile):
         details = json.loads(snapshot[5])
     except (TypeError, json.JSONDecodeError):
         raise RuntimeError('Saved APPEND_ONLY Preview details are invalid') from None
+    expected_append_count = profile.get('expected_append_count', 351)
+    expected_plan_counts = profile.get('expected_plan_counts')
     if (_preview_details_digest(details) != snapshot[4] or
             details.get('plan_digest') != snapshot[2] or
             details.get('append_only_digest') != snapshot[3] or
             details.get('environment') != 'SANDBOX' or details.get('version') != 1 or
-            not isinstance(details.get('appends'), list) or len(details['appends']) != 351 or
-            not isinstance(details.get('counts'), dict) or details['counts'].get('append') != 351 or
+            not isinstance(details.get('appends'), list) or len(details['appends']) != expected_append_count or
+            not isinstance(details.get('counts'), dict) or details['counts'].get('append') != expected_append_count or
+            (expected_plan_counts is not None and details['counts'] != expected_plan_counts) or
+            (expected_plan_counts is not None and
+             (not isinstance(details.get('updates'),list) or
+              not isinstance(details.get('conflicts'),list) or
+              not isinstance(details.get('errors'),list) or
+              len(details['updates']) != expected_plan_counts['update'] or
+              len(details.get('conflicts', [])) != expected_plan_counts['conflict'] or
+              len(details['errors']) != expected_plan_counts['error'])) or
             any(not isinstance(item, dict) or item.get('operation') != 'APPEND'
                 or not isinstance(item.get('cells'), list)
                 or any(not isinstance(cell, dict) or cell.get('column') not in {'A','B','C','D','E','F','H','I','L'}
@@ -181,9 +243,183 @@ def _validate_partial_reconciliation_saved_run(con, request_id, profile):
                            for cell in item['cells'])
                 for item in details['appends'])):
         raise RuntimeError('Saved APPEND_ONLY Preview content does not match the fixed profile')
+    if profile.get('expected_first_chunk_by_tab'):
+        if any(item.get('tab') not in {'ФОП','ЮО'} or
+               not isinstance(item.get('code'),str) or not item.get('code').strip()
+               for item in details['appends']):
+            raise RuntimeError('Saved APPEND_ONLY Preview identities do not match the fixed profile')
+        if not is_canonical_sha256_b64url(details.get('source_digest')):
+            raise RuntimeError('Saved APPEND_ONLY source digest is unavailable')
+        by_tab = {tab: sum(item['tab'] == tab for item in details['appends'][:25])
+                  for tab in ('ФОП','ЮО')}
+        codes = [item['code'].strip() for item in details['appends']]
+        if (by_tab != profile['expected_first_chunk_by_tab'] or
+                len(set(codes)) != expected_append_count):
+            raise RuntimeError('Saved APPEND_ONLY Preview composition does not match the fixed profile')
     return {'request_id': request_id, 'plan_digest': snapshot[2],
             'append_only_digest': snapshot[3], 'details_digest': snapshot[4],
-            'append_count': len(details['appends'])}
+            'append_count': len(details['appends']), 'details': details}
+
+
+def load_legacy_reconciliation_live_audit_plan(path, request_fingerprint):
+    """Read-only saved-plan loader for the fixed 2026-11-08 legacy profile."""
+    profile = partial_reconciliation_profile(request_fingerprint)
+    if not profile or not profile.get('require_live_sheet_preflight'):
+        raise PermissionError('Live sheet audit is not enabled for this profile')
+    expected_request_id = profile['request_id']
+    if request_id_fingerprint(expected_request_id) != request_fingerprint:
+        raise PermissionError('Legacy reconciliation fingerprint is invalid')
+    uri = Path(path).resolve().as_uri() + '?mode=ro'
+    with closing(sqlite3.connect(uri, uri=True, timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON')
+        con.row_factory = sqlite3.Row
+        run = con.execute('''SELECT request_id FROM google_writer_runs
+                             WHERE environment='SANDBOX' AND status='outcome_unknown' ''').fetchall()
+        if len(run) != 1 or run[0]['request_id'] != expected_request_id:
+            raise RuntimeError('Legacy reconciliation run is no longer uniquely held')
+        bound = _validate_partial_reconciliation_saved_run(con, expected_request_id, profile)
+    return {
+        'request_id': expected_request_id,
+        'request_fingerprint': request_fingerprint,
+        'plan_digest': bound['plan_digest'],
+        'append_only_digest': bound['append_only_digest'],
+        'details_digest': bound['details_digest'],
+        'expected_rows': bound['details']['appends'][:25],
+    }
+
+
+def _legacy_sheet_date_serial(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        parsed = None
+        for pattern in ('%d.%m.%Y %H:%M:%S', '%d.%m.%Y', '%Y-%m-%d'):
+            try:
+                parsed = datetime.strptime(value, pattern)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(KYIV).replace(tzinfo=None)
+    return (parsed - datetime(1899, 12, 30)).total_seconds() / 86400.0
+
+
+def _legacy_sheet_value_matches(expected, actual, column):
+    if expected is None:
+        expected = ''
+    if actual is None:
+        actual = ''
+    if column in {'H', 'I'}:
+        serial = _legacy_sheet_date_serial(expected)
+        if serial is not None and type(actual) in (int, float):
+            return abs(serial - float(actual)) < 1e-7
+    if isinstance(expected, bool):
+        return isinstance(actual, bool) and expected is actual
+    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        return type(actual) in (int, float) and not isinstance(actual, bool) and float(expected) == float(actual)
+    return type(expected) is type(actual) and expected == actual
+
+
+def audit_legacy_reconciliation_first_chunk(request_fingerprint, expected_rows, sheet_values):
+    """Compare the first 25 saved APPENDs without exposing codes or cell values."""
+    profile = partial_reconciliation_profile(request_fingerprint)
+    if (not profile or not profile.get('require_live_sheet_preflight') or
+            not isinstance(expected_rows, list) or len(expected_rows) != 25 or
+            not isinstance(sheet_values, dict) or set(sheet_values) != {'ФОП', 'ЮО'}):
+        raise ValueError('Legacy live audit input rejected')
+    allowed_i = set(profile['expected_i_mismatch_operations'])
+    code_locations = {}
+    for tab in ('ФОП', 'ЮО'):
+        matrix = sheet_values[tab]
+        if not isinstance(matrix, list):
+            raise ValueError('Legacy live audit sheet response rejected')
+        for row_number, row in enumerate(matrix, 1):
+            if not isinstance(row, list):
+                raise ValueError('Legacy live audit row shape rejected')
+            code = row[1] if len(row) > 1 else ''
+            if isinstance(code, str) and code:
+                code_locations.setdefault(code, []).append((tab, row_number, row))
+    expected_codes = []
+    missing = duplicates = wrong_tab = formula_matches = protected_mutations = 0
+    full_matches = partial_rows = 0
+    for operation_number, item in enumerate(expected_rows, 1):
+        if (not isinstance(item, dict) or item.get('operation') != 'APPEND' or
+                item.get('tab') not in {'ФОП', 'ЮО'} or
+                not isinstance(item.get('code'), str) or not item['code'] or
+                not isinstance(item.get('cells'), list)):
+            raise ValueError('Legacy saved APPEND operation rejected')
+        code = item['code']
+        expected_codes.append(code)
+        matches = code_locations.get(code, [])
+        duplicates += max(0, len(matches) - 1)
+        if not matches:
+            missing += 1
+            continue
+        if len(matches) != 1 or matches[0][0] != item['tab']:
+            wrong_tab += 1
+            continue
+        _, _, row = matches[0]
+        row_matches = True
+        i_mismatch = False
+        for cell in item['cells']:
+            if not isinstance(cell, dict) or cell.get('column') not in 'ABCDEFGHIJKLMNO':
+                raise ValueError('Legacy saved APPEND cell rejected')
+            column = cell['column']
+            index = ord(column) - ord('A')
+            expected = cell.get('new_value', '')
+            actual = row[index] if index < len(row) else ''
+            if column == 'A':
+                if (cell.get('formula') is not True or not isinstance(expected, str) or
+                        not expected.startswith('=') or actual != expected):
+                    row_matches = False
+                else:
+                    formula_matches += 1
+            elif column == 'I' and operation_number in allowed_i:
+                if _legacy_sheet_value_matches(expected, actual, column):
+                    row_matches = False
+                else:
+                    i_mismatch = True
+            elif not _legacy_sheet_value_matches(expected, actual, column):
+                row_matches = False
+        # Columns G, J, K, M, N, O are outside the APPEND write contract.
+        for column in (6, 9, 10, 12, 13, 14):
+            if (column < len(row) and row[column] not in ('', None)):
+                protected_mutations += 1
+                row_matches = False
+        if row_matches and i_mismatch and operation_number in allowed_i:
+            partial_rows += 1
+        elif row_matches and not i_mismatch:
+            full_matches += 1
+        else:
+            wrong_tab += 1
+    if len(set(expected_codes)) != 25:
+        raise ValueError('Legacy saved APPEND identities are not unique')
+    expected_tabs = {'ФОП': 17, 'ЮО': 8}
+    if {tab: sum(item['tab'] == tab for item in expected_rows) for tab in expected_tabs} != expected_tabs:
+        raise ValueError('Legacy saved APPEND routing changed')
+    partial_operations = [i for i, item in enumerate(expected_rows, 1)
+                          if item['tab'] in {'ФОП', 'ЮО'} and i in allowed_i]
+    result = {
+        'rows_found': 25 - missing,
+        'full_matches': full_matches,
+        'partial_rows': partial_rows,
+        'partial_operation_numbers': partial_operations if partial_rows == 5 else [],
+        'partial_columns': {'I': partial_rows},
+        'missing': missing,
+        'duplicates': duplicates,
+        'wrong_tab': wrong_tab,
+        'formula_a_matches': formula_matches,
+        'protected_cell_mutations': protected_mutations,
+        'saved_preview_binding': 'PASS',
+        'writes_performed': 0,
+    }
+    if result != profile['evidence']['audit']:
+        raise RuntimeError('Legacy live Google Sheets evidence changed; reconciliation stopped')
+    return result
 
 
 RENDER_SECRET_DIR = Path('/etc/secrets')
@@ -787,7 +1023,8 @@ class ExecutionClient:
             raise ExecutionOutcomeUnknown('Invalid execution counters')
         safe['counts'] = {k:int(v) for k,v in counters.items() if k in {
             'append','update','conflict','error','remaining_safe','batches','skipped',
-            'audit_confirmed_existing_append_rows','checkpoint_receipts'}}
+            'audit_confirmed_existing_append_rows','checkpoint_receipts','rows_found',
+            'fully_matching_rows','partial_rows','unverified_column_i_rows'}}
         if action == 'apply' and checkpoint_apply_enabled(self.environment):
             safe.update(chunkIndex=chunk_index,nextChunk=result['nextChunk'],more=result['more'],phase=result.get('phase'))
             if self.environment == 'SANDBOX':

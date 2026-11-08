@@ -4568,6 +4568,61 @@ def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHE
         _raise_google_phase_error("sheets_values_read", exc)
 
 
+def _google_writer_legacy_cached_sheets_token() -> str:
+    """Return an unexpired cached Sandbox Sheets token without refreshing credentials."""
+    if (not SANDBOX_MODE or SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID or
+            not google_edr_effective_enabled()):
+        raise PermissionError("Legacy reconciliation Sandbox Sheets guard rejected the request")
+    token = _google_oauth_token()
+    if not isinstance(token, dict):
+        raise PermissionError("Legacy reconciliation cached Sheets token is unavailable")
+    access_token = token.get("access_token")
+    scopes = set(str(token.get("scope", "")).split())
+    try:
+        remaining = (float(token.get("obtained_at", 0)) + int(token.get("expires_in", 0)) - time.time())
+    except (TypeError, ValueError, OverflowError):
+        remaining = -1
+    if (not isinstance(access_token, str) or not access_token or remaining <= 120 or
+            not scopes.intersection({GOOGLE_SHEETS_SCOPE, GOOGLE_SHEETS_READONLY_SCOPE})):
+        raise PermissionError("Legacy reconciliation cached Sheets token is expired or read scope is unavailable")
+    return access_token
+
+
+def _google_writer_legacy_read_sheet_values(tab: str, access_token: str) -> list[list]:
+    """Read the fixed Sandbox tab with a GET only; never refresh OAuth or write cells."""
+    if tab not in {"ФОП", "ЮО"}:
+        raise PermissionError("Legacy reconciliation tab guard rejected the request")
+    cell_range = urllib.parse.quote(f"'{tab}'!A:O", safe="")
+    query = urllib.parse.urlencode({"majorDimension": "ROWS", "valueRenderOption": "FORMULA"})
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/"
+           f"{sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID}/values/{cell_range}?{query}")
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {access_token}", "Accept": "application/json"}, method="GET")
+    try:
+        with sandbox_runtime.google_open(request, timeout=45) as response:
+            raw = response.read(4_000_001)
+        if len(raw) > 4_000_000:
+            raise ValueError("Legacy reconciliation sheet read exceeded its fixed response bound")
+        body = json.loads(raw.decode("utf-8"))
+        values = body.get("values", [])
+        if not isinstance(values, list) or any(not isinstance(row, list) for row in values):
+            raise ValueError("Legacy reconciliation sheet response shape rejected")
+        return values
+    except urllib.error.HTTPError as exc:
+        _raise_google_phase_error("legacy_reconciliation_sheets_read", exc)
+
+
+def _google_writer_legacy_live_sheet_preflight(request_fingerprint: str) -> dict:
+    """Rebind the fixed Preview and current target rows immediately before remote reconciliation."""
+    plan = google_writer_execution.load_legacy_reconciliation_live_audit_plan(
+        DB_PATH, request_fingerprint)
+    cached_token = _google_writer_legacy_cached_sheets_token()
+    sheet_values = {tab: _google_writer_legacy_read_sheet_values(tab, cached_token)
+                    for tab in ("ФОП", "ЮО")}
+    return google_writer_execution.audit_legacy_reconciliation_first_chunk(
+        request_fingerprint, plan['expected_rows'], sheet_values)
+
+
 def sandbox_google_row_navigation_enabled() -> bool:
     """Keep the read-only card route's explicit availability contract separate
     from destination-based authorization of SANDBOX Google writes.
@@ -12344,6 +12399,15 @@ class Handler(BaseHTTPRequestHandler):
             if (set(payload)!={'reconciliation_id','request_fingerprint','confirmed'} or
                     payload.get('confirmed') is not True):
                 return self.send_json({'error':'Потрібне явне підтвердження reconciliation'},400)
+            profile=google_writer_execution.partial_reconciliation_profile(payload.get('request_fingerprint'))
+            if profile and profile.get('require_live_sheet_preflight'):
+                try:
+                    _google_writer_legacy_live_sheet_preflight(payload.get('request_fingerprint'))
+                except (ValueError,PermissionError,RuntimeError,OSError,TypeError,sqlite3.Error,
+                        urllib.error.URLError,json.JSONDecodeError):
+                    return self.send_json({'error':'Read-only legacy evidence preflight failed; no reconciliation intent created',
+                        'reconciliation_id':payload.get('reconciliation_id'),
+                        'sqlite_hold_retained':True,'do_not_retry_apply':True},409)
             try:
                 prepared=google_writer_execution.prepare_partial_reconciliation(
                     DB_PATH,'SANDBOX',payload.get('reconciliation_id'),
@@ -12351,6 +12415,15 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError,PermissionError,RuntimeError) as exc:
                 return self.send_json({'error':str(exc),'reconciliation_id':payload.get('reconciliation_id'),
                     'sqlite_hold_retained':True},409)
+            if profile and profile.get('require_live_sheet_preflight'):
+                try:
+                    _google_writer_legacy_live_sheet_preflight(payload.get('request_fingerprint'))
+                except (ValueError,PermissionError,RuntimeError,OSError,TypeError,sqlite3.Error,
+                        urllib.error.URLError,json.JSONDecodeError):
+                    return self.send_json({'error':'Final read-only legacy evidence check failed; prepared intent and run hold retained',
+                        'reconciliation_id':payload.get('reconciliation_id'),
+                        'reconciliation_state':'prepared','sqlite_hold_retained':True,
+                        'do_not_retry_apply':True},409)
             try:
                 client=google_writer_client()
                 receipt=client.invoke('reconcile_partial',prepared['request_id'],self.auth_user,

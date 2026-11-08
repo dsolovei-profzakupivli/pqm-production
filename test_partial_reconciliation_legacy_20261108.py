@@ -1,0 +1,200 @@
+import base64
+import hashlib
+import json
+import sqlite3
+import tempfile
+import unittest
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
+
+import google_writer_execution as execution
+
+
+REQUEST_ID = '592128d9837d4b71bbeb330ef8aabf4b'
+FINGERPRINT = '816c6424279bff220878b0c4'
+ACTOR = 'legacy-test-operator'
+RECONCILIATION_ID = 'a' * 32
+NOW = datetime(2026, 11, 8, 12, 0, tzinfo=timezone.utc)
+PARTIAL_OPERATIONS = {6, 12, 14, 17, 25}
+
+
+def digest(value):
+    return base64.urlsafe_b64encode(hashlib.sha256(value).digest()).decode().rstrip('=')
+
+
+def serial(value):
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    parsed = parsed.astimezone(execution.KYIV).replace(tzinfo=None)
+    return (parsed - datetime(1899, 12, 30)).total_seconds() / 86400
+
+
+class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).parent, prefix='legacy-append-recon-')
+        self.path = str(Path(self.temp.name) / 'sandbox.sqlite3')
+        with closing(sqlite3.connect(self.path)) as con, con:
+            execution.migrate(con)
+        self.details = self._make_details()
+        stored = execution.store_preview_plan(self.path, REQUEST_ID, ACTOR, self.details, now=NOW)
+        claim = execution.claim_run(self.path, 'SANDBOX', REQUEST_ID, ACTOR, 'manual',
+            manual_authorized=True, plan_scope='APPEND_ONLY',
+            plan_digest=self.details['append_only_digest'], details_digest=stored['details_digest'], now=NOW)
+        self.assertTrue(claim['claimed'])
+        # The legacy run predates receipt-recovery auto-continuation metadata.
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute("UPDATE google_writer_runs SET result_json=json_remove(result_json,'$.auto_continue_chunks') WHERE request_id=?",
+                        (REQUEST_ID,))
+        execution.hold_unknown_run(self.path, REQUEST_ID, attempted_chunk=0,
+            digest=self.details['append_only_digest'], checkpoint_digest=None)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _make_details(self):
+        appends = []
+        for index in range(1, 327):
+            tab = 'ФОП' if index <= 17 or index > 25 else 'ЮО'
+            code = f'TESTCODE{index:04d}'
+            verification_date = f'2026-11-{(index % 27) + 1:02d}T12:00:00+02:00'
+            appends.append({
+                'operation': 'APPEND', 'tab': tab, 'code': code,
+                'cells': [
+                    {'column': 'A', 'new_value': f'=FRESHNESS_{index:04d}', 'formula': True},
+                    {'column': 'B', 'new_value': code, 'formula': False},
+                    {'column': 'C', 'new_value': f'NAME_{index:04d}', 'formula': False},
+                    {'column': 'D', 'new_value': 'PERSON', 'formula': False},
+                    {'column': 'E', 'new_value': '', 'formula': False},
+                    {'column': 'F', 'new_value': 'STATUS', 'formula': False},
+                    {'column': 'H', 'new_value': '2026-11-08', 'formula': False},
+                    {'column': 'I', 'new_value': verification_date, 'formula': False},
+                    {'column': 'L', 'new_value': 'ACTIVE', 'formula': False},
+                ],
+            })
+        return {
+            'version': 1, 'environment': 'SANDBOX',
+            'plan_digest': digest(b'legacy full plan'),
+            'append_only_digest': digest(b'legacy append-only plan'),
+            'source_digest': digest(b'legacy PQM source'),
+            'counts': {'append': 326, 'update': 2, 'conflict': 2, 'error': 0},
+            'appends': appends,
+            'updates': [{'operation': 'UPDATE', 'cells': []}, {'operation': 'UPDATE', 'cells': []}],
+            'conflicts': [{'reason': 'fixed'}, {'reason': 'fixed'}], 'errors': [],
+        }
+
+    def _prepare(self, reconciliation_id=RECONCILIATION_ID, fingerprint=FINGERPRINT):
+        return execution.prepare_partial_reconciliation(
+            self.path, 'SANDBOX', reconciliation_id, fingerprint, 'new-sandbox-admin', now=NOW)
+
+    def _matrices(self):
+        tabs = {'ФОП': [], 'ЮО': []}
+        for operation_number, item in enumerate(self.details['appends'][:25], 1):
+            row = [''] * 15
+            for cell in item['cells']:
+                index = ord(cell['column']) - ord('A')
+                value = cell['new_value']
+                if cell['column'] in {'H', 'I'}:
+                    value = serial(value if cell['column'] == 'I' else '2026-11-08T00:00:00+02:00')
+                    if cell['column'] == 'I' and operation_number in PARTIAL_OPERATIONS:
+                        value += 1
+                row[index] = value
+            tabs[item['tab']].append(row)
+        return tabs
+
+    def _receipt(self, prepared):
+        profile = execution.partial_reconciliation_profile(FINGERPRINT)
+        return {
+            'environment': 'SANDBOX', 'scriptId': execution.IDENTITIES['SANDBOX'][0],
+            'spreadsheetId': execution.IDENTITIES['SANDBOX'][1], 'contract': execution.CONTRACT,
+            'requestId': REQUEST_ID, 'status': 'RECONCILED_PARTIAL',
+            'reconciliationId': RECONCILIATION_ID, 'requestFingerprint': FINGERPRINT,
+            'evidenceDigest': prepared['evidence_digest'], 'digest': self.details['append_only_digest'],
+            'counts': profile['result_counts'], **profile['receipt_fields'],
+        }
+
+    def test_fixed_profile_records_20_full_5_i_unverified_and_never_authorizes_resume(self):
+        profile = execution.partial_reconciliation_profile(FINGERPRINT)
+        self.assertEqual(execution.request_id_fingerprint(REQUEST_ID), FINGERPRINT)
+        plan = execution.load_legacy_reconciliation_live_audit_plan(self.path, FINGERPRINT)
+        audit = execution.audit_legacy_reconciliation_first_chunk(FINGERPRINT, plan['expected_rows'], self._matrices())
+        self.assertEqual(audit, profile['evidence']['audit'])
+        prepared = self._prepare()
+        self.assertEqual(prepared['evidence'], profile['evidence'])
+        self.assertEqual(prepared['evidence']['audit']['full_matches'], 20)
+        self.assertEqual(prepared['evidence']['audit']['partial_rows'], 5)
+        self.assertEqual(prepared['evidence']['audit']['partial_operation_numbers'], [6, 12, 14, 17, 25])
+        self.assertEqual(prepared['evidence']['recovery_disposition'],
+                         'PARTIAL_ROWS_I_UNVERIFIED_NO_REAPPEND_NEW_PREVIEW_REQUIRED')
+        result = execution.finalize_partial_reconciliation(
+            self.path, RECONCILIATION_ID, 'new-sandbox-admin', self._receipt(prepared), now=NOW)
+        self.assertEqual(result['status'], 'RECONCILED_PARTIAL')
+        with closing(sqlite3.connect(self.path)) as con:
+            run = con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',
+                              (REQUEST_ID,)).fetchone()
+            journal_count = con.execute('SELECT COUNT(*) FROM google_writer_chunk_journal WHERE run_id=?',
+                                        (REQUEST_ID,)).fetchone()[0]
+            evidence_raw = con.execute('SELECT evidence_json FROM google_writer_run_reconciliations WHERE request_id=?',
+                                       (REQUEST_ID,)).fetchone()[0]
+        self.assertEqual(run[0], 'partial')
+        saved_result = json.loads(run[1])
+        self.assertEqual(saved_result['status'], 'RECONCILED_PARTIAL')
+        self.assertEqual(journal_count, 0)
+        self.assertEqual(json.loads(evidence_raw), profile['evidence'])
+        self.assertFalse(profile['receipt_fields']['checkpointPresent'])
+        self.assertFalse(profile['receipt_fields']['resumeAuthorized'])
+        self.assertEqual(profile['receipt_fields']['nextAction'], 'NEW_PREVIEW_REQUIRED')
+
+    def test_changed_non_i_value_or_wrong_i_operation_fails_closed(self):
+        matrices = self._matrices()
+        matrices['ФОП'][0][2] = 'CHANGED'
+        with self.assertRaises(RuntimeError):
+            execution.audit_legacy_reconciliation_first_chunk(FINGERPRINT,
+                self.details['appends'][:25], matrices)
+        matrices = self._matrices()
+        op = self.details['appends'][0]
+        row = matrices[op['tab']][0]
+        row[8] = serial(op['cells'][7]['new_value']) + 1
+        with self.assertRaises(RuntimeError):
+            execution.audit_legacy_reconciliation_first_chunk(FINGERPRINT,
+                self.details['appends'][:25], matrices)
+
+    def test_missing_duplicate_wrong_tab_formula_and_protected_changes_fail_closed(self):
+        for mutation in ('missing', 'duplicate', 'wrong_tab', 'formula', 'protected'):
+            matrices = self._matrices()
+            if mutation == 'missing':
+                matrices['ФОП'].pop(0)
+            elif mutation == 'duplicate':
+                matrices['ФОП'].append(list(matrices['ФОП'][0]))
+            elif mutation == 'wrong_tab':
+                matrices['ФОП'][0], matrices['ЮО'][0] = matrices['ЮО'][0], matrices['ФОП'][0]
+            elif mutation == 'formula':
+                matrices['ФОП'][0][0] = '=WRONG'
+            else:
+                matrices['ФОП'][0][6] = 'UNEXPECTED'
+            with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
+                execution.audit_legacy_reconciliation_first_chunk(FINGERPRINT,
+                    self.details['appends'][:25], matrices)
+
+    def test_request_id_fingerprint_digest_checkpoint_and_other_profile_are_rejected(self):
+        with self.assertRaises(PermissionError):
+            execution.prepare_partial_reconciliation(self.path, 'SANDBOX', RECONCILIATION_ID,
+                '30331b560493209210f1e507', 'new-sandbox-admin', now=NOW)
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute("UPDATE google_writer_runs SET result_json=json_set(result_json,'$.attempted_checkpoint_digest',?) WHERE request_id=?",
+                        (digest(b'not-null'), REQUEST_ID))
+        with self.assertRaises(RuntimeError):
+            self._prepare()
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute("UPDATE google_writer_runs SET result_json=json_set(result_json,'$.attempted_checkpoint_digest',NULL) WHERE request_id=?",
+                        (REQUEST_ID,))
+            con.execute("UPDATE google_writer_preview_plans SET append_only_digest=? WHERE request_id=?",
+                        (digest(b'changed digest'), REQUEST_ID))
+        with self.assertRaises(RuntimeError):
+            self._prepare()
+        with closing(sqlite3.connect(self.path)) as con:
+            count = con.execute('SELECT COUNT(*) FROM google_writer_run_reconciliations').fetchone()[0]
+        self.assertEqual(count, 0)
+
+
+if __name__ == '__main__':
+    unittest.main()
