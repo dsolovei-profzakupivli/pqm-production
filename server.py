@@ -4588,11 +4588,13 @@ def _google_writer_legacy_cached_sheets_token() -> str:
     return access_token
 
 
-def _google_writer_legacy_read_sheet_values(tab: str, access_token: str) -> list[list]:
-    """Read the fixed Sandbox tab with a GET only; never refresh OAuth or write cells."""
-    if tab not in {"ФОП", "ЮО"}:
+def _google_writer_legacy_read_sheet_values(tab: str, access_token: str,
+                                            a1_range: str) -> list[list]:
+    """Read only fixed audit ranges in Sandbox; never refresh OAuth or write cells."""
+    if (tab not in {"ФОП", "ЮО"} or
+            (a1_range != "B:B" and not re.fullmatch(r"A[1-9][0-9]*:O[1-9][0-9]*", a1_range))):
         raise PermissionError("Legacy reconciliation tab guard rejected the request")
-    cell_range = urllib.parse.quote(f"'{tab}'!A:O", safe="")
+    cell_range = urllib.parse.quote(f"'{tab}'!{a1_range}", safe="")
     query = urllib.parse.urlencode({"majorDimension": "ROWS", "valueRenderOption": "FORMULA"})
     url = (f"https://sheets.googleapis.com/v4/spreadsheets/"
            f"{sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID}/values/{cell_range}?{query}")
@@ -4617,8 +4619,44 @@ def _google_writer_legacy_live_sheet_preflight(request_fingerprint: str) -> dict
     plan = google_writer_execution.load_legacy_reconciliation_live_audit_plan(
         DB_PATH, request_fingerprint)
     cached_token = _google_writer_legacy_cached_sheets_token()
-    sheet_values = {tab: _google_writer_legacy_read_sheet_values(tab, cached_token)
-                    for tab in ("ФОП", "ЮО")}
+    # The full A:O matrix for every used row can exceed the fixed response cap.
+    # Read only the key column across each complete tab to retain global duplicate
+    # detection, then fetch complete A:O values only for uniquely located targets.
+    sheet_values = {}
+    for tab in ("ФОП", "ЮО"):
+        code_rows = _google_writer_legacy_read_sheet_values(tab, cached_token, "B:B")
+        sheet_values[tab] = [["", row[0]] if row and row[0] not in (None, "") else []
+                             for row in code_rows]
+
+    code_locations = {}
+    for tab, matrix in sheet_values.items():
+        for row_number, row in enumerate(matrix, 1):
+            code = row[1] if len(row) > 1 else ""
+            if isinstance(code, str) and code:
+                code_locations.setdefault(code, []).append((tab, row_number))
+
+    target_rows = {"ФОП": set(), "ЮО": set()}
+    for item in plan["expected_rows"]:
+        locations = code_locations.get(item["code"], [])
+        if len(locations) == 1 and locations[0][0] == item["tab"]:
+            target_rows[item["tab"]].add(locations[0][1])
+
+    for tab, rows in target_rows.items():
+        ordered = sorted(rows)
+        groups = []
+        for row_number in ordered:
+            if groups and row_number == groups[-1][1] + 1:
+                groups[-1] = (groups[-1][0], row_number)
+            else:
+                groups.append((row_number, row_number))
+        for first, last in groups:
+            full_rows = _google_writer_legacy_read_sheet_values(
+                tab, cached_token, f"A{first}:O{last}")
+            for offset, row in enumerate(full_rows):
+                row_number = first + offset
+                if row_number in rows and row_number <= len(sheet_values[tab]):
+                    sheet_values[tab][row_number - 1] = row
+
     return google_writer_execution.audit_legacy_reconciliation_first_chunk(
         request_fingerprint, plan['expected_rows'], sheet_values)
 
