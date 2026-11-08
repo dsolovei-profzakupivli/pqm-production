@@ -175,6 +175,75 @@ PARTIAL_RECONCILIATION_PROFILES = {
         'legacy_source_digest_absence': True,
     },
 }
+# Preserve the original 20+5 evidence as an audit record, but never select it
+# for execution: its I-column mismatches came from a date-normalization defect
+# in the first read-only auditor.
+_PARTIAL_RECONCILIATION_LEGACY_20261108_PROFILE_V1 = PARTIAL_RECONCILIATION_PROFILES[
+    _PARTIAL_RECONCILIATION_LEGACY_20261108_FINGERPRINT]
+PARTIAL_RECONCILIATION_PROFILE_HISTORY = {
+    _PARTIAL_RECONCILIATION_LEGACY_20261108_FINGERPRINT + ':v1': {
+        'status': 'RETIRED_INVALID_DATE_NORMALIZATION_EVIDENCE',
+        'profile': _PARTIAL_RECONCILIATION_LEGACY_20261108_PROFILE_V1,
+    },
+}
+_PARTIAL_RECONCILIATION_LEGACY_20261108_V2_EVIDENCE = {
+    'evidence_version': 2,
+    'request_id': _PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID,
+    'plan_scope': 'APPEND_ONLY',
+    'initial_plan': {'append': 326, 'update': 2, 'conflict': 2},
+    'attempted_chunk': 0,
+    'checkpoint_present': False,
+    'saved_preview_source_digest': {
+        'present': False,
+        'historical_schema': 'PRE_SOURCE_DIGEST',
+        'substitute_used': False,
+    },
+    'audit_type': 'READ_ONLY_SAVED_PREVIEW_AND_LIVE_SHEETS',
+    'audit': {
+        'rows_found': 25,
+        'full_matches': 25,
+        'partial_rows': 0,
+        'partial_operation_numbers': [],
+        'partial_columns': {'I': 0},
+        'missing': 0,
+        'duplicates': 0,
+        'wrong_tab': 0,
+        'formula_a_matches': 25,
+        'protected_cell_mutations': 0,
+        'saved_preview_binding': 'PASS',
+        'writes_performed': 0,
+    },
+    'recovery_disposition': 'FULL_FIRST_CHUNK_MATCH_NO_REAPPEND_NEW_PREVIEW_REQUIRED',
+}
+_PARTIAL_RECONCILIATION_LEGACY_20261108_PROFILE_V2 = {
+    'profile_version': 2,
+    'request_id': _PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID,
+    'evidence': _PARTIAL_RECONCILIATION_LEGACY_20261108_V2_EVIDENCE,
+    'result_counts': {
+        'rows_found': 25,
+        'fully_matching_rows': 25,
+        'partial_rows': 0,
+        'unverified_column_i_rows': 0,
+        'checkpoint_receipts': 0,
+    },
+    'receipt_fields': {
+        'checkpointPresent': False,
+        'resumeAuthorized': False,
+        'nextAction': 'NEW_PREVIEW_REQUIRED',
+        'partialOperationNumbers': [],
+    },
+    'require_saved_append_only_preview': True,
+    'require_live_sheet_preflight': True,
+    'expected_append_count': 326,
+    'expected_plan_counts': {'append': 326, 'update': 2, 'conflict': 2, 'error': 0},
+    'expected_first_chunk_by_tab': {'ФОП': 17, 'ЮО': 8},
+    'expected_i_mismatch_operations': [],
+    'legacy_source_digest_absence': True,
+}
+# The active dispatch for this one fingerprint is additive v2. V1 remains
+# available only through PARTIAL_RECONCILIATION_PROFILE_HISTORY above.
+PARTIAL_RECONCILIATION_PROFILES[_PARTIAL_RECONCILIATION_LEGACY_20261108_FINGERPRINT] = (
+    _PARTIAL_RECONCILIATION_LEGACY_20261108_PROFILE_V2)
 # Backward-compatible aliases for the first reconciliation profile.
 PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = _PARTIAL_RECONCILIATION_FIRST_FINGERPRINT
 PARTIAL_RECONCILIATION_EVIDENCE = _PARTIAL_RECONCILIATION_FIRST_EVIDENCE
@@ -408,7 +477,12 @@ def audit_legacy_reconciliation_first_chunk(request_fingerprint, expected_rows, 
                     formula_matches += 1
             elif column == 'I' and operation_number in allowed_i:
                 if _legacy_sheet_value_matches(expected, actual, column):
-                    row_matches = False
+                    # The fixed profile expects this column to differ. If it
+                    # now matches, count the row as a full live match; the
+                    # evidence equality check below will still stop
+                    # reconciliation because the expected partial evidence
+                    # has changed. Do not mislabel this as a tab mismatch.
+                    pass
                 else:
                     i_mismatch = True
             elif not _legacy_sheet_value_matches(expected, actual, column):

@@ -282,14 +282,14 @@ function legacyColumnIAuditFixture(overrides={}) {
     get spreadsheetWrites(){return spreadsheetWrites;},get dailySyncCalls(){return dailySyncCalls;}};
 }
 
-test('legacy 326 APPEND audit records exactly 20 full rows and five I-only partial rows',()=>{
+test('legacy v2 audit records 25 full matches and closes the hold without APPEND or Resume',()=>{
   const f=legacyColumnIAuditFixture();
   assert.equal(f.message.requestFingerprint,'816c6424279bff220878b0c4');
   const result=f.context.pqmSandboxExecution(f.envelope());
   assert.equal(result.status,'RECONCILED_PARTIAL');
   assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
-    {rows_found:25,fully_matching_rows:20,partial_rows:5,unverified_column_i_rows:5,checkpoint_receipts:0});
-  assert.deepEqual(JSON.parse(JSON.stringify(result.partialOperationNumbers)),[6,12,14,17,25]);
+    {rows_found:25,fully_matching_rows:25,partial_rows:0,unverified_column_i_rows:0,checkpoint_receipts:0});
+  assert.deepEqual(JSON.parse(JSON.stringify(result.partialOperationNumbers)),[]);
   assert.equal(result.checkpointPresent,false);
   assert.equal(result.resumeAuthorized,false);
   assert.equal(result.nextAction,'NEW_PREVIEW_REQUIRED');
@@ -297,8 +297,27 @@ test('legacy 326 APPEND audit records exactly 20 full rows and five I-only parti
   const event=JSON.parse(f.properties.get(f.eventKey));
   assert.deepEqual(event.evidence.saved_preview_source_digest,
     {present:false,historical_schema:'PRE_SOURCE_DIGEST',substitute_used:false});
-  assert.deepEqual(event.evidence.audit.partial_columns,{I:5});
-  assert.equal(event.evidence.audit.full_matches,20);
+  assert.deepEqual(event.evidence.audit.partial_columns,{I:0});
+  assert.equal(event.evidence.audit.full_matches,25);
+  assert.equal(event.evidence.audit.partial_rows,0);
+  assert.equal(f.spreadsheetWrites,0);
+  assert.equal(f.dailySyncCalls,0);
+});
+
+test('legacy v1 20+5 evidence is retained only as retired history and is rejected for execution',()=>{
+  const f=legacyColumnIAuditFixture();
+  const archived=f.context.pqmSandboxPartialReconciliationLegacy20261108V1Archive_();
+  assert.equal(archived.status,'RETIRED_INVALID_DATE_NORMALIZATION_EVIDENCE');
+  assert.deepEqual(JSON.parse(JSON.stringify(archived.profile.evidence.audit)),
+    {rows_found:25,full_matches:20,partial_rows:5,
+      partial_operation_numbers:[6,12,14,17,25],partial_columns:{I:5},
+      missing:0,duplicates:0,wrong_tab:0,formula_a_matches:25,
+      protected_cell_mutations:0,saved_preview_binding:'PASS',writes_performed:0});
+  const changes={evidence:archived.profile.evidence,
+    evidenceDigest:f.context.pqmSandboxReconciliationDigest_(archived.profile.evidence)};
+  assert.throws(()=>f.context.pqmSandboxExecution(f.envelope(changes)),/evidence rejected/);
+  assert.equal(f.marker,f.requestId);
+  assert.equal(f.properties.has(f.eventKey),false);
   assert.equal(f.spreadsheetWrites,0);
   assert.equal(f.dailySyncCalls,0);
 });

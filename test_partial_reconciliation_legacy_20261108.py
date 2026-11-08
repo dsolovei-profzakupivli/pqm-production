@@ -85,7 +85,7 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
         return execution.prepare_partial_reconciliation(
             self.path, 'SANDBOX', reconciliation_id, fingerprint, 'new-sandbox-admin', now=NOW)
 
-    def _matrices(self):
+    def _matrices(self, *, partial=False):
         tabs = {'ФОП': [], 'ЮО': []}
         for operation_number, item in enumerate(self.details['appends'][:25], 1):
             row = [''] * 15
@@ -94,7 +94,7 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
                 value = cell['new_value']
                 if cell['column'] in {'H', 'I'}:
                     value = serial(value if cell['column'] == 'I' else '2026-11-08T00:00:00+02:00')
-                    if cell['column'] == 'I' and operation_number in PARTIAL_OPERATIONS:
+                    if partial and cell['column'] == 'I' and operation_number in PARTIAL_OPERATIONS:
                         value += 1
                 row[index] = value
             tabs[item['tab']].append(row)
@@ -111,21 +111,33 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
             'counts': profile['result_counts'], **profile['receipt_fields'],
         }
 
-    def test_fixed_profile_records_20_full_5_i_unverified_and_never_authorizes_resume(self):
+    def test_v1_20_plus_5_evidence_is_retired_and_v2_25_plus_0_is_active(self):
+        history = execution.PARTIAL_RECONCILIATION_PROFILE_HISTORY[FINGERPRINT + ':v1']
+        self.assertEqual(history['status'], 'RETIRED_INVALID_DATE_NORMALIZATION_EVIDENCE')
+        self.assertEqual(history['profile']['evidence'], execution._PARTIAL_RECONCILIATION_LEGACY_20261108_EVIDENCE)
+        self.assertEqual(history['profile']['evidence']['audit']['full_matches'], 20)
+        self.assertEqual(history['profile']['evidence']['audit']['partial_rows'], 5)
+        self.assertEqual(history['profile']['evidence']['audit']['partial_columns'], {'I': 5})
+
         profile = execution.partial_reconciliation_profile(FINGERPRINT)
+        self.assertEqual(profile['profile_version'], 2)
+        self.assertEqual(profile['expected_i_mismatch_operations'], [])
+        self.assertNotEqual(profile['evidence'], history['profile']['evidence'])
         self.assertEqual(execution.request_id_fingerprint(REQUEST_ID), FINGERPRINT)
         self.assertNotIn('source_digest', self.details)
         plan = execution.load_legacy_reconciliation_live_audit_plan(self.path, FINGERPRINT)
         self.assertNotIn('source_digest', plan['expected_rows'][0])
-        audit = execution.audit_legacy_reconciliation_first_chunk(FINGERPRINT, plan['expected_rows'], self._matrices())
+        audit = execution.audit_legacy_reconciliation_first_chunk(
+            FINGERPRINT, plan['expected_rows'], self._matrices())
         self.assertEqual(audit, profile['evidence']['audit'])
         prepared = self._prepare()
         self.assertEqual(prepared['evidence'], profile['evidence'])
-        self.assertEqual(prepared['evidence']['audit']['full_matches'], 20)
-        self.assertEqual(prepared['evidence']['audit']['partial_rows'], 5)
-        self.assertEqual(prepared['evidence']['audit']['partial_operation_numbers'], [6, 12, 14, 17, 25])
+        self.assertEqual(prepared['evidence']['audit']['full_matches'], 25)
+        self.assertEqual(prepared['evidence']['audit']['partial_rows'], 0)
+        self.assertEqual(prepared['evidence']['audit']['partial_operation_numbers'], [])
+        self.assertEqual(prepared['evidence']['audit']['partial_columns'], {'I': 0})
         self.assertEqual(prepared['evidence']['recovery_disposition'],
-                         'PARTIAL_ROWS_I_UNVERIFIED_NO_REAPPEND_NEW_PREVIEW_REQUIRED')
+                         'FULL_FIRST_CHUNK_MATCH_NO_REAPPEND_NEW_PREVIEW_REQUIRED')
         self.assertEqual(prepared['evidence']['saved_preview_source_digest'], {
             'present': False, 'historical_schema': 'PRE_SOURCE_DIGEST', 'substitute_used': False})
         result = execution.finalize_partial_reconciliation(
@@ -157,6 +169,16 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
             execution._validate_saved_preview_source_digest(self.details, 'f' * 32, other_profile)
         new_profile = execution.partial_reconciliation_profile('30331b560493209210f1e507')
         self.assertFalse(new_profile.get('legacy_source_digest_absence', False))
+
+    def test_v1_receipt_counts_cannot_finalize_the_active_v2_intent(self):
+        prepared = self._prepare()
+        receipt = self._receipt(prepared)
+        legacy = execution.PARTIAL_RECONCILIATION_PROFILE_HISTORY[FINGERPRINT + ':v1']['profile']
+        receipt['counts'] = legacy['result_counts']
+        receipt.update(legacy['receipt_fields'])
+        with self.assertRaisesRegex(PermissionError, 'counters do not match'):
+            execution.finalize_partial_reconciliation(
+                self.path, RECONCILIATION_ID, 'new-sandbox-admin', receipt, now=NOW)
 
     def test_legacy_preview_with_present_invalid_source_digest_is_rejected(self):
         with closing(sqlite3.connect(self.path)) as con, con:
@@ -194,6 +216,32 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             execution.audit_legacy_reconciliation_first_chunk(FINGERPRINT,
                 self.details['appends'][:25], matrices)
+
+    def test_date_i_mismatch_and_other_cell_mismatch_still_fail_closed(self):
+        matrices = self._matrices(partial=True)
+        with self.assertRaisesRegex(RuntimeError, 'evidence changed'):
+            execution.audit_legacy_reconciliation_first_chunk(
+                FINGERPRINT, self.details['appends'][:25], matrices)
+
+    def test_dmy_datetime_date_only_and_serial_comparison_preserve_precision(self):
+        epoch = datetime(1899, 12, 30)
+        expected_timestamp = datetime(2026, 11, 8, 9, 5, 10)
+        timestamp_serial = (expected_timestamp - epoch).total_seconds() / 86400
+        self.assertTrue(execution._legacy_sheet_value_matches(
+            '08.11.2026 09:05:10', timestamp_serial, 'I'))
+        self.assertFalse(execution._legacy_sheet_value_matches(
+            '08.11.2026 09:05:10', timestamp_serial + 1 / 86400, 'I'))
+
+        date_only_serial = (datetime(2026, 11, 8) - epoch).total_seconds() / 86400
+        self.assertTrue(execution._legacy_sheet_value_matches(
+            '08.11.2026', date_only_serial, 'I'))
+        self.assertFalse(execution._legacy_sheet_value_matches(
+            '08.11.2026', date_only_serial + 1 / 86400, 'I'))
+        matrices = self._matrices()
+        matrices['ФОП'][0][2] = 'CHANGED'
+        with self.assertRaisesRegex(RuntimeError, 'evidence changed'):
+            execution.audit_legacy_reconciliation_first_chunk(
+                FINGERPRINT, self.details['appends'][:25], matrices)
 
     def test_missing_duplicate_wrong_tab_formula_and_protected_changes_fail_closed(self):
         for mutation in ('missing', 'duplicate', 'wrong_tab', 'formula', 'protected'):
