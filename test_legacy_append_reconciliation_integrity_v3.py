@@ -9,7 +9,7 @@ import unittest
 
 
 MANIFEST = Path("validation/local_release_20261108/legacy_append_reconciliation_v3.json")
-MANIFEST_SHA256 = "abfe95f274fee440532f0dbed79eea8543f92341fdc9e666b0b81fe3142114cf"
+MANIFEST_SHA256 = "d5c1b6d44d24e18076a2f95e2ab803476731719982f27d92e81de0a584235890"
 TEST_FILE = "test_legacy_append_reconciliation_integrity_v3.py"
 
 
@@ -64,6 +64,7 @@ class LegacyAppendReconciliationIntegrityV3Tests(unittest.TestCase):
         python_tests = canonical((self.root / "test_partial_reconciliation_legacy_20261108.py").read_bytes()).decode("utf-8")
         node_tests = canonical((self.root / "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs").read_bytes()).decode("utf-8")
         runner = canonical((self.root / "validation/run_local_release.py").read_bytes()).decode("utf-8")
+        transport_tests = canonical((self.root / "test_sandbox_execution_transport.py").read_bytes()).decode("utf-8")
 
         for required in (
             "816c6424279bff220878b0c4", "592128d9837d4b71bbeb330ef8aabf4b",
@@ -101,6 +102,15 @@ class LegacyAppendReconciliationIntegrityV3Tests(unittest.TestCase):
         ):
             with self.subTest(node_test=required):
                 self.assertIn(required, node_tests)
+        for required in (
+            "def test_legacy_326_profile_is_allowlisted_only_for_its_exact_reconciliation(self):",
+            "self.assertEqual(result['counts']['fully_matching_rows'],25)",
+            "self.assertEqual(result['counts']['partial_rows'],0)",
+            "self.assertEqual(result['counts']['unverified_column_i_rows'],0)",
+            "def test_arbitrary_fingerprint_is_rejected_before_network_even_for_registered_profile(self):",
+        ):
+            with self.subTest(transport_test=required):
+                self.assertIn(required, transport_tests)
         for required in (
             "test_legacy_append_reconciliation_integrity_v2",
             "run_legacy_append_reconciliation_v2_history.py",

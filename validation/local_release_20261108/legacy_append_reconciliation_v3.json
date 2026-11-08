@@ -5,6 +5,7 @@
   "normalization": "CRLF-to-LF only for text files; binary artifacts are raw-byte pinned",
   "scope": [
     "google_writer_execution.py",
+    "test_sandbox_execution_transport.py",
     "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
     "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs",
     "test_partial_reconciliation_legacy_20261108.py",
@@ -15,13 +16,14 @@
   ],
   "files": {
     "google_writer_execution.py": "2cf5b33abaadb7f28db6b66f03d23555a6a024d4900fbc017ab746f6a4d76991",
+    "test_sandbox_execution_transport.py": "0b01474c707c127c0177762cfeb87414d5e059a5f3eb40c950fd1ab55ac9d5c4",
     "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "8b0af8580913db3f867be76b8cfc5a58e11934e43e919f6bd968986d6bf4f7fa",
     "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs": "26d150bd987f5c8a5699c03ac862c2c4ab723e5eae574055782f4ad31fe761fe",
     "test_partial_reconciliation_legacy_20261108.py": "871bbe0e4052b7fc292cbc1ade471adcf335ce9835f5a2b6bde9ebc2f1a8d232",
     "validation/run_local_release.py": "a7570fb65601315c03b9af0c2b6491e364673952d368b139b36a5964fe92142d",
     "validation/run_legacy_append_reconciliation_v2_history.py": "c11a3e9992fc60767bde664bf5a1bdeee89b77725fecbe72a39edaf4988383c8",
     "validation/fixtures/legacy_append_reconciliation_v2_exact_98eb5d5.zip": "ae2de88d72f481ba69a73500961b36c31e7572321217cef05531a3f13f418af1",
-    "test_legacy_append_reconciliation_integrity_v3.py": "d8211f6665669309acb9ac77278ddab75aa20faf4c4d31a479a97d7bcb43145b"
+    "test_legacy_append_reconciliation_integrity_v3.py": "d8547059154f196ef70d20eb8076ac114307cc2850c88aba6e5c285cbc728191"
   },
   "preserved_manifests": {
     "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",

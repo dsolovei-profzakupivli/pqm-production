@@ -301,8 +301,9 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.assertFalse(result['checkpointPresent'])
         self.assertFalse(result['resumeAuthorized'])
         self.assertEqual(result['nextAction'],'NEW_PREVIEW_REQUIRED')
-        self.assertEqual(result['counts']['fully_matching_rows'],20)
-        self.assertEqual(result['counts']['partial_rows'],5)
+        self.assertEqual(result['counts']['fully_matching_rows'],25)
+        self.assertEqual(result['counts']['partial_rows'],0)
+        self.assertEqual(result['counts']['unverified_column_i_rows'],0)
         self.assertEqual(len(self.calls),1)
 
     def test_arbitrary_fingerprint_is_rejected_before_network_even_for_registered_profile(self):
