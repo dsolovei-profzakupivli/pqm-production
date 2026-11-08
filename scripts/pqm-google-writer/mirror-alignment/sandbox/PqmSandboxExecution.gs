@@ -14,7 +14,7 @@ function pqmSandboxExecution(envelope) {
   if (request.environment !== PQM_MIRROR_ENV.environment || request.scriptId !== PQM_MIRROR_ENV.scriptId ||
       ScriptApp.getScriptId() !== PQM_MIRROR_ENV.scriptId || request.spreadsheetId !== PQM_MIRROR_ENV.spreadsheetId ||
       request.contract !== 'pqm-mirror-datetime-v1' ||
-      ['preview','apply','resume_check','reconcile_partial'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
+      ['preview','apply','resume_check','recover_append_chunk','reconcile_partial'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
       (request.action==='reconcile_partial' && request.trigger!=='manual') ||
       !/^[0-9a-f]{32}$/.test(request.requestId || '') ||
       typeof request.actor !== 'string' || !request.actor || request.actor.length>128 ||
@@ -24,6 +24,15 @@ function pqmSandboxExecution(envelope) {
       (request.action==='apply' && (!pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
         !Number.isInteger(request.chunkIndex) || request.chunkIndex<0 || request.chunkIndex>499 ||
         ['ALL','APPEND_ONLY'].indexOf(request.planScope || 'ALL')<0)) ||
+      (request.action==='apply' && request.planScope==='APPEND_ONLY' &&
+        (request.chunkId!==undefined || request.chunkDigest!==undefined || request.planId!==undefined) &&
+        (!/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
+         !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId)) ||
+      (request.action==='recover_append_chunk' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
+        request.planScope!=='APPEND_ONLY' || !pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
+        !Number.isInteger(request.chunkIndex) || request.chunkIndex<0 || request.chunkIndex>499 ||
+        !/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
+        !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId)) ||
       (request.action==='resume_check' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
         !pqmSandboxIsCanonicalDigest_(request.expectedDigest) || !pqmSandboxIsCanonicalDigest_(request.expectedCheckpointDigest) ||
         !Number.isInteger(request.chunkIndex) || request.chunkIndex<1 || request.chunkIndex>499 ||
@@ -43,12 +52,17 @@ function pqmSandboxExecution(envelope) {
     function receipt(status,counts,digest) {
       var value = {environment:request.environment,scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
         contract:request.contract,requestId:request.requestId,status:status,counts:counts || {},digest:digest || null};
-      if (request.action==='apply') value.planScope = planScope;
+      if (request.action==='apply' || request.action==='recover_append_chunk') value.planScope = planScope;
+      if ((request.action==='apply' || request.action==='recover_append_chunk') && request.chunkId) {
+        value.chunkId=request.chunkId; value.chunkDigest=request.chunkDigest; value.planId=request.planId;
+      }
       return value;
     }
     var key='PQM_EXECUTION_RUN_'+request.requestId, stored=properties.getProperty(key);
     if (request.action==='reconcile_partial')
       return pqmSandboxReconcilePartial_(properties,request,receipt);
+    if (request.action==='recover_append_chunk')
+      return pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt);
     if (stored) {
       var previous=JSON.parse(stored);
       if (previous.actor!==request.actor || previous.digest!==request.expectedDigest ||
@@ -129,6 +143,15 @@ function pqmSandboxExecution(envelope) {
       planScope:planScope,
       result:null,state:'ready',nextChunk:0,inflight:null,payloadDigest:loaded.state.payload_digest,
       googleDigest:loaded.state.google_digest,aggregate:{append:0,update:0,batches:0},steps:[]};
+    if (stored && ((previous.chunkJournalVersion===1 && !request.chunkId) ||
+        (request.chunkId && previous.chunkJournalVersion!==1))) {
+      throw new Error('PQM: Apply chunk journal protocol changed; read-only review required');
+    }
+    if (!stored && request.chunkId) {
+      record.chunkJournalVersion=1;
+      record.planId=request.planId;
+      record.runId=request.requestId;
+    }
     if (!stored) pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
     try {
       var result=pqmSandboxApplyCheckpointStep_(id,loaded,request,properties,key,record,receipt);
@@ -169,6 +192,14 @@ function pqmSandboxCheckpointStepsValid_(record) {
         !Number.isInteger(counts.batches) || counts.batches<0 ||
         !Number.isInteger(counts.remaining_safe) || counts.remaining_safe<0 ||
         typeof step.more!=='boolean' || step.more!==(step.status==='APPLY_CHUNK_VERIFIED')) return false;
+    if (step.chunkId && (!/^[0-9a-f]{32}$/.test(step.chunkId) ||
+        !pqmSandboxIsCanonicalDigest_(step.chunkDigest) || step.planId!==record.planId ||
+        !Array.isArray(step.serviceRanges) || !step.serviceRanges.length ||
+        step.serviceRanges.some(function(range) {
+          return !range || ['ФОП','ЮО'].indexOf(range.tab)<0 || !Number.isInteger(range.first) ||
+            !Number.isInteger(range.last) || range.first<2 || range.last<range.first ||
+            range.planId!==record.planId || range.runId!==record.runId;
+        }))) return false;
     totals.append+=counts.append;
     totals.update+=counts.update;
     totals.batches+=counts.batches;
@@ -176,6 +207,154 @@ function pqmSandboxCheckpointStepsValid_(record) {
   var aggregate=record.aggregate || {};
   if (record.steps.length && record.steps[record.steps.length-1].googleDigest!==record.googleDigest) return false;
   return aggregate.append===totals.append && aggregate.update===totals.update && aggregate.batches===totals.batches;
+}
+
+/* Recover one lost APPEND response from a read-only exact-row audit. */
+function pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt) {
+  if (!stored) throw new Error('PQM: APPEND chunk recovery record is missing');
+  var record;
+  try { record=JSON.parse(stored); } catch (_) { throw new Error('PQM: APPEND chunk recovery record is invalid'); }
+  var manifest=record.inflightManifest;
+  if (record.chunkJournalVersion!==1 || record.planId!==request.planId || record.runId!==request.requestId ||
+      record.planScope!=='APPEND_ONLY' || record.digest!==request.expectedDigest ||
+      !manifest || manifest.chunkId!==request.chunkId || manifest.chunkDigest!==request.chunkDigest ||
+      manifest.planId!==request.planId || manifest.runId!==request.requestId ||
+      !((record.state==='uncertain' && record.uncertainChunk===request.chunkIndex) ||
+        (record.state==='writing' && record.uncertainChunk==null && record.inflight===request.chunkIndex)) ||
+      !Number.isInteger(record.inflight) || record.inflight!==request.chunkIndex ||
+      record.nextChunk!==request.chunkIndex ||
+      !Array.isArray(manifest.rows) || !manifest.rows.length || manifest.rows.length>PQM_SANDBOX_EXECUTION_APPEND_PAGE_ROWS) {
+    var saved=record.steps && record.steps[request.chunkIndex];
+    if (record.state==='ready' && saved && saved.verified===true && saved.chunkId===request.chunkId &&
+        saved.chunkDigest===request.chunkDigest && saved.planId===request.planId) {
+      var replay=pqmExecutionCheckpointReceipt_(request,receipt,saved);
+      replay.status='CHUNK_RECOVERED';
+      return replay;
+    }
+    throw new Error('PQM: APPEND chunk recovery binding rejected');
+  }
+  if (!Array.isArray(record.steps) || record.steps.length!==request.chunkIndex ||
+      (record.steps.length && !pqmSandboxCheckpointStepsValid_(record))) {
+    throw new Error('PQM: prior verified checkpoint chain is invalid');
+  }
+  var loaded=pqmSandboxFullLoad_(id);
+  if (loaded.state.payload_digest!==record.payloadDigest) throw new Error('PQM: PQM source changed; recovery held');
+  var original=pqmSandboxAppendLoad_(id,undefined,loaded,PQM_SANDBOX_EXECUTION_APPEND_PAGE_ROWS);
+  if (manifest.rows.some(function(row) {
+    return !row || PQM_GOOGLE_TABS.indexOf(row.tab)<0 || !Number.isInteger(row.row) ||
+      typeof row.code!=='string' || !row.code || !pqmSandboxIsCanonicalDigest_(row.cellsDigest) ||
+      !row.serviceMetadata || row.serviceMetadata.planId!==request.planId ||
+      row.serviceMetadata.runId!==request.requestId;
+  })) throw new Error('PQM: persisted APPEND chunk manifest is invalid');
+
+  var codeCounts=new Map(original.selected.map(function(change) { return [String(change.cells[1]).trim(),0]; }));
+  PQM_GOOGLE_TABS.forEach(function(tabName) {
+    (loaded.tabs[tabName].rows||[]).forEach(function(row) {
+      var code=String(row.codeDisplay||'').trim();
+      if (codeCounts.has(code)) codeCounts.set(code,codeCounts.get(code)+1);
+    });
+  });
+  var totalPresent=Array.from(codeCounts.values()).reduce(function(sum,count) { return sum+count; },0);
+  if (totalPresent===0 && loaded.state.google_digest===record.googleDigest &&
+      loaded.append_only_digest===request.expectedDigest && original.digest===request.expectedDigest &&
+      original.selected.length===manifest.rows.length && original.selected.every(function(change,index) {
+        var row=manifest.rows[index];
+        return row.tab===change.tab && row.row===change.row && row.code===String(change.cells[1]).trim() &&
+          row.cellsDigest===pqmSandboxControlledDigest_(change.cells) && row.formulaA===change.cells[0];
+      })) {
+    // Prove the exact pre-write state and blank destinations before releasing
+    // this one attempt for a retry. This is not a retry of an uncertain write.
+    pqmSandboxAppendPrewriteGuard_(id,original);
+    var serviceRanges=original.selected.map(function(change) {
+      return "'" + change.tab.replace(/'/g,"''") + "'!Q" + change.row + ':S' + change.row;
+    });
+    var service=Sheets.Spreadsheets.Values.batchGet(id,{ranges:serviceRanges,valueRenderOption:'FORMULA'});
+    if (!service || !Array.isArray(service.valueRanges) || service.valueRanges.length!==serviceRanges.length ||
+        service.valueRanges.some(function(item) { return (item.values||[]).some(function(row) {
+          return row.some(function(value) { return !pqmGoogleBlank_(value); });
+        }); })) throw new Error('PQM: destination service metadata is not blank; recovery held');
+    record.state='ready'; record.inflight=null; record.inflightManifest=null; record.uncertainChunk=null;
+    pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
+    if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')===request.requestId)
+      properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
+    var notApplied=receipt('CHUNK_NOT_APPLIED',{append:0,update:0,batches:0,remaining_safe:original.plan.counts.appended},request.expectedDigest);
+    notApplied.chunkIndex=request.chunkIndex; notApplied.nextChunk=request.chunkIndex;
+    notApplied.more=true; notApplied.phase='append'; notApplied.planScope='APPEND_ONLY';
+    notApplied.chunkId=request.chunkId; notApplied.chunkDigest=request.chunkDigest; notApplied.planId=request.planId;
+    return notApplied;
+  }
+  if (totalPresent!==manifest.rows.length) throw new Error('PQM: partial or duplicate APPEND chunk; recovery held');
+  var blankTabs=JSON.parse(JSON.stringify(loaded.tabs));
+  manifest.rows.forEach(function(expected) {
+    var tab=blankTabs[expected.tab], index=expected.row-2, row=tab && tab.rows[index];
+    if (!row || String(row.codeDisplay||'').trim()!==expected.code) {
+      throw new Error('PQM: exact APPEND destination row mismatch; recovery held');
+    }
+    tab.rows[index]={values:Array(15).fill(''),formulas:Array(15).fill(''),codeDisplay:'',dateFormat:'',verificationDateFormat:''};
+  });
+  PQM_GOOGLE_TABS.forEach(function(name) {
+    var rows=blankTabs[name].rows;
+    while (rows.length) {
+      var last=rows[rows.length-1];
+      if (String(last.codeDisplay||'').trim() || last.values.some(function(value) { return !pqmGoogleBlank_(value); }) ||
+          last.formulas.some(function(value) { return !pqmGoogleBlank_(value); })) break;
+      rows.pop();
+    }
+  });
+  var rebuiltPlan=pqmGooglePlan_(loaded.body,blankTabs);
+  var rebuilt=pqmSandboxAppendLoad_(id,undefined,{body:loaded.body,tabs:blankTabs,plan:rebuiltPlan},manifest.rows.length);
+  if (rebuilt.digest!==request.expectedDigest || rebuilt.selected.length!==manifest.rows.length || rebuilt.selected.some(function(change,index) {
+      var expected=manifest.rows[index];
+      return !expected || change.tab!==expected.tab || change.row!==expected.row ||
+        String(change.cells[1]).trim()!==expected.code ||
+        pqmSandboxControlledDigest_(change.cells)!==expected.cellsDigest;
+  })) throw new Error('PQM: planned APPEND values do not match the persisted chunk; recovery held');
+  rebuilt.selected.forEach(function(change,index) { change.serviceMetadata=manifest.rows[index].serviceMetadata; });
+  var duplicates=new Map(rebuilt.selected.map(function(change) { return [String(change.cells[1]).trim(),0]; }));
+  PQM_GOOGLE_TABS.forEach(function(name) { loaded.tabs[name].rows.forEach(function(row) {
+    var code=String(row.codeDisplay||'').trim(); if (duplicates.has(code)) duplicates.set(code,duplicates.get(code)+1);
+  }); });
+  if (Array.from(duplicates.values()).some(function(count) { return count!==1; })) {
+    throw new Error('PQM: duplicate or missing APPEND identity; recovery held');
+  }
+  pqmSandboxAppendServiceColumnsReady_(id,loaded.tabs);
+  pqmSandboxAppendVerify_(id,rebuilt.selected,loaded.tabs);
+  var templates={};
+  PQM_GOOGLE_TABS.forEach(function(name) {
+    var rows=rebuilt.selected.filter(function(change) { return change.tab===name; });
+    if (rows.length) templates[name]=pqmSandboxAppendRowMetadata_(id,name,rows[0].row-1);
+  });
+  pqmSandboxAppendVerifyMetadata_(id,rebuilt.selected,templates);
+
+  var counts={append:manifest.rows.length,update:0,conflict:loaded.plan.counts.conflicts,
+    error:loaded.plan.counts.errors,remaining_safe:loaded.plan.counts.appended,batches:1};
+  record.aggregate=record.aggregate||{append:0,update:0,batches:0};
+  record.aggregate.append+=counts.append; record.aggregate.batches+=1;
+  record.payloadDigest=loaded.state.payload_digest; record.googleDigest=loaded.state.google_digest;
+  record.inflight=null; record.inflightManifest=null; record.uncertainChunk=null;
+  record.nextChunk=request.chunkIndex+1; record.state=counts.remaining_safe?'ready':'complete';
+  var status=counts.remaining_safe?'APPLY_CHUNK_VERIFIED':
+    (counts.conflict||counts.error?'COMPLETE_WITH_CONFLICTS':'COMPLETE');
+  var step={status:status,chunkIndex:request.chunkIndex,nextChunk:record.nextChunk,
+    more:counts.remaining_safe>0,phase:'append',counts:counts,verified:true,
+    digest:request.expectedDigest,planScope:'APPEND_ONLY',payloadDigest:record.payloadDigest,
+    googleDigest:record.googleDigest,chunkId:request.chunkId,chunkDigest:request.chunkDigest,
+    planId:request.planId,serviceRanges:pqmSandboxAppendServiceRanges_(rebuilt.selected)};
+  record.steps.push(step);
+  if (!step.more) {
+    record.result=receipt(status,{append:record.aggregate.append,update:record.aggregate.update,
+      conflict:counts.conflict,error:counts.error,remaining_safe:0,batches:record.aggregate.batches},request.expectedDigest);
+    record.result.chunkIndex=step.chunkIndex; record.result.nextChunk=step.nextChunk;
+    record.result.more=false; record.result.phase='append'; record.result.planScope='APPEND_ONLY';
+  }
+  step.checkpointDigest=pqmExecutionCheckpointStateDigest_(record);
+  if (record.result) record.result.checkpointDigest=step.checkpointDigest;
+  pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
+  if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')===request.requestId)
+    properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
+  var recovered=pqmExecutionCheckpointReceipt_(request,receipt,step);
+  recovered.status='CHUNK_RECOVERED';
+  return recovered;
 }
 
 var PQM_SANDBOX_PARTIAL_RECONCILIATION_FINGERPRINT_='9be34ff2df1e661346176eeb';

@@ -193,6 +193,7 @@ function pqmSandboxFullPreviewDetails_(loaded) {
       explanation: PQM_SANDBOX_PREVIEW_ERROR_LABELS_[issue.reason] || issue.reason};
   });
   return {version: 1, environment: 'SANDBOX', plan_digest: loaded.plan_digest,
+    source_digest: loaded.state.payload_digest,
     append_only_digest: loaded.append_only_digest, counts: {
       append: loaded.plan.counts.appended, update: loaded.plan.counts.updated,
       conflict: loaded.plan.counts.conflicts, error: loaded.plan.counts.errors
@@ -538,9 +539,15 @@ function pqmSandboxDailySync(execution) {
 function pqmSandboxCheckpointAdapter_() {
   return {
     appendLoad:pqmSandboxAppendLoad_, appendPrewriteGuard:pqmSandboxAppendPrewriteGuard_,
-    appendRowMetadata:pqmSandboxAppendRowMetadata_, appendRequests:pqmSandboxAppendRequests_,
+    appendRowMetadata:pqmSandboxAppendRowMetadata_,
+    appendRequests:function(selected,tabs,context) {
+      return pqmSandboxAppendRequests_(selected,tabs,Object.assign({},context,{journaled:true}));
+    },
     batchUpdate:pqmMirrorSheetsBatchUpdate_, appendVerify:pqmSandboxAppendVerify_,
     appendVerifyMetadata:pqmSandboxAppendVerifyMetadata_, fullChunks:pqmSandboxFullChunks_,
+    projectVerifiedAppend:pqmSandboxAppendProjectVerified_,
+    appendServiceRanges:pqmSandboxAppendServiceRanges_,
+    verifyServiceRanges:pqmSandboxAppendVerifyServiceRanges_,
     fetchRegistry:pqmSandboxFetchRegistry_, appendPayloadDigest:pqmSandboxAppendPayloadDigest_,
     protectionCheck:pqmSandboxControlledProtectionCheck_, readRows:pqmSandboxControlledReadRows_,
     fullBeforeCheck:pqmSandboxFullBeforeCheck_, fullRequests:pqmSandboxFullRequests_,

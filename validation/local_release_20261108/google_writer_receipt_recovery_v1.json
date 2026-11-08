@@ -1,0 +1,50 @@
+{
+  "contract": "pqm-sandbox-google-writer-receipt-recovery",
+  "version": 1,
+  "baseline": "2c11e43af185d6ea77316ffc2ca6697220dfe0e8",
+  "normalization": "CRLF-to-LF only for text files",
+  "scope": [
+    "google_writer_execution.py",
+    "server.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendApply.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxPreviewDependencies.gs",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/durable-append-metadata.test.cjs",
+    "test_google_writer_execution.py",
+    "test_google_writer_durable_append_recovery.py",
+    "test_manual_operation_interlock.py",
+    "validation/run_local_release.py",
+    "validation/run_prepared_append_only_retry_v1_history.py",
+    "validation/fixtures/prepared_append_only_retry_v1_exact_d386586.zip",
+    "test_google_writer_receipt_recovery_integrity_v1.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "809e7fdf86b2486d6550257669a60c9ae3fc3a8cf7805d749714c41342163788",
+    "server.py": "e19b40134fd1344d75729fd1cdab88922752a5673a448bb7fcf2a74fb8228de7",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendApply.gs": "0ba6ed0e92c7b380868fffb30a66eb82a85198ed26d2dbdae6e0498d941872b4",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "c77b9a9ff18e792e4eba703d77295160f4d763a84f21ee296f01f30028a2a9a4",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs": "502abf51e3d373f6941beafba3f853effc22d940b76249e4f40ab54cd2488081",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxPreviewDependencies.gs": "3545eef2b66d4db29e4fa2e76cf0791c2e3b9ac290ccc6c8666b56bfb38d0342",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "933ca0620491f3ed3eb9414692798656322a83165628e005cf689fe598924c02",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "4ba935b31d23f0af3d3f5b63e0ab18f5d8d817421070401b66763ddf67a4f777",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/durable-append-metadata.test.cjs": "20a8eabb9fd33104340dcfa6c7b9cafa81524a3497ef5fe0a8258bfbfe664243",
+    "test_google_writer_execution.py": "02f6e9fa68f5cf136ec879e0b05ab48a52a50f1c5193f1ba32c6810d2c1c39a3",
+    "test_google_writer_durable_append_recovery.py": "a1a2840a991133c1528c4e7418ba8f7ca6a943d4c7b27c5b62ab0ba922f2de23",
+    "test_manual_operation_interlock.py": "c37200e81d11e53b11440ce5d819b2573aa08c11f485291cd9c31a491cb465e2",
+    "validation/run_local_release.py": "9ea1f2b5a5bf994b6bca7d6cf9b3fe49ecb890e53da38c1ae36e9a40f327b8e9",
+    "validation/run_prepared_append_only_retry_v1_history.py": "95589bf3c66ec3a7b15e2c873ef0af3f699c3f16968a74ed62c71d3321289676",
+    "validation/fixtures/prepared_append_only_retry_v1_exact_d386586.zip": "39e4f53cb2af2c027140cc26f9890622daddf371aa8bd52c016ff808507eb43b",
+    "test_google_writer_receipt_recovery_integrity_v1.py": "3d03df2d359cf6a5f567759bbfa67d2965454efaebb50b96548995152feb39e7"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",
+    "validation/local_release_20260911/partial_reconciliation_first_append_only_v1.json": "bfab6425ec9bbad98bf36e85b4c96f018519b747548c44f8f6d7ec0a5f03a291",
+    "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
+    "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40",
+    "validation/sandbox_preview_append_only_v1.json": "a6b8a92df5f267ff0846e099a7190424644fa65273b07fcc9177ee292e9b65fd",
+    "validation/sandbox_preview_workflow_v1.json": "4101c9c711ebf97634deb067711906511951d9f8a654872c01e23ac2604f58f4"
+  }
+}

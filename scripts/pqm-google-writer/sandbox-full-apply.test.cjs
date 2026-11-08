@@ -119,7 +119,14 @@ function executionFixture(planDigest) {
 function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
   const properties=new Map([['PQM_EXECUTION_SHARED_SECRET','S'.repeat(40)]]);
   let locked=false,version=0,writes=0,loseNextResponse=false,sheetDigest='sheet-state-0',payloadDigest='source-stable';
-  const queue=Array.from({length:totalAppends},(_,i)=>({tab:i%2?'ЮО':'ФОП',row:i+2,cells:{1:'code-'+i}}));
+  const nextRow={'ФОП':2,'ЮО':2};
+  const queue=Array.from({length:totalAppends},(_,i)=>{
+    const tab=i%2?'ЮО':'ФОП',row=nextRow[tab]++;
+    return {tab,row,cells:{1:'code-'+i}};
+  });
+  const writtenRows={'ФОП':0,'ЮО':0};
+  const tabsNow=()=>({ФОП:{rows:Array.from({length:writtenRows['ФОП']},()=>({}))},
+    ЮО:{rows:Array.from({length:writtenRows['ЮО']},()=>({}))}});
   const context={Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
     PQM_MIRROR_ENV:{environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox'},
     Utilities:{Charset:{UTF_8:'UTF_8'},DigestAlgorithm:{SHA_256:'SHA_256'},
@@ -148,15 +155,21 @@ function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
   context.pqmSandboxFullLoad_=()=>({plan_digest:planDigest,
     append_only_digest:planDigest,
     plan:{counts:{appended:queue.length,updated:0,conflicts:0,errors:0,unchanged:0}},
-    state:{payload_digest:payloadDigest,google_digest:stateDigest()},body:{count:0,items:[]},tabs:{},entries:[]});
+    state:{payload_digest:payloadDigest,google_digest:stateDigest()},body:{count:0,items:[]},tabs:tabsNow(),entries:[]});
   context.pqmSandboxCheckpointAdapter_=()=>({
-    appendLoad:(_id,_allowlist,loaded,limit)=>({selected:queue.slice(0,limit),tabs:{ФОП:{rows:[]},ЮО:{rows:[]}},
+    appendLoad:(_id,_allowlist,loaded,limit)=>({selected:queue.slice(0,limit),tabs:{
+      ФОП:{rows:Array.from({length:writtenRows['ФОП']},()=>({}))},
+      ЮО:{rows:Array.from({length:writtenRows['ЮО']},()=>({}))}},
       payload_digest:loaded.state.payload_digest,plan:loaded.plan}),
     appendPrewriteGuard:()=>{},appendRowMetadata:()=>({cells:[],height:28}),
     appendRequests:selected=>[{selected:selected}],
-    batchUpdate:request=>{writes++;queue.splice(0,request.requests[0].selected.length);version++;
+    batchUpdate:request=>{writes++;request.requests[0].selected.forEach(change=>{writtenRows[change.tab]++;});
+      queue.splice(0,request.requests[0].selected.length);version++;
       if(loseNextResponse){loseNextResponse=false;throw new Error('synthetic response lost after successful write');}},
-    appendVerify:()=>{},appendVerifyMetadata:()=>{},fullChunks:()=>[],fetchRegistry:()=>({count:0,items:[]}),
+    appendVerify:(_id,selected)=>({rows:selected.map(change=>{
+      const values=Array.from({length:15},()=> ''); values[1]=change.cells[1]||'';
+      return {tab:change.tab,row:change.row,values,formulas:Array.from({length:15},()=>''),codeDisplay:values[1]};
+    })}),appendVerifyMetadata:()=>{},fullChunks:()=>[],fetchRegistry:()=>({count:0,items:[]}),
     appendPayloadDigest:()=> payloadDigest,protectionCheck:()=>{},readRows:()=>[],fullBeforeCheck:()=>{},
     fullRequests:()=>[],controlledVerify:()=>({verification_passed:true}),snapshot:()=>({version,sheetDigest}),
     fullSheetState:tabs=>tabs,plan:()=>({counts:{appended:queue.length,updated:0,conflicts:0,errors:0}}),
@@ -183,7 +196,14 @@ function checkpointStepFixture(totalAppends=30, updateRows=1) {
     console:{log(){}},PQM_MIRROR_ENV:{environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox'}};
   vm.createContext(context);vm.runInContext(executionSource,context);
   context.PQM_GOOGLE_TABS=['ФОП','ЮО'];
-  let appendQueue=Array.from({length:totalAppends},(_,i)=>({tab:i%2?'ЮО':'ФОП',row:i+2,cells:{1:'code-'+i}}));
+  const nextRow={'ФОП':2,'ЮО':2};
+  let appendQueue=Array.from({length:totalAppends},(_,i)=>{
+    const tab=i%2?'ЮО':'ФОП',row=nextRow[tab]++;
+    return {tab,row,cells:{1:'code-'+i}};
+  });
+  const writtenRows={'ФОП':0,'ЮО':0};
+  const tabsNow=()=>({ФОП:{rows:Array.from({length:writtenRows['ФОП']},()=>({}))},
+    ЮО:{rows:Array.from({length:writtenRows['ЮО']},()=>({}))}});
   let remainingUpdates=updateRows, version=0, writeKinds=[], verifiedAppend=0, metadataVerifyCalls=0;
   const payloadDigest='pqm-source-stable';
   context.Utilities={newBlob:value=>({getBytes:()=>Array.from(Buffer.from(value,'utf8'))})};
@@ -191,13 +211,18 @@ function checkpointStepFixture(totalAppends=30, updateRows=1) {
   context.PQM_SANDBOX_EXECUTION_UPDATE_PAGE_ROWS=50;
   context.PQM_SANDBOX_EXECUTION_UPDATE_PAGE_CELLS=100;
   context.pqmSandboxAppendLoad_=(id,allowlist,full,limit)=>({
-    selected:appendQueue.slice(0,limit),tabs:{ФОП:{rows:[]},ЮО:{rows:[]}},payload_digest:payloadDigest,
+    selected:appendQueue.slice(0,limit),tabs:{
+      ФОП:{rows:Array.from({length:writtenRows['ФОП']},()=>({}))},
+      ЮО:{rows:Array.from({length:writtenRows['ЮО']},()=>({}))}},payload_digest:payloadDigest,
     plan:{counts:{conflicts:2,errors:0}}
   });
   context.pqmSandboxAppendPrewriteGuard_=()=>{};
   context.pqmSandboxAppendRowMetadata_=()=>({cells:Array.from({length:15},()=>({})),height:28});
   context.pqmSandboxAppendRequests_=(selected)=>[{kind:'append',selected:selected}];
-  context.pqmSandboxAppendVerify_=(id,selected)=>{verifiedAppend+=selected.length;};
+  context.pqmSandboxAppendVerify_=(id,selected)=>{verifiedAppend+=selected.length;return {rows:selected.map(change=>{
+    const values=Array.from({length:15},()=> ''); values[1]=change.cells[1]||'';
+    return {tab:change.tab,row:change.row,values,formulas:Array.from({length:15},()=>''),codeDisplay:values[1]};
+  })};};
   context.pqmSandboxAppendVerifyMetadata_=()=>{metadataVerifyCalls++;};
   context.pqmSandboxFullChunks_=()=>remainingUpdates?[[...Array.from({length:remainingUpdates},(_,i)=>({row:i+2,columns:[4]}))]]:[];
   context.pqmSandboxFetchRegistry_=()=>({count:0,items:[]});
@@ -209,19 +234,27 @@ function checkpointStepFixture(totalAppends=30, updateRows=1) {
   context.pqmSandboxFullRequests_=chunk=>[{kind:'update',rows:chunk.length}];
   context.pqmSandboxControlledVerify_=()=>({verification_passed:true});
   context.pqmSandboxFullSheetState_=tabs=>tabs;
-  context.pqmSandboxControlledDigest_=value=>JSON.stringify(value);
+  context.pqmSandboxControlledDigest_=value=>crypto.createHash('sha256')
+    .update(JSON.stringify(value),'utf8').digest('base64url');
+  context.pqmSandboxFullSheetState_=()=>({version});
   context.pqmGoogleSnapshot_=()=>({version:++version});
   context.pqmGooglePlan_=()=>({counts:{appended:appendQueue.length,updated:remainingUpdates,
     conflicts:2,errors:0}});
   context.pqmMirrorSheetsBatchUpdate_=request=>{
-    const kind=request.requests[0].kind;writeKinds.push(kind);
-    if(kind==='append')appendQueue.splice(0,request.requests[0].selected.length);
+    const kind=request.requests[0].kind;writeKinds.push(kind);version++;
+    if(kind==='append'){
+      request.requests[0].selected.forEach(change=>{writtenRows[change.tab]++;});
+      appendQueue.splice(0,request.requests[0].selected.length);
+    }
     else remainingUpdates=Math.max(0,remainingUpdates-(request.requests[0].rows||0));
   };
-  context.pqmSandboxControlledDigest_ = value => JSON.stringify(value);
-  function loaded(){return {state:{payload_digest:payloadDigest,google_digest:JSON.stringify({version})},
-    plan:{counts:{conflicts:2,errors:0}},body:{count:0,items:[]},tabs:{},entries:[]};}
+  context.pqmSandboxControlledDigest_ = value => crypto.createHash('sha256')
+    .update(JSON.stringify(value),'utf8').digest('base64url');
+  function loaded(){return {state:{payload_digest:payloadDigest,
+    google_digest:context.pqmSandboxControlledDigest_({version})},
+    plan:{counts:{conflicts:2,errors:0}},body:{count:0,items:[]},tabs:tabsNow(),entries:[]};}
   return {context,loaded,appendLeft:()=>appendQueue.length,writeKinds:()=>writeKinds.slice(),
+    get version(){return version;},
     get verifiedAppend(){return verifiedAppend;},get metadataVerifyCalls(){return metadataVerifyCalls;},
     updateLeft:()=>remainingUpdates};
 }
@@ -1054,7 +1087,8 @@ test('Execution API stops before the next chunk if source or Google state change
 
 test('checkpoint append metadata is verified with one batched Sheets metadata read', () => {
   const f=executionFixture('A'.repeat(43)), calls=[];
-  const rows=(count)=>Array.from({length:count},()=>({values:Array.from({length:15},()=>({}))}));
+  const rows=(count)=>Array.from({length:count},()=>({values:Array.from({length:19},(_,column)=>
+    column >= 16 ? {userEnteredFormat:{numberFormat:{pattern:'@'}}} : {})}));
   f.context.Sheets={Spreadsheets:{get:(id,options)=>{
     calls.push({id,options});
     return {sheets:[
@@ -1069,13 +1103,14 @@ test('checkpoint append metadata is verified with one batched Sheets metadata re
     ЮО:{cells:Array.from({length:15},()=>({})),height:28}};
   f.context.pqmSandboxAppendVerifyMetadata_('sheet-sandbox',selected,templates);
   assert.equal(calls.length,1);
-  assert.deepEqual(Array.from(calls[0].options.ranges),["'ФОП'!A2:O3","'ЮО'!A2:O2"]);
+  assert.deepEqual(Array.from(calls[0].options.ranges),["'ФОП'!A2:S3","'ЮО'!A2:S2"]);
   assert.equal(calls[0].options.includeGridData,true);
 });
 
 test('bounded checkpoint steps confirm all APPEND pages before starting UPDATE', () => {
   const f=checkpointStepFixture(30,1),props=new Map(),key='PQM_EXECUTION_RUN_'+('c'.repeat(32));
-  const record={payloadDigest:'pqm-source-stable',googleDigest:JSON.stringify({version:0}),
+  const record={payloadDigest:'pqm-source-stable',googleDigest:crypto.createHash('sha256')
+      .update(JSON.stringify({version:0}),'utf8').digest('base64url'),
     aggregate:{append:0,update:0,batches:0},steps:[],nextChunk:0,inflight:null,state:'ready'};
   props.set(key,JSON.stringify(record));
   const receipt=(status,counts,digest)=>({status,counts,digest});
@@ -1087,11 +1122,9 @@ test('bounded checkpoint steps confirm all APPEND pages before starting UPDATE',
   const first=run(0);
   assert.equal(first.status,'APPLY_CHUNK_VERIFIED');assert.equal(first.counts.append,25);
   assert.equal(f.appendLeft(),5);assert.deepEqual(f.writeKinds(),['append']);
-  record.googleDigest=JSON.stringify({version:1});
   const second=run(1);
   assert.equal(second.status,'APPLY_CHUNK_VERIFIED');assert.equal(second.counts.append,5);
   assert.equal(f.appendLeft(),0);assert.deepEqual(f.writeKinds(),['append','append']);
-  record.googleDigest=JSON.stringify({version:2});
   const third=run(2);
   assert.equal(third.status,'COMPLETE_WITH_CONFLICTS');assert.equal(third.phase,'update');
   assert.equal(f.updateLeft(),0);assert.deepEqual(f.writeKinds(),['append','append','update']);
@@ -1102,7 +1135,8 @@ test('bounded checkpoint steps confirm all APPEND pages before starting UPDATE',
 
 test('APPEND_ONLY checkpoint completes append pages without entering UPDATE phase', () => {
   const f=checkpointStepFixture(30,1),props=new Map(),key='PQM_EXECUTION_RUN_'+('e'.repeat(32));
-  const record={payloadDigest:'pqm-source-stable',googleDigest:JSON.stringify({version:0}),
+  const record={payloadDigest:'pqm-source-stable',googleDigest:crypto.createHash('sha256')
+      .update(JSON.stringify({version:0}),'utf8').digest('base64url'),
     aggregate:{append:0,update:0,batches:0},steps:[],nextChunk:0,inflight:null,state:'ready'};
   props.set(key,JSON.stringify(record));
   const receipt=(status,counts,digest)=>({status,counts,digest});
@@ -1112,7 +1146,6 @@ test('APPEND_ONLY checkpoint completes append pages without entering UPDATE phas
   const first=run(0);
   assert.equal(first.status,'APPLY_CHUNK_VERIFIED');assert.equal(first.phase,'append');
   assert.equal(first.counts.append,25);assert.equal(first.counts.update,0);
-  record.googleDigest=JSON.stringify({version:1});
   const second=run(1);
   assert.equal(second.status,'COMPLETE_WITH_CONFLICTS');assert.equal(second.phase,'append');
   assert.equal(second.counts.append,5);assert.equal(second.counts.update,0);
@@ -1123,7 +1156,8 @@ test('APPEND_ONLY checkpoint completes append pages without entering UPDATE phas
 
 test('shared checkpoint engine bounds UPDATE pages by rows and cells', () => {
   const f=checkpointStepFixture(0,60),props=new Map(),key='PQM_EXECUTION_RUN_'+('d'.repeat(32));
-  const record={payloadDigest:'pqm-source-stable',googleDigest:JSON.stringify({version:0}),
+  const record={payloadDigest:'pqm-source-stable',googleDigest:crypto.createHash('sha256')
+      .update(JSON.stringify({version:0}),'utf8').digest('base64url'),
     aggregate:{append:0,update:0,batches:0},steps:[],nextChunk:0,inflight:null,state:'ready'};
   const receipt=(status,counts,digest)=>({status,counts,digest});
   function run(index){return f.context.pqmSandboxApplyCheckpointStep_('sheet-sandbox',f.loaded(),
@@ -1131,7 +1165,6 @@ test('shared checkpoint engine bounds UPDATE pages by rows and cells', () => {
   const first=run(0);
   assert.equal(first.status,'APPLY_CHUNK_VERIFIED');assert.equal(first.counts.update,50);
   assert.equal(f.updateLeft(),10);assert.deepEqual(f.writeKinds(),['update']);
-  record.googleDigest=JSON.stringify({version:1});
   const second=run(1);
   assert.equal(second.status,'COMPLETE_WITH_CONFLICTS');assert.equal(second.counts.update,10);
   assert.equal(f.updateLeft(),0);assert.deepEqual(f.writeKinds(),['update','update']);
@@ -1168,14 +1201,8 @@ test('Apps Script v6 normal Preview and APPEND plan retain formula A v1.2 and li
   assert.match(selected.cells[0],/ISDATE\(/);
   assert.match(selected.cells[0],/⚪️\|⚪\|➖\|🟠\|🟢\|🔴/);
 
-  const requests=c.pqmSandboxAppendRequests_(loaded.selected,loaded.tabs);
-  const formulaWrite=requests.find(request=>request.updateCells &&
-    request.updateCells.range.startColumnIndex===0);
-  assert.ok(formulaWrite,'APPEND writes the planned formula into A');
-  assert.equal(formulaWrite.updateCells.rows[0].values[0].userEnteredValue.formulaValue,selected.cells[0]);
-  assert.ok(requests.some(request=>request.copyPaste && request.copyPaste.pasteType==='PASTE_FORMAT'));
-  assert.ok(requests.some(request=>request.copyPaste && request.copyPaste.pasteType==='PASTE_DATA_VALIDATION'));
-  assert.equal(requests.some(request=>request.copyPaste && request.copyPaste.pasteType==='PASTE_FORMULA'),false);
+  assert.throws(()=>c.pqmSandboxAppendRequests_(loaded.selected,loaded.tabs),/durable run journal required/,
+    'a planning-only legacy call cannot bypass the durable execution journal');
 });
 
 test('Apps Script v6 UPDATE preserves column A and existing E against Немає інформації', () => {
@@ -1211,7 +1238,8 @@ test('Detailed Sandbox Preview renders frozen APPEND, UPDATE cells and conflict 
       {tab:'ФОП',row:2,append:false,cells:{4:'Зареєстровано'}}],
       conflicts:[{supplier_code:'000003',tab:'ЮО',reason:'routing_mismatch'}],
       errors:[{supplier_code:'000004',tab:'ФОП',reason:'invalid_date'}]},
-    plan_digest:'P'.repeat(43),append_only_digest:'A'.repeat(43)};
+    plan_digest:'P'.repeat(43),append_only_digest:'A'.repeat(43),
+    state:{payload_digest:'source-fixture'}};
   loaded.tabs.ФОП.rows[0].values[2]='Old supplier';loaded.tabs.ФОП.rows[0].values[4]='Припинено';
   const details=c.pqmSandboxFullPreviewDetails_(loaded);
   assert.equal(details.counts.append,1);assert.equal(details.counts.update,1);

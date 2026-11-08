@@ -78,6 +78,9 @@ EXACT_TREE_OVERLAY_MODULES={
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
     # the candidate carries its own additive prepared-intent retry overlay.
     'test_partial_reconciliation_first_append_only_integrity_v1',
+    # Keep the prepared-retry v1 pin on its immutable d386586 snapshot;
+    # newer receipt-recovery changes are pinned by the additive v2 overlay.
+    'test_partial_reconciliation_prepared_append_only_retry_integrity_v1',
 }
 
 def selected_suite(suite,mode):
@@ -101,7 +104,8 @@ def copy_candidate_manifests(source_root, validation_target, mode):
     Path(validation_target).mkdir(parents=True, exist_ok=True)
     for manifest_name in ('sandbox_preview_append_only_v1.json',
                           'sandbox_preview_workflow_v1.json',
-                          'local_release_20261107/partial_reconciliation_prepared_retry_v1.json'):
+                          'local_release_20261107/partial_reconciliation_prepared_retry_v1.json',
+                          'local_release_20261108/google_writer_receipt_recovery_v1.json'):
         source=Path(source_root)/'validation'/manifest_name
         target=Path(validation_target)/manifest_name
         target.parent.mkdir(parents=True,exist_ok=True)
@@ -143,6 +147,7 @@ def main():
                             'run_checkpointed_apply_v1_integrity.py',
                             'run_partial_reconciliation_second_v1_history.py',
                             'run_partial_reconciliation_first_append_only_v1_history.py',
+                            'run_prepared_append_only_retry_v1_history.py',
                             'run_sandbox_preview_append_only_v1_history.py',
                             'run_sandbox_preview_workflow_v1_history.py',
                             'run_messages_integrated_v1_history_addendum.py'):
@@ -302,6 +307,9 @@ def main():
             first_append_only_v1_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_partial_reconciliation_first_append_only_v1_history.py')],
                 cwd=old_cwd,check=False)
+            prepared_retry_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_prepared_append_only_retry_v1_history.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -320,7 +328,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

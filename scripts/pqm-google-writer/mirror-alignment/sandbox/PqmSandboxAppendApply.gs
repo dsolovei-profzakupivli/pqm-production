@@ -2,6 +2,145 @@
 var PQM_SANDBOX_APPEND_MAX_ROWS = 50;
 var PQM_SANDBOX_APPEND_CODE_SCAN_ROWS = 1000;
 var PQM_SANDBOX_APPEND_CONFIRMATION = 'APPLY_SANDBOX_SUPPLIER_APPEND_MAX_50';
+var PQM_SANDBOX_APPEND_SERVICE_HEADERS_ = [
+  'PQM Дата й час додавання (Europe/Kyiv)', 'PQM ID плану', 'PQM ID запуску'
+];
+var PQM_SANDBOX_APPEND_SERVICE_FIRST_COLUMN_ = 16; // Q; P remains untouched on ЮО.
+
+function pqmSandboxAppendServiceColumnsReady_(id, tabs) {
+  var ranges = PQM_GOOGLE_TABS.map(function(name) {
+    return "'" + name.replace(/'/g, "''") + "'!Q1:S1";
+  });
+  var response = Sheets.Spreadsheets.Values.batchGet(id, {
+    ranges: ranges, valueRenderOption: 'FORMULA'
+  });
+  if (!response || !Array.isArray(response.valueRanges) || response.valueRanges.length !== ranges.length) {
+    throw new Error('PQM SANDBOX APPEND: service-column header check incomplete; zero writes.');
+  }
+  response.valueRanges.forEach(function(range, index) {
+    var values = (range.values || [])[0] || [];
+    if (JSON.stringify(values) !== JSON.stringify(PQM_SANDBOX_APPEND_SERVICE_HEADERS_)) {
+      throw new Error('PQM SANDBOX APPEND: run service columns are not installed; zero writes.');
+    }
+    var tab = tabs[PQM_GOOGLE_TABS[index]];
+    if (!tab || tab.maxColumns < PQM_SANDBOX_APPEND_SERVICE_FIRST_COLUMN_ + 3) {
+      throw new Error('PQM SANDBOX APPEND: service columns are outside the sheet grid; zero writes.');
+    }
+  });
+}
+
+function pqmSandboxAppendServiceRanges_(selected) {
+  var groups = [];
+  PQM_GOOGLE_TABS.forEach(function(tab) {
+    var rows = selected.filter(function(change) { return change.tab === tab; });
+    if (!rows.length) return;
+    if (rows.some(function(change, index) {
+      return change.row !== rows[0].row + index || !change.serviceMetadata;
+    })) throw new Error('PQM SANDBOX APPEND: service range is not contiguous.');
+    var first = rows[0].serviceMetadata;
+    if (rows.some(function(change) {
+      return JSON.stringify(change.serviceMetadata) !== JSON.stringify(first);
+    })) throw new Error('PQM SANDBOX APPEND: service range metadata is inconsistent.');
+    groups.push({tab: tab, first: rows[0].row, last: rows[rows.length - 1].row,
+      addedAt: first.addedAt, planId: first.planId, runId: first.runId});
+  });
+  return groups;
+}
+
+function pqmSandboxAppendVerifyServiceRanges_(id, ranges, request) {
+  if (!Array.isArray(ranges) || ranges.length > 100) {
+    throw new Error('PQM SANDBOX APPEND: service checkpoint list is invalid.');
+  }
+  if (!ranges.length) return;
+  var a1 = ranges.map(function(range) {
+    if (!range || PQM_GOOGLE_TABS.indexOf(range.tab) < 0 ||
+        !Number.isInteger(range.first) || !Number.isInteger(range.last) || range.first < 2 ||
+        range.last < range.first || range.last - range.first >= PQM_SANDBOX_APPEND_MAX_ROWS ||
+        range.planId !== (request.planId || request.requestId) || range.runId !== request.requestId) {
+      throw new Error('PQM SANDBOX APPEND: service checkpoint identity changed.');
+    }
+    return "'" + range.tab.replace(/'/g, "''") + "'!Q" + range.first + ':S' + range.last;
+  });
+  var response = Sheets.Spreadsheets.Values.batchGet(id, {ranges: a1, valueRenderOption: 'UNFORMATTED_VALUE'});
+  if (!response || !Array.isArray(response.valueRanges) || response.valueRanges.length !== ranges.length) {
+    throw new Error('PQM SANDBOX APPEND: service checkpoint read-back incomplete.');
+  }
+  ranges.forEach(function(range, index) {
+    var rows = response.valueRanges[index].values || [];
+    if (rows.length !== range.last - range.first + 1 || rows.some(function(row) {
+      return String((row || [])[0] || '') !== range.addedAt ||
+        String((row || [])[1] || '') !== range.planId ||
+        String((row || [])[2] || '') !== range.runId;
+    })) throw new Error('PQM SANDBOX APPEND: verified service metadata changed; hold.');
+  });
+}
+
+/* Explicit, idempotent schema migration. Never called by Preview or Apply. */
+function pqmSandboxInstallAppendServiceColumns20261108() {
+  pqmMirrorContext_();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) throw new Error('PQM SANDBOX service-column migration is locked.');
+  try {
+    var id = pqmSandboxControlledSpreadsheetId_();
+    var meta = Sheets.Spreadsheets.get(id, {includeGridData: false,
+      fields: 'sheets(properties(title,sheetId,gridProperties(rowCount,columnCount)))'});
+    var byName = new Map((meta.sheets || []).map(function(sheet) {
+      return [sheet.properties.title, sheet.properties];
+    }));
+    var ranges = [], rangeTabs = [];
+    PQM_GOOGLE_TABS.forEach(function(name) {
+      var property = byName.get(name), grid = property && property.gridProperties;
+      if (!grid || !Number.isInteger(grid.rowCount) || !Number.isInteger(grid.columnCount)) {
+        throw new Error('PQM SANDBOX service-column migration metadata unavailable; zero writes.');
+      }
+      // Sheets rejects a values range outside the current grid. Read any
+      // existing portion of Q:S before extending a partially sized sheet.
+      if (grid.columnCount > PQM_SANDBOX_APPEND_SERVICE_FIRST_COLUMN_) {
+        var end = grid.columnCount >= 19 ? 'S' : grid.columnCount === 18 ? 'R' : 'Q';
+        ranges.push("'" + name.replace(/'/g, "''") + "'!Q1:" + end + grid.rowCount);
+        rangeTabs.push(name);
+      }
+    });
+    var values = ranges.length ? Sheets.Spreadsheets.Values.batchGet(id,
+      {ranges: ranges, valueRenderOption: 'FORMULA'}) : {valueRanges: []};
+    if (!values || !Array.isArray(values.valueRanges) || values.valueRanges.length !== ranges.length) {
+      throw new Error('PQM SANDBOX service-column migration read-back incomplete; zero writes.');
+    }
+    var alreadyInstalled = true;
+    var existingRows = new Map(rangeTabs.map(function(name, index) {
+      return [name, values.valueRanges[index].values || []];
+    }));
+    PQM_GOOGLE_TABS.forEach(function(name) {
+      var rows = existingRows.get(name) || [], header = rows[0] || [];
+      var exact = JSON.stringify(header) === JSON.stringify(PQM_SANDBOX_APPEND_SERVICE_HEADERS_);
+      if (!exact) {
+        alreadyInstalled = false;
+        if (rows.some(function(row) { return row.some(function(value) { return !pqmGoogleBlank_(value); }); })) {
+          throw new Error('PQM SANDBOX service-column migration target is not empty; zero writes.');
+        }
+      }
+    });
+    if (alreadyInstalled) return {status: 'ALREADY_INSTALLED', sheets_modified: 0};
+    var requests = [];
+    PQM_GOOGLE_TABS.forEach(function(name) {
+      var property = byName.get(name), grid = property.gridProperties;
+      if (grid.columnCount < PQM_SANDBOX_APPEND_SERVICE_FIRST_COLUMN_ + 3) {
+        requests.push({appendDimension: {sheetId: property.sheetId, dimension: 'COLUMNS',
+          length: PQM_SANDBOX_APPEND_SERVICE_FIRST_COLUMN_ + 3 - grid.columnCount}});
+      }
+      requests.push({updateCells: {range: {sheetId: property.sheetId,
+        startRowIndex: 0, endRowIndex: 1,
+        startColumnIndex: PQM_SANDBOX_APPEND_SERVICE_FIRST_COLUMN_,
+        endColumnIndex: PQM_SANDBOX_APPEND_SERVICE_FIRST_COLUMN_ + 3},
+        rows: [{values: PQM_SANDBOX_APPEND_SERVICE_HEADERS_.map(function(value) {
+          return {userEnteredValue: {stringValue: value}, userEnteredFormat: {textFormat: {bold: true}}};
+        })}], fields: 'userEnteredValue,userEnteredFormat.textFormat.bold'}});
+    });
+    Sheets.Spreadsheets.batchUpdate({requests: requests}, id);
+    pqmSandboxAppendServiceColumnsReady_(id, pqmGoogleSnapshot_(id));
+    return {status: 'INSTALLED', sheets_modified: 2, data_rows_modified: 0};
+  } finally { lock.releaseLock(); }
+}
 
 function pqmSandboxAppendLoad_(id, allowlist, fullLoaded, maxRows) {
   var full = fullLoaded || null;
@@ -70,14 +209,15 @@ function pqmSandboxAppendCodeCounts_(id, tabs, selected) {
 
 function pqmSandboxAppendGridCounts_(id, tabs) {
   var response = Sheets.Spreadsheets.get(id, {includeGridData: false,
-    fields: 'sheets(properties(title,sheetId,gridProperties(rowCount)))'});
+    fields: 'sheets(properties(title,sheetId,gridProperties(rowCount,columnCount)))'});
   var actual = new Map((response.sheets || []).map(function(sheet) {
     return [sheet.properties.title, sheet.properties];
   }));
   PQM_GOOGLE_TABS.forEach(function(name) {
     var property = actual.get(name);
     if (!property || property.sheetId !== tabs[name].id ||
-        property.gridProperties.rowCount !== tabs[name].maxRows) {
+        property.gridProperties.rowCount !== tabs[name].maxRows ||
+        (tabs[name].maxColumns && property.gridProperties.columnCount !== tabs[name].maxColumns)) {
       throw new Error('PQM SANDBOX APPEND: Sheet dimensions changed; no write/retry.');
     }
   });
@@ -90,6 +230,7 @@ function pqmSandboxAppendPrewriteGuard_(id, loaded) {
     throw new Error('PQM SANDBOX APPEND: PQM source changed; zero writes.');
   }
   pqmSandboxAppendGridCounts_(id, loaded.tabs);
+  pqmSandboxAppendServiceColumnsReady_(id, loaded.tabs);
   var counts = pqmSandboxAppendCodeCounts_(id, loaded.tabs, loaded.selected);
   counts.forEach(function(count) {
     if (count !== 0) throw new Error('PQM SANDBOX APPEND: selected identity already exists; zero writes.');
@@ -140,7 +281,33 @@ function pqmSandboxAppendRange_(id, row, column, height, width) {
     startColumnIndex: column, endColumnIndex: column + width};
 }
 
-function pqmSandboxAppendRequests_(selected, tabs) {
+function pqmSandboxAppendTimestampKyiv_(date) {
+  var local = Utilities.formatDate(date, 'Europe/Kyiv', "yyyy-MM-dd'T'HH:mm:ss");
+  var offset = Utilities.formatDate(date, 'Europe/Kyiv', 'Z');
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(local) || !/^[+-]\d{4}$/.test(offset)) {
+    throw new Error('PQM SANDBOX APPEND: Kyiv timestamp unavailable; zero writes.');
+  }
+  return local + offset.slice(0, 3) + ':' + offset.slice(3);
+}
+
+function pqmSandboxAppendRequests_(selected, tabs, context) {
+  context = context || {};
+  // All persistent Sandbox APPEND writes must originate from the SQLite
+  // write-ahead journal and the shared checkpoint engine. Legacy UI/DailySync
+  // callers do not have that binding and therefore fail before any request.
+  if (context.journaled !== true) {
+    throw new Error('PQM SANDBOX APPEND: durable run journal required; zero writes.');
+  }
+  var planId = context.planId || context.expectedDigest ||
+    pqmSandboxControlledDigest_(selected.map(function(change) { return [change.tab, change.cells[1]]; }));
+  var runId = context.runId || context.requestId || Utilities.getUuid().replace(/-/g, '').toLowerCase();
+  if (!/^[A-Za-z0-9_-]{20,256}$/.test(String(planId)) || !/^[0-9a-f]{32}$/.test(String(runId))) {
+    throw new Error('PQM SANDBOX APPEND: service identity missing; zero writes.');
+  }
+  var timestamp = pqmSandboxAppendTimestampKyiv_(new Date());
+  selected.forEach(function(change) {
+    change.serviceMetadata = {addedAt: timestamp, planId: String(planId), runId: String(runId)};
+  });
   var requests = [], allowed = [0, 1, 2, 3, 4, 5, 7, 8, 11];
   PQM_GOOGLE_TABS.forEach(function(name) {
     var tab = tabs[name], additions = selected.filter(function(change) { return change.tab === name; });
@@ -174,6 +341,10 @@ function pqmSandboxAppendRequests_(selected, tabs) {
       if (changed) requests.push({updateConditionalFormatRule: {sheetId: tab.id, index: index, rule: copy}});
     });
     additions.forEach(function(change) {
+      if (!change.serviceMetadata || change.serviceMetadata.runId !== String(runId) ||
+          change.serviceMetadata.planId !== String(planId)) {
+        throw new Error('PQM SANDBOX APPEND: service metadata binding mismatch; zero writes.');
+      }
       requests.push({updateCells: {range: pqmSandboxAppendRange_(tab.id, change.row, 0, 1, 1),
         rows: [{values: [{userEnteredValue: {formulaValue: change.cells[0]}}]}], fields: 'userEnteredValue'}});
       allowed.forEach(function(column) {
@@ -187,6 +358,13 @@ function pqmSandboxAppendRequests_(selected, tabs) {
           rows: [{values: [cell]}], fields: 'userEnteredValue' +
             (isDate || column === 1 ? ',userEnteredFormat.numberFormat' : '')}});
       });
+      [change.serviceMetadata.addedAt, change.serviceMetadata.planId, change.serviceMetadata.runId]
+        .forEach(function(value, offset) {
+          requests.push({updateCells: {range: pqmSandboxAppendRange_(tab.id, change.row, 16 + offset, 1, 1),
+            rows: [{values: [{userEnteredValue: {stringValue: value},
+              userEnteredFormat: {numberFormat: {type: 'TEXT', pattern: '@'}}}]}],
+            fields: 'userEnteredValue,userEnteredFormat.numberFormat'}});
+        });
     });
   });
   return requests;
@@ -213,7 +391,7 @@ function pqmSandboxAppendVerifyMetadata_(id, selected, templates) {
     if (rows.some(function(change, index) { return change.row !== rows[0].row + index; })) {
       throw new Error('PQM SANDBOX APPEND: metadata rows are not contiguous.');
     }
-    ranges.push("'" + name.replace(/'/g, "''") + "'!A" + rows[0].row + ':O' + rows[rows.length - 1].row);
+    ranges.push("'" + name.replace(/'/g, "''") + "'!A" + rows[0].row + ':S' + rows[rows.length - 1].row);
     names.push(name);
   });
   if (!ranges.length) return;
@@ -231,7 +409,7 @@ function pqmSandboxAppendVerifyMetadata_(id, selected, templates) {
     }
     rows.forEach(function(change, index) {
       var template = templates[name], cells = rowData[index].values || [], height = rowMetadata[index].pixelSize;
-      if (!template || cells.length !== 15 || !Number.isInteger(height) || height !== template.height) {
+      if (!template || cells.length !== 19 || !Number.isInteger(height) || height !== template.height) {
         throw new Error('PQM SANDBOX APPEND: row metadata mismatch.');
       }
       for (var column = 0; column < 15; column++) {
@@ -253,12 +431,18 @@ function pqmSandboxAppendVerifyMetadata_(id, selected, templates) {
           throw new Error('PQM SANDBOX APPEND: format mismatch.');
         }
       }
+      for (var serviceColumn = 16; serviceColumn <= 18; serviceColumn++) {
+        var serviceFormat = cells[serviceColumn] && cells[serviceColumn].userEnteredFormat || {};
+        if (!serviceFormat.numberFormat || serviceFormat.numberFormat.pattern !== '@') {
+          throw new Error('PQM SANDBOX APPEND: service-column text format mismatch.');
+        }
+      }
     });
   });
 }
 
 function pqmSandboxAppendVerify_(id, selected, before) {
-  var rawRanges = [], codeRanges = [], groups = [];
+  var rawRanges = [], codeRanges = [], formulaRanges = [], serviceRanges = [], groups = [];
   PQM_GOOGLE_TABS.forEach(function(name) {
     var additions = selected.filter(function(change) { return change.tab === name; });
     if (!additions.length) return;
@@ -266,6 +450,8 @@ function pqmSandboxAppendVerify_(id, selected, before) {
     var last = additions[additions.length - 1].row;
     rawRanges.push(esc + '!A' + first + ':O' + last);
     codeRanges.push(esc + '!B' + first + ':B' + last);
+    formulaRanges.push(esc + '!A' + first + ':A' + last);
+    serviceRanges.push(esc + '!Q' + first + ':S' + last);
     groups.push({name: name, additions: additions, first: first, last: last});
   });
   var rawResponse = Sheets.Spreadsheets.Values.batchGet(id, {
@@ -280,18 +466,29 @@ function pqmSandboxAppendVerify_(id, selected, before) {
       codeResponse.valueRanges.length !== codeRanges.length) {
     throw new Error('PQM SANDBOX APPEND: AFTER read-back incomplete; new Preview required.');
   }
-  var formulaResponse = Sheets.Spreadsheets.Values.batchGet(id, {ranges: rawRanges, valueRenderOption: 'FORMULA'});
-  if (!formulaResponse || !Array.isArray(formulaResponse.valueRanges) || formulaResponse.valueRanges.length !== rawRanges.length) {
+  var formulaResponse = Sheets.Spreadsheets.Values.batchGet(id, {ranges: formulaRanges, valueRenderOption: 'FORMULA'});
+  if (!formulaResponse || !Array.isArray(formulaResponse.valueRanges) || formulaResponse.valueRanges.length !== formulaRanges.length) {
     throw new Error('PQM SANDBOX APPEND: formula read-back incomplete; new Preview required.');
   }
+  var serviceResponse = Sheets.Spreadsheets.Values.batchGet(id, {ranges: serviceRanges, valueRenderOption: 'UNFORMATTED_VALUE'});
+  if (!serviceResponse || !Array.isArray(serviceResponse.valueRanges) || serviceResponse.valueRanges.length !== serviceRanges.length) {
+    throw new Error('PQM SANDBOX APPEND: service metadata read-back incomplete; outcome requires reconciliation.');
+  }
+  var verifiedRows = [];
   groups.forEach(function(group, index) {
     var raw = rawResponse.valueRanges[index].values || [];
     var codes = codeResponse.valueRanges[index].values || [];
     group.additions.forEach(function(change) {
       var offset = change.row - group.first, row = raw[offset] || [];
       var formulas = (formulaResponse.valueRanges[index].values || [])[offset] || [];
+      var service = (serviceResponse.valueRanges[index].values || [])[offset] || [];
       var expectedA = pqmGoogleFreshnessFormula_(change.row, before[group.name].formulaLocale);
       if (formulas[0] !== expectedA) throw new Error('PQM SANDBOX APPEND: formula A mismatch; new Preview required.');
+      var expectedService = change.serviceMetadata || {};
+      if (service[0] !== expectedService.addedAt || service[1] !== expectedService.planId ||
+          service[2] !== expectedService.runId) {
+        throw new Error('PQM SANDBOX APPEND: service metadata mismatch; outcome requires reconciliation.');
+      }
       if (String((codes[offset] || [])[0] || '').trim() !== String(change.cells[1]).trim() ||
           [6, 9, 10, 12, 13, 14].some(function(column) { return !pqmGoogleBlank_(row[column]); })) {
         throw new Error('PQM SANDBOX APPEND: AFTER verification failed; new Preview required.');
@@ -311,6 +508,10 @@ function pqmSandboxAppendVerify_(id, selected, before) {
           throw new Error('PQM SANDBOX APPEND: AFTER value mismatch; new Preview required.');
         }
       });
+      var snapshotValues = Array(15).fill('');
+      row.forEach(function(value, column) { if (column < 15) snapshotValues[column] = value; });
+      verifiedRows.push({tab: group.name, row: change.row, values: snapshotValues,
+        formulas: formulas.slice(0, 15), codeDisplay: String((codes[offset] || [])[0] || '').trim()});
     });
   });
   var afterTabs = {};
@@ -320,6 +521,29 @@ function pqmSandboxAppendVerify_(id, selected, before) {
     afterTabs[name] = {id: before[name].id, maxRows: last};
   });
   pqmSandboxAppendGridCounts_(id, afterTabs);
+  return {rows: verifiedRows};
+}
+
+/* Reuse the already verified read-back to advance the in-memory digest. */
+function pqmSandboxAppendProjectVerified_(loaded, selected, verification) {
+  if (!verification || !Array.isArray(verification.rows) || verification.rows.length !== selected.length) {
+    throw new Error('PQM SANDBOX APPEND: verified row projection incomplete; stop before next chunk.');
+  }
+  var verifiedByKey = new Map(verification.rows.map(function(row) { return [row.tab + ':' + row.row, row]; }));
+  selected.forEach(function(change) {
+    var tab = loaded.tabs[change.tab], actual = verifiedByKey.get(change.tab + ':' + change.row);
+    if (!tab || !actual || change.row !== tab.rows.length + 2) {
+      throw new Error('PQM SANDBOX APPEND: verified row projection is not contiguous.');
+    }
+    var row = {values: actual.values, formulas: Array(15).fill(''), codeDisplay: actual.codeDisplay,
+      dateFormat: tab.rows.length ? tab.rows[tab.rows.length - 1].dateFormat : '',
+      verificationDateFormat: tab.rows.length ? tab.rows[tab.rows.length - 1].verificationDateFormat : ''};
+    row.formulas[0] = actual.formulas[0] || '';
+    if (Object.prototype.hasOwnProperty.call(change.cells, 7)) row.dateFormat = 'dd.MM.yyyy';
+    if (Object.prototype.hasOwnProperty.call(change.cells, 8)) row.verificationDateFormat = 'dd.MM.yyyy HH:mm:ss';
+    tab.rows.push(row);
+    tab.maxRows = Math.max(tab.maxRows, change.row);
+  });
 }
 
 function pqmSandboxAppendApply() {

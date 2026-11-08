@@ -2832,6 +2832,7 @@ def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
 
 
 GOOGLE_WRITER_SCHEDULER = None
+GOOGLE_WRITER_CONTINUATION = None
 GOOGLE_WRITER_REGISTRATION_LOCK = threading.Lock()
 
 
@@ -2891,6 +2892,15 @@ def google_writer_status(actor=None):
         heartbeat=service.heartbeat if service else None,actor=actor),
         "manual_available": manual_available,
         "automation_blocked": background_jobs.disabled()}
+
+
+def google_writer_continuation_service():
+    global GOOGLE_WRITER_CONTINUATION
+    if not SANDBOX_MODE or google_writer_environment()!='SANDBOX': return None
+    if GOOGLE_WRITER_CONTINUATION is None:
+        GOOGLE_WRITER_CONTINUATION=google_writer_execution.AppendOnlyContinuationWorker(
+            DB_PATH,google_writer_client,google_writer_manual_available,environment='SANDBOX')
+    return GOOGLE_WRITER_CONTINUATION
 
 
 def decision_label(status: str | None) -> str:
@@ -12384,7 +12394,8 @@ class Handler(BaseHTTPRequestHandler):
                             parent_digest=result['digest'],details_digest=snapshot['details_digest'])
                         return self.send_json({'status':result['status'],'counts':result['counts'],
                             'plan_digest':result['digest'],'details_digest':snapshot['details_digest'],
-                            'expires_at':snapshot['expires_at'],'ticket':ticket})
+                            'expires_at':None,'review_only_expiry':True,
+                            'apply_revalidates_live_plan':True,'ticket':ticket})
                     return self.send_json({'status':result['status'],'counts':result['counts'],
                         'ticket':google_writer_execution.preview_ticket(client,payload['request_id'],self.auth_user,result['digest'])})
                 if set(payload) != {'ticket','confirmed'} or payload['confirmed'] is not True:
@@ -12396,6 +12407,27 @@ class Handler(BaseHTTPRequestHandler):
                     snapshot=google_writer_execution.load_preview_plan(DB_PATH,ticket['request_id'],
                         self.auth_user,ticket['parent_digest'],details_digest=ticket['details_digest'])
                     google_writer_execution.validate_preview_plan_scope(snapshot,ticket)
+                    # Preview age is not an Apply authorization test. Recompute
+                    # the plan now and require a fresh user confirmation if any
+                    # source, destination, formula or operation detail changed.
+                    live=client.invoke('preview',ticket['request_id'],self.auth_user,
+                                       manual_authorized=True)
+                    live_details_digest=google_writer_execution._preview_details_digest(live.get('planDetails'))
+                    if (live.get('digest')!=snapshot['plan_digest'] or
+                            live_details_digest!=snapshot['details_digest']):
+                        replacement_id=uuid.uuid4().hex
+                        replacement=client.invoke('preview',replacement_id,self.auth_user,
+                                                  manual_authorized=True)
+                        replacement_snapshot=google_writer_execution.store_preview_plan(
+                            DB_PATH,replacement_id,self.auth_user,replacement.get('planDetails'))
+                        replacement_ticket=google_writer_execution.preview_ticket(
+                            client,replacement_id,self.auth_user,replacement['digest'],plan_scope='ALL',
+                            parent_digest=replacement['digest'],details_digest=replacement_snapshot['details_digest'])
+                        return self.send_json({'status':'PREVIEW_STALE_RECONFIRM',
+                            'error':'План або Google Sheets змінилися. Перегляньте й підтвердьте новий Preview.',
+                            'counts':replacement.get('counts',{}),'plan_digest':replacement['digest'],
+                            'details_digest':replacement_snapshot['details_digest'],
+                            'ticket':replacement_ticket,'started':False},409)
                 claimed = google_writer_execution.claim_run(DB_PATH,google_writer_environment(),
                     ticket['request_id'],self.auth_user,'manual',manual_authorized=True,
                     plan_scope=ticket.get('scope','ALL'),plan_digest=ticket['digest'],
@@ -13748,6 +13780,12 @@ def main():
     scheduler_enabled = apply_scheduler_settings(catch_up=True)
     if not background_jobs.disabled():
         google_writer_service().start()  # Fourth job only: disabled by default, no startup catch-up.
+    if (SANDBOX_MODE and google_writer_environment()=='SANDBOX' and
+            env_flag('PQM_SANDBOX_AUTO_CONTINUE_CHUNKS',True)):
+        # This resumes only an already-manual APPEND_ONLY run with a confirmed
+        # checkpoint; it never creates a Preview or a new Apply.
+        worker=google_writer_continuation_service()
+        if worker: worker.start()
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
     print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
     print(f"Features: prozorro_scheduler={scheduler_enabled['prozorro']}, "

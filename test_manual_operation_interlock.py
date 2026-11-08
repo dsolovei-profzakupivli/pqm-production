@@ -270,6 +270,62 @@ class ManualOperationInterlockTests(unittest.TestCase):
             client.assert_called_once()
             claim.assert_not_called()
 
+    def test_google_writer_stale_sandbox_preview_requires_new_confirmation_before_claim(self):
+        request_id = "a" * 32
+        old_digest = google_writer_execution.base64.urlsafe_b64encode(b"o" * 32).decode().rstrip("=")
+        new_digest = google_writer_execution.base64.urlsafe_b64encode(b"n" * 32).decode().rstrip("=")
+        details = {"version": 1, "environment": "SANDBOX", "plan_digest": old_digest,
+            "append_only_digest": old_digest, "counts": {"append": 0, "update": 0, "conflict": 0, "error": 0},
+            "appends": [], "updates": [], "conflicts": [], "errors": []}
+        google_writer_execution.store_preview_plan(str(self.path), request_id, "sandbox.admin", details)
+        client = Mock()
+        client.environment = "SANDBOX"
+        client.shared_secret = "s" * 40
+        client.validate.return_value = None
+        ticket = google_writer_execution.preview_ticket(client, request_id, "sandbox.admin", old_digest,
+            plan_scope="ALL", parent_digest=old_digest,
+            details_digest=google_writer_execution._preview_details_digest(details))
+        fresh = dict(details, plan_digest=new_digest, append_only_digest=new_digest)
+        invocations = []
+        def invoke(action, preview_id, _actor, **_kwargs):
+            invocations.append((action, preview_id))
+            return {"status": "PREVIEW", "digest": new_digest, "planDetails": fresh}
+        client.invoke.side_effect = invoke
+
+        class FakeHandler:
+            command = "POST"
+            client_address = ("127.0.0.1", 1)
+            headers = {"Content-Length": "1"}
+            auth_user = "sandbox.admin"
+            auth_role = "admin"
+            auth_officer_id = None
+            path = "/api/google-writer/apply"
+            auth_access = {"active": True, "permissions": {"google.writer.execute": True}}
+            def __init__(self): self.payload = {"ticket": ticket, "confirmed": True}; self.response = None
+            def _authorize(self): return True
+            def read_json(self): return self.payload
+            def send_json(self, body, status=200): self.response = (status, body)
+            def _do_POST(self): return server.Handler._do_POST(self)
+        handler = FakeHandler()
+        with patch.object(server, "DB_PATH", self.path), patch.object(server, "SANDBOX_MODE", True), \
+             patch.object(server, "google_writer_environment", return_value="SANDBOX"), \
+             patch.object(server, "db", return_value=nullcontext(self.con)), \
+             patch.object(sandbox_runtime, "attest_internal_target"), \
+             patch.object(auth_access, "effective", return_value=handler.auth_access), \
+             patch.object(server, "google_writer_manual_available", return_value=True), \
+             patch.object(server, "google_writer_client", return_value=client), \
+             patch.object(google_writer_execution, "claim_run") as claim, \
+             patch.object(server.threading, "Thread") as worker:
+            server.Handler._dispatch(handler, handler._do_POST)
+        self.assertEqual(handler.response[0], 409)
+        self.assertEqual(handler.response[1]["status"], "PREVIEW_STALE_RECONFIRM")
+        self.assertFalse(handler.response[1]["started"])
+        self.assertEqual(len(invocations), 2, "the live plan is checked, then a new Preview is frozen")
+        self.assertEqual(invocations[0], ("preview", request_id))
+        self.assertNotEqual(invocations[1][1], request_id)
+        claim.assert_not_called()
+        worker.assert_not_called()
+
     def test_google_writer_status_reports_manual_readiness_without_enabling_automation(self):
         with patch.object(server, "DB_PATH", self.path), \
              patch.object(server, "google_writer_manual_available", return_value=True), \

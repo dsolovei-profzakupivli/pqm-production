@@ -2,6 +2,7 @@ import io
 import base64
 import hashlib
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -186,7 +187,7 @@ class PreviewPlanScopeTests(ExecutionTransportTests):
             'google.writer.execute')
         self.assertIsNone(auth_access.permission_key('GET','/api/google-writer/preview-details/not-a-request-id'))
 
-    def test_immutable_snapshot_is_actor_digest_and_ttl_bound(self):
+    def test_immutable_snapshot_is_actor_and_digest_bound_but_reviewable_after_300_seconds(self):
         loaded=execution.load_preview_plan(self.path,self.request_id,'uo',TEST_DIGEST,
             details_digest=self.stored['details_digest'],now=NOW)
         self.assertEqual(loaded['details'],self.details)
@@ -195,8 +196,10 @@ class PreviewPlanScopeTests(ExecutionTransportTests):
             base64.urlsafe_b64encode(hashlib.sha256(b'wrong').digest()).decode().rstrip('='),now=NOW)
         with self.assertRaises(ValueError):execution.load_preview_plan(self.path,self.request_id,'uo',TEST_DIGEST,
             details_digest=base64.urlsafe_b64encode(hashlib.sha256(b'wrong details').digest()).decode().rstrip('='),now=NOW)
-        with self.assertRaises(ValueError):execution.load_preview_plan(self.path,self.request_id,'uo',TEST_DIGEST,
-            details_digest=self.stored['details_digest'],now=NOW+timedelta(seconds=300))
+        aged=execution.load_preview_plan(self.path,self.request_id,'uo',TEST_DIGEST,
+            details_digest=self.stored['details_digest'],now=NOW+timedelta(days=30))
+        self.assertTrue(aged['review_only_expiry'])
+        self.assertIsNone(aged['expires_at'])
 
     def test_append_only_ticket_binds_scope_and_excludes_updates_server_side(self):
         parent=execution.verify_ticket(self.scope_client,self.all_ticket,'uo')
@@ -277,8 +280,40 @@ class ExecutionStateTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(dir=Path(__file__).parent,prefix='writer-test-')
         self.addCleanup(self.temp.cleanup);self.path=Path(self.temp.name)/'disposable.sqlite3'
+        self.env_patch=patch.dict(os.environ,{'PQM_SANDBOX_AUTO_CONTINUE_CHUNKS':'0'})
+        self.env_patch.start();self.addCleanup(self.env_patch.stop)
         with closing(sqlite3.connect(self.path)) as con:
             execution.migrate(con);con.commit()
+
+    def save_append_only_plan(self,run,actor='uo',count=60):
+        append_digest=base64.urlsafe_b64encode(hashlib.sha256((run+'append').encode()).digest()).decode().rstrip('=')
+        source_digest=base64.urlsafe_b64encode(hashlib.sha256((run+'source').encode()).digest()).decode().rstrip('=')
+        appends=[]
+        for index in range(count):
+            code=f'{index+1:010d}'
+            appends.append({'operation':'APPEND','tab':'ФОП','code':code,'cells':[
+                {'column':'A','formula':True,'new_value':'=TODAY()'},
+                {'column':'B','formula':False,'new_value':code}]})
+        details={'version':1,'environment':'SANDBOX','plan_digest':TEST_DIGEST,
+            'append_only_digest':append_digest,'source_digest':source_digest,
+            'counts':{'append':count,'update':0,'conflict':0,'error':0},
+            'appends':appends,'updates':[],'conflicts':[],'errors':[]}
+        snapshot=execution.store_preview_plan(self.path,run,actor,details,now=NOW)
+        return details,snapshot
+
+    def chunk_receipt(self,run,index,*,more,append,checkpoint):
+        with closing(sqlite3.connect(self.path)) as con:
+            chunk=con.execute('''SELECT chunk_id,chunk_digest,plan_id,plan_digest,status,expected_json
+                                 FROM google_writer_chunk_journal WHERE run_id=? AND chunk_index=?''',
+                              (run,index)).fetchone()
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk[4],'inflight')
+        expected=json.loads(chunk[5])
+        self.assertEqual(len(expected['rows']),append)
+        return {'status':'APPLY_CHUNK_VERIFIED' if more else 'COMPLETE','digest':chunk[3],
+            'chunkIndex':index,'nextChunk':index+1,'more':more,'phase':'append','planScope':'APPEND_ONLY',
+            'checkpointDigest':checkpoint,'chunkId':chunk[0],'chunkDigest':chunk[1],
+            'planId':chunk[2],'counts':{'append':append,'update':0,'batches':1}}
 
     def test_defaults_preview_no_writes_apply_revision_and_restart(self):
         with closing(sqlite3.connect(self.path)) as con:
@@ -368,41 +403,42 @@ class ExecutionStateTests(unittest.TestCase):
     def test_append_only_stops_at_verified_boundary_and_resumes_same_run_from_next_chunk(self):
         run='1'*32;checkpoint=base64.urlsafe_b64encode(hashlib.sha256(b'checkpoint zero').digest()).decode().rstrip('=')
         next_checkpoint=base64.urlsafe_b64encode(hashlib.sha256(b'checkpoint one').digest()).decode().rstrip('=')
+        final_checkpoint=base64.urlsafe_b64encode(hashlib.sha256(b'checkpoint two').digest()).decode().rstrip('=')
+        details,snapshot=self.save_append_only_plan(run,count=60)
         self.assertTrue(execution.claim_run(self.path,'SANDBOX',run,'uo','manual',manual_authorized=True,
-            plan_scope='APPEND_ONLY',plan_digest=TEST_DIGEST,details_digest=TEST_DIGEST)['claimed'])
+            plan_scope='APPEND_ONLY',plan_digest=details['append_only_digest'],details_digest=snapshot['details_digest'])['claimed'])
         calls=[]
         def invoke(action,*args,**kwargs):
             if action=='resume_check':
-                return {'status':'RESUME_READY','checkpointDigest':checkpoint,'nextChunk':1,
-                    'planDetails':{'appends':[{},{}],'updates':[]},'counts':{'append':2,'update':0}}
+                return {'status':'RESUME_READY','digest':details['append_only_digest'],'planScope':'APPEND_ONLY',
+                    'checkpointDigest':checkpoint,'chunkIndex':1,'nextChunk':1,
+                    'planDetails':{'appends':[{} for _ in range(35)],'updates':[]},'counts':{'append':35,'update':0}}
             index=kwargs['chunk_index'];calls.append((index,kwargs.get('expected_checkpoint_digest')))
             if index==0:
-                return {'status':'APPLY_CHUNK_VERIFIED','digest':TEST_DIGEST,'chunkIndex':0,'nextChunk':1,
-                    'more':True,'phase':'append','planScope':'APPEND_ONLY','checkpointDigest':checkpoint,
-                    'counts':{'append':25,'update':0,'batches':1}}
-            return {'status':'COMPLETE','digest':TEST_DIGEST,'chunkIndex':1,'nextChunk':2,
-                'more':False,'phase':'append','planScope':'APPEND_ONLY','checkpointDigest':next_checkpoint,
-                'counts':{'append':50,'update':0,'batches':2}}
+                return self.chunk_receipt(run,index,more=True,append=25,checkpoint=checkpoint)
+            if index==1:
+                return self.chunk_receipt(run,index,more=True,append=25,checkpoint=next_checkpoint)
+            return self.chunk_receipt(run,index,more=False,append=10,checkpoint=final_checkpoint)
         client=Mock(environment='SANDBOX');client.invoke.side_effect=invoke
-        first=execution.execute_claimed(self.path,client,run,'uo',digest=TEST_DIGEST,
+        first=execution.execute_claimed(self.path,client,run,'uo',digest=details['append_only_digest'],
             manual_authorized=True,plan_scope='APPEND_ONLY',max_append_chunks=1)
         self.assertEqual(first['status'],'HALTED_AFTER_VERIFIED_CHECKPOINTS')
         candidate=execution.load_append_only_resume_candidate(self.path,run,'uo')
         self.assertEqual(candidate['next_chunk'],1)
         self.assertEqual(candidate['verified_totals']['append'],25)
         self.assertEqual(execution.claim_run(self.path,'SANDBOX','2'*32,'uo','manual',manual_authorized=True,
-            plan_scope='APPEND_ONLY',plan_digest=TEST_DIGEST)['status'],'append_only_resume_required')
-        preflight=client.invoke('resume_check',run,'uo',digest=TEST_DIGEST,plan_scope='APPEND_ONLY',
+            plan_scope='APPEND_ONLY',plan_digest=details['append_only_digest'])['status'],'append_only_resume_required')
+        preflight=client.invoke('resume_check',run,'uo',digest=details['append_only_digest'],plan_scope='APPEND_ONLY',
             manual_authorized=True,chunk_index=1,expected_checkpoint_digest=checkpoint)
         self.assertEqual(preflight['status'],'RESUME_READY')
         self.assertTrue(execution.claim_append_only_resume(self.path,candidate)['claimed'])
         self.assertFalse(execution.claim_append_only_resume(self.path,candidate)['claimed'],
             'the same checkpoint cannot be claimed twice')
-        resumed=execution.execute_claimed(self.path,client,run,'uo',digest=TEST_DIGEST,manual_authorized=True,
+        resumed=execution.execute_claimed(self.path,client,run,'uo',digest=details['append_only_digest'],manual_authorized=True,
             plan_scope='APPEND_ONLY',start_chunk=candidate['next_chunk'],
             checkpoint_digest=candidate['checkpoint_digest'])
         self.assertEqual(resumed['status'],'COMPLETE')
-        self.assertEqual(calls,[(0,None),(1,checkpoint)])
+        self.assertEqual(calls,[(0,None),(1,checkpoint),(2,next_checkpoint)])
         with closing(sqlite3.connect(self.path)) as con:
             row=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()
         self.assertEqual(row[0],'complete')
@@ -410,22 +446,25 @@ class ExecutionStateTests(unittest.TestCase):
 
     def test_uncertain_resume_chunk_remains_hold_and_cannot_be_resumed_again(self):
         run='3'*32;checkpoint=base64.urlsafe_b64encode(hashlib.sha256(b'checkpoint').digest()).decode().rstrip('=')
+        details,snapshot=self.save_append_only_plan(run,count=50)
         execution.claim_run(self.path,'SANDBOX',run,'uo','manual',manual_authorized=True,
-            plan_scope='APPEND_ONLY',plan_digest=TEST_DIGEST,details_digest=TEST_DIGEST)
+            plan_scope='APPEND_ONLY',plan_digest=details['append_only_digest'],details_digest=snapshot['details_digest'])
         client=Mock(environment='SANDBOX')
-        client.invoke.side_effect=[{'status':'APPLY_CHUNK_VERIFIED','digest':TEST_DIGEST,'chunkIndex':0,'nextChunk':1,
-            'more':True,'phase':'append','planScope':'APPEND_ONLY','checkpointDigest':checkpoint,
-            'counts':{'append':25,'update':0,'batches':1}},execution.ExecutionOutcomeUnknown('simulated timeout')]
-        initial=execution.execute_claimed(self.path,client,run,'uo',digest=TEST_DIGEST,manual_authorized=True,
+        def invoke(action,*args,**kwargs):
+            if action=='apply' and kwargs['chunk_index']==0:
+                return self.chunk_receipt(run,0,more=True,append=25,checkpoint=checkpoint)
+            raise execution.ExecutionOutcomeUnknown('simulated timeout')
+        client.invoke.side_effect=invoke
+        initial=execution.execute_claimed(self.path,client,run,'uo',digest=details['append_only_digest'],manual_authorized=True,
             plan_scope='APPEND_ONLY',max_append_chunks=1)
         self.assertEqual(initial['status'],'HALTED_AFTER_VERIFIED_CHECKPOINTS')
         candidate=execution.load_append_only_resume_candidate(self.path,run,'uo')
         self.assertTrue(execution.claim_append_only_resume(self.path,candidate)['claimed'])
-        result=execution.execute_claimed(self.path,client,run,'uo',digest=TEST_DIGEST,manual_authorized=True,
+        result=execution.execute_claimed(self.path,client,run,'uo',digest=details['append_only_digest'],manual_authorized=True,
             plan_scope='APPEND_ONLY',start_chunk=1,checkpoint_digest=checkpoint)
         self.assertEqual(result['status'],'OUTCOME_UNKNOWN_HOLD_NO_RETRY')
         with self.assertRaises(ValueError):execution.load_append_only_resume_candidate(self.path,run,'uo')
-        self.assertEqual(client.invoke.call_count,2)
+        self.assertEqual(client.invoke.call_count,3)
 
     def test_lost_chunk_response_holds_run_and_preserves_verified_progress_without_retry(self):
         run='d'*32

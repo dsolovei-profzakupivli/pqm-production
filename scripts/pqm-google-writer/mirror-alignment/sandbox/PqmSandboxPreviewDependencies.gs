@@ -445,7 +445,7 @@ function pqmGoogleSnapshotProfileCall_(profile, phase, rows, cells, ranges, acti
 function pqmGoogleSnapshot_(spreadsheetId, profile) {
   var meta = pqmGoogleSnapshotProfileCall_(profile,'sheet_metadata',0,0,0,function(){
     return Sheets.Spreadsheets.get(spreadsheetId, {includeGridData:false,
-      fields:'properties(locale),sheets(properties(title,sheetId,gridProperties(rowCount)),merges,protectedRanges,conditionalFormats)'});
+      fields:'properties(locale),sheets(properties(title,sheetId,gridProperties(rowCount,columnCount)),merges,protectedRanges,conditionalFormats)'});
   });
   var formulaLocale = meta.properties && meta.properties.locale;
   var byName={}; (meta.sheets||[]).forEach(function(s){byName[s.properties.title]=s;});
@@ -551,7 +551,10 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
       return Sheets.Spreadsheets.get(spreadsheetId,{ranges:[esc+'!A'+template+':A'+template],includeGridData:true,fields:'sheets(data(startRow,rowMetadata(pixelSize)))'});
     });
     var height=(((((h.sheets||[])[0]||{}).data||[])[0]||{}).rowMetadata||[])[0]||{};
-    tabs[name]={id:sheet.properties.sheetId,maxRows:count,headers:(header.values||[])[0]||[],rows:rows.slice(0,Math.max(0,highest-1)),templateRowHeight:height.pixelSize||null,formulaLocale:formulaLocale,conditionalFormats:sheet.conditionalFormats||[],merges:sheet.merges||[],protectedRanges:sheet.protectedRanges||[]};
+    tabs[name]={id:sheet.properties.sheetId,maxRows:count,maxColumns:sheet.properties.gridProperties.columnCount,
+      headers:(header.values||[])[0]||[],rows:rows.slice(0,Math.max(0,highest-1)),
+      templateRowHeight:height.pixelSize||null,formulaLocale:formulaLocale,
+      conditionalFormats:sheet.conditionalFormats||[],merges:sheet.merges||[],protectedRanges:sheet.protectedRanges||[]};
   }); return tabs;
 }
 

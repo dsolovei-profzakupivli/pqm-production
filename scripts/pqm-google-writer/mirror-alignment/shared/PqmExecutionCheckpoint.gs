@@ -14,6 +14,11 @@ function pqmExecutionCheckpointReceipt_(request, receipt, step) {
   result.more = step.more;
   result.phase = step.phase;
   result.checkpointDigest = step.checkpointDigest || null;
+    if (step.chunkId) {
+      result.chunkId = step.chunkId;
+      result.chunkDigest = step.chunkDigest;
+      result.planId = step.planId;
+    }
   return result;
 }
 
@@ -25,10 +30,17 @@ function pqmExecutionCheckpointStateDigest_(record) {
     });
     return copy;
   });
-  return pqmSandboxControlledDigest_({version: 2, actor: record.actor, trigger: record.trigger,
+  var state = {version: 2, actor: record.actor, trigger: record.trigger,
     digest: record.digest, planScope: record.planScope, state: record.state,
     nextChunk: record.nextChunk, inflight: record.inflight, payloadDigest: record.payloadDigest,
-    googleDigest: record.googleDigest, aggregate: record.aggregate, steps: steps});
+    googleDigest: record.googleDigest, aggregate: record.aggregate, steps: steps};
+  if (Object.prototype.hasOwnProperty.call(record, 'inflightManifest')) state.inflightManifest = record.inflightManifest;
+  if (record.chunkJournalVersion === 1) {
+    state.chunkJournalVersion = record.chunkJournalVersion;
+    state.planId = record.planId;
+    state.runId = record.runId;
+  }
+  return pqmSandboxControlledDigest_(state);
 }
 
 function pqmExecutionUpdatePage_(chunks, maxRows, maxCells) {
@@ -51,6 +63,13 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
       beforeGoogleDigest !== record.googleDigest) {
     throw new Error('PQM EXECUTION CHECKPOINT: source or sheet changed since last verified step.');
   }
+  if (adapter.verifyServiceRanges && record.steps && record.steps.some(function(step) {
+      return Array.isArray(step.serviceRanges) && step.serviceRanges.length;
+    })) {
+    adapter.verifyServiceRanges(id, record.steps.reduce(function(all, step) {
+      return all.concat(step.serviceRanges || []);
+    }, []), request);
+  }
 
   var append = adapter.appendLoad(id, undefined, loaded, limits.appendPageRows);
   var appendOnly = request.planScope === 'APPEND_ONLY';
@@ -65,14 +84,26 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
       if (!templates[change.tab]) templates[change.tab] = adapter.appendRowMetadata(id,
         change.tab, append.tabs[change.tab].rows.length + 1);
     });
-    var requests = adapter.appendRequests(append.selected, append.tabs);
+    var requests = adapter.appendRequests(append.selected, append.tabs, {
+      requestId: request.requestId, runId: request.requestId,
+      planId: request.planId || request.requestId,
+      expectedDigest: request.expectedDigest
+    });
     if (!requests.length) throw new Error('PQM EXECUTION CHECKPOINT: empty APPEND chunk.');
     record.inflight = request.chunkIndex;
+    if (request.chunkId) {
+      record.inflightManifest = {chunkId: request.chunkId, chunkDigest: request.chunkDigest,
+        planId: request.planId, runId: request.requestId,
+        rows: append.selected.map(function(change) { return {tab: change.tab, row: change.row,
+          code: String(change.cells[1]).trim(), cellsDigest: adapter.controlledDigest(change.cells),
+          formulaA: change.cells[0], serviceMetadata: change.serviceMetadata}; })};
+    }
     record.state = 'writing';
     pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
     adapter.batchUpdate({requests: requests}, id);
-    adapter.appendVerify(id, append.selected, append.tabs);
+    var appendVerification = adapter.appendVerify(id, append.selected, append.tabs);
     adapter.appendVerifyMetadata(id, append.selected, templates);
+    if (adapter.projectVerifiedAppend) adapter.projectVerifiedAppend(loaded, append.selected, appendVerification);
     counts.append = append.selected.length;
     counts.batches = 1;
   } else if (phase === 'update') {
@@ -110,7 +141,10 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
 
   // A full post-write state digest is retained so the next invocation detects
   // any out-of-band Google edit before another write is allowed.
-  var afterTabs = adapter.snapshot(id);
+  // APPEND has already been read back row-by-row and its verified state is
+  // projected into the one full snapshot loaded before the write. Avoid a
+  // second full-sheet read and planner pass after each bounded chunk.
+  var afterTabs = phase === 'append' && adapter.projectVerifiedAppend ? loaded.tabs : adapter.snapshot(id);
   var afterGoogleDigest = adapter.controlledDigest(adapter.fullSheetState(afterTabs));
   var afterPlan = adapter.plan(loaded.body, afterTabs);
   counts.conflict = afterPlan.counts.conflicts;
@@ -124,6 +158,7 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
   record.aggregate.batches += counts.batches;
   record.steps = record.steps || [];
   record.inflight = null;
+  record.inflightManifest = null;
   record.state = counts.remaining_safe ? 'ready' : 'complete';
   record.nextChunk = request.chunkIndex + 1;
   var finalStatus = counts.remaining_safe ? 'APPLY_CHUNK_VERIFIED' :
@@ -133,6 +168,14 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     counts: counts, verified: true, digest: request.expectedDigest,
     planScope: request.planScope || 'ALL', payloadDigest: record.payloadDigest,
     googleDigest: afterGoogleDigest};
+  if (request.chunkId) {
+    record.chunkJournalVersion = 1;
+    step.chunkId = request.chunkId;
+    step.chunkDigest = request.chunkDigest;
+    step.planId = request.planId;
+    step.serviceRanges = adapter.appendServiceRanges ?
+      adapter.appendServiceRanges(append.selected) : [];
+  }
   record.steps.push(step);
   if (!step.more) {
     record.result = receipt(finalStatus, {
