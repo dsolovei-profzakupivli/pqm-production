@@ -412,6 +412,7 @@ function pqmSandboxPartialReconciliationProfile_(fingerprint) {
         initial_plan:{append:326,update:2,conflict:2},
         attempted_chunk:0,
         checkpoint_present:false,
+        saved_preview_source_digest:{present:false,historical_schema:'PRE_SOURCE_DIGEST',substitute_used:false},
         audit_type:'READ_ONLY_SAVED_PREVIEW_AND_LIVE_SHEETS',
         audit:{rows_found:25,full_matches:20,partial_rows:5,
           partial_operation_numbers:[6,12,14,17,25],partial_columns:{I:5},

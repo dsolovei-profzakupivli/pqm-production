@@ -75,7 +75,6 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
             'version': 1, 'environment': 'SANDBOX',
             'plan_digest': digest(b'legacy full plan'),
             'append_only_digest': digest(b'legacy append-only plan'),
-            'source_digest': digest(b'legacy PQM source'),
             'counts': {'append': 326, 'update': 2, 'conflict': 2, 'error': 0},
             'appends': appends,
             'updates': [{'operation': 'UPDATE', 'cells': []}, {'operation': 'UPDATE', 'cells': []}],
@@ -115,7 +114,9 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
     def test_fixed_profile_records_20_full_5_i_unverified_and_never_authorizes_resume(self):
         profile = execution.partial_reconciliation_profile(FINGERPRINT)
         self.assertEqual(execution.request_id_fingerprint(REQUEST_ID), FINGERPRINT)
+        self.assertNotIn('source_digest', self.details)
         plan = execution.load_legacy_reconciliation_live_audit_plan(self.path, FINGERPRINT)
+        self.assertNotIn('source_digest', plan['expected_rows'][0])
         audit = execution.audit_legacy_reconciliation_first_chunk(FINGERPRINT, plan['expected_rows'], self._matrices())
         self.assertEqual(audit, profile['evidence']['audit'])
         prepared = self._prepare()
@@ -125,6 +126,8 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
         self.assertEqual(prepared['evidence']['audit']['partial_operation_numbers'], [6, 12, 14, 17, 25])
         self.assertEqual(prepared['evidence']['recovery_disposition'],
                          'PARTIAL_ROWS_I_UNVERIFIED_NO_REAPPEND_NEW_PREVIEW_REQUIRED')
+        self.assertEqual(prepared['evidence']['saved_preview_source_digest'], {
+            'present': False, 'historical_schema': 'PRE_SOURCE_DIGEST', 'substitute_used': False})
         result = execution.finalize_partial_reconciliation(
             self.path, RECONCILIATION_ID, 'new-sandbox-admin', self._receipt(prepared), now=NOW)
         self.assertEqual(result['status'], 'RECONCILED_PARTIAL')
@@ -143,6 +146,40 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
         self.assertFalse(profile['receipt_fields']['checkpointPresent'])
         self.assertFalse(profile['receipt_fields']['resumeAuthorized'])
         self.assertEqual(profile['receipt_fields']['nextAction'], 'NEW_PREVIEW_REQUIRED')
+
+    def test_only_fixed_legacy_profile_accepts_absent_source_digest(self):
+        profile = execution.partial_reconciliation_profile(FINGERPRINT)
+        self.assertTrue(profile['legacy_source_digest_absence'])
+        self.assertFalse(execution._validate_saved_preview_source_digest(
+            self.details, REQUEST_ID, profile))
+        other_profile = {'expected_first_chunk_by_tab': {'ФОП': 17, 'ЮО': 8}, 'evidence': {}}
+        with self.assertRaisesRegex(RuntimeError, 'source digest is unavailable'):
+            execution._validate_saved_preview_source_digest(self.details, 'f' * 32, other_profile)
+        new_profile = execution.partial_reconciliation_profile('30331b560493209210f1e507')
+        self.assertFalse(new_profile.get('legacy_source_digest_absence', False))
+
+    def test_legacy_preview_with_present_invalid_source_digest_is_rejected(self):
+        with closing(sqlite3.connect(self.path)) as con, con:
+            saved = con.execute(
+                'SELECT details_json FROM google_writer_preview_plans WHERE request_id=?',
+                (REQUEST_ID,),
+            ).fetchone()[0]
+            details = json.loads(saved)
+            details['source_digest'] = 'malformed-but-preserved-for-test'
+            details_raw = json.dumps(details, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            details_digest = execution._preview_details_digest(details)
+            con.execute(
+                'UPDATE google_writer_preview_plans SET details_json=?,details_digest=? WHERE request_id=?',
+                (details_raw, details_digest, REQUEST_ID),
+            )
+            state = json.loads(con.execute(
+                'SELECT result_json FROM google_writer_runs WHERE request_id=?', (REQUEST_ID,)
+            ).fetchone()[0])
+            state['details_digest'] = details_digest
+            con.execute('UPDATE google_writer_runs SET result_json=? WHERE request_id=?',
+                        (json.dumps(state, sort_keys=True), REQUEST_ID))
+        with self.assertRaisesRegex(RuntimeError, 'source-digest absence differs'):
+            execution.load_legacy_reconciliation_live_audit_plan(self.path, FINGERPRINT)
 
     def test_changed_non_i_value_or_wrong_i_operation_fails_closed(self):
         matrices = self._matrices()

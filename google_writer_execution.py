@@ -96,6 +96,11 @@ _PARTIAL_RECONCILIATION_LEGACY_20261108_EVIDENCE = {
     'initial_plan': {'append': 326, 'update': 2, 'conflict': 2},
     'attempted_chunk': 0,
     'checkpoint_present': False,
+    'saved_preview_source_digest': {
+        'present': False,
+        'historical_schema': 'PRE_SOURCE_DIGEST',
+        'substitute_used': False,
+    },
     'audit_type': 'READ_ONLY_SAVED_PREVIEW_AND_LIVE_SHEETS',
     'audit': {
         'rows_found': 25,
@@ -167,6 +172,7 @@ PARTIAL_RECONCILIATION_PROFILES = {
         'expected_plan_counts': {'append': 326, 'update': 2, 'conflict': 2, 'error': 0},
         'expected_first_chunk_by_tab': {'ФОП': 17, 'ЮО': 8},
         'expected_i_mismatch_operations': [6, 12, 14, 17, 25],
+        'legacy_source_digest_absence': True,
     },
 }
 # Backward-compatible aliases for the first reconciliation profile.
@@ -177,6 +183,29 @@ PARTIAL_RECONCILIATION_EVIDENCE = _PARTIAL_RECONCILIATION_FIRST_EVIDENCE
 def partial_reconciliation_profile(request_fingerprint):
     """Return a fixed, Sandbox-only evidence profile; never accept caller-defined evidence."""
     return PARTIAL_RECONCILIATION_PROFILES.get(request_fingerprint)
+
+
+def _validate_saved_preview_source_digest(details, request_id, profile):
+    """Preserve the exact historical absence only for the pinned legacy request."""
+    legacy_absence = profile.get('legacy_source_digest_absence') is True
+    if legacy_absence:
+        expected_evidence = {
+            'present': False,
+            'historical_schema': 'PRE_SOURCE_DIGEST',
+            'substitute_used': False,
+        }
+        if (request_id != _PARTIAL_RECONCILIATION_LEGACY_20261108_REQUEST_ID or
+                profile.get('evidence', {}).get('request_id') != request_id or
+                profile.get('evidence', {}).get('saved_preview_source_digest') != expected_evidence):
+            raise RuntimeError('Legacy source-digest absence profile identity rejected')
+        if 'source_digest' in details:
+            raise RuntimeError('Legacy Preview source-digest absence differs from fixed evidence')
+        return False
+    if profile.get('expected_first_chunk_by_tab'):
+        if not is_canonical_sha256_b64url(details.get('source_digest')):
+            raise RuntimeError('Saved APPEND_ONLY source digest is unavailable')
+        return True
+    return None
 
 
 def _validate_partial_reconciliation_saved_run(con, request_id, profile):
@@ -248,8 +277,7 @@ def _validate_partial_reconciliation_saved_run(con, request_id, profile):
                not isinstance(item.get('code'),str) or not item.get('code').strip()
                for item in details['appends']):
             raise RuntimeError('Saved APPEND_ONLY Preview identities do not match the fixed profile')
-        if not is_canonical_sha256_b64url(details.get('source_digest')):
-            raise RuntimeError('Saved APPEND_ONLY source digest is unavailable')
+        _validate_saved_preview_source_digest(details, request_id, profile)
         by_tab = {tab: sum(item['tab'] == tab for item in details['appends'][:25])
                   for tab in ('ФОП','ЮО')}
         codes = [item['code'].strip() for item in details['appends']]

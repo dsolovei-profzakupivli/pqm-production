@@ -1,0 +1,34 @@
+{
+  "contract": "pqm-sandbox-legacy-source-digest-absence",
+  "version": 2,
+  "baseline": "1111eb963844245336c107d5e4d8e0b8887dfe81",
+  "normalization": "CRLF-to-LF only for text files; binary fixtures are raw-byte pinned",
+  "scope": [
+    "google_writer_execution.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs",
+    "test_partial_reconciliation_legacy_20261108.py",
+    "test_legacy_append_reconciliation_integrity_v2.py",
+    "validation/run_local_release.py",
+    "validation/run_legacy_append_reconciliation_v1_history.py",
+    "validation/fixtures/legacy_append_reconciliation_v1_exact_1111eb9.zip"
+  ],
+  "files": {
+    "google_writer_execution.py": "c16d6f18c28ffb1dcde0b734f3b7c8a91175c6b65a8dfd002462d17849094d0c",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "12470a92a2e9395f7371dcf960c579495324c44b4583081717891128130841a4",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs": "376e6816b42637bc6732bf61e8263fcfb0a78eb8a7c33a7d977557fa5a9dcd15",
+    "test_partial_reconciliation_legacy_20261108.py": "45ae8c4f99143e89a4cd11a90f9e2d001bd7a1649a331804c7dcf108d3413993",
+    "test_legacy_append_reconciliation_integrity_v2.py": "11fb40c609ccf217407e64ba06fafbe4f24d1f7ab265aa2efc9cb59744a307e1",
+    "validation/run_local_release.py": "d0077c10c2d4f049cac91c5892ee336d8e376a2a73eea3c0b06ec88d6c5d90d2",
+    "validation/run_legacy_append_reconciliation_v1_history.py": "d77bd158dd3a60a2e7aa7049a78e536950e167217ac64a294beabe628392ba98",
+    "validation/fixtures/legacy_append_reconciliation_v1_exact_1111eb9.zip": "775845413ddb0835845252abcb952139e2697435af96302788a1577913897bc2"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+    "validation/local_release_20261108/google_writer_receipt_recovery_v1.json": "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b",
+    "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",
+    "validation/local_release_20260911/partial_reconciliation_first_append_only_v1.json": "bfab6425ec9bbad98bf36e85b4c96f018519b747548c44f8f6d7ec0a5f03a291",
+    "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
+    "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40"
+  }
+}

@@ -295,6 +295,8 @@ test('legacy 326 APPEND audit records exactly 20 full rows and five I-only parti
   assert.equal(result.nextAction,'NEW_PREVIEW_REQUIRED');
   assert.equal(f.marker,null);
   const event=JSON.parse(f.properties.get(f.eventKey));
+  assert.deepEqual(event.evidence.saved_preview_source_digest,
+    {present:false,historical_schema:'PRE_SOURCE_DIGEST',substitute_used:false});
   assert.deepEqual(event.evidence.audit.partial_columns,{I:5});
   assert.equal(event.evidence.audit.full_matches,20);
   assert.equal(f.spreadsheetWrites,0);
