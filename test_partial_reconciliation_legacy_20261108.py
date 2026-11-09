@@ -170,6 +170,31 @@ class LegacyAppendOnlyReconciliation20261108Tests(unittest.TestCase):
         new_profile = execution.partial_reconciliation_profile('30331b560493209210f1e507')
         self.assertFalse(new_profile.get('legacy_source_digest_absence', False))
 
+    def test_known_hold_progress_metadata_is_accepted_but_resume_or_checkpoint_is_not(self):
+        with closing(sqlite3.connect(self.path)) as con:
+            row = con.execute('SELECT result_json FROM google_writer_runs WHERE request_id=?',
+                              (REQUEST_ID,)).fetchone()
+        original = json.loads(row[0])
+        self.assertEqual(original['status'], 'OUTCOME_UNKNOWN_HOLD_NO_RETRY')
+        self.assertEqual(original['progress_state'], 'preparing')
+        self.assertEqual(original['attempted_checkpoint_digest'], None)
+        # Malformed authorization/checkpoint metadata must remain rejected.
+        for key, value in (('auto_continue_chunks', True), ('checkpoint_digest', digest(b'checkpoint'))):
+            changed = dict(original)
+            changed[key] = value
+            with closing(sqlite3.connect(self.path)) as con, con:
+                con.execute('UPDATE google_writer_runs SET result_json=? WHERE request_id=?',
+                            (json.dumps(changed, sort_keys=True), REQUEST_ID))
+            with self.subTest(field=key), self.assertRaisesRegex(RuntimeError,
+                    'no-checkpoint state|cannot authorize automatic continuation'):
+                self._prepare()
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute('UPDATE google_writer_runs SET result_json=? WHERE request_id=?',
+                        (json.dumps(original, sort_keys=True), REQUEST_ID))
+        # Real metadata from claim_run()/hold_unknown_run() remains valid.
+        prepared = self._prepare()
+        self.assertEqual(prepared['state'], 'prepared')
+
     def test_v1_receipt_counts_cannot_finalize_the_active_v2_intent(self):
         prepared = self._prepare()
         receipt = self._receipt(prepared)

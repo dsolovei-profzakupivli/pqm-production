@@ -56,7 +56,8 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         if message['action']=='apply':
             result.update(chunkIndex=message['chunkIndex'],nextChunk=message['chunkIndex']+1,
                 more=False,phase='append',checkpointDigest=self.preview_digest,
-                planScope=message.get('planScope','ALL'))
+                planScope=message.get('planScope','ALL'),chunkId=message.get('chunkId'),
+                chunkDigest=message.get('chunkDigest'),planId=message.get('planId'))
         if message['action']=='reconcile_partial':
             evidence_raw=json.dumps(message['evidence'],ensure_ascii=False,sort_keys=True,separators=(',',':'))
             evidence_digest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('=')
@@ -67,6 +68,12 @@ class SandboxExecutionTransportTests(unittest.TestCase):
     def request(self):
         self.client.invoke('preview','a'*32,'uo')
         return self.calls.pop()
+
+    def all_apply_binding(self, request_id, chunk_index):
+        return {'manual_authorized':True,'digest':self.preview_digest,'chunk_index':chunk_index,
+            'chunk_id':f'{chunk_index + 1:032x}','chunk_digest':self.append_only_digest,
+            'plan_id':request_id,'chunk_phase':'append','chunk_added_at':'2026-11-09T12:00:00+02:00',
+            'chunk_details_digest':self.append_only_digest}
 
     def validate(self, request, **overrides):
         values=dict(environment='SANDBOX',script_id=self.script,spreadsheet_id=self.sheet,deployment_id=self.deployment)
@@ -89,15 +96,17 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         ticket=execution.preview_ticket(self.client,'a'*32,'uo',preview['digest'])
         verified=execution.verify_ticket(self.client,ticket,'uo')
         self.assertEqual(verified['digest'],self.preview_digest)
-        self.client.invoke('apply','b'*32,'uo',digest=verified['digest'])
+        self.client.invoke('apply','b'*32,'uo',**(self.all_apply_binding('b'*32,0)|{'digest':verified['digest']}))
+        self.assertEqual(json.loads(self.calls[-1].data)['function'],
+            'pqmSandboxAllScopeExecution20261109')
         message=json.loads(json.loads(self.calls[-1].data)['parameters'][0]['payload'])
         self.assertEqual(message['expectedDigest'],self.preview_digest)
         self.assertEqual(message['chunkIndex'],0)
         self.assertEqual(len(self.calls),2)
 
     def test_apply_checkpoint_receipt_is_bound_to_digest_and_chunk_index(self):
-        result=self.client.invoke('apply','b'*32,'uo',digest=self.preview_digest,chunk_index=7,
-            expected_checkpoint_digest=self.preview_digest)
+        result=self.client.invoke('apply','b'*32,'uo',**(self.all_apply_binding('b'*32,7)|
+            {'expected_checkpoint_digest':self.preview_digest}))
         payload=json.loads(json.loads(self.calls[-1].data)['parameters'][0]['payload'])
         self.assertEqual(payload['chunkIndex'],7)
         self.assertEqual(payload['expectedDigest'],self.preview_digest)
@@ -111,8 +120,8 @@ class SandboxExecutionTransportTests(unittest.TestCase):
             return io.BytesIO(json.dumps(body).encode())
         self.network.open.side_effect=wrong_receipt
         with self.assertRaisesRegex(execution.ExecutionOutcomeUnknown,'Invalid Apply checkpoint receipt'):
-            self.client.invoke('apply','c'*32,'uo',digest=self.preview_digest,chunk_index=2,
-                expected_checkpoint_digest=self.preview_digest)
+            self.client.invoke('apply','c'*32,'uo',
+                expected_checkpoint_digest=self.preview_digest,**self.all_apply_binding('c'*32,2))
         self.assertEqual(self.network.open.call_count,2,'invalid receipt is not retried')
 
     def test_receipt_ticket_and_apply_reject_noncanonical_sha256_digests(self):
@@ -138,11 +147,27 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         body=json.loads(request.data)
         envelope=body['parameters'][0]
         payload=json.loads(envelope['payload'])
-        payload.update(action='apply',expectedDigest=self.preview_digest)
+        body['function']='pqmSandboxAllScopeExecution20261109'
+        payload.update(action='apply',expectedDigest=self.preview_digest,planScope='ALL',
+            chunkId='d'*32,chunkDigest=self.append_only_digest,planId='a'*32,
+            chunkPhase='append',chunkAddedAt='2026-11-09T12:00:00+02:00',
+            chunkDetailsDigest=self.append_only_digest)
         payload['chunkIndex']=0
         envelope['payload']=json.dumps(payload)
         accepted=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
         self.assertEqual(self.validate(accepted),'script.googleapis.com')
+        payload['requestId']='592128d9837d4b71bbeb330ef8aabf4b'
+        envelope['payload']=json.dumps(payload)
+        historical=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
+        with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
+            self.validate(historical)
+        payload['requestId']='a'*32
+        envelope['payload']=json.dumps(payload)
+        envelope['payload']='[]'
+        malformed=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
+        with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
+            self.validate(malformed)
+        envelope['payload']=json.dumps(payload)
         alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
         final=alphabet.index(self.preview_digest[-1])
         invalid=(self.preview_digest+'=',self.preview_digest[:-1]+'$',
@@ -166,6 +191,14 @@ class SandboxExecutionTransportTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
                     self.validate(changed)
 
+    def test_historical_profile_request_cannot_route_to_new_all_scope_entrypoint(self):
+        request_id='592128d9837d4b71bbeb330ef8aabf4b'
+        with self.assertRaisesRegex(ValueError,'Historical reconciliation request'):
+            self.client.invoke('apply',request_id,'sandbox-admin',digest=self.preview_digest,
+                manual_authorized=True,chunk_id='c'*32,chunk_digest=self.append_only_digest,
+                plan_id=request_id,chunk_phase='append',chunk_added_at='2026-11-09T12:00:00+02:00',
+                chunk_details_digest=self.append_only_digest)
+        self.assertEqual(self.calls,[],'legacy profile request is rejected before transport')
     def test_reconcile_partial_uses_scoped_guard_and_same_manual_request_contract(self):
         request_id='a'*32
         reconciliation_id='b'*32
@@ -184,6 +217,8 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.assertEqual(len(self.calls),1)
         self.assertEqual(json.loads(json.loads(self.calls[0].data)['parameters'][0]['payload'])['action'],
             'reconcile_partial')
+        self.assertEqual(json.loads(self.calls[0].data)['function'],'pqmSandboxExecution',
+            'historical reconciliation remains on the immutable dispatcher')
         self.assertEqual(json.loads(json.loads(self.calls[0].data)['parameters'][0]['payload'])['evidence'],
             second_profile['evidence'])
         changed_evidence=dict(second_profile['evidence'])

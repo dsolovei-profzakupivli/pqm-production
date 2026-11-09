@@ -57,6 +57,7 @@ SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS = frozenset({
     '30331b560493209210f1e507',
     '816c6424279bff220878b0c4',
 })
+SANDBOX_LEGACY_WRITER_REQUEST_IDS = frozenset({'592128d9837d4b71bbeb330ef8aabf4b'})
 _original_getaddrinfo = socket.getaddrinfo
 
 
@@ -434,7 +435,28 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
         body = json.loads(request.data)
         envelope = body['parameters'][0]
         payload = json.loads(envelope['payload'])
-        action = payload.get('action') if isinstance(payload, dict) else None
+        if not isinstance(body, dict) or not isinstance(payload, dict):
+            raise ValueError()
+        action = payload.get('action')
+        function = body.get('function')
+        all_scope_endpoint = function == 'pqmSandboxAllScopeExecution20261109'
+        all_scope_shape = (all_scope_endpoint and action in {'apply', 'recover_apply_chunk'} and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'ALL' and
+            payload.get('requestId') not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            payload.get('trigger') == 'manual' and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            type(payload.get('chunkIndex')) is int and 0 <= payload.get('chunkIndex') <= 499 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            is_canonical_sha256_b64url(payload.get('chunkDetailsDigest')) and
+            payload.get('chunkPhase') in {'append', 'update'} and
+            (payload.get('chunkPhase') == 'update' and payload.get('chunkAddedAt') is None or
+             payload.get('chunkPhase') == 'append' and isinstance(payload.get('chunkAddedAt'), str) and
+             re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}', payload.get('chunkAddedAt'))))
+        legacy_shape = (function == 'pqmSandboxExecution' and
+            action in ('preview', 'apply', 'reconcile_partial') and
+            not (action == 'apply' and payload.get('planScope', 'ALL') == 'ALL'))
         allowed_reconciliation_fingerprints = (
             SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS |
             {SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT}
@@ -454,14 +476,14 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             is_canonical_sha256_b64url(payload.get('evidenceDigest'))
         )
         if (set(body) != {'function', 'devMode', 'parameters'} or
-                body['function'] != 'pqmSandboxExecution' or body['devMode'] is not False or
+                not (legacy_shape or all_scope_shape) or body['devMode'] is not False or
                 len(body['parameters']) != 1 or
                 set(envelope) != {'payload', 'signature'} or
                 not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or
                 payload['environment'] != environment or payload['scriptId'] != script_id or
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
-                action not in ('preview', 'apply', 'reconcile_partial') or
+                action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk') or
                 (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
                 (checkpoint_apply_enabled(environment) and payload['action'] == 'apply' and

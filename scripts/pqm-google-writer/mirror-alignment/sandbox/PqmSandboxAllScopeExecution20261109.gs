@@ -12,7 +12,8 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   if (different) throw new Error('PQM: execution authorization rejected');
   var request = JSON.parse(envelope.payload), now = Math.floor(Date.now()/1000);
   if (request.environment!=='SANDBOX' || request.planScope!=='ALL' || request.trigger!=='manual' ||
-      ['apply','recover_apply_chunk'].indexOf(request.action)<0)
+      ['apply','recover_apply_chunk'].indexOf(request.action)<0 ||
+      request.requestId==='592128d9837d4b71bbeb330ef8aabf4b')
     throw new Error('PQM: additive ALL-scope endpoint rejects this action or scope');
   if (request.action==='apply' && (!/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
       !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId ||

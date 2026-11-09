@@ -8,7 +8,7 @@ import unittest
 
 
 MANIFEST=Path('validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json')
-MANIFEST_SHA256 = "308743cb495f6c4de70b12b042dba5383a5210294452e858538fbb1d7e933fd6"
+MANIFEST_SHA256 = "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6"
 TEST_FILE='test_google_writer_all_scope_receipt_recovery_integrity_v1.py'
 
 
@@ -69,6 +69,11 @@ class GoogleWriterAllScopeReceiptRecoveryIntegrityTests(unittest.TestCase):
         self.assertIn('function pqmSandboxAllScopeExecution20261109(envelope)',addon)
         self.assertIn("request.planScope!=='ALL'",addon)
         self.assertIn("['apply','recover_apply_chunk'].indexOf(request.action)<0",addon)
+        self.assertIn("request.requestId==='592128d9837d4b71bbeb330ef8aabf4b'",addon)
+        guard=canonical((root/'sandbox_runtime.py').read_bytes()).decode('utf-8')
+        self.assertIn("function == 'pqmSandboxAllScopeExecution20261109'",guard)
+        self.assertIn('SANDBOX_LEGACY_WRITER_REQUEST_IDS',guard)
+        self.assertIn('not (action == \'apply\' and payload.get(\'planScope\', \'ALL\') == \'ALL\')',guard)
         self.assertIn('function pqmSandboxExecution(envelope)',legacy)
 
 

@@ -90,6 +90,10 @@ EXACT_TREE_OVERLAY_MODULES={
     # Legacy append reconciliation v2 remains pinned to the exact 98eb5d5
     # source snapshot; the corrected 25+0 profile is pinned by additive v3.
     'test_legacy_append_reconciliation_integrity_v2',
+    # The v3 and bounded-read exact-source contracts run only against their
+    # immutable source snapshots, never against the evolving candidate tree.
+    'test_legacy_append_reconciliation_integrity_v3',
+    'validation.local_release_20260911.test_legacy_sheet_read_bounds_integrity_v1',
 }
 
 def selected_suite(suite,mode):
@@ -117,7 +121,10 @@ def copy_candidate_manifests(source_root, validation_target, mode):
                           'local_release_20261108/google_writer_receipt_recovery_v1.json',
                           'local_release_20261108/legacy_append_reconciliation_v1.json',
                           'local_release_20261108/legacy_append_reconciliation_v2.json',
-                          'local_release_20261108/legacy_append_reconciliation_v3.json'):
+                          'local_release_20261108/legacy_append_reconciliation_v3.json',
+                          'local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json',
+                          'local_release_20261109/google_writer_legacy_source_snapshots_v1.json',
+                          'local_release_20261109/legacy_reconciliation_evidence_v2.json'):
         source=Path(source_root)/'validation'/manifest_name
         target=Path(validation_target)/manifest_name
         target.parent.mkdir(parents=True,exist_ok=True)
@@ -163,6 +170,7 @@ def main():
                             'run_google_writer_receipt_recovery_v1_history.py',
                             'run_legacy_append_reconciliation_v1_history.py',
                             'run_legacy_append_reconciliation_v2_history.py',
+                            'run_immutable_google_writer_source_overlays.py',
                             'run_sandbox_preview_append_only_v1_history.py',
                             'run_sandbox_preview_workflow_v1_history.py',
                             'run_messages_integrated_v1_history_addendum.py'):
@@ -218,7 +226,9 @@ def main():
                               'prepared_append_only_retry_v1_exact_d386586.zip',
                              'google_writer_receipt_recovery_v1_exact_24554fef.zip',
                              'legacy_append_reconciliation_v1_exact_1111eb9.zip',
-                             'legacy_append_reconciliation_v2_exact_98eb5d5.zip')
+                             'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
+                             'google_writer_legacy_reconciliation_v3_immutable.zip',
+                             'google_writer_legacy_sheet_bounds_v1_immutable.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -338,6 +348,9 @@ def main():
             legacy_append_reconciliation_v2_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v2_history.py')],
                 cwd=old_cwd,check=False)
+            immutable_google_writer_source_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_immutable_google_writer_source_overlays.py')],
+                cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
             baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
@@ -356,7 +369,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

@@ -297,10 +297,38 @@ def _validate_partial_reconciliation_saved_run(con, request_id, profile):
         'attempted_checkpoint_digest': None,
         'plan_scope': 'APPEND_ONLY',
     }
+    # claim_run()/hold_unknown_run() persist operational progress metadata.
+    # Accept only that closed set, and never let it imply checkpoint/resume.
+    optional_state_keys = {'progress_state', 'last_progress_at',
+        'last_confirmed_progress_at', 'planned_counts', 'auto_continue_chunks',
+        'attempted_phase', 'safe_error'}
     expected_state_keys = set(required_state) | {'plan_digest', 'details_digest'}
-    if (not isinstance(state, dict) or set(state) != expected_state_keys or
+    if (not isinstance(state, dict) or not expected_state_keys.issubset(state) or
+            set(state) - expected_state_keys - optional_state_keys or
             any(state.get(key) != value for key, value in required_state.items())):
         raise RuntimeError('APPEND_ONLY reconciliation hold is not the expected no-checkpoint state')
+    progress_state = state.get('progress_state')
+    if progress_state is not None and progress_state not in {'preparing', 'remote_in_flight', 'verified'}:
+        raise RuntimeError('APPEND_ONLY reconciliation progress state is invalid')
+    for key in ('last_progress_at', 'last_confirmed_progress_at'):
+        value = state.get(key)
+        if value is not None:
+            try:
+                if not isinstance(value, str): raise ValueError
+                datetime.fromisoformat(value.replace('Z', '+00:00'))
+            except (TypeError, ValueError):
+                raise RuntimeError('APPEND_ONLY reconciliation progress timestamp is invalid') from None
+    planned = state.get('planned_counts')
+    if planned is not None and (not isinstance(planned, dict) or
+            set(planned) != {'append', 'update', 'conflict', 'error'} or
+            any(type(value) is not int or value < 0 for value in planned.values())):
+        raise RuntimeError('APPEND_ONLY reconciliation planned counts are invalid')
+    if state.get('auto_continue_chunks') not in (None, False):
+        raise RuntimeError('APPEND_ONLY reconciliation cannot authorize automatic continuation')
+    if state.get('attempted_phase') not in (None, 'append'):
+        raise RuntimeError('APPEND_ONLY reconciliation attempted phase is invalid')
+    if state.get('safe_error') is not None and not isinstance(state.get('safe_error'), dict):
+        raise RuntimeError('APPEND_ONLY reconciliation safe error metadata is invalid')
     snapshot = con.execute('''SELECT environment,actor,plan_digest,append_only_digest,
                                      details_digest,details_json
                               FROM google_writer_preview_plans WHERE request_id=?''',
@@ -341,6 +369,10 @@ def _validate_partial_reconciliation_saved_run(con, request_id, profile):
                            for cell in item['cells'])
                 for item in details['appends'])):
         raise RuntimeError('Saved APPEND_ONLY Preview content does not match the fixed profile')
+    if planned is not None and planned != {
+            'append': len(details.get('appends', [])), 'update': 0,
+            'conflict': len(details.get('conflicts', [])), 'error': len(details.get('errors', []))}:
+        raise RuntimeError('APPEND_ONLY reconciliation planned counts differ from the saved Preview')
     if profile.get('expected_first_chunk_by_tab'):
         if any(item.get('tab') not in {'ФОП','ЮО'} or
                not isinstance(item.get('code'),str) or not item.get('code').strip()
@@ -1037,8 +1069,12 @@ class ExecutionClient:
                 hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode('ascii').rstrip('=')
         script, sheet, function = IDENTITIES[self.environment]
         api_function=function
+        historical_profile_ids = {profile.get('request_id') for profile in PARTIAL_RECONCILIATION_PROFILES.values()
+                                  if isinstance(profile, dict) and profile.get('request_id')}
         if (self.environment=='SANDBOX' and action=='apply' and
                 checkpoint_apply_enabled(self.environment) and plan_scope=='ALL'):
+            if request_id in historical_profile_ids:
+                raise ValueError('Historical reconciliation request cannot use the new ALL-scope endpoint')
             if (not manual_override or not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
                     not is_canonical_sha256_b64url(chunk_digest) or plan_id!=request_id or
                     not is_canonical_sha256_b64url(chunk_details_digest) or
@@ -1049,6 +1085,8 @@ class ExecutionClient:
                 raise ValueError('Sandbox ALL-scope Apply requires its durable chunk binding')
             api_function='pqmSandboxAllScopeExecution20261109'
         elif action=='recover_apply_chunk':
+            if request_id in historical_profile_ids:
+                raise ValueError('Historical reconciliation request cannot use the new ALL-scope endpoint')
             api_function='pqmSandboxAllScopeExecution20261109'
         issued = int(self.clock().timestamp())
         message = {'environment':self.environment, 'scriptId':script, 'spreadsheetId':sheet,
