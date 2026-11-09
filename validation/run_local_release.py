@@ -84,6 +84,9 @@ EXACT_TREE_OVERLAY_MODULES={
     # Receipt-recovery v1 remains pinned to its original 24554fef tree; its
     # additive successor is tested against the current candidate separately.
     'test_google_writer_receipt_recovery_integrity_v1',
+    # ALL-scope recovery v1 is immutable at 9037e57; v2 pins the manifest
+    # compatibility correction against the evolving candidate.
+    'test_google_writer_all_scope_receipt_recovery_integrity_v1',
     # Legacy append reconciliation v1 remains pinned to the original 1111eb9
     # profile source; its source-digest-absence successor is an additive v2.
     'test_legacy_append_reconciliation_integrity_v1',
@@ -125,6 +128,7 @@ def copy_candidate_manifests(source_root, validation_target, mode):
                           'local_release_20261108/legacy_append_reconciliation_v2.json',
                           'local_release_20261108/legacy_append_reconciliation_v3.json',
                           'local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json',
+                          'local_release_20261109/google_writer_manifest_compatibility_v2.json',
                           'local_release_20261109/google_writer_legacy_source_snapshots_v1.json',
                           'local_release_20261109/legacy_reconciliation_evidence_v2.json'):
         source=Path(source_root)/'validation'/manifest_name
@@ -170,6 +174,7 @@ def main():
                             'run_partial_reconciliation_first_append_only_v1_history.py',
                             'run_prepared_append_only_retry_v1_history.py',
                             'run_google_writer_receipt_recovery_v1_history.py',
+                            'run_google_writer_all_scope_receipt_recovery_v1_history.py',
                             'run_legacy_append_reconciliation_v1_history.py',
                             'run_legacy_append_reconciliation_v2_history.py',
                             'run_immutable_google_writer_source_overlays.py',
@@ -227,6 +232,7 @@ def main():
                              'partial_reconciliation_first_append_only_v1_exact_1fd48f4.zip',
                               'prepared_append_only_retry_v1_exact_d386586.zip',
                              'google_writer_receipt_recovery_v1_exact_24554fef.zip',
+                             'google_writer_all_scope_receipt_recovery_v1_9037e57.zip',
                              'legacy_append_reconciliation_v1_exact_1111eb9.zip',
                              'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
                              'google_writer_legacy_reconciliation_v3_immutable.zip',
@@ -344,6 +350,9 @@ def main():
             receipt_recovery_v1_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_google_writer_receipt_recovery_v1_history.py')],
                 cwd=old_cwd,check=False)
+            all_scope_recovery_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_google_writer_all_scope_receipt_recovery_v1_history.py')],
+                cwd=old_cwd,check=False)
             legacy_append_reconciliation_v1_overlay=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v1_history.py')],
                 cwd=old_cwd,check=False)
@@ -371,7 +380,7 @@ def main():
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and historic.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and historic.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

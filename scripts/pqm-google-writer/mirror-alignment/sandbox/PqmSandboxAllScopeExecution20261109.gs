@@ -312,7 +312,7 @@ function pqmSandboxRecoverApplyChunk20261109_(id,properties,key,stored,request,r
       !['writing','uncertain'].includes(record.state) || !Array.isArray(manifest.rows) ||
       !manifest.rows.length || manifest.rows.length>PQM_SANDBOX_FULL_CHUNK_MAX_ROWS) {
     var saved=record.steps && record.steps[request.chunkIndex];
-    if (record.state==='ready' && saved && saved.verified===true &&
+    if (['ready','complete'].indexOf(record.state)>=0 && saved && saved.verified===true &&
         saved.chunkId===request.chunkId && saved.chunkDigest===request.chunkDigest &&
         saved.planId===request.planId && saved.phase===request.chunkPhase &&
         saved.planScope==='ALL' && pqmSandboxIsCanonicalDigest_(saved.checkpointDigest)) {

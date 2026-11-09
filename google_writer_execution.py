@@ -3219,7 +3219,7 @@ class AppendOnlyContinuationWorker:
                                 FROM google_writer_runs r JOIN google_writer_chunk_journal c
                                   ON c.run_id=r.request_id
                                 WHERE r.environment='SANDBOX' AND r.trigger='manual'
-                                  AND r.status IN ('running','outcome_unknown')
+                                  AND r.status='running'
                                   AND c.status IN ('inflight','outcome_unknown')
                                 UNION ALL
                                 SELECT r.request_id,r.actor,r.status,r.result_json,
@@ -3227,7 +3227,7 @@ class AppendOnlyContinuationWorker:
                                 FROM google_writer_runs r JOIN google_writer_apply_chunk_journal c
                                   ON c.run_id=r.request_id
                                 WHERE r.environment='SANDBOX' AND r.trigger='manual'
-                                  AND r.status IN ('running','outcome_unknown') AND c.scope='ALL'
+                                  AND r.status='running' AND c.scope='ALL'
                                   AND c.status IN ('inflight','outcome_unknown')
             ORDER BY started_at''').fetchall()
         now=datetime.now(timezone.utc);found=[];seen=set()
@@ -3244,8 +3244,6 @@ class AppendOnlyContinuationWorker:
                     if claimed.tzinfo is None or (now-claimed.astimezone(timezone.utc)).total_seconds()<APPEND_RECOVERY_LEASE_SECONDS:
                         continue
                 except (TypeError,ValueError):continue
-            if run_status=='outcome_unknown':
-                found.append((request_id,actor,journal_kind));continue
             try:
                 stamp=datetime.fromisoformat(inflight_at)
                 if stamp.tzinfo and (now-stamp.astimezone(timezone.utc)).total_seconds()>=APPEND_RECOVERY_STALE_SECONDS:

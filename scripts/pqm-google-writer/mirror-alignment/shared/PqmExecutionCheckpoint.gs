@@ -96,18 +96,32 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     var requests = adapter.appendRequests(append.selected, append.tabs, {
       requestId: request.requestId, runId: request.requestId,
       planId: request.planId || request.requestId,
-      expectedDigest: request.expectedDigest, addedAt: request.chunkAddedAt || null
+      expectedDigest: request.expectedDigest, addedAt: request.chunkAddedAt || null,
+      journaled: !!request.chunkId
     });
     if (!requests.length) throw new Error('PQM EXECUTION CHECKPOINT: empty APPEND chunk.');
     record.inflight = request.chunkIndex;
     if (request.chunkId) {
-      record.chunkJournalVersion = request.planScope === 'APPEND_ONLY' ? 1 : 2;
       record.planId = request.planId;
       record.runId = request.requestId;
-      record.inflightManifest = {chunkId: request.chunkId, chunkDigest: request.chunkDigest,
-        detailsDigest: request.chunkDetailsDigest || null, planId: request.planId,
-        runId: request.requestId, phase: 'append', rows: adapter.chunkEvidence ?
-          adapter.chunkEvidence('append',append.selected,loaded,request) : []};
+      if (request.planScope === 'APPEND_ONLY') {
+        // Preserve the exact v1 manifest consumed by the legacy APPEND_ONLY
+        // recovery entrypoint. Existing Script Properties are never migrated.
+        record.chunkJournalVersion = 1;
+        record.inflightManifest = {chunkId: request.chunkId, chunkDigest: request.chunkDigest,
+          planId: request.planId, runId: request.requestId,
+          rows: append.selected.map(function(change) { return {tab: change.tab, row: change.row,
+            code: String(change.cells[1]).trim(), cellsDigest: adapter.controlledDigest(change.cells),
+            formulaA: change.cells[0], serviceMetadata: change.serviceMetadata}; })};
+      } else {
+        record.chunkJournalVersion = 2;
+        record.inflightManifest = {chunkId: request.chunkId, chunkDigest: request.chunkDigest,
+          detailsDigest: request.chunkDetailsDigest, planId: request.planId,
+          runId: request.requestId, phase: 'append', rows: adapter.chunkEvidence ?
+            adapter.chunkEvidence('append',append.selected,loaded,request) : []};
+        if (!record.inflightManifest.rows.length)
+          throw new Error('PQM EXECUTION CHECKPOINT: ALL APPEND recovery manifest unavailable.');
+      }
     }
     record.state = 'writing';
     record.lastStage='append_inflight_save';

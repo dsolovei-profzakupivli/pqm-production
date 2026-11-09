@@ -123,7 +123,7 @@ function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
   const nextRow={'ФОП':2,'ЮО':2};
   const queue=Array.from({length:totalAppends},(_,i)=>{
     const tab=i%2?'ЮО':'ФОП',row=nextRow[tab]++;
-    return {tab,row,cells:{1:'code-'+i}};
+    return {tab,row,cells:{0:`=IF(B${row}="","",1)`,1:'code-'+i}};
   });
   const writtenRows={'ФОП':0,'ЮО':0};
   const tabsNow=()=>({ФОП:{rows:Array.from({length:writtenRows['ФОП']},()=>({}))},
@@ -164,7 +164,10 @@ function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
       ЮО:{rows:Array.from({length:writtenRows['ЮО']},()=>({}))}},
       payload_digest:loaded.state.payload_digest,plan:loaded.plan}),
     appendPrewriteGuard:()=>{},appendRowMetadata:()=>({cells:[],height:28}),
-    appendRequests:selected=>[{selected:selected}],
+    appendRequests:(selected,_tabs,request)=>{selected.forEach(change=>{
+      change.serviceMetadata={addedAt:request.addedAt||'2026-11-09T14:00:00+02:00',
+        planId:request.planId,runId:request.runId};
+    });return[{selected:selected}];},
     batchUpdate:request=>{writes++;request.requests[0].selected.forEach(change=>{writtenRows[change.tab]++;});
       queue.splice(0,request.requests[0].selected.length);version++;
       if(loseNextResponse){loseNextResponse=false;throw new Error('synthetic response lost after successful write');}},
@@ -175,7 +178,11 @@ function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
     appendPayloadDigest:()=> payloadDigest,protectionCheck:()=>{},readRows:()=>[],fullBeforeCheck:()=>{},
     fullRequests:()=>[],controlledVerify:()=>({verification_passed:true}),snapshot:()=>({version,sheetDigest}),
     fullSheetState:tabs=>tabs,plan:()=>({counts:{appended:queue.length,updated:0,conflicts:0,errors:0}}),
-    controlledDigest,rowState:value=>value});
+    controlledDigest,rowState:value=>value,chunkEvidence:(phase,selected,_loaded,request)=>selected.map(change=>({
+      tab:change.tab,row:change.row,columns:Array.from({length:15},(_,column)=>column),
+      beforeDigest:controlledDigest({phase,before:true,tab:change.tab,row:change.row}),
+      afterDigest:controlledDigest({phase,before:false,tab:change.tab,row:change.row}),
+      codeDigest:controlledDigest(String(change.cells[1]||'').trim())}))});
   const checkpointStep=context.pqmSandboxApplyCheckpointStep_;
   context.pqmSandboxApplyCheckpointStep_=(...args)=>{
     try{return checkpointStep(...args);}catch(error){context.lastCheckpointError=String(error);throw error;}
@@ -1343,11 +1350,71 @@ test('Apps Script v6 does not replay a chunk when Execution API loses its respon
   assert.equal(f.writes,1);assert.equal(f.remaining,5);
   assert.equal(f.properties.get('PQM_EXECUTION_UNCERTAIN'),id);
   const held=JSON.parse(f.properties.get('PQM_EXECUTION_RUN_'+id));
+  assert.equal(held.chunkJournalVersion,2);
+  assert.equal(held.inflightManifest.phase,'append');
+  assert.deepEqual(Object.keys(held.inflightManifest.rows[0]).sort(),
+    ['afterDigest','beforeDigest','codeDigest','columns','row','tab']);
   assert.equal(held.lastError.stage,'append_batch_update');
   assert.equal(held.lastError.exceptionType,'Error');
   assert.doesNotMatch(JSON.stringify(held),/synthetic response lost/,'raw exception text is not persisted');
   assert.throws(apply,/outcome uncertain/);
   assert.equal(f.writes,1,'uncertain chunk remains held and is never replayed');
+});
+
+test('APPEND_ONLY lost-response checkpoint keeps the exact legacy v1 manifest contract', () => {
+  const digest=crypto.createHash('sha256').update('legacy v1 manifest plan').digest('base64url');
+  const f=realCheckpointExecutionFixture(digest,30),id='b'.repeat(32),chunkId='c'.repeat(32);
+  const base=JSON.parse(f.request('apply',id,digest,0,'APPEND_ONLY').payload);
+  Object.assign(base,{chunkId,chunkDigest:crypto.createHash('sha256').update('legacy chunk').digest('base64url'),planId:id});
+  const payload=JSON.stringify(base),envelope={payload,
+    signature:crypto.createHmac('sha256','S'.repeat(40)).update(payload).digest('base64url')};
+  f.loseNextResponse();
+  assert.throws(()=>f.context.pqmSandboxExecution(envelope),/Apply may be partial/);
+  const held=JSON.parse(f.properties.get('PQM_EXECUTION_RUN_'+id));
+  assert.equal(held.chunkJournalVersion,1);
+  assert.deepEqual(Object.keys(held.inflightManifest.rows[0]).sort(),
+    ['cellsDigest','code','formulaA','row','serviceMetadata','tab']);
+  assert.equal(held.inflightManifest.rows.length,25);
+  assert.equal(held.inflightManifest.rows[0].serviceMetadata.runId,id);
+  assert.equal(held.inflightManifest.rows[0].serviceMetadata.planId,id);
+  assert.equal(f.writes,1);
+  assert.throws(()=>f.context.pqmSandboxExecution(envelope),/outcome uncertain/);
+  assert.equal(f.writes,1,'a repeated Apply cannot replay the held APPEND_ONLY chunk');
+});
+
+test('ALL UPDATE writes journal v2 before batch update without changing the legacy v1 shape', () => {
+  const f=checkpointStepFixture(0,1),context=f.context,loaded=f.loaded();
+  const requestId='9'.repeat(32),chunkId='8'.repeat(32),digest='D'.repeat(43),saved=[];
+  const originalSave=context.pqmExecutionCheckpointSave_;
+  context.pqmExecutionCheckpointSave_=(props,key,record)=>{
+    saved.push(clone(record));props.setProperty(key,JSON.stringify(record));
+  };
+  const record={checkpointProtocolVersion:2,actor:'synthetic-admin',trigger:'manual',digest,
+    planScope:'ALL',result:null,state:'ready',nextChunk:0,inflight:null,payloadDigest:loaded.state.payload_digest,
+    googleDigest:loaded.state.google_digest,aggregate:{append:0,update:0,batches:0},steps:[]};
+  const rowEvidence={tab:'ЮО',row:2,columns:Array.from({length:15},(_,i)=>i),
+    beforeDigest:'B'.repeat(43),afterDigest:'A'.repeat(43),codeDigest:'C'.repeat(43)};
+  const adapter={appendLoad:()=>({selected:[],tabs:{}}),appendPayloadDigest:()=>loaded.state.payload_digest,
+    protectionCheck:()=>{},fullChunks:()=>[[{tab:'ЮО',row:2,columns:[4]}]],
+    fetchRegistry:()=>({count:0,items:[]}),fullBeforeCheck:()=>{},fullRequests:()=>[{kind:'update'}],
+    controlledVerify:()=>({verification_passed:true}),readRows:()=>[{}],
+    controlledDigest:value=>crypto.createHash('sha256').update(JSON.stringify(value),'utf8').digest('base64url'),
+    snapshot:()=>({after:true}),fullSheetState:value=>value,plan:()=>({counts:{appended:0,updated:0,conflicts:0,errors:0}}),
+    rowState:value=>value,chunkEvidence:()=>[rowEvidence],batchUpdate:()=>{}};
+  const req={requestId,actor:'synthetic-admin',trigger:'manual',expectedDigest:digest,planScope:'ALL',
+    chunkIndex:0,chunkId,chunkDigest:'H'.repeat(43),chunkDetailsDigest:'T'.repeat(43),
+    chunkPhase:'update',planId:requestId};
+  const receipt=(status,counts,expected)=>({status,counts,digest:expected,planScope:'ALL'});
+  context.pqmExecutionApplyCheckpointStep_(adapter,'sheet-sandbox',loaded,req,
+    {setProperty:(key,value)=>saved.push(JSON.parse(value))},'run-key',record,receipt,
+    {appendPageRows:25,updatePageRows:50,updatePageCells:100,maxBytes:12000});
+  const inflight=saved.find(value=>value.state==='writing');
+  assert.ok(inflight);
+  assert.equal(inflight.chunkJournalVersion,2);
+  assert.deepEqual(inflight.inflightManifest.rows,[rowEvidence]);
+  assert.equal(record.aggregate.update,1);
+  assert.equal(record.aggregate.append,0);
+  context.pqmExecutionCheckpointSave_=originalSave;
 });
 
 test('ALL-scope lost response recovers only exact read-back and persists a bound checkpoint', () => {
@@ -1391,6 +1458,13 @@ test('ALL-scope lost response recovers only exact read-back and persists a bound
   assert.equal(result.checkpointDigest,JSON.parse(props.get(key)).steps[0].checkpointDigest);
   assert.equal(props.has('PQM_EXECUTION_UNCERTAIN'),false);
   assert.equal(JSON.parse(props.get(key)).steps[0].counts.append,1);
+  const saved=props.get(key),savedSteps=JSON.parse(saved).steps.length;
+  const replay=context.pqmSandboxRecoverApplyChunk20261109_('sandbox-sheet',{
+    getProperty:name=>props.get(name)||null,setProperty:(name,value)=>props.set(name,value),
+    deleteProperty:name=>props.delete(name)},key,saved,request,receipt);
+  assert.equal(replay.status,'CHUNK_RECOVERED');
+  assert.equal(replay.checkpointDigest,result.checkpointDigest);
+  assert.equal(JSON.parse(props.get(key)).steps.length,savedSteps,'receipt replay does not create another checkpoint step');
 });
 
 test('ALL-scope recovery keeps the hold for a zero-write or ambiguous row state', () => {

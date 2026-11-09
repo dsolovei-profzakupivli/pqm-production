@@ -107,7 +107,7 @@ class AllScopeApplyJournalTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_apply_chunk_journal').fetchone()[0],0)
 
-    def test_worker_recovers_exact_uncertain_chunk_then_continues_with_remaining_append_and_update(self):
+    def test_explicit_recovery_helper_verifies_uncertain_chunk_then_continues_with_remaining_append_and_update(self):
         first=self.prepare(0)
         execution.mark_apply_chunk_inflight(self.path,first['chunk_id'])
         execution.hold_unknown_run(self.path,self.request_id,attempted_chunk=0,
@@ -179,13 +179,14 @@ class AllScopeApplyJournalTests(unittest.TestCase):
         self.assertEqual(status,'outcome_unknown')
         self.assertEqual(chunk_status,'outcome_unknown')
 
-    def test_continuation_worker_discovers_all_scope_unknown_chunk(self):
+    def test_continuation_worker_does_not_auto_recover_all_scope_unknown_hold(self):
         chunk=self.prepare(0)
         execution.mark_apply_chunk_inflight(self.path,chunk['chunk_id'])
         execution.hold_unknown_run(self.path,self.request_id,attempted_chunk=0,
             digest=self.plan_digest,chunk_id=chunk['chunk_id'],phase='append')
         worker=execution.AppendOnlyContinuationWorker(self.path,lambda:None,lambda:True)
-        self.assertEqual(worker.recoverable(),[(self.request_id,'operator','ALL')])
+        self.assertEqual(worker.recoverable(),[])
+        self.assertEqual(worker.run_once(),0)
 
     def test_all_scope_worker_bounds_each_http_apply_to_four_confirmed_chunks(self):
         request_id='b'*32

@@ -1,0 +1,46 @@
+{
+  "contract": "pqm-sandbox-google-writer-manifest-compatibility",
+  "version": 2,
+  "baseline": "7df413e2d3d7242e1cc321e6578026f5cad271d1",
+  "normalization": "CRLF-to-LF only for text files",
+  "scope": [
+    "google_writer_execution.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendApply.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs",
+    "test_google_writer_all_scope_recovery.py",
+    "test_google_writer_durable_append_recovery.py",
+    "test_google_writer_manifest_compatibility_integrity_v2.py",
+    "validation/fixtures/google_writer_all_scope_receipt_recovery_v1_9037e57.zip",
+    "validation/run_google_writer_all_scope_receipt_recovery_v1_history.py",
+    "validation/run_local_release.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "6ae7df6598edd7814305d6b6ced3501bd86ae217c8be0ab6b7ba998be5ba9ae3",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "4d5ef0efcff0944b45b6ce0922f05daf3ead5d0a2a22d82f0e024932a09877dd",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendApply.gs": "cefcb644afcd91f4340a4ce8692cfe7f779f50416487accaf097da15a9ec4d14",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "8b0af8580913db3f867be76b8cfc5a58e11934e43e919f6bd968986d6bf4f7fa",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs": "6eb721e4c0f550bf7352522bc55ff681193ff7dfd72255d52cf0fc452c184352",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "e5e4573e341992e1349510fbda2e8f92638f91ccff84960d126e8bb19da9f7bf",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "2ecc8412c5db25f4a121dcdd457c8cc13af35f1212ada26217aefea8b95c1c9b",
+    "test_google_writer_all_scope_recovery.py": "8d787c1359d77ff00a2a75470fe27d7cf333ee73fd618bd47053e663f4ff7ecf",
+    "test_google_writer_durable_append_recovery.py": "e66c60507c7a6a227ce401160ae3d67d4ccf3df39dd408327f8024a394b5144c",
+    "test_google_writer_manifest_compatibility_integrity_v2.py": "3c539ec702c8ca41f162cadf519cb6b7f09916e69aed389aac7d250fcd2c2300",
+    "validation/fixtures/google_writer_all_scope_receipt_recovery_v1_9037e57.zip": "682bd1779f5ab7675f59f5e5cfb2e117b962a67c6e73df1b3602911b6f299b92",
+    "validation/run_google_writer_all_scope_receipt_recovery_v1_history.py": "de5292c04056e3548bfb6ed840076155fd5cc3ab209977808fb405d957a9947e",
+    "validation/run_local_release.py": "103fda3f2845456b2fd1e15d577a1cd4a7186f677b35525b3ca1a6696dc29a0f"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",
+    "validation/local_release_20261108/google_writer_receipt_recovery_v1.json": "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b",
+    "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+    "validation/local_release_20261108/legacy_append_reconciliation_v2.json": "7aecd4a1eee8c35cbe8210336203030a2c1f1d77709e6bce5e9d01a588eb43dc",
+    "validation/local_release_20261108/legacy_append_reconciliation_v3.json": "d5c1b6d44d24e18076a2f95e2ab803476731719982f27d92e81de0a584235890",
+    "validation/local_release_20261109/legacy_reconciliation_evidence_v2.json": "7694d1c0a720702a71d6a5a9ee380381298b8bd1aecab6ff32838d5fd56a03d5",
+    "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+    "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd"
+  }
+}

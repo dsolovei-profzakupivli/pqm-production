@@ -157,7 +157,7 @@ class DurableAppendRecoveryTests(unittest.TestCase):
         self.assertEqual(calls, ["apply", "recover_append_chunk"])
         self.assertEqual(execution.chunk_journal_state(self.path, self.run_id)["unknown_chunks"], 1)
 
-    def test_unknown_chunk_can_be_read_only_recovered_after_worker_restart(self):
+    def test_continuation_worker_keeps_unknown_hold_after_restart_without_recovery_call(self):
         self._claim()
         def initial(action, *args, **kwargs):
             if action == "apply": raise execution.ExecutionOutcomeUnknown("lost")
@@ -166,15 +166,19 @@ class DurableAppendRecoveryTests(unittest.TestCase):
             digest=self.append_digest, manual_authorized=True, plan_scope="APPEND_ONLY")
         self.assertEqual(initial_result["status"], "OUTCOME_UNKNOWN_HOLD_NO_RETRY")
         calls = []
-        def recovered(action, *args, **kwargs):
+        def forbidden_recovery(action, *args, **kwargs):
             calls.append(action)
-            self.assertEqual(action, "recover_append_chunk")
-            return self._receipt(0, status="CHUNK_RECOVERED", append=25, more=True)
-        result = execution.recover_interrupted_append_chunk(self.path, self._client(recovered),
-            self.run_id, ACTOR, now=NOW + timedelta(seconds=1))
-        self.assertEqual(result["status"], "HALTED_AFTER_VERIFIED_CHECKPOINTS")
-        self.assertEqual(calls, ["recover_append_chunk"])
-        self.assertEqual(execution.chunk_journal_state(self.path, self.run_id)["unknown_chunks"], 0)
+            raise AssertionError("unknown hold must not reach the continuation worker")
+        worker = execution.AppendOnlyContinuationWorker(
+            self.path, lambda: self._client(forbidden_recovery), lambda: True)
+        self.assertEqual(worker.recoverable(), [])
+        self.assertEqual(worker.run_once(), 0)
+        self.assertEqual(calls, [])
+        self.assertEqual(execution.chunk_journal_state(self.path, self.run_id)["unknown_chunks"], 1)
+        with closing(sqlite3.connect(self.path)) as con:
+            status = con.execute("SELECT status FROM google_writer_runs WHERE request_id=?",
+                (self.run_id,)).fetchone()[0]
+        self.assertEqual(status, "outcome_unknown")
 
     def test_interrupted_running_chunk_waits_for_stale_window_and_uses_recovery_lease(self):
         self._claim()
