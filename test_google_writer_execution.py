@@ -42,6 +42,9 @@ class ExecutionTransportTests(unittest.TestCase):
                     more=False,phase='append',checkpointDigest=TEST_DIGEST)
                 if payload['environment']=='SANDBOX':
                     result['planScope']=payload['planScope']
+                    for source,target in (('chunkId','chunkId'),('chunkDigest','chunkDigest'),
+                                          ('planId','planId'),('chunkPhase','phase')):
+                        if source in payload: result[target]=payload[source]
                     if payload['planScope']=='APPEND_ONLY':result['counts']={'append':1,'update':0,'conflict':1,'error':0}
             if payload['action']=='resume_check':
                 result.update(status='RESUME_READY',digest=payload['expectedDigest'],planScope='APPEND_ONLY',
@@ -78,6 +81,24 @@ class ExecutionTransportTests(unittest.TestCase):
         self.assertNotIn('chunkIndex',payload)
         self.assertEqual(result['status'],'COMPLETE')
         self.assertNotIn('nextChunk',result)
+
+    def test_all_scope_durable_apply_uses_additive_apps_script_entrypoint(self):
+        client=self.client('SANDBOX')
+        request_id='a'*32
+        client.invoke('apply',request_id,'uo',trigger='manual',digest=TEST_DIGEST,plan_scope='ALL',
+            manual_authorized=True,chunk_index=0,chunk_id='b'*32,chunk_digest=TEST_DIGEST,
+            plan_id=request_id,chunk_phase='append',chunk_added_at='2026-11-09T14:00:00+02:00',
+            chunk_details_digest=TEST_DIGEST)
+        body=json.loads(self.calls[0][0].data)
+        payload=json.loads(body['parameters'][0]['payload'])
+        self.assertEqual(body['function'],'pqmSandboxAllScopeExecution20261109')
+        self.assertEqual(payload['action'],'apply')
+        self.assertEqual(payload['planScope'],'ALL')
+        self.assertEqual(payload['chunkId'],'b'*32)
+        self.assertEqual(payload['chunkPhase'],'append')
+        with self.assertRaisesRegex(ValueError,'durable chunk binding'):
+            self.client('SANDBOX').invoke('apply',request_id,'uo',trigger='manual',digest=TEST_DIGEST,
+                plan_scope='ALL',manual_authorized=True,chunk_index=0)
 
     def test_shared_checkpoint_architecture_can_be_enabled_by_environment_only(self):
         self.assertTrue(execution_apply_contract.checkpoint_apply_enabled('SANDBOX'))
@@ -144,7 +165,11 @@ class ExecutionTransportTests(unittest.TestCase):
         failure=HTTPError('https://script.googleapis.com',401,'TEST_SECRET_DO_NOT_LEAK',{},io.BytesIO())
         opener=Mock(side_effect=failure);client=self.client('SANDBOX',opener=opener)
         with self.assertRaises(execution.ExecutionPreflightError) as raised:
-            client.invoke('apply','d'*32,'uo',digest=TEST_DIGEST,plan_scope='ALL',manual_authorized=True)
+            request_id='d'*32
+            client.invoke('apply',request_id,'uo',digest=TEST_DIGEST,plan_scope='ALL',manual_authorized=True,
+                chunk_index=0,chunk_id='e'*32,chunk_digest=TEST_DIGEST,plan_id=request_id,
+                chunk_phase='append',chunk_added_at='2026-11-09T14:00:00+02:00',
+                chunk_details_digest=TEST_DIGEST)
         self.assertNotIn('TEST_SECRET_DO_NOT_LEAK',str(raised.exception))
         self.assertEqual(opener.call_count,1)
 

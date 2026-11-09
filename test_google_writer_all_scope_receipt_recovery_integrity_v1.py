@@ -8,7 +8,7 @@ import unittest
 
 
 MANIFEST=Path('validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json')
-MANIFEST_SHA256 = "a70817e78a7bf602e27ca05f728d8ee6ab02adf52befc393857f827431d5ff01"
+MANIFEST_SHA256 = "308743cb495f6c4de70b12b042dba5383a5210294452e858538fbb1d7e933fd6"
 TEST_FILE='test_google_writer_all_scope_receipt_recovery_integrity_v1.py'
 
 
@@ -58,6 +58,18 @@ class GoogleWriterAllScopeReceiptRecoveryIntegrityTests(unittest.TestCase):
                          'test_all_scope_worker_bounds_each_http_apply_to_four_confirmed_chunks',
                          'test_read_only_no_write_proof_keeps_all_scope_run_held'):
             with self.subTest(test=required):self.assertIn(required,tests)
+
+    def test_candidate_routes_all_scope_to_pinned_legacy_safe_additive_entrypoint(self):
+        root=root_path()
+        transport=canonical((root/'google_writer_execution.py').read_bytes()).decode('utf-8')
+        addon=canonical((root/'scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs').read_bytes()).decode('utf-8')
+        legacy=canonical((root/'scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs').read_bytes()).decode('utf-8')
+        self.assertIn("api_function='pqmSandboxAllScopeExecution20261109'",transport)
+        self.assertIn("'function':api_function",transport)
+        self.assertIn('function pqmSandboxAllScopeExecution20261109(envelope)',addon)
+        self.assertIn("request.planScope!=='ALL'",addon)
+        self.assertIn("['apply','recover_apply_chunk'].indexOf(request.action)<0",addon)
+        self.assertIn('function pqmSandboxExecution(envelope)',legacy)
 
 
 if __name__=='__main__':

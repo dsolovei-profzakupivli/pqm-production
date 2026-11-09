@@ -14,7 +14,7 @@ function pqmSandboxExecution(envelope) {
   if (request.environment !== PQM_MIRROR_ENV.environment || request.scriptId !== PQM_MIRROR_ENV.scriptId ||
       ScriptApp.getScriptId() !== PQM_MIRROR_ENV.scriptId || request.spreadsheetId !== PQM_MIRROR_ENV.spreadsheetId ||
       request.contract !== 'pqm-mirror-datetime-v1' ||
-      ['preview','apply','resume_check','recover_append_chunk','recover_apply_chunk','reconcile_partial'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
+      ['preview','apply','resume_check','recover_append_chunk','reconcile_partial'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
       (request.action==='reconcile_partial' && request.trigger!=='manual') ||
       !/^[0-9a-f]{32}$/.test(request.requestId || '') ||
       typeof request.actor !== 'string' || !request.actor || request.actor.length>128 ||
@@ -28,29 +28,11 @@ function pqmSandboxExecution(envelope) {
         (request.chunkId!==undefined || request.chunkDigest!==undefined || request.planId!==undefined) &&
         (!/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
          !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId)) ||
-      (request.action==='apply' && request.planScope==='ALL' && request.chunkId!==undefined &&
-        (!/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
-         !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId ||
-         !pqmSandboxIsCanonicalDigest_(request.chunkDetailsDigest) ||
-         ['append','update'].indexOf(request.chunkPhase)<0 ||
-         (request.chunkPhase==='append' && (typeof request.chunkAddedAt!=='string' ||
-           !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(request.chunkAddedAt))) ||
-         (request.chunkPhase==='update' && request.chunkAddedAt!==undefined))) ||
       (request.action==='recover_append_chunk' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
         request.planScope!=='APPEND_ONLY' || !pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
         !Number.isInteger(request.chunkIndex) || request.chunkIndex<0 || request.chunkIndex>499 ||
         !/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
         !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId)) ||
-      (request.action==='recover_apply_chunk' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
-        request.planScope!=='ALL' || !pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
-        !Number.isInteger(request.chunkIndex) || request.chunkIndex<0 || request.chunkIndex>499 ||
-        !/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
-        !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId ||
-        !pqmSandboxIsCanonicalDigest_(request.chunkDetailsDigest) ||
-        ['append','update'].indexOf(request.chunkPhase)<0 ||
-        (request.chunkPhase==='append' && (typeof request.chunkAddedAt!=='string' ||
-          !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(request.chunkAddedAt))) ||
-        (request.chunkPhase==='update' && request.chunkAddedAt!==undefined))) ||
       (request.action==='resume_check' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
         !pqmSandboxIsCanonicalDigest_(request.expectedDigest) || !pqmSandboxIsCanonicalDigest_(request.expectedCheckpointDigest) ||
         !Number.isInteger(request.chunkIndex) || request.chunkIndex<1 || request.chunkIndex>499 ||
@@ -70,10 +52,9 @@ function pqmSandboxExecution(envelope) {
     function receipt(status,counts,digest) {
       var value = {environment:request.environment,scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
         contract:request.contract,requestId:request.requestId,status:status,counts:counts || {},digest:digest || null};
-      if (request.action==='apply' || request.action==='recover_append_chunk' || request.action==='recover_apply_chunk') value.planScope = planScope;
-      if ((request.action==='apply' || request.action==='recover_append_chunk' || request.action==='recover_apply_chunk') && request.chunkId) {
+      if (request.action==='apply' || request.action==='recover_append_chunk') value.planScope = planScope;
+      if ((request.action==='apply' || request.action==='recover_append_chunk') && request.chunkId) {
         value.chunkId=request.chunkId; value.chunkDigest=request.chunkDigest; value.planId=request.planId;
-        if (request.chunkPhase) value.phase=request.chunkPhase;
       }
       return value;
     }
@@ -82,8 +63,6 @@ function pqmSandboxExecution(envelope) {
       return pqmSandboxReconcilePartial_(properties,request,receipt);
     if (request.action==='recover_append_chunk')
       return pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt);
-    if (request.action==='recover_apply_chunk')
-      return pqmSandboxRecoverApplyChunk_(id,properties,key,stored,request,receipt);
     if (stored) {
       var previous=JSON.parse(stored);
       if (previous.actor!==request.actor || previous.digest!==request.expectedDigest ||
@@ -164,9 +143,8 @@ function pqmSandboxExecution(envelope) {
       planScope:planScope,
       result:null,state:'ready',nextChunk:0,inflight:null,payloadDigest:loaded.state.payload_digest,
       googleDigest:loaded.state.google_digest,aggregate:{append:0,update:0,batches:0},steps:[]};
-    if (stored && ((previous.chunkJournalVersion===1 && (!request.chunkId || planScope!=='APPEND_ONLY')) ||
-        (previous.chunkJournalVersion===2 && (!request.chunkId || planScope!=='ALL')) ||
-        (request.chunkId && previous.chunkJournalVersion!==1 && previous.chunkJournalVersion!==2))) {
+    if (stored && ((previous.chunkJournalVersion===1 && !request.chunkId) ||
+        (request.chunkId && previous.chunkJournalVersion!==1))) {
       throw new Error('PQM: Apply chunk journal protocol changed; read-only review required');
     }
     if (!stored && request.chunkId) {
@@ -184,67 +162,16 @@ function pqmSandboxExecution(envelope) {
       if (result.more) return result;
       return record.result || result;
     } catch (_) {
-      var safeStages=['source_and_sheet_guard','chunk_selection','append_prewrite_guard','append_request_build',
-        'append_inflight_save','append_batch_update','append_read_back','append_metadata_read_back',
-        'append_projection','update_chunk_selection','update_inflight_save','update_batch_update',
-        'update_read_back','postwrite_sheet_snapshot','postwrite_plan','checkpoint_receipt_save'];
-      var stage=safeStages.indexOf(record.lastStage)>=0?record.lastStage:'apply_step';
-      var exceptionType=(_ && ['Error','TypeError','RangeError','ReferenceError'].indexOf(_.name)>=0)?_.name:'Other';
-      var provenPrewriteStages=['source_and_sheet_guard','chunk_selection','append_prewrite_guard',
-        'append_request_build','append_inflight_save','update_chunk_selection','update_inflight_save'];
-      if (provenPrewriteStages.indexOf(stage)>=0) {
-        record.state='ready'; record.inflight=null; record.inflightManifest=null; record.uncertainChunk=null;
-        record.lastError={stage:stage,category:'prewrite_rejected',exceptionType:exceptionType};
-        pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
-        throw new Error('PQM: Apply rejected before write. PQM_APPLY_DIAG:'+stage+':'+exceptionType);
-      }
       record.state='uncertain';
       record.uncertainChunk=request.chunkIndex;
-      record.lastError={stage:stage,category:'apply_stage_failed',exceptionType:exceptionType};
       try { pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES); } catch (ignored) {}
       properties.setProperty('PQM_EXECUTION_UNCERTAIN',request.requestId);
-      throw new Error('PQM: Apply may be partial; no retry. PQM_APPLY_DIAG:'+stage+':'+exceptionType);
+      throw new Error('PQM: Apply may be partial; no retry, reconcile using a read-only audit');
     }
   } finally {
     PQM_EXECUTION_CONTEXT_=null;
     lock.releaseLock();
   }
-}
-
-/* Read-only support view. Returns no operation values, digests, tokens, or supplier identifiers. */
-function pqmSandboxApplyStateReadOnly(requestId) {
-  if (typeof requestId!=='string' || !/^[0-9a-f]{32}$/.test(requestId))
-    throw new Error('PQM: invalid read-only run identity');
-  var properties=PropertiesService.getScriptProperties();
-  var raw=properties.getProperty('PQM_EXECUTION_RUN_'+requestId);
-  var marker=properties.getProperty('PQM_EXECUTION_UNCERTAIN');
-  var record=null,valid=false;
-  if (raw) {
-    try { record=JSON.parse(raw); valid=!!record && typeof record==='object' && !Array.isArray(record); }
-    catch (_) { record=null; }
-  }
-  var steps=record && Array.isArray(record.steps) ? record.steps : [];
-  var result=record && record.result && typeof record.result==='object' ? record.result : null;
-  var lastStep=steps.length ? steps[steps.length-1] : null;
-  var checkpoint=record && record.checkpointDigest || lastStep && lastStep.checkpointDigest || result && result.checkpointDigest || null;
-  var lastError=record && record.lastError && typeof record.lastError==='object' ? record.lastError : null;
-  return {request_id_matches:true,marker_present:marker!==null && marker!=='',
-    marker_matches_request:marker===requestId,run_record_present:raw!==null,
-    run_record_valid_json:valid,state:record && typeof record.state==='string' ? record.state : null,
-    plan_scope:record && typeof record.planScope==='string' ? record.planScope : null,
-    inflight:Number.isInteger(record && record.inflight) ? record.inflight : null,
-    uncertain_chunk:Number.isInteger(record && record.uncertainChunk) ? record.uncertainChunk : null,
-    steps_count:steps.length,checkpoint_present:!!checkpoint,
-    checkpoint_valid:pqmSandboxIsCanonicalDigest_(checkpoint),
-    result_present:!!result,result_status:result && typeof result.status==='string' ? result.status : null,
-    receipt_present:!!(lastStep && lastStep.checkpointDigest),
-    receipt_valid:!!(lastStep && lastStep.verified===true && pqmSandboxIsCanonicalDigest_(lastStep.checkpointDigest)),
-    last_error_present:!!lastError,
-    last_error_stage:lastError && typeof lastError.stage==='string' ? lastError.stage : null,
-    last_error_category:lastError && typeof lastError.category==='string' ? lastError.category : null,
-    last_error_type:lastError && typeof lastError.exceptionType==='string' ? lastError.exceptionType : null,
-    result_counts:result && result.counts && Number.isInteger(result.counts.append) &&
-      Number.isInteger(result.counts.update) ? {append:result.counts.append,update:result.counts.update} : null};
 }
 
 function pqmSandboxCheckpointStepsValid_(record) {
@@ -266,10 +193,9 @@ function pqmSandboxCheckpointStepsValid_(record) {
         !Number.isInteger(counts.remaining_safe) || counts.remaining_safe<0 ||
         typeof step.more!=='boolean' || step.more!==(step.status==='APPLY_CHUNK_VERIFIED')) return false;
     if (step.chunkId && (!/^[0-9a-f]{32}$/.test(step.chunkId) ||
-        !pqmSandboxIsCanonicalDigest_(step.chunkDigest) || step.planId!==record.planId)) return false;
-    if (step.chunkId && record.chunkJournalVersion===1 &&
-        (!Array.isArray(step.serviceRanges) || !step.serviceRanges.length || step.phase!=='append' ||
-         step.serviceRanges.some(function(range) {
+        !pqmSandboxIsCanonicalDigest_(step.chunkDigest) || step.planId!==record.planId ||
+        !Array.isArray(step.serviceRanges) || !step.serviceRanges.length ||
+        step.serviceRanges.some(function(range) {
           return !range || ['ФОП','ЮО'].indexOf(range.tab)<0 || !Number.isInteger(range.first) ||
             !Number.isInteger(range.last) || range.first<2 || range.last<range.first ||
             range.planId!==record.planId || range.runId!==record.runId;
@@ -347,8 +273,10 @@ function pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt)
         service.valueRanges.some(function(item) { return (item.values||[]).some(function(row) {
           return row.some(function(value) { return !pqmGoogleBlank_(value); });
         }); })) throw new Error('PQM: destination service metadata is not blank; recovery held');
-    // A proved zero-write outcome is still held. A human must explicitly
-    // decide whether to start a fresh Preview; never replay this chunk here.
+    record.state='ready'; record.inflight=null; record.inflightManifest=null; record.uncertainChunk=null;
+    pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
+    if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')===request.requestId)
+      properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
     var notApplied=receipt('CHUNK_NOT_APPLIED',{append:0,update:0,batches:0,remaining_safe:original.plan.counts.appended},request.expectedDigest);
     notApplied.chunkIndex=request.chunkIndex; notApplied.nextChunk=request.chunkIndex;
     notApplied.more=true; notApplied.phase='append'; notApplied.planScope='APPEND_ONLY';
@@ -424,108 +352,6 @@ function pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt)
   pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
   if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')===request.requestId)
     properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
-  var recovered=pqmExecutionCheckpointReceipt_(request,receipt,step);
-  recovered.status='CHUNK_RECOVERED';
-  return recovered;
-}
-
-/* Recover one ALL-scope chunk only after exact, bounded read-back proves every row. */
-function pqmSandboxRecoverApplyChunk_(id,properties,key,stored,request,receipt) {
-  if (!stored) throw new Error('PQM: Apply chunk recovery record is missing');
-  var record;
-  try { record=JSON.parse(stored); } catch (_) { throw new Error('PQM: Apply chunk recovery record is invalid'); }
-  var manifest=record.inflightManifest,marker=properties.getProperty('PQM_EXECUTION_UNCERTAIN');
-  if (marker && marker!==request.requestId) throw new Error('PQM: another execution is uncertain');
-  if (record.actor!==request.actor || record.trigger!=='manual' || record.planScope!=='ALL' ||
-      record.digest!==request.expectedDigest || record.chunkJournalVersion!==2 ||
-      record.planId!==request.planId || record.runId!==request.requestId ||
-      !manifest || manifest.chunkId!==request.chunkId || manifest.chunkDigest!==request.chunkDigest ||
-      manifest.detailsDigest!==request.chunkDetailsDigest || manifest.phase!==request.chunkPhase ||
-      manifest.planId!==request.planId || manifest.runId!==request.requestId ||
-      record.inflight!==request.chunkIndex || record.nextChunk!==request.chunkIndex ||
-      !['writing','uncertain'].includes(record.state) || !Array.isArray(manifest.rows) ||
-      !manifest.rows.length || manifest.rows.length>PQM_SANDBOX_FULL_CHUNK_MAX_ROWS) {
-    var saved=record.steps && record.steps[request.chunkIndex];
-    if (record.state==='ready' && saved && saved.verified===true &&
-        saved.chunkId===request.chunkId && saved.chunkDigest===request.chunkDigest &&
-        saved.planId===request.planId && saved.phase===request.chunkPhase &&
-        saved.planScope==='ALL' && pqmSandboxIsCanonicalDigest_(saved.checkpointDigest)) {
-      var replay=pqmExecutionCheckpointReceipt_(request,receipt,saved);
-      replay.status='CHUNK_RECOVERED';
-      return replay;
-    }
-    throw new Error('PQM: Apply chunk recovery binding rejected');
-  }
-  if (!Array.isArray(record.steps) || record.steps.length!==request.chunkIndex ||
-      (record.steps.length && !pqmSandboxCheckpointStepsValid_(record)) ||
-      manifest.rows.some(function(row) {
-        return !row || PQM_GOOGLE_TABS.indexOf(row.tab)<0 || !Number.isInteger(row.row) || row.row<2 ||
-          !Array.isArray(row.columns) || !row.columns.length ||
-          !pqmSandboxIsCanonicalDigest_(row.beforeDigest) || !pqmSandboxIsCanonicalDigest_(row.afterDigest) ||
-          !pqmSandboxIsCanonicalDigest_(row.codeDigest);
-      })) throw new Error('PQM: Apply chunk manifest or checkpoint chain is invalid');
-  var loaded=pqmSandboxFullLoad_(id);
-  if (loaded.state.payload_digest!==record.payloadDigest)
-    throw new Error('PQM: Preview source changed; Apply recovery held');
-  var actual=pqmSandboxExecutionReadChunkEvidence_(id,manifest),allBefore=true,allAfter=true;
-  manifest.rows.forEach(function(expected,index) {
-    var observed=actual[index];
-    if (!observed || observed.tab!==expected.tab || observed.row!==expected.row) { allBefore=false; allAfter=false; return; }
-    if (observed.digest!==expected.beforeDigest) allBefore=false;
-    if (observed.digest!==expected.afterDigest || observed.codeDigest!==expected.codeDigest) allAfter=false;
-  });
-  if (allBefore) {
-    var notApplied=receipt('CHUNK_NOT_APPLIED',{append:0,update:0,batches:0},request.expectedDigest);
-    notApplied.chunkIndex=request.chunkIndex; notApplied.nextChunk=request.chunkIndex;
-    notApplied.more=true; notApplied.phase=request.chunkPhase; notApplied.planScope='ALL';
-    notApplied.chunkId=request.chunkId; notApplied.chunkDigest=request.chunkDigest; notApplied.planId=request.planId;
-    return notApplied;
-  }
-  if (!allAfter) throw new Error('PQM: Apply chunk read-back is partial or ambiguous; hold retained');
-  var codes=manifest.rows.map(function(row) { return row.codeDigest; });
-  var codeValues=[];
-  manifest.rows.forEach(function(row) {
-    var loadedRow=loaded.tabs[row.tab].rows[row.row-2];
-    if (!loadedRow || !loadedRow.codeDisplay) throw new Error('PQM: Apply chunk identity is unavailable');
-    var code=String(loadedRow.codeDisplay).trim(),occurrences=0;
-    PQM_GOOGLE_TABS.forEach(function(tabName) {
-      (loaded.tabs[tabName].rows||[]).forEach(function(item) {
-        if (String(item.codeDisplay||'').trim()===code) occurrences++;
-      });
-    });
-    if (occurrences!==1) throw new Error('PQM: Apply chunk identity is duplicated');
-    codeValues.push(code);
-  });
-  if (new Set(codeValues).size!==manifest.rows.length || codes.some(function(hash,index) {
-      return pqmSandboxControlledDigest_(codeValues[index])!==hash;
-    })) throw new Error('PQM: Apply chunk identities are duplicated or changed');
-  var appendCount=manifest.phase==='append'?manifest.rows.length:0;
-  var updateCount=manifest.phase==='update'?manifest.rows.length:0;
-  var remaining=loaded.plan.counts.appended+loaded.plan.counts.updated;
-  record.aggregate=record.aggregate||{append:0,update:0,batches:0};
-  record.aggregate.append+=appendCount; record.aggregate.update+=updateCount; record.aggregate.batches+=1;
-  record.payloadDigest=loaded.state.payload_digest; record.googleDigest=loaded.state.google_digest;
-  record.inflight=null; record.inflightManifest=null; record.uncertainChunk=null;
-  record.nextChunk=request.chunkIndex+1; record.state=remaining?'ready':'complete';
-  var status=remaining?'APPLY_CHUNK_VERIFIED':
-    (loaded.plan.counts.conflicts||loaded.plan.counts.errors?'COMPLETE_WITH_CONFLICTS':'COMPLETE');
-  var counts={append:appendCount,update:updateCount,conflict:loaded.plan.counts.conflicts,
-    error:loaded.plan.counts.errors,remaining_safe:remaining,batches:1};
-  var step={status:status,chunkIndex:request.chunkIndex,nextChunk:record.nextChunk,more:remaining>0,
-    phase:manifest.phase,counts:counts,verified:true,digest:request.expectedDigest,planScope:'ALL',
-    payloadDigest:record.payloadDigest,googleDigest:record.googleDigest,chunkId:request.chunkId,
-    chunkDigest:request.chunkDigest,planId:request.planId};
-  record.steps.push(step);
-  if (!step.more) {
-    record.result=receipt(status,{append:record.aggregate.append,update:record.aggregate.update,
-      conflict:counts.conflict,error:counts.error,remaining_safe:remaining,batches:record.aggregate.batches},request.expectedDigest);
-    record.result.chunkIndex=step.chunkIndex; record.result.nextChunk=step.nextChunk;
-    record.result.more=false; record.result.phase=step.phase; record.result.planScope='ALL';
-  }
-  step.checkpointDigest=pqmExecutionCheckpointStateDigest_(record);
-  if (record.result) record.result.checkpointDigest=step.checkpointDigest;
-  pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
-  if (marker===request.requestId) properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
   var recovered=pqmExecutionCheckpointReceipt_(request,receipt,step);
   recovered.status='CHUNK_RECOVERED';
   return recovered;

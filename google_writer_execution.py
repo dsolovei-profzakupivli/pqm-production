@@ -1036,6 +1036,20 @@ class ExecutionClient:
             evidence_digest = base64.urlsafe_b64encode(
                 hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode('ascii').rstrip('=')
         script, sheet, function = IDENTITIES[self.environment]
+        api_function=function
+        if (self.environment=='SANDBOX' and action=='apply' and
+                checkpoint_apply_enabled(self.environment) and plan_scope=='ALL'):
+            if (not manual_override or not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
+                    not is_canonical_sha256_b64url(chunk_digest) or plan_id!=request_id or
+                    not is_canonical_sha256_b64url(chunk_details_digest) or
+                    chunk_phase not in {'append','update'} or
+                    (chunk_phase=='append' and (not isinstance(chunk_added_at,str) or
+                        not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}',chunk_added_at))) or
+                    (chunk_phase=='update' and chunk_added_at is not None)):
+                raise ValueError('Sandbox ALL-scope Apply requires its durable chunk binding')
+            api_function='pqmSandboxAllScopeExecution20261109'
+        elif action=='recover_apply_chunk':
+            api_function='pqmSandboxAllScopeExecution20261109'
         issued = int(self.clock().timestamp())
         message = {'environment':self.environment, 'scriptId':script, 'spreadsheetId':sheet,
                    'contract':CONTRACT, 'action':action, 'requestId':request_id,
@@ -1064,7 +1078,7 @@ class ExecutionClient:
                     float(token.get('expires_at', 0)) - self.clock().timestamp() <= 400 or
                     not token.get('access_token')):
                 raise ValueError('OAuth token preflight rejected')
-            body = {'function':function, 'devMode':False,
+            body = {'function':api_function, 'devMode':False,
                     'parameters':[{'payload':raw, 'signature':signature}]}
             # Current Google reference names this path parameter deploymentId.
             request = urllib.request.Request(
