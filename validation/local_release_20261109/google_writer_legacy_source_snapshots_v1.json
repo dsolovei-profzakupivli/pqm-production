@@ -23,11 +23,11 @@
     "test_partial_reconciliation_legacy_20261108.py": "cad7522e729d5dae098065a064501cc1952838ae7167c7ef8283028fca5d094d",
     "test_google_writer_all_scope_receipt_recovery_integrity_v1.py": "24991942aa2edb00c24d54216f2387e2c04b110c573cfb667dcaaf8b530d4584",
     "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "c7f4d551538c969e3e404f03659f0e8dd4c687001313f6b65939cf74e4279ac1",
-    "validation/run_local_release.py": "51422783804b4015560652c2bdadc42ed31c04fb11cda8e842e7dfe86b2fd8fa",
+    "validation/run_local_release.py": "11c8a1802e00146fa41ef73cc8dc78bd7c1f1696a5fee6c978c2f785942df46d",
     "validation/run_immutable_google_writer_source_overlays.py": "36493bfb34e3366e323920092788c8a3b43cc7221e3b6c82746065c78858f5e9",
     "validation/fixtures/google_writer_legacy_reconciliation_v3_immutable.zip": "681d2a967e6f3c8414f7db081119205e4f14e5dea7367e0aa76fc23849f98e42",
     "validation/fixtures/google_writer_legacy_sheet_bounds_v1_immutable.zip": "1bda164db84e2ce9b10b5d3984f48f957e35b66eb4ba86c16b7b579e4184af8f",
-    "test_google_writer_legacy_source_snapshots_integrity_v1.py": "670b839618d616be10a719f0c1dc85742e1dccfdf34a6d244c794b5869840945"
+    "test_google_writer_legacy_source_snapshots_integrity_v1.py": "7156e20a31ccace59777b64c2d106607303e33035550fe48ac914307c7f88e24"
   },
   "preserved_manifests": {
     "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",

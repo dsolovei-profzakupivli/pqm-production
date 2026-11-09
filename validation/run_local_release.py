@@ -93,6 +93,8 @@ EXACT_TREE_OVERLAY_MODULES={
     # The v3 and bounded-read exact-source contracts run only against their
     # immutable source snapshots, never against the evolving candidate tree.
     'test_legacy_append_reconciliation_integrity_v3',
+    # The flattened discovery copy is also present beside the namespace import.
+    'test_legacy_sheet_read_bounds_integrity_v1',
     'validation.local_release_20260911.test_legacy_sheet_read_bounds_integrity_v1',
 }
 

@@ -8,7 +8,7 @@ import unittest
 
 
 MANIFEST = Path('validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json')
-MANIFEST_SHA256 = "df3d3dd8487d76b94d068051120ae0e9901b9087c8a726825251c1d4cc6aeac0"
+MANIFEST_SHA256 = "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd"
 TEST_FILE = 'test_google_writer_legacy_source_snapshots_integrity_v1.py'
 
 
@@ -54,6 +54,7 @@ class GoogleWriterLegacySourceSnapshotsIntegrityTests(unittest.TestCase):
         root = root_path()
         runner = canonical((root / 'validation/run_local_release.py').read_bytes()).decode('utf-8')
         for module in ('test_legacy_append_reconciliation_integrity_v3',
+                       'test_legacy_sheet_read_bounds_integrity_v1',
                        'validation.local_release_20260911.test_legacy_sheet_read_bounds_integrity_v1'):
             with self.subTest(module=module):
                 self.assertIn(repr(module), runner)
