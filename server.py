@@ -13893,8 +13893,8 @@ def main():
         google_writer_service().start()  # Fourth job only: disabled by default, no startup catch-up.
     if (SANDBOX_MODE and google_writer_environment()=='SANDBOX' and
             env_flag('PQM_SANDBOX_AUTO_CONTINUE_CHUNKS',True)):
-        # This resumes only an already-manual APPEND_ONLY run with a confirmed
-        # checkpoint; it never creates a Preview or a new Apply.
+        # This continues only an already-manual Sandbox run from verified chunk
+        # receipts or a read-only recovery proof; it never creates a Preview or a new run.
         worker=google_writer_continuation_service()
         if worker: worker.start()
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")

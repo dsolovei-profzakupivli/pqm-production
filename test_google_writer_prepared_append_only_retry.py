@@ -41,6 +41,14 @@ class PreparedAppendOnlyRetryTests(unittest.TestCase):
             self.path, REQUEST_ID, attempted_chunk=0,
             digest=self.details["append_only_digest"], checkpoint_digest=None,
         )
+        # The fixed legacy profile binds the pre-upgrade run JSON exactly.
+        # Remove diagnostics introduced by the new writer from this historical fixture.
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute("UPDATE google_writer_runs SET result_json=? WHERE request_id=?", (
+                json.dumps({'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY','outcome_unknown':True,
+                    'attempted_chunk':0,'attempted_checkpoint_digest':None,'plan_scope':'APPEND_ONLY',
+                    'plan_digest':self.details['append_only_digest'],'details_digest':snapshot['details_digest']},
+                    sort_keys=True),REQUEST_ID))
         self.prepared = execution.prepare_partial_reconciliation(
             self.path, "SANDBOX", RECONCILIATION_ID, self.fingerprint, ACTOR, now=NOW
         )

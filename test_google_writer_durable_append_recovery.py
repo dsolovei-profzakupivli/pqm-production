@@ -125,7 +125,7 @@ class DurableAppendRecoveryTests(unittest.TestCase):
         self.assertEqual(status, "partial")
         self.assertEqual(json.loads(progress)["verified_totals"]["append"], 25)
 
-    def test_proven_zero_write_allows_exactly_one_same_chunk_attempt(self):
+    def test_proven_zero_write_stays_held_without_automatic_same_chunk_retry(self):
         self._claim()
         calls = []
         def call(action, *args, **kwargs):
@@ -142,9 +142,9 @@ class DurableAppendRecoveryTests(unittest.TestCase):
         client = self._client(call)
         result = execution.execute_claimed(self.path, client, self.run_id, ACTOR,
             digest=self.append_digest, manual_authorized=True, plan_scope="APPEND_ONLY",max_append_chunks=1)
-        self.assertEqual(calls, ["apply", "recover_append_chunk", "apply"])
-        self.assertEqual(result["status"], "HALTED_AFTER_VERIFIED_CHECKPOINTS")
-        self.assertEqual(execution.chunk_journal_state(self.path, self.run_id)["verified_chunks"], 1)
+        self.assertEqual(calls, ["apply", "recover_append_chunk"])
+        self.assertEqual(result["status"], "OUTCOME_UNKNOWN_HOLD_NO_RETRY")
+        self.assertEqual(execution.chunk_journal_state(self.path, self.run_id)["unknown_chunks"], 1)
 
     def test_ambiguous_recovery_stays_held_and_does_not_replay_apply(self):
         self._claim(); calls = []

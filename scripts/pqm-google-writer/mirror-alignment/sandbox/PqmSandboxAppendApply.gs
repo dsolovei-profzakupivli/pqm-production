@@ -304,7 +304,10 @@ function pqmSandboxAppendRequests_(selected, tabs, context) {
   if (!/^[A-Za-z0-9_-]{20,256}$/.test(String(planId)) || !/^[0-9a-f]{32}$/.test(String(runId))) {
     throw new Error('PQM SANDBOX APPEND: service identity missing; zero writes.');
   }
-  var timestamp = pqmSandboxAppendTimestampKyiv_(new Date());
+  var timestamp = context.addedAt || pqmSandboxAppendTimestampKyiv_(new Date());
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(timestamp)) {
+    throw new Error('PQM SANDBOX APPEND: journal-bound Kyiv timestamp invalid; zero writes.');
+  }
   selected.forEach(function(change) {
     change.serviceMetadata = {addedAt: timestamp, planId: String(planId), runId: String(runId)};
   });

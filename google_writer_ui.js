@@ -1,5 +1,39 @@
 /* Separate fourth-job controls; no credentials, Google API calls or legacy scheduler edits. */
-let googleWriterJobState=null,googleWriterSchedulePreview=null,googleWriterBusy=false;
+let googleWriterJobState=null,googleWriterSchedulePreview=null,googleWriterBusy=false,googleWriterProgressTimer=null;
+function googleWriterProgressLabel(run){
+  const progress=run?.progress||{},state=progress.state||run?.status;
+  if(run?.status==='outcome_unknown')return 'Невизначений результат · запис заблоковано';
+  if(run?.status==='complete')return 'Завершено';
+  if(run?.status==='partial')return 'Часткове завершення';
+  if(state==='preparing')return 'Підготовка порції';
+  if(state==='remote_in_flight')return 'Запит Apps Script триває · запис і read-back ще не підтверджені';
+  if(state==='verified')return 'Останню порцію підтверджено';
+  if(run?.status==='running')return 'Запуск активний · підтвердженого прогресу ще немає';
+  return state||'—';
+}
+function googleWriterProgressHtml(run){
+  if(!run)return '<p class="muted">Немає активного виконання.</p>';
+  const p=run.progress||{},planned=p.planned||{},confirmed=p.confirmed||{},remaining=p.remaining||{},error=p.safe_error,recovered=p.last_recovered_error;
+  const stage=error?`<p class="google-writer-error">Помилка: ${esc(error.stage||'невідомий етап')} · ${esc(error.category||'невідома категорія')}${error.http_status?` · HTTP ${Number(error.http_status)}`:''} (${esc(error.exception_type||'Other')})</p>`:'';
+  const recovery=recovered?`<p class="muted">Порцію відновлено після ${esc(recovered.stage||'невідомого етапу')} · ${esc(recovered.category||'невідомої категорії')}${recovered.http_status?` · HTTP ${Number(recovered.http_status)}`:''} (${esc(recovered.exception_type||'Other')})</p>`:'';
+  const last=p.last_confirmed_progress_at?displayDate(p.last_confirmed_progress_at):'ще не було';
+  const chunk=p.current_chunk===null||p.current_chunk===undefined?'—':String(Number(p.current_chunk)+1);
+  return `<strong>${esc(googleWriterProgressLabel(run))}</strong><dl class="google-writer-progress-metrics">
+    <div><dt>Поточна фаза</dt><dd>${esc(p.phase||'—')}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div>
+    <div><dt>APPEND: план / підтверджено / залишок</dt><dd>${Number(planned.append||0)} / ${Number(confirmed.append||0)} / ${Number(remaining.append||0)}</dd></div>
+    <div><dt>UPDATE: план / підтверджено / залишок</dt><dd>${Number(planned.update||0)} / ${Number(confirmed.update||0)} / ${Number(remaining.update||0)}</dd></div>
+    <div><dt>Останній підтверджений прогрес</dt><dd>${esc(last)}</dd></div></dl>${stage}${recovery}`;
+}
+function startGoogleWriterProgressPolling(requestId){
+  if(googleWriterProgressTimer)clearInterval(googleWriterProgressTimer);
+  let ticks=0,polling=false;
+  googleWriterProgressTimer=setInterval(async()=>{
+    if(polling)return;polling=true;ticks++;
+    let data=null;try{data=await loadGoogleWriterJob();}finally{polling=false;}
+    const run=data?.runs?.find(item=>item.request_id===requestId);
+    if((run&&run.status!=='running')||ticks>=600){clearInterval(googleWriterProgressTimer);googleWriterProgressTimer=null;}
+  },2000);
+}
 async function loadGoogleWriterJob(){
   try{
     const data=await request(`${API}/google-writer/status`);
@@ -12,8 +46,10 @@ async function loadGoogleWriterJob(){
     const root=document.getElementById('schedulerJobs');if(!root)return data;
     let card=document.getElementById('googleWriterJobCard');
     if(!card){card=document.createElement('article');card.id='googleWriterJobCard';card.className='scheduler-job';root.append(card);}
+    const activeRun=data.runs.find(row=>row.status==='running'||row.status==='outcome_unknown')||data.runs[0];
     card.innerHTML=`<header><strong>PQM → Google Sheets</strong><span>${data.automation_blocked?(data.configured_enabled?'Розклад збережено · заблоковано':'Розклад вимкнено'):data.configured_enabled?'Розклад увімкнено':'Розклад вимкнено'}</span></header>
       <dl><div><dt>Розклад</dt><dd>${esc(data.schedule)} · Europe/Kyiv</dd></div><div><dt>Останній результат</dt><dd>${esc(data.last_status)} · ${esc(data.last_finished_at?displayDate(data.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(data.next_run?displayDate(data.next_run):'—')}</dd></div></dl>
+      <section class="google-writer-progress" aria-live="polite">${googleWriterProgressHtml(activeRun)}</section>
       <p class="muted">${data.channel_ready?'':'Захищений канал ще не підготовлено. '}${data.automation_blocked?'Глобальна автоматика заблокована; ручний запуск не змінює розклад. ':''}${data.blocked?'Активний запуск / outcome unknown — новий Apply заблоковано.':''}</p>
       ${data.can_manage?`<label><input id="googleWriterEnabled" type="checkbox" ${data.configured_enabled?'checked':''} ${!data.channel_ready||(data.automation_blocked&&!data.configured_enabled)?'disabled':''}> Автоматичний розклад</label>
       <label>Година <input id="googleWriterHour" type="number" min="0" max="23" value="${data.hour}" ${data.automation_blocked?'disabled':''}></label>
@@ -131,6 +167,7 @@ async function manualGoogleWriter(){
         throw new Error('APPEND_ONLY ticket не відповідає підтвердженому плану; Apply заблоковано');
       ticket=scoped.ticket;
     }
+    startGoogleWriterProgressPolling(request_id);
     await request(`${API}/google-writer/apply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket,confirmed:true})});
     toast('Запуск прийнято. Перевірте журнал; частковий результат не означає повний PASS.','success');
   }catch(error){toast(error.message,'error');}

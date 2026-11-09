@@ -842,6 +842,37 @@ class ExecutionPreflightError(ExecutionConfigurationError):
 
 class ExecutionOutcomeUnknown(RuntimeError):
     """Never retry automatically: a transport error can follow committed writes."""
+    def __init__(self, message='Execution outcome unknown; no automatic retry', *, safe_error=None):
+        super().__init__(message)
+        self.safe_error=safe_error if isinstance(safe_error,dict) else None
+
+
+def _safe_apply_error(stage, exc):
+    allowed={'Error','TypeError','RangeError','ReferenceError','ValueError','OperationalError','IntegrityError',
+             'HTTPError','URLError','TimeoutError','ConnectionError'}
+    name=type(exc).__name__
+    if name not in allowed: name='Other'
+    if isinstance(exc,sqlite3.Error): category='sqlite_persistence_error'
+    elif isinstance(exc,ExecutionOutcomeUnknown): category='remote_outcome_unknown'
+    elif isinstance(exc,urllib.error.HTTPError): category='execution_api_http_error'
+    elif isinstance(exc,TimeoutError): category='transport_timeout'
+    elif isinstance(exc,urllib.error.URLError): category='transport_error'
+    else: category='apply_pipeline_error'
+    remote=getattr(exc,'safe_error',None)
+    if isinstance(remote,dict) and set(remote).issuperset({'stage','category','exception_type'}):
+        result={'stage':remote['stage'],'category':remote['category'],
+                'exception_type':remote['exception_type']}
+        for key in ('http_status','primary_http_status','recovery_http_status',
+                    'primary_stage','primary_category','recovery_stage','recovery_category'):
+            value=remote.get(key)
+            if (key.endswith('http_status') and type(value) is int and 100<=value<=599) or (
+                    not key.endswith('http_status') and isinstance(value,str) and re.fullmatch(r'[a-z_]{1,40}',value)):
+                result[key]=value
+        return result
+    result={'stage':str(stage)[:40],'category':category,'exception_type':name}
+    if isinstance(exc,urllib.error.HTTPError) and type(exc.code) is int and 100<=exc.code<=599:
+        result['http_status']=exc.code
+    return result
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -923,13 +954,14 @@ class ExecutionClient:
     def invoke(self, action, request_id, actor, *, trigger='manual', digest=None, plan_scope='ALL',
                manual_authorized=False, reconciliation_id=None,
                request_fingerprint=None, evidence=None, chunk_index=0,
-               expected_checkpoint_digest=None, chunk_id=None, chunk_digest=None, plan_id=None):
+               expected_checkpoint_digest=None, chunk_id=None, chunk_digest=None, plan_id=None,
+               chunk_phase=None, chunk_added_at=None, chunk_details_digest=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
         if background_jobs.disabled() and not manual_override:
             raise ExecutionConfigurationError('Background jobs disabled')
         self.validate()
-        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'reconcile_partial'} or trigger not in {'manual', 'scheduled'}:
+        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'recover_apply_chunk', 'reconcile_partial'} or trigger not in {'manual', 'scheduled'}:
             raise ValueError('Unsupported execution action')
         if not re.fullmatch(r'[0-9a-f]{32}', request_id) or not actor or len(actor) > 128:
             raise ValueError('Invalid execution identity')
@@ -942,7 +974,8 @@ class ExecutionClient:
         if action == 'apply' and plan_scope == 'APPEND_ONLY' and not checkpoint_apply:
             raise ExecutionConfigurationError('APPEND_ONLY requires the Sandbox checkpoint protocol')
         checkpoint_protocol = (checkpoint_apply_enabled(self.environment) and action=='apply') or (
-            self.environment=='SANDBOX' and checkpoint_apply_enabled(self.environment) and action in {'resume_check','recover_append_chunk'})
+            self.environment=='SANDBOX' and checkpoint_apply_enabled(self.environment) and
+            action in {'resume_check','recover_append_chunk','recover_apply_chunk'})
         if action == 'resume_check' and (not checkpoint_protocol or trigger!='manual' or
                 manual_override is not True or plan_scope!='APPEND_ONLY' or
                 not is_canonical_sha256_b64url(digest) or
@@ -956,6 +989,15 @@ class ExecutionClient:
                 not is_canonical_sha256_b64url(chunk_digest) or
                 not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or ''))):
             raise ValueError('Sandbox APPEND_ONLY recovery preflight is invalid')
+        if action=='recover_apply_chunk' and (
+                self.environment!='SANDBOX' or trigger!='manual' or manual_override is not True or
+                plan_scope!='ALL' or not is_canonical_sha256_b64url(digest) or
+                type(chunk_index) is not int or not 0<=chunk_index<=499 or
+                not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
+                not is_canonical_sha256_b64url(chunk_digest) or
+                not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or '')) or
+                chunk_phase not in {'append','update'}):
+            raise ValueError('Sandbox Apply chunk recovery preflight is invalid')
         if checkpoint_apply and (type(chunk_index) is not int or not 0 <= chunk_index <= 499):
             raise ValueError('Invalid Apply checkpoint index')
         if checkpoint_protocol and action == 'apply' and self.environment=='SANDBOX':
@@ -964,13 +1006,21 @@ class ExecutionClient:
                     (chunk_index > 0 and not is_canonical_sha256_b64url(expected_checkpoint_digest))):
                 raise ValueError('Apply checkpoint receipt binding is required')
         chunk_binding=(chunk_id,chunk_digest,plan_id)
-        if action in {'apply','recover_append_chunk'} and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
-            if (plan_scope!='APPEND_ONLY' or not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
+        if action in {'apply','recover_append_chunk','recover_apply_chunk'} and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
+            if (not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
                     not is_canonical_sha256_b64url(chunk_digest) or
                     not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or ''))):
-                raise ValueError('Durable APPEND_ONLY chunk binding is invalid')
+                raise ValueError('Durable Apply chunk binding is invalid')
+            legacy_append=(action=='recover_append_chunk' or (action=='apply' and plan_scope=='APPEND_ONLY'))
+            if (legacy_append and (plan_scope!='APPEND_ONLY' or chunk_phase not in {None,'append'})) or (
+                    not legacy_append and (chunk_phase not in {'append','update'} or
+                        not is_canonical_sha256_b64url(chunk_details_digest) or
+                        (chunk_phase=='append' and (not isinstance(chunk_added_at,str) or
+                            not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}',chunk_added_at))) or
+                        (chunk_phase=='update' and chunk_added_at is not None))):
+                raise ValueError('Durable Apply chunk phase binding is invalid')
         elif any(value is not None for value in chunk_binding):
-            raise ValueError('Durable chunk binding is Sandbox APPEND_ONLY only')
+            raise ValueError('Durable chunk binding is Sandbox Apply only')
         evidence_digest = None
         reconciliation_profile = None
         if action == 'reconcile_partial':
@@ -998,6 +1048,9 @@ class ExecutionClient:
                 message['expectedCheckpointDigest'] = expected_checkpoint_digest
         if chunk_id is not None:
             message.update(chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
+            if chunk_phase is not None: message['chunkPhase']=chunk_phase
+            if chunk_added_at is not None: message['chunkAddedAt']=chunk_added_at
+            if chunk_details_digest is not None: message['chunkDetailsDigest']=chunk_details_digest
         if action == 'reconcile_partial':
             message.update(reconciliationId=reconciliation_id,
                            requestFingerprint=request_fingerprint,
@@ -1025,6 +1078,33 @@ class ExecutionClient:
                 data = json.loads(response.read(1024*1024).decode())
         except ExecutionConfigurationError:
             raise ExecutionPreflightError('Execution transport preflight rejected; Apps Script was not called') from None
+        except urllib.error.HTTPError as exc:
+            if action=='resume_check':
+                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+            status_code=exc.code if type(exc.code) is int and 100<=exc.code<=599 else None
+            if status_code and 400<=status_code<500:
+                raise ExecutionPreflightError('Execution API rejected the request before script execution') from None
+            family='http_5xx' if status_code and status_code>=500 else 'http_4xx' if status_code and status_code>=400 else 'http_error'
+            safe={'stage':'execution_api_response','category':family,'exception_type':'HTTPError'}
+            if status_code:safe['http_status']=status_code
+            raise ExecutionOutcomeUnknown('Execution API response was incomplete; recovery required',safe_error=safe) from None
+        except urllib.error.URLError as exc:
+            if action=='resume_check':
+                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+            reason=getattr(exc,'reason',None)
+            category='transport_timeout' if isinstance(reason,TimeoutError) else 'transport_error'
+            raise ExecutionOutcomeUnknown('Execution transport result was unknown; recovery required',
+                safe_error={'stage':'execution_api_transport','category':category,'exception_type':'URLError'}) from None
+        except TimeoutError:
+            if action=='resume_check':
+                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+            raise ExecutionOutcomeUnknown('Execution transport timed out; recovery required',
+                safe_error={'stage':'execution_api_transport','category':'transport_timeout','exception_type':'TimeoutError'}) from None
+        except OSError:
+            if action=='resume_check':
+                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+            raise ExecutionOutcomeUnknown('Execution transport failed; no automatic retry; recovery required',
+                safe_error={'stage':'execution_api_transport','category':'transport_error','exception_type':'OSError'}) from None
         except Exception:
             if action == 'resume_check':
                 raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
@@ -1032,7 +1112,23 @@ class ExecutionClient:
         if data.get('done') is not True or 'error' in data:
             if action == 'resume_check':
                 raise ExecutionPreflightError('Read-only checkpoint preflight rejected; no write was requested')
-            raise ExecutionOutcomeUnknown('Execution did not return a verified completion; reconciliation required')
+            safe_error=None
+            raw_error=data.get('error') if isinstance(data.get('error'),dict) else {}
+            details=raw_error.get('details') if isinstance(raw_error,dict) else None
+            candidates=details if isinstance(details,list) else [details]
+            for item in candidates:
+                message=item.get('errorMessage') if isinstance(item,dict) else None
+                match=re.search(r'(?:^|\s)PQM_APPLY_DIAG:([a-z_]{1,40}):([A-Za-z]{1,24})',str(message or ''))
+                if match:
+                    safe_error={'stage':match.group(1),'category':'apps_script_stage_error',
+                        'exception_type':match.group(2) if match.group(2) in {'Error','TypeError','RangeError','ReferenceError'} else 'Other'}
+                    break
+            if safe_error and safe_error['stage'] in {
+                    'source_and_sheet_guard','chunk_selection','append_prewrite_guard','append_request_build',
+                    'append_inflight_save','update_chunk_selection','update_inflight_save'}:
+                raise ExecutionPreflightError('Apps Script rejected before a write; no remote write was attempted')
+            raise ExecutionOutcomeUnknown('Execution did not return a verified completion; reconciliation required',
+                                          safe_error=safe_error)
         result = data.get('response', {}).get('result', {})
         if (not isinstance(result, dict) or result.get('environment') != self.environment or
                 result.get('scriptId') != script or result.get('spreadsheetId') != sheet or
@@ -1064,7 +1160,20 @@ class ExecutionClient:
                 raise ExecutionOutcomeUnknown('Sandbox Preview detail counts mismatch')
             if len(json.dumps(plan_details,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')) > 750_000:
                 raise ExecutionOutcomeUnknown('Sandbox Preview detail payload exceeds safe bound')
-        if action == 'apply' and checkpoint_apply_enabled(self.environment):
+        if action=='recover_apply_chunk':
+            if (result.get('digest')!=digest or result.get('planScope')!=plan_scope or
+                    result.get('chunkIndex')!=chunk_index or
+                    result.get('chunkId')!=chunk_id or result.get('chunkDigest')!=chunk_digest or
+                    result.get('planId')!=plan_id or result.get('phase')!=chunk_phase or
+                    result.get('status') not in {'CHUNK_RECOVERED','CHUNK_NOT_APPLIED','CHUNK_AMBIGUOUS'}):
+                raise ExecutionOutcomeUnknown('Invalid read-only Apply recovery receipt')
+            if result.get('status')=='CHUNK_RECOVERED' and (
+                    not is_canonical_sha256_b64url(result.get('checkpointDigest')) or
+                    result.get('nextChunk')!=chunk_index+1 or type(result.get('more')) is not bool):
+                raise ExecutionOutcomeUnknown('Invalid recovered Apply checkpoint receipt')
+            if result.get('status')=='CHUNK_NOT_APPLIED' and result.get('nextChunk')!=chunk_index:
+                raise ExecutionOutcomeUnknown('Invalid not-applied recovery receipt')
+        elif action in {'apply'} and checkpoint_apply_enabled(self.environment):
             if (result.get('digest') != digest or type(result.get('chunkIndex')) is not int or
                     result.get('chunkIndex') != chunk_index or
                     type(result.get('nextChunk')) is not int or result.get('nextChunk') != chunk_index + 1 or
@@ -1078,6 +1187,8 @@ class ExecutionClient:
             if chunk_id is not None and any(result.get(key)!=value for key,value in {
                     'chunkId':chunk_id,'chunkDigest':chunk_digest,'planId':plan_id}.items()):
                 raise ExecutionOutcomeUnknown('Apply chunk journal receipt mismatch')
+            if chunk_id is not None and chunk_phase is not None and result.get('phase')!=chunk_phase:
+                raise ExecutionOutcomeUnknown('Apply chunk phase receipt mismatch')
         resume_details = None
         if action == 'resume_check':
             resume_details = result.get('planDetails')
@@ -1140,6 +1251,11 @@ class ExecutionClient:
         if action=='recover_append_chunk':
             safe.update(planScope='APPEND_ONLY',chunkIndex=chunk_index,nextChunk=result['nextChunk'],
                         chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
+            if result.get('status')=='CHUNK_RECOVERED': safe['checkpointDigest']=result['checkpointDigest']
+        if action=='recover_apply_chunk':
+            safe.update(planScope='ALL',chunkIndex=chunk_index,nextChunk=result['nextChunk'],
+                more=result.get('more'),phase=chunk_phase,chunkId=chunk_id,
+                chunkDigest=chunk_digest,planId=plan_id)
             if result.get('status')=='CHUNK_RECOVERED': safe['checkpointDigest']=result['checkpointDigest']
         if action == 'preview' and plan_details is not None:
             safe['planDetails'] = plan_details
@@ -1293,6 +1409,9 @@ def validate_preview_plan_scope(snapshot, ticket):
 APPEND_JOURNAL_PAGE_ROWS = 25
 APPEND_RECOVERY_STALE_SECONDS = 900
 APPEND_RECOVERY_LEASE_SECONDS = 600
+APPLY_CHUNK_UPDATE_PAGE_ROWS = 50
+APPLY_CHUNK_UPDATE_PAGE_CELLS = 100
+APPLY_CHUNKS_PER_WORKER = 4
 
 
 def _canonical_json(value):
@@ -1301,6 +1420,168 @@ def _canonical_json(value):
 
 def _sha256_b64(value):
     return base64.urlsafe_b64encode(hashlib.sha256(value).digest()).decode('ascii').rstrip('=')
+
+
+def _apply_operation_projection(item):
+    if not isinstance(item,dict) or not isinstance(item.get('cells'),list):
+        raise ValueError('Apply operation projection is invalid')
+    cells=[]
+    for cell in item['cells']:
+        if not isinstance(cell,dict) or not isinstance(cell.get('column'),str):
+            raise ValueError('Apply operation cell projection is invalid')
+        cells.append({'column':cell['column'],'new_value':cell.get('new_value'),
+                      'formula':cell.get('formula') is True})
+    return {'operation':item.get('operation'),'tab':item.get('tab'),'row':item.get('row'),
+            'code':str(item.get('code') or '').strip(),'cells':cells}
+
+
+def prepare_apply_chunk(path, request_id, actor, plan_digest, details_digest, scope, chunk_index,
+                        *, now=None):
+    """Write an immutable Sandbox ALL-scope chunk manifest before transport."""
+    if (not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or not actor or
+            not is_canonical_sha256_b64url(plan_digest) or
+            not is_canonical_sha256_b64url(details_digest) or
+            scope!='ALL' or type(chunk_index) is not int or
+            not 0 <= chunk_index <= 499):
+        raise ValueError('Apply chunk journal identity rejected')
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        row=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,
+                                  source_digest,details_json
+                           FROM google_writer_plan_journal
+                           WHERE request_id=? AND environment='SANDBOX' ''',(request_id,)).fetchone()
+        expected_digest=row[2] if row and scope=='ALL' else row[3] if row else None
+        if (not row or row[1]!=actor or expected_digest!=plan_digest or row[4]!=details_digest or
+                not is_canonical_sha256_b64url(row[5])):
+            raise ValueError('Durable Preview plan is unavailable or changed')
+        try: details=json.loads(row[6])
+        except (TypeError,json.JSONDecodeError):
+            raise ValueError('Durable Preview plan is invalid') from None
+        if (_preview_details_digest(details)!=details_digest or details.get('append_only_digest')!=row[3] or
+                details.get('plan_digest')!=row[2] or details.get('source_digest')!=row[5] or
+                details.get('environment')!='SANDBOX' or details.get('version')!=1):
+            raise ValueError('Durable Preview digest binding failed')
+        appends=details.get('appends'); updates=details.get('updates')
+        if not isinstance(appends,list) or not isinstance(updates,list):
+            raise ValueError('Durable Preview operations are invalid')
+        phase='append'; added_at=None
+        append_pages=(len(appends)+APPEND_JOURNAL_PAGE_ROWS-1)//APPEND_JOURNAL_PAGE_ROWS
+        if scope=='APPEND_ONLY':
+            selected=appends[chunk_index*APPEND_JOURNAL_PAGE_ROWS:(chunk_index+1)*APPEND_JOURNAL_PAGE_ROWS]
+        elif chunk_index < append_pages:
+            selected=appends[chunk_index*APPEND_JOURNAL_PAGE_ROWS:(chunk_index+1)*APPEND_JOURNAL_PAGE_ROWS]
+        else:
+            phase='update'
+            ordered=sorted(updates,key=lambda item:(item.get('tab',''),item.get('row',0)))
+            pages=[]; page=[]; cells=0
+            for item in ordered:
+                width=len(item.get('cells',[])) if isinstance(item,dict) else 0
+                if page and (len(page)>=APPLY_CHUNK_UPDATE_PAGE_ROWS or cells+width>APPLY_CHUNK_UPDATE_PAGE_CELLS):
+                    pages.append(page); page=[]; cells=0
+                if width>APPLY_CHUNK_UPDATE_PAGE_CELLS:
+                    raise ValueError('UPDATE operation exceeds the bounded chunk size')
+                page.append(item); cells+=width
+            if page: pages.append(page)
+            update_index=chunk_index-append_pages
+            selected=pages[update_index] if update_index<len(pages) else []
+        if not selected:
+            raise ValueError('Apply chunk is outside the immutable Preview plan')
+        if any(not isinstance(item,dict) or item.get('operation')!=phase.upper() or
+               item.get('tab') not in {'ФОП','ЮО'} or type(item.get('row')) is not int or
+               not isinstance(item.get('code'),str) or not item['code'].strip() or
+               not isinstance(item.get('cells'),list) or not item['cells'] for item in selected):
+            raise ValueError('Apply chunk composition is invalid')
+        identities=[(item['tab'],item['row']) for item in selected]
+        if len(set(identities))!=len(identities):
+            raise ValueError('Duplicate row identity in Apply chunk')
+        if phase=='append':
+            added_at=(now or datetime.now(KYIV)).astimezone(KYIV).isoformat(timespec='seconds')
+        projected=[_apply_operation_projection(item) for item in selected]
+        manifest={'version':1,'plan_id':row[0],'run_id':request_id,'scope':scope,
+                  'plan_digest':plan_digest,'details_digest':details_digest,'source_digest':row[5],
+                  'phase':phase,'chunk_index':chunk_index,'operations':projected}
+        if added_at: manifest['added_at']=added_at
+        expected_raw=_canonical_json(manifest)
+        chunk_digest=_sha256_b64(expected_raw.encode('utf-8'))
+        chunk_id=hashlib.sha256((request_id+'|'+row[0]+'|'+scope+'|'+phase+'|'+str(chunk_index)+'|'+chunk_digest).encode()).hexdigest()[:32]
+        existing=con.execute('''SELECT chunk_digest,expected_json,status FROM google_writer_apply_chunk_journal
+                                WHERE chunk_id=?''',(chunk_id,)).fetchone()
+        if existing:
+            if existing[0]!=chunk_digest or existing[1]!=expected_raw:
+                raise RuntimeError('Apply chunk journal identity collision')
+            if existing[2] in {'inflight','outcome_unknown'}:
+                raise RuntimeError('Apply chunk outcome is unresolved; no retry')
+            if existing[2]!='prepared':
+                raise RuntimeError('Apply chunk is already confirmed; no replay')
+            return {'chunk_id':chunk_id,'chunk_digest':chunk_digest,'plan_id':row[0],
+                    'phase':phase,'added_at':added_at,'scope':scope,'details_digest':details_digest,
+                    'source_digest':row[5],'status':existing[2]}
+        stamp=(now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        con.execute('''INSERT INTO google_writer_apply_chunk_journal(
+            chunk_id,plan_id,run_id,environment,scope,phase,plan_digest,source_digest,chunk_index,
+            chunk_digest,status,expected_json,prepared_at)
+            VALUES(?,?,?,'SANDBOX',?,?,?,?,?,?,'prepared',?,?)''',
+            (chunk_id,row[0],request_id,scope,phase,plan_digest,row[5],chunk_index,
+             chunk_digest,expected_raw,stamp))
+    return {'chunk_id':chunk_id,'chunk_digest':chunk_digest,'plan_id':row[0],
+            'phase':phase,'added_at':added_at,'scope':scope,'details_digest':details_digest,
+            'source_digest':row[5],'status':'prepared'}
+
+
+def mark_apply_chunk_inflight(path, chunk_id, *, now=None):
+    stamp=(now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        changed=con.execute("UPDATE google_writer_apply_chunk_journal SET status='inflight',inflight_at=? WHERE chunk_id=? AND status='prepared'",
+                            (stamp,chunk_id)).rowcount
+        if changed!=1: raise RuntimeError('Apply chunk is not eligible for its first remote call')
+        row=con.execute('''SELECT run_id,phase,chunk_index FROM google_writer_apply_chunk_journal WHERE chunk_id=?''',(chunk_id,)).fetchone()
+        run=con.execute("SELECT result_json FROM google_writer_runs WHERE request_id=? AND status='running'",(row[0],)).fetchone()
+        if not run: raise RuntimeError('Apply run no longer owns its journaled chunk')
+        progress=json.loads(run[0] or '{}')
+        progress.update(attempted_chunk=row[2],attempted_phase=row[1],progress_state='remote_in_flight',
+                        last_progress_at=stamp)
+        con.execute("UPDATE google_writer_runs SET result_json=? WHERE request_id=? AND status='running'",
+                    (json.dumps(progress,sort_keys=True),row[0]))
+    return True
+
+
+def mark_apply_chunk_unknown(path, chunk_id):
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute("UPDATE google_writer_apply_chunk_journal SET status='outcome_unknown' WHERE chunk_id=? AND status='inflight'",
+                    (chunk_id,))
+
+
+def reset_apply_chunk_preflight(path, chunk_id):
+    """Reset only when transport has proven that Apps Script was not called."""
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        row=con.execute('SELECT run_id,phase,chunk_index FROM google_writer_apply_chunk_journal WHERE chunk_id=? AND status=\'inflight\'',
+                        (chunk_id,)).fetchone()
+        if not row: raise RuntimeError('Apply chunk preflight reset lost its compare-and-set')
+        changed=con.execute("UPDATE google_writer_apply_chunk_journal SET status='prepared',inflight_at=NULL WHERE chunk_id=? AND status='inflight'",
+                            (chunk_id,)).rowcount
+        if changed!=1: raise RuntimeError('Apply chunk preflight reset lost its compare-and-set')
+        run=con.execute("SELECT result_json FROM google_writer_runs WHERE request_id=? AND status='running'",(row[0],)).fetchone()
+        if run:
+            try: progress=json.loads(run[0] or '{}')
+            except (TypeError,json.JSONDecodeError): progress={}
+            progress.update(progress_state='preparing',attempted_chunk=None,attempted_phase=None,
+                            last_progress_at=datetime.now(timezone.utc).isoformat())
+            con.execute("UPDATE google_writer_runs SET result_json=? WHERE request_id=? AND status='running'",
+                        (json.dumps(progress,sort_keys=True),row[0]))
+
+
+def apply_chunk_journal_state(path, request_id):
+    """Read-only aggregate; does not expose operation values or supplier identities."""
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON')
+        rows=con.execute('''SELECT phase,status,COUNT(*) FROM google_writer_apply_chunk_journal
+                            WHERE run_id=? GROUP BY phase,status ORDER BY phase,status''',(request_id,)).fetchall()
+    return {'chunks':[{'phase':r[0],'status':r[1],'count':r[2]} for r in rows],
+            'verified_chunks':sum(r[2] for r in rows if r[1]=='verified'),
+            'unknown_chunks':sum(r[2] for r in rows if r[1] in {'inflight','outcome_unknown'})}
 
 
 def prepare_append_chunk(path, request_id, actor, plan_digest, details_digest, chunk_index,
@@ -1381,6 +1662,14 @@ def mark_append_chunk_inflight(path, chunk_id, *, now=None):
             if not row or row[0]!='verified':
                 raise RuntimeError('Append chunk is not eligible for its first remote call')
             return False
+        row=con.execute('SELECT run_id,chunk_index FROM google_writer_chunk_journal WHERE chunk_id=?',(chunk_id,)).fetchone()
+        run=con.execute("SELECT result_json FROM google_writer_runs WHERE request_id=? AND status='running'",(row[0],)).fetchone()
+        if not run: raise RuntimeError('Append run no longer owns its journaled chunk')
+        progress=json.loads(run[0] or '{}')
+        progress.update(attempted_chunk=row[1],attempted_phase='append',progress_state='remote_in_flight',
+                        last_progress_at=stamp)
+        con.execute("UPDATE google_writer_runs SET result_json=? WHERE request_id=? AND status='running'",
+                    (json.dumps(progress,sort_keys=True),row[0]))
     return True
 
 
@@ -1507,6 +1796,261 @@ def claim_interrupted_append_chunk_recovery(path, request_id, *, now=None,
         'chunk_index':chunk[6],'chunk_id':chunk[0],'chunk_digest':chunk[7],
         'plan_id':chunk[1],'checkpoint_digest':progress.get('checkpoint_digest'),
         'prior_verified_chunks':int(progress.get('verified_chunks',0))}
+
+
+def claim_interrupted_apply_chunk_recovery(path, request_id, *, now=None,
+                                           stale_seconds=APPEND_RECOVERY_STALE_SECONDS,
+                                           lease_seconds=APPEND_RECOVERY_LEASE_SECONDS):
+    """Claim one immutable ALL-scope chunk for read-only Apps Script recovery."""
+    if (not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or
+            type(stale_seconds) is not int or stale_seconds<600 or
+            type(lease_seconds) is not int or lease_seconds<390):
+        raise ValueError('Apply recovery claim parameters rejected')
+    clock=now or datetime.now(timezone.utc)
+    if clock.tzinfo is None: raise ValueError('Aware recovery clock required')
+    stamp=clock.astimezone(timezone.utc); stamp_raw=stamp.isoformat()
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        run=con.execute('''SELECT environment,trigger,actor,status,result_json FROM google_writer_runs
+                           WHERE request_id=?''',(request_id,)).fetchone()
+        if not run or run[0]!='SANDBOX' or run[1]!='manual' or run[3] not in {'running','outcome_unknown'}:
+            return None
+        try: progress=json.loads(run[4] or '{}')
+        except (TypeError,json.JSONDecodeError): return None
+        plan_digest=progress.get('plan_digest') if isinstance(progress,dict) else None
+        details_digest=progress.get('details_digest') if isinstance(progress,dict) else None
+        if (not isinstance(progress,dict) or progress.get('plan_scope')!='ALL' or
+                not is_canonical_sha256_b64url(plan_digest) or
+                not is_canonical_sha256_b64url(details_digest)):
+            return None
+        if con.execute('SELECT 1 FROM google_writer_run_reconciliations WHERE request_id=? LIMIT 1',
+                       (request_id,)).fetchone(): return None
+        claimed_at=progress.get('recovery_claimed_at')
+        if claimed_at:
+            try:
+                parsed=datetime.fromisoformat(claimed_at)
+                if parsed.tzinfo is None or (stamp-parsed.astimezone(timezone.utc)).total_seconds()<lease_seconds:
+                    return None
+            except (TypeError,ValueError): return None
+        rows=con.execute('''SELECT chunk_id,plan_id,run_id,scope,phase,plan_digest,source_digest,
+                                   chunk_index,chunk_digest,status,expected_json,inflight_at
+                            FROM google_writer_apply_chunk_journal
+                            WHERE run_id=? AND scope='ALL' AND status IN ('inflight','outcome_unknown')
+                            ORDER BY chunk_index''',(request_id,)).fetchall()
+        if len(rows)!=1: return None
+        chunk=rows[0]
+        if (chunk[2]!=request_id or chunk[3]!='ALL' or chunk[5]!=plan_digest or
+                progress.get('attempted_chunk') not in (None,chunk[7]) or
+                progress.get('attempted_phase') not in (None,chunk[4])): return None
+        if run[3]=='running':
+            try:
+                inflight=datetime.fromisoformat(chunk[11])
+                if inflight.tzinfo is None or (stamp-inflight.astimezone(timezone.utc)).total_seconds()<stale_seconds:
+                    return None
+            except (TypeError,ValueError): return None
+        plan=con.execute('''SELECT actor,plan_digest,append_only_digest,details_digest,source_digest,details_json
+                            FROM google_writer_plan_journal WHERE plan_id=? AND request_id=?
+                              AND environment='SANDBOX' ''',(chunk[1],request_id)).fetchone()
+        if (not plan or plan[0]!=run[2] or plan[1]!=plan_digest or plan[3]!=details_digest or
+                plan[4]!=chunk[6] or not is_canonical_sha256_b64url(plan[4])): return None
+        try: details=json.loads(plan[5]); expected=json.loads(chunk[10])
+        except (TypeError,json.JSONDecodeError): return None
+        if (not isinstance(details,dict) or not isinstance(expected,dict) or
+                details.get('environment')!='SANDBOX' or details.get('version')!=1 or
+                _preview_details_digest(details)!=details_digest or details.get('plan_digest')!=plan_digest or
+                details.get('source_digest')!=chunk[6] or details.get('append_only_digest')!=plan[2]): return None
+        appends=details.get('appends'); updates=details.get('updates')
+        if not isinstance(appends,list) or not isinstance(updates,list): return None
+        append_pages=(len(appends)+APPEND_JOURNAL_PAGE_ROWS-1)//APPEND_JOURNAL_PAGE_ROWS
+        if chunk[4]=='append':
+            selected=appends[chunk[7]*APPEND_JOURNAL_PAGE_ROWS:(chunk[7]+1)*APPEND_JOURNAL_PAGE_ROWS]
+            added_at=expected.get('added_at')
+        else:
+            ordered=sorted(updates,key=lambda item:(item.get('tab',''),item.get('row',0)))
+            pages=[]; page=[]; cells=0
+            for item in ordered:
+                width=len(item.get('cells',[])) if isinstance(item,dict) else 0
+                if page and (len(page)>=APPLY_CHUNK_UPDATE_PAGE_ROWS or cells+width>APPLY_CHUNK_UPDATE_PAGE_CELLS):
+                    pages.append(page); page=[]; cells=0
+                if width>APPLY_CHUNK_UPDATE_PAGE_CELLS: return None
+                page.append(item); cells+=width
+            if page: pages.append(page)
+            update_index=chunk[7]-append_pages
+            selected=pages[update_index] if 0<=update_index<len(pages) else []
+            added_at=None
+        projected=[_apply_operation_projection(item) for item in selected]
+        manifest={'version':1,'plan_id':chunk[1],'run_id':request_id,'scope':'ALL',
+            'plan_digest':plan_digest,'details_digest':details_digest,'source_digest':chunk[6],
+            'phase':chunk[4],'chunk_index':chunk[7],'operations':projected}
+        if added_at is not None: manifest['added_at']=added_at
+        expected_raw=_canonical_json(manifest)
+        expected_chunk_digest=_sha256_b64(expected_raw.encode('utf-8'))
+        expected_chunk_id=hashlib.sha256((request_id+'|'+chunk[1]+'|ALL|'+chunk[4]+'|'+
+            str(chunk[7])+'|'+expected_chunk_digest).encode()).hexdigest()[:32]
+        if (not selected or chunk[8]!=expected_chunk_digest or chunk[0]!=expected_chunk_id or
+                chunk[9] not in {'inflight','outcome_unknown'} or chunk[10]!=expected_raw): return None
+        changed=con.execute("UPDATE google_writer_apply_chunk_journal SET status='inflight' WHERE chunk_id=? AND status=?",
+                            (chunk[0],chunk[9])).rowcount
+        if changed!=1: return None
+        progress=progress|{'status':'APPLY_CHUNK_RECOVERY_CLAIMED','recovery_claimed_at':stamp_raw,
+            'attempted_chunk':chunk[7],'attempted_phase':chunk[4],'plan_digest':plan_digest}
+        changed=con.execute("UPDATE google_writer_runs SET status='running',finished_at=NULL,result_json=? WHERE request_id=? AND status=?",
+                            (json.dumps(progress,sort_keys=True),request_id,run[3])).rowcount
+        if changed!=1: raise RuntimeError('Apply recovery run claim compare-and-set failed')
+    return {'request_id':request_id,'actor':run[2],'plan_digest':plan_digest,
+        'details_digest':details_digest,'chunk_index':chunk[7],'chunk_id':chunk[0],
+        'chunk_digest':chunk[8],'plan_id':chunk[1],'phase':chunk[4],
+        'added_at':added_at,'checkpoint_digest':progress.get('checkpoint_digest')}
+
+
+def claim_apply_continuation(path, request_id, actor, *, now=None):
+    """CAS-claim only a fully journaled ALL-scope checkpoint chain for background continuation."""
+    if not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or not actor:
+        return None
+    stamp=(now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        run=con.execute('''SELECT environment,trigger,actor,status,result_json FROM google_writer_runs
+                           WHERE request_id=?''',(request_id,)).fetchone()
+        if not run or (run[0],run[1],run[2],run[3])!=('SANDBOX','manual',actor,'partial'):return None
+        try: progress=json.loads(run[4] or '{}')
+        except (TypeError,json.JSONDecodeError):return None
+        next_chunk=progress.get('next_chunk') if isinstance(progress,dict) else None
+        digest=progress.get('plan_digest') if isinstance(progress,dict) else None
+        checkpoint=progress.get('checkpoint_digest') if isinstance(progress,dict) else None
+        if (not isinstance(progress,dict) or progress.get('status')!='HALTED_AFTER_VERIFIED_CHECKPOINTS' or
+                progress.get('plan_scope')!='ALL' or progress.get('outcome_unknown') or
+                progress.get('attempted_chunk') is not None or progress.get('auto_continue_chunks') is not True or
+                type(next_chunk) is not int or not 1<=next_chunk<=499 or
+                not is_canonical_sha256_b64url(digest) or not is_canonical_sha256_b64url(checkpoint) or
+                con.execute('SELECT 1 FROM google_writer_run_reconciliations WHERE request_id=? LIMIT 1',
+                            (request_id,)).fetchone()):return None
+        plan=con.execute('''SELECT plan_id,plan_digest,details_digest,source_digest,details_json
+                            FROM google_writer_plan_journal WHERE request_id=? AND environment='SANDBOX'
+                              AND actor=?''',(request_id,actor)).fetchall()
+        if len(plan)!=1:return None
+        plan_id,plan_digest,details_digest,source_digest,details_raw=plan[0]
+        if (plan_digest!=digest or not is_canonical_sha256_b64url(details_digest) or
+                not is_canonical_sha256_b64url(source_digest)):return None
+        try: details=json.loads(details_raw)
+        except (TypeError,json.JSONDecodeError):return None
+        if (not isinstance(details,dict) or _preview_details_digest(details)!=details_digest or
+                details.get('plan_digest')!=digest or details.get('source_digest')!=source_digest or
+                details.get('environment')!='SANDBOX'):return None
+        appends=details.get('appends'); updates=details.get('updates')
+        if not isinstance(appends,list) or not isinstance(updates,list):return None
+        append_pages=(len(appends)+APPEND_JOURNAL_PAGE_ROWS-1)//APPEND_JOURNAL_PAGE_ROWS
+        chunks=con.execute('''SELECT chunk_id,phase,plan_digest,source_digest,chunk_index,chunk_digest,
+                                     status,expected_json,receipt_json
+                              FROM google_writer_apply_chunk_journal WHERE run_id=? AND scope='ALL'
+                              ORDER BY chunk_index''',(request_id,)).fetchall()
+        if len(chunks)<next_chunk:return None
+        chunks=chunks[:next_chunk]
+        if [row[4] for row in chunks]!=list(range(next_chunk)):return None
+        last_receipt=None
+        for row in chunks:
+            if row[6]!='verified' or row[2]!=digest or row[3]!=source_digest:return None
+            try: expected=json.loads(row[7]); receipt=json.loads(row[8])
+            except (TypeError,json.JSONDecodeError):return None
+            if not isinstance(expected,dict) or not isinstance(receipt,dict):return None
+            if row[4]<append_pages:
+                expected_phase='append'
+                selected=appends[row[4]*APPEND_JOURNAL_PAGE_ROWS:(row[4]+1)*APPEND_JOURNAL_PAGE_ROWS]
+                added_at=expected.get('added_at')
+                try:
+                    parsed_added_at=datetime.fromisoformat(added_at)
+                    if parsed_added_at.tzinfo is None:return None
+                except (TypeError,ValueError):return None
+            else:
+                expected_phase='update';ordered=sorted(updates,key=lambda item:(item.get('tab',''),item.get('row',0)))
+                pages=[];page=[];cells=0
+                for item in ordered:
+                    width=len(item.get('cells',[])) if isinstance(item,dict) else 0
+                    if page and (len(page)>=APPLY_CHUNK_UPDATE_PAGE_ROWS or cells+width>APPLY_CHUNK_UPDATE_PAGE_CELLS):
+                        pages.append(page);page=[];cells=0
+                    if width>APPLY_CHUNK_UPDATE_PAGE_CELLS:return None
+                    page.append(item);cells+=width
+                if page:pages.append(page)
+                update_index=row[4]-append_pages
+                selected=pages[update_index] if 0<=update_index<len(pages) else []
+                added_at=None
+            expected_ops=[_apply_operation_projection(item) for item in selected]
+            expected_manifest={'version':1,'plan_id':plan_id,'run_id':request_id,'scope':'ALL',
+                'plan_digest':digest,'details_digest':details_digest,'source_digest':source_digest,
+                'phase':expected_phase,'chunk_index':row[4],'operations':expected_ops}
+            if added_at is not None:expected_manifest['added_at']=added_at
+            if (not selected or row[1]!=expected_phase or expected!=expected_manifest or
+                    expected.get('version')!=1 or expected.get('run_id')!=request_id or
+                    expected.get('plan_id')!=plan_id or expected.get('scope')!='ALL' or
+                    expected.get('plan_digest')!=digest or expected.get('details_digest')!=details_digest or
+                    expected.get('source_digest')!=source_digest or expected.get('phase')!=row[1] or
+                    expected.get('chunk_index')!=row[4] or not isinstance(expected.get('operations'),list) or
+                    not expected['operations'] or _sha256_b64(_canonical_json(expected).encode())!=row[5] or
+                    hashlib.sha256((request_id+'|'+plan_id+'|ALL|'+row[1]+'|'+str(row[4])+'|'+row[5]).encode()).hexdigest()[:32]!=row[0] or
+                    receipt.get('digest')!=digest or receipt.get('planScope')!='ALL' or
+                    receipt.get('chunkIndex')!=row[4] or receipt.get('nextChunk')!=row[4]+1 or
+                    receipt.get('chunkId')!=row[0] or receipt.get('chunkDigest')!=row[5] or
+                    receipt.get('planId')!=plan_id or receipt.get('phase')!=row[1] or
+                    not is_canonical_sha256_b64url(receipt.get('checkpointDigest'))):return None
+            ops=expected['operations']; counts=receipt.get('counts')
+            if (not isinstance(counts,dict) or counts.get('append')!=(len(ops) if row[1]=='append' else 0) or
+                    counts.get('update')!=(len(ops) if row[1]=='update' else 0)):return None
+            last_receipt=receipt
+        if (not last_receipt or last_receipt.get('nextChunk')!=next_chunk or
+                last_receipt.get('checkpointDigest')!=checkpoint or last_receipt.get('more') is not True):return None
+        progress=progress|{'status':'APPLY_CONTINUATION_CLAIMED','recovery_claimed_at':stamp,
+            'attempted_chunk':None,'progress_state':'preparing','last_progress_at':stamp}
+        changed=con.execute("UPDATE google_writer_runs SET status='running',finished_at=NULL,result_json=? WHERE request_id=? AND status='partial'",
+            (json.dumps(progress,sort_keys=True),request_id)).rowcount
+        if changed!=1:return None
+    return {'request_id':request_id,'actor':actor,'plan_digest':digest,'next_chunk':next_chunk,
+            'checkpoint_digest':checkpoint,'scope':'ALL'}
+
+
+def continue_apply_checkpoint(path,client,request_id,actor,*,guard=lambda:True):
+    claim=claim_apply_continuation(path,request_id,actor)
+    if not claim:return {'status':'CONTINUATION_NOT_CLAIMED'}
+    if not guard():
+        finish_partial_after_checkpoints(path,request_id,verified_chunks=claim['next_chunk'],
+            next_chunk=claim['next_chunk'],digest=claim['plan_digest'])
+        return {'status':'HALTED_AFTER_VERIFIED_CHECKPOINTS','next_chunk':claim['next_chunk']}
+    return execute_claimed(path,client,request_id,actor,trigger='manual',digest=claim['plan_digest'],
+        guard=guard,manual_authorized=True,plan_scope='ALL',start_chunk=claim['next_chunk'],
+        checkpoint_digest=claim['checkpoint_digest'],max_apply_chunks=APPLY_CHUNKS_PER_WORKER)
+
+
+def reclaim_stale_apply_continuation(path, *, now=None, lease_seconds=APPEND_RECOVERY_LEASE_SECONDS):
+    """Return a worker lease to partial only when no remote chunk was marked inflight."""
+    if type(lease_seconds) is not int or lease_seconds<390:raise ValueError('Continuation lease rejected')
+    clock=now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:raise ValueError('Aware continuation clock required')
+    stamp=clock.astimezone(timezone.utc);reclaimed=[]
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        rows=con.execute('''SELECT request_id,result_json FROM google_writer_runs
+                            WHERE environment='SANDBOX' AND trigger='manual' AND status='running'
+                            ''').fetchall()
+        for request_id,raw in rows:
+            try:state=json.loads(raw or '{}')
+            except (TypeError,json.JSONDecodeError):continue
+            if (not isinstance(state,dict) or state.get('plan_scope')!='ALL' or
+                    state.get('status')!='APPLY_CONTINUATION_CLAIMED' or
+                    state.get('auto_continue_chunks') is not True or state.get('attempted_chunk') is not None):continue
+            try:
+                lease=datetime.fromisoformat(state.get('recovery_claimed_at'))
+                if lease.tzinfo is None or (stamp-lease.astimezone(timezone.utc)).total_seconds()<lease_seconds:continue
+            except (TypeError,ValueError):continue
+            unresolved=con.execute('''SELECT 1 FROM google_writer_apply_chunk_journal
+                WHERE run_id=? AND scope='ALL' AND status IN ('inflight','outcome_unknown') LIMIT 1''',
+                (request_id,)).fetchone()
+            if unresolved:continue
+            state.pop('recovery_claimed_at',None)
+            state.update(status='HALTED_AFTER_VERIFIED_CHECKPOINTS',progress_state='verified',
+                last_progress_at=stamp.isoformat(),attempted_chunk=None,attempted_phase=None)
+            changed=con.execute("UPDATE google_writer_runs SET status='partial',finished_at=?,result_json=? WHERE request_id=? AND status='running'",
+                (stamp.isoformat(),json.dumps(state,sort_keys=True),request_id)).rowcount
+            if changed==1:reclaimed.append(request_id)
+    return reclaimed
 
 
 def _reconciliation_time(now=None):
@@ -1772,6 +2316,26 @@ def migrate(con):
         UNIQUE(run_id,chunk_index));
       CREATE INDEX IF NOT EXISTS ix_google_writer_chunk_journal_plan
         ON google_writer_chunk_journal(plan_id,chunk_index);
+      CREATE TABLE IF NOT EXISTS google_writer_apply_chunk_journal(
+        chunk_id TEXT PRIMARY KEY CHECK(length(chunk_id)=32),
+        plan_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        environment TEXT NOT NULL CHECK(environment='SANDBOX'),
+        scope TEXT NOT NULL CHECK(scope='ALL'),
+        phase TEXT NOT NULL CHECK(phase IN ('append','update')),
+        plan_digest TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL CHECK(chunk_index BETWEEN 0 AND 499),
+        chunk_digest TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('prepared','inflight','verified','outcome_unknown')),
+        expected_json TEXT NOT NULL,
+        prepared_at TEXT NOT NULL,
+        inflight_at TEXT,
+        verified_at TEXT,
+        receipt_json TEXT NOT NULL DEFAULT '{}',
+        UNIQUE(run_id,chunk_index));
+      CREATE INDEX IF NOT EXISTS ix_google_writer_apply_chunk_plan
+        ON google_writer_apply_chunk_journal(plan_id,chunk_index);
     ''')
 
 
@@ -1855,9 +2419,10 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
                 try: saved=json.loads(candidate[2] or '{}')
                 except (TypeError,json.JSONDecodeError): saved={}
                 if (saved.get('status')=='HALTED_AFTER_VERIFIED_CHECKPOINTS' and
-                        saved.get('plan_scope')=='APPEND_ONLY' and
+                        saved.get('plan_scope') in {'APPEND_ONLY','ALL'} and
                         not saved.get('outcome_unknown') and not saved.get('attempted_chunk')):
-                    return {'claimed':False,'status':'append_only_resume_required'}
+                    required='append_only_resume_required' if saved.get('plan_scope')=='APPEND_ONLY' else 'verified_checkpoint_continuation_required'
+                    return {'claimed':False,'status':required}
         config = settings(con)
         if trigger == 'scheduled' and (not config['enabled'] or revision != config['revision']):
             return {'claimed':False,'status':'schedule_changed'}
@@ -1867,12 +2432,32 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
             initial={}
             if environment=='SANDBOX':
                 initial={'plan_scope':plan_scope,'plan_digest':plan_digest,'details_digest':details_digest}
-                continuation_enabled=(plan_scope=='APPEND_ONLY' and
+                if plan_digest and details_digest:
+                    saved=con.execute('''SELECT details_json FROM google_writer_plan_journal
+                        WHERE request_id=? AND environment='SANDBOX' AND actor=?
+                          AND details_digest=? AND (plan_digest=? OR append_only_digest=?)''',
+                        (request_id,actor,details_digest,plan_digest,plan_digest)).fetchone()
+                    if saved:
+                        try: saved_details=json.loads(saved[0])
+                        except (TypeError,json.JSONDecodeError): saved_details={}
+                        if isinstance(saved_details,dict):
+                            initial['planned_counts']={'append':len(saved_details.get('appends',[]))
+                                if isinstance(saved_details.get('appends'),list) else 0,
+                                'update':(len(saved_details.get('updates',[]))
+                                    if plan_scope=='ALL' and isinstance(saved_details.get('updates'),list) else 0),
+                                'conflict':len(saved_details.get('conflicts',[]))
+                                if isinstance(saved_details.get('conflicts'),list) else 0,
+                                'error':len(saved_details.get('errors',[]))
+                                if isinstance(saved_details.get('errors'),list) else 0}
+                initial.update(progress_state='preparing',last_progress_at=(now or datetime.now(timezone.utc)).isoformat(),
+                    last_confirmed_progress_at=None)
+                continuation_enabled=(plan_scope in {'APPEND_ONLY','ALL'} and
                     os.getenv('PQM_SANDBOX_AUTO_CONTINUE_CHUNKS','1').strip().lower() not in {'0','false','no','off'})
                 if continuation_enabled and details_digest:
-                    journal=con.execute('''SELECT source_digest FROM google_writer_plan_journal
+                    digest_column='append_only_digest' if plan_scope=='APPEND_ONLY' else 'plan_digest'
+                    journal=con.execute(f'''SELECT source_digest FROM google_writer_plan_journal
                                            WHERE request_id=? AND environment='SANDBOX' AND actor=?
-                                             AND append_only_digest=? AND details_digest=?''',
+                                             AND {digest_column}=? AND details_digest=?''',
                                         (request_id,actor,plan_digest,details_digest)).fetchone()
                     if journal and is_canonical_sha256_b64url(journal[0]):
                         initial['auto_continue_chunks']=True
@@ -1963,6 +2548,12 @@ def finish_run(path, request_id, status, result):
                 last=result.get('counts',{}) if isinstance(result.get('counts'),dict) else {}
                 result['counts']={**last,'append':int(totals.get('append',0)),
                     'update':int(totals.get('update',0)),'batches':int(totals.get('batches',0))}
+            if isinstance(progress,dict) and isinstance(result,dict):
+                result=dict(result)
+                for key in ('planned_counts','last_recovered_error','last_progress_at',
+                            'last_confirmed_progress_at','plan_scope','plan_digest','details_digest'):
+                    if key in progress:result[key]=progress[key]
+                result['progress_state']=status
         con.execute("UPDATE google_writer_runs SET status=?,finished_at=?,result_json=? WHERE request_id=? AND status='running'",
                     (status,datetime.now(timezone.utc).isoformat(),json.dumps(result),request_id))
     return result
@@ -1974,7 +2565,9 @@ def checkpoint_run(path, request_id, step_result):
         con.execute('BEGIN IMMEDIATE')
         row=con.execute("SELECT status,result_json FROM google_writer_runs WHERE request_id=? AND environment='SANDBOX'",
                         (request_id,)).fetchone()
-        if not row or row[0] != 'running':
+        recovered_receipt = step_result.get('status')=='CHUNK_RECOVERED'
+        allowed_run_status = {'running','outcome_unknown'} if recovered_receipt else {'running'}
+        if not row or row[0] not in allowed_run_status:
             raise RuntimeError('Apply checkpoint no longer owns its run')
         previous=json.loads(row[1] or '{}')
         totals=previous.get('verified_totals',{'append':0,'update':0,'batches':0})
@@ -1986,38 +2579,78 @@ def checkpoint_run(path, request_id, step_result):
             raise RuntimeError('Apply checkpoint receipt was incomplete or outside its plan scope')
         chunk_id=step_result.get('chunkId')
         if chunk_id is not None:
-            chunk=con.execute('''SELECT plan_id,run_id,scope,plan_digest,chunk_digest,status,expected_json
-                                 FROM google_writer_chunk_journal WHERE chunk_id=?''',(chunk_id,)).fetchone()
-            try: expected=json.loads(chunk[6]) if chunk else None
-            except (TypeError,json.JSONDecodeError): expected=None
-            counts=step_result.get('counts',{})
-            if (not chunk or chunk[1]!=request_id or chunk[2]!='APPEND_ONLY' or
-                    chunk[5]!='inflight' or chunk[3]!=step_result.get('digest') or
-                    step_result.get('planId')!=chunk[0] or
-                    step_result.get('chunkDigest')!=chunk[4] or
-                    not isinstance(expected,dict) or
-                    counts.get('append')!=len(expected.get('rows',[])) or counts.get('update')!=0 or
-                    step_result.get('phase')!='append'):
-                raise RuntimeError('Append chunk receipt did not match the durable write-ahead journal')
-            receipt_raw=_canonical_json({key:step_result.get(key) for key in (
-                'status','digest','planScope','chunkIndex','nextChunk','more','phase','checkpointDigest',
-                'chunkId','chunkDigest','planId','counts')})
-            changed=con.execute("UPDATE google_writer_chunk_journal SET status='verified',verified_at=?,receipt_json=? WHERE chunk_id=? AND status='inflight'",
-                (datetime.now(timezone.utc).isoformat(),receipt_raw,chunk_id)).rowcount
-            if changed!=1: raise RuntimeError('Append chunk journal receipt compare-and-set failed')
-        progress={'status':'APPLY_PROGRESS_CHECKPOINTED','next_chunk':step_result['nextChunk'],
+            chunk=con.execute('''SELECT plan_id,run_id,scope,phase,plan_digest,chunk_digest,status,expected_json
+                                 FROM google_writer_apply_chunk_journal WHERE chunk_id=?''',(chunk_id,)).fetchone()
+            if chunk:
+                try: expected=json.loads(chunk[7])
+                except (TypeError,json.JSONDecodeError): expected=None
+                counts=step_result.get('counts',{})
+                operations=expected.get('operations',[]) if isinstance(expected,dict) else []
+                expected_append=len(operations) if chunk[3]=='append' else 0
+                expected_update=len(operations) if chunk[3]=='update' else 0
+                if (not isinstance(expected,dict) or chunk[1]!=request_id or chunk[2]!=previous.get('plan_scope','ALL') or
+                        chunk[5]!=step_result.get('chunkDigest') or chunk[4]!=step_result.get('digest') or
+                        chunk[0]!=step_result.get('planId') or chunk[6]!='inflight' or
+                        chunk[3]!=step_result.get('phase') or step_result.get('chunkIndex')!=expected.get('chunk_index') or
+                        expected_append!=counts.get('append') or expected_update!=counts.get('update') or
+                        step_result.get('planScope')!=chunk[2]):
+                    raise RuntimeError('Apply chunk receipt did not match the durable write-ahead journal')
+                receipt_raw=_canonical_json({key:step_result.get(key) for key in (
+                    'status','digest','planScope','chunkIndex','nextChunk','more','phase','checkpointDigest',
+                    'chunkId','chunkDigest','planId','counts')})
+                if recovered_receipt:
+                    changed=con.execute("UPDATE google_writer_apply_chunk_journal SET status='verified',verified_at=?,receipt_json=? WHERE chunk_id=? AND status IN ('inflight','outcome_unknown')",
+                        (datetime.now(timezone.utc).isoformat(),receipt_raw,chunk_id)).rowcount
+                else:
+                    changed=con.execute("UPDATE google_writer_apply_chunk_journal SET status='verified',verified_at=?,receipt_json=? WHERE chunk_id=? AND status='inflight'",
+                        (datetime.now(timezone.utc).isoformat(),receipt_raw,chunk_id)).rowcount
+                if changed!=1: raise RuntimeError('Apply chunk journal receipt compare-and-set failed')
+            else:
+                chunk=con.execute('''SELECT plan_id,run_id,scope,plan_digest,chunk_digest,status,expected_json
+                                     FROM google_writer_chunk_journal WHERE chunk_id=?''',(chunk_id,)).fetchone()
+                try: expected=json.loads(chunk[6]) if chunk else None
+                except (TypeError,json.JSONDecodeError): expected=None
+                counts=step_result.get('counts',{})
+                if (not chunk or chunk[1]!=request_id or chunk[2]!='APPEND_ONLY' or
+                        chunk[5]!='inflight' or chunk[3]!=step_result.get('digest') or
+                        step_result.get('planId')!=chunk[0] or
+                        step_result.get('chunkDigest')!=chunk[4] or
+                        not isinstance(expected,dict) or
+                        counts.get('append')!=len(expected.get('rows',[])) or counts.get('update')!=0 or
+                        step_result.get('phase')!='append'):
+                    raise RuntimeError('Append chunk receipt did not match the durable write-ahead journal')
+                receipt_raw=_canonical_json({key:step_result.get(key) for key in (
+                    'status','digest','planScope','chunkIndex','nextChunk','more','phase','checkpointDigest',
+                    'chunkId','chunkDigest','planId','counts')})
+                changed=con.execute("UPDATE google_writer_chunk_journal SET status='verified',verified_at=?,receipt_json=? WHERE chunk_id=? AND status='inflight'",
+                    (datetime.now(timezone.utc).isoformat(),receipt_raw,chunk_id)).rowcount
+                if changed!=1: raise RuntimeError('Append chunk journal receipt compare-and-set failed')
+        progress=previous|{'status':'APPLY_PROGRESS_CHECKPOINTED','next_chunk':step_result['nextChunk'],
                   'last_verified_chunk':step_result['chunkIndex'],'last_phase':step_result.get('phase'),
                   'last_step_counts':step_result.get('counts',{}),'verified_totals':totals,
                   'plan_digest':step_result.get('digest'), 'plan_scope':previous.get('plan_scope','ALL'),
                   'checkpoint_digest':step_result['checkpointDigest'],
                   'details_digest':previous.get('details_digest'),
                   'resume_attempts':int(previous.get('resume_attempts',0)),
-                  'auto_continue_chunks':previous.get('auto_continue_chunks') is True}
-        con.execute("UPDATE google_writer_runs SET result_json=? WHERE request_id=? AND status='running'",
-                    (json.dumps(progress,sort_keys=True),request_id))
+                  'auto_continue_chunks':previous.get('auto_continue_chunks') is True,
+                  'progress_state':'verified','attempted_chunk':None,
+                  'last_progress_at':datetime.now(timezone.utc).isoformat(),
+                  'last_confirmed_progress_at':datetime.now(timezone.utc).isoformat()}
+        if recovered_receipt:
+            recovery_error=step_result.get('_recovered_apply_error') or previous.get('safe_error')
+            if isinstance(recovery_error,dict) and set(recovery_error).issuperset({'stage','category','exception_type'}):
+                progress['last_recovered_error']=_safe_apply_error('apply_recovery',ExecutionOutcomeUnknown(
+                    safe_error=recovery_error))
+            progress.pop('safe_error',None)
+        next_run_status='running' if recovered_receipt else row[0]
+        con.execute("UPDATE google_writer_runs SET status=?,finished_at=NULL,result_json=? WHERE request_id=? AND status=?",
+                    (next_run_status,json.dumps(progress,sort_keys=True),request_id,row[0]))
+        if con.execute('SELECT changes()').fetchone()[0]!=1:
+            raise RuntimeError('Apply checkpoint run compare-and-set failed')
 
 
-def hold_unknown_run(path, request_id, *, attempted_chunk, digest, checkpoint_digest=None, chunk_id=None):
+def hold_unknown_run(path, request_id, *, attempted_chunk, digest, checkpoint_digest=None, chunk_id=None,
+                     phase=None, safe_error=None):
     """Retain verified local checkpoints while holding an ambiguous remote step."""
     with closing(sqlite3.connect(path,timeout=5)) as con, con:
         con.execute('BEGIN IMMEDIATE')
@@ -2029,11 +2662,16 @@ def hold_unknown_run(path, request_id, *, attempted_chunk, digest, checkpoint_di
         if not isinstance(previous,dict): previous={}
         held=previous|{'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY',
             'outcome_unknown':True,'attempted_chunk':attempted_chunk,'plan_digest':digest,
-            'attempted_checkpoint_digest':checkpoint_digest}
+            'attempted_checkpoint_digest':checkpoint_digest,
+            'attempted_phase':phase or previous.get('attempted_phase'),
+            'safe_error':safe_error if isinstance(safe_error,dict) else previous.get('safe_error'),
+            'last_progress_at':datetime.now(timezone.utc).isoformat()}
         con.execute("UPDATE google_writer_runs SET status='outcome_unknown',finished_at=?,result_json=? WHERE request_id=? AND status='running'",
                     (datetime.now(timezone.utc).isoformat(),json.dumps(held,sort_keys=True),request_id))
         if chunk_id:
             con.execute("UPDATE google_writer_chunk_journal SET status='outcome_unknown' WHERE chunk_id=? AND run_id=? AND status='inflight'",
+                        (chunk_id,request_id))
+            con.execute("UPDATE google_writer_apply_chunk_journal SET status='outcome_unknown' WHERE chunk_id=? AND run_id=? AND status='inflight'",
                         (chunk_id,request_id))
 
 
@@ -2079,7 +2717,8 @@ def continue_append_only_checkpoint(path, client, request_id, actor, *, digest, 
 
 def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest=None,
                     guard=lambda:True, manual_authorized=False, plan_scope='ALL',
-                    start_chunk=0, checkpoint_digest=None, max_append_chunks=4):
+                    start_chunk=0, checkpoint_digest=None, max_append_chunks=4,
+                    max_apply_chunks=APPLY_CHUNKS_PER_WORKER):
     """One common writer for manual and scheduled calls, no automatic retry."""
     manual_override = (manual_authorized is True and trigger == 'manual' and
                        isinstance(actor, str) and bool(actor.strip()))
@@ -2088,7 +2727,8 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
     verified_steps=0
     chunk_index=start_chunk
     active_chunk_id=None
-    no_write_retry_used=set()
+    active_phase=None
+    stage='preflight'
     try:
         if not guard(): raise ExecutionConfigurationError('Execution guard changed before preview')
         if digest is None:
@@ -2107,6 +2747,7 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
             if (background_jobs.disabled() and not manual_override) or not guard():
                 raise ExecutionConfigurationError('Execution guard changed before next Apply checkpoint')
             chunk_binding={}
+            stage='prepare_chunk'
             if getattr(client,'environment',None)=='SANDBOX' and plan_scope=='APPEND_ONLY':
                 try:
                     with closing(sqlite3.connect(path,timeout=5)) as con:
@@ -2119,32 +2760,78 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
                     if not mark_append_chunk_inflight(path,chunk['chunk_id']):
                         raise RuntimeError('Append chunk was already confirmed; no remote replay is allowed')
                     active_chunk_id=chunk['chunk_id']
+                    active_phase='append'
                     chunk_binding={'chunk_id':chunk['chunk_id'],'chunk_digest':chunk['chunk_digest'],
                                    'plan_id':chunk['plan_id']}
                 except Exception:
                     raise ExecutionPreflightError('Durable APPEND_ONLY chunk preflight rejected; no Apps Script call') from None
+            elif getattr(client,'environment',None)=='SANDBOX' and plan_scope=='ALL':
+                try:
+                    with closing(sqlite3.connect(path,timeout=5)) as con:
+                        run_state=con.execute('SELECT result_json FROM google_writer_runs WHERE request_id=? AND status=\'running\'',
+                                              (request_id,)).fetchone()
+                    run_meta=json.loads(run_state[0] or '{}') if run_state else {}
+                    chunk=prepare_apply_chunk(path,request_id,actor,digest,run_meta.get('details_digest'),
+                                              'ALL',chunk_index)
+                    if chunk['status']!='prepared':
+                        raise RuntimeError('Apply chunk is already in flight or confirmed; no remote replay')
+                    mark_apply_chunk_inflight(path,chunk['chunk_id'])
+                    active_chunk_id=chunk['chunk_id']
+                    active_phase=chunk['phase']
+                    chunk_binding={'chunk_id':chunk['chunk_id'],'chunk_digest':chunk['chunk_digest'],
+                        'plan_id':chunk['plan_id'],'chunk_phase':chunk['phase'],
+                        'chunk_added_at':chunk['added_at'],
+                        'chunk_details_digest':chunk['details_digest']}
+                except Exception:
+                    raise ExecutionPreflightError('Durable Apply chunk preflight rejected; no Apps Script call') from None
             try:
+                stage='apps_script_apply'
                 result = client.invoke('apply',request_id,actor,trigger=trigger,digest=digest,
                                        plan_scope=plan_scope,manual_authorized=manual_override,chunk_index=chunk_index,
                                        expected_checkpoint_digest=checkpoint_digest,**chunk_binding)
-            except ExecutionOutcomeUnknown:
+            except ExecutionOutcomeUnknown as apply_error:
                 if not chunk_binding:
                     raise
-                recovered=client.invoke('recover_append_chunk',request_id,actor,trigger='manual',digest=digest,
-                    plan_scope='APPEND_ONLY',manual_authorized=manual_override,chunk_index=chunk_index,
-                    **chunk_binding)
-                if recovered.get('status')=='CHUNK_NOT_APPLIED':
-                    if chunk_index in no_write_retry_used:
-                        raise ExecutionOutcomeUnknown('Chunk remained unapplied after its one safe retry')
-                    no_write_retry_used.add(chunk_index)
-                    reset_append_chunk_preflight(path,active_chunk_id)
-                    active_chunk_id=None
-                    continue
-                if recovered.get('status')!='CHUNK_RECOVERED':
-                    raise ExecutionOutcomeUnknown('Chunk recovery did not establish a safe state')
-                result=recovered
+                if plan_scope=='ALL':
+                    stage='apps_script_recovery'
+                    try:
+                        recovered=client.invoke('recover_apply_chunk',request_id,actor,trigger='manual',digest=digest,
+                            plan_scope='ALL',manual_authorized=manual_override,chunk_index=chunk_index,**chunk_binding)
+                    except Exception as recovery_error:
+                        primary=_safe_apply_error('apps_script_apply',apply_error)
+                        recovery=_safe_apply_error('apps_script_recovery',recovery_error)
+                        raise ExecutionOutcomeUnknown('Apply and its read-only recovery both need review',safe_error={
+                            'stage':recovery['stage'],'category':recovery['category'],
+                            'exception_type':recovery['exception_type'],
+                            'primary_stage':primary['stage'],'primary_category':primary['category'],
+                            'recovery_stage':recovery['stage'],'recovery_category':recovery['category'],
+                            **({'primary_http_status':primary['http_status']} if 'http_status' in primary else {}),
+                            **({'http_status':recovery['http_status']} if 'http_status' in recovery else {})}) from None
+                    if recovered.get('status') not in {'CHUNK_RECOVERED','CHUNK_NOT_APPLIED','CHUNK_AMBIGUOUS'}:
+                        raise ExecutionOutcomeUnknown('Apply chunk recovery did not establish a safe state',
+                            safe_error=apply_error.safe_error)
+                    if recovered.get('status')!='CHUNK_RECOVERED':
+                        raise ExecutionOutcomeUnknown('Apply chunk was not fully confirmed; no automatic retry',
+                            safe_error=apply_error.safe_error or {
+                                'stage':'read_only_recovery','category':recovered.get('status','ambiguous').lower(),
+                                'exception_type':'ExecutionOutcomeUnknown'})
+                    recovered['_recovered_apply_error']=apply_error.safe_error or _safe_apply_error('apps_script_apply',apply_error)
+                    result=recovered
+                else:
+                    stage='apps_script_recovery'
+                    recovered=client.invoke('recover_append_chunk',request_id,actor,trigger='manual',digest=digest,
+                        plan_scope='APPEND_ONLY',manual_authorized=manual_override,chunk_index=chunk_index,
+                        chunk_id=chunk_binding['chunk_id'],chunk_digest=chunk_binding['chunk_digest'],
+                        plan_id=chunk_binding['plan_id'])
+                    if recovered.get('status')!='CHUNK_RECOVERED':
+                        raise ExecutionOutcomeUnknown('Append chunk recovery did not establish a safe state',
+                            safe_error=apply_error.safe_error)
+                    recovered['_recovered_apply_error']=apply_error.safe_error or _safe_apply_error('apps_script_apply',apply_error)
+                    result=recovered
             if result['status'] in {'APPLY_CHUNK_VERIFIED','CHUNK_RECOVERED'}:
+                stage='receipt_checkpoint_persist'
                 checkpoint_run(path,request_id,result)
+                active_chunk_id=None
                 verified_steps+=1
                 chunk_index=result['nextChunk']
                 checkpoint_digest=result['checkpointDigest']
@@ -2169,13 +2856,21 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
                                     'continuation_preflight':'DEFERRED_NO_WRITE'}
                     return {'status':'HALTED_AFTER_VERIFIED_CHECKPOINTS','verified_chunks':chunk_index,
                             'next_chunk':chunk_index,'checkpoint_digest':checkpoint_digest}
+                if plan_scope=='ALL' and verified_steps>=max_apply_chunks and result['more']:
+                    finish_partial_after_checkpoints(path,request_id,verified_chunks=chunk_index,
+                        next_chunk=chunk_index,digest=digest)
+                    return {'status':'HALTED_AFTER_VERIFIED_CHECKPOINTS','verified_chunks':chunk_index,
+                        'next_chunk':chunk_index,'checkpoint_digest':checkpoint_digest}
                 continue
             if result.get('chunkId'):
+                stage='receipt_checkpoint_persist'
                 checkpoint_run(path,request_id,result)
+                active_chunk_id=None
             status = 'complete' if result['status']=='COMPLETE' else 'partial'
             return finish_run(path,request_id,status,result)
     except ExecutionPreflightError:
-        if active_chunk_id: reset_append_chunk_preflight(path,active_chunk_id)
+        if active_chunk_id:
+            (reset_apply_chunk_preflight if plan_scope=='ALL' else reset_append_chunk_preflight)(path,active_chunk_id)
         if verified_steps or start_chunk>0:
             finish_partial_after_checkpoints(path,request_id,verified_chunks=chunk_index,
                 next_chunk=chunk_index,digest=digest)
@@ -2184,7 +2879,8 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
         finish_run(path,request_id,'failed_safe',{'status':'PRECALL_REJECTED_NO_REMOTE_CALL'})
         return {'status':'PRECALL_REJECTED_NO_REMOTE_CALL'}
     except ExecutionConfigurationError:
-        if active_chunk_id: reset_append_chunk_preflight(path,active_chunk_id)
+        if active_chunk_id:
+            (reset_apply_chunk_preflight if plan_scope=='ALL' else reset_append_chunk_preflight)(path,active_chunk_id)
         if verified_steps or start_chunk>0:
             finish_partial_after_checkpoints(path,request_id,verified_chunks=chunk_index,
                 next_chunk=chunk_index,digest=digest)
@@ -2193,7 +2889,8 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
         finish_run(path,request_id,'failed_safe',{'status':'PRECALL_REJECTED_NO_REMOTE_CALL'})
         return {'status':'PRECALL_REJECTED_NO_REMOTE_CALL'}
     except ValueError:
-        if active_chunk_id: reset_append_chunk_preflight(path,active_chunk_id)
+        if active_chunk_id:
+            (reset_apply_chunk_preflight if plan_scope=='ALL' else reset_append_chunk_preflight)(path,active_chunk_id)
         if verified_steps or start_chunk>0:
             finish_partial_after_checkpoints(path,request_id,verified_chunks=chunk_index,
                 next_chunk=chunk_index,digest=digest)
@@ -2201,9 +2898,10 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
                     'next_chunk':chunk_index}
         finish_run(path,request_id,'failed_safe',{'status':'PRECALL_REJECTED_NO_REMOTE_CALL'})
         return {'status':'PRECALL_REJECTED_NO_REMOTE_CALL'}
-    except Exception:
+    except Exception as exc:
         hold_unknown_run(path,request_id,attempted_chunk=chunk_index,digest=digest,
-                         checkpoint_digest=checkpoint_digest,chunk_id=active_chunk_id)
+                         checkpoint_digest=checkpoint_digest,chunk_id=active_chunk_id,
+                         phase=active_phase,safe_error=_safe_apply_error(stage,exc))
         return {'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY'}
 
 
@@ -2219,7 +2917,35 @@ def status(path, environment, *, available=False, running=False, heartbeat=None,
         except sqlite3.OperationalError as exc:
             if 'no such table' not in str(exc).lower(): raise
             rows=[]
-    for row in rows: row['result']=json.loads(row.pop('result_json'))
+    for row in rows:
+        row['result']=json.loads(row.pop('result_json'))
+        result=row['result'] if isinstance(row.get('result'),dict) else {}
+        planned=result.get('planned_counts') if isinstance(result.get('planned_counts'),dict) else {}
+        verified=result.get('verified_totals') if isinstance(result.get('verified_totals'),dict) else {}
+        result_counts=result.get('counts') if isinstance(result.get('counts'),dict) else {}
+        confirmed={'append':int(verified.get('append',result_counts.get('append',0)) or 0),
+                   'update':int(verified.get('update',result_counts.get('update',0)) or 0)}
+        row['progress']={'state':result.get('progress_state') or row['status'],
+            'phase':result.get('attempted_phase') or result.get('last_phase'),
+            'planned':{'append':int(planned.get('append',0) or 0),'update':int(planned.get('update',0) or 0)},
+            'confirmed':confirmed,
+            'remaining':{'append':max(0,int(planned.get('append',0) or 0)-confirmed['append']),
+                         'update':max(0,int(planned.get('update',0) or 0)-confirmed['update'])},
+            'current_chunk':result.get('attempted_chunk',result.get('next_chunk')),
+            'last_progress_at':result.get('last_progress_at'),
+            'last_confirmed_progress_at':result.get('last_confirmed_progress_at'),
+            'safe_error':result.get('safe_error') if isinstance(result.get('safe_error'),dict) else None,
+            'last_recovered_error':result.get('last_recovered_error') if isinstance(result.get('last_recovered_error'),dict) else None}
+        if environment=='SANDBOX':
+            journal=[]
+            try:
+                with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+                    con.execute('PRAGMA query_only=ON')
+                    journal=con.execute('''SELECT phase,status,COUNT(*) FROM google_writer_apply_chunk_journal
+                        WHERE run_id=? GROUP BY phase,status''',(row['request_id'],)).fetchall()
+            except sqlite3.OperationalError as exc:
+                if 'no such table' not in str(exc).lower(): raise
+            row['progress']['chunks']=[{'phase':item[0],'state':item[1],'count':item[2]} for item in journal]
     last=rows[0] if rows else {}
     active_blocked=any(row['status'] in {'running','outcome_unknown'} for row in rows)
     # Unknown/active lanes are queried separately: an older hold must not be hidden by log limits.
@@ -2231,17 +2957,22 @@ def status(path, environment, *, available=False, running=False, heartbeat=None,
         except sqlite3.OperationalError as exc:
             if 'no such table' not in str(exc).lower(): raise
             resumable_rows=[]
-    resumable=[]
+    resumable=[];continuable=[]
     for request_id,run_actor,raw_result in resumable_rows:
         try: progress=json.loads(raw_result or '{}')
         except (TypeError,json.JSONDecodeError): progress={}
+        if (progress.get('status')=='HALTED_AFTER_VERIFIED_CHECKPOINTS' and
+                progress.get('plan_scope')=='ALL' and not progress.get('outcome_unknown') and
+                progress.get('attempted_chunk') is None and type(progress.get('next_chunk')) is int and
+                is_canonical_sha256_b64url(progress.get('checkpoint_digest'))):
+            continuable.append((request_id,run_actor))
         if (progress.get('status')=='HALTED_AFTER_VERIFIED_CHECKPOINTS' and
                 progress.get('plan_scope')=='APPEND_ONLY' and not progress.get('outcome_unknown') and
                 progress.get('attempted_chunk') is None and type(progress.get('next_chunk')) is int and
                 is_canonical_sha256_b64url(progress.get('checkpoint_digest'))):
             resumable.append((request_id,run_actor))
     resume_available=any(run_actor==actor for _,run_actor in resumable) if actor else bool(resumable)
-    blocked=active_blocked or bool(resumable)
+    blocked=active_blocked or bool(resumable) or bool(continuable)
     for row in rows:
         row['resume_available']=any(request_id==row['request_id'] and run_actor==actor
                                     for request_id,run_actor in resumable) if actor else False
@@ -2324,11 +3055,9 @@ def recover_interrupted_append_chunk(path, client, request_id, actor, *, guard=l
             chunk_index=claim['chunk_index'],chunk_id=claim['chunk_id'],
             chunk_digest=claim['chunk_digest'],plan_id=claim['plan_id'])
         if result.get('status')=='CHUNK_NOT_APPLIED':
-            reset_append_chunk_preflight(path,claim['chunk_id'])
-            return execute_claimed(path,client,request_id,actor,trigger='manual',
-                digest=claim['plan_digest'],guard=guard,manual_authorized=True,
-                plan_scope='APPEND_ONLY',start_chunk=claim['chunk_index'],
-                checkpoint_digest=claim['checkpoint_digest'])
+            raise ExecutionOutcomeUnknown('Read-only recovery proved no write, but automatic replay is prohibited',
+                safe_error={'stage':'read_only_recovery','category':'no_write_proved_manual_review_required',
+                            'exception_type':'ExecutionOutcomeUnknown'})
         if result.get('status')!='CHUNK_RECOVERED':
             raise ExecutionOutcomeUnknown('Read-only chunk recovery did not establish a safe state')
         checkpoint_run(path,request_id,result)
@@ -2353,6 +3082,54 @@ def recover_interrupted_append_chunk(path, client, request_id, actor, *, guard=l
         return {'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY'}
 
 
+def recover_interrupted_apply_chunk(path, client, request_id, actor, *, guard=lambda:True,
+                                    now=None):
+    """Read-only recover one uncertain ALL chunk; continue only after exact receipt proof."""
+    claim=claim_interrupted_apply_chunk_recovery(path,request_id,now=now)
+    if not claim:return {'status':'NOT_ELIGIBLE'}
+    if not guard():
+        hold_unknown_run(path,request_id,attempted_chunk=claim['chunk_index'],
+            digest=claim['plan_digest'],checkpoint_digest=claim['checkpoint_digest'],
+            chunk_id=claim['chunk_id'],phase=claim['phase'])
+        return {'status':'HELD_GUARD_CHANGED'}
+    try:
+        result=client.invoke('recover_apply_chunk',request_id,actor,trigger='manual',
+            digest=claim['plan_digest'],plan_scope='ALL',manual_authorized=True,
+            chunk_index=claim['chunk_index'],chunk_id=claim['chunk_id'],
+            chunk_digest=claim['chunk_digest'],plan_id=claim['plan_id'],
+            chunk_phase=claim['phase'],chunk_added_at=claim['added_at'],
+            chunk_details_digest=claim['details_digest'])
+        if result.get('status')=='CHUNK_NOT_APPLIED':
+            raise ExecutionOutcomeUnknown('Read-only recovery proved no write; replay remains prohibited',
+                safe_error={'stage':'read_only_recovery','category':'no_write_proved_manual_review_required',
+                            'exception_type':'ExecutionOutcomeUnknown'})
+        if result.get('status')!='CHUNK_RECOVERED':
+            raise ExecutionOutcomeUnknown('Read-only Apply recovery did not establish a safe state',
+                safe_error={'stage':'read_only_recovery','category':'ambiguous',
+                            'exception_type':'ExecutionOutcomeUnknown'})
+        checkpoint_run(path,request_id,result)
+        if not result.get('more'):
+            final='complete' if result.get('counts',{}).get('conflict',0)==0 and result.get('counts',{}).get('error',0)==0 else 'partial'
+            return finish_run(path,request_id,final,result)
+        with closing(sqlite3.connect(path,timeout=5)) as con:
+            saved=con.execute('SELECT result_json FROM google_writer_runs WHERE request_id=?',(request_id,)).fetchone()
+        try:auto_continue=json.loads(saved[0] or '{}').get('auto_continue_chunks') is True if saved else False
+        except (TypeError,json.JSONDecodeError):auto_continue=False
+        if auto_continue and guard():
+            return execute_claimed(path,client,request_id,actor,trigger='manual',digest=claim['plan_digest'],
+                guard=guard,manual_authorized=True,plan_scope='ALL',start_chunk=result['nextChunk'],
+                checkpoint_digest=result['checkpointDigest'],max_apply_chunks=APPLY_CHUNKS_PER_WORKER)
+        finish_partial_after_checkpoints(path,request_id,verified_chunks=result['nextChunk'],
+            next_chunk=result['nextChunk'],digest=claim['plan_digest'])
+        return {'status':'HALTED_AFTER_VERIFIED_CHECKPOINTS','verified_chunks':result['nextChunk'],
+            'next_chunk':result['nextChunk'],'checkpoint_digest':result['checkpointDigest']}
+    except Exception as exc:
+        hold_unknown_run(path,request_id,attempted_chunk=claim['chunk_index'],
+            digest=claim['plan_digest'],checkpoint_digest=claim['checkpoint_digest'],
+            chunk_id=claim['chunk_id'],phase=claim['phase'],safe_error=_safe_apply_error('read_only_recovery',exc))
+        return {'status':'OUTCOME_UNKNOWN_HOLD_NO_RETRY'}
+
+
 class AppendOnlyContinuationWorker:
     """Sandbox-only watchdog for runs explicitly started by a human and checkpointed safely."""
     def __init__(self,path,client_factory,guard,*,environment='SANDBOX',interval_seconds=20):
@@ -2362,7 +3139,7 @@ class AppendOnlyContinuationWorker:
 
     def start(self):
         if self.environment!='SANDBOX' or self.thread is not None:return False
-        self.thread=threading.Thread(target=self.loop,name='pqm-append-only-continuation',daemon=True)
+        self.thread=threading.Thread(target=self.loop,name='pqm-google-writer-continuation',daemon=True)
         self.thread.start();return True
 
     def eligible(self):
@@ -2376,9 +3153,9 @@ class AppendOnlyContinuationWorker:
             except (TypeError,json.JSONDecodeError):continue
             if (isinstance(state,dict) and state.get('auto_continue_chunks') is True and
                     state.get('status')=='HALTED_AFTER_VERIFIED_CHECKPOINTS' and
-                    state.get('plan_scope')=='APPEND_ONLY' and not state.get('outcome_unknown') and
+                    state.get('plan_scope') in {'APPEND_ONLY','ALL'} and not state.get('outcome_unknown') and
                     state.get('attempted_chunk') is None):
-                candidates.append((request_id,actor,state.get('plan_digest')))
+                candidates.append((request_id,actor,state.get('plan_digest'),state.get('plan_scope')))
         return candidates
 
     def recoverable(self):
@@ -2386,42 +3163,69 @@ class AppendOnlyContinuationWorker:
         with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
             con.execute('PRAGMA query_only=ON')
             rows=con.execute('''SELECT r.request_id,r.actor,r.status,r.result_json,
-                                       c.status,c.inflight_at
+                                       c.status,c.inflight_at,c.scope,'APPEND_ONLY',r.started_at
                                 FROM google_writer_runs r JOIN google_writer_chunk_journal c
                                   ON c.run_id=r.request_id
                                 WHERE r.environment='SANDBOX' AND r.trigger='manual'
                                   AND r.status IN ('running','outcome_unknown')
                                   AND c.status IN ('inflight','outcome_unknown')
-                                ORDER BY r.started_at''').fetchall()
-        now=datetime.now(timezone.utc);found=[]
-        for request_id,actor,run_status,raw,chunk_status,inflight_at in rows:
+                                UNION ALL
+                                SELECT r.request_id,r.actor,r.status,r.result_json,
+                                       c.status,c.inflight_at,c.scope,'ALL',r.started_at
+                                FROM google_writer_runs r JOIN google_writer_apply_chunk_journal c
+                                  ON c.run_id=r.request_id
+                                WHERE r.environment='SANDBOX' AND r.trigger='manual'
+                                  AND r.status IN ('running','outcome_unknown') AND c.scope='ALL'
+                                  AND c.status IN ('inflight','outcome_unknown')
+            ORDER BY started_at''').fetchall()
+        now=datetime.now(timezone.utc);found=[];seen=set()
+        for request_id,actor,run_status,raw,chunk_status,inflight_at,scope,journal_kind,_started_at in rows:
+            if request_id in seen: continue
+            seen.add(request_id)
             try:state=json.loads(raw or '{}')
             except (TypeError,json.JSONDecodeError):continue
-            if not isinstance(state,dict) or state.get('plan_scope')!='APPEND_ONLY':continue
+            if not isinstance(state,dict) or state.get('plan_scope')!=journal_kind:continue
+            claimed_at=state.get('recovery_claimed_at')
+            if claimed_at:
+                try:
+                    claimed=datetime.fromisoformat(claimed_at)
+                    if claimed.tzinfo is None or (now-claimed.astimezone(timezone.utc)).total_seconds()<APPEND_RECOVERY_LEASE_SECONDS:
+                        continue
+                except (TypeError,ValueError):continue
             if run_status=='outcome_unknown':
-                found.append((request_id,actor));continue
+                found.append((request_id,actor,journal_kind));continue
             try:
                 stamp=datetime.fromisoformat(inflight_at)
                 if stamp.tzinfo and (now-stamp.astimezone(timezone.utc)).total_seconds()>=APPEND_RECOVERY_STALE_SECONDS:
-                    found.append((request_id,actor))
+                    found.append((request_id,actor,journal_kind))
             except (TypeError,ValueError):continue
         return found
 
     def run_once(self):
         if self.environment!='SANDBOX' or not self.guard():return 0
-        started=0
-        for request_id,actor in self.recoverable():
+        try: reclaim_stale_apply_continuation(self.path)
+        except Exception: return 0
+        started=0;recovered_ids=set()
+        for request_id,actor,scope in self.recoverable():
             if not self.guard():break
             try:
-                recover_interrupted_append_chunk(self.path,self.client_factory(),request_id,actor,guard=self.guard)
+                if scope=='ALL':
+                    recover_interrupted_apply_chunk(self.path,self.client_factory(),request_id,actor,guard=self.guard)
+                else:
+                    recover_interrupted_append_chunk(self.path,self.client_factory(),request_id,actor,guard=self.guard)
                 started+=1
+                recovered_ids.add(request_id)
             except Exception:
                 continue
-        for request_id,actor,digest in self.eligible():
+        for request_id,actor,digest,scope in self.eligible():
+            if request_id in recovered_ids:continue
             if not self.guard():break
             try:
-                continue_append_only_checkpoint(self.path,self.client_factory(),request_id,actor,
-                    digest=digest,guard=self.guard,manual_authorized=True)
+                if scope=='ALL':
+                    continue_apply_checkpoint(self.path,self.client_factory(),request_id,actor,guard=self.guard)
+                else:
+                    continue_append_only_checkpoint(self.path,self.client_factory(),request_id,actor,
+                        digest=digest,guard=self.guard,manual_authorized=True)
                 started+=1
             except Exception:
                 # Keep the confirmed checkpoint; next poll can retry only the read-only preflight.

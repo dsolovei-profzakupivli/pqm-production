@@ -300,6 +300,102 @@ function pqmSandboxFullCellValue_(cell) {
     value.boolValue !== undefined ? value.boolValue : '';
 }
 
+function pqmSandboxExecutionOperationProjection_(loaded,phase,selected) {
+  var details=pqmSandboxFullPreviewDetails_(loaded),items=phase==='append'?details.appends:details.updates;
+  var keys=new Set((selected||[]).map(function(entry) {
+    var change=entry.change||entry;
+    return change.tab+':'+change.row;
+  }));
+  return items.filter(function(item) { return keys.has(item.tab+':'+item.row); }).map(function(item) {
+    return {operation:item.operation,tab:item.tab,row:item.row,code:String(item.code||'').trim(),
+      cells:(item.cells||[]).map(function(cell) { return {column:cell.column,new_value:cell.new_value,
+        formula:cell.formula===true}; })};
+  });
+}
+
+function pqmSandboxExecutionComparableValue_(value,column) {
+  if (value===null || value===undefined || value==='') return '';
+  if (column===7) {
+    var date=pqmGoogleCalendarDate_(value);
+    return date && date.kind==='date' ? date.value : String(value);
+  }
+  if (column===8) {
+    var datetime=pqmVerificationDatetime_(value);
+    return datetime && datetime.kind==='datetime' ? datetime.value : String(value);
+  }
+  return typeof value==='string'?value:String(value);
+}
+
+function pqmSandboxExecutionRowProjection_(tab,row,columns,values,formulas,service) {
+  return {tab:tab,row:row,cells:columns.map(function(column) {
+    return {column:column,value:column===0?'':pqmSandboxExecutionComparableValue_(values[column],column),
+      formula:column===0?String(formulas[0]||''):''};
+  }),service:service||null};
+}
+
+function pqmSandboxExecutionChunkEvidence_(phase,selected,loaded,request,beforeRows) {
+  return (selected||[]).map(function(entry,index) {
+    var change=entry.change||entry,tab=change.tab,row=change.row;
+    var plannedColumns=Object.keys(change.cells||{}).map(Number).sort(function(a,b){return a-b;});
+    if (!plannedColumns.length) throw new Error('PQM EXECUTION CHECKPOINT: empty chunk row evidence.');
+    var cols=Array.from({length:15},function(_,column){return column;});
+    var old=loaded.tabs[tab].rows[row-2],oldValues=old?old.values:Array(15).fill(''),
+      oldFormulas=old?old.formulas:Array(15).fill('');
+    var afterValues=oldValues.slice(),afterFormulas=oldFormulas.slice();
+    plannedColumns.forEach(function(column) {
+      afterValues[column]=change.cells[column];
+      if (column===0 && typeof change.cells[column]==='string' && change.cells[column].charAt(0)==='=')
+        afterFormulas[column]=change.cells[column];
+    });
+    var beforeService=null,afterService=null;
+    if (phase==='append') {
+      oldValues=Array(15).fill('');oldFormulas=Array(15).fill('');
+      afterValues=oldValues.slice();afterFormulas=oldFormulas.slice();
+      plannedColumns.forEach(function(column) {
+        afterValues[column]=change.cells[column];
+        if (column===0 && typeof change.cells[column]==='string' && change.cells[column].charAt(0)==='=')
+          afterFormulas[column]=change.cells[column];
+      });
+      afterService={addedAt:request.chunkAddedAt,planId:request.planId,runId:request.requestId};
+      beforeService={addedAt:'',planId:'',runId:''};
+    }
+    var before=pqmSandboxExecutionRowProjection_(tab,row,cols,oldValues,oldFormulas,beforeService);
+    var after=pqmSandboxExecutionRowProjection_(tab,row,cols,afterValues,afterFormulas,afterService);
+    var evidence={tab:tab,row:row,columns:cols,beforeDigest:pqmSandboxControlledDigest_(before),
+      afterDigest:pqmSandboxControlledDigest_(after)};
+    evidence.codeDigest=pqmSandboxControlledDigest_(String(change.code||change.cells[1]||'').trim());
+    return evidence;
+  });
+}
+
+function pqmSandboxExecutionReadChunkEvidence_(id,manifest) {
+  var rows=manifest.rows||[],ranges=rows.map(function(item) {
+    return "'"+item.tab.replace(/'/g,"''")+"'!A"+item.row+':S'+item.row;
+  });
+  var values=Sheets.Spreadsheets.Values.batchGet(id,{ranges:ranges,valueRenderOption:'UNFORMATTED_VALUE'});
+  var formulas=Sheets.Spreadsheets.Values.batchGet(id,{ranges:ranges.map(function(range) {
+    return range.substring(0,range.indexOf('!')+1)+'A'+range.substring(range.indexOf('!A')+2,range.indexOf(':'));
+  }),valueRenderOption:'FORMULA'});
+  if (!values || !Array.isArray(values.valueRanges) || values.valueRanges.length!==ranges.length ||
+      !formulas || !Array.isArray(formulas.valueRanges) || formulas.valueRanges.length!==ranges.length)
+    throw new Error('PQM EXECUTION CHECKPOINT: bounded recovery read-back incomplete.');
+  var services=manifest.phase==='append'?Sheets.Spreadsheets.Values.batchGet(id,{ranges:ranges.map(function(range) {
+    var row=range.substring(range.indexOf('!A')+2,range.indexOf(':'));
+    return range.substring(0,range.indexOf('!')+1)+'Q'+row+':S'+row;
+  }),valueRenderOption:'UNFORMATTED_VALUE'}):null;
+  if (manifest.phase==='append' && (!services || !Array.isArray(services.valueRanges) || services.valueRanges.length!==ranges.length))
+    throw new Error('PQM EXECUTION CHECKPOINT: service marker recovery read-back incomplete.');
+  return rows.map(function(expected,index) {
+    var row=((values.valueRanges[index]||{}).values||[])[0]||[],formula=((formulas.valueRanges[index]||{}).values||[])[0]||[];
+    var serviceRow=manifest.phase==='append'?(((services.valueRanges[index]||{}).values||[])[0]||[]):null;
+    var service=manifest.phase==='append'?{addedAt:serviceRow[0]||'',planId:serviceRow[1]||'',runId:serviceRow[2]||''}:null;
+    var digest=pqmSandboxControlledDigest_(pqmSandboxExecutionRowProjection_(expected.tab,expected.row,
+      expected.columns,row,formula,service));
+    return {tab:expected.tab,row:expected.row,digest:digest,
+      codeDigest:pqmSandboxControlledDigest_(String(row[1]||'').trim())};
+  });
+}
+
 function pqmSandboxFullBeforeCheck_(chunk, rawRows, tabs) {
   chunk.forEach(function(entry, index) {
     var expected = tabs[entry.tab].rows[entry.row - 2], cells = rawRows[index];
@@ -553,7 +649,8 @@ function pqmSandboxCheckpointAdapter_() {
     fullBeforeCheck:pqmSandboxFullBeforeCheck_, fullRequests:pqmSandboxFullRequests_,
     controlledVerify:pqmSandboxControlledVerify_, snapshot:pqmGoogleSnapshot_,
     fullSheetState:pqmSandboxFullSheetState_, plan:pqmGooglePlan_,
-    controlledDigest:pqmSandboxControlledDigest_, rowState:pqmSandboxControlledRowState_
+    controlledDigest:pqmSandboxControlledDigest_, rowState:pqmSandboxControlledRowState_,
+    chunkEvidence:pqmSandboxExecutionChunkEvidence_
   };
 }
 

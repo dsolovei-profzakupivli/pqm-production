@@ -40,6 +40,11 @@ function pqmExecutionCheckpointStateDigest_(record) {
     state.planId = record.planId;
     state.runId = record.runId;
   }
+  if (record.chunkJournalVersion === 2) {
+    state.chunkJournalVersion = record.chunkJournalVersion;
+    state.planId = record.planId;
+    state.runId = record.runId;
+  }
   return pqmSandboxControlledDigest_(state);
 }
 
@@ -58,6 +63,7 @@ function pqmExecutionUpdatePage_(chunks, maxRows, maxCells) {
 
 function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properties, key,
     record, receipt, limits) {
+  record.lastStage='source_and_sheet_guard';
   var beforeGoogleDigest = loaded.state.google_digest;
   if (loaded.state.payload_digest !== record.payloadDigest ||
       beforeGoogleDigest !== record.googleDigest) {
@@ -71,6 +77,7 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     }, []), request);
   }
 
+  record.lastStage='chunk_selection';
   var append = adapter.appendLoad(id, undefined, loaded, limits.appendPageRows);
   var appendOnly = request.planScope === 'APPEND_ONLY';
   var phase = append.selected.length || appendOnly ? 'append' : 'update';
@@ -78,35 +85,44 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     error: loaded.plan.counts.errors, remaining_safe: 0, batches: 0};
 
   if (phase === 'append' && append.selected.length) {
+    record.lastStage='append_prewrite_guard';
     adapter.appendPrewriteGuard(id, append);
     var templates = {};
     append.selected.forEach(function(change) {
       if (!templates[change.tab]) templates[change.tab] = adapter.appendRowMetadata(id,
         change.tab, append.tabs[change.tab].rows.length + 1);
     });
+    record.lastStage='append_request_build';
     var requests = adapter.appendRequests(append.selected, append.tabs, {
       requestId: request.requestId, runId: request.requestId,
       planId: request.planId || request.requestId,
-      expectedDigest: request.expectedDigest
+      expectedDigest: request.expectedDigest, addedAt: request.chunkAddedAt || null
     });
     if (!requests.length) throw new Error('PQM EXECUTION CHECKPOINT: empty APPEND chunk.');
     record.inflight = request.chunkIndex;
     if (request.chunkId) {
+      record.chunkJournalVersion = request.planScope === 'APPEND_ONLY' ? 1 : 2;
+      record.planId = request.planId;
+      record.runId = request.requestId;
       record.inflightManifest = {chunkId: request.chunkId, chunkDigest: request.chunkDigest,
-        planId: request.planId, runId: request.requestId,
-        rows: append.selected.map(function(change) { return {tab: change.tab, row: change.row,
-          code: String(change.cells[1]).trim(), cellsDigest: adapter.controlledDigest(change.cells),
-          formulaA: change.cells[0], serviceMetadata: change.serviceMetadata}; })};
+        detailsDigest: request.chunkDetailsDigest || null, planId: request.planId,
+        runId: request.requestId, phase: 'append', rows: adapter.chunkEvidence ?
+          adapter.chunkEvidence('append',append.selected,loaded,request) : []};
     }
     record.state = 'writing';
+    record.lastStage='append_inflight_save';
     pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
+    record.lastStage='append_batch_update';
     adapter.batchUpdate({requests: requests}, id);
+    record.lastStage='append_read_back';
     var appendVerification = adapter.appendVerify(id, append.selected, append.tabs);
+    record.lastStage='append_metadata_read_back';
     adapter.appendVerifyMetadata(id, append.selected, templates);
     if (adapter.projectVerifiedAppend) adapter.projectVerifiedAppend(loaded, append.selected, appendVerification);
     counts.append = append.selected.length;
     counts.batches = 1;
   } else if (phase === 'update') {
+    record.lastStage='update_chunk_selection';
     var chunks = adapter.fullChunks(loaded.entries);
     var chunk = pqmExecutionUpdatePage_(chunks, limits.updatePageRows, limits.updatePageCells);
     if (chunk.length) {
@@ -125,10 +141,23 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
       }
       updateRequests = adapter.fullRequests(chunk, loaded.tabs);
       if (!updateRequests.length) throw new Error('PQM EXECUTION CHECKPOINT: empty UPDATE chunk.');
+      if (request.chunkId) {
+        record.chunkJournalVersion = 2;
+        record.planId = request.planId;
+        record.runId = request.requestId;
+        record.inflightManifest = {chunkId:request.chunkId,chunkDigest:request.chunkDigest,
+          detailsDigest:request.chunkDetailsDigest,planId:request.planId,runId:request.requestId,
+          phase:'update',rows:adapter.chunkEvidence ? adapter.chunkEvidence('update',chunk,loaded,request,before) : []};
+        if (!record.inflightManifest.rows.length)
+          throw new Error('PQM EXECUTION CHECKPOINT: UPDATE recovery manifest unavailable.');
+      }
       record.inflight = request.chunkIndex;
       record.state = 'writing';
+      record.lastStage='update_inflight_save';
       pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
+      record.lastStage='update_batch_update';
       adapter.batchUpdate({requests: updateRequests}, id);
+      record.lastStage='update_read_back';
       var verified = adapter.controlledVerify(chunk, before,
         adapter.readRows(id, chunk, loaded.tabs));
       if (!verified.verification_passed) {
@@ -144,8 +173,10 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
   // APPEND has already been read back row-by-row and its verified state is
   // projected into the one full snapshot loaded before the write. Avoid a
   // second full-sheet read and planner pass after each bounded chunk.
+  record.lastStage='postwrite_sheet_snapshot';
   var afterTabs = phase === 'append' && adapter.projectVerifiedAppend ? loaded.tabs : adapter.snapshot(id);
   var afterGoogleDigest = adapter.controlledDigest(adapter.fullSheetState(afterTabs));
+  record.lastStage='postwrite_plan';
   var afterPlan = adapter.plan(loaded.body, afterTabs);
   counts.conflict = afterPlan.counts.conflicts;
   counts.error = afterPlan.counts.errors;
@@ -169,7 +200,7 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     planScope: request.planScope || 'ALL', payloadDigest: record.payloadDigest,
     googleDigest: afterGoogleDigest};
   if (request.chunkId) {
-    record.chunkJournalVersion = 1;
+    record.chunkJournalVersion = request.planScope === 'APPEND_ONLY' ? 1 : 2;
     step.chunkId = request.chunkId;
     step.chunkDigest = request.chunkDigest;
     step.planId = request.planId;
@@ -193,6 +224,7 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     record.result.checkpointDigest = step.checkpointDigest;
     record.result.planScope = request.planScope || 'ALL';
   }
+  record.lastStage='checkpoint_receipt_save';
   pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
   return pqmExecutionCheckpointReceipt_(request, receipt, step);
 }
