@@ -2,6 +2,7 @@
 import io
 import base64
 import hashlib
+import hmac
 import json
 import os
 import stat
@@ -46,7 +47,8 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         message=json.loads(body['parameters'][0]['payload'])
         result={k:message[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
         status={'preview':'PREVIEW','apply':'COMPLETE',
-            'reconcile_partial':'RECONCILED_PARTIAL'}[message['action']]
+            'reconcile_partial':'RECONCILED_PARTIAL',
+            'close_unknown_run':'ADMIN_CLOSED_UNKNOWN'}[message['action']]
         counts={'append':0,'update':0,'conflict':0,'error':0}
         result.update(status=status,digest=self.preview_digest,counts=counts)
         if message['action']=='preview':
@@ -63,7 +65,38 @@ class SandboxExecutionTransportTests(unittest.TestCase):
             evidence_digest=base64.urlsafe_b64encode(hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode().rstrip('=')
             result.update(reconciliationId=message['reconciliationId'],
                 requestFingerprint=message['requestFingerprint'],evidenceDigest=evidence_digest)
+        if message['action']=='close_unknown_run':
+            result.update(status='ADMIN_CLOSED_UNKNOWN',closeId=message['closeId'],
+                planScope=message['planScope'],disposition='OUTCOME_UNKNOWN_NOT_CONFIRMED',
+                evidenceDigest=message['closeEvidenceDigest'],reasonDigest=message['reasonDigest'],
+                actor=message['actor'],runRecordDigest=self.append_only_digest,
+                closedAt='2026-11-10T12:00:00+02:00')
+            result['digest']=execution._close_receipt_digest(result)
         return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
+
+    def invoke_close(self, *, request_id='e'*32, close_id='f'*32, action='close_unknown_run', **kwargs):
+        return self.client.invoke(action,request_id,'sandbox-admin',trigger='manual',
+            manual_authorized=True,digest=self.preview_digest,plan_scope='ALL',close_id=close_id,
+            close_evidence_digest=self.append_only_digest,reason_digest=self.preview_digest,**kwargs)
+
+    def close_request(self, *, function='pqmSandboxAllScopeExecution20261109', **changes):
+        request=self.request()
+        body=json.loads(request.data)
+        envelope=body['parameters'][0]
+        payload=json.loads(envelope['payload'])
+        payload.update(action='close_unknown_run',environment='SANDBOX',scriptId=self.script,
+            spreadsheetId=self.sheet,contract=execution.CONTRACT,requestId='e'*32,
+            actor='sandbox-admin',trigger='manual',issuedAt=int(NOW.timestamp()),
+            expiresAt=int(NOW.timestamp())+300,expectedDigest=self.preview_digest,
+            planScope='ALL',closeId='f'*32,closeEvidenceDigest=self.append_only_digest,
+            reasonDigest=self.preview_digest)
+        payload.update(changes)
+        body['function']=function
+        envelope['payload']=json.dumps(payload,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(hmac.new(
+            self.client.shared_secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        return urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+            headers=request.headers,method='POST')
 
     def request(self):
         self.client.invoke('preview','a'*32,'uo')
@@ -190,6 +223,61 @@ class SandboxExecutionTransportTests(unittest.TestCase):
                 changed=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),headers=request.headers,method='POST')
                 with self.assertRaisesRegex(RuntimeError,'Sandbox execution envelope is not approved'):
                     self.validate(changed)
+
+    def test_close_unknown_run_is_allowed_only_on_sandbox_all_scope_dispatcher(self):
+        request=self.close_request()
+        self.assertEqual(self.validate(request),'script.googleapis.com')
+        wrong_handler=self.close_request(function='pqmSandboxExecution')
+        with self.assertRaisesRegex(runtime.SandboxExecutionPreflightRejected,
+                'Sandbox execution envelope is not approved'):
+            self.validate(wrong_handler)
+        bad_signature=self.close_request()
+        bad_body=json.loads(bad_signature.data)
+        bad_body['parameters'][0]['signature']='short'
+        bad_signature=urllib.request.Request(bad_signature.full_url,data=json.dumps(bad_body).encode(),
+            headers=bad_signature.headers,method='POST')
+        with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+            self.validate(bad_signature)
+        for changes in (
+                {'environment':'PROD'}, {'trigger':'scheduled'}, {'planScope':'BAD'},
+                {'closeId':'not-an-id'}, {'closeEvidenceDigest':'bad'},
+                {'reasonDigest':'bad'}, {'expectedDigest':'bad'}, {'actor':''},
+                {'unexpected':'extra-parameter'}):
+            with self.subTest(changes=changes):
+                rejected=self.close_request(**changes)
+                with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+                    self.validate(rejected)
+
+    def test_close_unknown_run_keeps_sandbox_identity_and_deployment_attestation(self):
+        request=self.close_request()
+        for overrides in (
+                {'script_id':'another-sandbox-script-1234567890'},
+                {'spreadsheet_id':'another-sandbox-sheet-1234567890'},
+                {'deployment_id':'another-sandbox-deployment-123456789'}):
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+                    self.validate(request,**overrides)
+
+    def test_close_unknown_run_routes_once_and_validates_receipt(self):
+        result=self.invoke_close()
+        self.assertEqual(result['status'],'ADMIN_CLOSED_UNKNOWN')
+        self.assertEqual(result['disposition'],'OUTCOME_UNKNOWN_NOT_CONFIRMED')
+        self.assertEqual(result['closeId'],'f'*32)
+        self.assertEqual(len(self.calls),1)
+        body=json.loads(self.calls[0].data)
+        self.assertEqual(body['function'],'pqmSandboxAllScopeExecution20261109')
+        message=json.loads(body['parameters'][0]['payload'])
+        self.assertEqual(message['action'],'close_unknown_run')
+
+    def test_local_egress_rejection_is_preflight_not_remote_outcome_unknown(self):
+        with patch.object(runtime,'validate_execution_request',
+                side_effect=runtime.SandboxExecutionPreflightRejected('local reject')):
+            with self.assertRaisesRegex(execution.ExecutionPreflightError,
+                    'Apps Script was not called'):
+                self.invoke_close()
+        self.assertEqual(self.calls,[],'local guard rejection must happen before network I/O')
+        self.assertFalse(runtime._egress.active)
+        self.assertIsNone(runtime._egress.execution_identity)
 
     def test_historical_profile_request_cannot_route_to_new_all_scope_entrypoint(self):
         request_id='592128d9837d4b71bbeb330ef8aabf4b'
@@ -347,7 +435,7 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.assertNotIn(fingerprint,runtime.SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS)
         profile=execution.PARTIAL_RECONCILIATION_PROFILES['18a4aba10c1c13ab3bf59f56']
         with patch.dict(execution.PARTIAL_RECONCILIATION_PROFILES,{fingerprint:profile}):
-            with self.assertRaises(execution.ExecutionOutcomeUnknown):
+            with self.assertRaises(execution.ExecutionPreflightError):
                 self.client.invoke('reconcile_partial',request_id,'sandbox-admin',trigger='manual',
                     manual_authorized=True,reconciliation_id='d'*32,
                     request_fingerprint=fingerprint,evidence=profile['evidence'])
@@ -784,7 +872,7 @@ class SandboxExecutionTransportTests(unittest.TestCase):
 
     def test_wrong_production_runtime_cannot_open_sandbox_execution(self):
         with patch.dict(os.environ,{'PQM_SANDBOX':'0','RENDER_SERVICE_ID':'srv-da7vmitg1s2s73fim0p0'}):
-            with self.assertRaises(execution.ExecutionOutcomeUnknown):self.client.invoke('preview','a'*32,'uo')
+            with self.assertRaises(execution.ExecutionPreflightError):self.client.invoke('preview','a'*32,'uo')
         self.assertEqual(self.calls,[])
 
 

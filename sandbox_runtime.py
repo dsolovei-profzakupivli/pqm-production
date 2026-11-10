@@ -31,6 +31,12 @@ import sandbox_documents
 import sandbox_amcu
 
 ROOT = Path(__file__).resolve().parent
+
+
+class SandboxExecutionPreflightRejected(RuntimeError):
+    """The local Sandbox egress policy rejected a request before network I/O."""
+
+
 POLICY = {
     'PQM_SANDBOX': '1', 'PQM_ENV': 'test_web', 'PQM_SAFE_MODE': '1',
     'PQM_AUTH_ENABLED': '1', 'PQM_LOCAL_ROLE_IMPERSONATION': '0',
@@ -415,10 +421,10 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             script_id != expected_script or spreadsheet_id != SANDBOX_EDR_SPREADSHEET_ID or
             not re.fullmatch(r'[A-Za-z0-9_-]{20,256}', str(deployment_id or '')) or
             deployment_id != os.getenv('PQM_SANDBOX_EXECUTION_DEPLOYMENT_ID')):
-        raise RuntimeError('Sandbox execution identity or configuration is not approved')
+        raise SandboxExecutionPreflightRejected('Sandbox execution identity or configuration is not approved')
     url = request.full_url
     if request.get_method() != 'POST' or not isinstance(request.data, bytes):
-        raise RuntimeError('Sandbox execution method is not approved')
+        raise SandboxExecutionPreflightRejected('Sandbox execution method is not approved')
     if url == 'https://oauth2.googleapis.com/token':
         try:
             fields = urllib.parse.parse_qs(request.data.decode('ascii'), strict_parsing=True)
@@ -427,10 +433,10 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                     fields['grant_type'] != ['refresh_token']):
                 raise ValueError()
         except (ValueError, UnicodeError):
-            raise RuntimeError('Sandbox execution OAuth request is not approved') from None
+            raise SandboxExecutionPreflightRejected('Sandbox execution OAuth request is not approved') from None
         return GOOGLE_TOKEN_HOST
     if url != 'https://script.googleapis.com/v1/scripts/' + deployment_id + ':run':
-        raise RuntimeError('Sandbox execution endpoint is not approved')
+        raise SandboxExecutionPreflightRejected('Sandbox execution endpoint is not approved')
     try:
         body = json.loads(request.data)
         envelope = body['parameters'][0]
@@ -454,6 +460,24 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             (payload.get('chunkPhase') == 'update' and payload.get('chunkAddedAt') is None or
              payload.get('chunkPhase') == 'append' and isinstance(payload.get('chunkAddedAt'), str) and
              re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}', payload.get('chunkAddedAt'))))
+        close_unknown_shape = (all_scope_endpoint and action == 'close_unknown_run' and
+            set(payload) == {'environment', 'scriptId', 'spreadsheetId', 'contract', 'action',
+                'requestId', 'actor', 'trigger', 'issuedAt', 'expiresAt', 'expectedDigest',
+                'planScope', 'closeId', 'closeEvidenceDigest', 'reasonDigest'} and
+            payload.get('environment') == 'SANDBOX' and
+            payload.get('planScope') in {'ALL', 'APPEND_ONLY'} and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('requestId')) and
+            isinstance(payload.get('actor'), str) and bool(payload.get('actor').strip()) and
+            len(payload.get('actor')) <= 128 and payload.get('trigger') == 'manual' and
+            type(payload.get('issuedAt')) is int and
+            type(payload.get('expiresAt')) is int and
+            payload.get('issuedAt') < payload.get('expiresAt') <= payload.get('issuedAt') + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            isinstance(payload.get('closeId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('closeId')) and
+            is_canonical_sha256_b64url(payload.get('closeEvidenceDigest')) and
+            is_canonical_sha256_b64url(payload.get('reasonDigest')))
         legacy_shape = (function == 'pqmSandboxExecution' and
             action in ('preview', 'apply', 'reconcile_partial') and
             not (action == 'apply' and payload.get('planScope', 'ALL') == 'ALL'))
@@ -476,14 +500,14 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             is_canonical_sha256_b64url(payload.get('evidenceDigest'))
         )
         if (set(body) != {'function', 'devMode', 'parameters'} or
-                not (legacy_shape or all_scope_shape) or body['devMode'] is not False or
+                not (legacy_shape or all_scope_shape or close_unknown_shape) or body['devMode'] is not False or
                 len(body['parameters']) != 1 or
                 set(envelope) != {'payload', 'signature'} or
                 not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or
                 payload['environment'] != environment or payload['scriptId'] != script_id or
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
-                action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk') or
+                action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run') or
                 (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
                 (checkpoint_apply_enabled(environment) and payload['action'] == 'apply' and
@@ -492,14 +516,22 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                 not re.fullmatch(r'Bearer [A-Za-z0-9._~+/-]+=*', request.get_header('Authorization', ''))):
             raise ValueError()
     except (ValueError, KeyError, TypeError, IndexError):
-        raise RuntimeError('Sandbox execution envelope is not approved') from None
+        raise SandboxExecutionPreflightRejected('Sandbox execution envelope is not approved') from None
     return 'script.googleapis.com'
 
 
 @contextmanager
 def execution_open(request, timeout, *, environment, script_id, spreadsheet_id, deployment_id):
     identity = (environment, script_id, spreadsheet_id, deployment_id)
-    host = validate_execution_request(request, *identity)
+    try:
+        host = validate_execution_request(request, *identity)
+    except SandboxExecutionPreflightRejected:
+        # google_writer_execution is already loaded before this transport is
+        # entered; its typed preflight exception keeps this local rejection out
+        # of the remote-outcome-unknown path.
+        from google_writer_execution import ExecutionPreflightError
+        raise ExecutionPreflightError(
+            'Execution transport preflight rejected; Apps Script was not called') from None
     if getattr(_egress, 'active', False):
         raise RuntimeError('Nested sandbox network scope is not supported')
     _egress.active = True
