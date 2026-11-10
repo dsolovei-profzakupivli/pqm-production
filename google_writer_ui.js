@@ -123,12 +123,21 @@ async function applyGoogleWriterSchedule(){
     googleWriterSchedulePreview=null;await loadGoogleWriterJob();toast('Збережено лише розклад; sync не запускався','success');
   }catch(error){googleWriterSchedulePreview=null;toast(error.message,'error');}
 }
+function googleWriterPreviewHasFormula(value){return typeof value==='string'&&/^\s*=/.test(value);}
 function googleWriterPreviewValueHtml(value){return esc(value===null||value===undefined||value===''?'—':String(value));}
+function googleWriterPreviewCellValueHtml(value){
+  if(googleWriterPreviewHasFormula(value))return esc('Формула');
+  return googleWriterPreviewValueHtml(value);
+}
 function renderGoogleWriterPreviewDetails(details){
   const root=document.getElementById('googleWriterPreviewDetails');
   if(!root)return;
   if(!details){root.innerHTML='<p class="preview-empty">Деталі плану недоступні в цьому середовищі.</p>';return;}
-  const cellList=cells=>(cells||[]).map(cell=>`<div><strong>${esc(cell.column)}</strong>: <span class="preview-old">${googleWriterPreviewValueHtml(cell.old_value)}</span> → <span class="preview-new">${googleWriterPreviewValueHtml(cell.new_value)}</span>${cell.formula?' <small>формула</small>':''}</div>`).join('');
+  const cellList=cells=>(cells||[]).map(cell=>{
+    const formulaText=googleWriterPreviewHasFormula(cell.old_value)||googleWriterPreviewHasFormula(cell.new_value);
+    const formulaHint=cell.formula&&!formulaText?' <small>Формула</small>':'';
+    return `<div><strong>${esc(cell.column)}</strong>: <span class="preview-old">${googleWriterPreviewCellValueHtml(cell.old_value)}</span> → <span class="preview-new">${googleWriterPreviewCellValueHtml(cell.new_value)}</span>${formulaHint}</div>`;
+  }).join('');
   const rows=(items,operation)=>items.map(item=>`<tr><td>${esc(operation)}</td><td>${esc(item.tab||'—')}</td><td><strong>${googleWriterPreviewValueHtml(item.name)}</strong><br><small>${esc(item.code||'')}</small></td><td class="change-values">${cellList(item.cells)}</td><td>—</td></tr>`).join('');
   const conflicts=(details.conflicts||[]).map(item=>`<tr><td>CONFLICT</td><td>${esc(item.tab||'—')}</td><td><strong>${googleWriterPreviewValueHtml(item.name)}</strong><br><small>${esc(item.code||'')}</small></td><td>—</td><td class="preview-conflict">${esc(item.explanation||item.reason||'Причину не визначено')}</td></tr>`).join('');
   const errors=(details.errors||[]).map(item=>`<tr><td>ERROR</td><td>${esc(item.tab||'—')}</td><td><strong>${googleWriterPreviewValueHtml(item.name)}</strong><br><small>${esc(item.code||'')}</small></td><td>—</td><td class="preview-conflict">${esc(item.explanation||item.reason||'Помилка плану')}</td></tr>`).join('');

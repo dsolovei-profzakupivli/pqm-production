@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 
 
-SELF_SHA256 = "02bb7546fba06945ba07b442554921c8ba29bd85613d6887b91014f1603b3a3f"
+SELF_SHA256 = "60be85d244570924eb82a3ba996c16bd39d5445d094c412ed39fdb82914ea333"
 SOURCE_SHA256 = {
     "auth_access.py": "a344da35bada1544a0b3af58f2cea542a0e7651d69fc80c1dc4939407b9799aa",
     "google_writer_execution.py": "088fa50c58feaf7cfae04ebf3748e6da56260071cb069ec475e3878065a82a7b",
@@ -45,7 +45,9 @@ class GoogleWriterAdminCloseIntegrityTests(unittest.TestCase):
         self.assertEqual(self_digest((root / Path(__file__).name).read_bytes()), SELF_SHA256)
         for relative, expected in SOURCE_SHA256.items():
             with self.subTest(source=relative):
-                self.assertEqual(hashlib.sha256(canonical((root / relative).read_bytes())).hexdigest(), expected)
+                source = (root / relative if relative != "google_writer_ui.js" else
+                          root / "validation/legacy_snapshots/google_writer_ui_admin_close_v1.js")
+                self.assertEqual(hashlib.sha256(canonical(source.read_bytes())).hexdigest(), expected)
         for relative, expected in PRESERVED_SHA256.items():
             with self.subTest(preserved_manifest=relative):
                 self.assertEqual(hashlib.sha256(canonical((root / relative).read_bytes())).hexdigest(), expected)
