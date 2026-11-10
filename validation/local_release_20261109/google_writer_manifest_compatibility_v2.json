@@ -16,7 +16,9 @@
     "test_google_writer_manifest_compatibility_integrity_v2.py",
     "validation/fixtures/google_writer_all_scope_receipt_recovery_v1_9037e57.zip",
     "validation/run_google_writer_all_scope_receipt_recovery_v1_history.py",
-    "validation/run_local_release.py"
+    "validation/run_local_release.py",
+    "validation/run_google_writer_legacy_source_snapshots_v1_history.py",
+    "validation/fixtures/google_writer_legacy_source_snapshots_v1_run_local_release.py"
   ],
   "files": {
     "google_writer_execution.py": "6ae7df6598edd7814305d6b6ced3501bd86ae217c8be0ab6b7ba998be5ba9ae3",
@@ -31,7 +33,9 @@
     "test_google_writer_manifest_compatibility_integrity_v2.py": "3c539ec702c8ca41f162cadf519cb6b7f09916e69aed389aac7d250fcd2c2300",
     "validation/fixtures/google_writer_all_scope_receipt_recovery_v1_9037e57.zip": "682bd1779f5ab7675f59f5e5cfb2e117b962a67c6e73df1b3602911b6f299b92",
     "validation/run_google_writer_all_scope_receipt_recovery_v1_history.py": "de5292c04056e3548bfb6ed840076155fd5cc3ab209977808fb405d957a9947e",
-    "validation/run_local_release.py": "103fda3f2845456b2fd1e15d577a1cd4a7186f677b35525b3ca1a6696dc29a0f"
+    "validation/run_local_release.py": "0647330d05ce7678d23205fe0f40435f1b771afd5d6f41fe05ca64ce911a34f3",
+    "validation/run_google_writer_legacy_source_snapshots_v1_history.py": "6edbff0729e811d55e86e73d51c8b6fc237deedc519239993d706630994a8903",
+    "validation/fixtures/google_writer_legacy_source_snapshots_v1_run_local_release.py": "11c8a1802e00146fa41ef73cc8dc78bd7c1f1696a5fee6c978c2f785942df46d"
   },
   "preserved_manifests": {
     "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",

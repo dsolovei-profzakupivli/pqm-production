@@ -8,7 +8,7 @@ import unittest
 
 
 MANIFEST=Path('validation/local_release_20261109/google_writer_manifest_compatibility_v2.json')
-MANIFEST_SHA256 = "120627fd1c06e3ba9f44fa5cbda0b18cf92675ecb01090eeb9de2b61b762343c"
+MANIFEST_SHA256 = "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494"
 TEST_FILE='test_google_writer_manifest_compatibility_integrity_v2.py'
 
 

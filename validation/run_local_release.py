@@ -87,6 +87,9 @@ EXACT_TREE_OVERLAY_MODULES={
     # ALL-scope recovery v1 is immutable at 9037e57; v2 pins the manifest
     # compatibility correction against the evolving candidate.
     'test_google_writer_all_scope_receipt_recovery_integrity_v1',
+    # The source-snapshot v1 assertions run against their materialized pinned
+    # tree through the additive history runner, never against candidate files.
+    'test_google_writer_legacy_source_snapshots_integrity_v1',
     # Legacy append reconciliation v1 remains pinned to the original 1111eb9
     # profile source; its source-digest-absence successor is an additive v2.
     'test_legacy_append_reconciliation_integrity_v1',
@@ -129,6 +132,7 @@ def copy_candidate_manifests(source_root, validation_target, mode):
                           'local_release_20261108/legacy_append_reconciliation_v3.json',
                           'local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json',
                           'local_release_20261109/google_writer_manifest_compatibility_v2.json',
+                          'local_release_20261110/google_writer_legacy_snapshot_execution_v2.json',
                           'local_release_20261109/google_writer_legacy_source_snapshots_v1.json',
                           'local_release_20261109/legacy_reconciliation_evidence_v2.json'):
         source=Path(source_root)/'validation'/manifest_name
@@ -175,6 +179,7 @@ def main():
                             'run_prepared_append_only_retry_v1_history.py',
                             'run_google_writer_receipt_recovery_v1_history.py',
                             'run_google_writer_all_scope_receipt_recovery_v1_history.py',
+                            'run_google_writer_legacy_source_snapshots_v1_history.py',
                             'run_legacy_append_reconciliation_v1_history.py',
                             'run_legacy_append_reconciliation_v2_history.py',
                             'run_immutable_google_writer_source_overlays.py',
@@ -233,6 +238,7 @@ def main():
                               'prepared_append_only_retry_v1_exact_d386586.zip',
                              'google_writer_receipt_recovery_v1_exact_24554fef.zip',
                              'google_writer_all_scope_receipt_recovery_v1_9037e57.zip',
+                             'google_writer_legacy_source_snapshots_v1_run_local_release.py',
                              'legacy_append_reconciliation_v1_exact_1111eb9.zip',
                              'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
                              'google_writer_legacy_reconciliation_v3_immutable.zip',
