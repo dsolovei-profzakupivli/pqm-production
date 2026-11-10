@@ -2,6 +2,7 @@
 let googleWriterJobState=null,googleWriterSchedulePreview=null,googleWriterBusy=false,googleWriterProgressTimer=null;
 function googleWriterProgressLabel(run){
   const progress=run?.progress||{},state=progress.state||run?.status;
+  if(run?.status==='closed_unknown')return 'Адміністративно закрито · результат запису невідомий';
   if(run?.status==='outcome_unknown')return 'Невизначений результат · запис заблоковано';
   if(run?.status==='complete')return 'Завершено';
   if(run?.status==='partial')return 'Часткове завершення';
@@ -47,9 +48,21 @@ async function loadGoogleWriterJob(){
     let card=document.getElementById('googleWriterJobCard');
     if(!card){card=document.createElement('article');card.id='googleWriterJobCard';card.className='scheduler-job';root.append(card);}
     const activeRun=data.runs.find(row=>row.status==='running'||row.status==='outcome_unknown')||data.runs[0];
+    const heldRuns=data.runs.filter(row=>row.status==='outcome_unknown'||row.status==='closed_unknown');
+    const holdHtml=heldRuns.map(row=>{
+      const result=row.result||{},progress=row.progress||{},error=progress.safe_error||{};
+      const scope=result.plan_scope||'невідомий',chunk=result.attempted_chunk===null||result.attempted_chunk===undefined?'—':String(Number(result.attempted_chunk)+1);
+      const diagnosis=error.stage?`${error.stage} · ${error.category||'unknown'} · ${error.exception_type||'Other'}`:'Діагностику не збережено';
+      const closed=row.status==='closed_unknown';
+      const closeAction=!closed&&data.can_close?`<button class="ghost google-writer-close" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>${row.close_state==='prepared'?'Повторити закриття з тим самим ID':'Закрити запуск без повторного запису'}</button>`:'';
+      const closeNote=closed?`<p class="muted">Адміністративно закрито ${esc(row.closed_at?displayDate(row.closed_at):'')} · результат запису невідомий${row.close_reason?` · причина: ${esc(row.close_reason)}`:''}</p>`:
+        row.close_state==='prepared'?'<p class="google-writer-error">Закриття очікує підтвердження Apps Script; HOLD збережено. Повторюйте лише з тим самим close ID.</p>':'';
+      return `<article class="google-writer-hold"><strong>${closed?'Адміністративно закритий запуск':'Заблокований запуск'}</strong><dl><div><dt>Request ID</dt><dd>${esc(row.request_id)}</dd></div><div><dt>Статус</dt><dd>${esc(row.status)}</dd></div><div><dt>Scope</dt><dd>${esc(scope)}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div><div><dt>Діагностика</dt><dd>${esc(diagnosis)}</dd></div></dl>${closeNote}${closeAction}</article>`;
+    }).join('');
     card.innerHTML=`<header><strong>PQM → Google Sheets</strong><span>${data.automation_blocked?(data.configured_enabled?'Розклад збережено · заблоковано':'Розклад вимкнено'):data.configured_enabled?'Розклад увімкнено':'Розклад вимкнено'}</span></header>
       <dl><div><dt>Розклад</dt><dd>${esc(data.schedule)} · Europe/Kyiv</dd></div><div><dt>Останній результат</dt><dd>${esc(data.last_status)} · ${esc(data.last_finished_at?displayDate(data.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(data.next_run?displayDate(data.next_run):'—')}</dd></div></dl>
       <section class="google-writer-progress" aria-live="polite">${googleWriterProgressHtml(activeRun)}</section>
+      ${holdHtml?`<section class="google-writer-holds"><h4>Стан запусків із невизначеним результатом</h4>${holdHtml}</section>`:''}
       <p class="muted">${data.channel_ready?'':'Захищений канал ще не підготовлено. '}${data.automation_blocked?'Глобальна автоматика заблокована; ручний запуск не змінює розклад. ':''}${data.blocked?'Активний запуск / outcome unknown — новий Apply заблоковано.':''}</p>
       ${data.can_manage?`<label><input id="googleWriterEnabled" type="checkbox" ${data.configured_enabled?'checked':''} ${!data.channel_ready||(data.automation_blocked&&!data.configured_enabled)?'disabled':''}> Автоматичний розклад</label>
       <label>Година <input id="googleWriterHour" type="number" min="0" max="23" value="${data.hour}" ${data.automation_blocked?'disabled':''}></label>
@@ -57,6 +70,7 @@ async function loadGoogleWriterJob(){
       <footer><button id="googleWriterSchedulePreview" class="ghost" type="button" ${!data.channel_ready||(data.automation_blocked&&!data.configured_enabled)?'disabled':''}>Переглянути розклад</button><button id="googleWriterScheduleApply" class="ghost" type="button" disabled>Застосувати розклад</button></footer><p id="googleWriterScheduleResult" class="muted"></p>`:''}
       <details><summary>Журнал запусків</summary><ul>${data.runs.map(row=>`<li>${esc(displayDate(row.started_at))} · ${esc(row.trigger)} · ${esc(row.actor||'')} · ${esc(row.status)} · ${esc(JSON.stringify(row.result?.counts||{}))}${row.resume_available&&data.can_execute&&data.channel_ready?` <button class="ghost google-writer-resume" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Продовжити підтверджений APPEND_ONLY checkpoint</button>`:''}</li>`).join('')||'<li>Запусків ще не було</li>'}</ul></details>`;
     card.querySelectorAll('.google-writer-resume').forEach(button=>button.onclick=()=>resumeGoogleWriterAppendOnly(button.dataset.requestId));
+    card.querySelectorAll('.google-writer-close').forEach(button=>button.onclick=()=>closeGoogleWriterUnknownRun(button.dataset.requestId));
     googleWriterSchedulePreview=null;
     if(data.can_manage){
       for(const id of ['googleWriterEnabled','googleWriterHour','googleWriterMinute'])document.getElementById(id).oninput=()=>{googleWriterSchedulePreview=null;document.getElementById('googleWriterScheduleApply').disabled=true;};
@@ -69,6 +83,25 @@ async function loadGoogleWriterJob(){
     const message=document.getElementById('pqmGoogleWriterMessage');if(message)message.textContent='Статус Execution API недоступний; запуск заблоковано';
     return null;
   }
+}
+async function closeGoogleWriterUnknownRun(requestId){
+  if(googleWriterBusy||!googleWriterJobState?.can_close)return;
+  const run=googleWriterJobState.runs.find(item=>item.request_id===requestId&&item.status==='outcome_unknown');
+  if(!run)return;
+  const existing=run.close_state==='prepared';
+  const reason=window.prompt('Причина адміністративного закриття (результат запису залишиться невідомим):',existing?(run.close_reason||''):'');
+  if(typeof reason!=='string'||reason.trim().length<8||reason.trim().length>500)return;
+  if(!window.confirm(`Закрити ${requestId} без повторного запису? Це НЕ підтверджує успішність Apply. Google Sheets не змінюватиметься.`))return;
+  googleWriterBusy=true;
+  try{
+    const closeId=existing?run.close_id:crypto.randomUUID().replaceAll('-','');
+    const result=await request(`${API}/admin/google-writer/close-unknown`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({close_id:closeId,request_id:requestId,reason:reason.trim(),confirmed:true})});
+    if(result.status!=='ADMIN_CLOSED_UNKNOWN'||result.disposition!=='OUTCOME_UNKNOWN_NOT_CONFIRMED'||result.resume_authorized!==false)
+      throw new Error('Закриття не має підтвердженого адміністративного результату; HOLD зберігається');
+    toast('Адміністративно закрито. Результат запису невідомий.','success');
+  }catch(error){toast(error.message,'error');}
+  finally{googleWriterBusy=false;await loadGoogleWriterJob();}
 }
 function googleWriterSpecification(){return{enabled:document.getElementById('googleWriterEnabled').checked,
   hour:Number(document.getElementById('googleWriterHour').value),minute:Number(document.getElementById('googleWriterMinute').value)};}

@@ -187,6 +187,10 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
   // APPEND has already been read back row-by-row and its verified state is
   // projected into the one full snapshot loaded before the write. Avoid a
   // second full-sheet read and planner pass after each bounded chunk.
+  // Keep the last durable ALL write-ahead record until its verified checkpoint
+  // has been saved. If the final property write fails, the caller must be able
+  // to retain this manifest for a later read-only recovery.
+  var durableInflight = request.planScope === 'ALL' ? JSON.parse(JSON.stringify(record)) : null;
   record.lastStage='postwrite_sheet_snapshot';
   var afterTabs = phase === 'append' && adapter.projectVerifiedAppend ? loaded.tabs : adapter.snapshot(id);
   var afterGoogleDigest = adapter.controlledDigest(adapter.fullSheetState(afterTabs));
@@ -239,6 +243,17 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     record.result.planScope = request.planScope || 'ALL';
   }
   record.lastStage='checkpoint_receipt_save';
-  pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
+  try {
+    pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
+  } catch (error) {
+    if (durableInflight) {
+      Object.keys(record).forEach(function(name) {
+        if (!Object.prototype.hasOwnProperty.call(durableInflight, name)) delete record[name];
+      });
+      Object.keys(durableInflight).forEach(function(name) { record[name] = durableInflight[name]; });
+      record.lastStage='checkpoint_receipt_save';
+    }
+    throw error;
+  }
   return pqmExecutionCheckpointReceipt_(request, receipt, step);
 }

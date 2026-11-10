@@ -11,10 +11,25 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   for (var n=0; n<signature.length; n++) different |= signature.charCodeAt(n) ^ (envelope.signature.charCodeAt(n) || 0);
   if (different) throw new Error('PQM: execution authorization rejected');
   var request = JSON.parse(envelope.payload), now = Math.floor(Date.now()/1000);
-  if (request.environment!=='SANDBOX' || request.planScope!=='ALL' || request.trigger!=='manual' ||
-      ['apply','recover_apply_chunk'].indexOf(request.action)<0 ||
+  var closeAction=request.action==='close_unknown_run';
+  var appendRecovery=request.action==='recover_append_chunk';
+  if (request.environment!=='SANDBOX' ||
+      (closeAction ? ['ALL','APPEND_ONLY'].indexOf(request.planScope)<0 :
+        (appendRecovery ? request.planScope!=='APPEND_ONLY' : request.planScope!=='ALL')) ||
+      request.trigger!=='manual' ||
+      ['apply','recover_apply_chunk','recover_append_chunk','close_unknown_run'].indexOf(request.action)<0 ||
       request.requestId==='592128d9837d4b71bbeb330ef8aabf4b')
     throw new Error('PQM: additive ALL-scope endpoint rejects this action or scope');
+  if (closeAction && (!/^[0-9a-f]{32}$/.test(request.closeId || '') ||
+      !pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
+      !pqmSandboxIsCanonicalDigest_(request.closeEvidenceDigest) ||
+      !pqmSandboxIsCanonicalDigest_(request.reasonDigest)))
+    throw new Error('PQM: administrative close binding rejected');
+  if (appendRecovery && (!pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
+      !Number.isInteger(request.chunkIndex) || request.chunkIndex<0 || request.chunkIndex>499 ||
+      !/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
+      !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId))
+    throw new Error('PQM: APPEND_ONLY recovery binding rejected');
   if (request.action==='apply' && (!/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
       !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId ||
       !pqmSandboxIsCanonicalDigest_(request.chunkDetailsDigest) ||
@@ -26,7 +41,7 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   if (request.environment !== PQM_MIRROR_ENV.environment || request.scriptId !== PQM_MIRROR_ENV.scriptId ||
       ScriptApp.getScriptId() !== PQM_MIRROR_ENV.scriptId || request.spreadsheetId !== PQM_MIRROR_ENV.spreadsheetId ||
       request.contract !== 'pqm-mirror-datetime-v1' ||
-      ['preview','apply','resume_check','recover_append_chunk','recover_apply_chunk','reconcile_partial'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
+      ['preview','apply','resume_check','recover_append_chunk','recover_apply_chunk','reconcile_partial','close_unknown_run'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
       (request.action==='reconcile_partial' && request.trigger!=='manual') ||
       !/^[0-9a-f]{32}$/.test(request.requestId || '') ||
       typeof request.actor !== 'string' || !request.actor || request.actor.length>128 ||
@@ -63,6 +78,12 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
         (request.chunkPhase==='append' && (typeof request.chunkAddedAt!=='string' ||
           !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(request.chunkAddedAt))) ||
         (request.chunkPhase==='update' && request.chunkAddedAt!==undefined))) ||
+      (request.action==='close_unknown_run' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
+        ['ALL','APPEND_ONLY'].indexOf(request.planScope)<0 ||
+        !/^[0-9a-f]{32}$/.test(request.closeId || '') ||
+        !pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
+        !pqmSandboxIsCanonicalDigest_(request.closeEvidenceDigest) ||
+        !pqmSandboxIsCanonicalDigest_(request.reasonDigest))) ||
       (request.action==='resume_check' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
         !pqmSandboxIsCanonicalDigest_(request.expectedDigest) || !pqmSandboxIsCanonicalDigest_(request.expectedCheckpointDigest) ||
         !Number.isInteger(request.chunkIndex) || request.chunkIndex<1 || request.chunkIndex>499 ||
@@ -72,6 +93,10 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(0)) throw new Error('PQM: another writer is running; zero writes');
   try {
+    if (closeAction) return pqmSandboxCloseUnknownRun20261109_(properties,request);
+    var closeTombstone=properties.getProperty('PQM_EXECUTION_CLOSED_'+request.requestId);
+    if (closeTombstone && request.action!=='preview')
+      throw new Error('PQM: administratively closed run is permanently non-replayable');
     // No getActiveSpreadsheet or UI access in the API path.
     var spreadsheet = SpreadsheetApp.openById(PQM_MIRROR_ENV.spreadsheetId);
     if (!spreadsheet || spreadsheet.getId()!==PQM_MIRROR_ENV.spreadsheetId)
@@ -92,6 +117,8 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
     var key='PQM_EXECUTION_RUN_'+request.requestId, stored=properties.getProperty(key);
     if (request.action==='reconcile_partial')
       return pqmSandboxReconcilePartial_(properties,request,receipt);
+    if (request.action==='recover_append_chunk')
+      return pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt);
     if (request.action==='recover_append_chunk')
       return pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt);
     if (request.action==='recover_apply_chunk')
@@ -189,10 +216,6 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
     if (!stored) pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
     try {
       var result=pqmSandboxApplyCheckpointStep_(id,loaded,request,properties,key,record,receipt);
-      if (record.steps && record.steps.length) {
-        var confirmed=record.steps[record.steps.length-1];
-        if (confirmed.checkpointDigest) pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
-      }
       if (result.more) return result;
       return record.result || result;
     } catch (_) {
@@ -221,6 +244,75 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
     PQM_EXECUTION_CONTEXT_=null;
     lock.releaseLock();
   }
+}
+
+function pqmSandboxCloseUnknownRun20261109_(properties,request) {
+  var runKey='PQM_EXECUTION_RUN_'+request.requestId;
+  var closeKey='PQM_EXECUTION_CLOSED_'+request.requestId;
+  function digest(value) {
+    return Utilities.base64EncodeWebSafe(
+      Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,value,Utilities.Charset.UTF_8)).replace(/=+$/,'');
+  }
+  function receiptFrom(event,idempotent) {
+    var value={environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
+      contract:request.contract,requestId:request.requestId,status:'ADMIN_CLOSED_UNKNOWN',
+      closeId:request.closeId,planScope:request.planScope,
+      disposition:'OUTCOME_UNKNOWN_NOT_CONFIRMED',evidenceDigest:request.closeEvidenceDigest,
+      reasonDigest:request.reasonDigest,runRecordDigest:event.runRecordDigest,
+      closedAt:event.closedAt,actor:request.actor};
+    value.digest=digest(['environment','scriptId','spreadsheetId','contract','requestId','status',
+      'closeId','planScope','disposition','evidenceDigest','reasonDigest','runRecordDigest',
+      'closedAt','actor'].map(function(key){return value[key];}).join('\n'));
+    value.idempotent=!!idempotent;
+    return value;
+  }
+  var marker=properties.getProperty('PQM_EXECUTION_UNCERTAIN');
+  var saved=properties.getProperty(closeKey),event=null;
+  if (saved!==null) {
+    try { event=JSON.parse(saved); } catch (_) { throw new Error('PQM: administrative close tombstone is invalid'); }
+    if (!event || event.version!==1 || event.requestId!==request.requestId ||
+        event.closeId!==request.closeId || event.planScope!==request.planScope ||
+        event.actor!==request.actor || event.expectedDigest!==request.expectedDigest ||
+        event.evidenceDigest!==request.closeEvidenceDigest ||
+        event.reasonDigest!==request.reasonDigest ||
+        !pqmSandboxIsCanonicalDigest_(event.runRecordDigest) ||
+        !pqmSandboxIsCanonicalDigest_(event.digest) ||
+        event.digest!==digest(['version','environment','scriptId','spreadsheetId','contract',
+          'requestId','status','closeId','planScope','disposition','evidenceDigest','reasonDigest',
+          'runRecordDigest','expectedDigest','actor','closedAt'].map(function(key){return event[key];}).join('\n')))
+      throw new Error('PQM: administrative close retry binding rejected');
+    if (marker && marker!==request.requestId)
+      throw new Error('PQM: another uncertain run remains active');
+    if (marker===request.requestId) properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
+    return receiptFrom(event,true);
+  }
+  if (marker!==request.requestId)
+    throw new Error('PQM: uncertain marker no longer matches the requested run');
+  var raw=properties.getProperty(runKey),record=null;
+  if (typeof raw!=='string' || !raw) throw new Error('PQM: uncertain Apps Script run record is missing');
+  try { record=JSON.parse(raw); } catch (_) { throw new Error('PQM: uncertain Apps Script run record is invalid'); }
+  var recordedScope=record && (record.planScope || (record.chunkJournalVersion===1?'APPEND_ONLY':null));
+  if (!record || record.state!=='uncertain' || recordedScope!==request.planScope ||
+      record.digest!==request.expectedDigest)
+    throw new Error('PQM: uncertain Apps Script run binding changed');
+  var runRecordDigest=digest(raw);
+  var closedAt=new Date().toISOString();
+  event={version:1,environment:'SANDBOX',scriptId:request.scriptId,
+    spreadsheetId:request.spreadsheetId,contract:request.contract,
+    requestId:request.requestId,status:'ADMIN_CLOSED_UNKNOWN',closeId:request.closeId,
+    planScope:request.planScope,disposition:'OUTCOME_UNKNOWN_NOT_CONFIRMED',
+    evidenceDigest:request.closeEvidenceDigest,reasonDigest:request.reasonDigest,
+    runRecordDigest:runRecordDigest,expectedDigest:request.expectedDigest,
+    actor:request.actor,closedAt:closedAt};
+  event.digest=digest(['version','environment','scriptId','spreadsheetId','contract','requestId',
+    'status','closeId','planScope','disposition','evidenceDigest','reasonDigest','runRecordDigest',
+    'expectedDigest','actor','closedAt'].map(function(key){return event[key];}).join('\n'));
+  // Durable non-success tombstone first; release the global hold only after it exists.
+  properties.setProperty(closeKey,JSON.stringify(event));
+  if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')!==request.requestId)
+    throw new Error('PQM: uncertain marker changed before administrative release');
+  properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
+  return receiptFrom(event,false);
 }
 
 /* Read-only support view. Returns no operation values, digests, tokens, or supplier identifiers. */

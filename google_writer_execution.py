@@ -879,6 +879,10 @@ class ExecutionOutcomeUnknown(RuntimeError):
         self.safe_error=safe_error if isinstance(safe_error,dict) else None
 
 
+class AdminCloseFinalizationUnknown(RuntimeError):
+    """Apps Script tombstone may exist while SQLite conservatively retains the hold."""
+
+
 def _safe_apply_error(stage, exc):
     allowed={'Error','TypeError','RangeError','ReferenceError','ValueError','OperationalError','IntegrityError',
              'HTTPError','URLError','TimeoutError','ConnectionError'}
@@ -985,7 +989,8 @@ class ExecutionClient:
 
     def invoke(self, action, request_id, actor, *, trigger='manual', digest=None, plan_scope='ALL',
                manual_authorized=False, reconciliation_id=None,
-               request_fingerprint=None, evidence=None, chunk_index=0,
+               request_fingerprint=None, evidence=None, close_id=None,
+               close_evidence_digest=None, reason_digest=None, chunk_index=0,
                expected_checkpoint_digest=None, chunk_id=None, chunk_digest=None, plan_id=None,
                chunk_phase=None, chunk_added_at=None, chunk_details_digest=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
@@ -993,7 +998,7 @@ class ExecutionClient:
         if background_jobs.disabled() and not manual_override:
             raise ExecutionConfigurationError('Background jobs disabled')
         self.validate()
-        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'recover_apply_chunk', 'reconcile_partial'} or trigger not in {'manual', 'scheduled'}:
+        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'recover_apply_chunk', 'reconcile_partial', 'close_unknown_run'} or trigger not in {'manual', 'scheduled'}:
             raise ValueError('Unsupported execution action')
         if not re.fullmatch(r'[0-9a-f]{32}', request_id) or not actor or len(actor) > 128:
             raise ValueError('Invalid execution identity')
@@ -1067,6 +1072,14 @@ class ExecutionClient:
             evidence_raw = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             evidence_digest = base64.urlsafe_b64encode(
                 hashlib.sha256(evidence_raw.encode('utf-8')).digest()).decode('ascii').rstrip('=')
+        if action == 'close_unknown_run':
+            if (self.environment != 'SANDBOX' or trigger != 'manual' or manual_override is not True or
+                    plan_scope not in {'ALL','APPEND_ONLY'} or
+                    not re.fullmatch(r'[0-9a-f]{32}',str(close_id or '')) or
+                    not is_canonical_sha256_b64url(digest) or
+                    not is_canonical_sha256_b64url(close_evidence_digest) or
+                    not is_canonical_sha256_b64url(reason_digest)):
+                raise ValueError('Administrative close identity or evidence rejected')
         script, sheet, function = IDENTITIES[self.environment]
         api_function=function
         historical_profile_ids = {profile.get('request_id') for profile in PARTIAL_RECONCILIATION_PROFILES.values()
@@ -1088,6 +1101,10 @@ class ExecutionClient:
             if request_id in historical_profile_ids:
                 raise ValueError('Historical reconciliation request cannot use the new ALL-scope endpoint')
             api_function='pqmSandboxAllScopeExecution20261109'
+        elif action in {'close_unknown_run','recover_append_chunk'}:
+            # The additive dispatcher checks the immutable closure tombstone
+            # before delegating APPEND_ONLY recovery to the pinned legacy code.
+            api_function='pqmSandboxAllScopeExecution20261109'
         issued = int(self.clock().timestamp())
         message = {'environment':self.environment, 'scriptId':script, 'spreadsheetId':sheet,
                    'contract':CONTRACT, 'action':action, 'requestId':request_id,
@@ -1098,6 +1115,9 @@ class ExecutionClient:
             if self.environment=='SANDBOX': message['planScope'] = plan_scope
             if expected_checkpoint_digest is not None:
                 message['expectedCheckpointDigest'] = expected_checkpoint_digest
+        if action == 'close_unknown_run':
+            message.update(closeId=close_id,closeEvidenceDigest=close_evidence_digest,
+                           reasonDigest=reason_digest,planScope=plan_scope)
         if chunk_id is not None:
             message.update(chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
             if chunk_phase is not None: message['chunkPhase']=chunk_phase
@@ -1267,6 +1287,19 @@ class ExecutionClient:
                 result.get('evidenceDigest') != evidence_digest or
                 not is_canonical_sha256_b64url(result.get('digest'))):
             raise ExecutionOutcomeUnknown('Invalid partial reconciliation receipt')
+        if action == 'close_unknown_run' and (
+                result.get('status') != 'ADMIN_CLOSED_UNKNOWN' or
+                result.get('closeId') != close_id or
+                result.get('planScope') != plan_scope or
+                result.get('disposition') != 'OUTCOME_UNKNOWN_NOT_CONFIRMED' or
+                result.get('evidenceDigest') != close_evidence_digest or
+                result.get('reasonDigest') != reason_digest or
+                result.get('actor') != actor or
+                not is_canonical_sha256_b64url(result.get('runRecordDigest')) or
+                not isinstance(result.get('closedAt'),str) or
+                not is_canonical_sha256_b64url(result.get('digest')) or
+                result.get('digest') != _close_receipt_digest(result)):
+            raise ExecutionOutcomeUnknown('Apps Script administrative close receipt is invalid')
         if action=='recover_append_chunk' and (
                 result.get('status') not in {'CHUNK_RECOVERED','CHUNK_NOT_APPLIED'} or
                 result.get('digest')!=digest or result.get('planScope')!='APPEND_ONLY' or
@@ -1303,6 +1336,11 @@ class ExecutionClient:
         if action=='recover_append_chunk':
             safe.update(planScope='APPEND_ONLY',chunkIndex=chunk_index,nextChunk=result['nextChunk'],
                         chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
+        if action=='close_unknown_run':
+            safe.update(closeId=close_id,planScope=plan_scope,
+                        disposition=result['disposition'],evidenceDigest=close_evidence_digest,
+                        reasonDigest=reason_digest,runRecordDigest=result['runRecordDigest'],
+                        closedAt=result['closedAt'],actor=actor,idempotent=bool(result.get('idempotent')))
             if result.get('status')=='CHUNK_RECOVERED': safe['checkpointDigest']=result['checkpointDigest']
         if action=='recover_apply_chunk':
             safe.update(planScope='ALL',chunkIndex=chunk_index,nextChunk=result['nextChunk'],
@@ -1472,6 +1510,28 @@ def _canonical_json(value):
 
 def _sha256_b64(value):
     return base64.urlsafe_b64encode(hashlib.sha256(value).digest()).decode('ascii').rstrip('=')
+
+
+_CLOSE_RECEIPT_FIELDS = ('environment','scriptId','spreadsheetId','contract','requestId','status',
+                         'closeId','planScope','disposition','evidenceDigest','reasonDigest',
+                         'runRecordDigest','closedAt','actor')
+
+
+def _close_receipt_digest(receipt):
+    """Digest the immutable receipt fields in the shared Apps Script/Python order."""
+    if not isinstance(receipt,dict) or any(not isinstance(receipt.get(key),str) for key in _CLOSE_RECEIPT_FIELDS):
+        return None
+    return _sha256_b64('\n'.join(receipt[key] for key in _CLOSE_RECEIPT_FIELDS).encode('utf-8'))
+
+
+def _run_close_state(con, request_id):
+    """Return the permanent close state; tolerate pre-migration read-only fixtures."""
+    try:
+        row=con.execute('SELECT state FROM google_writer_run_closures WHERE request_id=?',(request_id,)).fetchone()
+    except sqlite3.OperationalError as exc:
+        if 'no such table' in str(exc).lower(): return None
+        raise
+    return row[0] if row else None
 
 
 def _apply_operation_projection(item):
@@ -1772,6 +1832,8 @@ def claim_interrupted_append_chunk_recovery(path, request_id, *, now=None,
     stamp_raw=stamp.isoformat()
     with closing(sqlite3.connect(path,timeout=5)) as con, con:
         con.execute('BEGIN IMMEDIATE')
+        if _run_close_state(con,request_id) is not None:
+            return None
         run=con.execute('''SELECT environment,trigger,actor,status,result_json
                            FROM google_writer_runs WHERE request_id=?''',(request_id,)).fetchone()
         if not run or run[0]!='SANDBOX' or run[1]!='manual' or run[3] not in {'running','outcome_unknown'}:
@@ -1863,6 +1925,8 @@ def claim_interrupted_apply_chunk_recovery(path, request_id, *, now=None,
     stamp=clock.astimezone(timezone.utc); stamp_raw=stamp.isoformat()
     with closing(sqlite3.connect(path,timeout=5)) as con, con:
         con.execute('BEGIN IMMEDIATE')
+        if _run_close_state(con,request_id) is not None:
+            return None
         run=con.execute('''SELECT environment,trigger,actor,status,result_json FROM google_writer_runs
                            WHERE request_id=?''',(request_id,)).fetchone()
         if not run or run[0]!='SANDBOX' or run[1]!='manual' or run[3] not in {'running','outcome_unknown'}:
@@ -1962,6 +2026,8 @@ def claim_apply_continuation(path, request_id, actor, *, now=None):
     stamp=(now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
     with closing(sqlite3.connect(path,timeout=5)) as con, con:
         con.execute('BEGIN IMMEDIATE')
+        if _run_close_state(con,request_id) is not None:
+            return None
         run=con.execute('''SELECT environment,trigger,actor,status,result_json FROM google_writer_runs
                            WHERE request_id=?''',(request_id,)).fetchone()
         if not run or (run[0],run[1],run[2],run[3])!=('SANDBOX','manual',actor,'partial'):return None
@@ -2148,6 +2214,8 @@ def prepare_partial_reconciliation(path, environment, reconciliation_id,
             if len(existing) != 1:
                 raise RuntimeError('Conflicting reconciliation history exists')
             prior = existing[0]
+            if _run_close_state(con,prior['request_id']) is not None:
+                raise RuntimeError('Administratively closed or closing run cannot be reconciled')
             if (prior['reconciliation_id'],prior['environment'],prior['actor'],
                     prior['request_fingerprint'],prior['evidence_digest'],prior['evidence_json']) != (
                     reconciliation_id,'SANDBOX',actor,request_fingerprint,
@@ -2291,6 +2359,160 @@ def finalize_partial_reconciliation(path, reconciliation_id, actor, receipt, *, 
         return {'status':'RECONCILED_PARTIAL','reconciliation_id':reconciliation_id,'idempotent':False}
 
 
+def prepare_admin_close_unknown(path, environment, close_id, request_id, actor, reason, *, now=None):
+    """Persist an idempotent close intent without changing the held run or its evidence."""
+    if (environment!='SANDBOX' or not re.fullmatch(r'[0-9a-f]{32}',str(close_id or '')) or
+            not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or
+            not isinstance(actor,str) or not actor.strip() or len(actor)>128 or
+            not isinstance(reason,str) or not 8<=len(reason.strip())<=500 or
+            any(ord(char)<32 and char not in '\t' for char in reason)):
+        raise ValueError('Administrative close identity or reason is invalid')
+    reason=reason.strip()
+    reason_digest=_sha256_b64(reason.encode('utf-8'))
+    clock=now or datetime.now(timezone.utc)
+    if clock.tzinfo is None: raise ValueError('Aware administrative close time required')
+    stamp=clock.astimezone(timezone.utc).isoformat()
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        con.row_factory=sqlite3.Row
+        existing=con.execute('''SELECT * FROM google_writer_run_closures
+                                WHERE close_id=? OR request_id=?''',(close_id,request_id)).fetchall()
+        if existing:
+            if len(existing)!=1:
+                raise RuntimeError('Administrative close identity is not unique')
+            saved=existing[0]
+            if (saved['close_id']!=close_id or saved['request_id']!=request_id or
+                    saved['actor']!=actor or saved['reason_digest']!=reason_digest or
+                    saved['environment']!='SANDBOX'):
+                raise PermissionError('A different administrative close intent already exists')
+            return dict(saved)
+        try:
+            run=con.execute('''SELECT environment,trigger,actor,revision,started_at,finished_at,status,result_json
+                               FROM google_writer_runs WHERE request_id=?''',(request_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if 'no such table' in str(exc).lower():
+                raise RuntimeError('Google Writer run storage is unavailable') from None
+            raise
+        if (not run or run['environment']!='SANDBOX' or run['trigger']!='manual' or
+                run['status']!='outcome_unknown' or not run['finished_at']):
+            raise RuntimeError('Only a finished manual Sandbox outcome_unknown run can be closed')
+        try: progress=json.loads(run['result_json'] or '{}')
+        except (TypeError,json.JSONDecodeError): progress=None
+        if (not isinstance(progress,dict) or
+                (progress.get('outcome_unknown') is not True and
+                 progress.get('status')!='OUTCOME_UNKNOWN_HOLD_NO_RETRY')):
+            raise RuntimeError('Unknown-result evidence is missing or invalid')
+        scope=progress.get('plan_scope')
+        plan_digest=progress.get('plan_digest')
+        attempted_chunk=progress.get('attempted_chunk')
+        if (scope not in {'ALL','APPEND_ONLY'} or not is_canonical_sha256_b64url(plan_digest) or
+                (attempted_chunk is not None and (type(attempted_chunk) is not int or not 0<=attempted_chunk<=499))):
+            raise RuntimeError('Run scope or immutable plan binding is unavailable')
+        if progress.get('recovery_claimed_at'):
+            raise RuntimeError('Run has an active or unresolved recovery claim')
+        unknown=con.execute("SELECT request_id FROM google_writer_runs WHERE environment='SANDBOX' AND status='outcome_unknown' ORDER BY request_id").fetchall()
+        running=con.execute("SELECT COUNT(*) FROM google_writer_runs WHERE environment='SANDBOX' AND status='running'").fetchone()[0]
+        if len(unknown)!=1 or unknown[0][0]!=request_id or running:
+            raise RuntimeError('Sandbox execution lane is not uniquely held by this run')
+        if con.execute('SELECT 1 FROM google_writer_run_reconciliations WHERE request_id=? LIMIT 1',
+                       (request_id,)).fetchone():
+            raise RuntimeError('A reconciliation intent or receipt conflicts with administrative close')
+        if con.execute('SELECT 1 FROM google_writer_run_closures WHERE request_id=? LIMIT 1',
+                       (request_id,)).fetchone():
+            raise RuntimeError('A close intent already exists for this run')
+        result_digest=_sha256_b64(run['result_json'].encode('utf-8'))
+        identity={'environment':'SANDBOX','close_id':close_id,'request_id':request_id,
+            'actor':actor,'scope':scope,'plan_digest':plan_digest,'attempted_chunk':attempted_chunk,
+            'original_status':'outcome_unknown','original_result_digest':result_digest,
+            'original_started_at':run['started_at'],'reason_digest':reason_digest}
+        evidence_digest=_sha256_b64(_canonical_json(identity).encode('utf-8'))
+        con.execute('''INSERT INTO google_writer_run_closures(
+            close_id,request_id,environment,actor,reason,reason_digest,evidence_digest,plan_scope,
+            plan_digest,attempted_chunk,original_status,original_result_digest,original_started_at,
+            state,prepared_at,closed_at,receipt_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,? ,?,?, 'prepared',?,NULL,'{}')''',
+            (close_id,request_id,'SANDBOX',actor,reason,reason_digest,evidence_digest,scope,
+             plan_digest,attempted_chunk,'outcome_unknown',result_digest,run['started_at'],stamp))
+        return dict(con.execute('SELECT * FROM google_writer_run_closures WHERE close_id=?',(close_id,)).fetchone())
+
+
+def finalize_admin_close_unknown(path, close_id, actor, receipt, *, now=None):
+    """Mark the SQLite run terminal only after the matching Apps Script tombstone receipt."""
+    if not re.fullmatch(r'[0-9a-f]{32}',str(close_id or '')) or not isinstance(actor,str) or not actor:
+        raise ValueError('Administrative close identity is invalid')
+    clock=now or datetime.now(timezone.utc)
+    if clock.tzinfo is None: raise ValueError('Aware administrative close time required')
+    stamp=clock.astimezone(timezone.utc).isoformat()
+    with closing(sqlite3.connect(path,timeout=5)) as con, con:
+        con.execute('BEGIN IMMEDIATE')
+        con.row_factory=sqlite3.Row
+        intent=con.execute('SELECT * FROM google_writer_run_closures WHERE close_id=?',(close_id,)).fetchone()
+        if not intent or intent['actor']!=actor or intent['environment']!='SANDBOX':
+            raise PermissionError('Administrative close audit identity mismatch')
+        required={'environment':'SANDBOX','scriptId':IDENTITIES['SANDBOX'][0],
+            'spreadsheetId':IDENTITIES['SANDBOX'][1],'contract':CONTRACT,
+            'requestId':intent['request_id'],'status':'ADMIN_CLOSED_UNKNOWN',
+            'closeId':close_id,'planScope':intent['plan_scope'],
+            'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED',
+            'evidenceDigest':intent['evidence_digest'],'reasonDigest':intent['reason_digest'],
+            'actor':actor}
+        if (not isinstance(receipt,dict) or any(receipt.get(key)!=value for key,value in required.items()) or
+                not is_canonical_sha256_b64url(receipt.get('runRecordDigest')) or
+                not isinstance(receipt.get('closedAt'),str) or
+                not is_canonical_sha256_b64url(receipt.get('digest')) or
+                receipt.get('digest')!=_close_receipt_digest(receipt)):
+            raise PermissionError('Apps Script administrative close receipt mismatch')
+        run=con.execute('SELECT status,result_json,started_at FROM google_writer_runs WHERE request_id=? AND environment=?',
+                        (intent['request_id'],'SANDBOX')).fetchone()
+        if (not run or run['started_at']!=intent['original_started_at'] or
+                _sha256_b64(run['result_json'].encode('utf-8'))!=intent['original_result_digest']):
+            raise RuntimeError('Original unknown-run evidence changed after close preparation')
+        if intent['state']=='closed_unknown':
+            saved_receipt=json.loads(intent['receipt_json'])
+            # Apps Script marks a same-ID replay as idempotent in the response;
+            # that transport hint is deliberately outside the canonical receipt
+            # digest, while all close bindings and the tombstone time remain bound.
+            if (run['status']!='closed_unknown' or
+                    _close_receipt_digest(saved_receipt)!=_close_receipt_digest(receipt)):
+                raise RuntimeError('Closed-run audit conflicts with the saved receipt')
+            return {'status':'ADMIN_CLOSED_UNKNOWN','close_id':close_id,
+                    'request_id':intent['request_id'],'idempotent':True,
+                    'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED'}
+        if intent['state']!='prepared' or run['status']!='outcome_unknown':
+            raise RuntimeError('Run is no longer in its prepared unknown-result state')
+        running=con.execute("SELECT COUNT(*) FROM google_writer_runs WHERE environment='SANDBOX' AND status='running'").fetchone()[0]
+        if running:
+            raise RuntimeError('A Sandbox Writer execution is active during close finalization')
+        con.execute("UPDATE google_writer_runs SET status='closed_unknown' WHERE request_id=? AND environment='SANDBOX' AND status='outcome_unknown' AND result_json=?",
+                    (intent['request_id'],run['result_json']))
+        if con.execute('SELECT changes()').fetchone()[0]!=1:
+            raise RuntimeError('Unknown-run close compare-and-set failed')
+        receipt_raw=_canonical_json(receipt)
+        con.execute("UPDATE google_writer_run_closures SET state='closed_unknown',closed_at=?,receipt_json=? WHERE close_id=? AND state='prepared'",
+                    (stamp,receipt_raw,close_id))
+        if con.execute('SELECT changes()').fetchone()[0]!=1:
+            raise RuntimeError('Administrative close audit compare-and-set failed')
+        return {'status':'ADMIN_CLOSED_UNKNOWN','close_id':close_id,
+                'request_id':intent['request_id'],'idempotent':False,
+                'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED'}
+
+
+def close_unknown_run(path, client, request_id, actor, close_id, reason):
+    """Two-system close. An unknown Apps Script outcome leaves the SQLite hold intact."""
+    intent=prepare_admin_close_unknown(path,'SANDBOX',close_id,request_id,actor,reason)
+    if intent['state']=='closed_unknown':
+        return {'status':'ADMIN_CLOSED_UNKNOWN','close_id':close_id,
+                'request_id':request_id,'idempotent':True,
+                'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED'}
+    receipt=client.invoke('close_unknown_run',request_id,actor,trigger='manual',digest=intent['plan_digest'],
+        plan_scope=intent['plan_scope'],manual_authorized=True,close_id=close_id,
+        close_evidence_digest=intent['evidence_digest'],reason_digest=intent['reason_digest'])
+    try:
+        return finalize_admin_close_unknown(path,close_id,actor,receipt)
+    except (PermissionError,RuntimeError,sqlite3.Error):
+        raise AdminCloseFinalizationUnknown('Apps Script close was acknowledged; SQLite hold remains until the same close ID is finalized') from None
+
+
 def migrate(con):
     con.executescript('''
       CREATE TABLE IF NOT EXISTS google_writer_settings(
@@ -2326,6 +2548,24 @@ def migrate(con):
         original_revision INTEGER NOT NULL,
         original_started_at TEXT NOT NULL,
         apps_script_receipt_json TEXT NOT NULL DEFAULT '{}');
+      CREATE TABLE IF NOT EXISTS google_writer_run_closures(
+        close_id TEXT PRIMARY KEY CHECK(length(close_id)=32),
+        request_id TEXT NOT NULL UNIQUE,
+        environment TEXT NOT NULL CHECK(environment='SANDBOX'),
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        reason_digest TEXT NOT NULL,
+        evidence_digest TEXT NOT NULL,
+        plan_scope TEXT NOT NULL CHECK(plan_scope IN ('ALL','APPEND_ONLY')),
+        plan_digest TEXT NOT NULL,
+        attempted_chunk INTEGER,
+        original_status TEXT NOT NULL CHECK(original_status='outcome_unknown'),
+        original_result_digest TEXT NOT NULL,
+        original_started_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','closed_unknown')),
+        prepared_at TEXT NOT NULL,
+        closed_at TEXT,
+        receipt_json TEXT NOT NULL DEFAULT '{}');
       CREATE TABLE IF NOT EXISTS google_writer_preview_plans(
         request_id TEXT PRIMARY KEY CHECK(length(request_id)=32),
         environment TEXT NOT NULL CHECK(environment='SANDBOX'),
@@ -2458,6 +2698,11 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
         con.execute('BEGIN IMMEDIATE')
         old = con.execute('SELECT environment,actor,trigger,status,result_json FROM google_writer_runs WHERE request_id=?',(request_id,)).fetchone()
         if old:
+            close_state=_run_close_state(con,request_id)
+            if close_state=='closed_unknown':
+                return {'claimed':False,'status':'closed_unknown','result':json.loads(old[4])}
+            if close_state=='prepared':
+                return {'claimed':False,'status':'close_in_progress','result':json.loads(old[4])}
             if old[:3] != (environment,actor,trigger): raise PermissionError('Run identity reuse rejected')
             try: prior_meta=json.loads(old[4] or '{}')
             except (TypeError,json.JSONDecodeError): prior_meta={}
@@ -2527,6 +2772,8 @@ def load_append_only_resume_candidate(path, request_id, actor):
     uri=Path(path).resolve().as_uri()+'?mode=ro'
     with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
         con.execute('PRAGMA query_only=ON')
+        if _run_close_state(con,request_id) is not None:
+            raise PermissionError('Administratively closed or closing run cannot be resumed')
         row=con.execute('''SELECT environment,actor,trigger,status,result_json FROM google_writer_runs
           WHERE request_id=?''',(request_id,)).fetchone()
     if not row or row[0]!='SANDBOX' or row[1]!=actor or row[2]!='manual' or row[3]!='partial':
@@ -2560,6 +2807,8 @@ def claim_append_only_resume(path, candidate, *, now=None):
         raise ValueError('Invalid APPEND_ONLY resume claim')
     with closing(sqlite3.connect(path,timeout=5)) as con, con:
         con.execute('BEGIN IMMEDIATE')
+        if _run_close_state(con,request_id) is not None:
+            return {'claimed':False,'status':'closed_or_closing'}
         row=con.execute("SELECT environment,actor,trigger,status,result_json FROM google_writer_runs WHERE request_id=?",
                         (request_id,)).fetchone()
         if not row or row[:4]!=('SANDBOX',actor,'manual','partial'):
@@ -2964,8 +3213,11 @@ def status(path, environment, *, available=False, running=False, heartbeat=None,
         config = settings(con)
         try:
             con.row_factory=sqlite3.Row
-            rows=[dict(row) for row in con.execute('''SELECT request_id,trigger,actor,revision,started_at,finished_at,status,result_json
-              FROM google_writer_runs WHERE environment=? ORDER BY started_at DESC LIMIT 20''',(environment,))]
+            rows=[dict(row) for row in con.execute('''SELECT r.request_id,r.trigger,r.actor,r.revision,r.started_at,
+              r.finished_at,r.status,r.result_json,c.close_id,c.closed_at,c.actor AS closed_by,
+              c.reason AS close_reason,c.state AS close_state
+              FROM google_writer_runs r LEFT JOIN google_writer_run_closures c ON c.request_id=r.request_id
+              WHERE r.environment=? ORDER BY r.started_at DESC LIMIT 20''',(environment,))]
         except sqlite3.OperationalError as exc:
             if 'no such table' not in str(exc).lower(): raise
             rows=[]

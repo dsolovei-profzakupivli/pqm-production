@@ -138,7 +138,8 @@ function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
       base64DecodeWebSafe:value=>[...Buffer.from(value,'base64url')],
       newBlob:value=>({getBytes:()=>[...Buffer.from(value,'utf8')]})},
     PropertiesService:{getScriptProperties:()=>({getProperty:key=>properties.get(key)||null,
-      setProperty:(key,value)=>properties.set(key,value),getProperties:()=>Object.fromEntries(properties)})},
+      setProperty:(key,value)=>properties.set(key,value),deleteProperty:key=>properties.delete(key),
+      getProperties:()=>Object.fromEntries(properties)})},
     ScriptApp:{getScriptId:()=> 'script-sandbox'},SpreadsheetApp:{openById:id=>({getId:()=>id})},
     LockService:{getScriptLock:()=>({tryLock:()=>{if(locked)return false;locked=true;return true;},releaseLock:()=>{locked=false;}})},
     PQM_EXECUTION_CONTEXT_:null,pqmSandboxControlledSpreadsheetId_:()=> 'sheet-sandbox'};
@@ -1359,6 +1360,82 @@ test('Apps Script v6 does not replay a chunk when Execution API loses its respon
   assert.doesNotMatch(JSON.stringify(held),/synthetic response lost/,'raw exception text is not persisted');
   assert.throws(apply,/outcome uncertain/);
   assert.equal(f.writes,1,'uncertain chunk remains held and is never replayed');
+});
+
+test('ALL checkpoint save failure preserves the durable manifest for exact read-only recovery', () => {
+  const digest=crypto.createHash('sha256').update('ALL checkpoint save failure').digest('base64url');
+  const f=realCheckpointExecutionFixture(digest,30),id='e'.repeat(32),key='PQM_EXECUTION_RUN_'+id;
+  f.context.pqmSandboxExecution(f.request('preview','c'.repeat(32)));
+  const apply=f.allScopeRequest('apply',id,digest,0,'append'),applyRequest=JSON.parse(apply.payload);
+  const adapterFactory=f.context.pqmSandboxCheckpointAdapter_;
+  f.context.pqmSandboxCheckpointAdapter_=()=>{
+    const adapter=adapterFactory(),batchUpdate=adapter.batchUpdate;
+    adapter.batchUpdate=request=>{
+      const durable=JSON.parse(f.properties.get(key));
+      assert.equal(durable.state,'writing');
+      assert.equal(durable.chunkJournalVersion,2);
+      assert.equal(durable.inflightManifest.chunkId,applyRequest.chunkId);
+      assert.equal(durable.inflightManifest.chunkDigest,applyRequest.chunkDigest);
+      assert.equal(durable.inflightManifest.detailsDigest,applyRequest.chunkDetailsDigest);
+      assert.equal(durable.inflightManifest.rows.length,25);
+      batchUpdate(request);
+    };
+    return adapter;
+  };
+  const save=f.context.pqmExecutionCheckpointSave_;let saveCalls=0;
+  f.context.pqmExecutionCheckpointSave_=(...args)=>{
+    saveCalls++;
+    if(saveCalls===3)throw new Error('synthetic post-write checkpoint save failure');
+    return save(...args);
+  };
+  assert.throws(()=>f.context.pqmSandboxAllScopeExecution20261109(apply),/Apply may be partial/);
+  assert.equal(f.writes,1,'the completed chunk is never automatically reissued');
+  assert.equal(f.properties.get('PQM_EXECUTION_UNCERTAIN'),id);
+  const held=JSON.parse(f.properties.get(key));
+  assert.equal(held.state,'uncertain');assert.equal(held.inflight,0);assert.equal(held.nextChunk,0);
+  assert.equal(held.aggregate.append,0);assert.equal(held.steps.length,0);
+  assert.equal(held.inflightManifest.chunkId,applyRequest.chunkId);
+  assert.equal(held.inflightManifest.chunkDigest,applyRequest.chunkDigest);
+  assert.equal(held.inflightManifest.detailsDigest,applyRequest.chunkDetailsDigest);
+  assert.equal(held.lastError.stage,'checkpoint_receipt_save');
+
+  // The second call is an isolated mock read-back. It proves only this chunk;
+  // the mock recovery path must not issue another Sheets batch update.
+  const manifest=held.inflightManifest,fullLoad=f.context.pqmSandboxFullLoad_;
+  const controlledDigest=f.context.pqmSandboxControlledDigest_;let readCalls=0;
+  f.context.pqmSandboxFullLoad_=()=>{
+    const loaded=fullLoad();
+    manifest.rows.forEach((row,index)=>{
+      const tab=loaded.tabs[row.tab];
+      while(tab.rows.length<row.row-1)tab.rows.push({});
+      tab.rows[row.row-2]={codeDisplay:'mock-code-'+index};
+    });
+    loaded.plan.counts.appended=5;loaded.plan.counts.updated=0;
+    return loaded;
+  };
+  f.context.pqmSandboxControlledDigest_=value=>
+    typeof value==='string'&&value.indexOf('mock-code-')===0
+      ?manifest.rows[Number(value.slice('mock-code-'.length))].codeDigest
+      :controlledDigest(value);
+  f.context.pqmSandboxExecutionReadChunkEvidence_=(_spreadsheetId,expected)=>{
+    readCalls++;
+    return expected.rows.map(row=>({tab:row.tab,row:row.row,digest:row.afterDigest,codeDigest:row.codeDigest}));
+  };
+  const recoveryRequest=JSON.parse(f.allScopeRequest('recover_apply_chunk',id,digest,0,'append').payload);
+  recoveryRequest.chunkIndex=0;
+  const recoveryPayload=JSON.stringify(recoveryRequest);
+  const recovery={payload:recoveryPayload,
+    signature:crypto.createHmac('sha256','S'.repeat(40)).update(recoveryPayload).digest('base64url')};
+  const recovered=f.context.pqmSandboxAllScopeExecution20261109(recovery);
+  assert.equal(recovered.status,'CHUNK_RECOVERED');assert.equal(readCalls,1);
+  assert.equal(f.writes,1,'recovery reads the already written chunk and does not append again');
+  const confirmed=JSON.parse(f.properties.get(key));
+  assert.equal(confirmed.state,'ready');assert.equal(confirmed.nextChunk,1);
+  assert.equal(confirmed.inflightManifest,null);assert.equal(confirmed.steps.length,1);
+  assert.equal(f.properties.has('PQM_EXECUTION_UNCERTAIN'),false);
+  const replay=f.context.pqmSandboxAllScopeExecution20261109(recovery);
+  assert.equal(replay.status,'CHUNK_RECOVERED');assert.equal(readCalls,1);
+  assert.equal(f.writes,1);assert.equal(JSON.parse(f.properties.get(key)).steps.length,1);
 });
 
 test('APPEND_ONLY lost-response checkpoint keeps the exact legacy v1 manifest contract', () => {
