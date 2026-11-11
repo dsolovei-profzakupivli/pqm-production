@@ -7,6 +7,113 @@ function pqmExecutionCheckpointSave_(properties, key, record, maxBytes) {
   properties.setProperty(key, encoded);
 }
 
+function pqmExecutionCheckpointManifestKey_(runId, chunkId, part) {
+  if (!/^[0-9a-f]{32}$/.test(String(runId)) || !/^[0-9a-f]{32}$/.test(String(chunkId)) ||
+      !Number.isInteger(part) || part < 0) throw new Error('PQM EXECUTION CHECKPOINT: invalid manifest shard identity.');
+  return 'PQM_EXECUTION_MANIFEST_' + runId + '_' + chunkId + '_' + part;
+}
+
+function pqmExecutionCheckpointManifestDigest_(manifest) {
+  var canonical = typeof pqmSandboxControlledCanonical_ === 'function' ?
+    pqmSandboxControlledCanonical_(manifest) : manifest;
+  return pqmSandboxControlledDigest_(canonical);
+}
+
+/* Keep the complete v1/v2 evidence; large manifests move to verified Script Properties shards. */
+function pqmExecutionCheckpointStoreManifest_(properties, runId, manifest, maxBytes) {
+  var raw = JSON.stringify(manifest);
+  if (Utilities.newBlob(raw, 'application/json').getBytes().length <= maxBytes) return manifest;
+  if (!manifest || !Array.isArray(manifest.rows) || !manifest.rows.length ||
+      !properties || typeof properties.setProperty !== 'function' || typeof properties.getProperty !== 'function') {
+    throw new Error('PQM EXECUTION CHECKPOINT: manifest storage unavailable.');
+  }
+  var chunkId = manifest.chunkId, digest = pqmExecutionCheckpointManifestDigest_(manifest), header = {};
+  Object.keys(manifest).forEach(function(name) { if (name !== 'rows') header[name] = manifest[name]; });
+  var groups = [], current = [];
+  function shardBytes(rows, index) {
+    return Utilities.newBlob(JSON.stringify({version:1,runId:runId,chunkId:chunkId,
+      manifestDigest:digest,part:index,partCount:manifest.rows.length,rows:rows}), 'application/json').getBytes().length;
+  }
+  manifest.rows.forEach(function(row) {
+    var candidate = current.concat([row]);
+    if (current.length && shardBytes(candidate, groups.length) > maxBytes) {
+      groups.push(current); current = [row];
+    } else current = candidate;
+    if (shardBytes(current, groups.length) > maxBytes)
+      throw new Error('PQM EXECUTION CHECKPOINT: one manifest row exceeds the shard bound.');
+  });
+  if (current.length) groups.push(current);
+  if (!groups.length || groups.length > manifest.rows.length)
+    throw new Error('PQM EXECUTION CHECKPOINT: manifest shard count invalid.');
+  var attemptedKeys = [];
+  try {
+    groups.forEach(function(rows, index) {
+      var encoded = JSON.stringify({version:1,runId:runId,chunkId:chunkId,
+        manifestDigest:digest,part:index,partCount:groups.length,rows:rows});
+      if (Utilities.newBlob(encoded, 'application/json').getBytes().length > maxBytes)
+        throw new Error('PQM EXECUTION CHECKPOINT: manifest shard exceeds the storage bound.');
+      var key = pqmExecutionCheckpointManifestKey_(runId, chunkId, index);
+      attemptedKeys.push(key);
+      properties.setProperty(key, encoded);
+      if (properties.getProperty(key) !== encoded)
+        throw new Error('PQM EXECUTION CHECKPOINT: manifest shard read-back mismatch.');
+    });
+  } catch (error) {
+    attemptedKeys.forEach(function(key) {
+      try { if (typeof properties.deleteProperty === 'function') properties.deleteProperty(key); }
+      catch (_) { /* Unreferenced shards cannot authorize a write. */ }
+    });
+    throw error;
+  }
+  var reference = {};
+  Object.keys(header).forEach(function(name) { reference[name] = header[name]; });
+  reference.storage='script_properties_shards_v1';
+  reference.storageVersion=1;
+  reference.manifestDigest=digest;
+  reference.partCount=groups.length;
+  reference.rowCount=manifest.rows.length;
+  reference.header=header;
+  return reference;
+}
+
+function pqmExecutionCheckpointResolveManifest_(properties, runId, stored) {
+  if (stored && Array.isArray(stored.rows)) return stored; // Historical inline manifests remain valid.
+  if (!stored || stored.storage !== 'script_properties_shards_v1' || stored.storageVersion !== 1 ||
+      !/^[A-Za-z0-9_-]{43}$/.test(String(stored.manifestDigest || '')) ||
+      !Number.isInteger(stored.partCount) || stored.partCount < 1 || stored.partCount > 1000 ||
+      !Number.isInteger(stored.rowCount) || stored.rowCount < 1 || stored.rowCount > 1000 ||
+      !stored.header || typeof stored.header !== 'object' ||
+      !properties || typeof properties.getProperty !== 'function') {
+    throw new Error('PQM EXECUTION CHECKPOINT: manifest reference invalid or unavailable.');
+  }
+  var rows = [], chunkId = stored.header.chunkId;
+  for (var part = 0; part < stored.partCount; part++) {
+    var raw = properties.getProperty(pqmExecutionCheckpointManifestKey_(runId, chunkId, part)), shard;
+    try { shard = raw ? JSON.parse(raw) : null; } catch (_) { shard = null; }
+    if (!shard || shard.version !== 1 || shard.runId !== runId || shard.chunkId !== chunkId ||
+        shard.manifestDigest !== stored.manifestDigest || shard.part !== part ||
+        shard.partCount !== stored.partCount || !Array.isArray(shard.rows) || !shard.rows.length) {
+      throw new Error('PQM EXECUTION CHECKPOINT: manifest shard binding or read-back invalid.');
+    }
+    rows = rows.concat(shard.rows);
+  }
+  var manifest = {};
+  Object.keys(stored.header).forEach(function(name) { manifest[name] = stored.header[name]; });
+  manifest.rows = rows;
+  if (rows.length !== stored.rowCount || pqmExecutionCheckpointManifestDigest_(manifest) !== stored.manifestDigest)
+    throw new Error('PQM EXECUTION CHECKPOINT: manifest digest or row count mismatch.');
+  return manifest;
+}
+
+function pqmExecutionCheckpointDeleteManifestShards_(properties, runId, stored) {
+  if (!stored || stored.storage !== 'script_properties_shards_v1' ||
+      !Number.isInteger(stored.partCount) || typeof properties.deleteProperty !== 'function') return;
+  for (var part = 0; part < stored.partCount; part++) {
+    try { properties.deleteProperty(pqmExecutionCheckpointManifestKey_(runId, stored.header.chunkId, part)); }
+    catch (_) { /* A committed checkpoint no longer depends on orphaned shards. */ }
+  }
+}
+
 function pqmExecutionCheckpointReceipt_(request, receipt, step) {
   var result = receipt(step.status, step.counts, request.expectedDigest);
   result.chunkIndex = step.chunkIndex;
@@ -125,6 +232,8 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     }
     record.state = 'writing';
     record.lastStage='append_inflight_save';
+    if (request.chunkId) record.inflightManifest = pqmExecutionCheckpointStoreManifest_(properties,
+      request.requestId, record.inflightManifest, limits.maxBytes);
     pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
     record.lastStage='append_batch_update';
     adapter.batchUpdate({requests: requests}, id);
@@ -168,6 +277,8 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
       record.inflight = request.chunkIndex;
       record.state = 'writing';
       record.lastStage='update_inflight_save';
+      if (request.chunkId) record.inflightManifest = pqmExecutionCheckpointStoreManifest_(properties,
+        request.requestId, record.inflightManifest, limits.maxBytes);
       pqmExecutionCheckpointSave_(properties, key, record, limits.maxBytes);
       record.lastStage='update_batch_update';
       adapter.batchUpdate({requests: updateRequests}, id);
@@ -187,10 +298,11 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
   // APPEND has already been read back row-by-row and its verified state is
   // projected into the one full snapshot loaded before the write. Avoid a
   // second full-sheet read and planner pass after each bounded chunk.
-  // Keep the last durable ALL write-ahead record until its verified checkpoint
-  // has been saved. If the final property write fails, the caller must be able
-  // to retain this manifest for a later read-only recovery.
-  var durableInflight = request.planScope === 'ALL' ? JSON.parse(JSON.stringify(record)) : null;
+  // Keep the last durable write-ahead record for both APPEND_ONLY v1 and ALL v2
+  // until the verified checkpoint has been saved. A receipt-save failure must
+  // never replace the recoverable manifest with an in-memory cleared version.
+  var durableInflight = request.chunkId ? JSON.parse(JSON.stringify(record)) : null;
+  var manifestForCleanup = record.inflightManifest;
   record.lastStage='postwrite_sheet_snapshot';
   var afterTabs = phase === 'append' && adapter.projectVerifiedAppend ? loaded.tabs : adapter.snapshot(id);
   var afterGoogleDigest = adapter.controlledDigest(adapter.fullSheetState(afterTabs));
@@ -255,5 +367,6 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
     }
     throw error;
   }
+  pqmExecutionCheckpointDeleteManifestShards_(properties, request.requestId, manifestForCleanup);
   return pqmExecutionCheckpointReceipt_(request, receipt, step);
 }

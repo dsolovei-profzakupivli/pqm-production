@@ -1365,6 +1365,7 @@ test('Apps Script v6 does not replay a chunk when Execution API loses its respon
 test('ALL checkpoint save failure preserves the durable manifest for exact read-only recovery', () => {
   const digest=crypto.createHash('sha256').update('ALL checkpoint save failure').digest('base64url');
   const f=realCheckpointExecutionFixture(digest,30),id='e'.repeat(32),key='PQM_EXECUTION_RUN_'+id;
+  f.context.PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES=2000;
   f.context.pqmSandboxExecution(f.request('preview','c'.repeat(32)));
   const apply=f.allScopeRequest('apply',id,digest,0,'append'),applyRequest=JSON.parse(apply.payload);
   const adapterFactory=f.context.pqmSandboxCheckpointAdapter_;
@@ -1377,7 +1378,9 @@ test('ALL checkpoint save failure preserves the durable manifest for exact read-
       assert.equal(durable.inflightManifest.chunkId,applyRequest.chunkId);
       assert.equal(durable.inflightManifest.chunkDigest,applyRequest.chunkDigest);
       assert.equal(durable.inflightManifest.detailsDigest,applyRequest.chunkDetailsDigest);
-      assert.equal(durable.inflightManifest.rows.length,25);
+      const manifest=f.context.pqmExecutionCheckpointResolveManifest_(f.context.PropertiesService.getScriptProperties(),id,
+        durable.inflightManifest);
+      assert.equal(manifest.rows.length,25);
       batchUpdate(request);
     };
     return adapter;
@@ -1401,7 +1404,10 @@ test('ALL checkpoint save failure preserves the durable manifest for exact read-
 
   // The second call is an isolated mock read-back. It proves only this chunk;
   // the mock recovery path must not issue another Sheets batch update.
-  const manifest=held.inflightManifest,fullLoad=f.context.pqmSandboxFullLoad_;
+  assert.equal(held.inflightManifest.storage,'script_properties_shards_v1');
+  const storedManifest=held.inflightManifest;
+  const manifest=f.context.pqmExecutionCheckpointResolveManifest_(f.context.PropertiesService.getScriptProperties(),id,
+    storedManifest),fullLoad=f.context.pqmSandboxFullLoad_;
   const controlledDigest=f.context.pqmSandboxControlledDigest_;let readCalls=0;
   f.context.pqmSandboxFullLoad_=()=>{
     const loaded=fullLoad();
@@ -1436,6 +1442,8 @@ test('ALL checkpoint save failure preserves the durable manifest for exact read-
   const replay=f.context.pqmSandboxAllScopeExecution20261109(recovery);
   assert.equal(replay.status,'CHUNK_RECOVERED');assert.equal(readCalls,1);
   assert.equal(f.writes,1);assert.equal(JSON.parse(f.properties.get(key)).steps.length,1);
+  assert.equal([...f.properties.keys()].some(name=>name.startsWith('PQM_EXECUTION_MANIFEST_')),false,
+    'shards are removed only after the confirmed checkpoint is durable');
 });
 
 test('APPEND_ONLY lost-response checkpoint keeps the exact legacy v1 manifest contract', () => {
@@ -1457,6 +1465,169 @@ test('APPEND_ONLY lost-response checkpoint keeps the exact legacy v1 manifest co
   assert.equal(f.writes,1);
   assert.throws(()=>f.context.pqmSandboxExecution(envelope),/outcome uncertain/);
   assert.equal(f.writes,1,'a repeated Apply cannot replay the held APPEND_ONLY chunk');
+});
+
+test('25-row APPEND_ONLY freshness manifest is measured, losslessly sharded, and held against duplicates', () => {
+  const digest=crypto.createHash('sha256').update('APPEND_ONLY shard size fixture').digest('base64url');
+  const f=realCheckpointExecutionFixture(digest,30),id='f'.repeat(32),chunkId='a'.repeat(32);
+  f.context.pqmSandboxExecution(f.request('preview','9'.repeat(32)));
+  const adapterFactory=f.context.pqmSandboxCheckpointAdapter_;
+  f.context.pqmSandboxCheckpointAdapter_=()=>{
+    const adapter=adapterFactory(),appendRequests=adapter.appendRequests;
+    adapter.appendRequests=(selected,tabs,request)=>{
+      const requests=appendRequests(selected,tabs,request);
+      selected.forEach(change=>{change.cells[0]=f.context.pqmGoogleFreshnessFormula_(change.row,'uk_UA');});
+      return requests;
+    };
+    return adapter;
+  };
+  let measuredBytes=0,manifestBytes=0;
+  const store=f.context.pqmExecutionCheckpointStoreManifest_;
+  f.context.pqmExecutionCheckpointStoreManifest_=(properties,runId,manifest,maxBytes)=>{
+    manifestBytes=Buffer.byteLength(JSON.stringify(manifest),'utf8');
+    const ready=JSON.parse(properties.getProperty('PQM_EXECUTION_RUN_'+runId));
+    Object.assign(ready,{state:'writing',inflight:0,lastStage:'append_inflight_save',inflightManifest:manifest});
+    measuredBytes=Buffer.byteLength(JSON.stringify(ready),'utf8');
+    return store(properties,runId,manifest,maxBytes);
+  };
+  const base=JSON.parse(f.request('apply',id,digest,0,'APPEND_ONLY').payload);
+  Object.assign(base,{chunkId,chunkDigest:crypto.createHash('sha256').update('append-v1-chunk').digest('base64url'),planId:id,
+    chunkAddedAt:'2026-11-10T19:31:00+02:00'});
+  const payload=JSON.stringify(base),envelope={payload,
+    signature:crypto.createHmac('sha256','S'.repeat(40)).update(payload).digest('base64url')};
+  f.loseNextResponse();
+  assert.throws(()=>f.context.pqmSandboxExecution(envelope),/Apply may be partial/);
+  assert.ok(measuredBytes>8000,`expected serialized APPEND manifest above bound; observed ${measuredBytes}`);
+  assert.ok(manifestBytes>8000,`expected manifest itself above bound; observed ${manifestBytes}`);
+  const stored=JSON.parse(f.properties.get('PQM_EXECUTION_RUN_'+id));
+  assert.equal(stored.chunkJournalVersion,1,'historical APPEND_ONLY manifest contract stays v1');
+  assert.equal(stored.inflightManifest.storage,'script_properties_shards_v1');
+  const properties=f.context.PropertiesService.getScriptProperties();
+  const manifest=f.context.pqmExecutionCheckpointResolveManifest_(properties,id,stored.inflightManifest);
+  assert.equal(manifest.rows.length,25);
+  assert.equal(manifest.rows[0].formulaA,f.context.pqmGoogleFreshnessFormula_(manifest.rows[0].row,'uk_UA'));
+  const shardKeys=[...f.properties.keys()].filter(name=>name.startsWith('PQM_EXECUTION_MANIFEST_'));
+  assert.ok(shardKeys.length>1);
+  shardKeys.forEach(name=>assert.ok(Buffer.byteLength(f.properties.get(name),'utf8')<=8000));
+  assert.equal(f.writes,1);
+  assert.equal(f.properties.get('PQM_EXECUTION_UNCERTAIN'),id);
+  assert.throws(()=>f.context.pqmSandboxExecution(envelope),/outcome uncertain/);
+  assert.equal(f.writes,1,'a repeated request cannot duplicate the APPEND');
+  f.properties.set(shardKeys[0],'{}');
+  assert.throws(()=>f.context.pqmExecutionCheckpointResolveManifest_(properties,id,stored.inflightManifest),/shard binding|digest/,
+    'corrupt or missing evidence fails closed');
+});
+
+test('APPEND_ONLY final checkpoint save failure retains sharded v1 evidence and never replays the write', () => {
+  const digest=crypto.createHash('sha256').update('APPEND_ONLY checkpoint failure').digest('base64url');
+  const f=realCheckpointExecutionFixture(digest,30),id='1'.repeat(32),chunkId='2'.repeat(32);
+  let plannedChanges=[];
+  f.context.pqmSandboxExecution(f.request('preview','3'.repeat(32)));
+  const adapterFactory=f.context.pqmSandboxCheckpointAdapter_;
+  f.context.pqmSandboxCheckpointAdapter_=()=>{
+    const adapter=adapterFactory(),appendRequests=adapter.appendRequests;
+    adapter.appendRequests=(selected,tabs,request)=>{
+      const requests=appendRequests(selected,tabs,request);
+      selected.forEach(change=>{change.cells[0]=f.context.pqmGoogleFreshnessFormula_(change.row,'uk_UA');});
+      plannedChanges=selected.map(change=>clone(change));
+      return requests;
+    };
+    return adapter;
+  };
+  const save=f.context.pqmExecutionCheckpointSave_;let saveCalls=0;
+  f.context.pqmExecutionCheckpointSave_=(...args)=>{
+    saveCalls++;
+    if(saveCalls===3)throw new Error('synthetic APPEND_ONLY final checkpoint failure');
+    return save(...args);
+  };
+  const base=JSON.parse(f.request('apply',id,digest,0,'APPEND_ONLY').payload);
+  Object.assign(base,{chunkId,chunkDigest:crypto.createHash('sha256').update('append-v1-checkpoint').digest('base64url'),planId:id,
+    chunkAddedAt:'2026-11-10T19:31:00+02:00'});
+  const payload=JSON.stringify(base),envelope={payload,
+    signature:crypto.createHmac('sha256','S'.repeat(40)).update(payload).digest('base64url')};
+  assert.throws(()=>f.context.pqmSandboxExecution(envelope),/Apply may be partial/);
+  assert.equal(f.writes,1);
+  const held=JSON.parse(f.properties.get('PQM_EXECUTION_RUN_'+id));
+  assert.equal(held.state,'uncertain');assert.equal(held.lastError.stage,'checkpoint_receipt_save');
+  assert.equal(held.inflightManifest.storage,'script_properties_shards_v1');
+  const manifest=f.context.pqmExecutionCheckpointResolveManifest_(f.context.PropertiesService.getScriptProperties(),id,
+    held.inflightManifest);
+  assert.equal(manifest.rows.length,25);
+  assert.equal(manifest.rows[0].serviceMetadata.runId,id);
+  assert.equal(manifest.rows[0].formulaA,f.context.pqmGoogleFreshnessFormula_(manifest.rows[0].row,'uk_UA'));
+  assert.equal(f.properties.get('PQM_EXECUTION_UNCERTAIN'),id);
+  const tabs={ФОП:{rows:[]},ЮО:{rows:[]}};
+  plannedChanges.forEach(change=>{
+    const tab=tabs[change.tab];
+    while(tab.rows.length<change.row-1)tab.rows.push({values:Array(15).fill(''),formulas:Array(15).fill(''),codeDisplay:''});
+    tab.rows[change.row-2]={values:Array(15).fill(''),formulas:Array(15).fill(''),
+      codeDisplay:String(change.cells[1]),serviceMetadata:change.serviceMetadata};
+  });
+  f.context.pqmSandboxFullLoad_=()=>({state:{payload_digest:'source-stable',google_digest:'sheet-after'},
+    append_only_digest:digest,body:{count:0,items:[]},plan:{counts:{appended:5,conflicts:0,errors:0}},tabs});
+  f.context.pqmSandboxAppendLoad_=(_id,_allowlist,loaded)=>({selected:plannedChanges.map(change=>clone(change)),
+    tabs:loaded.tabs,digest,plan:{counts:{appended:5,conflicts:0,errors:0}}});
+  f.context.pqmGooglePlan_=()=>({counts:{appended:5,conflicts:0,errors:0}});
+  f.context.pqmSandboxAppendVerify_=()=>({rows:[]});
+  f.context.pqmSandboxAppendRowMetadata_=()=>({cells:[],height:28});
+  f.context.pqmSandboxAppendVerifyMetadata_=()=>{};
+  f.context.Sheets={Spreadsheets:{Values:{batchGet:(_id,options)=>({valueRanges:options.ranges.map(()=>(
+    {values:[f.context.PQM_SANDBOX_APPEND_SERVICE_HEADERS_]}))})}}};
+  const recoveryRequest={requestId:id,actor:'synthetic-admin',expectedDigest:digest,chunkIndex:0,
+    chunkId,chunkDigest:base.chunkDigest,planId:id};
+  const receipt=(status,counts,expected)=>({status,counts,digest:expected,planScope:'APPEND_ONLY'});
+  const recovered=f.context.pqmSandboxRecoverAppendChunk_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),'PQM_EXECUTION_RUN_'+id,
+    f.properties.get('PQM_EXECUTION_RUN_'+id),recoveryRequest,receipt);
+  assert.equal(recovered.status,'CHUNK_RECOVERED');
+  assert.equal(f.writes,1,'APPEND recovery reads and verifies the existing chunk without another batchUpdate');
+  assert.equal(f.properties.has('PQM_EXECUTION_UNCERTAIN'),false);
+  assert.equal([...f.properties.keys()].some(name=>name.startsWith('PQM_EXECUTION_MANIFEST_')),false);
+  const replay=f.context.pqmSandboxRecoverAppendChunk_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),'PQM_EXECUTION_RUN_'+id,
+    f.properties.get('PQM_EXECUTION_RUN_'+id),recoveryRequest,receipt);
+  assert.equal(replay.checkpointDigest,recovered.checkpointDigest);
+  assert.equal(f.writes,1,'a repeated recovery returns its receipt without another append');
+  const replayApply=f.context.pqmSandboxExecution(envelope);
+  assert.equal(replayApply.status,'APPLY_CHUNK_VERIFIED');
+  assert.equal(f.writes,1,'the recovered APPEND receipt prevents duplicate writes');
+  f.context.pqmExecutionCheckpointSave_=save;
+});
+
+test('APPEND_ONLY manifest shard persistence failure is stage-coded and stops before batchUpdate', () => {
+  const digest=crypto.createHash('sha256').update('APPEND_ONLY shard persistence failure').digest('base64url');
+  const f=realCheckpointExecutionFixture(digest,30),id='4'.repeat(32),chunkId='5'.repeat(32);
+  f.context.pqmSandboxExecution(f.request('preview','6'.repeat(32)));
+  const adapterFactory=f.context.pqmSandboxCheckpointAdapter_;
+  f.context.pqmSandboxCheckpointAdapter_=()=>{
+    const adapter=adapterFactory(),appendRequests=adapter.appendRequests;
+    adapter.appendRequests=(selected,tabs,request)=>{
+      const requests=appendRequests(selected,tabs,request);
+      selected.forEach(change=>{change.cells[0]=f.context.pqmGoogleFreshnessFormula_(change.row,'uk_UA');});
+      return requests;
+    };
+    return adapter;
+  };
+  const getProperties=f.context.PropertiesService.getScriptProperties;
+  f.context.PropertiesService.getScriptProperties=()=>{
+    const properties=getProperties();
+    return Object.assign({},properties,{setProperty:(key,value)=>{
+      if(key.startsWith('PQM_EXECUTION_MANIFEST_'))throw new Error('synthetic storage failure');
+      properties.setProperty(key,value);
+    }});
+  };
+  const base=JSON.parse(f.request('apply',id,digest,0,'APPEND_ONLY').payload);
+  Object.assign(base,{chunkId,chunkDigest:crypto.createHash('sha256').update('append-v1-storage').digest('base64url'),planId:id,
+    chunkAddedAt:'2026-11-10T19:31:00+02:00'});
+  const payload=JSON.stringify(base),envelope={payload,
+    signature:crypto.createHmac('sha256','S'.repeat(40)).update(payload).digest('base64url')};
+  assert.throws(()=>f.context.pqmSandboxExecution(envelope),/rejected before write.*PQM_APPLY_DIAG:append_inflight_save:Error/);
+  assert.equal(f.writes,0,'manifest persistence must finish before any Sheets batchUpdate');
+  const run=JSON.parse(f.properties.get('PQM_EXECUTION_RUN_'+id));
+  assert.equal(run.state,'ready');assert.equal(run.lastError.stage,'append_inflight_save');
+  assert.equal(run.lastError.category,'prewrite_rejected');
+  assert.equal(f.properties.has('PQM_EXECUTION_UNCERTAIN'),false);
+  assert.equal([...f.properties.keys()].some(name=>name.startsWith('PQM_EXECUTION_MANIFEST_')),false);
 });
 
 test('ALL UPDATE writes journal v2 before batch update without changing the legacy v1 shape', () => {
@@ -1665,4 +1836,131 @@ test('read-only Apply state view reports safe stage metadata without mutating Sc
   assert.equal(view.receipt_valid,true);assert.equal(view.last_error_stage,'append_read_back');
   assert.equal(JSON.stringify(view).includes('PERSONAL_DATA_MUST_NOT_ESCAPE'),false);
   assert.deepEqual([...props.entries()],before);
+});
+
+function prewriteCloseFixture({existingIdentity=false,recordOverrides={},id='a'.repeat(32)}={}) {
+  const code='0000000001',props=new Map([
+    ['PQM_EXECUTION_UNCERTAIN',id],['PQM_EXECUTION_RUN_'+id,JSON.stringify({
+      state:'ready',planScope:'APPEND_ONLY',chunkJournalVersion:1,digest:'D'.repeat(43),
+      nextChunk:0,inflight:null,inflightManifest:null,uncertainChunk:null,steps:[],
+      aggregate:{append:0,update:0,batches:0},result:null,
+      lastError:{stage:'append_inflight_save',category:'prewrite_rejected',exceptionType:'Error'},
+      ...recordOverrides})]
+  ]);
+  let writes=0,reads=0;
+  const context={Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
+    PQM_MIRROR_ENV:{environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox'},
+    PQM_GOOGLE_TABS:['ФОП','ЮО'],
+    Utilities:{Charset:{UTF_8:'UTF_8'},DigestAlgorithm:{SHA_256:'SHA_256'},
+      computeDigest:(_algorithm,value)=>crypto.createHash('sha256').update(value,'utf8').digest(),
+      base64EncodeWebSafe:value=>Buffer.from(value).toString('base64url'),
+      base64DecodeWebSafe:value=>[...Buffer.from(value,'base64url')],
+      newBlob:value=>({getBytes:()=>[...Buffer.from(value,'utf8')]})},
+    PropertiesService:{getScriptProperties:()=>({getProperty:key=>props.get(key)??null,
+      setProperty:(key,value)=>props.set(key,value),deleteProperty:key=>props.delete(key)})},
+    Sheets:{Spreadsheets:{get:()=>({sheets:['ФОП','ЮО'].map((title,index)=>({properties:{title,sheetId:index+1,
+        gridProperties:{rowCount:2,columnCount:19}}}))}),
+      Values:{batchGet:(_id,{ranges})=>{reads++;return {valueRanges:ranges.map(range=>({values:
+        existingIdentity&&range.includes('!B')?[[code]]:[]}))};},
+        batchUpdate:()=>{writes++;throw new Error('close path must not write Sheets');}}}},
+    SpreadsheetApp:{},ScriptApp:{},LockService:{},PQM_EXECUTION_CONTEXT_:null};
+  vm.createContext(context);vm.runInContext(executionSource,context);
+  context.PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES=8000;
+  const identities=[{tab:'ФОП',code}],identityDigest=crypto.createHash('sha256')
+    .update(JSON.stringify([['ФОП',code]]),'utf8').digest('base64url');
+  const request={requestId:id,closeId:'b'.repeat(32),scriptId:'script-sandbox',
+    spreadsheetId:'sheet-sandbox',contract:'pqm-mirror-datetime-v1',actor:'sandbox-admin',
+    expectedDigest:'D'.repeat(43),closeEvidenceDigest:'E'.repeat(43),reasonDigest:'R'.repeat(43),
+    chunkId:'c'.repeat(32),chunkDigest:'H'.repeat(43),planId:id,chunkIndex:0,
+    targetIdentityDigest:identityDigest,prewriteStage:'APPS_SCRIPT_PREWRITE_GUARD_V1',targetIdentities:identities};
+  return {context,props,id,request,get reads(){return reads;},get writes(){return writes;}};
+}
+
+test('prewrite closure requires the Apps Script ready-stage proof and zero target identities, then writes only its tombstone', () => {
+  const f=prewriteCloseFixture();
+  const receipt=f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),f.request);
+  assert.equal(receipt.status,'ADMIN_CLOSED_PREWRITE_NO_WRITE');
+  assert.equal(receipt.disposition,'PREWRITE_FAILURE_CONFIRMED_NO_SHEET_WRITE');
+  assert.equal(receipt.prewriteStage,'append_inflight_save');
+  assert.equal(receipt.idempotent,false);assert.equal(f.writes,0);assert.ok(f.reads>0);
+  assert.equal(f.props.has('PQM_EXECUTION_UNCERTAIN'),false);
+  assert.equal(f.props.has('PQM_EXECUTION_PREWRITE_CLOSED_'+f.id),true);
+  const event=JSON.parse(f.props.get('PQM_EXECUTION_PREWRITE_CLOSED_'+f.id));
+  assert.equal(event.version,1);assert.equal(event.requestId,f.id);assert.equal(event.closeId,f.request.closeId);
+  assert.equal(event.planScope,'APPEND_ONLY');assert.equal(event.expectedDigest,f.request.expectedDigest);
+  assert.equal(event.evidenceDigest,f.request.closeEvidenceDigest);assert.equal(event.reasonDigest,f.request.reasonDigest);
+  assert.equal(event.chunkId,f.request.chunkId);assert.equal(event.chunkDigest,f.request.chunkDigest);
+  assert.equal(event.chunkIndex,0);assert.equal(event.targetIdentityDigest,f.request.targetIdentityDigest);
+  assert.equal(event.prewriteStage,'append_inflight_save');assert.equal(event.actor,f.request.actor);
+  assert.equal(f.context.pqmSandboxIsCanonicalDigest_(event.runRecordDigest),true);
+  assert.equal(f.context.pqmSandboxIsCanonicalDigest_(event.digest),true);
+  const eventFields=['version','environment','scriptId','spreadsheetId','contract','requestId','status',
+    'closeId','planScope','disposition','evidenceDigest','reasonDigest','chunkId','chunkDigest','chunkIndex',
+    'targetIdentityDigest','prewriteStage','runRecordDigest','expectedDigest','actor','closedAt','proofType',
+    'writeAheadBytes','checkpointMaxBytes','legacyManifestProjectionDigest'];
+  assert.equal(event.digest,crypto.createHash('sha256').update(eventFields.map(key=>String(event[key])).join('\n')).digest('base64url'));
+  const again=f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),f.request);
+  assert.equal(again.idempotent,true);assert.equal(f.writes,0);
+});
+
+test('prewrite closure rejects possible writes or incomplete Apps Script evidence without clearing HOLD', () => {
+  const cases=[
+    prewriteCloseFixture({existingIdentity:true}),
+    prewriteCloseFixture({recordOverrides:{lastError:{stage:'append_batch_update',category:'apply_stage_failed',exceptionType:'Error'}}}),
+    prewriteCloseFixture({recordOverrides:{state:'uncertain'}}),
+    prewriteCloseFixture({recordOverrides:{steps:[{verified:true}]}})
+  ];
+  for(const f of cases){
+    const before=[...f.props.entries()];
+    assert.throws(()=>f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+      f.context.PropertiesService.getScriptProperties(),f.request));
+    assert.equal(f.props.get('PQM_EXECUTION_UNCERTAIN'),f.id);
+    assert.equal(f.props.has('PQM_EXECUTION_PREWRITE_CLOSED_'+f.id),false);
+    assert.equal(f.writes,0);
+    if(!f.request.targetIdentities.length)assert.deepEqual([...f.props.entries()],before);
+  }
+});
+
+test('legacy v18 generic catch is closable only when the exact reconstructed v1 write-ahead JSON exceeds 8000 bytes', () => {
+  const id='b11433e8efb84b4492bf2df7c7c25908';
+  const f=prewriteCloseFixture({id,recordOverrides:{lastError:undefined}});
+  const codes=Array.from({length:25},(_,i)=>String(i+1).padStart(10,'0'));
+  const formulas=codes.map((code,i)=>({tab:'ФОП',row:i+2,code,formulaA:'='+('x'.repeat(170))}));
+  f.request.targetIdentities=codes.map(code=>({tab:'ФОП',code}));
+  f.request.targetIdentityDigest=crypto.createHash('sha256')
+    .update(JSON.stringify(formulas.map(item=>[item.tab,item.code])),'utf8').digest('base64url');
+  const projectionDigest=crypto.createHash('sha256').update(JSON.stringify(formulas.map(item=>({
+    code:item.code,formulaA:item.formulaA,row:item.row,tab:item.tab}))), 'utf8').digest('base64url');
+  f.request.prewriteStage='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1';
+  f.request.legacyManifestRows=formulas;
+  f.request.legacyManifestProjectionDigest=projectionDigest;
+  const receipt=f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),f.request);
+  assert.equal(receipt.proofType,'LEGACY_V1_WRITEAHEAD_OVERSIZE');
+  assert.ok(receipt.writeAheadBytes>8000);
+  assert.equal(receipt.checkpointMaxBytes,8000);
+  assert.equal(receipt.legacyManifestProjectionDigest,projectionDigest);
+  assert.equal(f.writes,0);
+  assert.equal(f.props.has('PQM_EXECUTION_UNCERTAIN'),false);
+  const event=JSON.parse(f.props.get('PQM_EXECUTION_PREWRITE_CLOSED_'+id));
+  assert.equal(event.proofType,'LEGACY_V1_WRITEAHEAD_OVERSIZE');
+  assert.equal(event.writeAheadBytes,receipt.writeAheadBytes);
+});
+
+test('legacy v1 size proof rejects under-bound records and preserves uncertainty marker', () => {
+  const id='b11433e8efb84b4492bf2df7c7c25908';
+  const f=prewriteCloseFixture({id,recordOverrides:{lastError:undefined}});
+  const code='0000000001',rows=[{tab:'ФОП',row:2,code,formulaA:'=A2'}];
+  f.request.targetIdentities=[{tab:'ФОП',code}];
+  f.request.targetIdentityDigest=crypto.createHash('sha256').update(JSON.stringify([['ФОП',code]])).digest('base64url');
+  f.request.prewriteStage='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1';f.request.legacyManifestRows=rows;
+  f.request.legacyManifestProjectionDigest=crypto.createHash('sha256').update(
+    JSON.stringify(rows.map(item=>({code:item.code,formulaA:item.formulaA,row:item.row,tab:item.tab})))).digest('base64url');
+  assert.throws(()=>f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),f.request),/fits the old bound/);
+  assert.equal(f.props.get('PQM_EXECUTION_UNCERTAIN'),id);
+  assert.equal(f.props.has('PQM_EXECUTION_PREWRITE_CLOSED_'+id),false);
+  assert.equal(f.writes,0);
 });

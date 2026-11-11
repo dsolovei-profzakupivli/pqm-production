@@ -10,7 +10,7 @@ def stamp():
 
 # key, module, label, officer default, GET/non-mutating or mutation, route pattern
 PERMISSIONS = [
- ('google.writer.execute','Перевірка ЄДР','Ручний PQM → Google Sheets',True,True,r'(?:/api/google-writer/(?:preview|apply|preview-scope|resume-preview|resume-append-only)|/api/admin/google-writer/close-unknown)'),
+ ('google.writer.execute','Перевірка ЄДР','Ручний PQM → Google Sheets',True,True,r'(?:/api/google-writer/(?:preview|apply|preview-scope|resume-preview|resume-append-only)|/api/admin/google-writer/(?:close-unknown|close-prewrite))'),
  ('applications.read','Реєстр заявок','Перегляд заявок',True,False,r'/api/(?:applications(?:/.*)?|document-check-jobs/.*|protocol/files/.*|stats|application-history|application-profiles(?:/.*)?|frameworks|supplier-options)'),
  ('applications.edit','Реєстр заявок','Редагування заявки та зауважень',True,True,r'/api/applications/[^/]+(?:/remark-selections)?'),
  ('applications.check','Реєстр заявок','Перевірка документів / НАЗК',True,True,r'/api/applications/[^/]+/(?:verify-documents(?:/start)?|nazk-control)'),

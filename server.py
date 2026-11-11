@@ -11885,10 +11885,12 @@ class Handler(BaseHTTPRequestHandler):
             permissions=getattr(self,'auth_access',{}).get('permissions',{})
             data.update(can_execute=bool(permissions.get('google.writer.execute')),
                         can_manage=bool(permissions.get('admin.manage')),
-                        can_close=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')))
+                        can_close=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')),
+                        can_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')))
             if not permissions.get('admin.manage'):
                 for run in data.get('runs',[]):
                     run.pop('close_reason',None);run.pop('closed_by',None)
+                    run.pop('prewrite_close_reason',None);run.pop('prewrite_closed_by',None)
             return self.send_json(data)
         if parsed.path == '/api/google-writer/resume-preview':
             if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
@@ -12527,6 +12529,44 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError,PermissionError,RuntimeError,sqlite3.Error) as exc:
                 return self.send_json({'error':str(exc),'sqlite_hold_retained':True,
                     'sheets_write_performed':False},409)
+        if parsed.path == '/api/admin/google-writer/close-prewrite':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only prewrite closure'},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'error':'Потрібні права адміністратора та Google writer'},403)
+            payload={}
+            try:
+                payload=self.read_json()
+                if (not isinstance(payload,dict) or set(payload)!={'close_id','request_id','reason','confirmed'} or
+                        payload.get('confirmed') is not True):
+                    return self.send_json({'error':'Потрібні точний запуск, причина та явне підтвердження'},400)
+                result=google_writer_execution.close_confirmed_prewrite_failure(DB_PATH,google_writer_client(),
+                    payload.get('request_id'),self.auth_user,payload.get('close_id'),payload.get('reason'))
+                return self.send_json({**result,'resume_authorized':False,
+                    'sheets_write_performed':False,
+                    'disposition':'PREWRITE_FAILURE_CONFIRMED_NO_SHEET_WRITE'})
+            except google_writer_execution.AdminCloseFinalizationUnknown:
+                return self.send_json({'error':'Apps Script prewrite tombstone is confirmed; SQLite close remains pending for the same close_id',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'apps_script_closed':True,'sqlite_hold_retained':True,
+                    'retry_same_close_id_only':True,'sheets_write_performed':False},503)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Prewrite close outcome unknown; retry the same close_id only after read-only review',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'sqlite_hold_retained':True,'retry_same_close_id_only':True,
+                    'sheets_write_performed':False},503)
+            except google_writer_execution.ExecutionConfigurationError:
+                return self.send_json({'error':'Apps Script prewrite closure was not confirmed; SQLite hold retained',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'sqlite_hold_retained':True,'retry_same_close_id_only':True,
+                    'sheets_write_performed':False},503)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error) as exc:
+                return self.send_json({'error':str(exc),'sqlite_hold_retained':True,
+                    'sheets_write_performed':False},409)
         if parsed.path in {'/api/google-writer/preview','/api/google-writer/apply'}:
             if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
                 return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
@@ -12577,6 +12617,7 @@ class Handler(BaseHTTPRequestHandler):
                             parent_digest=replacement['digest'],details_digest=replacement_snapshot['details_digest'])
                         return self.send_json({'status':'PREVIEW_STALE_RECONFIRM',
                             'error':'План або Google Sheets змінилися. Перегляньте й підтвердьте новий Preview.',
+                            'request_id':replacement_id,
                             'counts':replacement.get('counts',{}),'plan_digest':replacement['digest'],
                             'details_digest':replacement_snapshot['details_digest'],
                             'ticket':replacement_ticket,'started':False},409)

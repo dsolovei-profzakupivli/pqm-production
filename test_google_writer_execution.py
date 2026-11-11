@@ -161,17 +161,34 @@ class ExecutionTransportTests(unittest.TestCase):
             if isinstance(failure,HTTPError):
                 self.assertEqual(raised.exception.safe_error['http_status'],503)
 
-    def test_execution_api_4xx_is_prewrite_and_does_not_echo_response_text(self):
-        failure=HTTPError('https://script.googleapis.com',401,'TEST_SECRET_DO_NOT_LEAK',{},io.BytesIO())
-        opener=Mock(side_effect=failure);client=self.client('SANDBOX',opener=opener)
-        with self.assertRaises(execution.ExecutionPreflightError) as raised:
+    def test_execution_api_write_4xx_is_outcome_unknown_and_does_not_echo_response_text(self):
+        for code in (400,401,403,409):
+            failure=HTTPError('https://script.googleapis.com',code,'TEST_SECRET_DO_NOT_LEAK',{},io.BytesIO())
+            opener=Mock(side_effect=failure);client=self.client('SANDBOX',opener=opener)
             request_id='d'*32
-            client.invoke('apply',request_id,'uo',digest=TEST_DIGEST,plan_scope='ALL',manual_authorized=True,
-                chunk_index=0,chunk_id='e'*32,chunk_digest=TEST_DIGEST,plan_id=request_id,
-                chunk_phase='append',chunk_added_at='2026-11-09T14:00:00+02:00',
-                chunk_details_digest=TEST_DIGEST)
-        self.assertNotIn('TEST_SECRET_DO_NOT_LEAK',str(raised.exception))
-        self.assertEqual(opener.call_count,1)
+            with self.assertRaises(execution.ExecutionOutcomeUnknown) as raised:
+                client.invoke('apply',request_id,'uo',digest=TEST_DIGEST,plan_scope='ALL',manual_authorized=True,
+                    chunk_index=0,chunk_id='e'*32,chunk_digest=TEST_DIGEST,plan_id=request_id,
+                    chunk_phase='append',chunk_added_at='2026-11-09T14:00:00+02:00',
+                    chunk_details_digest=TEST_DIGEST)
+            self.assertEqual(raised.exception.safe_error,{'stage':'execution_api_response',
+                'category':'http_4xx','exception_type':'HTTPError','http_status':code})
+            self.assertNotIn('TEST_SECRET_DO_NOT_LEAK',str(raised.exception))
+            self.assertEqual(opener.call_count,1)
+
+    def test_apps_script_prewrite_diagnostic_code_is_safe_and_preserved(self):
+        body={'done':False,'error':{'details':[{'errorMessage':
+            'PQM: Apply rejected before write. PQM_APPLY_DIAG:append_inflight_save:Error'}]}}
+        opener=Mock(return_value=io.BytesIO(json.dumps(body).encode()))
+        client=self.client('SANDBOX',opener=opener)
+        request_id='c'*32
+        with self.assertRaises(execution.ExecutionRemotePrewriteRejected) as raised:
+            client.invoke('apply',request_id,'uo',digest=TEST_DIGEST,plan_scope='APPEND_ONLY',
+                manual_authorized=True,chunk_index=0,chunk_id='e'*32,chunk_digest=TEST_DIGEST,
+                plan_id=request_id)
+        self.assertEqual(raised.exception.safe_error,{'stage':'append_inflight_save',
+            'category':'apps_script_stage_error','exception_type':'Error'})
+        self.assertNotIn('TEST_ONLY_TOKEN',str(raised.exception))
 
     def test_token_failure_is_known_before_execution_api_call(self):
         client=self.client('SANDBOX')
@@ -556,6 +573,56 @@ class ExecutionStateTests(unittest.TestCase):
         self.assertEqual(state['next_chunk'],1)
         self.assertEqual(state['attempted_chunk'],1)
         self.assertFalse(execution.claim_run(self.path,'SANDBOX','e'*32,'uo','manual')['claimed'])
+
+    def test_execution_api_4xx_keeps_append_chunk_unknown_instead_of_resetting_prepared(self):
+        run='a'*32
+        details,snapshot=self.save_append_only_plan(run,count=30)
+        execution.claim_run(self.path,'SANDBOX',run,'uo','manual',manual_authorized=True,
+            plan_scope='APPEND_ONLY',plan_digest=details['append_only_digest'],details_digest=snapshot['details_digest'])
+        client=Mock();client.environment='SANDBOX';actions=[]
+        def invoke(action,*args,**kwargs):
+            actions.append(action)
+            if action=='preview':return {'digest':TEST_DIGEST}
+            if action=='apply':
+                raise execution.ExecutionOutcomeUnknown('Execution API response was incomplete; recovery required',
+                    safe_error={'stage':'execution_api_response','category':'http_4xx',
+                                'exception_type':'HTTPError','http_status':401})
+            if action=='recover_append_chunk':
+                raise execution.ExecutionOutcomeUnknown('Recovery response unknown; hold required')
+            self.fail('unexpected action '+action)
+        client.invoke.side_effect=invoke
+        result=execution.execute_claimed(self.path,client,run,'uo',digest=details['append_only_digest'],
+            manual_authorized=True,plan_scope='APPEND_ONLY')
+        self.assertEqual(result['status'],'OUTCOME_UNKNOWN_HOLD_NO_RETRY')
+        self.assertEqual(actions,['apply','recover_append_chunk'])
+        with closing(sqlite3.connect(self.path)) as con:
+            run_row=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()
+            chunk=con.execute('SELECT status FROM google_writer_chunk_journal WHERE run_id=? AND chunk_index=0',(run,)).fetchone()
+        self.assertEqual(run_row[0],'outcome_unknown')
+        safe=json.loads(run_row[1])['safe_error']
+        self.assertEqual(safe.get('primary_category'),'http_4xx',repr(safe))
+        self.assertEqual(safe.get('primary_http_status'),401,repr(safe))
+        self.assertEqual(chunk[0],'outcome_unknown','the ambiguous call is never reset to prepared')
+
+    def test_remote_prewrite_stage_is_not_misreported_as_no_remote_call(self):
+        run='b'*32
+        details,snapshot=self.save_append_only_plan(run,count=30)
+        execution.claim_run(self.path,'SANDBOX',run,'uo','manual',manual_authorized=True,
+            plan_scope='APPEND_ONLY',plan_digest=details['append_only_digest'],details_digest=snapshot['details_digest'])
+        client=Mock();client.environment='SANDBOX'
+        client.invoke.side_effect=execution.ExecutionRemotePrewriteRejected(
+            safe_error={'stage':'append_inflight_save','category':'apps_script_stage_error',
+                        'exception_type':'Error'})
+        result=execution.execute_claimed(self.path,client,run,'uo',digest=details['append_only_digest'],
+            manual_authorized=True,plan_scope='APPEND_ONLY')
+        self.assertEqual(result['status'],'APPS_SCRIPT_PREWRITE_REJECTED_NO_SHEET_WRITE')
+        self.assertNotEqual(result['status'],'PRECALL_REJECTED_NO_REMOTE_CALL')
+        with closing(sqlite3.connect(self.path)) as con:
+            run_row=con.execute('SELECT status,result_json FROM google_writer_runs WHERE request_id=?',(run,)).fetchone()
+            chunk=con.execute('SELECT status FROM google_writer_chunk_journal WHERE run_id=? AND chunk_index=0',(run,)).fetchone()
+        self.assertEqual(run_row[0],'failed_safe')
+        self.assertEqual(json.loads(run_row[1])['safe_error']['stage'],'append_inflight_save')
+        self.assertEqual(chunk[0],'prepared','only an explicit Apps Script no-write stage can reset it')
 
     def test_guard_change_after_checkpoint_stops_before_next_chunk_and_keeps_progress(self):
         run='f'*32

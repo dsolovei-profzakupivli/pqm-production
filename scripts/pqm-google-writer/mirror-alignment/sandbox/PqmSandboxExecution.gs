@@ -161,12 +161,34 @@ function pqmSandboxExecution(envelope) {
       }
       if (result.more) return result;
       return record.result || result;
-    } catch (_) {
+    } catch (error) {
+      var stages=['source_and_sheet_guard','chunk_selection','append_prewrite_guard','append_request_build',
+        'append_inflight_save','append_batch_update','append_read_back','append_metadata_read_back',
+        'append_projection','update_chunk_selection','update_inflight_save','update_batch_update',
+        'update_read_back','postwrite_sheet_snapshot','postwrite_plan','checkpoint_receipt_save'];
+      var stage=stages.indexOf(record.lastStage)>=0?record.lastStage:'apply_step';
+      var types=['Error','TypeError','RangeError','ReferenceError'];
+      var exceptionType=error && types.indexOf(error.name)>=0?error.name:'Other';
+      var prewrite=['source_and_sheet_guard','chunk_selection','append_prewrite_guard','append_request_build',
+        'append_inflight_save','update_chunk_selection','update_inflight_save'].indexOf(stage)>=0;
+      if (prewrite) {
+        var storedManifest=record.inflightManifest;
+        record.state='ready'; record.inflight=null; record.inflightManifest=null; record.uncertainChunk=null;
+        record.lastError={stage:stage,category:'prewrite_rejected',exceptionType:exceptionType};
+        try {
+          pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
+          pqmExecutionCheckpointDeleteManifestShards_(properties,request.requestId,storedManifest);
+        } catch (saveError) {
+          properties.setProperty('PQM_EXECUTION_UNCERTAIN',request.requestId);
+        }
+        throw new Error('PQM: Apply rejected before write. PQM_APPLY_DIAG:'+stage+':'+exceptionType);
+      }
       record.state='uncertain';
       record.uncertainChunk=request.chunkIndex;
+      record.lastError={stage:stage,category:'apply_stage_failed',exceptionType:exceptionType};
       try { pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES); } catch (ignored) {}
       properties.setProperty('PQM_EXECUTION_UNCERTAIN',request.requestId);
-      throw new Error('PQM: Apply may be partial; no retry, reconcile using a read-only audit');
+      throw new Error('PQM: Apply may be partial; no retry. PQM_APPLY_DIAG:'+stage+':'+exceptionType);
     }
   } finally {
     PQM_EXECUTION_CONTEXT_=null;
@@ -214,7 +236,16 @@ function pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt)
   if (!stored) throw new Error('PQM: APPEND chunk recovery record is missing');
   var record;
   try { record=JSON.parse(stored); } catch (_) { throw new Error('PQM: APPEND chunk recovery record is invalid'); }
-  var manifest=record.inflightManifest;
+  var prior=record.steps && record.steps[request.chunkIndex];
+  if (record.state==='ready' && prior && prior.verified===true && prior.chunkId===request.chunkId &&
+      prior.chunkDigest===request.chunkDigest && prior.planId===request.planId &&
+      pqmSandboxIsCanonicalDigest_(prior.checkpointDigest)) {
+    var priorReceipt=pqmExecutionCheckpointReceipt_(request,receipt,prior);
+    priorReceipt.status='CHUNK_RECOVERED';
+    return priorReceipt;
+  }
+  var storedManifest=record.inflightManifest;
+  var manifest=pqmExecutionCheckpointResolveManifest_(properties,request.requestId,storedManifest);
   if (record.chunkJournalVersion!==1 || record.planId!==request.planId || record.runId!==request.requestId ||
       record.planScope!=='APPEND_ONLY' || record.digest!==request.expectedDigest ||
       !manifest || manifest.chunkId!==request.chunkId || manifest.chunkDigest!==request.chunkDigest ||
@@ -275,6 +306,7 @@ function pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt)
         }); })) throw new Error('PQM: destination service metadata is not blank; recovery held');
     record.state='ready'; record.inflight=null; record.inflightManifest=null; record.uncertainChunk=null;
     pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
+    pqmExecutionCheckpointDeleteManifestShards_(properties,request.requestId,storedManifest);
     if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')===request.requestId)
       properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
     var notApplied=receipt('CHUNK_NOT_APPLIED',{append:0,update:0,batches:0,remaining_safe:original.plan.counts.appended},request.expectedDigest);
@@ -352,6 +384,7 @@ function pqmSandboxRecoverAppendChunk_(id,properties,key,stored,request,receipt)
   pqmExecutionCheckpointSave_(properties,key,record,PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES);
   if (properties.getProperty('PQM_EXECUTION_UNCERTAIN')===request.requestId)
     properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
+  pqmExecutionCheckpointDeleteManifestShards_(properties,request.requestId,storedManifest);
   var recovered=pqmExecutionCheckpointReceipt_(request,receipt,step);
   recovered.status='CHUNK_RECOVERED';
   return recovered;
