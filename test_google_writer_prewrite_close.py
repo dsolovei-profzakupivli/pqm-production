@@ -92,9 +92,10 @@ class PrewriteCloseTests(unittest.TestCase):
         self.actor='admin-fixture'
         self.reason='Confirmed prewrite failure; no Sheet writes occurred.'
         self.plan_digest=self.digest('plan')
+        self.full_plan_digest=self.digest('full-plan')
         self.source_digest=self.digest('source')
         self.details={
-            'version':1,'environment':'SANDBOX','plan_digest':self.plan_digest,
+            'version':1,'environment':'SANDBOX','plan_digest':self.full_plan_digest,
             'append_only_digest':self.plan_digest,'source_digest':self.source_digest,
             'counts':{'append':25,'update':0,'conflict':0,'error':0},
             'appends':[{'operation':'APPEND','tab':'ФОП' if i<21 else 'ЮО','row':100+i,
@@ -125,6 +126,22 @@ class PrewriteCloseTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as con:
             return con.execute('SELECT status,finished_at,result_json FROM google_writer_runs WHERE request_id=?',
                                (self.request_id,)).fetchone()
+
+    def test_prewrite_binding_accepts_distinct_full_and_append_only_digests(self):
+        self.assertNotEqual(self.full_plan_digest,self.plan_digest)
+        with closing(sqlite3.connect(self.path)) as con:
+            material=writer._prewrite_close_material(
+                con,self.request_id,self.actor,self.close_id,self.reason,read_only=True)
+        self.assertEqual(material['plan_digest'],self.plan_digest)
+        self.assertEqual(material['chunk_id'],self.chunk['chunk_id'])
+
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute('UPDATE google_writer_plan_journal SET append_only_digest=? WHERE request_id=?',
+                        (self.digest('wrong-append-scope'),self.request_id))
+        with closing(sqlite3.connect(self.path)) as con:
+            with self.assertRaisesRegex(RuntimeError,'APPEND_ONLY Preview journal binding mismatch'):
+                writer._prewrite_close_material(
+                    con,self.request_id,self.actor,self.close_id,self.reason,read_only=True)
 
     def test_confirmed_prewrite_close_preserves_history_and_releases_only_after_receipt(self):
         writer.prepare_admin_close_prewrite(self.path,'SANDBOX',self.close_id,self.request_id,

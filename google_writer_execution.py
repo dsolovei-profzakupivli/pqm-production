@@ -2726,20 +2726,27 @@ def _prewrite_close_material(con, request_id, actor, close_id, reason, *, read_o
                              (request_id,)).fetchone()
     if other_active:
         raise RuntimeError('Another active or unknown Sandbox run prevents lane release')
-    plans=con.execute('''SELECT plan_id,plan_digest,details_digest,source_digest,details_json
+    plans=con.execute('''SELECT plan_id,plan_digest,append_only_digest,details_digest,source_digest,details_json
                          FROM google_writer_plan_journal WHERE request_id=? AND environment='SANDBOX'
                            AND actor=?''',(request_id,run[2])).fetchall()
     if len(plans)!=1:
         raise RuntimeError('Unique Sandbox Preview journal binding is unavailable')
-    plan_id,stored_digest,details_digest,source_digest,details_raw=plans[0]
-    if (plan_id!=request_id or stored_digest!=plan_digest or
+    plan_id,stored_full_digest,stored_append_digest,details_digest,source_digest,details_raw=plans[0]
+    # APPEND_ONLY run/chunk digests bind to the scoped append digest. The
+    # Preview journal's plan_digest remains the full Preview digest; keep both
+    # bindings explicit instead of comparing those intentionally distinct values.
+    if (plan_id!=request_id or stored_append_digest!=plan_digest or
+            not is_canonical_sha256_b64url(stored_full_digest) or
+            not is_canonical_sha256_b64url(stored_append_digest) or
             not is_canonical_sha256_b64url(details_digest) or
             not is_canonical_sha256_b64url(source_digest)):
         raise RuntimeError('APPEND_ONLY Preview journal binding mismatch')
     try: details=json.loads(details_raw)
     except (TypeError,json.JSONDecodeError): details=None
     if (not isinstance(details,dict) or details.get('environment')!='SANDBOX' or
-            details.get('plan_digest')!=plan_digest or details.get('source_digest')!=source_digest or
+            details.get('plan_digest')!=stored_full_digest or
+            details.get('append_only_digest')!=stored_append_digest or
+            details.get('source_digest')!=source_digest or
             _preview_details_digest(details)!=details_digest or
             not isinstance(details.get('appends'),list) or not details['appends']):
         raise RuntimeError('APPEND_ONLY Preview details are invalid or do not match their digest')
@@ -2749,7 +2756,7 @@ def _prewrite_close_material(con, request_id, actor, close_id, reason, *, read_o
     if len(chunks)!=1:
         raise RuntimeError('Exactly one prepared first APPEND portion is required')
     chunk_id,c_plan_id,c_plan_digest,c_source_digest,index,chunk_digest,chunk_state,expected_raw=chunks[0]
-    if (c_plan_id!=plan_id or c_plan_digest!=plan_digest or c_source_digest!=source_digest or
+    if (c_plan_id!=plan_id or c_plan_digest!=stored_append_digest or c_source_digest!=source_digest or
             index!=0 or chunk_state!='prepared'):
         raise RuntimeError('First APPEND portion is not durably prepared and untouched')
     try: expected=json.loads(expected_raw)
