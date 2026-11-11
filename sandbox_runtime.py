@@ -559,6 +559,35 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             target_identities is not None and legacy_prewrite_valid and
             (prewrite_stage != 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' or
              is_canonical_sha256_b64url(payload.get('legacyManifestProjectionDigest'))))
+        prewrite_close_fields = {'closeId', 'closeEvidenceDigest', 'reasonDigest'}
+        expected_prewrite_close_keys = (prewrite_preflight_fields | prewrite_close_fields |
+            (legacy_prewrite_fields if prewrite_stage == 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' else set()))
+        prewrite_close_shape = (all_scope_endpoint and action == 'close_prewrite_failure' and
+            prewrite_keys == expected_prewrite_close_keys and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'APPEND_ONLY' and
+            payload.get('trigger') == 'manual' and
+            isinstance(payload.get('requestId'), str) and re.fullmatch(r'[0-9a-f]{32}', payload['requestId']) and
+            isinstance(payload.get('actor'), str) and bool(payload['actor'].strip()) and
+            len(payload['actor']) <= 128 and
+            type(payload.get('issuedAt')) is int and type(payload.get('expiresAt')) is int and
+            payload['issuedAt'] < payload['expiresAt'] <= payload['issuedAt'] + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            isinstance(prewrite_stage, str) and prewrite_stage in {
+                'source_and_sheet_guard', 'chunk_selection', 'append_prewrite_guard',
+                'append_request_build', 'append_inflight_save',
+                'APPS_SCRIPT_PREWRITE_GUARD_V1', 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1'} and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex'] == 0 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            is_canonical_sha256_b64url(payload.get('targetIdentityDigest')) and
+            payload.get('targetIdentityDigest') == prewrite_identity_digest and
+            target_identities is not None and legacy_prewrite_valid and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('closeId') or '')) and
+            is_canonical_sha256_b64url(payload.get('closeEvidenceDigest')) and
+            is_canonical_sha256_b64url(payload.get('reasonDigest')) and
+            (prewrite_stage != 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' or
+             is_canonical_sha256_b64url(payload.get('legacyManifestProjectionDigest'))))
         legacy_shape = (function == 'pqmSandboxExecution' and
             action in ('preview', 'apply', 'reconcile_partial') and
             not (action == 'apply' and payload.get('planScope', 'ALL') == 'ALL'))
@@ -581,7 +610,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             is_canonical_sha256_b64url(payload.get('evidenceDigest'))
         )
         if (set(body) != {'function', 'devMode', 'parameters'} or
-                not (legacy_shape or all_scope_shape or close_unknown_shape or prewrite_preflight_shape) or body['devMode'] is not False or
+                not (legacy_shape or all_scope_shape or close_unknown_shape or prewrite_preflight_shape or prewrite_close_shape) or body['devMode'] is not False or
                 len(body['parameters']) != 1 or
                 set(envelope) != {'payload', 'signature'} or
                 not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or
@@ -589,7 +618,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
                 action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run',
-                    'prewrite_close_preflight') or
+                    'prewrite_close_preflight', 'close_prewrite_failure') or
                 (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
                 (checkpoint_apply_enabled(environment) and payload['action'] == 'apply' and

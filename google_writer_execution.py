@@ -1517,8 +1517,9 @@ class ExecutionClient:
         if action=='close_prewrite_failure':
             safe.update(closeId=close_id,planScope='APPEND_ONLY',disposition=result['disposition'],
                 evidenceDigest=close_evidence_digest,reasonDigest=reason_digest,chunkId=chunk_id,
-                chunkDigest=chunk_digest,targetIdentityDigest=target_identity_digest,
-                prewriteStage=prewrite_stage,runRecordDigest=result['runRecordDigest'],
+                chunkDigest=chunk_digest,chunkIndex=result['chunkIndex'],
+                targetIdentityDigest=target_identity_digest,
+                prewriteStage=result['prewriteStage'],runRecordDigest=result['runRecordDigest'],
                 closedAt=result['closedAt'],actor=actor,idempotent=bool(result.get('idempotent')),
                 proofType=result['proofType'],writeAheadBytes=result['writeAheadBytes'],
                 checkpointMaxBytes=result['checkpointMaxBytes'],

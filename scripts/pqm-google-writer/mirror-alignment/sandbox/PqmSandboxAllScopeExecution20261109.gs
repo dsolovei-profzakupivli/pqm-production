@@ -2,8 +2,9 @@
 function pqmSandboxAllScopeExecution20261109(envelope) {
   var maxExecutionPayloadChars=8192;
   var maxReadOnlyPreflightPayloadChars=32768;
+  var maxPrewriteClosePayloadChars=32768;
   if (!envelope || typeof envelope.payload !== 'string' ||
-      envelope.payload.length > maxReadOnlyPreflightPayloadChars ||
+      envelope.payload.length > Math.max(maxReadOnlyPreflightPayloadChars,maxPrewriteClosePayloadChars) ||
       typeof envelope.signature !== 'string') throw new Error('PQM: invalid execution envelope');
   var properties = PropertiesService.getScriptProperties();
   var secret = properties.getProperty('PQM_EXECUTION_SHARED_SECRET');
@@ -14,8 +15,26 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   for (var n=0; n<signature.length; n++) different |= signature.charCodeAt(n) ^ (envelope.signature.charCodeAt(n) || 0);
   if (different) throw new Error('PQM: execution authorization rejected');
   var request = JSON.parse(envelope.payload), now = Math.floor(Date.now()/1000);
-  if (envelope.payload.length>maxExecutionPayloadChars && request.action!=='prewrite_close_preflight')
+  var largePrewriteCloseBinding=request.action==='close_prewrite_failure' &&
+    request.environment==='SANDBOX' && request.trigger==='manual' && request.planScope==='APPEND_ONLY' &&
+    /^[0-9a-f]{32}$/.test(request.requestId || '') && /^[0-9a-f]{32}$/.test(request.closeId || '') &&
+    pqmSandboxIsCanonicalDigest_(request.expectedDigest) &&
+    pqmSandboxIsCanonicalDigest_(request.closeEvidenceDigest) &&
+    pqmSandboxIsCanonicalDigest_(request.reasonDigest) &&
+    pqmSandboxIsCanonicalDigest_(request.targetIdentityDigest) &&
+    /^[0-9a-f]{32}$/.test(request.chunkId || '') &&
+    pqmSandboxIsCanonicalDigest_(request.chunkDigest) && request.planId===request.requestId &&
+    request.chunkIndex===0 && Array.isArray(request.targetIdentities) &&
+    request.targetIdentities.length>=1 && request.targetIdentities.length<=25 &&
+    (request.prewriteStage!=='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' ||
+      (request.requestId==='b11433e8efb84b4492bf2df7c7c25908' &&
+       Array.isArray(request.legacyManifestRows) && request.legacyManifestRows.length===25 &&
+       pqmSandboxIsCanonicalDigest_(request.legacyManifestProjectionDigest)));
+  if (envelope.payload.length>maxExecutionPayloadChars &&
+      request.action!=='prewrite_close_preflight' && !largePrewriteCloseBinding)
     throw new Error('PQM: oversized execution payload is restricted to read-only preflight');
+  if (largePrewriteCloseBinding && envelope.payload.length>maxPrewriteClosePayloadChars)
+    throw new Error('PQM: prewrite close payload exceeds its signed bound');
   var closeAction=request.action==='close_unknown_run';
   var prewriteCloseAction=request.action==='close_prewrite_failure';
   var prewriteCheckAction=request.action==='prewrite_close_preflight';
