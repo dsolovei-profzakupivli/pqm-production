@@ -7,6 +7,7 @@ require an independently attested SANDBOX-owned destination.
 from __future__ import annotations
 
 import datetime
+import base64
 from contextlib import closing
 from execution_digest import is_canonical_sha256_b64url
 from execution_apply_contract import checkpoint_apply_enabled
@@ -478,6 +479,86 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             re.fullmatch(r'[0-9a-f]{32}', payload.get('closeId')) and
             is_canonical_sha256_b64url(payload.get('closeEvidenceDigest')) and
             is_canonical_sha256_b64url(payload.get('reasonDigest')))
+        prewrite_preflight_fields = {'environment', 'scriptId', 'spreadsheetId', 'contract', 'action',
+            'requestId', 'actor', 'trigger', 'issuedAt', 'expiresAt', 'expectedDigest', 'planScope',
+            'chunkIndex', 'chunkId', 'chunkDigest', 'planId', 'prewriteStage',
+            'targetIdentityDigest', 'targetIdentities'}
+        legacy_prewrite_fields = {'legacyManifestRows', 'legacyManifestProjectionDigest'}
+        prewrite_stage = payload.get('prewriteStage')
+        prewrite_keys = set(payload)
+        prewrite_identity_digest = None
+        identity_pairs = []
+        try:
+            target_identities = payload.get('targetIdentities')
+            if not isinstance(target_identities, list) or not 1 <= len(target_identities) <= 25:
+                raise ValueError()
+            codes = set()
+            identity_pairs = []
+            for identity in target_identities:
+                if (not isinstance(identity, dict) or set(identity) != {'tab', 'code'} or
+                        identity.get('tab') not in {'ФОП', 'ЮО'} or
+                        not isinstance(identity.get('code'), str) or
+                        not re.fullmatch(r'\d{8,10}', identity['code']) or
+                        identity['code'] in codes):
+                    raise ValueError()
+                codes.add(identity['code'])
+                identity_pairs.append([identity['tab'], identity['code']])
+            identity_raw = json.dumps(identity_pairs, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+            prewrite_identity_digest = base64.urlsafe_b64encode(
+                hashlib.sha256(identity_raw).digest()).decode('ascii').rstrip('=')
+        except (ValueError, TypeError, KeyError):
+            target_identities = None
+        legacy_prewrite_valid = True
+        if prewrite_stage == 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1':
+            try:
+                rows = payload.get('legacyManifestRows')
+                projection = []
+                if (payload.get('requestId') != 'b11433e8efb84b4492bf2df7c7c25908' or
+                        not isinstance(rows, list) or len(rows) != 25):
+                    raise ValueError()
+                for item in rows:
+                    if (not isinstance(item, dict) or set(item) != {'tab', 'row', 'code', 'formulaA'} or
+                            item.get('tab') not in {'ФОП', 'ЮО'} or
+                            type(item.get('row')) is not int or item['row'] < 2 or
+                            not isinstance(item.get('code'), str) or
+                            not re.fullmatch(r'\d{8,10}', item['code']) or
+                            not isinstance(item.get('formulaA'), str) or not item['formulaA'].startswith('=')):
+                        raise ValueError()
+                    projection.append(item)
+                projection_raw = json.dumps(projection, ensure_ascii=False, sort_keys=True,
+                    separators=(',', ':')).encode('utf-8')
+                projection_digest = base64.urlsafe_b64encode(
+                    hashlib.sha256(projection_raw).digest()).decode('ascii').rstrip('=')
+                if (projection_digest != payload.get('legacyManifestProjectionDigest') or
+                        [[item['tab'], item['code']] for item in projection] != identity_pairs):
+                    raise ValueError()
+            except (ValueError, TypeError, KeyError):
+                legacy_prewrite_valid = False
+        elif prewrite_keys & legacy_prewrite_fields:
+            legacy_prewrite_valid = False
+        expected_prewrite_keys = (prewrite_preflight_fields | legacy_prewrite_fields
+            if prewrite_stage == 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' else prewrite_preflight_fields)
+        prewrite_preflight_shape = (all_scope_endpoint and action == 'prewrite_close_preflight' and
+            prewrite_keys == expected_prewrite_keys and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'APPEND_ONLY' and
+            payload.get('trigger') == 'manual' and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload['requestId']) and
+            isinstance(payload.get('actor'), str) and bool(payload['actor'].strip()) and
+            len(payload['actor']) <= 128 and
+            type(payload.get('issuedAt')) is int and type(payload.get('expiresAt')) is int and
+            payload['issuedAt'] < payload['expiresAt'] <= payload['issuedAt'] + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex'] == 0 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            isinstance(prewrite_stage, str) and re.fullmatch(r'[A-Za-z0-9_]{1,40}', prewrite_stage) and
+            is_canonical_sha256_b64url(payload.get('targetIdentityDigest')) and
+            payload.get('targetIdentityDigest') == prewrite_identity_digest and
+            target_identities is not None and legacy_prewrite_valid and
+            (prewrite_stage != 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' or
+             is_canonical_sha256_b64url(payload.get('legacyManifestProjectionDigest'))))
         legacy_shape = (function == 'pqmSandboxExecution' and
             action in ('preview', 'apply', 'reconcile_partial') and
             not (action == 'apply' and payload.get('planScope', 'ALL') == 'ALL'))
@@ -500,14 +581,15 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             is_canonical_sha256_b64url(payload.get('evidenceDigest'))
         )
         if (set(body) != {'function', 'devMode', 'parameters'} or
-                not (legacy_shape or all_scope_shape or close_unknown_shape) or body['devMode'] is not False or
+                not (legacy_shape or all_scope_shape or close_unknown_shape or prewrite_preflight_shape) or body['devMode'] is not False or
                 len(body['parameters']) != 1 or
                 set(envelope) != {'payload', 'signature'} or
                 not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or
                 payload['environment'] != environment or payload['scriptId'] != script_id or
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
-                action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run') or
+                action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run',
+                    'prewrite_close_preflight') or
                 (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
                 (checkpoint_apply_enabled(environment) and payload['action'] == 'apply' and

@@ -48,9 +48,17 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         result={k:message[k] for k in ('environment','scriptId','spreadsheetId','contract','requestId')}
         status={'preview':'PREVIEW','apply':'COMPLETE',
             'reconcile_partial':'RECONCILED_PARTIAL',
-            'close_unknown_run':'ADMIN_CLOSED_UNKNOWN'}[message['action']]
+            'close_unknown_run':'ADMIN_CLOSED_UNKNOWN',
+            'prewrite_close_preflight':'READY'}[message['action']]
         counts={'append':0,'update':0,'conflict':0,'error':0}
         result.update(status=status,digest=self.preview_digest,counts=counts)
+        if message['action']=='prewrite_close_preflight':
+            result.update(digest=message['expectedDigest'],planScope='APPEND_ONLY',chunkIndex=0,
+                chunkId=message['chunkId'],chunkDigest=message['chunkDigest'],
+                targetIdentityDigest=message['targetIdentityDigest'],prewriteStage=message['prewriteStage'],
+                targetCount=len(message['targetIdentities']),targetCodeMatches=0,runMarkerMatches=0,
+                writeAheadBytes=0,checkpointMaxBytes=8192,proofType='APPS_SCRIPT_LAST_ERROR',
+                runRecordDigest=self.append_only_digest,reasonCodes=[],readOnly=True)
         if message['action']=='preview':
             result['planDetails']={'version':1,'environment':'SANDBOX',
                 'plan_digest':self.preview_digest,'append_only_digest':self.append_only_digest,
@@ -90,6 +98,29 @@ class SandboxExecutionTransportTests(unittest.TestCase):
             expiresAt=int(NOW.timestamp())+300,expectedDigest=self.preview_digest,
             planScope='ALL',closeId='f'*32,closeEvidenceDigest=self.append_only_digest,
             reasonDigest=self.preview_digest)
+        payload.update(changes)
+        body['function']=function
+        envelope['payload']=json.dumps(payload,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(hmac.new(
+            self.client.shared_secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        return urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+            headers=request.headers,method='POST')
+
+    def prewrite_request(self, *, function='pqmSandboxAllScopeExecution20261109', **changes):
+        request=self.request()
+        body=json.loads(request.data)
+        envelope=body['parameters'][0]
+        payload=json.loads(envelope['payload'])
+        identities=[{'tab':'ФОП','code':'12345678'}]
+        identity_raw=json.dumps([['ФОП','12345678']],ensure_ascii=False,separators=(',',':')).encode('utf-8')
+        identity_digest=base64.urlsafe_b64encode(hashlib.sha256(identity_raw).digest()).decode().rstrip('=')
+        payload.update(action='prewrite_close_preflight',environment='SANDBOX',scriptId=self.script,
+            spreadsheetId=self.sheet,contract=execution.CONTRACT,requestId='d'*32,actor='sandbox-admin',
+            trigger='manual',issuedAt=int(NOW.timestamp()),expiresAt=int(NOW.timestamp())+300,
+            expectedDigest=self.preview_digest,planScope='APPEND_ONLY',chunkIndex=0,
+            chunkId='a'*32,chunkDigest=self.append_only_digest,planId='d'*32,
+            prewriteStage='append_prewrite_guard',targetIdentityDigest=identity_digest,
+            targetIdentities=identities)
         payload.update(changes)
         body['function']=function
         envelope['payload']=json.dumps(payload,separators=(',',':'))
@@ -268,6 +299,122 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.assertEqual(body['function'],'pqmSandboxAllScopeExecution20261109')
         message=json.loads(body['parameters'][0]['payload'])
         self.assertEqual(message['action'],'close_unknown_run')
+
+    def test_read_only_prewrite_preflight_is_allowed_with_exact_v20_contract(self):
+        identities=[{'tab':'ФОП','code':'12345678'}]
+        identity_raw=json.dumps([['ФОП','12345678']],ensure_ascii=False,separators=(',',':')).encode('utf-8')
+        identity_digest=base64.urlsafe_b64encode(hashlib.sha256(identity_raw).digest()).decode().rstrip('=')
+        result=self.client.invoke('prewrite_close_preflight','d'*32,'sandbox-admin',trigger='manual',
+            manual_authorized=True,digest=self.preview_digest,plan_scope='APPEND_ONLY',chunk_id='a'*32,
+            chunk_digest=self.append_only_digest,plan_id='d'*32,chunk_index=0,
+            prewrite_stage='append_prewrite_guard',target_identity_digest=identity_digest,
+            target_identities=identities)
+        self.assertEqual(result['status'],'READY')
+        self.assertTrue(result['read_only'])
+        self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
+        self.assertEqual(len(self.calls),1)
+        body=json.loads(self.calls[0].data)
+        payload=json.loads(body['parameters'][0]['payload'])
+        self.assertEqual(body['function'],'pqmSandboxAllScopeExecution20261109')
+        self.assertEqual(payload['action'],'prewrite_close_preflight')
+        self.assertEqual(payload['planScope'],'APPEND_ONLY')
+        self.assertNotIn('closeId',payload)
+        self.assertNotIn('closeEvidenceDigest',payload)
+        self.assertNotIn('reasonDigest',payload)
+
+    def test_read_only_prewrite_preflight_rejects_invalid_bindings_and_shape(self):
+        valid=self.prewrite_request()
+        self.assertEqual(self.validate(valid),'script.googleapis.com')
+        bad_cases=(
+            ('wrong_handler',{'function':'pqmSandboxExecution'}),
+            ('production_environment',{'environment':'PROD'}),
+            ('scheduled_trigger',{'trigger':'scheduled'}),
+            ('wrong_scope',{'planScope':'ALL'}),
+            ('malformed_request_id',{'requestId':'not-a-request-id'}),
+            ('malformed_preview_digest',{'expectedDigest':'bad'}),
+            ('wrong_chunk_index',{'chunkIndex':1}),
+            ('malformed_chunk_id',{'chunkId':'bad'}),
+            ('malformed_chunk_digest',{'chunkDigest':'bad'}),
+            ('wrong_plan_binding',{'planId':'e'*32}),
+            ('malformed_target_digest',{'targetIdentityDigest':'bad'}),
+            ('duplicate_target',{'targetIdentities':[{'tab':'ФОП','code':'12345678'},
+                {'tab':'ЮО','code':'12345678'}]}),
+            ('invalid_target_tab',{'targetIdentities':[{'tab':'PROD','code':'12345678'}]}),
+            ('invalid_target_code',{'targetIdentities':[{'tab':'ФОП','code':'abc'}]}),
+            ('unexpected_close_intent',{'closeId':'f'*32}),
+            ('unexpected_field',{'closeEvidenceDigest':self.preview_digest}),
+        )
+        for name,changes in bad_cases:
+            with self.subTest(name=name):
+                changed=self.prewrite_request(**changes)
+                with self.assertRaisesRegex(runtime.SandboxExecutionPreflightRejected,
+                        'Sandbox execution envelope is not approved'):
+                    self.validate(changed)
+        with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+            self.validate(valid,deployment_id='another-sandbox-deployment-123456789')
+        self.assertEqual(self.calls,[],'the pure egress validation does not perform network I/O')
+
+    def test_read_only_prewrite_preflight_accepts_only_bound_legacy_v1_proof(self):
+        request=self.prewrite_request()
+        body=json.loads(request.data)
+        envelope=body['parameters'][0]
+        payload=json.loads(envelope['payload'])
+        request_id='b11433e8efb84b4492bf2df7c7c25908'
+        identities=[{'tab':'ФОП' if index%2==0 else 'ЮО','code':str(10000000+index)}
+            for index in range(25)]
+        rows=[{'tab':item['tab'],'row':index+2,'code':item['code'],'formulaA':'=A1'}
+            for index,item in enumerate(identities)]
+        identity_raw=json.dumps([[item['tab'],item['code']] for item in identities],
+            ensure_ascii=False,separators=(',',':')).encode('utf-8')
+        projection_raw=json.dumps(rows,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+        payload.update(requestId=request_id,planId=request_id,prewriteStage='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1',
+            targetIdentities=identities,
+            targetIdentityDigest=base64.urlsafe_b64encode(hashlib.sha256(identity_raw).digest()).decode().rstrip('='),
+            legacyManifestRows=rows,
+            legacyManifestProjectionDigest=base64.urlsafe_b64encode(
+                hashlib.sha256(projection_raw).digest()).decode().rstrip('='))
+        envelope['payload']=json.dumps(payload,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(hmac.new(
+            self.client.shared_secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        request=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+            headers=request.headers,method='POST')
+        self.assertEqual(self.validate(request),'script.googleapis.com')
+
+        payload['requestId']='c'*32
+        payload['planId']='c'*32
+        envelope['payload']=json.dumps(payload,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(hmac.new(
+            self.client.shared_secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        wrong_request=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+            headers=request.headers,method='POST')
+        with self.assertRaisesRegex(runtime.SandboxExecutionPreflightRejected,
+                'Sandbox execution envelope is not approved'):
+            self.validate(wrong_request)
+        payload['requestId']=request_id
+        payload['planId']=request_id
+        payload['legacyManifestRows']=rows[:-1]
+        envelope['payload']=json.dumps(payload,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(hmac.new(
+            self.client.shared_secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        incomplete_proof=urllib.request.Request(request.full_url,data=json.dumps(body).encode(),
+            headers=request.headers,method='POST')
+        with self.assertRaisesRegex(runtime.SandboxExecutionPreflightRejected,
+                'Sandbox execution envelope is not approved'):
+            self.validate(incomplete_proof)
+        self.assertEqual(self.calls,[])
+
+    def test_prewrite_preflight_allowance_does_not_allow_close_apply_or_resume(self):
+        for action,extra in (
+                ('close_prewrite_failure',{'closeId':'f'*32,'closeEvidenceDigest':self.preview_digest,
+                    'reasonDigest':self.append_only_digest}),
+                ('apply',{}),
+                ('resume_check',{})):
+            with self.subTest(action=action):
+                request=self.prewrite_request(action=action,**extra)
+                with self.assertRaisesRegex(runtime.SandboxExecutionPreflightRejected,
+                        'Sandbox execution envelope is not approved'):
+                    self.validate(request)
+        self.assertEqual(self.calls,[])
 
     def test_local_egress_rejection_is_preflight_not_remote_outcome_unknown(self):
         with patch.object(runtime,'validate_execution_request',
