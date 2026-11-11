@@ -66,6 +66,21 @@ class MockPrewriteClose:
         return receipt
 
 
+class MockPrewriteReadOnly:
+    environment='SANDBOX'
+    def __init__(self, *, status='READY', reason_codes=(), fail=False):
+        self.status=status;self.reason_codes=list(reason_codes);self.fail=fail;self.calls=[]
+    def invoke(self, action, request_id, actor, **kwargs):
+        self.calls.append((action,request_id,actor,kwargs))
+        if self.fail: raise writer.ExecutionPreflightError('mock read-only source unavailable')
+        return {'status':self.status,'request_id_matches':True,'plan_binding':'PASS',
+            'chunk_binding':'PASS','manifest_binding':'PASS','write_ahead_bytes':8501,
+            'checkpoint_max_bytes':8000,'target_count':len(kwargs['target_identities']),
+            'target_code_matches':0 if not self.reason_codes else 1,
+            'run_marker_matches':0,'reason_codes':self.reason_codes,
+            'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+
+
 class PrewriteCloseTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(dir=Path(__file__).parent,prefix='prewrite-close-')
@@ -147,6 +162,58 @@ class PrewriteCloseTests(unittest.TestCase):
         allowed=writer.claim_run(self.path,'SANDBOX','c'*32,'another-admin','manual',
             manual_authorized=True,plan_scope='APPEND_ONLY')
         self.assertTrue(allowed['claimed'])
+
+    def test_read_only_preflight_ready_returns_only_safe_aggregates_and_creates_no_intent(self):
+        client=MockPrewriteReadOnly()
+        before=self.run_row()
+        result=writer.prewrite_close_preflight(self.path,client,self.request_id,self.actor)
+        self.assertEqual(result['status'],'READY')
+        self.assertEqual((result['write_ahead_bytes'],result['checkpoint_max_bytes']),(8501,8000))
+        self.assertEqual((result['target_count'],result['target_code_matches'],result['run_marker_matches']),(25,0,0))
+        self.assertTrue(result['read_only'])
+        self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
+        self.assertEqual(client.calls[0][0],'prewrite_close_preflight')
+        self.assertEqual(self.run_row(),before)
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_prewrite_closures').fetchone()[0],0)
+            self.assertEqual(con.execute('SELECT status FROM google_writer_chunk_journal WHERE run_id=?',
+                                         (self.request_id,)).fetchone()[0],'prepared')
+
+    def test_read_only_preflight_blocked_when_target_row_or_marker_is_found(self):
+        for reason in ('TARGET_CODES_PRESENT','RUN_MARKER_PRESENT'):
+            with self.subTest(reason=reason):
+                result=writer.prewrite_close_preflight(self.path,
+                    MockPrewriteReadOnly(status='BLOCKED',reason_codes=[reason]),self.request_id,self.actor)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertEqual(result['reason_codes'],[reason])
+                self.assertEqual(result['sqlite_writes'],0)
+                with closing(sqlite3.connect(self.path)) as con:
+                    self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_prewrite_closures').fetchone()[0],0)
+
+    def test_read_only_preflight_incomplete_remote_read_fails_closed(self):
+        result=writer.prewrite_close_preflight(self.path,
+            MockPrewriteReadOnly(fail=True),self.request_id,self.actor)
+        self.assertEqual(result['status'],'BLOCKED')
+        self.assertEqual(result['reason_codes'],['APPS_SCRIPT_CHECK_UNAVAILABLE'])
+        self.assertTrue(result['read_only'])
+        self.assertEqual(self.run_row()[0],'failed_safe')
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_prewrite_closures').fetchone()[0],0)
+
+    def test_state_change_after_ready_preflight_is_rechecked_before_close_intent(self):
+        result=writer.prewrite_close_preflight(self.path,MockPrewriteReadOnly(),self.request_id,self.actor)
+        self.assertEqual(result['status'],'READY')
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute("UPDATE google_writer_chunk_journal SET status='inflight' WHERE run_id=?",
+                        (self.request_id,))
+        client=MockPrewriteClose(self.request_id)
+        with self.assertRaisesRegex(RuntimeError,'First APPEND portion'):
+            writer.close_confirmed_prewrite_failure(self.path,client,self.request_id,
+                self.actor,self.close_id,self.reason)
+        self.assertEqual(client.calls,0)
+        self.assertEqual(self.run_row()[0],'failed_safe')
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_prewrite_closures').fetchone()[0],0)
 
     def test_receipt_cannot_finalize_if_failed_safe_evidence_changes_after_remote_read(self):
         script=MockPrewriteClose(self.request_id)
@@ -273,6 +340,21 @@ class PrewriteCloseTests(unittest.TestCase):
         self.assertIn("not permissions.get('admin.manage') or not permissions.get('google.writer.execute')",route)
         self.assertIn("payload.get('confirmed') is not True",route)
         self.assertLess(route.index("not permissions.get('admin.manage')"),route.index('google_writer_client()'))
+
+    def test_read_only_preflight_endpoint_is_sandbox_admin_only_and_does_not_prepare_close(self):
+        path='/api/admin/google-writer/prewrite-close-preflight'
+        self.assertEqual(auth_access.permission_key('POST',path),'google.writer.execute')
+        source=Path(__file__).with_name('server.py').read_text(encoding='utf-8')
+        start=source.index("if parsed.path == '/api/admin/google-writer/prewrite-close-preflight':")
+        end=source.index("if parsed.path == '/api/admin/google-writer/close-prewrite':",start)
+        route=source[start:end]
+        self.assertIn("not permissions.get('admin.manage') or not permissions.get('google.writer.execute')",route)
+        self.assertIn('prewrite_close_preflight(',route)
+        self.assertNotIn('prepare_admin_close_prewrite(',route)
+        self.assertNotIn('close_confirmed_prewrite_failure(',route)
+        auth_start=source.index('if (seen_now - float(session.get("last_seen_persisted") or 0) >= 60')
+        auth_guard=source[auth_start:source.index('session["last_seen_persisted"] = seen_now',auth_start)]
+        self.assertIn('self.command == "POST" and path == "/api/admin/google-writer/prewrite-close-preflight"',auth_guard)
 
     def test_apps_script_proof_path_is_read_only_for_sheets(self):
         path=Path(__file__).parent/'scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs'

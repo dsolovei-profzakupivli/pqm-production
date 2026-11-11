@@ -58,13 +58,15 @@ async function loadGoogleWriterJob(){
       const prewrite=row.status==='failed_safe'||row.status==='closed_prewrite';
       const prewriteClosed=row.status==='closed_prewrite';
       const closeAction=row.status==='outcome_unknown'&&data.can_close?`<button class="ghost google-writer-close" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>${row.close_state==='prepared'?'Повторити закриття з тим самим ID':'Закрити запуск без повторного запису'}</button>`:'';
+      const preflightAction=prewrite&&!prewriteClosed&&row.prewrite_close_eligible&&data.can_preflight_close_prewrite?
+        `<button class="ghost google-writer-preflight-close" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Перевірити можливість закриття</button>`:'';
       const prewriteAction=prewrite&&!prewriteClosed&&row.prewrite_close_eligible&&data.can_close_prewrite?
         `<button class="ghost google-writer-close-prewrite" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>${row.prewrite_close_state==='prepared'?'Повторити перевірку з тим самим ID':'Перевірити й закрити підтверджений збій до запису'}</button>`:'';
       const closeNote=closed?`<p class="muted">Адміністративно закрито ${esc(row.closed_at?displayDate(row.closed_at):'')} · результат запису невідомий${row.close_reason?` · причина: ${esc(row.close_reason)}`:''}</p>`:
         row.close_state==='prepared'?'<p class="google-writer-error">Закриття очікує підтвердження Apps Script; HOLD збережено. Повторюйте лише з тим самим close ID.</p>':
         prewriteClosed?`<p class="muted">Адміністративно закрито як підтверджений збій до запису · ${esc(row.prewrite_closed_at?displayDate(row.prewrite_closed_at):'')} · запис у Google Sheets не виконувався${row.prewrite_close_reason?` · причина: ${esc(row.prewrite_close_reason)}`:''}</p>`:
         row.prewrite_close_state==='prepared'?'<p class="google-writer-error">Перевірку очікує Apps Script; блокування збережено. Повторюйте лише з тим самим close ID.</p>':'';
-      return `<article class="google-writer-hold"><strong>${closed?'Адміністративно закритий запуск':prewriteClosed?'Закритий prewrite-збій':'Заблокований запуск'}</strong><dl><div><dt>Request ID</dt><dd>${esc(row.request_id)}</dd></div><div><dt>Статус</dt><dd>${esc(row.status)}</dd></div><div><dt>Scope</dt><dd>${esc(scope)}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div><div><dt>Діагностика</dt><dd>${esc(diagnosis)}</dd></div></dl>${closeNote}${closeAction}${prewriteAction}</article>`;
+      return `<article class="google-writer-hold"><strong>${closed?'Адміністративно закритий запуск':prewriteClosed?'Закритий prewrite-збій':'Заблокований запуск'}</strong><dl><div><dt>Request ID</dt><dd>${esc(row.request_id)}</dd></div><div><dt>Статус</dt><dd>${esc(row.status)}</dd></div><div><dt>Scope</dt><dd>${esc(scope)}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div><div><dt>Діагностика</dt><dd>${esc(diagnosis)}</dd></div></dl>${closeNote}${closeAction}${preflightAction}${prewriteAction}</article>`;
     }).join('');
     card.innerHTML=`<header><strong>PQM → Google Sheets</strong><span>${data.automation_blocked?(data.configured_enabled?'Розклад збережено · заблоковано':'Розклад вимкнено'):data.configured_enabled?'Розклад увімкнено':'Розклад вимкнено'}</span></header>
       <dl><div><dt>Розклад</dt><dd>${esc(data.schedule)} · Europe/Kyiv</dd></div><div><dt>Останній результат</dt><dd>${esc(data.last_status)} · ${esc(data.last_finished_at?displayDate(data.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(data.next_run?displayDate(data.next_run):'—')}</dd></div></dl>
@@ -78,6 +80,7 @@ async function loadGoogleWriterJob(){
       <details><summary>Журнал запусків</summary><ul>${data.runs.map(row=>`<li>${esc(displayDate(row.started_at))} · ${esc(row.trigger)} · ${esc(row.actor||'')} · ${esc(row.status)} · ${esc(JSON.stringify(row.result?.counts||{}))}${row.resume_available&&data.can_execute&&data.channel_ready?` <button class="ghost google-writer-resume" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Продовжити підтверджений APPEND_ONLY checkpoint</button>`:''}</li>`).join('')||'<li>Запусків ще не було</li>'}</ul></details>`;
     card.querySelectorAll('.google-writer-resume').forEach(button=>button.onclick=()=>resumeGoogleWriterAppendOnly(button.dataset.requestId));
     card.querySelectorAll('.google-writer-close').forEach(button=>button.onclick=()=>closeGoogleWriterUnknownRun(button.dataset.requestId));
+    card.querySelectorAll('.google-writer-preflight-close').forEach(button=>button.onclick=()=>preflightGoogleWriterPrewriteClose(button.dataset.requestId));
     card.querySelectorAll('.google-writer-close-prewrite').forEach(button=>button.onclick=()=>closeGoogleWriterPrewriteFailure(button.dataset.requestId));
     googleWriterSchedulePreview=null;
     if(data.can_manage){
@@ -91,6 +94,41 @@ async function loadGoogleWriterJob(){
     const message=document.getElementById('pqmGoogleWriterMessage');if(message)message.textContent='Статус Execution API недоступний; запуск заблоковано';
     return null;
   }
+}
+async function preflightGoogleWriterPrewriteClose(requestId){
+  if(googleWriterBusy||!googleWriterJobState?.can_preflight_close_prewrite)return;
+  const run=googleWriterJobState.runs.find(item=>item.request_id===requestId&&
+    item.status==='failed_safe'&&item.prewrite_close_eligible);
+  if(!run)return;
+  googleWriterBusy=true;
+  try{
+    const result=await request(`${API}/admin/google-writer/prewrite-close-preflight`,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId})});
+    if(result.read_only!==true||result.sqlite_writes!==0||result.sheets_writes!==0||result.properties_writes!==0||
+       !['READY','BLOCKED'].includes(result.status))
+      throw new Error('Read-only результат не підтверджений; блокування збережено');
+    if(result.status==='READY'&&(!result.request_id_matches||result.plan_binding!=='PASS'||
+       result.chunk_binding!=='PASS'||result.manifest_binding!=='PASS'||result.target_code_matches!==0||
+       result.run_marker_matches!==0))
+      throw new Error('Доказові bindings неповні; блокування збережено');
+    const labels={LOCAL_EVIDENCE_UNAVAILABLE:'локальні SQLite-докази недоступні',
+      CLOSE_ALREADY_EXISTS:'для запуску вже є intent закриття',APPS_SCRIPT_TOMBSTONE_EXISTS:'Apps Script уже має tombstone',
+      LEGACY_CLOSE_EXISTS:'існує попередній close marker',UNCERTAINTY_MARKER_MISMATCH:'uncertainty marker не збігається',
+      RUN_RECORD_INVALID:'Apps Script run record відсутній або некоректний',RUN_NOT_UNTOUCHED:'run record не доводить стан до запису',
+      PREWRITE_STAGE_UNVERIFIED:'prewrite stage не підтверджено',MANIFEST_NOT_OVERSIZED:'manifest не перевищує межу checkpoint',
+      SHEET_BOUNDS_UNAVAILABLE:'межі аркушів не підтверджені',SHEET_READ_INCOMPLETE:'читання аркушів неповне',
+      TARGET_CODES_PRESENT:'знайдено цільові коди',RUN_MARKER_PRESENT:'знайдено маркер запуску',
+      APPS_SCRIPT_CHECK_UNAVAILABLE:'Apps Script read-only перевірка недоступна',
+      APPS_SCRIPT_EVIDENCE_REJECTED:'Apps Script не підтвердив доказ',LOCAL_OR_REMOTE_EVIDENCE_UNAVAILABLE:'докази недоступні',
+      SANDBOX_ONLY:'доступно лише в Sandbox',PERMISSION_REQUIRED:'бракує адміністративних прав'};
+    if(result.status==='READY'){
+      toast(`READY · write-ahead ${Number(result.write_ahead_bytes).toLocaleString('uk-UA')} / ${Number(result.checkpoint_max_bytes).toLocaleString('uk-UA')} байт · цільових кодів ${result.target_code_matches} · маркерів ${result.run_marker_matches}. Це лише перевірка; під час закриття все буде перевірено повторно.`, 'success');
+    }else{
+      const reasons=(result.reason_codes||[]).map(code=>labels[code]||'доказ не підтверджено');
+      toast(`BLOCKED · ${reasons.join('; ')||'доказів недостатньо'}. HOLD збережено.`, 'error');
+    }
+  }catch(error){toast(`BLOCKED · read-only перевірка не завершена: ${error.message}. HOLD збережено.`, 'error');}
+  finally{googleWriterBusy=false;}
 }
 async function closeGoogleWriterUnknownRun(requestId){
   if(googleWriterBusy||!googleWriterJobState?.can_close)return;

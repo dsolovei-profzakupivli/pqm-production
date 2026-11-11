@@ -1011,7 +1011,7 @@ class ExecutionClient:
         if background_jobs.disabled() and not manual_override:
             raise ExecutionConfigurationError('Background jobs disabled')
         self.validate()
-        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'recover_apply_chunk', 'reconcile_partial', 'close_unknown_run','close_prewrite_failure'} or trigger not in {'manual', 'scheduled'}:
+        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'recover_apply_chunk', 'reconcile_partial', 'close_unknown_run','close_prewrite_failure','prewrite_close_preflight'} or trigger not in {'manual', 'scheduled'}:
             raise ValueError('Unsupported execution action')
         if not re.fullmatch(r'[0-9a-f]{32}', request_id) or not actor or len(actor) > 128:
             raise ValueError('Invalid execution identity')
@@ -1056,12 +1056,12 @@ class ExecutionClient:
                     (chunk_index > 0 and not is_canonical_sha256_b64url(expected_checkpoint_digest))):
                 raise ValueError('Apply checkpoint receipt binding is required')
         chunk_binding=(chunk_id,chunk_digest,plan_id)
-        if action in {'apply','recover_append_chunk','recover_apply_chunk','close_prewrite_failure'} and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
+        if action in {'apply','recover_append_chunk','recover_apply_chunk','close_prewrite_failure','prewrite_close_preflight'} and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
             if (not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
                     not is_canonical_sha256_b64url(chunk_digest) or
                     not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or ''))):
                 raise ValueError('Durable Apply chunk binding is invalid')
-            legacy_append=(action in {'recover_append_chunk','close_prewrite_failure'} or (action=='apply' and plan_scope=='APPEND_ONLY'))
+            legacy_append=(action in {'recover_append_chunk','close_prewrite_failure','prewrite_close_preflight'} or (action=='apply' and plan_scope=='APPEND_ONLY'))
             if (legacy_append and (plan_scope!='APPEND_ONLY' or chunk_phase not in {None,'append'})) or (
                     not legacy_append and (chunk_phase not in {'append','update'} or
                         not is_canonical_sha256_b64url(chunk_details_digest) or
@@ -1093,12 +1093,13 @@ class ExecutionClient:
                     not is_canonical_sha256_b64url(close_evidence_digest) or
                     not is_canonical_sha256_b64url(reason_digest)):
                 raise ValueError('Administrative close identity or evidence rejected')
-        if action=='close_prewrite_failure':
+        if action in {'close_prewrite_failure','prewrite_close_preflight'}:
             if (self.environment!='SANDBOX' or trigger!='manual' or manual_override is not True or
-                    plan_scope!='APPEND_ONLY' or not re.fullmatch(r'[0-9a-f]{32}',str(close_id or '')) or
+                    plan_scope!='APPEND_ONLY' or
+                    (action=='close_prewrite_failure' and not re.fullmatch(r'[0-9a-f]{32}',str(close_id or ''))) or
                     not is_canonical_sha256_b64url(digest) or
-                    not is_canonical_sha256_b64url(close_evidence_digest) or
-                    not is_canonical_sha256_b64url(reason_digest) or
+                    (action=='close_prewrite_failure' and (not is_canonical_sha256_b64url(close_evidence_digest) or
+                     not is_canonical_sha256_b64url(reason_digest))) or
                     not is_canonical_sha256_b64url(target_identity_digest) or
                     prewrite_stage not in _PREWRITE_CLOSE_STAGES and prewrite_stage not in {
                         _PREWRITE_CLOSE_STAGE_SENTINEL,_LEGACY_PREWRITE_LIMIT_STAGE} or chunk_index!=0 or
@@ -1149,7 +1150,7 @@ class ExecutionClient:
             if request_id in historical_profile_ids:
                 raise ValueError('Historical reconciliation request cannot use the new ALL-scope endpoint')
             api_function='pqmSandboxAllScopeExecution20261109'
-        elif action in {'close_unknown_run','recover_append_chunk','close_prewrite_failure'}:
+        elif action in {'close_unknown_run','recover_append_chunk','close_prewrite_failure','prewrite_close_preflight'}:
             # The additive dispatcher checks the immutable closure tombstone
             # before delegating APPEND_ONLY recovery to the pinned legacy code.
             api_function='pqmSandboxAllScopeExecution20261109'
@@ -1166,7 +1167,7 @@ class ExecutionClient:
         if action == 'close_unknown_run':
             message.update(closeId=close_id,closeEvidenceDigest=close_evidence_digest,
                            reasonDigest=reason_digest,planScope=plan_scope)
-        if action=='close_prewrite_failure':
+        if action in {'close_prewrite_failure','prewrite_close_preflight'}:
             message.update(closeId=close_id,closeEvidenceDigest=close_evidence_digest,
                 reasonDigest=reason_digest,planScope='APPEND_ONLY',chunkIndex=0,
                 prewriteStage=prewrite_stage,targetIdentityDigest=target_identity_digest,
@@ -1174,6 +1175,8 @@ class ExecutionClient:
             if prewrite_stage==_LEGACY_PREWRITE_LIMIT_STAGE:
                 message.update(legacyManifestRows=legacy_manifest_rows,
                     legacyManifestProjectionDigest=legacy_manifest_projection_digest)
+            if action=='prewrite_close_preflight':
+                message.pop('closeId',None);message.pop('closeEvidenceDigest',None);message.pop('reasonDigest',None)
         if chunk_id is not None:
             message.update(chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
             if chunk_phase is not None: message['chunkPhase']=chunk_phase
@@ -1208,35 +1211,35 @@ class ExecutionClient:
             raise ExecutionPreflightError('Execution transport preflight rejected; Apps Script was not called') from None
         except urllib.error.HTTPError as exc:
             status_code=exc.code if type(exc.code) is int and 100<=exc.code<=599 else None
-            if action=='resume_check':
+            if action in {'resume_check','prewrite_close_preflight'}:
                 raise ExecutionPreflightError('Read-only checkpoint preflight unavailable') from None
             family='http_5xx' if status_code and status_code>=500 else 'http_4xx' if status_code and status_code>=400 else 'http_error'
             safe={'stage':'execution_api_response','category':family,'exception_type':'HTTPError'}
             if status_code:safe['http_status']=status_code
             raise ExecutionOutcomeUnknown('Execution API response was incomplete; recovery required',safe_error=safe) from None
         except urllib.error.URLError as exc:
-            if action=='resume_check':
+            if action in {'resume_check','prewrite_close_preflight'}:
                 raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
             reason=getattr(exc,'reason',None)
             category='transport_timeout' if isinstance(reason,TimeoutError) else 'transport_error'
             raise ExecutionOutcomeUnknown('Execution transport result was unknown; recovery required',
                 safe_error={'stage':'execution_api_transport','category':category,'exception_type':'URLError'}) from None
         except TimeoutError:
-            if action=='resume_check':
+            if action in {'resume_check','prewrite_close_preflight'}:
                 raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
             raise ExecutionOutcomeUnknown('Execution transport timed out; recovery required',
                 safe_error={'stage':'execution_api_transport','category':'transport_timeout','exception_type':'TimeoutError'}) from None
         except OSError:
-            if action=='resume_check':
+            if action in {'resume_check','prewrite_close_preflight'}:
                 raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
             raise ExecutionOutcomeUnknown('Execution transport failed; no automatic retry; recovery required',
                 safe_error={'stage':'execution_api_transport','category':'transport_error','exception_type':'OSError'}) from None
         except Exception:
-            if action == 'resume_check':
+            if action in {'resume_check','prewrite_close_preflight'}:
                 raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
             raise ExecutionOutcomeUnknown('Execution outcome unknown; no automatic retry') from None
         if data.get('done') is not True or 'error' in data:
-            if action == 'resume_check':
+            if action in {'resume_check','prewrite_close_preflight'}:
                 raise ExecutionPreflightError('Read-only checkpoint preflight rejected; no write was requested')
             safe_error=None
             raw_error=data.get('error') if isinstance(data.get('error'),dict) else {}
@@ -1260,9 +1263,39 @@ class ExecutionClient:
         if (not isinstance(result, dict) or result.get('environment') != self.environment or
                 result.get('scriptId') != script or result.get('spreadsheetId') != sheet or
                 result.get('contract') != CONTRACT or result.get('requestId') != request_id):
-            if action == 'resume_check':
+            if action in {'resume_check','prewrite_close_preflight'}:
                 raise ExecutionPreflightError('Read-only checkpoint identity rejected; no write was requested')
             raise ExecutionOutcomeUnknown('Execution response identity mismatch; reconciliation required')
+        if action=='prewrite_close_preflight':
+            reason_codes=result.get('reasonCodes',[])
+            if (result.get('status') not in {'READY','BLOCKED'} or result.get('digest')!=digest or
+                    result.get('planScope')!='APPEND_ONLY' or result.get('chunkIndex')!=0 or
+                    result.get('chunkId')!=chunk_id or result.get('chunkDigest')!=chunk_digest or
+                    result.get('targetIdentityDigest')!=target_identity_digest or
+                    result.get('prewriteStage')!=prewrite_stage or
+                    result.get('targetCount')!=len(target_identities or []) or
+                    type(result.get('targetCodeMatches')) is not int or result['targetCodeMatches']<0 or
+                    type(result.get('runMarkerMatches')) is not int or result['runMarkerMatches']<0 or
+                    type(result.get('writeAheadBytes')) is not int or result['writeAheadBytes']<0 or
+                    type(result.get('checkpointMaxBytes')) is not int or result['checkpointMaxBytes']<0 or
+                    not isinstance(reason_codes,list) or any(code not in _PREWRITE_PREFLIGHT_REASON_CODES for code in reason_codes) or
+                    (result.get('status')=='READY' and (reason_codes or result['targetCodeMatches']!=0 or
+                     result['runMarkerMatches']!=0 or not is_canonical_sha256_b64url(result.get('runRecordDigest'))))):
+                raise ExecutionPreflightError('Apps Script read-only prewrite evidence was incomplete')
+            if prewrite_stage==_LEGACY_PREWRITE_LIMIT_STAGE and result.get('status')=='READY' and (
+                    result.get('proofType')!='LEGACY_V1_WRITEAHEAD_OVERSIZE' or
+                    result['writeAheadBytes']<=_LEGACY_PREWRITE_LIMIT_BYTES or
+                    result['checkpointMaxBytes']!=_LEGACY_PREWRITE_LIMIT_BYTES or
+                    result.get('legacyManifestProjectionDigest')!=legacy_manifest_projection_digest):
+                raise ExecutionPreflightError('Historical write-ahead size proof was incomplete')
+            if result.get('status')=='READY' and result.get('proofType')!='APPS_SCRIPT_LAST_ERROR' and prewrite_stage!=_LEGACY_PREWRITE_LIMIT_STAGE:
+                raise ExecutionPreflightError('Apps Script prewrite reason is not verified')
+            return {'status':result['status'],'request_id_matches':True,'plan_binding':'PASS',
+                'chunk_binding':'PASS','manifest_binding':'PASS','write_ahead_bytes':result['writeAheadBytes'],
+                'checkpoint_max_bytes':result['checkpointMaxBytes'],'target_count':result['targetCount'],
+                'target_code_matches':result['targetCodeMatches'],'run_marker_matches':result['runMarkerMatches'],
+                'reason_codes':reason_codes,'read_only':True,'sqlite_writes':0,'sheets_writes':0,
+                'properties_writes':0}
         if action == 'preview' and not is_canonical_sha256_b64url(result.get('digest')):
             raise ExecutionOutcomeUnknown('Invalid Preview receipt')
         plan_details = None
@@ -1611,6 +1644,11 @@ _CLOSE_RECEIPT_FIELDS = ('environment','scriptId','spreadsheetId','contract','re
 
 _PREWRITE_CLOSE_STAGES = frozenset({'source_and_sheet_guard','chunk_selection','append_prewrite_guard',
     'append_request_build','append_inflight_save'})
+_PREWRITE_PREFLIGHT_REASON_CODES = frozenset({'LOCAL_EVIDENCE_UNAVAILABLE','CLOSE_ALREADY_EXISTS',
+    'APPS_SCRIPT_TOMBSTONE_EXISTS','LEGACY_CLOSE_EXISTS','UNCERTAINTY_MARKER_MISMATCH',
+    'RUN_RECORD_INVALID','RUN_NOT_UNTOUCHED','PREWRITE_STAGE_UNVERIFIED','MANIFEST_NOT_OVERSIZED',
+    'SHEET_BOUNDS_UNAVAILABLE','SHEET_READ_INCOMPLETE','TARGET_CODES_PRESENT','RUN_MARKER_PRESENT',
+    'APPS_SCRIPT_CHECK_UNAVAILABLE','APPS_SCRIPT_EVIDENCE_REJECTED'})
 _PREWRITE_CLOSE_STAGE_SENTINEL = 'APPS_SCRIPT_PREWRITE_GUARD_V1'
 _LEGACY_PREWRITE_LIMIT_REQUEST_ID = 'b11433e8efb84b4492bf2df7c7c25908'
 _LEGACY_PREWRITE_LIMIT_STAGE = 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1'
@@ -2635,7 +2673,7 @@ def close_unknown_run(path, client, request_id, actor, close_id, reason):
         raise AdminCloseFinalizationUnknown('Apps Script close was acknowledged; SQLite hold remains until the same close ID is finalized') from None
 
 
-def _prewrite_close_material(con, request_id, actor, close_id, reason):
+def _prewrite_close_material(con, request_id, actor, close_id, reason, *, read_only=False):
     """Validate the immutable prewrite evidence and return only its bounded identity projection."""
     run=con.execute('''SELECT environment,trigger,actor,started_at,finished_at,status,result_json
                        FROM google_writer_runs WHERE request_id=?''',(request_id,)).fetchone()
@@ -2750,18 +2788,23 @@ def _prewrite_close_material(con, request_id, actor, close_id, reason):
             legacy_manifest_rows.append({'tab':tab,'row':row_number,'code':code,'formulaA':formula_a})
     legacy_projection_digest=(_sha256_b64(_canonical_json(legacy_manifest_rows).encode('utf-8'))
         if stage==_LEGACY_PREWRITE_LIMIT_STAGE else None)
+    if (request_id==_LEGACY_PREWRITE_LIMIT_REQUEST_ID and stage==_LEGACY_PREWRITE_LIMIT_STAGE and
+            len(identities)!=APPEND_JOURNAL_PAGE_ROWS):
+        raise RuntimeError('Historical prewrite proof requires the complete first 25-row APPEND portion')
     identities_raw=_canonical_json([[item['tab'],item['code']] for item in identities]).encode('utf-8')
     identity_digest=_sha256_b64(identities_raw)
-    reason_digest=_sha256_b64(reason.strip().encode('utf-8'))
+    reason_digest=None if read_only else _sha256_b64(reason.strip().encode('utf-8'))
     original_result_digest=_sha256_b64(run[6].encode('utf-8'))
-    evidence={'environment':'SANDBOX','request_id':request_id,'close_id':close_id,'actor':actor,
-        'reason_digest':reason_digest,'original_status':'failed_safe','original_started_at':run[3],
+    evidence={'environment':'SANDBOX','request_id':request_id,'actor':actor,
+        'original_status':'failed_safe','original_started_at':run[3],
         'original_result_digest':original_result_digest,'plan_scope':'APPEND_ONLY','plan_digest':plan_digest,
         'details_digest':details_digest,'chunk_id':chunk_id,'chunk_digest':chunk_digest,'chunk_index':0,
         'prewrite_stage':stage,'target_identity_digest':identity_digest,'target_count':len(identities),
         'legacy_manifest_projection_digest':legacy_projection_digest}
-    evidence_digest=_sha256_b64(_canonical_json(evidence).encode('utf-8'))
-    return {'request_id':request_id,'actor':actor,'reason':reason.strip(),'reason_digest':reason_digest,
+    if not read_only:
+        evidence.update(close_id=close_id,reason_digest=reason_digest)
+    evidence_digest=None if read_only else _sha256_b64(_canonical_json(evidence).encode('utf-8'))
+    return {'request_id':request_id,'actor':actor,'reason':None if read_only else reason.strip(),'reason_digest':reason_digest,
         'plan_scope':'APPEND_ONLY','plan_digest':plan_digest,'details_digest':details_digest,
         'chunk_id':chunk_id,'chunk_digest':chunk_digest,'chunk_index':0,'chunk_status':chunk_state,
         'prewrite_stage':stage,'target_identity_digest':identity_digest,'target_count':len(identities),
@@ -2770,6 +2813,50 @@ def _prewrite_close_material(con, request_id, actor, close_id, reason):
         'target_identities':identities,'original_status':'failed_safe',
         'original_result_digest':original_result_digest,'original_started_at':run[3],
         'evidence_digest':evidence_digest}
+
+
+def prewrite_close_preflight(path, client, request_id, actor):
+    """Read-only readiness check; never prepares an intent or releases the HOLD."""
+    blocked=lambda *codes: {'status':'BLOCKED','reason_codes':list(codes) or ['LOCAL_EVIDENCE_UNAVAILABLE'],
+        'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+    if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
+            not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or
+            not isinstance(actor,str) or not actor.strip() or len(actor)>128):
+        return blocked('LOCAL_EVIDENCE_UNAVAILABLE')
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    try:
+        with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+            con.execute('PRAGMA query_only=ON')
+            con.execute('BEGIN')
+            intent=con.execute('SELECT 1 FROM google_writer_prewrite_closures WHERE request_id=? LIMIT 1',
+                                (request_id,)).fetchone()
+            if intent:
+                return blocked('CLOSE_ALREADY_EXISTS')
+            material=_prewrite_close_material(con,request_id,actor,None,None,read_only=True)
+    except (OSError,sqlite3.Error,ValueError,PermissionError,RuntimeError):
+        return blocked('LOCAL_EVIDENCE_UNAVAILABLE')
+    try:
+        result=client.invoke('prewrite_close_preflight',request_id,actor,trigger='manual',
+            digest=material['plan_digest'],plan_scope='APPEND_ONLY',manual_authorized=True,
+            chunk_id=material['chunk_id'],chunk_digest=material['chunk_digest'],plan_id=request_id,
+            chunk_index=0,prewrite_stage=material['prewrite_stage'],
+            target_identity_digest=material['target_identity_digest'],target_identities=material['target_identities'],
+            legacy_manifest_rows=material.get('legacy_manifest_rows'),
+            legacy_manifest_projection_digest=material.get('legacy_manifest_projection_digest'))
+    except (ExecutionPreflightError,ExecutionConfigurationError):
+        return blocked('APPS_SCRIPT_CHECK_UNAVAILABLE')
+    except (ValueError,PermissionError,RuntimeError,sqlite3.Error):
+        return blocked('APPS_SCRIPT_EVIDENCE_REJECTED')
+    if not isinstance(result,dict) or result.get('read_only') is not True:
+        return blocked('APPS_SCRIPT_EVIDENCE_REJECTED')
+    if result.get('status')=='BLOCKED':
+        return result
+    if (result.get('status')!='READY' or result.get('request_id_matches') is not True or
+            result.get('plan_binding')!='PASS' or result.get('chunk_binding')!='PASS' or
+            result.get('manifest_binding')!='PASS' or result.get('target_code_matches')!=0 or
+            result.get('run_marker_matches')!=0):
+        return blocked('APPS_SCRIPT_EVIDENCE_REJECTED')
+    return result
 
 
 def prepare_admin_close_prewrite(path, environment, close_id, request_id, actor, reason, *, now=None):

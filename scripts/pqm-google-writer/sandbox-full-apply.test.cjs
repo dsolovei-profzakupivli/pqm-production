@@ -1838,7 +1838,8 @@ test('read-only Apply state view reports safe stage metadata without mutating Sc
   assert.deepEqual([...props.entries()],before);
 });
 
-function prewriteCloseFixture({existingIdentity=false,recordOverrides={},id='a'.repeat(32)}={}) {
+function prewriteCloseFixture({existingIdentity=false,existingRunMarker=false,incompleteRead=false,
+  recordOverrides={},id='a'.repeat(32)}={}) {
   const code='0000000001',props=new Map([
     ['PQM_EXECUTION_UNCERTAIN',id],['PQM_EXECUTION_RUN_'+id,JSON.stringify({
       state:'ready',planScope:'APPEND_ONLY',chunkJournalVersion:1,digest:'D'.repeat(43),
@@ -1847,7 +1848,7 @@ function prewriteCloseFixture({existingIdentity=false,recordOverrides={},id='a'.
       lastError:{stage:'append_inflight_save',category:'prewrite_rejected',exceptionType:'Error'},
       ...recordOverrides})]
   ]);
-  let writes=0,reads=0;
+  let writes=0,reads=0,propertyWrites=0,identityPresent=existingIdentity;
   const context={Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
     PQM_MIRROR_ENV:{environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox'},
     PQM_GOOGLE_TABS:['ФОП','ЮО'],
@@ -1857,24 +1858,98 @@ function prewriteCloseFixture({existingIdentity=false,recordOverrides={},id='a'.
       base64DecodeWebSafe:value=>[...Buffer.from(value,'base64url')],
       newBlob:value=>({getBytes:()=>[...Buffer.from(value,'utf8')]})},
     PropertiesService:{getScriptProperties:()=>({getProperty:key=>props.get(key)??null,
-      setProperty:(key,value)=>props.set(key,value),deleteProperty:key=>props.delete(key)})},
+      setProperty:(key,value)=>{propertyWrites++;props.set(key,value);},
+      deleteProperty:key=>{propertyWrites++;props.delete(key);}})},
     Sheets:{Spreadsheets:{get:()=>({sheets:['ФОП','ЮО'].map((title,index)=>({properties:{title,sheetId:index+1,
         gridProperties:{rowCount:2,columnCount:19}}}))}),
-      Values:{batchGet:(_id,{ranges})=>{reads++;return {valueRanges:ranges.map(range=>({values:
-        existingIdentity&&range.includes('!B')?[[code]]:[]}))};},
+      Values:{batchGet:(_id,{ranges})=>{reads++;if(incompleteRead)return {valueRanges:[]};
+        return {valueRanges:ranges.map(range=>({values:
+          identityPresent&&range.includes('!B')?[[code]]:
+          existingRunMarker&&range.includes('!S')?[[id]]:[]}))};},
         batchUpdate:()=>{writes++;throw new Error('close path must not write Sheets');}}}},
     SpreadsheetApp:{},ScriptApp:{},LockService:{},PQM_EXECUTION_CONTEXT_:null};
   vm.createContext(context);vm.runInContext(executionSource,context);
   context.PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES=8000;
   const identities=[{tab:'ФОП',code}],identityDigest=crypto.createHash('sha256')
     .update(JSON.stringify([['ФОП',code]]),'utf8').digest('base64url');
-  const request={requestId:id,closeId:'b'.repeat(32),scriptId:'script-sandbox',
+  const request={action:'close_prewrite_failure',requestId:id,closeId:'b'.repeat(32),scriptId:'script-sandbox',
     spreadsheetId:'sheet-sandbox',contract:'pqm-mirror-datetime-v1',actor:'sandbox-admin',
     expectedDigest:'D'.repeat(43),closeEvidenceDigest:'E'.repeat(43),reasonDigest:'R'.repeat(43),
     chunkId:'c'.repeat(32),chunkDigest:'H'.repeat(43),planId:id,chunkIndex:0,
     targetIdentityDigest:identityDigest,prewriteStage:'APPS_SCRIPT_PREWRITE_GUARD_V1',targetIdentities:identities};
-  return {context,props,id,request,get reads(){return reads;},get writes(){return writes;}};
+  return {context,props,id,request,get reads(){return reads;},get writes(){return writes;},
+    get propertyWrites(){return propertyWrites;},setExistingIdentity(value){identityPresent=!!value;}};
 }
+
+test('read-only prewrite preflight proves the same oversized checkpoint and full zero-match scans without writes', () => {
+  const id='b11433e8efb84b4492bf2df7c7c25908';
+  const f=prewriteCloseFixture({id,recordOverrides:{lastError:undefined}});
+  const codes=Array.from({length:25},(_,i)=>String(i+1).padStart(10,'0'));
+  const formulas=codes.map((code,i)=>({tab:i<21?'ФОП':'ЮО',row:i+2,code,formulaA:'='+('x'.repeat(170))}));
+  f.request.action='prewrite_close_preflight';delete f.request.closeId;
+  delete f.request.closeEvidenceDigest;delete f.request.reasonDigest;
+  f.request.targetIdentities=formulas.map(({tab,code})=>({tab,code}));
+  f.request.targetIdentityDigest=crypto.createHash('sha256')
+    .update(JSON.stringify(formulas.map(item=>[item.tab,item.code])),'utf8').digest('base64url');
+  f.request.prewriteStage='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1';
+  f.request.legacyManifestRows=formulas;
+  f.request.legacyManifestProjectionDigest=crypto.createHash('sha256').update(JSON.stringify(formulas.map(item=>({
+    code:item.code,formulaA:item.formulaA,row:item.row,tab:item.tab}))), 'utf8').digest('base64url');
+  const propsBefore=[...f.props.entries()];
+  const result=f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),f.request);
+  assert.equal(result.status,'READY');assert.equal(result.readOnly,true);
+  assert.ok(result.writeAheadBytes>8000);assert.equal(result.checkpointMaxBytes,8000);
+  assert.equal(result.targetCount,25);assert.equal(result.targetCodeMatches,0);assert.equal(result.runMarkerMatches,0);
+  assert.equal(result.planScope,'APPEND_ONLY');assert.equal(result.chunkIndex,0);
+  assert.equal(f.writes,0);assert.equal(f.propertyWrites,0);assert.ok(f.reads>0);
+  assert.deepEqual([...f.props.entries()],propsBefore);
+});
+
+test('read-only prewrite preflight returns BLOCKED for target rows, markers, and incomplete reads without writes', () => {
+  for(const [options,code] of [
+    [{existingIdentity:true},'TARGET_CODES_PRESENT'],
+    [{existingRunMarker:true},'RUN_MARKER_PRESENT'],
+    [{incompleteRead:true},'SHEET_READ_INCOMPLETE']
+  ]){
+    const f=prewriteCloseFixture(options);f.request.action='prewrite_close_preflight';
+    delete f.request.closeId;delete f.request.closeEvidenceDigest;delete f.request.reasonDigest;
+    const propsBefore=[...f.props.entries()];
+    const result=f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+      f.context.PropertiesService.getScriptProperties(),f.request);
+    assert.equal(result.status,'BLOCKED');assert.deepEqual(Array.from(result.reasonCodes),[code]);
+    assert.equal(result.readOnly,true);assert.equal(f.writes,0);assert.equal(f.propertyWrites,0);
+    assert.deepEqual([...f.props.entries()],propsBefore);
+  }
+});
+
+test('a READY preflight is not authorization: changed Sheets evidence blocks close and retains HOLD', () => {
+  const id='b11433e8efb84b4492bf2df7c7c25908';
+  const f=prewriteCloseFixture({id,recordOverrides:{lastError:undefined}});
+  const codes=Array.from({length:25},(_,i)=>String(i+1).padStart(10,'0'));
+  const formulas=codes.map((code,i)=>({tab:i<21?'ФОП':'ЮО',row:i+2,code,formulaA:'='+('x'.repeat(170))}));
+  f.request.action='prewrite_close_preflight';delete f.request.closeId;
+  delete f.request.closeEvidenceDigest;delete f.request.reasonDigest;
+  f.request.targetIdentities=formulas.map(({tab,code})=>({tab,code}));
+  f.request.targetIdentityDigest=crypto.createHash('sha256')
+    .update(JSON.stringify(formulas.map(item=>[item.tab,item.code])),'utf8').digest('base64url');
+  f.request.prewriteStage='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1';
+  f.request.legacyManifestRows=formulas;
+  f.request.legacyManifestProjectionDigest=crypto.createHash('sha256').update(JSON.stringify(formulas.map(item=>({
+    code:item.code,formulaA:item.formulaA,row:item.row,tab:item.tab}))), 'utf8').digest('base64url');
+  const preflight=f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),f.request);
+  assert.equal(preflight.status,'READY');assert.equal(f.propertyWrites,0);assert.equal(f.writes,0);
+  f.setExistingIdentity(true);
+  f.request.action='close_prewrite_failure';f.request.closeId='b'.repeat(32);
+  f.request.closeEvidenceDigest='E'.repeat(43);f.request.reasonDigest='R'.repeat(43);
+  const before=[...f.props.entries()];
+  assert.throws(()=>f.context.pqmSandboxClosePrewriteFailure20261109_('sheet-sandbox',
+    f.context.PropertiesService.getScriptProperties(),f.request),/planned APPEND identity exists/);
+  assert.equal(f.propertyWrites,0);assert.equal(f.writes,0);
+  assert.deepEqual([...f.props.entries()],before);
+  assert.equal(f.props.get('PQM_EXECUTION_UNCERTAIN'),id);
+});
 
 test('prewrite closure requires the Apps Script ready-stage proof and zero target identities, then writes only its tombstone', () => {
   const f=prewriteCloseFixture();

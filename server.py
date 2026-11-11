@@ -11070,7 +11070,10 @@ class Handler(BaseHTTPRequestHandler):
                 seen_now = time.time(); session["last_seen"] = seen_now
                 if (seen_now - float(session.get("last_seen_persisted") or 0) >= 60
                         and not (self.command == "GET" and (path == "/api/operational-tasks/nazk-preview"
-                             or re.fullmatch(r"/api/chats/\d+/messages",path)))):
+                             or re.fullmatch(r"/api/chats/\d+/messages",path)))
+                        # This POST is semantically read-only and must not persist
+                        # auth last-seen metadata as a side effect of the evidence check.
+                        and not (self.command == "POST" and path == "/api/admin/google-writer/prewrite-close-preflight")):
                     session["last_seen_persisted"] = seen_now
                     try:
                         with db() as con:
@@ -11886,7 +11889,8 @@ class Handler(BaseHTTPRequestHandler):
             data.update(can_execute=bool(permissions.get('google.writer.execute')),
                         can_manage=bool(permissions.get('admin.manage')),
                         can_close=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')),
-                        can_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')))
+                        can_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')),
+                        can_preflight_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')))
             if not permissions.get('admin.manage'):
                 for run in data.get('runs',[]):
                     run.pop('close_reason',None);run.pop('closed_by',None)
@@ -12529,6 +12533,25 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError,PermissionError,RuntimeError,sqlite3.Error) as exc:
                 return self.send_json({'error':str(exc),'sqlite_hold_retained':True,
                     'sheets_write_performed':False},409)
+        if parsed.path == '/api/admin/google-writer/prewrite-close-preflight':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'BLOCKED','reason_codes':['SANDBOX_ONLY'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'BLOCKED','reason_codes':['PERMISSION_REQUIRED'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'request_id'}:
+                    raise ValueError('Only the saved run identity is accepted')
+                result=google_writer_execution.prewrite_close_preflight(
+                    DB_PATH,google_writer_client(),payload['request_id'],self.auth_user)
+                return self.send_json(result)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'BLOCKED','reason_codes':['LOCAL_OR_REMOTE_EVIDENCE_UNAVAILABLE'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0})
         if parsed.path == '/api/admin/google-writer/close-prewrite':
             permissions=getattr(self,'auth_access',{}).get('permissions',{})
             if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':

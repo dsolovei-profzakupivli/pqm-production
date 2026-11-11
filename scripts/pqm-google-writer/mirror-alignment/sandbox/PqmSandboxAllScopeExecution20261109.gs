@@ -13,13 +13,15 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   var request = JSON.parse(envelope.payload), now = Math.floor(Date.now()/1000);
   var closeAction=request.action==='close_unknown_run';
   var prewriteCloseAction=request.action==='close_prewrite_failure';
+  var prewriteCheckAction=request.action==='prewrite_close_preflight';
+  var prewriteEvidenceAction=prewriteCloseAction||prewriteCheckAction;
   var appendRecovery=request.action==='recover_append_chunk';
   if (request.environment!=='SANDBOX' ||
       (closeAction ? ['ALL','APPEND_ONLY'].indexOf(request.planScope)<0 :
-        (prewriteCloseAction ? request.planScope!=='APPEND_ONLY' :
+        (prewriteEvidenceAction ? request.planScope!=='APPEND_ONLY' :
         (appendRecovery ? request.planScope!=='APPEND_ONLY' : request.planScope!=='ALL'))) ||
       request.trigger!=='manual' ||
-      ['apply','recover_apply_chunk','recover_append_chunk','close_unknown_run','close_prewrite_failure'].indexOf(request.action)<0 ||
+      ['apply','recover_apply_chunk','recover_append_chunk','close_unknown_run','close_prewrite_failure','prewrite_close_preflight'].indexOf(request.action)<0 ||
       request.requestId==='592128d9837d4b71bbeb330ef8aabf4b')
     throw new Error('PQM: additive ALL-scope endpoint rejects this action or scope');
   if (closeAction && (!/^[0-9a-f]{32}$/.test(request.closeId || '') ||
@@ -27,24 +29,25 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
       !pqmSandboxIsCanonicalDigest_(request.closeEvidenceDigest) ||
       !pqmSandboxIsCanonicalDigest_(request.reasonDigest)))
     throw new Error('PQM: administrative close binding rejected');
-  if (prewriteCloseAction && (!/^[0-9a-f]{32}$/.test(request.closeId || '') ||
-      !pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
-      !pqmSandboxIsCanonicalDigest_(request.closeEvidenceDigest) ||
-      !pqmSandboxIsCanonicalDigest_(request.reasonDigest) ||
+  if (prewriteEvidenceAction && (!pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
       !pqmSandboxIsCanonicalDigest_(request.targetIdentityDigest) ||
       !pqmSandboxIsCanonicalDigest_(request.chunkDigest) ||
       !/^[0-9a-f]{32}$/.test(request.chunkId || '') || request.planId!==request.requestId ||
       request.chunkIndex!==0 || !/^[A-Za-z0-9_]{1,40}$/.test(request.prewriteStage || '') ||
       !Array.isArray(request.targetIdentities) || request.targetIdentities.length<1 ||
       request.targetIdentities.length>25))
-    throw new Error('PQM: prewrite close binding rejected');
-  if (prewriteCloseAction && request.prewriteStage==='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' &&
+    throw new Error('PQM: prewrite evidence binding rejected');
+  if (prewriteCloseAction && (!/^[0-9a-f]{32}$/.test(request.closeId || '') ||
+      !pqmSandboxIsCanonicalDigest_(request.closeEvidenceDigest) ||
+      !pqmSandboxIsCanonicalDigest_(request.reasonDigest)))
+    throw new Error('PQM: prewrite close authorization binding rejected');
+  if (prewriteEvidenceAction && request.prewriteStage==='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' &&
       (request.requestId!=='b11433e8efb84b4492bf2df7c7c25908' ||
        !pqmSandboxIsCanonicalDigest_(request.legacyManifestProjectionDigest) ||
        !Array.isArray(request.legacyManifestRows) || request.legacyManifestRows.length<1 ||
        request.legacyManifestRows.length>25))
     throw new Error('PQM: historical v1 manifest proof is not allowed');
-  if (prewriteCloseAction && request.prewriteStage!=='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' &&
+  if (prewriteEvidenceAction && request.prewriteStage!=='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' &&
       (request.legacyManifestRows!==undefined || request.legacyManifestProjectionDigest!==undefined))
     throw new Error('PQM: unexpected legacy manifest proof fields');
   if (appendRecovery && (!pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
@@ -63,7 +66,7 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   if (request.environment !== PQM_MIRROR_ENV.environment || request.scriptId !== PQM_MIRROR_ENV.scriptId ||
       ScriptApp.getScriptId() !== PQM_MIRROR_ENV.scriptId || request.spreadsheetId !== PQM_MIRROR_ENV.spreadsheetId ||
       request.contract !== 'pqm-mirror-datetime-v1' ||
-      ['preview','apply','resume_check','recover_append_chunk','recover_apply_chunk','reconcile_partial','close_unknown_run','close_prewrite_failure'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
+      ['preview','apply','resume_check','recover_append_chunk','recover_apply_chunk','reconcile_partial','close_unknown_run','close_prewrite_failure','prewrite_close_preflight'].indexOf(request.action)<0 || ['manual','scheduled'].indexOf(request.trigger)<0 ||
       (request.action==='reconcile_partial' && request.trigger!=='manual') ||
       !/^[0-9a-f]{32}$/.test(request.requestId || '') ||
       typeof request.actor !== 'string' || !request.actor || request.actor.length>128 ||
@@ -117,6 +120,14 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
         !/^[A-Za-z0-9_]{1,40}$/.test(request.prewriteStage || '') ||
         !Array.isArray(request.targetIdentities) || request.targetIdentities.length<1 ||
         request.targetIdentities.length>25)) ||
+      (request.action==='prewrite_close_preflight' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
+        request.planScope!=='APPEND_ONLY' || !pqmSandboxIsCanonicalDigest_(request.expectedDigest) ||
+        !pqmSandboxIsCanonicalDigest_(request.targetIdentityDigest) || !/^[0-9a-f]{32}$/.test(request.chunkId || '') ||
+        !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || request.planId!==request.requestId || request.chunkIndex!==0 ||
+        !/^[A-Za-z0-9_]{1,40}$/.test(request.prewriteStage || '') ||
+        !Array.isArray(request.targetIdentities) || request.targetIdentities.length<1 ||
+        request.targetIdentities.length>25 || request.closeId!==undefined ||
+        request.closeEvidenceDigest!==undefined || request.reasonDigest!==undefined)) ||
       (request.action==='resume_check' && (request.environment!=='SANDBOX' || request.trigger!=='manual' ||
         !pqmSandboxIsCanonicalDigest_(request.expectedDigest) || !pqmSandboxIsCanonicalDigest_(request.expectedCheckpointDigest) ||
         !Number.isInteger(request.chunkIndex) || request.chunkIndex<1 || request.chunkIndex>499 ||
@@ -127,7 +138,7 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   if (!lock.tryLock(0)) throw new Error('PQM: another writer is running; zero writes');
   try {
     if (closeAction) return pqmSandboxCloseUnknownRun20261109_(properties,request);
-    if (prewriteCloseAction) return pqmSandboxClosePrewriteFailure20261109_(id,properties,request);
+    if (prewriteEvidenceAction) return pqmSandboxClosePrewriteFailure20261109_(id,properties,request);
     var closeTombstone=properties.getProperty('PQM_EXECUTION_CLOSED_'+request.requestId);
     var prewriteTombstone=properties.getProperty('PQM_EXECUTION_PREWRITE_CLOSED_'+request.requestId);
     if ((closeTombstone || prewriteTombstone) && request.action!=='preview')
@@ -354,6 +365,7 @@ function pqmSandboxCloseUnknownRun20261109_(properties,request) {
 
 /* Close only a positively identified APPEND_ONLY prewrite rejection; this never issues a Sheets write. */
 function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
+  var readOnlyCheck=request.action==='prewrite_close_preflight';
   var closeKey='PQM_EXECUTION_PREWRITE_CLOSED_'+request.requestId;
   var legacyCloseKey='PQM_EXECUTION_CLOSED_'+request.requestId;
   var runKey='PQM_EXECUTION_RUN_'+request.requestId;
@@ -384,6 +396,17 @@ function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
     value.idempotent=!!idempotent;
     return value;
   }
+  function preflightResult(status,reasonCodes,extra) {
+    return Object.assign({environment:request.environment,scriptId:request.scriptId,
+      spreadsheetId:request.spreadsheetId,contract:request.contract,requestId:request.requestId,
+      status:status,digest:request.expectedDigest,planScope:'APPEND_ONLY',chunkIndex:0,
+      chunkId:request.chunkId,chunkDigest:request.chunkDigest,
+      targetIdentityDigest:request.targetIdentityDigest,prewriteStage:request.prewriteStage,
+      targetCount:identities.length,targetCodeMatches:0,runMarkerMatches:0,
+      writeAheadBytes:0,checkpointMaxBytes:PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES,
+      proofType:'APPS_SCRIPT_LAST_ERROR',runRecordDigest:'',legacyManifestProjectionDigest:'',
+      reasonCodes:reasonCodes||[],readOnly:true},extra||{});
+  }
   if (properties.getProperty(legacyCloseKey)!==null)
     throw new Error('PQM: another administrative close already owns this run');
   var identities=request.targetIdentities.map(function(item) {
@@ -401,7 +424,11 @@ function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
   if (digest(JSON.stringify(identities))!==request.targetIdentityDigest)
     throw new Error('PQM: prewrite target identity digest mismatch');
   var marker=properties.getProperty('PQM_EXECUTION_UNCERTAIN');
-  var saved=properties.getProperty(closeKey),event=null;
+  var saved=readOnlyCheck?null:properties.getProperty(closeKey),event=null;
+  if (readOnlyCheck && properties.getProperty(closeKey)!==null)
+    return preflightResult('BLOCKED',['APPS_SCRIPT_TOMBSTONE_EXISTS']);
+  if (readOnlyCheck && properties.getProperty(legacyCloseKey)!==null)
+    return preflightResult('BLOCKED',['LEGACY_CLOSE_EXISTS']);
   if (saved!==null) {
     try { event=JSON.parse(saved); } catch (_) { throw new Error('PQM: prewrite close tombstone invalid'); }
     if (!event || event.version!==1 || event.requestId!==request.requestId ||
@@ -421,14 +448,26 @@ function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
           'writeAheadBytes','checkpointMaxBytes','legacyManifestProjectionDigest']
           .map(function(key){return String(event[key]);}).join('\n')))
       throw new Error('PQM: prewrite close retry binding rejected');
-    if (marker && marker!==request.requestId) throw new Error('PQM: another uncertain run remains active');
+    if (marker && marker!==request.requestId) {
+      if (readOnlyCheck) return preflightResult('BLOCKED',['UNCERTAINTY_MARKER_MISMATCH']);
+      throw new Error('PQM: another uncertain run remains active');
+    }
     if (marker===request.requestId) properties.deleteProperty('PQM_EXECUTION_UNCERTAIN');
     return receiptFrom(event,true);
   }
-  if (marker!==request.requestId) throw new Error('PQM: uncertain marker no longer matches the requested run');
+  if (marker!==request.requestId) {
+    if (readOnlyCheck) return preflightResult('BLOCKED',['UNCERTAINTY_MARKER_MISMATCH']);
+    throw new Error('PQM: uncertain marker no longer matches the requested run');
+  }
   var raw=properties.getProperty(runKey),record=null;
-  if (typeof raw!=='string' || !raw) throw new Error('PQM: prewrite Apps Script run record missing');
-  try { record=JSON.parse(raw); } catch (_) { throw new Error('PQM: prewrite Apps Script run record invalid'); }
+  if (typeof raw!=='string' || !raw) {
+    if (readOnlyCheck) return preflightResult('BLOCKED',['RUN_RECORD_INVALID']);
+    throw new Error('PQM: prewrite Apps Script run record missing');
+  }
+  try { record=JSON.parse(raw); } catch (_) {
+    if (readOnlyCheck) return preflightResult('BLOCKED',['RUN_RECORD_INVALID']);
+    throw new Error('PQM: prewrite Apps Script run record invalid');
+  }
   var aggregate=record && record.aggregate, lastError=record && record.lastError;
   if (!record || record.state!=='ready' || record.planScope!=='APPEND_ONLY' ||
       record.chunkJournalVersion!==1 || record.digest!==request.expectedDigest ||
@@ -437,7 +476,11 @@ function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
       (record.uncertainChunk!==null && record.uncertainChunk!==undefined) ||
       !Array.isArray(record.steps) || record.steps.length!==0 || !aggregate ||
       aggregate.append!==0 || aggregate.update!==0 || aggregate.batches!==0 || record.result!==null)
-    throw new Error('PQM: Apps Script record does not prove an untouched prewrite failure');
+    {
+      if (readOnlyCheck) return preflightResult('BLOCKED',['RUN_NOT_UNTOUCHED'],
+        {runRecordDigest:digest(raw)});
+      throw new Error('PQM: Apps Script record does not prove an untouched prewrite failure');
+    }
   var proofType='APPS_SCRIPT_LAST_ERROR',proofStage=null,writeAheadBytes=0,checkpointMaxBytes=0;
   var legacyProjectionDigest='';
   if (legacyLimitProof) {
@@ -460,7 +503,11 @@ function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
       throw new Error('PQM: legacy manifest projection digest mismatch');
     legacyProjectionDigest=request.legacyManifestProjectionDigest;
     if (lastError!==null && lastError!==undefined)
-      throw new Error('PQM: legacy v1 proof cannot override a saved Apps Script error stage');
+      {
+        if (readOnlyCheck) return preflightResult('BLOCKED',['PREWRITE_STAGE_UNVERIFIED'],
+          {runRecordDigest:digest(raw)});
+        throw new Error('PQM: legacy v1 proof cannot override a saved Apps Script error stage');
+      }
     var manifestRows=projection.map(function(item) {
       return {tab:item.tab,row:item.row,code:item.code,cellsDigest:'A'.repeat(43),formulaA:item.formulaA,
         serviceMetadata:{addedAt:'2000-01-01T00:00:00+00:00',planId:request.planId,runId:request.requestId}};
@@ -476,14 +523,23 @@ function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
     probe.lastStage='append_inflight_save';
     writeAheadBytes=Utilities.newBlob(JSON.stringify(probe),'application/json').getBytes().length;
     checkpointMaxBytes=PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES;
-    if (writeAheadBytes<=checkpointMaxBytes)
+    if (writeAheadBytes<=checkpointMaxBytes) {
+      if (readOnlyCheck) return preflightResult('BLOCKED',['MANIFEST_NOT_OVERSIZED'],
+        {writeAheadBytes:writeAheadBytes,checkpointMaxBytes:checkpointMaxBytes,
+         proofType:'LEGACY_V1_WRITEAHEAD_OVERSIZE',runRecordDigest:digest(raw),
+         legacyManifestProjectionDigest:legacyProjectionDigest});
       throw new Error('PQM: reconstructed legacy v1 write-ahead record fits the old bound');
+    }
     proofType='LEGACY_V1_WRITEAHEAD_OVERSIZE';
     proofStage='append_inflight_save';
   } else {
     if (!lastError || lastError.category!=='prewrite_rejected' || allowedStages.indexOf(lastError.stage)<0 ||
         (request.prewriteStage!=='APPS_SCRIPT_PREWRITE_GUARD_V1' && lastError.stage!==request.prewriteStage))
-      throw new Error('PQM: Apps Script record does not prove an untouched prewrite failure');
+      {
+        if (readOnlyCheck) return preflightResult('BLOCKED',['PREWRITE_STAGE_UNVERIFIED'],
+          {runRecordDigest:digest(raw)});
+        throw new Error('PQM: Apps Script record does not prove an untouched prewrite failure');
+      }
     proofStage=lastError.stage;
   }
   var runRecordDigest=digest(raw);
@@ -500,27 +556,62 @@ function pqmSandboxClosePrewriteFailure20261109_(id,properties,request) {
   PQM_GOOGLE_TABS.forEach(function(name) {
     if (!tabs[name] || !Number.isInteger(tabs[name].maxRows) || tabs[name].maxRows<2 ||
         !Number.isInteger(tabs[name].maxColumns) || tabs[name].maxColumns<19)
-      throw new Error('PQM: prewrite sheet identity scan bounds unavailable');
+      {
+        if (readOnlyCheck) return;
+        throw new Error('PQM: prewrite sheet identity scan bounds unavailable');
+      }
   });
+  if (readOnlyCheck && PQM_GOOGLE_TABS.some(function(name) {
+      var tab=tabs[name]; return !tab || !Number.isInteger(tab.maxRows) || tab.maxRows<2 ||
+        !Number.isInteger(tab.maxColumns) || tab.maxColumns<19;
+  })) return preflightResult('BLOCKED',['SHEET_BOUNDS_UNAVAILABLE'],{runRecordDigest:runRecordDigest});
   var selected=identities.map(function(item){return {cells:{1:item[1]}};});
-  var counts=pqmSandboxAppendCodeCounts_(id,tabs,selected);
+  var counts;
+  try { counts=pqmSandboxAppendCodeCounts_(id,tabs,selected); }
+  catch (scanError) {
+    if (readOnlyCheck) return preflightResult('BLOCKED',['SHEET_READ_INCOMPLETE'],
+      {runRecordDigest:runRecordDigest,writeAheadBytes:writeAheadBytes,checkpointMaxBytes:checkpointMaxBytes,
+       proofType:proofType,legacyManifestProjectionDigest:legacyProjectionDigest});
+    throw scanError;
+  }
+  var targetCodeMatches=0;
   counts.forEach(function(count) {
-    if (count!==0) throw new Error('PQM: planned APPEND identity exists; prewrite closure refused');
+    targetCodeMatches+=count;
+    if (count!==0 && !readOnlyCheck) throw new Error('PQM: planned APPEND identity exists; prewrite closure refused');
   });
+  var runMarkerMatches=0,markerScanIncomplete=false;
   PQM_GOOGLE_TABS.forEach(function(name) {
     var tab=tabs[name],esc="'"+name.replace(/'/g,"''")+"'";
     for (var first=2;first<=tab.maxRows;first+=PQM_SANDBOX_APPEND_CODE_SCAN_ROWS) {
       var last=Math.min(tab.maxRows,first+PQM_SANDBOX_APPEND_CODE_SCAN_ROWS-1);
       var response=Sheets.Spreadsheets.Values.batchGet(id,{ranges:[esc+'!S'+first+':S'+last],
         valueRenderOption:'UNFORMATTED_VALUE'});
-      if (!response || !Array.isArray(response.valueRanges) || response.valueRanges.length!==1)
+      if (!response || !Array.isArray(response.valueRanges) || response.valueRanges.length!==1) {
+        if (readOnlyCheck) { markerScanIncomplete=true; return; }
         throw new Error('PQM: prewrite run-marker scan incomplete');
+      }
       (response.valueRanges[0].values||[]).forEach(function(row) {
-        if (String((row||[])[0]||'')===request.requestId)
-          throw new Error('PQM: run marker exists; prewrite closure refused');
+        if (String((row||[])[0]||'')===request.requestId) {
+          runMarkerMatches++;
+          if (!readOnlyCheck) throw new Error('PQM: run marker exists; prewrite closure refused');
+        }
       });
     }
   });
+  if (readOnlyCheck) {
+    if (markerScanIncomplete) return preflightResult('BLOCKED',['SHEET_READ_INCOMPLETE'],
+      {runRecordDigest:runRecordDigest,targetCodeMatches:targetCodeMatches,
+       writeAheadBytes:writeAheadBytes,checkpointMaxBytes:checkpointMaxBytes,proofType:proofType,
+       legacyManifestProjectionDigest:legacyProjectionDigest});
+    var reasons=[];
+    if (targetCodeMatches) reasons.push('TARGET_CODES_PRESENT');
+    if (runMarkerMatches) reasons.push('RUN_MARKER_PRESENT');
+    var ready=reasons.length===0;
+    return preflightResult(ready?'READY':'BLOCKED',reasons,{runRecordDigest:runRecordDigest,
+      targetCodeMatches:targetCodeMatches,runMarkerMatches:runMarkerMatches,
+      writeAheadBytes:writeAheadBytes,checkpointMaxBytes:checkpointMaxBytes,proofType:proofType,
+      prewriteStage:proofStage,legacyManifestProjectionDigest:legacyProjectionDigest});
+  }
   event={version:1,environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
     contract:request.contract,requestId:request.requestId,status:'ADMIN_CLOSED_PREWRITE_NO_WRITE',
     closeId:request.closeId,planScope:'APPEND_ONLY',disposition:'PREWRITE_FAILURE_CONFIRMED_NO_SHEET_WRITE',
