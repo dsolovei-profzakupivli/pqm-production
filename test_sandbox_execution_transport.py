@@ -53,12 +53,16 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         counts={'append':0,'update':0,'conflict':0,'error':0}
         result.update(status=status,digest=self.preview_digest,counts=counts)
         if message['action']=='prewrite_close_preflight':
-            result.update(digest=message['expectedDigest'],planScope='APPEND_ONLY',chunkIndex=0,
+            legacy=message.get('prewriteStage')=='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1'
+            result.update(status='BLOCKED' if legacy else status,
+                digest=message['expectedDigest'],planScope='APPEND_ONLY',chunkIndex=0,
                 chunkId=message['chunkId'],chunkDigest=message['chunkDigest'],
                 targetIdentityDigest=message['targetIdentityDigest'],prewriteStage=message['prewriteStage'],
                 targetCount=len(message['targetIdentities']),targetCodeMatches=0,runMarkerMatches=0,
-                writeAheadBytes=0,checkpointMaxBytes=8192,proofType='APPS_SCRIPT_LAST_ERROR',
-                runRecordDigest=self.append_only_digest,reasonCodes=[],readOnly=True)
+                writeAheadBytes=9000 if legacy else 0,checkpointMaxBytes=8000,
+                proofType='LEGACY_V1_WRITEAHEAD_OVERSIZE' if legacy else 'APPS_SCRIPT_LAST_ERROR',
+                runRecordDigest=self.append_only_digest,
+                reasonCodes=['MANIFEST_NOT_OVERSIZED'] if legacy else [],readOnly=True)
         if message['action']=='preview':
             result['planDetails']={'version':1,'environment':'SANDBOX',
                 'plan_digest':self.preview_digest,'append_only_digest':self.append_only_digest,
@@ -321,6 +325,34 @@ class SandboxExecutionTransportTests(unittest.TestCase):
         self.assertNotIn('closeId',payload)
         self.assertNotIn('closeEvidenceDigest',payload)
         self.assertNotIn('reasonDigest',payload)
+
+    def test_legacy_25_row_preflight_payload_length_uses_utf16_units_and_exceeds_old_cap(self):
+        request_id='b11433e8efb84b4492bf2df7c7c25908'
+        rows=[{'tab':'ФОП' if i<21 else 'ЮО','row':i+2,'code':str(i+1).zfill(10),
+            'formulaA':'='+('x'*220)} for i in range(25)]
+        identities=[{'tab':item['tab'],'code':item['code']} for item in rows]
+        identity_raw=json.dumps([[item['tab'],item['code']] for item in rows],
+            ensure_ascii=False,separators=(',',':')).encode('utf-8')
+        identity_digest=base64.urlsafe_b64encode(hashlib.sha256(identity_raw).digest()).decode().rstrip('=')
+        projection=[{'code':item['code'],'formulaA':item['formulaA'],'row':item['row'],'tab':item['tab']}
+            for item in rows]
+        projection_raw=json.dumps(projection,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+        projection_digest=base64.urlsafe_b64encode(hashlib.sha256(projection_raw).digest()).decode().rstrip('=')
+        result=self.client.invoke('prewrite_close_preflight',request_id,'sandbox-admin',trigger='manual',
+            manual_authorized=True,digest=self.preview_digest,plan_scope='APPEND_ONLY',chunk_id='b'*32,
+            chunk_digest=self.append_only_digest,plan_id=request_id,chunk_index=0,
+            prewrite_stage='LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1',target_identity_digest=identity_digest,
+            target_identities=identities,legacy_manifest_rows=rows,
+            legacy_manifest_projection_digest=projection_digest)
+        self.assertEqual(result['status'],'BLOCKED')
+        self.assertTrue(result['read_only'])
+        body=json.loads(self.calls[-1].data)
+        raw_payload=body['parameters'][0]['payload']
+        payload_utf16_units=len(raw_payload.encode('utf-16-le'))//2
+        self.assertEqual(payload_utf16_units, len(raw_payload))
+        self.assertEqual(payload_utf16_units, 8649)
+        self.assertGreater(payload_utf16_units,8192)
+        self.assertLessEqual(payload_utf16_units,32768)
 
     def test_read_only_prewrite_preflight_rejects_invalid_bindings_and_shape(self):
         valid=self.prewrite_request()

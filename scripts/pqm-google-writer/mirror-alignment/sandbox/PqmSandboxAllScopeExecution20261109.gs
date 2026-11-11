@@ -1,6 +1,9 @@
 /* Additive Sandbox ALL-scope Execution API entrypoint. The pinned legacy dispatcher remains unchanged. */
 function pqmSandboxAllScopeExecution20261109(envelope) {
-  if (!envelope || typeof envelope.payload !== 'string' || envelope.payload.length > 8192 ||
+  var maxExecutionPayloadChars=8192;
+  var maxReadOnlyPreflightPayloadChars=32768;
+  if (!envelope || typeof envelope.payload !== 'string' ||
+      envelope.payload.length > maxReadOnlyPreflightPayloadChars ||
       typeof envelope.signature !== 'string') throw new Error('PQM: invalid execution envelope');
   var properties = PropertiesService.getScriptProperties();
   var secret = properties.getProperty('PQM_EXECUTION_SHARED_SECRET');
@@ -11,6 +14,8 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   for (var n=0; n<signature.length; n++) different |= signature.charCodeAt(n) ^ (envelope.signature.charCodeAt(n) || 0);
   if (different) throw new Error('PQM: execution authorization rejected');
   var request = JSON.parse(envelope.payload), now = Math.floor(Date.now()/1000);
+  if (envelope.payload.length>maxExecutionPayloadChars && request.action!=='prewrite_close_preflight')
+    throw new Error('PQM: oversized execution payload is restricted to read-only preflight');
   var closeAction=request.action==='close_unknown_run';
   var prewriteCloseAction=request.action==='close_prewrite_failure';
   var prewriteCheckAction=request.action==='prewrite_close_preflight';
@@ -138,7 +143,7 @@ function pqmSandboxAllScopeExecution20261109(envelope) {
   if (!lock.tryLock(0)) throw new Error('PQM: another writer is running; zero writes');
   try {
     if (closeAction) return pqmSandboxCloseUnknownRun20261109_(properties,request);
-    if (prewriteEvidenceAction) return pqmSandboxClosePrewriteFailure20261109_(id,properties,request);
+    if (prewriteEvidenceAction) return pqmSandboxClosePrewriteFailure20261109_(request.spreadsheetId,properties,request);
     var closeTombstone=properties.getProperty('PQM_EXECUTION_CLOSED_'+request.requestId);
     var prewriteTombstone=properties.getProperty('PQM_EXECUTION_PREWRITE_CLOSED_'+request.requestId);
     if ((closeTombstone || prewriteTombstone) && request.action!=='preview')

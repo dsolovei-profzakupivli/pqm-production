@@ -1841,6 +1841,7 @@ test('read-only Apply state view reports safe stage metadata without mutating Sc
 function prewriteCloseFixture({existingIdentity=false,existingRunMarker=false,incompleteRead=false,
   recordOverrides={},id='a'.repeat(32)}={}) {
   const code='0000000001',props=new Map([
+    ['PQM_EXECUTION_SHARED_SECRET','S'.repeat(40)],
     ['PQM_EXECUTION_UNCERTAIN',id],['PQM_EXECUTION_RUN_'+id,JSON.stringify({
       state:'ready',planScope:'APPEND_ONLY',chunkJournalVersion:1,digest:'D'.repeat(43),
       nextChunk:0,inflight:null,inflightManifest:null,uncertainChunk:null,steps:[],
@@ -1854,6 +1855,7 @@ function prewriteCloseFixture({existingIdentity=false,existingRunMarker=false,in
     PQM_GOOGLE_TABS:['ФОП','ЮО'],
     Utilities:{Charset:{UTF_8:'UTF_8'},DigestAlgorithm:{SHA_256:'SHA_256'},
       computeDigest:(_algorithm,value)=>crypto.createHash('sha256').update(value,'utf8').digest(),
+      computeHmacSha256Signature:(value,secret)=>crypto.createHmac('sha256',secret).update(value,'utf8').digest(),
       base64EncodeWebSafe:value=>Buffer.from(value).toString('base64url'),
       base64DecodeWebSafe:value=>[...Buffer.from(value,'base64url')],
       newBlob:value=>({getBytes:()=>[...Buffer.from(value,'utf8')]})},
@@ -1868,6 +1870,8 @@ function prewriteCloseFixture({existingIdentity=false,existingRunMarker=false,in
           existingRunMarker&&range.includes('!S')?[[id]]:[]}))};},
         batchUpdate:()=>{writes++;throw new Error('close path must not write Sheets');}}}},
     SpreadsheetApp:{},ScriptApp:{},LockService:{},PQM_EXECUTION_CONTEXT_:null};
+  context.ScriptApp={getScriptId:()=> 'script-sandbox'};
+  context.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
   vm.createContext(context);vm.runInContext(executionSource,context);
   context.PQM_SANDBOX_EXECUTION_CHECKPOINT_MAX_BYTES=8000;
   const identities=[{tab:'ФОП',code}],identityDigest=crypto.createHash('sha256')
@@ -2038,4 +2042,56 @@ test('legacy v1 size proof rejects under-bound records and preserves uncertainty
   assert.equal(f.props.get('PQM_EXECUTION_UNCERTAIN'),id);
   assert.equal(f.props.has('PQM_EXECUTION_PREWRITE_CLOSED_'+id),false);
   assert.equal(f.writes,0);
+});
+
+test('signed 25-row legacy preflight may exceed 8192 only within the scoped envelope cap', () => {
+  const id='b11433e8efb84b4492bf2df7c7c25908';
+  const scriptId='s'.repeat(57),spreadsheetId='h'.repeat(44);
+  const expectedDigest=crypto.createHash('sha256').update('preview-digest-fixture').digest('base64url');
+  const chunkDigest=crypto.createHash('sha256').update('chunk-digest-fixture').digest('base64url');
+  const f=prewriteCloseFixture({id,recordOverrides:{lastError:undefined,digest:expectedDigest}});
+  const codes=Array.from({length:25},(_,i)=>String(i+1).padStart(10,'0'));
+  const rows=codes.map((code,i)=>({tab:i<21?'ФОП':'ЮО',row:i+2,code,formulaA:'='+('x'.repeat(220))}));
+  const identities=rows.map(({tab,code})=>({tab,code}));
+  const targetIdentityDigest=crypto.createHash('sha256')
+    .update(JSON.stringify(rows.map(item=>[item.tab,item.code])),'utf8').digest('base64url');
+  const legacyManifestProjectionDigest=crypto.createHash('sha256').update(JSON.stringify(rows.map(item=>({
+    code:item.code,formulaA:item.formulaA,row:item.row,tab:item.tab}))), 'utf8').digest('base64url');
+  const issuedAt=Math.floor(Date.now()/1000);
+  const request={environment:'SANDBOX',scriptId,spreadsheetId,
+    contract:'pqm-mirror-datetime-v1',action:'prewrite_close_preflight',requestId:id,
+    actor:'sandbox-admin',trigger:'manual',issuedAt,expiresAt:issuedAt+300,expectedDigest,
+    planScope:'APPEND_ONLY',chunkIndex:0,chunkId:'c'.repeat(32),chunkDigest,planId:id,
+    prewriteStage:'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1',targetIdentityDigest,targetIdentities:identities,
+    legacyManifestRows:rows,legacyManifestProjectionDigest};
+  function signedEnvelope(value) {
+    const stable=value=>Array.isArray(value)?value.map(stable):
+      value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
+    const payload=JSON.stringify(stable(value));
+    return {payload,signature:crypto.createHmac('sha256','S'.repeat(40)).update(payload).digest('base64url')};
+  }
+  const envelope=signedEnvelope(request);
+  f.context.PQM_MIRROR_ENV.scriptId=scriptId;f.context.PQM_MIRROR_ENV.spreadsheetId=spreadsheetId;
+  f.context.ScriptApp.getScriptId=()=>scriptId;
+  const payloadChars=envelope.payload.length; // Apps Script String.length is UTF-16 code units.
+  assert.equal(payloadChars,8649,'Python and Apps Script canonical JSON fixtures must measure identically');
+  assert.ok(payloadChars>8192,`fixture must reproduce the old cap failure: ${payloadChars}`);
+  assert.ok(payloadChars<=32768,`fixture must remain within the scoped hard cap: ${payloadChars}`);
+  const propsBefore=[...f.props.entries()];
+  const result=f.context.pqmSandboxAllScopeExecution20261109(envelope);
+  assert.equal(result.status,'READY');assert.equal(result.readOnly,true);
+  assert.equal(result.writeAheadBytes>8000,true);
+  assert.equal(f.writes,0);assert.equal(f.propertyWrites,0);
+  assert.deepEqual([...f.props.entries()],propsBefore);
+
+  assert.throws(()=>f.context.pqmSandboxAllScopeExecution20261109({...envelope,signature:'invalid'}),
+    /execution authorization rejected/);
+  const oversizedApply=signedEnvelope({...request,action:'apply'});
+  assert.ok(oversizedApply.payload.length>8192);
+  assert.throws(()=>f.context.pqmSandboxAllScopeExecution20261109(oversizedApply),
+    /oversized execution payload is restricted to read-only preflight/);
+  assert.throws(()=>f.context.pqmSandboxAllScopeExecution20261109({payload:'x'.repeat(32769),signature:'invalid'}),
+    /invalid execution envelope/);
+  assert.equal(f.writes,0);assert.equal(f.propertyWrites,0);
+  assert.deepEqual([...f.props.entries()],propsBefore);
 });
