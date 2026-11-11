@@ -1301,6 +1301,9 @@ class ExecutionClient:
             raise ExecutionOutcomeUnknown('Execution response identity mismatch; reconciliation required')
         if action=='prewrite_close_preflight':
             reason_codes=result.get('reasonCodes',[])
+            legacy_concrete_stage=(prewrite_stage==_LEGACY_PREWRITE_LIMIT_STAGE and
+                                   result.get('prewriteStage')=='append_inflight_save')
+            expected_prewrite_stage='append_inflight_save' if legacy_concrete_stage else prewrite_stage
             contract_checks=(
                 ('STATUS',result.get('status') not in {'READY','BLOCKED'}),
                 ('DIGEST',result.get('digest')!=digest),
@@ -1309,7 +1312,7 @@ class ExecutionClient:
                 ('CHUNK_ID',result.get('chunkId')!=chunk_id),
                 ('CHUNK_DIGEST',result.get('chunkDigest')!=chunk_digest),
                 ('TARGET_IDENTITY',result.get('targetIdentityDigest')!=target_identity_digest),
-                ('PREWRITE_STAGE',result.get('prewriteStage')!=prewrite_stage),
+                ('PREWRITE_STAGE',result.get('prewriteStage')!=expected_prewrite_stage),
                 ('TARGET_COUNT',result.get('targetCount')!=len(target_identities or [])),
                 ('TARGET_CODE_MATCH_COUNT',type(result.get('targetCodeMatches')) is not int or
                     result['targetCodeMatches']<0),
@@ -1319,7 +1322,7 @@ class ExecutionClient:
                     result['writeAheadBytes']<0),
                 ('CHECKPOINT_MAX_BYTES',type(result.get('checkpointMaxBytes')) is not int or
                     result['checkpointMaxBytes']<0),
-                ('REASON_CODES',not isinstance(reason_codes,list) or
+                ('REASON_CODES','reasonCodes' not in result or not isinstance(reason_codes,list) or
                     any(code not in _PREWRITE_PREFLIGHT_REASON_CODES for code in reason_codes)),
                 ('READ_ONLY_MARKER',result.get('readOnly') is not True),
                 ('READY_EVIDENCE',result.get('status')=='READY' and
@@ -1330,11 +1333,13 @@ class ExecutionClient:
             if invalid_contract:
                 raise ExecutionPreflightError('Apps Script read-only prewrite evidence was incomplete',
                     safe_error={'diagnostic_code':'APPS_SCRIPT_PREFLIGHT_'+invalid_contract})
-            if prewrite_stage==_LEGACY_PREWRITE_LIMIT_STAGE and result.get('status')=='READY' and (
-                    result.get('proofType')!='LEGACY_V1_WRITEAHEAD_OVERSIZE' or
+            if prewrite_stage==_LEGACY_PREWRITE_LIMIT_STAGE and (
+                    (result.get('status')=='READY' and not legacy_concrete_stage) or
+                    (legacy_concrete_stage and (result.get('proofType')!='LEGACY_V1_WRITEAHEAD_OVERSIZE' or
+                    not is_canonical_sha256_b64url(result.get('runRecordDigest')) or
                     result['writeAheadBytes']<=_LEGACY_PREWRITE_LIMIT_BYTES or
                     result['checkpointMaxBytes']!=_LEGACY_PREWRITE_LIMIT_BYTES or
-                    result.get('legacyManifestProjectionDigest')!=legacy_manifest_projection_digest):
+                    result.get('legacyManifestProjectionDigest')!=legacy_manifest_projection_digest))):
                 raise ExecutionPreflightError('Historical write-ahead size proof was incomplete',
                     safe_error={'diagnostic_code':'APPS_SCRIPT_LEGACY_SIZE_PROOF_INVALID'})
             if result.get('status')=='READY' and result.get('proofType')!='APPS_SCRIPT_LAST_ERROR' and prewrite_stage!=_LEGACY_PREWRITE_LIMIT_STAGE:
