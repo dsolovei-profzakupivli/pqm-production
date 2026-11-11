@@ -207,6 +207,78 @@ class ExecutionTransportTests(unittest.TestCase):
                     expected_checkpoint_digest=TEST_DIGEST)
             self.assertEqual(opener.call_count,1,'read-only preflight is attempted once without retry')
 
+    def test_prewrite_readonly_action_calls_v20_dispatcher_and_accepts_safe_blocked_receipt(self):
+        request_id='a'*32;chunk_id='b'*32
+        identities=[{'tab':'ФОП','code':'12345678'}]
+        target_digest=execution._sha256_b64(execution._canonical_json(
+            [[item['tab'],item['code']] for item in identities]).encode())
+        captured={}
+        def opener(request,timeout):
+            captured['body']=json.loads(request.data)
+            payload=json.loads(captured['body']['parameters'][0]['payload'])
+            result={key:payload[key] for key in ('environment','scriptId','spreadsheetId','contract','requestId')}
+            result.update(status='BLOCKED',digest=payload['expectedDigest'],planScope='APPEND_ONLY',
+                chunkIndex=0,chunkId=chunk_id,chunkDigest=TEST_DIGEST,targetIdentityDigest=target_digest,
+                prewriteStage='APPS_SCRIPT_PREWRITE_GUARD_V1',targetCount=1,targetCodeMatches=0,
+                runMarkerMatches=0,writeAheadBytes=0,checkpointMaxBytes=8000,
+                reasonCodes=['RUN_NOT_UNTOUCHED'],readOnly=True)
+            return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
+        client=self.client('SANDBOX',opener=opener)
+        result=client.invoke('prewrite_close_preflight',request_id,'admin-fixture',trigger='manual',
+            digest=TEST_DIGEST,plan_scope='APPEND_ONLY',manual_authorized=True,
+            chunk_id=chunk_id,chunk_digest=TEST_DIGEST,plan_id=request_id,chunk_index=0,
+            prewrite_stage='APPS_SCRIPT_PREWRITE_GUARD_V1',target_identity_digest=target_digest,
+            target_identities=identities)
+        self.assertEqual(captured['body']['function'],'pqmSandboxAllScopeExecution20261109')
+        sent=json.loads(captured['body']['parameters'][0]['payload'])
+        self.assertEqual(sent['action'],'prewrite_close_preflight')
+        self.assertEqual(sent['planScope'],'APPEND_ONLY')
+        self.assertNotIn('closeId',sent)
+        self.assertEqual(result['status'],'BLOCKED')
+        self.assertEqual(result['reason_codes'],['RUN_NOT_UNTOUCHED'])
+
+    def test_prewrite_readonly_execution_errors_have_safe_diagnostic_codes(self):
+        request_id='c'*32;chunk_id='d'*32
+        target_digest=execution._sha256_b64(execution._canonical_json([['ФОП','12345678']]).encode())
+        args=dict(trigger='manual',digest=TEST_DIGEST,plan_scope='APPEND_ONLY',manual_authorized=True,
+            chunk_id=chunk_id,chunk_digest=TEST_DIGEST,plan_id=request_id,chunk_index=0,
+            prewrite_stage='APPS_SCRIPT_PREWRITE_GUARD_V1',target_identity_digest=target_digest,
+            target_identities=[{'tab':'ФОП','code':'12345678'}])
+        failure=HTTPError('https://script.googleapis.com',403,'SECRET_RESPONSE_TEXT',{},io.BytesIO(b'SECRET_BODY'))
+        client=self.client('SANDBOX',opener=Mock(side_effect=failure))
+        with self.assertRaises(execution.ExecutionPreflightError) as raised:
+            client.invoke('prewrite_close_preflight',request_id,'admin-fixture',**args)
+        self.assertEqual(raised.exception.safe_error,{'diagnostic_code':'EXECUTION_API_HTTP_403'})
+        self.assertNotIn('SECRET',str(raised.exception))
+
+        body={'done':False,'error':{'details':[{'errorMessage':'SECRET Apps Script response'}]}}
+        client=self.client('SANDBOX',opener=Mock(return_value=io.BytesIO(json.dumps(body).encode())))
+        with self.assertRaises(execution.ExecutionPreflightError) as raised:
+            client.invoke('prewrite_close_preflight',request_id,'admin-fixture',**args)
+        self.assertEqual(raised.exception.safe_error,{'diagnostic_code':'APPS_SCRIPT_FUNCTION_ERROR'})
+        self.assertNotIn('SECRET',str(raised.exception))
+
+    def test_prewrite_readonly_rejects_receipt_without_apps_script_read_only_marker(self):
+        request_id='e'*32;chunk_id='f'*32
+        target_digest=execution._sha256_b64(execution._canonical_json([['ФОП','12345678']]).encode())
+        def opener(request,timeout):
+            payload=json.loads(json.loads(request.data)['parameters'][0]['payload'])
+            result={key:payload[key] for key in ('environment','scriptId','spreadsheetId','contract','requestId')}
+            result.update(status='BLOCKED',digest=payload['expectedDigest'],planScope='APPEND_ONLY',
+                chunkIndex=0,chunkId=chunk_id,chunkDigest=TEST_DIGEST,targetIdentityDigest=target_digest,
+                prewriteStage='APPS_SCRIPT_PREWRITE_GUARD_V1',targetCount=1,targetCodeMatches=0,
+                runMarkerMatches=0,writeAheadBytes=0,checkpointMaxBytes=8000,reasonCodes=['RUN_NOT_UNTOUCHED'])
+            return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
+        client=self.client('SANDBOX',opener=opener)
+        with self.assertRaises(execution.ExecutionPreflightError) as raised:
+            client.invoke('prewrite_close_preflight',request_id,'admin-fixture',trigger='manual',
+                digest=TEST_DIGEST,plan_scope='APPEND_ONLY',manual_authorized=True,
+                chunk_id=chunk_id,chunk_digest=TEST_DIGEST,plan_id=request_id,chunk_index=0,
+                prewrite_stage='APPS_SCRIPT_PREWRITE_GUARD_V1',target_identity_digest=target_digest,
+                target_identities=[{'tab':'ФОП','code':'12345678'}])
+        self.assertEqual(raised.exception.safe_error,
+            {'diagnostic_code':'APPS_SCRIPT_PREFLIGHT_READ_ONLY_MARKER'})
+
 
 class PreviewPlanScopeTests(ExecutionTransportTests):
     def setUp(self):

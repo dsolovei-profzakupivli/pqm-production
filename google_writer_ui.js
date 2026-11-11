@@ -125,7 +125,9 @@ async function preflightGoogleWriterPrewriteClose(requestId){
       toast(`READY · write-ahead ${Number(result.write_ahead_bytes).toLocaleString('uk-UA')} / ${Number(result.checkpoint_max_bytes).toLocaleString('uk-UA')} байт · цільових кодів ${result.target_code_matches} · маркерів ${result.run_marker_matches}. Це лише перевірка; під час закриття все буде перевірено повторно.`, 'success');
     }else{
       const reasons=(result.reason_codes||[]).map(code=>labels[code]||'доказ не підтверджено');
-      toast(`BLOCKED · ${reasons.join('; ')||'доказів недостатньо'}. HOLD збережено.`, 'error');
+      const diagnostic=typeof result.diagnostic_code==='string'&&/^[A-Z0-9_]{1,64}$/.test(result.diagnostic_code)
+        ? ` [${result.diagnostic_code}]` : '';
+      toast(`BLOCKED · ${reasons.join('; ')||'доказів недостатньо'}${diagnostic}. HOLD збережено.`, 'error');
     }
   }catch(error){toast(`BLOCKED · read-only перевірка не завершена: ${error.message}. HOLD збережено.`, 'error');}
   finally{googleWriterBusy=false;}

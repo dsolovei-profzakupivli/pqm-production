@@ -68,11 +68,13 @@ class MockPrewriteClose:
 
 class MockPrewriteReadOnly:
     environment='SANDBOX'
-    def __init__(self, *, status='READY', reason_codes=(), fail=False):
-        self.status=status;self.reason_codes=list(reason_codes);self.fail=fail;self.calls=[]
+    def __init__(self, *, status='READY', reason_codes=(), fail=False, diagnostic_code=None):
+        self.status=status;self.reason_codes=list(reason_codes);self.fail=fail
+        self.diagnostic_code=diagnostic_code;self.calls=[]
     def invoke(self, action, request_id, actor, **kwargs):
         self.calls.append((action,request_id,actor,kwargs))
-        if self.fail: raise writer.ExecutionPreflightError('mock read-only source unavailable')
+        if self.fail: raise writer.ExecutionPreflightError('mock read-only source unavailable',
+            safe_error={'diagnostic_code':self.diagnostic_code} if self.diagnostic_code else None)
         return {'status':self.status,'request_id_matches':True,'plan_binding':'PASS',
             'chunk_binding':'PASS','manifest_binding':'PASS','write_ahead_bytes':8501,
             'checkpoint_max_bytes':8000,'target_count':len(kwargs['target_identities']),
@@ -209,9 +211,10 @@ class PrewriteCloseTests(unittest.TestCase):
 
     def test_read_only_preflight_incomplete_remote_read_fails_closed(self):
         result=writer.prewrite_close_preflight(self.path,
-            MockPrewriteReadOnly(fail=True),self.request_id,self.actor)
+            MockPrewriteReadOnly(fail=True,diagnostic_code='EXECUTION_API_HTTP_403'),self.request_id,self.actor)
         self.assertEqual(result['status'],'BLOCKED')
         self.assertEqual(result['reason_codes'],['APPS_SCRIPT_CHECK_UNAVAILABLE'])
+        self.assertEqual(result['diagnostic_code'],'EXECUTION_API_HTTP_403')
         self.assertTrue(result['read_only'])
         self.assertEqual(self.run_row()[0],'failed_safe')
         with closing(sqlite3.connect(self.path)) as con:

@@ -48,6 +48,15 @@ test('BLOCKED preflight UI preserves the HOLD and reports a safe reason',async()
   assert.match(messages[0].message,/HOLD збережено/);
 });
 
+test('BLOCKED preflight UI surfaces only the allowlisted diagnostic code',async()=>{
+  const {messages}=await runPreflight({status:'BLOCKED',read_only:true,sqlite_writes:0,sheets_writes:0,
+    properties_writes:0,reason_codes:['APPS_SCRIPT_CHECK_UNAVAILABLE'],diagnostic_code:'EXECUTION_API_HTTP_403'});
+  assert.match(messages[0].message,/EXECUTION_API_HTTP_403/);
+  const unsafe=await runPreflight({status:'BLOCKED',read_only:true,sqlite_writes:0,sheets_writes:0,
+    properties_writes:0,reason_codes:['APPS_SCRIPT_CHECK_UNAVAILABLE'],diagnostic_code:'secret-token-value'});
+  assert.doesNotMatch(unsafe.messages[0].message,/secret-token-value/);
+});
+
 test('incomplete or unsafe preflight response is rejected without a close call',async()=>{
   const {calls,messages}=await runPreflight({status:'READY',read_only:true,sqlite_writes:0,sheets_writes:1,
     properties_writes:0,request_id_matches:true,plan_binding:'PASS',chunk_binding:'PASS',manifest_binding:'PASS',

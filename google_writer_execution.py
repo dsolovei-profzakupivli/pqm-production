@@ -1190,11 +1190,24 @@ class ExecutionClient:
         signature = base64.urlsafe_b64encode(hmac.new(self.shared_secret.encode(), raw.encode(), hashlib.sha256).digest()).decode().rstrip('=')
         try:
             token = self.token_provider(self.environment)
-            if (token.get('environment') != self.environment or
-                    not PROJECT_SCOPES.issubset(set(token.get('scopes', []))) or
-                    float(token.get('expires_at', 0)) - self.clock().timestamp() <= 400 or
-                    not token.get('access_token')):
-                raise ValueError('OAuth token preflight rejected')
+        except Exception:
+            if action in {'resume_check','prewrite_close_preflight'}:
+                raise ExecutionPreflightError('Read-only execution credentials unavailable',
+                    safe_error={'diagnostic_code':'OAUTH_TOKEN_SOURCE_FAILED'}) from None
+            raise ExecutionPreflightError('Execution preflight rejected; Apps Script was not called') from None
+        try:
+            token_valid=(isinstance(token,dict) and token.get('environment')==self.environment and
+                PROJECT_SCOPES.issubset(set(token.get('scopes',[]))) and
+                float(token.get('expires_at',0))-self.clock().timestamp()>400 and
+                bool(token.get('access_token')))
+        except Exception:
+            token_valid=False
+        if not token_valid:
+            if action in {'resume_check','prewrite_close_preflight'}:
+                raise ExecutionPreflightError('Read-only execution credentials rejected',
+                    safe_error={'diagnostic_code':'OAUTH_TOKEN_PREFLIGHT_REJECTED'})
+            raise ExecutionPreflightError('Execution preflight rejected; Apps Script was not called')
+        try:
             body = {'function':api_function, 'devMode':False,
                     'parameters':[{'payload':raw, 'signature':signature}]}
             # Current Google reference names this path parameter deploymentId.
@@ -1203,6 +1216,9 @@ class ExecutionClient:
                 data=json.dumps(body).encode(), method='POST',
                 headers={'Authorization':'Bearer '+token['access_token'], 'Content-Type':'application/json'})
         except Exception:
+            if action in {'resume_check','prewrite_close_preflight'}:
+                raise ExecutionPreflightError('Read-only Execution API request could not be built',
+                    safe_error={'diagnostic_code':'EXECUTION_REQUEST_BUILD_FAILED'}) from None
             raise ExecutionPreflightError('Execution preflight rejected; Apps Script was not called') from None
         try:
             with self.opener(request, timeout=390) as response:
@@ -1212,35 +1228,51 @@ class ExecutionClient:
         except urllib.error.HTTPError as exc:
             status_code=exc.code if type(exc.code) is int and 100<=exc.code<=599 else None
             if action in {'resume_check','prewrite_close_preflight'}:
-                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable') from None
+                code=('EXECUTION_API_HTTP_'+str(status_code) if status_code else 'EXECUTION_API_HTTP_ERROR')
+                raise ExecutionPreflightError('Read-only Execution API request was rejected',
+                    safe_error={'diagnostic_code':code}) from None
             family='http_5xx' if status_code and status_code>=500 else 'http_4xx' if status_code and status_code>=400 else 'http_error'
             safe={'stage':'execution_api_response','category':family,'exception_type':'HTTPError'}
             if status_code:safe['http_status']=status_code
             raise ExecutionOutcomeUnknown('Execution API response was incomplete; recovery required',safe_error=safe) from None
         except urllib.error.URLError as exc:
             if action in {'resume_check','prewrite_close_preflight'}:
-                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+                reason=getattr(exc,'reason',None)
+                code='EXECUTION_API_TRANSPORT_TIMEOUT' if isinstance(reason,TimeoutError) else 'EXECUTION_API_TRANSPORT_ERROR'
+                raise ExecutionPreflightError('Read-only Execution API transport failed',
+                    safe_error={'diagnostic_code':code}) from None
             reason=getattr(exc,'reason',None)
             category='transport_timeout' if isinstance(reason,TimeoutError) else 'transport_error'
             raise ExecutionOutcomeUnknown('Execution transport result was unknown; recovery required',
                 safe_error={'stage':'execution_api_transport','category':category,'exception_type':'URLError'}) from None
         except TimeoutError:
             if action in {'resume_check','prewrite_close_preflight'}:
-                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+                raise ExecutionPreflightError('Read-only Execution API request timed out',
+                    safe_error={'diagnostic_code':'EXECUTION_API_TRANSPORT_TIMEOUT'}) from None
             raise ExecutionOutcomeUnknown('Execution transport timed out; recovery required',
                 safe_error={'stage':'execution_api_transport','category':'transport_timeout','exception_type':'TimeoutError'}) from None
         except OSError:
             if action in {'resume_check','prewrite_close_preflight'}:
-                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+                raise ExecutionPreflightError('Read-only Execution API transport failed',
+                    safe_error={'diagnostic_code':'EXECUTION_API_TRANSPORT_ERROR'}) from None
             raise ExecutionOutcomeUnknown('Execution transport failed; no automatic retry; recovery required',
                 safe_error={'stage':'execution_api_transport','category':'transport_error','exception_type':'OSError'}) from None
         except Exception:
             if action in {'resume_check','prewrite_close_preflight'}:
-                raise ExecutionPreflightError('Read-only checkpoint preflight unavailable; no write was requested') from None
+                raise ExecutionPreflightError('Read-only Execution API response was unreadable',
+                    safe_error={'diagnostic_code':'EXECUTION_API_RESPONSE_UNREADABLE'}) from None
             raise ExecutionOutcomeUnknown('Execution outcome unknown; no automatic retry') from None
+        if not isinstance(data,dict):
+            if action in {'resume_check','prewrite_close_preflight'}:
+                raise ExecutionPreflightError('Read-only Execution API returned an invalid response envelope',
+                    safe_error={'diagnostic_code':'EXECUTION_API_RESPONSE_INVALID'})
+            raise ExecutionOutcomeUnknown('Execution response was invalid; reconciliation required')
         if data.get('done') is not True or 'error' in data:
             if action in {'resume_check','prewrite_close_preflight'}:
-                raise ExecutionPreflightError('Read-only checkpoint preflight rejected; no write was requested')
+                code=('APPS_SCRIPT_FUNCTION_ERROR' if isinstance(data,dict) and 'error' in data
+                      else 'EXECUTION_API_RESPONSE_INCOMPLETE')
+                raise ExecutionPreflightError('Read-only Apps Script execution did not return a result',
+                    safe_error={'diagnostic_code':code})
             safe_error=None
             raw_error=data.get('error') if isinstance(data.get('error'),dict) else {}
             details=raw_error.get('details') if isinstance(raw_error,dict) else None
@@ -1264,32 +1296,50 @@ class ExecutionClient:
                 result.get('scriptId') != script or result.get('spreadsheetId') != sheet or
                 result.get('contract') != CONTRACT or result.get('requestId') != request_id):
             if action in {'resume_check','prewrite_close_preflight'}:
-                raise ExecutionPreflightError('Read-only checkpoint identity rejected; no write was requested')
+                raise ExecutionPreflightError('Read-only Apps Script response identity rejected',
+                    safe_error={'diagnostic_code':'EXECUTION_RESPONSE_IDENTITY_MISMATCH'})
             raise ExecutionOutcomeUnknown('Execution response identity mismatch; reconciliation required')
         if action=='prewrite_close_preflight':
             reason_codes=result.get('reasonCodes',[])
-            if (result.get('status') not in {'READY','BLOCKED'} or result.get('digest')!=digest or
-                    result.get('planScope')!='APPEND_ONLY' or result.get('chunkIndex')!=0 or
-                    result.get('chunkId')!=chunk_id or result.get('chunkDigest')!=chunk_digest or
-                    result.get('targetIdentityDigest')!=target_identity_digest or
-                    result.get('prewriteStage')!=prewrite_stage or
-                    result.get('targetCount')!=len(target_identities or []) or
-                    type(result.get('targetCodeMatches')) is not int or result['targetCodeMatches']<0 or
-                    type(result.get('runMarkerMatches')) is not int or result['runMarkerMatches']<0 or
-                    type(result.get('writeAheadBytes')) is not int or result['writeAheadBytes']<0 or
-                    type(result.get('checkpointMaxBytes')) is not int or result['checkpointMaxBytes']<0 or
-                    not isinstance(reason_codes,list) or any(code not in _PREWRITE_PREFLIGHT_REASON_CODES for code in reason_codes) or
-                    (result.get('status')=='READY' and (reason_codes or result['targetCodeMatches']!=0 or
-                     result['runMarkerMatches']!=0 or not is_canonical_sha256_b64url(result.get('runRecordDigest'))))):
-                raise ExecutionPreflightError('Apps Script read-only prewrite evidence was incomplete')
+            contract_checks=(
+                ('STATUS',result.get('status') not in {'READY','BLOCKED'}),
+                ('DIGEST',result.get('digest')!=digest),
+                ('SCOPE',result.get('planScope')!='APPEND_ONLY'),
+                ('CHUNK_INDEX',result.get('chunkIndex')!=0),
+                ('CHUNK_ID',result.get('chunkId')!=chunk_id),
+                ('CHUNK_DIGEST',result.get('chunkDigest')!=chunk_digest),
+                ('TARGET_IDENTITY',result.get('targetIdentityDigest')!=target_identity_digest),
+                ('PREWRITE_STAGE',result.get('prewriteStage')!=prewrite_stage),
+                ('TARGET_COUNT',result.get('targetCount')!=len(target_identities or [])),
+                ('TARGET_CODE_MATCH_COUNT',type(result.get('targetCodeMatches')) is not int or
+                    result['targetCodeMatches']<0),
+                ('RUN_MARKER_MATCH_COUNT',type(result.get('runMarkerMatches')) is not int or
+                    result['runMarkerMatches']<0),
+                ('WRITE_AHEAD_BYTES',type(result.get('writeAheadBytes')) is not int or
+                    result['writeAheadBytes']<0),
+                ('CHECKPOINT_MAX_BYTES',type(result.get('checkpointMaxBytes')) is not int or
+                    result['checkpointMaxBytes']<0),
+                ('REASON_CODES',not isinstance(reason_codes,list) or
+                    any(code not in _PREWRITE_PREFLIGHT_REASON_CODES for code in reason_codes)),
+                ('READ_ONLY_MARKER',result.get('readOnly') is not True),
+                ('READY_EVIDENCE',result.get('status')=='READY' and
+                    (reason_codes or result.get('targetCodeMatches')!=0 or result.get('runMarkerMatches')!=0 or
+                     not is_canonical_sha256_b64url(result.get('runRecordDigest')))),
+            )
+            invalid_contract=next((field for field,invalid in contract_checks if invalid),None)
+            if invalid_contract:
+                raise ExecutionPreflightError('Apps Script read-only prewrite evidence was incomplete',
+                    safe_error={'diagnostic_code':'APPS_SCRIPT_PREFLIGHT_'+invalid_contract})
             if prewrite_stage==_LEGACY_PREWRITE_LIMIT_STAGE and result.get('status')=='READY' and (
                     result.get('proofType')!='LEGACY_V1_WRITEAHEAD_OVERSIZE' or
                     result['writeAheadBytes']<=_LEGACY_PREWRITE_LIMIT_BYTES or
                     result['checkpointMaxBytes']!=_LEGACY_PREWRITE_LIMIT_BYTES or
                     result.get('legacyManifestProjectionDigest')!=legacy_manifest_projection_digest):
-                raise ExecutionPreflightError('Historical write-ahead size proof was incomplete')
+                raise ExecutionPreflightError('Historical write-ahead size proof was incomplete',
+                    safe_error={'diagnostic_code':'APPS_SCRIPT_LEGACY_SIZE_PROOF_INVALID'})
             if result.get('status')=='READY' and result.get('proofType')!='APPS_SCRIPT_LAST_ERROR' and prewrite_stage!=_LEGACY_PREWRITE_LIMIT_STAGE:
-                raise ExecutionPreflightError('Apps Script prewrite reason is not verified')
+                raise ExecutionPreflightError('Apps Script prewrite reason is not verified',
+                    safe_error={'diagnostic_code':'APPS_SCRIPT_PREWRITE_STAGE_UNVERIFIED'})
             return {'status':result['status'],'request_id_matches':True,'plan_binding':'PASS',
                 'chunk_binding':'PASS','manifest_binding':'PASS','write_ahead_bytes':result['writeAheadBytes'],
                 'checkpoint_max_bytes':result['checkpointMaxBytes'],'target_count':result['targetCount'],
@@ -2824,8 +2874,12 @@ def _prewrite_close_material(con, request_id, actor, close_id, reason, *, read_o
 
 def prewrite_close_preflight(path, client, request_id, actor):
     """Read-only readiness check; never prepares an intent or releases the HOLD."""
-    blocked=lambda *codes: {'status':'BLOCKED','reason_codes':list(codes) or ['LOCAL_EVIDENCE_UNAVAILABLE'],
-        'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+    def blocked(*codes,diagnostic_code=None):
+        result={'status':'BLOCKED','reason_codes':list(codes) or ['LOCAL_EVIDENCE_UNAVAILABLE'],
+            'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+        if isinstance(diagnostic_code,str) and re.fullmatch(r'[A-Z0-9_]{1,64}',diagnostic_code):
+            result['diagnostic_code']=diagnostic_code
+        return result
     if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
             not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or
             not isinstance(actor,str) or not actor.strip() or len(actor)>128):
@@ -2850,8 +2904,13 @@ def prewrite_close_preflight(path, client, request_id, actor):
             target_identity_digest=material['target_identity_digest'],target_identities=material['target_identities'],
             legacy_manifest_rows=material.get('legacy_manifest_rows'),
             legacy_manifest_projection_digest=material.get('legacy_manifest_projection_digest'))
-    except (ExecutionPreflightError,ExecutionConfigurationError):
-        return blocked('APPS_SCRIPT_CHECK_UNAVAILABLE')
+    except ExecutionPreflightError as exc:
+        safe=exc.safe_error if isinstance(exc.safe_error,dict) else {}
+        diagnostic=safe.get('diagnostic_code')
+        return blocked('APPS_SCRIPT_CHECK_UNAVAILABLE',diagnostic_code=(diagnostic
+            if isinstance(diagnostic,str) else 'EXECUTION_PREFLIGHT_REJECTED'))
+    except ExecutionConfigurationError:
+        return blocked('APPS_SCRIPT_CHECK_UNAVAILABLE',diagnostic_code='EXECUTION_CONFIGURATION_REJECTED')
     except (ValueError,PermissionError,RuntimeError,sqlite3.Error):
         return blocked('APPS_SCRIPT_EVIDENCE_REJECTED')
     if not isinstance(result,dict) or result.get('read_only') is not True:
