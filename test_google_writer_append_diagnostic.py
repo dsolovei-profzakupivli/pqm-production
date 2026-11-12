@@ -244,6 +244,33 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         self.assertEqual(writer._append_audit_comparable_value('2026-11-12T10:30:00+02:00',8),
             int(writer.datetime.fromisoformat('2026-11-12T10:30:00+02:00').timestamp()*1000))
 
+    def test_column_i_google_serial_uses_the_apps_script_epoch_conversion(self):
+        # Apps Script converts the serial to a wall time, then resolves that
+        # wall time in Europe/Kyiv (2026-11-12 00:00 is UTC+02).
+        self.assertEqual(writer._append_audit_comparable_value(46338,8),1794434400000)
+
+    def test_previous_five_column_i_date_cases_match_legacy_serial_evidence(self):
+        # These are the five operation positions in the retired v1 evidence.
+        # The old verified comparator matched date values against Sheets serials.
+        cases=((6,46338),(12,46339),(14,46340),(17,46341),(25,46342))
+        for operation_number,serial in cases:
+            with self.subTest(operation_number=operation_number):
+                expected_date=(writer.datetime(1899,12,30)+writer.timedelta(days=serial)).date().isoformat()
+                wall=writer.datetime(1970,1,1)+writer.timedelta(
+                    milliseconds=writer.math.floor((serial-25569)*86400000+0.5))
+                expected_epoch=int(wall.replace(tzinfo=writer.KYIV).timestamp()*1000)
+                self.assertTrue(writer._legacy_sheet_value_matches(expected_date,serial,'I'))
+                self.assertEqual(writer._append_audit_comparable_value(serial,8),expected_epoch)
+
+    def test_column_i_blank_invalid_and_real_mismatch_remain_distinguishable(self):
+        self.assertEqual(writer._append_audit_comparable_value(None,8),'')
+        self.assertEqual(writer._append_audit_comparable_value('',8),'')
+        self.assertEqual(writer._append_audit_comparable_value(1,8),'1')
+        self.assertNotEqual(writer._append_audit_comparable_value(46338,8),
+            writer._append_audit_comparable_value(46339,8))
+        self.assertTrue(writer._legacy_sheet_value_matches('2026-11-12',46338,'I'))
+        self.assertFalse(writer._legacy_sheet_value_matches('2026-11-12',46339,'I'))
+
     def test_missing_or_invalid_chunk_does_not_block_fact_audit_but_blocks_recovery(self):
         client=DiagnosticClient(first_chunk=True)
         with closing(sqlite3.connect(self.path)) as con, con:

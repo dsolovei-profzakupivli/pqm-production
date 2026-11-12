@@ -3110,8 +3110,12 @@ def _append_audit_comparable_value(value,column):
     if column==8:
         try:
             if isinstance(value,(int,float)) and not isinstance(value,bool):
-                wall=(datetime(1899,12,30)+timedelta(days=(value-25569))).replace(tzinfo=timezone.utc)
-                naive=wall.replace(tzinfo=None)
+                # Match pqmVerificationDatetime_: a Sheets serial is first
+                # converted to its wall time, then interpreted in Europe/Kyiv.
+                if not math.isfinite(value) or value<2 or value>2958465:
+                    return str(value)
+                serial_ms=math.floor((value-25569)*86400000+0.5)
+                naive=datetime(1970,1,1)+timedelta(milliseconds=serial_ms)
             elif isinstance(value,str):
                 text=value.strip()
                 if text.endswith('Z'): text=text[:-1]+'+00:00'
