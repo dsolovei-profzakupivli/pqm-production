@@ -1,5 +1,28 @@
 /* Separate fourth-job controls; no credentials, Google API calls or legacy scheduler edits. */
 let googleWriterJobState=null,googleWriterSchedulePreview=null,googleWriterBusy=false,googleWriterProgressTimer=null;
+let googleWriterAppendDiagnosticReport=null;
+function googleWriterAppendReportText(report){
+  if(!report)return '';
+  const lines=[`Request ID: ${report.request_id}`,`APPEND звірка: ${report.status||'BLOCKED'}`];
+  if(report.counts){const c=report.counts;lines.push(`Підтверджено ${c.confirmed}/${c.planned}; відсутні ${c.missing}; конфлікти ${c.conflict}; непідтверджено ${c.unverified}; залишок ${c.remaining}.`);}
+  if(report.reason_codes?.length)lines.push(`Причини звірки: ${report.reason_codes.join(', ')}.`);
+  for(const item of report.conflicts||[])lines.push(`${item.code}: ${item.fields.length?item.fields.join(', '):'поля не встановлено'} (${item.detail_status}).`);
+  lines.push(`Recovery: ${report.recovery_status||'BLOCKED'}.`);
+  if(report.recovery_reason_codes?.length)lines.push(`Причини recovery: ${report.recovery_reason_codes.join(', ')}.`);
+  if(report.recovery_field_mismatches?.length)lines.push(`Поля manifest: ${report.recovery_field_mismatches.join(', ')}.`);
+  lines.push('Запис не запускався; HOLD збережено.');
+  return lines.join('\n');
+}
+function googleWriterAppendDiagnosticHtml(requestId){
+  const report=googleWriterAppendDiagnosticReport;
+  if(!report||report.request_id!==requestId)return '';
+  const fields=(report.conflicts||[]).map(item=>`<li><strong>${esc(item.code)}</strong> · ${esc(item.fields.join(', ')||'поля не встановлено')} · ${esc(item.detail_status)}</li>`).join('');
+  const counts=report.counts?`<p>Підтверджено ${Number(report.counts.confirmed)}/${Number(report.counts.planned)} · відсутні ${Number(report.counts.missing)} · конфліктні ${Number(report.counts.conflict)} · непідтверджені ${Number(report.counts.unverified)} · залишок ${Number(report.counts.remaining)}</p>`:'';
+  const auditReasons=(report.reason_codes||[]).map(esc).join(', ')||'немає';
+  const recoveryReasons=(report.recovery_reason_codes||[]).map(esc).join(', ')||'немає';
+  const manifestFields=(report.recovery_field_mismatches||[]).map(esc).join(', ')||'немає';
+  return `<section class="google-writer-append-diagnostic-result" aria-live="polite"><header><strong>Read-only APPEND звірка · ${esc(report.status||'BLOCKED')}</strong><button type="button" class="ghost google-writer-append-report-dismiss" aria-label="Закрити результат">×</button></header>${counts}<p>Причини звірки: ${auditReasons}</p>${fields?`<ul>${fields}</ul>`:''}<p>Recovery: ${esc(report.recovery_status||'BLOCKED')} · причини: ${recoveryReasons}</p><p>Невідповідні поля manifest: ${manifestFields}</p><button type="button" class="ghost google-writer-append-report-copy">Скопіювати короткий звіт</button><span class="google-writer-append-report-copy-status" role="status"></span><p class="muted">Запис не запускався; HOLD збережено.</p></section>`;
+}
 function googleWriterProgressLabel(run){
   const progress=run?.progress||{},state=progress.state||run?.status;
   if(run?.status==='closed_unknown')return 'Адміністративно закрито · результат запису невідомий';
@@ -60,6 +83,7 @@ async function loadGoogleWriterJob(){
       const appendDiagnostic= row.status==='outcome_unknown'&&data.can_diagnose_append&&
         result.plan_scope==='APPEND_ONLY'&&Number(result.attempted_chunk)===0?
         `<button class="ghost google-writer-append-diagnostic" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Перевірити APPEND без запису</button>`:'';
+      const appendDiagnosticResult=googleWriterAppendDiagnosticHtml(row.request_id);
       const closeAction=row.status==='outcome_unknown'&&data.can_close?`<button class="ghost google-writer-close" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>${row.close_state==='prepared'?'Повторити закриття з тим самим ID':'Закрити запуск без повторного запису'}</button>`:'';
       const preflightAction=prewrite&&!prewriteClosed&&row.prewrite_close_eligible&&data.can_preflight_close_prewrite?
         `<button class="ghost google-writer-preflight-close" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Перевірити можливість закриття</button>`:'';
@@ -69,7 +93,7 @@ async function loadGoogleWriterJob(){
         row.close_state==='prepared'?'<p class="google-writer-error">Закриття очікує підтвердження Apps Script; HOLD збережено. Повторюйте лише з тим самим close ID.</p>':
         prewriteClosed?`<p class="muted">Адміністративно закрито як підтверджений збій до запису · ${esc(row.prewrite_closed_at?displayDate(row.prewrite_closed_at):'')} · запис у Google Sheets не виконувався${row.prewrite_close_reason?` · причина: ${esc(row.prewrite_close_reason)}`:''}</p>`:
         row.prewrite_close_state==='prepared'?'<p class="google-writer-error">Перевірку очікує Apps Script; блокування збережено. Повторюйте лише з тим самим close ID.</p>':'';
-      return `<article class="google-writer-hold"><strong>${closed?'Адміністративно закритий запуск':prewriteClosed?'Закритий prewrite-збій':'Заблокований запуск'}</strong><dl><div><dt>Request ID</dt><dd>${esc(row.request_id)}</dd></div><div><dt>Статус</dt><dd>${esc(row.status)}</dd></div><div><dt>Scope</dt><dd>${esc(scope)}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div><div><dt>Діагностика</dt><dd>${esc(diagnosis)}</dd></div></dl>${closeNote}${appendDiagnostic}${closeAction}${preflightAction}${prewriteAction}</article>`;
+      return `<article class="google-writer-hold"><strong>${closed?'Адміністративно закритий запуск':prewriteClosed?'Закритий prewrite-збій':'Заблокований запуск'}</strong><dl><div><dt>Request ID</dt><dd>${esc(row.request_id)}</dd></div><div><dt>Статус</dt><dd>${esc(row.status)}</dd></div><div><dt>Scope</dt><dd>${esc(scope)}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div><div><dt>Діагностика</dt><dd>${esc(diagnosis)}</dd></div></dl>${closeNote}${appendDiagnostic}${appendDiagnosticResult}${closeAction}${preflightAction}${prewriteAction}</article>`;
     }).join('');
     card.innerHTML=`<header><strong>PQM → Google Sheets</strong><span>${data.automation_blocked?(data.configured_enabled?'Розклад збережено · заблоковано':'Розклад вимкнено'):data.configured_enabled?'Розклад увімкнено':'Розклад вимкнено'}</span></header>
       <dl><div><dt>Розклад</dt><dd>${esc(data.schedule)} · Europe/Kyiv</dd></div><div><dt>Останній результат</dt><dd>${esc(data.last_status)} · ${esc(data.last_finished_at?displayDate(data.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(data.next_run?displayDate(data.next_run):'—')}</dd></div></dl>
@@ -84,6 +108,12 @@ async function loadGoogleWriterJob(){
     card.querySelectorAll('.google-writer-resume').forEach(button=>button.onclick=()=>resumeGoogleWriterAppendOnly(button.dataset.requestId));
     card.querySelectorAll('.google-writer-close').forEach(button=>button.onclick=()=>closeGoogleWriterUnknownRun(button.dataset.requestId));
     card.querySelectorAll('.google-writer-append-diagnostic').forEach(button=>button.onclick=()=>diagnoseGoogleWriterAppend(button.dataset.requestId));
+    card.querySelectorAll('.google-writer-append-report-dismiss').forEach(button=>button.onclick=()=>{googleWriterAppendDiagnosticReport=null;loadGoogleWriterJob();});
+    card.querySelectorAll('.google-writer-append-report-copy').forEach(button=>button.onclick=async()=>{
+      const status=button.parentElement.querySelector('.google-writer-append-report-copy-status');
+      try{await navigator.clipboard.writeText(googleWriterAppendReportText(googleWriterAppendDiagnosticReport));if(status)status.textContent='Скопійовано';}
+      catch(_){if(status)status.textContent='Копіювання недоступне в цьому браузері';}
+    });
     card.querySelectorAll('.google-writer-preflight-close').forEach(button=>button.onclick=()=>preflightGoogleWriterPrewriteClose(button.dataset.requestId));
     card.querySelectorAll('.google-writer-close-prewrite').forEach(button=>button.onclick=()=>closeGoogleWriterPrewriteFailure(button.dataset.requestId));
     googleWriterSchedulePreview=null;
@@ -110,44 +140,20 @@ async function diagnoseGoogleWriterAppend(requestId){
       headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId})});
     if(result.read_only!==true||result.sqlite_writes!==0||result.sheets_writes!==0||result.properties_writes!==0)
       throw new Error('Read-only підтвердження відсутнє; запуск лишається заблокованим');
-    const labels={TARGET_ROWS_MISSING:'частину кодів не знайдено',TARGET_CONFLICT:'є дублікати або відмінності рядків',
-      SHEET_READ_INCOMPLETE:'читання Google Sheets неповне',FORMULA_READ_INCOMPLETE:'читання формул неповне',
-      SERVICE_METADATA_READ_INCOMPLETE:'читання Q/R/S неповне',
-      ROW_READBACK_UNVERIFIED:'частину рядків не вдалося перевірити',
-      APPEND_AUDIT_PAYLOAD_TOO_LARGE:'план завеликий для безпечного запиту звірки',
-      APPS_SCRIPT_AUDIT_UNAVAILABLE:'read-only звірка Apps Script недоступна',
-      SQLITE_RUN_OR_PLAN_CARDINALITY:'збережений запуск або план не є однозначним',
-      RUN_NOT_HELD_ON_FIRST_APPEND:'запуск не відповідає очікуваному стану HOLD',
-      PLAN_BINDING_INVALID:'прив’язка плану не збігається',PREVIEW_JOURNAL_INVALID:'збережений план неповний або некоректний',
-      PREVIEW_TARGETS_INVALID:'цілі збереженого плану некоректні',PREVIEW_TARGET_COUNT_INVALID:'кількість цілей не збігається',
-      RECOVERY_CHUNK_JOURNAL_CARDINALITY:'журнал порції не дає однозначного доказу recovery',
-      RECOVERY_CHUNK_BINDING_INVALID:'прив’язка порції для recovery не підтверджена',
-      RECOVERY_CHUNK_MANIFEST_INVALID:'manifest порції для recovery не підтверджений',
-      RECOVERY_RECEIPT_OR_CHECKPOINT_PRESENT:'стан receipt/checkpoint потребує окремої перевірки',
-      RECOVERY_ROW_AUDIT_NOT_CONFIRMED:'рядки не підтверджені в обсязі, потрібному для recovery',
-      RECOVERY_EVIDENCE_NOT_CONFIRMED:'суворі recovery-докази не підтверджені',
-      RECOVERY_EVIDENCE_UNAVAILABLE:'перевірка recovery-доказів недоступна',
-      UNCERTAINTY_MARKER_MISMATCH:'uncertainty marker не збігається',RUN_RECORD_INVALID:'run record некоректний',
-      RUN_RECORD_BINDING_MISMATCH:'bindings run record не збігаються',MANIFEST_READ_INCOMPLETE:'manifest не вдалося прочитати',
-      MANIFEST_BINDING_MISMATCH:'bindings manifest не збігаються',SOURCE_BINDING_MISMATCH:'digest джерела не збігається',
-      REBUILT_PLAN_UNSAFE:'відтворений план небезпечний',PREVIEW_RECONSTRUCTION_MISMATCH:'план не відтворюється точно',
-      SERVICE_METADATA_READ_INCOMPLETE:'читання метаданих неповне'};
-    const describe=codes=>(codes||[]).map(code=>`${labels[code]||'додаткову перевірку не пройдено'} [${code}]`).join('; ');
-    const counts=result.counts;
-    if(!counts){
-      const audit=describe(result.reason_codes)||'план або читання недоступні';
-      const recovery=describe(result.recovery_reason_codes)||'не перевірено';
-      toast(`Звірка BLOCKED · ${audit}. Recovery BLOCKED · ${recovery}. HOLD збережено.`, 'error');
-      return;
-    }
-    const label=`APPEND звірка · підтверджено ${counts.confirmed}/${counts.planned}; відсутні ${counts.missing}; конфлікти ${counts.conflict}; не підтверджено ${counts.unverified}; залишок ${counts.remaining}.`;
-    const auditReasons=describe(result.reason_codes),recoveryReasons=describe(result.recovery_reason_codes);
-    const recovery=result.first_chunk_recovery_evidence===true?'Recovery-докази першої порції підтверджені.':
-      `Recovery заблоковано${recoveryReasons?` · ${recoveryReasons}`:''}.`;
-    const auditNote=auditReasons?` Причини звірки: ${auditReasons}.`:'';
-    toast(`${label}${auditNote} ${recovery} Запис не запускався; HOLD збережено.`,
-      counts.unverified||counts.conflict||result.first_chunk_recovery_evidence!==true?'error':'success');
-  }catch(error){toast(`BLOCKED · read-only звірка не завершена: ${error.message}. HOLD збережено.`, 'error');}
+    const fieldPattern=/^(?:tab|row|duplicate|metadata:[QRS]|(?:value|formula):[A-O])$/;
+    const manifestPattern=/^manifest(?:\.chunkIndex|\.chunkId|\.chunkDigest|\.planId|\.runId|\.rows(?:\.length|\[\d{1,2}\]\.(?:target|preview|tab|row|code|cellsDigest|formulaA|serviceMetadata(?:\.(?:addedAt|planId|runId))?)))?$/;
+    const conflicts=Array.isArray(result.conflicts)?result.conflicts.filter(item=>item&&typeof item.code==='string'&&/^\d{8,10}$/.test(item.code)).map(item=>({
+      code:item.code,fields:Array.isArray(item.fields)?item.fields.filter(field=>typeof field==='string'&&fieldPattern.test(field)):[],
+      detail_status:['VERIFIED','MATCHED','ROW_CHANGED','UNVERIFIED'].includes(item.detail_status||item.status)?(item.detail_status||item.status):'UNVERIFIED'})):[];
+    googleWriterAppendDiagnosticReport={request_id:requestId,status:['DIAGNOSED','READ_INCOMPLETE','BLOCKED'].includes(result.status)?result.status:'BLOCKED',
+      counts:result.counts&&['planned','confirmed','missing','conflict','unverified','remaining'].every(key=>Number.isInteger(result.counts[key])&&result.counts[key]>=0)?result.counts:null,
+      reason_codes:Array.isArray(result.reason_codes)?result.reason_codes.filter(code=>typeof code==='string'&&/^[A-Z0-9_]{1,64}$/.test(code)):[],
+      conflicts,recovery_status:result.recovery_status==='READY'?'READY':'BLOCKED',
+      recovery_reason_codes:Array.isArray(result.recovery_reason_codes)?result.recovery_reason_codes.filter(code=>typeof code==='string'&&/^[A-Z0-9_]{1,64}$/.test(code)):[],
+      recovery_field_mismatches:Array.isArray(result.recovery_field_mismatches)?result.recovery_field_mismatches.filter(field=>typeof field==='string'&&manifestPattern.test(field)):[]};
+  }catch(_error){googleWriterAppendDiagnosticReport={request_id:requestId,status:'BLOCKED',counts:null,
+    reason_codes:['APPEND_AUDIT_UNAVAILABLE'],conflicts:[],recovery_status:'BLOCKED',
+    recovery_reason_codes:['APPEND_AUDIT_UNAVAILABLE'],recovery_field_mismatches:[]};}
   finally{googleWriterBusy=false;await loadGoogleWriterJob();}
 }
 async function preflightGoogleWriterPrewriteClose(requestId){

@@ -1007,6 +1007,7 @@ class ExecutionClient:
                prewrite_stage=None,target_identity_digest=None,target_identities=None,
                legacy_manifest_rows=None,legacy_manifest_projection_digest=None,
                diagnostic_mode='recovery',audit_targets=None,audit_targets_digest=None,
+               audit_field_targets=None,audit_field_targets_digest=None,
                details_digest=None,full_plan_digest=None,source_digest=None,total_append_count=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
@@ -1093,7 +1094,31 @@ class ExecutionClient:
                         not is_canonical_sha256_b64url(item[3])):
                     raise ValueError('Sandbox APPEND audit rows are invalid')
                 seen.add(item[1])
-        if action=='diagnose_append_plan' and diagnostic_mode not in {'recovery','audit'}:
+        if action=='diagnose_append_plan' and diagnostic_mode=='audit_fields' and (
+                self.environment!='SANDBOX' or trigger!='manual' or manual_override is not True or
+                plan_scope!='APPEND_ONLY' or not is_canonical_sha256_b64url(digest) or
+                not is_canonical_sha256_b64url(details_digest) or
+                not is_canonical_sha256_b64url(full_plan_digest) or
+                not is_canonical_sha256_b64url(source_digest) or plan_id!=request_id or
+                type(total_append_count) is not int or not 1<=total_append_count<=10000 or
+                not isinstance(audit_field_targets,list) or not 1<=len(audit_field_targets)<=APPEND_JOURNAL_PAGE_ROWS or
+                not is_canonical_sha256_b64url(audit_field_targets_digest)):
+            raise ValueError('Sandbox APPEND audit field binding is invalid')
+        if action=='diagnose_append_plan' and diagnostic_mode=='audit_fields':
+            seen=set()
+            if _sha256_b64(_canonical_json(audit_field_targets).encode('utf-8'))!=audit_field_targets_digest:
+                raise ValueError('Sandbox APPEND audit field digest is invalid')
+            for item in audit_field_targets:
+                if (not isinstance(item,list) or len(item)!=5 or item[0] not in {'ФОП','ЮО'} or
+                        not isinstance(item[1],str) or not re.fullmatch(r'\d{8,10}',item[1]) or
+                        type(item[2]) is not int or item[2]<2 or item[1] in seen or
+                        not is_canonical_sha256_b64url(item[3]) or not isinstance(item[4],list) or
+                        len(item[4])!=15 or any(not isinstance(value,list) or len(value)!=2 or
+                            value[0] not in {'blank','value','formula'} or
+                            not is_canonical_sha256_b64url(value[1]) for value in item[4])):
+                    raise ValueError('Sandbox APPEND audit field targets are invalid')
+                seen.add(item[1])
+        if action=='diagnose_append_plan' and diagnostic_mode not in {'recovery','audit','audit_fields'}:
             raise ValueError('Sandbox APPEND diagnostic mode is invalid')
         if checkpoint_apply and (type(chunk_index) is not int or not 0 <= chunk_index <= 499):
             raise ValueError('Invalid Apply checkpoint index')
@@ -1118,8 +1143,10 @@ class ExecutionClient:
                             not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}',chunk_added_at))) or
                         (chunk_phase=='update' and chunk_added_at is not None))):
                 raise ValueError('Durable Apply chunk phase binding is invalid')
-        elif any(value is not None for value in chunk_binding) and not (
-                action=='diagnose_append_plan' and diagnostic_mode=='audit'):
+        elif action=='diagnose_append_plan' and diagnostic_mode in {'audit','audit_fields'}:
+            if chunk_id is not None or chunk_digest is not None or (plan_id is not None and plan_id!=request_id):
+                raise ValueError('Read-only APPEND audit cannot carry a chunk binding')
+        elif any(value is not None for value in chunk_binding):
             raise ValueError('Durable chunk binding is Sandbox Apply only')
         evidence_digest = None
         reconciliation_profile = None
@@ -1239,6 +1266,11 @@ class ExecutionClient:
                 detailsDigest=details_digest,fullPlanDigest=full_plan_digest,sourceDigest=source_digest,
                 totalAppendCount=total_append_count,auditTargets=audit_targets,
                 auditTargetsDigest=audit_targets_digest)
+        elif action=='diagnose_append_plan' and diagnostic_mode=='audit_fields':
+            message.update(diagnosticMode='audit_fields',planScope='APPEND_ONLY',chunkIndex=0,planId=request_id,
+                detailsDigest=details_digest,fullPlanDigest=full_plan_digest,sourceDigest=source_digest,
+                totalAppendCount=total_append_count,auditFieldTargets=audit_field_targets,
+                auditFieldTargetsDigest=audit_field_targets_digest)
         if chunk_id is not None:
             message.update(chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
             if chunk_phase is not None: message['chunkPhase']=chunk_phase
@@ -1437,8 +1469,57 @@ class ExecutionClient:
                     any(not isinstance(code,str) or not re.fullmatch(r'[A-Z0-9_]{1,48}',code) for code in reasons)):
                 raise ExecutionPreflightError('Read-only APPEND audit page receipt was incomplete',
                     safe_error={'diagnostic_code':'APPEND_AUDIT_PAGE_RECEIPT_INVALID'})
+            conflicts=result.get('conflicts',[])
+            target_codes={item[1] for item in audit_targets}
+            if (not isinstance(conflicts,list) or len(conflicts)!=counts['conflict'] or
+                    len(conflicts)>len(audit_targets)):
+                raise ExecutionPreflightError('Read-only APPEND conflict summary was incomplete',
+                    safe_error={'diagnostic_code':'APPEND_AUDIT_CONFLICTS_INVALID'})
+            seen_conflicts=set()
+            for item in conflicts:
+                if (not isinstance(item,dict) or set(item)-{'code','fields','observed_digest'} or
+                        not isinstance(item.get('code'),str) or item['code'] not in target_codes or
+                        item['code'] in seen_conflicts or not isinstance(item.get('fields'),list) or
+                        len(item['fields'])>18 or any(not isinstance(field,str) or not re.fullmatch(
+                            r'(?:tab|row|duplicate|metadata:[QRS]|(?:value|formula):[A-O])',field)
+                            for field in item['fields']) or
+                        (not item['fields'] and not is_canonical_sha256_b64url(item.get('observed_digest'))) or
+                        (item['fields'] and item.get('observed_digest') is not None)):
+                    raise ExecutionPreflightError('Read-only APPEND conflict fields were invalid',
+                        safe_error={'diagnostic_code':'APPEND_AUDIT_CONFLICTS_INVALID'})
+                seen_conflicts.add(item['code'])
             return {'status':result['status'],
                 'counts':{key:counts[key] for key in count_fields},'reason_codes':reasons,
+                'conflicts':conflicts,
+                'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+        if action=='diagnose_append_plan' and diagnostic_mode=='audit_fields':
+            conflicts=result.get('conflicts')
+            target_codes={item[1] for item in audit_field_targets}
+            if (result.get('diagnosticMode')!='audit_fields' or result.get('status') not in {'AUDIT_DETAILS','READ_INCOMPLETE'} or
+                    result.get('readOnly') is not True or result.get('requestId')!=request_id or
+                    result.get('planScope')!='APPEND_ONLY' or result.get('digest')!=digest or
+                    result.get('detailsDigest')!=details_digest or result.get('fullPlanDigest')!=full_plan_digest or
+                    result.get('sourceDigest')!=source_digest or result.get('planId')!=plan_id or
+                    result.get('auditFieldTargetsDigest')!=audit_field_targets_digest or
+                    not isinstance(conflicts,list) or len(conflicts)!=len(audit_field_targets)):
+                raise ExecutionPreflightError('Read-only APPEND field receipt was incomplete',
+                    safe_error={'diagnostic_code':'APPEND_AUDIT_FIELD_RECEIPT_INVALID'})
+            validated=[];seen=set()
+            for item in conflicts:
+                if (not isinstance(item,dict) or set(item)!={'code','fields','status'} or
+                        item.get('code') not in target_codes or item['code'] in seen or
+                        item.get('status') not in {'MATCHED','ROW_CHANGED','UNVERIFIED'} or
+                        not isinstance(item.get('fields'),list) or len(item['fields'])>30 or
+                        any(not isinstance(field,str) or not re.fullmatch(
+                            r'(?:value|formula):[A-O]|metadata:[QRS]|(?:tab|row|duplicate)',field)
+                            for field in item['fields'])):
+                    raise ExecutionPreflightError('Read-only APPEND field mismatch names were invalid',
+                        safe_error={'diagnostic_code':'APPEND_AUDIT_FIELD_RECEIPT_INVALID'})
+                seen.add(item['code']);validated.append(item)
+            if seen!=target_codes:
+                raise ExecutionPreflightError('Read-only APPEND field receipt omitted a target',
+                    safe_error={'diagnostic_code':'APPEND_AUDIT_FIELD_RECEIPT_INVALID'})
+            return {'status':result['status'],'conflicts':validated,
                 'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
         if action=='diagnose_append_plan' and diagnostic_mode=='recovery':
             count_fields=('planned','confirmed','missing','conflict','unverified','remaining')
@@ -1473,11 +1554,19 @@ class ExecutionClient:
                     any(not isinstance(code,str) or not re.fullmatch(r'[A-Z0-9_]{1,48}',code) for code in reasons)):
                 raise ExecutionPreflightError('Read-only APPEND diagnostic reason codes were invalid',
                     safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_REASON_INVALID'})
+            manifest_fields=result.get('manifestMismatchFields',[])
+            if (not isinstance(manifest_fields,list) or len(manifest_fields)>250 or
+                    any(not isinstance(field,str) or not re.fullmatch(
+                        r'manifest(?:\.chunkIndex|\.chunkId|\.chunkDigest|\.planId|\.runId|\.rows|\.rows\.length|\.rows\[\d{1,2}\]\.(?:target|preview|tab|row|code|cellsDigest|formulaA|serviceMetadata(?:\.(?:addedAt|planId|runId))?))?',field)
+                        for field in manifest_fields)):
+                raise ExecutionPreflightError('Read-only APPEND manifest field names were invalid',
+                    safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_MANIFEST_FIELDS_INVALID'})
             return {'status':result['status'],'request_id_matches':True,'plan_binding':'PASS',
                 'details_binding':'PASS','chunk_binding':'PASS','manifest_binding':result.get('manifestBinding'),
                 'counts':{key:counts[key] for key in count_fields},
                 'first_chunk_recovery_evidence':result['firstChunkRecoveryEvidence'],
-                'reason_codes':reasons,'read_only':True,'sqlite_writes':0,
+                'reason_codes':reasons,'manifest_mismatch_fields':manifest_fields,
+                'read_only':True,'sqlite_writes':0,
                 'sheets_writes':0,'properties_writes':0}
         if action == 'preview' and not is_canonical_sha256_b64url(result.get('digest')):
             raise ExecutionOutcomeUnknown('Invalid Preview receipt')
@@ -3056,6 +3145,22 @@ def _append_audit_row_digest(item,request_id):
     return _sha256_b64(_canonical_json(projection).encode('utf-8'))
 
 
+def _append_audit_field_digests(item):
+    values=['']*15;formulas=['']*15;formula_columns=set()
+    for cell in item['cells']:
+        column=ord(cell['column'])-ord('A')
+        if cell['formula']:
+            formulas[column]=cell.get('new_value') or '';formula_columns.add(column)
+        else: values[column]=_append_audit_comparable_value(cell.get('new_value'),column)
+    result=[]
+    for column in range(15):
+        if column in formula_columns: projection={'kind':'formula','value':formulas[column]}
+        elif values[column] not in ('',None): projection={'kind':'value','value':values[column]}
+        else: projection={'kind':'blank','value':''}
+        result.append([projection['kind'],_sha256_b64(_canonical_json(projection).encode('utf-8'))])
+    return result
+
+
 def diagnose_append_only_plan(path, client, request_id, actor):
     """Read-only saved-plan audit, independent from strict first-chunk recovery evidence."""
     def blocked(code):
@@ -3162,7 +3267,7 @@ def diagnose_append_only_plan(path, client, request_id, actor):
             recovery_reasons.append('RECOVERY_RECEIPT_OR_CHECKPOINT_PRESENT')
 
     counts={'planned':len(targets),'confirmed':0,'missing':0,'conflict':0,'unverified':0,'remaining':0}
-    audit_reasons=[]
+    audit_reasons=[];conflict_reports=[]
     audit_targets=[[item['tab'],item['code'],item['row'],_append_audit_row_digest(item,request_id)]
                    for item in targets]
     audit_targets_digest=_sha256_b64(_canonical_json(audit_targets).encode('utf-8'))
@@ -3173,11 +3278,40 @@ def diagnose_append_only_plan(path, client, request_id, actor):
             source_digest=plan['source_digest'],plan_id=request_id,total_append_count=len(targets),
             diagnostic_mode='audit',audit_targets=audit_targets,audit_targets_digest=audit_targets_digest)
         counts=remote['counts'];audit_reasons.extend(remote['reason_codes'])
+        conflict_reports=[]
+        field_items=[];field_expected={item['code']:item for item in targets}
+        for conflict in remote.get('conflicts',[]):
+            if conflict['fields']:
+                conflict_reports.append({'code':conflict['code'],'fields':conflict['fields'],
+                    'detail_status':'VERIFIED'})
+            else:
+                expected=field_expected.get(conflict['code'])
+                if expected and is_canonical_sha256_b64url(conflict.get('observed_digest')):
+                    field_items.append([expected['tab'],expected['code'],expected['row'],
+                        conflict['observed_digest'],_append_audit_field_digests(expected)])
+                else:
+                    conflict_reports.append({'code':conflict['code'],'fields':[],'detail_status':'UNVERIFIED'})
+        for offset in range(0,len(field_items),APPEND_JOURNAL_PAGE_ROWS):
+            page=field_items[offset:offset+APPEND_JOURNAL_PAGE_ROWS]
+            try:
+                field_digest=_sha256_b64(_canonical_json(page).encode('utf-8'))
+                field_result=client.invoke('diagnose_append_plan',request_id,actor,trigger='manual',
+                    digest=plan['append_only_digest'],plan_scope='APPEND_ONLY',manual_authorized=True,
+                    details_digest=plan['details_digest'],full_plan_digest=plan['plan_digest'],
+                    source_digest=plan['source_digest'],plan_id=request_id,total_append_count=len(targets),
+                    diagnostic_mode='audit_fields',audit_field_targets=page,
+                    audit_field_targets_digest=field_digest)
+                conflict_reports.extend({'code':item['code'],'fields':item['fields'],
+                    'detail_status':item['status']} for item in field_result['conflicts'])
+            except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,
+                    ValueError,KeyError,TypeError):
+                conflict_reports.extend({'code':item[1],'fields':[],'detail_status':'UNVERIFIED'}
+                                         for item in page)
     except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,ValueError,KeyError,TypeError) as exc:
         safe=getattr(exc,'safe_error',None);code=safe.get('diagnostic_code') if isinstance(safe,dict) else None
         if code is None and isinstance(exc,ValueError) and 'envelope exceeds the read-only limit' in str(exc):
             code='APPEND_AUDIT_PAYLOAD_TOO_LARGE'
-        counts['unverified']=len(targets);counts['remaining']=len(targets)
+        counts['unverified']=len(targets);counts['remaining']=len(targets);conflict_reports=[]
         audit_reasons=[code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9_]{1,64}',code)
                        else 'APPS_SCRIPT_AUDIT_UNAVAILABLE']
     counts['remaining']=counts['planned']-counts['confirmed']
@@ -3188,7 +3322,7 @@ def diagnose_append_only_plan(path, client, request_id, actor):
     if counts['unverified'] and 'ROW_READBACK_UNVERIFIED' not in audit_reasons:
         audit_reasons.append('ROW_READBACK_UNVERIFIED')
 
-    first_chunk_recovery=False
+    first_chunk_recovery=False;manifest_mismatch_fields=[]
     if not recovery_reasons and chunk is not None:
         try:
             targets_for_recovery=[{'tab':item['tab'],'code':item['code'],'row':item['row']} for item in targets]
@@ -3200,6 +3334,7 @@ def diagnose_append_only_plan(path, client, request_id, actor):
                 total_append_count=len(targets),diagnostic_mode='recovery')
             first_chunk_recovery=remote.get('first_chunk_recovery_evidence') is True
             recovery_reasons.extend(remote.get('reason_codes',[]))
+            manifest_mismatch_fields=remote.get('manifest_mismatch_fields',[])
         except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,ValueError,KeyError,TypeError) as exc:
             safe=getattr(exc,'safe_error',None);code=safe.get('diagnostic_code') if isinstance(safe,dict) else None
             recovery_reasons.append(code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9_]{1,64}',code)
@@ -3212,8 +3347,10 @@ def diagnose_append_only_plan(path, client, request_id, actor):
     return {'status':'DIAGNOSED' if counts['unverified']==0 else 'READ_INCOMPLETE',
         'request_id':request_id,'planned':len(targets),'counts':counts,
         'reason_codes':list(dict.fromkeys(audit_reasons)),
+        'conflicts':sorted(conflict_reports,key=lambda item:item['code']),
         'recovery_status':'READY' if first_chunk_recovery else 'BLOCKED',
         'recovery_reason_codes':list(dict.fromkeys(recovery_reasons)),
+        'recovery_field_mismatches':manifest_mismatch_fields,
         'first_chunk_recovery_evidence':first_chunk_recovery,'read_only':True,
         'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
 

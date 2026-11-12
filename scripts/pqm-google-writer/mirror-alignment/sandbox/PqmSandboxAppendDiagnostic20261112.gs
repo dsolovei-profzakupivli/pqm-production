@@ -18,10 +18,13 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
     'spreadsheetId','totalAppendCount','trigger'];
   var recoveryKeys=baseKeys.concat(['chunkDigest','chunkId','chunkIndex','diagnosticMode','targetIdentities']);
   var auditKeys=baseKeys.concat(['auditTargets','auditTargetsDigest','chunkIndex','diagnosticMode']);
+  var auditFieldKeys=baseKeys.concat(['auditFieldTargets','auditFieldTargetsDigest','chunkIndex','diagnosticMode']);
   var auditMode=request && request.diagnosticMode==='audit';
-  var keys=auditMode?auditKeys:recoveryKeys;
+  var auditFieldsMode=request && request.diagnosticMode==='audit_fields';
+  var keys=auditMode?auditKeys:(auditFieldsMode?auditFieldKeys:recoveryKeys);
   if (!request || Object.keys(request).sort().join('|')!==keys.sort().join('|') ||
-      request.action!=='diagnose_append_plan' || request.diagnosticMode!==(auditMode?'audit':'recovery') ||
+      request.action!=='diagnose_append_plan' ||
+      request.diagnosticMode!==(auditMode?'audit':(auditFieldsMode?'audit_fields':'recovery')) ||
       request.environment!=='SANDBOX' ||
       request.planScope!=='APPEND_ONLY' || request.trigger!=='manual' ||
       request.contract!=='pqm-mirror-datetime-v1' ||
@@ -42,11 +45,16 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
         request.auditTargets.length!==request.totalAppendCount ||
         !pqmSandboxIsCanonicalDigest_(request.auditTargetsDigest) ||
         pqmSandboxControlledDigest_(request.auditTargets)!==request.auditTargetsDigest)) ||
-      (!auditMode && (!pqmSandboxIsCanonicalDigest_(request.chunkDigest) ||
+      (auditFieldsMode && (!Array.isArray(request.auditFieldTargets) ||
+        request.auditFieldTargets.length<1 || request.auditFieldTargets.length>25 ||
+        !pqmSandboxIsCanonicalDigest_(request.auditFieldTargetsDigest) ||
+        pqmSandboxControlledDigest_(request.auditFieldTargets)!==request.auditFieldTargetsDigest)) ||
+      (!auditMode && !auditFieldsMode && (!pqmSandboxIsCanonicalDigest_(request.chunkDigest) ||
         !/^[0-9a-f]{32}$/.test(request.chunkId||'') || !Array.isArray(request.targetIdentities) ||
         request.targetIdentities.length!==request.totalAppendCount || request.targetIdentities.length>10000)))
     throw new Error('PQM: APPEND diagnostic binding rejected');
   if (auditMode) pqmSandboxValidateAppendAuditTargets_(request.auditTargets);
+  else if (auditFieldsMode) pqmSandboxValidateAppendAuditFieldTargets_(request.auditFieldTargets);
   else {
     var seen={};
     request.targetIdentities.forEach(function(item) {
@@ -66,6 +74,7 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
       return pqmSandboxAppendDiagnosticBlocked_(request,'SPREADSHEET_IDENTITY_REJECTED');
     PQM_EXECUTION_CONTEXT_={spreadsheet:spreadsheet};
     if (auditMode) return pqmSandboxAuditAppendRowsReadOnly_(request.spreadsheetId,request);
+    if (auditFieldsMode) return pqmSandboxAuditAppendFieldsReadOnly_(request.spreadsheetId,request);
     var key='PQM_EXECUTION_RUN_'+request.requestId;
     return pqmSandboxDiagnoseAppendPlan_(request.spreadsheetId,properties,key,
       properties.getProperty(key),request);
@@ -85,6 +94,15 @@ function pqmSandboxAppendDiagnosticBlocked_(request,code) {
       auditTargetsDigest:request.auditTargetsDigest,
       counts:{planned:pageTotal,confirmed:0,missing:0,conflict:0,unverified:pageTotal,remaining:pageTotal},
       reasonCodes:[code],readOnly:true};
+  }
+  if (request.diagnosticMode==='audit_fields') {
+    return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
+      contract:request.contract,requestId:request.requestId,status:'READ_INCOMPLETE',diagnosticMode:'audit_fields',
+      planScope:'APPEND_ONLY',digest:request.expectedDigest,detailsDigest:request.detailsDigest,
+      fullPlanDigest:request.fullPlanDigest,sourceDigest:request.sourceDigest,planId:request.planId,
+      auditFieldTargetsDigest:request.auditFieldTargetsDigest,
+      conflicts:(request.auditFieldTargets||[]).map(function(item){return {code:item[1],status:'UNVERIFIED',fields:[]};}),
+      readOnly:true};
   }
   var total=request.totalAppendCount;
   return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
@@ -107,14 +125,111 @@ function pqmSandboxValidateAppendAuditTargets_(targets) {
   });
 }
 
+function pqmSandboxValidateAppendAuditFieldTargets_(targets) {
+  var seen={};
+  targets.forEach(function(item) {
+    if (!Array.isArray(item) || item.length!==5 || ['ФОП','ЮО'].indexOf(item[0])<0 ||
+        typeof item[1]!=='string' || !/^\d{8,10}$/.test(item[1]) || !Number.isInteger(item[2]) ||
+        item[2]<2 || seen[item[1]] || !pqmSandboxIsCanonicalDigest_(item[3]) ||
+        !Array.isArray(item[4]) || item[4].length!==15 ||
+        item[4].some(function(value){return !Array.isArray(value) || value.length!==2 ||
+          ['blank','value','formula'].indexOf(value[0])<0 || !pqmSandboxIsCanonicalDigest_(value[1]);}))
+      throw new Error('PQM: APPEND audit field target rejected');
+    seen[item[1]]=true;
+  });
+}
+
+function pqmSandboxAuditAppendFieldsReadOnly_(spreadsheetId,request) {
+  var targets=request.auditFieldTargets,located={},formulaRows={},metadataRows={},failed=false;
+  function response(status,conflicts) {
+    return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
+      contract:request.contract,requestId:request.requestId,status:status,diagnosticMode:'audit_fields',
+      planScope:'APPEND_ONLY',digest:request.expectedDigest,detailsDigest:request.detailsDigest,
+      fullPlanDigest:request.fullPlanDigest,sourceDigest:request.sourceDigest,planId:request.planId,
+      auditFieldTargetsDigest:request.auditFieldTargetsDigest,conflicts:conflicts,readOnly:true};
+  }
+  var tabs;
+  try { tabs=pqmGoogleSnapshot_(spreadsheetId,null); }
+  catch (_) { return response('READ_INCOMPLETE',targets.map(function(item){
+    return {code:item[1],status:'UNVERIFIED',fields:[]};})); }
+  if (!tabs || PQM_GOOGLE_TABS.some(function(name){return !tabs[name] || !Array.isArray(tabs[name].rows);}))
+    return response('READ_INCOMPLETE',targets.map(function(item){return {code:item[1],status:'UNVERIFIED',fields:[]};}));
+  var byCode={};targets.forEach(function(item){byCode[item[1]]=[];});
+  PQM_GOOGLE_TABS.forEach(function(tab){tabs[tab].rows.forEach(function(row,index){
+    var code=String(row.codeDisplay||'').trim();
+    if (Object.prototype.hasOwnProperty.call(byCode,code)) byCode[code].push({tab:tab,row:index+2,record:row});
+  });});
+  var conflicts=targets.map(function(item){
+    var found=byCode[item[1]]||[],fields=[];
+    if (found.length!==1) return {code:item[1],status:'ROW_CHANGED',fields:[found.length>1?'duplicate':'row']};
+    if (found[0].tab!==item[0]) fields.push('tab');
+    if (found[0].row!==item[2]) fields.push('row');
+    if (fields.length) return {code:item[1],status:'ROW_CHANGED',fields:fields};
+    located[item[1]]=found[0];
+    return null;
+  });
+  if (conflicts.some(function(item){return item!==null;})) {
+    conflicts=conflicts.map(function(item,index){return item||{code:targets[index][1],status:'UNVERIFIED',fields:[]};});
+    return response('AUDIT_DETAILS',conflicts);
+  }
+  try {
+    var formulaRanges=targets.map(function(item){return "'"+item[0].replace(/'/g,"''")+"'!A"+item[2]+':O'+item[2];});
+    var serviceRanges=targets.map(function(item){return "'"+item[0].replace(/'/g,"''")+"'!Q"+item[2]+':S'+item[2];});
+    var formulas=Sheets.Spreadsheets.Values.batchGet(spreadsheetId,
+      {ranges:formulaRanges,valueRenderOption:'FORMULA'});
+    var services=Sheets.Spreadsheets.Values.batchGet(spreadsheetId,
+      {ranges:serviceRanges,valueRenderOption:'UNFORMATTED_VALUE'});
+    if (!formulas || !Array.isArray(formulas.valueRanges) || formulas.valueRanges.length!==targets.length ||
+        !services || !Array.isArray(services.valueRanges) || services.valueRanges.length!==targets.length)
+      throw new Error('incomplete');
+    targets.forEach(function(item,index){
+      formulaRows[item[1]]=formulas.valueRanges[index] && formulas.valueRanges[index].values && formulas.valueRanges[index].values[0];
+      metadataRows[item[1]]=services.valueRanges[index] && services.valueRanges[index].values && services.valueRanges[index].values[0];
+      if (!Array.isArray(formulaRows[item[1]]) || !Array.isArray(metadataRows[item[1]])) failed=true;
+    });
+  } catch (_) { failed=true; }
+  if (failed) return response('READ_INCOMPLETE',targets.map(function(item){
+    return {code:item[1],status:'UNVERIFIED',fields:[]};}));
+
+  conflicts=targets.map(function(item,index){
+    var actual=located[item[1]],formulaRow=formulaRows[item[1]],metadata=metadataRows[item[1]];
+    var q=String(metadata[0]||''),r=String(metadata[1]||''),s=String(metadata[2]||''),fields=[];
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(q)) fields.push('metadata:Q');
+    if (r!==request.planId) fields.push('metadata:R');
+    if (s!==request.requestId) fields.push('metadata:S');
+    var values=Array(15).fill(''),formulas=Array(15).fill('');
+    for (var column=0;column<15;column++) {
+      var f=formulaRow[column];
+      if (typeof f==='string' && f.charAt(0)==='=') formulas[column]=f;
+      else values[column]=pqmSandboxExecutionComparableValue_((actual.record.values||[])[column],column);
+    }
+    var projection={tab:item[0],row:item[2],code:item[1],values:values,formulas:formulas,
+      service:{addedAtValid:true,planId:r,runId:s}};
+    if (pqmSandboxControlledDigest_(projection)!==item[3])
+      return {code:item[1],status:'UNVERIFIED',fields:[]};
+    var differences=[];
+    for (var c=0;c<15;c++) {
+      var formulaValue=formulaRow[c],isFormula=typeof formulaValue==='string'&&formulaValue.charAt(0)==='=';
+      var kind=isFormula?'formula':(pqmGoogleBlank_(actual.record.values[c])?'blank':'value');
+      var value=isFormula?formulaValue:(kind==='blank'?'':pqmSandboxExecutionComparableValue_(actual.record.values[c],c));
+      var expectedCell=item[4][c];
+      if (expectedCell[0]!==kind || pqmSandboxControlledDigest_({kind:kind,value:value})!==expectedCell[1])
+        differences.push((expectedCell[0]==='formula'||kind==='formula'?'formula:':'value:')+String.fromCharCode(65+c));
+    }
+    return {code:item[1],status:differences.length?'ROW_CHANGED':'UNVERIFIED',fields:differences};
+  });
+  return response('AUDIT_DETAILS',conflicts);
+}
+
 function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request) {
   var targets=request.auditTargets,total=targets.length;
-  function response(status,counts,reasons) {
+  function response(status,counts,reasons,conflicts) {
     return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
       contract:request.contract,requestId:request.requestId,status:status,diagnosticMode:'audit',
       planScope:'APPEND_ONLY',digest:request.expectedDigest,detailsDigest:request.detailsDigest,
       fullPlanDigest:request.fullPlanDigest,sourceDigest:request.sourceDigest,planId:request.planId,
-      auditTargetsDigest:request.auditTargetsDigest,counts:counts,reasonCodes:reasons,readOnly:true};
+      auditTargetsDigest:request.auditTargetsDigest,counts:counts,reasonCodes:reasons,
+      conflicts:conflicts||[],readOnly:true};
   }
   var counts={planned:total,confirmed:0,missing:0,conflict:0,unverified:0,remaining:0};
   var reasons=[],tabs;
@@ -135,10 +250,15 @@ function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request) {
         requested[code].push({tab:name,row:index+2,record:row});
     });
   });
-  var outcomes=targets.map(function(item){
+  var conflictDetails=Array(total).fill(null);
+  var outcomes=targets.map(function(item,index){
     var found=requested[item[1]]||[];
     if (!found.length) return 'missing';
-    if (found.length!==1 || found[0].tab!==item[0] || found[0].row!==item[2]) return 'conflict';
+    if (found.length!==1) {conflictDetails[index]={code:item[1],fields:['duplicate']};return 'conflict';}
+    var fields=[];
+    if (found[0].tab!==item[0]) fields.push('tab');
+    if (found[0].row!==item[2]) fields.push('row');
+    if (fields.length) {conflictDetails[index]={code:item[1],fields:fields};return 'conflict';}
     return null;
   });
   var formulaByTab={},formulaFailed=false;
@@ -191,10 +311,11 @@ function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request) {
     var metadataGroup=service[item[0]],metadata=metadataGroup&&metadataGroup.values[item[2]-metadataGroup.first];
     if (!actual || !Array.isArray(formulaRow) || !Array.isArray(metadata)) {outcomes[index]='unverified';return;}
     var addedAt=String(metadata[0]||''),planId=String(metadata[1]||''),runId=String(metadata[2]||'');
-    if (planId!==request.planId || runId!==request.requestId ||
-        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(addedAt)) {
-      outcomes[index]='conflict';return;
-    }
+    var metadataFields=[];
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(addedAt)) metadataFields.push('metadata:Q');
+    if (planId!==request.planId) metadataFields.push('metadata:R');
+    if (runId!==request.requestId) metadataFields.push('metadata:S');
+    if (metadataFields.length) {outcomes[index]='conflict';conflictDetails[index]={code:item[1],fields:metadataFields};return;}
     var values=Array(15).fill(''),formulas=Array(15).fill('');
     for (var column=0;column<15;column++) {
       var formulaValue=formulaRow[column];
@@ -203,29 +324,34 @@ function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request) {
     }
     var projection={tab:item[0],row:item[2],code:item[1],values:values,formulas:formulas,
       service:{addedAtValid:true,planId:planId,runId:runId}};
-    if (pqmSandboxControlledDigest_(projection)!==item[3]) outcomes[index]='conflict';
+    if (pqmSandboxControlledDigest_(projection)!==item[3]) {
+      outcomes[index]='conflict';
+      conflictDetails[index]={code:item[1],fields:[],observed_digest:pqmSandboxControlledDigest_(projection)};
+    }
   });
   outcomes.forEach(function(value){counts[value||'confirmed']++;});
   counts.remaining=counts.planned-counts.confirmed;
   if (counts.missing) reasons.push('TARGET_ROWS_MISSING');
   if (counts.conflict) reasons.push('TARGET_CONFLICT');
   if (counts.unverified) reasons.push('ROW_READBACK_UNVERIFIED');
-  return response(counts.unverified?'READ_INCOMPLETE':'AUDITED',counts,reasons);
+  var reportedConflicts=conflictDetails.filter(function(item){return item!==null;});
+  return response(counts.unverified?'READ_INCOMPLETE':'AUDITED',counts,reasons,reportedConflicts);
 }
 
 function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request) {
   var targets=request.targetIdentities,total=targets.length;
-  function summary(status,counts,reasons,manifestBinding,firstChunkReady) {
+  function summary(status,counts,reasons,manifestBinding,firstChunkReady,manifestMismatchFields) {
     return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
       contract:request.contract,requestId:request.requestId,status:status,planScope:'APPEND_ONLY',
       digest:request.expectedDigest,detailsDigest:request.detailsDigest,fullPlanDigest:request.fullPlanDigest,
       sourceDigest:request.sourceDigest,chunkId:request.chunkId,chunkDigest:request.chunkDigest,
       planId:request.planId,chunkIndex:0,counts:counts,reasonCodes:reasons,
-      manifestBinding:manifestBinding,firstChunkRecoveryEvidence:firstChunkReady===true,readOnly:true};
+      manifestBinding:manifestBinding,manifestMismatchFields:manifestMismatchFields||[],
+      firstChunkRecoveryEvidence:firstChunkReady===true,readOnly:true};
   }
-  function allUnverified(code) {
+  function allUnverified(code,manifestMismatchFields) {
     return summary('BLOCKED',{planned:total,confirmed:0,missing:0,conflict:0,unverified:total,remaining:total},
-      [code],'BLOCKED',false);
+      [code],'BLOCKED',false,manifestMismatchFields||[]);
   }
   if (!stored || properties.getProperty('PQM_EXECUTION_UNCERTAIN')!==request.requestId)
     return allUnverified('UNCERTAINTY_MARKER_MISMATCH');
@@ -239,10 +365,19 @@ function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request) {
   var manifest;
   try { manifest=pqmExecutionCheckpointResolveManifest_(properties,request.requestId,record.inflightManifest); }
   catch (_) { return allUnverified('MANIFEST_READ_INCOMPLETE'); }
-  if (!manifest || manifest.chunkIndex!==0 || manifest.chunkId!==request.chunkId ||
-      manifest.chunkDigest!==request.chunkDigest || manifest.planId!==request.requestId ||
-      manifest.runId!==request.requestId || !Array.isArray(manifest.rows) ||
-      manifest.rows.length!==Math.min(25,total)) return allUnverified('MANIFEST_BINDING_MISMATCH');
+  var manifestHeaderMismatches=[];
+  if (!manifest) manifestHeaderMismatches.push('manifest');
+  else {
+    if (manifest.chunkIndex!==0) manifestHeaderMismatches.push('manifest.chunkIndex');
+    if (manifest.chunkId!==request.chunkId) manifestHeaderMismatches.push('manifest.chunkId');
+    if (manifest.chunkDigest!==request.chunkDigest) manifestHeaderMismatches.push('manifest.chunkDigest');
+    if (manifest.planId!==request.requestId) manifestHeaderMismatches.push('manifest.planId');
+    if (manifest.runId!==request.requestId) manifestHeaderMismatches.push('manifest.runId');
+    if (!Array.isArray(manifest.rows)) manifestHeaderMismatches.push('manifest.rows');
+    else if (manifest.rows.length!==Math.min(25,total)) manifestHeaderMismatches.push('manifest.rows.length');
+  }
+  if (manifestHeaderMismatches.length)
+    return allUnverified('MANIFEST_BINDING_MISMATCH',manifestHeaderMismatches);
   var loaded;
   try { loaded=pqmSandboxFullLoad_(id); } catch (_) { return allUnverified('SHEET_OR_SOURCE_READ_INCOMPLETE'); }
   if (!loaded || !loaded.state || loaded.state.payload_digest!==request.sourceDigest)
@@ -340,14 +475,29 @@ function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request) {
         outcome[index]='conflict';
     }
   });
-  var manifestBinding=true;
+  var manifestBinding=true,manifestMismatchFields=[];
   manifest.rows.forEach(function(item,index) {
+    if (!item || typeof item!=='object' || Array.isArray(item)) {
+      manifestMismatchFields.push('manifest.rows');return;
+    }
     var target=targets[index],change=target&&expectedByCode.get(target.code);
-    if (!target || !change || item.tab!==target.tab || item.row!==target.row || item.code!==target.code ||
-        item.cellsDigest!==pqmSandboxControlledDigest_(change.cells) || item.formulaA!==change.cells[0] ||
-        !item.serviceMetadata || item.serviceMetadata.planId!==request.requestId ||
-        item.serviceMetadata.runId!==request.requestId) manifestBinding=false;
+    if (!target) manifestMismatchFields.push('manifest.rows['+index+'].target');
+    if (!change) manifestMismatchFields.push('manifest.rows['+index+'].preview');
+    if (item.tab!==(target&&target.tab)) manifestMismatchFields.push('manifest.rows['+index+'].tab');
+    if (item.row!==(target&&target.row)) manifestMismatchFields.push('manifest.rows['+index+'].row');
+    if (item.code!==(target&&target.code)) manifestMismatchFields.push('manifest.rows['+index+'].code');
+    if (item.cellsDigest!==(change&&pqmSandboxControlledDigest_(change.cells)))
+      manifestMismatchFields.push('manifest.rows['+index+'].cellsDigest');
+    if (item.formulaA!==(change&&change.cells[0])) manifestMismatchFields.push('manifest.rows['+index+'].formulaA');
+    if (!item.serviceMetadata) manifestMismatchFields.push('manifest.rows['+index+'].serviceMetadata');
+    else {
+      if (item.serviceMetadata.planId!==request.requestId)
+        manifestMismatchFields.push('manifest.rows['+index+'].serviceMetadata.planId');
+      if (item.serviceMetadata.runId!==request.requestId)
+        manifestMismatchFields.push('manifest.rows['+index+'].serviceMetadata.runId');
+    }
   });
+  manifestBinding=manifestMismatchFields.length===0;
   if (!manifestBinding) for (var m=0;m<manifest.rows.length;m++)
     if (outcome[m]===null) outcome[m]='unverified';
   var groups=[];
@@ -380,5 +530,5 @@ function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request) {
   var firstReady=manifestBinding&&manifest.rows.length===Math.min(25,total)&&
     outcome.slice(0,manifest.rows.length).every(function(value){return value===null;});
   return summary(counts.unverified?'READ_INCOMPLETE':'DIAGNOSED',counts,reasons,
-    manifestBinding?'PASS':'BLOCKED',firstReady);
+    manifestBinding?'PASS':'BLOCKED',firstReady,manifestMismatchFields);
 }
