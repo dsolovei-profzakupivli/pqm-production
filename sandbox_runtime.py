@@ -538,6 +538,30 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             len(audit_targets or [])==payload['totalAppendCount'] and audit_targets_valid and
             is_canonical_sha256_b64url(payload.get('auditTargetsDigest')) and
             payload.get('auditTargetsDigest')==audit_targets_digest)
+        append_audit_recovery_shape = (append_diagnostic_endpoint and action == 'diagnose_append_plan' and
+            set(payload) == {'environment','scriptId','spreadsheetId','contract','action','requestId','actor',
+                'trigger','issuedAt','expiresAt','expectedDigest','planScope','chunkIndex','chunkId','chunkDigest',
+                'planId','detailsDigest','fullPlanDigest','sourceDigest','totalAppendCount','diagnosticMode',
+                'auditTargets','auditTargetsDigest'} and
+            payload.get('diagnosticMode')=='audit_recovery' and payload.get('environment')=='SANDBOX' and
+            payload.get('planScope')=='APPEND_ONLY' and isinstance(payload.get('requestId'),str) and
+            re.fullmatch(r'[0-9a-f]{32}',payload['requestId']) and
+            payload['requestId'] not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            isinstance(payload.get('actor'),str) and bool(payload['actor'].strip()) and len(payload['actor'])<=128 and
+            payload.get('trigger')=='manual' and type(payload.get('issuedAt')) is int and
+            type(payload.get('expiresAt')) is int and payload['issuedAt']<payload['expiresAt']<=payload['issuedAt']+300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('detailsDigest')) and
+            is_canonical_sha256_b64url(payload.get('fullPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('sourceDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex']==0 and
+            re.fullmatch(r'[0-9a-f]{32}',str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId')==payload.get('requestId') and
+            type(payload.get('totalAppendCount')) is int and 1<=payload['totalAppendCount']<=10000 and
+            len(audit_targets or [])==payload['totalAppendCount'] and audit_targets_valid and
+            is_canonical_sha256_b64url(payload.get('auditTargetsDigest')) and
+            payload.get('auditTargetsDigest')==audit_targets_digest)
         audit_field_targets=payload.get('auditFieldTargets')
         audit_field_codes=set()
         audit_field_targets_valid=isinstance(audit_field_targets,list) and 1<=len(audit_field_targets)<=25
@@ -727,7 +751,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             is_canonical_sha256_b64url(payload.get('evidenceDigest'))
         )
         if (set(body) != {'function', 'devMode', 'parameters'} or
-                not (legacy_shape or all_scope_shape or append_diagnostic_shape or append_audit_page_shape or append_audit_fields_shape or close_unknown_shape or prewrite_preflight_shape or prewrite_close_shape) or body['devMode'] is not False or
+                not (legacy_shape or all_scope_shape or append_diagnostic_shape or append_audit_page_shape or append_audit_recovery_shape or append_audit_fields_shape or close_unknown_shape or prewrite_preflight_shape or prewrite_close_shape) or body['devMode'] is not False or
                 len(body['parameters']) != 1 or
                 set(envelope) != {'payload', 'signature'} or
                 not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or

@@ -37,6 +37,26 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
             'https://script.googleapis.com/v1/scripts/'+self.deployment+':run')
         self.assertEqual(json.loads(request.data)['function'],'pqmSandboxAppendDiagnostic20261112')
         result={key:payload[key] for key in ('environment','scriptId','spreadsheetId','contract','requestId')}
+        if payload.get('diagnosticMode')=='audit_recovery':
+            rows=payload['auditTargets']
+            result.update(status='AUDITED',diagnosticMode='audit_recovery',planScope='APPEND_ONLY',
+                digest=payload['expectedDigest'],detailsDigest=payload['detailsDigest'],
+                fullPlanDigest=payload['fullPlanDigest'],sourceDigest=payload['sourceDigest'],
+                planId=payload['planId'],chunkId=payload['chunkId'],chunkDigest=payload['chunkDigest'],
+                chunkIndex=0,auditTargetsDigest=payload['auditTargetsDigest'],
+                counts={'planned':len(rows),'confirmed':25,'missing':len(rows)-25,
+                    'conflict':0,'unverified':0,'remaining':len(rows)-25},reasonCodes=[],conflicts=[],
+                recoveryStatus='DIAGNOSED',recoveryReasonCodes=[],manifestBinding='PASS',
+                manifestMismatchFields=[],firstChunkRecoveryEvidence=True,
+                reconstructionChecks={'fullPreviewDigest':'MATCH','appendOnlyDigest':'MATCH',
+                    'plannedAppendCount':'MATCH','appendOperationCount':'MATCH'},
+                downstreamChecks={'sourceBinding':'MATCH','planSafety':'MATCH','targetRows':'MATCH',
+                    'rowValuesAndFormulas':'MATCH','serviceMetadata':'MATCH','manifestRows':'MATCH',
+                    'appendRowMetadata':'MATCH'},stageDurationsMs={'dataAcquisitionMs':1000,
+                    'previewReconstructionMs':50,'manifestVerificationMs':20,'responseBuildMs':1,
+                    'totalMs':1071},readOnly=True)
+            if self.response_mutator: self.response_mutator(result)
+            return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
         if payload.get('diagnosticMode')=='audit':
             rows=payload['auditTargets']
             result.update(status='AUDITED',diagnosticMode='audit',planScope='APPEND_ONLY',
@@ -83,6 +103,20 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
             plan_id='d'*32,details_digest=self.digest('details'),full_plan_digest=self.digest('full'),
             source_digest=self.digest('source'),total_append_count=276,diagnostic_mode='audit',
             audit_targets=rows,audit_targets_digest=targets_digest)
+
+    def invoke_combined(self):
+        audit_targets=[]
+        for i in range(276):
+            tab='ФОП' if i%2==0 else 'ЮО';code=f'{10000000+i:08d}';row=2+(i//2)
+            audit_targets.append([tab,code,row,self.digest(f'row-{i}')])
+        targets_digest=self.digest(execution._canonical_json(audit_targets))
+        return self.client.invoke('diagnose_append_plan','d'*32,'sandbox-admin',trigger='manual',
+            digest=self.digest('append'),plan_scope='APPEND_ONLY',manual_authorized=True,
+            chunk_index=0,chunk_id='c'*32,chunk_digest=self.digest('chunk'),plan_id='d'*32,
+            details_digest=self.digest('details'),full_plan_digest=self.digest('full'),
+            source_digest=self.digest('source'),total_append_count=len(audit_targets),
+            diagnostic_mode='audit_recovery',audit_targets=audit_targets,
+            audit_targets_digest=targets_digest)
 
     @staticmethod
     def digest(value):
@@ -173,6 +207,41 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
             self.secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
         mutated=urllib.request.Request(self.calls[-1].full_url,data=json.dumps(body).encode(),
             headers=self.calls[-1].headers,method='POST')
+        with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+            runtime.validate_execution_request(mutated,'SANDBOX',execution.IDENTITIES['SANDBOX'][0],
+                execution.IDENTITIES['SANDBOX'][1],self.deployment)
+
+    def test_combined_call_binds_audit_and_recovery_and_returns_stage_timings(self):
+        result=self.invoke_combined()
+        self.assertEqual(len(self.calls),1)
+        self.assertEqual(result['counts']['confirmed'],25)
+        self.assertEqual(result['counts']['missing'],251)
+        self.assertTrue(result['first_chunk_recovery_evidence'])
+        self.assertEqual(result['stage_durations_ms']['totalMs'],1071)
+        raw=json.loads(self.calls[0].data)['parameters'][0]['payload']
+        payload=json.loads(raw)
+        self.assertEqual(payload['diagnosticMode'],'audit_recovery')
+        self.assertNotIn('targetIdentities',payload)
+        self.assertLessEqual(len(raw.encode('utf-16-le'))//2,32768)
+        self.assertEqual(runtime.validate_execution_request(self.calls[0],'SANDBOX',
+            execution.IDENTITIES['SANDBOX'][0],execution.IDENTITIES['SANDBOX'][1],self.deployment),
+            'script.googleapis.com')
+
+    def test_combined_response_fails_closed_when_recovery_check_is_unchecked(self):
+        self.response_mutator=lambda result: result['downstreamChecks'].update(manifestRows='NOT_CHECKED')
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'Combined APPEND recovery status was inconsistent'):
+            self.invoke_combined()
+        self.assertEqual(len(self.calls),1)
+
+    def test_combined_egress_rejects_missing_chunk_binding(self):
+        self.invoke_combined();original=self.calls[0]
+        body=json.loads(original.data);envelope=body['parameters'][0];payload=json.loads(envelope['payload'])
+        payload.pop('chunkDigest')
+        envelope['payload']=json.dumps(payload,ensure_ascii=False,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(__import__('hmac').new(
+            self.secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        mutated=urllib.request.Request(original.full_url,data=json.dumps(body).encode(),
+            headers=original.headers,method='POST')
         with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
             runtime.validate_execution_request(mutated,'SANDBOX',execution.IDENTITIES['SANDBOX'][0],
                 execution.IDENTITIES['SANDBOX'][1],self.deployment)

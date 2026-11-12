@@ -156,6 +156,9 @@ function pqmGoogleProtected_(tab, row, columns) {
 
 function pqmGooglePlan_(body, tabs, options) {
   options = options || {};
+  function diagnosticBudgetCheck() {
+    if (typeof options.diagnosticBudgetCheck === 'function') options.diagnosticBudgetCheck();
+  }
   pqmGoogleSchema_(body);
   var result = pqmGoogleCounts_(), perTab = {}, issues = [], conflicts = [], errors = [], changes = [], index = new Map(), apiKeys = new Map();
   result.api_records = body.items.length;
@@ -169,9 +172,11 @@ function pqmGooglePlan_(body, tabs, options) {
     issue(code, key, tab);
   }
   PQM_GOOGLE_TABS.forEach(function(name) {
+    diagnosticBudgetCheck();
     var t = tabs[name]; perTab[name] = pqmGoogleCounts_();
     if (!t || JSON.stringify(t.headers) !== JSON.stringify(PQM_GOOGLE_HEADERS)) throw new Error('PQM: header mismatch: ' + name);
     t.rows.forEach(function(row, i) {
+      diagnosticBudgetCheck();
       var raw = row.values[1];
       var key = String(row.codeDisplay === undefined ? (raw == null ? '' : raw) : row.codeDisplay).trim();
       if (!key) return;
@@ -179,7 +184,10 @@ function pqmGooglePlan_(body, tabs, options) {
       index.get(key).push({tab: name, row: i + 2, data: row});
     });
   });
-  body.items.forEach(function(x) { var k = x.supplier_code.trim(); apiKeys.set(k, (apiKeys.get(k) || 0) + 1); });
+  body.items.forEach(function(x) {
+    diagnosticBudgetCheck();
+    var k = x.supplier_code.trim(); apiKeys.set(k, (apiKeys.get(k) || 0) + 1);
+  });
   var duplicates = new Set();
   index.forEach(function(v, k) { if (v.length > 1) duplicates.add(k); });
   apiKeys.forEach(function(v, k) { if (v > 1) duplicates.add(k); });
@@ -200,6 +208,7 @@ function pqmGooglePlan_(body, tabs, options) {
   var nextRows = {};
   PQM_GOOGLE_TABS.forEach(function(t) { nextRows[t] = tabs[t].rows.length + 2; });
   body.items.forEach(function(x) {
+    diagnosticBudgetCheck();
     var key = x.supplier_code.trim();
     var name = x.entity_type === 'individual_entrepreneur' ? 'ФОП' : x.entity_type === 'legal_entity' ? 'ЮО' : null;
     function count(k) { result[k]++; if (name) perTab[name][k]++; }
@@ -411,26 +420,45 @@ function pqmGooglePlanComparisonAudit_(plan, tabs) {
 var PQM_GOOGLE_SNAPSHOT_VALUE_CHUNK_ROWS = 1000;
 var PQM_GOOGLE_SNAPSHOT_VALUES_BATCH_RANGES = 3;
 var PQM_GOOGLE_SNAPSHOT_H_BATCH_RANGES = 4;
-function pqmGoogleReadRetry_(action) {
+function pqmGoogleReadRetry_(action, budget) {
   for (var attempt = 0; attempt < 4; attempt++) {
-    try { return action(); }
+    if (budget && typeof budget.check==='function') budget.check();
+    try {
+      var result=action();
+      if (budget && typeof budget.check==='function') budget.check();
+      return result;
+    }
     catch (error) {
       var message = String((error && error.message) || error);
       var quota = (error && (error.code === 429 || error.responseCode === 429)) ||
         /(?:\b429\b|quota exceeded for quota metric ['"]?Read requests|read requests per minute per user)/i.test(message);
       if (!quota || attempt === 3) throw error;
-      Utilities.sleep(5000 * Math.pow(2, attempt));
+      var delay=5000 * Math.pow(2, attempt);
+      if (budget && Date.now()+delay>=budget.deadline) {
+        budget.expired=true;
+        throw new Error('PQM: APPEND diagnostic time budget exhausted');
+      }
+      Utilities.sleep(delay);
     }
   }
 }
-function pqmGoogleSnapshotProfileCall_(profile, phase, rows, cells, ranges, action) {
-  if (!profile) return pqmGoogleReadRetry_(action);
+function pqmGoogleSnapshotProfileCall_(profile, phase, rows, cells, ranges, action, budget) {
+  if (budget && typeof budget.check==='function') budget.check();
+  if (!profile) {
+    var direct=pqmGoogleReadRetry_(action,budget);
+    if (budget && typeof budget.check==='function') budget.check();
+    return direct;
+  }
   var entry = profile[phase] || (profile[phase] = {
     calls: 0, total_ms: 0, max_single_call_ms: 0,
     requested_rows: 0, requested_cells: 0, requested_ranges: 0
   });
   var started = Date.now();
-  try { return pqmGoogleReadRetry_(action); }
+  try {
+    var result=pqmGoogleReadRetry_(action,budget);
+    if (budget && typeof budget.check==='function') budget.check();
+    return result;
+  }
   finally {
     var elapsed = Date.now() - started;
     entry.calls++;
@@ -442,16 +470,17 @@ function pqmGoogleSnapshotProfileCall_(profile, phase, rows, cells, ranges, acti
   }
 }
 
-function pqmGoogleSnapshot_(spreadsheetId, profile) {
+function pqmGoogleSnapshot_(spreadsheetId, profile, budget) {
   var meta = pqmGoogleSnapshotProfileCall_(profile,'sheet_metadata',0,0,0,function(){
     return Sheets.Spreadsheets.get(spreadsheetId, {includeGridData:false,
       fields:'properties(locale),sheets(properties(title,sheetId,gridProperties(rowCount,columnCount)),merges,protectedRanges,conditionalFormats)'});
-  });
+  },budget);
   var formulaLocale = meta.properties && meta.properties.locale;
   var byName={}; (meta.sheets||[]).forEach(function(s){byName[s.properties.title]=s;});
   var tabs={};
   function blank(){return {values:Array(15).fill(''),formulas:Array(15).fill(''),codeDisplay:'',dateFormat:'',verificationDateFormat:''};}
   PQM_GOOGLE_TABS.forEach(function(name){
+    if (budget && typeof budget.check==='function') budget.check();
     var sheet=byName[name]; if(!sheet)return;
     var count=sheet.properties.gridProperties.rowCount, esc="'"+name.replace(/'/g,"''")+"'";
     var chunks=[];
@@ -461,7 +490,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
     function batchValues(ranges,render,phase,rows,cells){
       var result=pqmGoogleSnapshotProfileCall_(profile,phase,rows,cells,ranges.length,function(){
         return Sheets.Spreadsheets.Values.batchGet(spreadsheetId,{ranges:ranges,valueRenderOption:render});
-      });
+      },budget);
       if(!result||!Array.isArray(result.valueRanges)||result.valueRanges.length!==ranges.length){
         throw new Error('PQM: batched values response incomplete.');
       }
@@ -494,7 +523,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
         hPart.reduce(function(n,x){return n+(x.end-x.start+1)*2;},0),hRanges.length,function(){
           return Sheets.Spreadsheets.get(spreadsheetId,{ranges:hRanges,includeGridData:true,
             fields:'sheets(data(startRow,startColumn,rowData(values(userEnteredValue(formulaValue),userEnteredFormat(numberFormat)))))'});
-        });
+        },budget);
       var hData=((((hRaw.sheets||[])[0]||{}).data)||[]);
       if(hData.length!==hPart.length*2)throw new Error('PQM: H/I grid metadata response incomplete.');
       hData.forEach(function(data,i){
@@ -504,6 +533,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
     }
     var rows=[], highest=0;
     chunks.forEach(function(chunk,chunkIndex){
+      if (budget && typeof budget.check==='function') budget.check();
       var start=chunk.start,end=chunk.end;
       var values=dataValues[chunkIndex].values||[];
       for(var i=0;i<values.length;i++){var r=blank(),v=values[i]||[];for(var c=0;c<15;c++)r.values[c]=v[c]===undefined?'':v[c];if(v.length)highest=Math.max(highest,start+i);rows[start+i-2]=r;}
@@ -536,7 +566,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
         var fallback=pqmGoogleSnapshotProfileCall_(profile,'formula_disambiguation_A_B_C_D_E_F_L',end-start+1,(end-start+1)*suspicious.length,suspicious.length,function(){
           return Sheets.Spreadsheets.get(spreadsheetId,{ranges:suspectRanges,includeGridData:true,
             fields:'sheets(data(startRow,startColumn,rowData(values(userEnteredValue(formulaValue)))))'});
-        });
+        },budget);
         var fallbackData=((((fallback.sheets||[])[0]||{}).data)||[]);
         if(fallbackData.length!==suspicious.length)throw new Error('PQM: formula disambiguation incomplete.');
         var actualColumns=fallbackData.map(function(data){return data.startColumn===undefined?0:data.startColumn;}).sort().join(',');
@@ -549,7 +579,7 @@ function pqmGoogleSnapshot_(spreadsheetId, profile) {
     // Never add one here: a last-row value at physical row N has template A1=N.
     var template=highest >= 2 ? highest : 1, h=pqmGoogleSnapshotProfileCall_(profile,'template_row_height',1,1,1,function(){
       return Sheets.Spreadsheets.get(spreadsheetId,{ranges:[esc+'!A'+template+':A'+template],includeGridData:true,fields:'sheets(data(startRow,rowMetadata(pixelSize)))'});
-    });
+    },budget);
     var height=(((((h.sheets||[])[0]||{}).data||[])[0]||{}).rowMetadata||[])[0]||{};
     tabs[name]={id:sheet.properties.sheetId,maxRows:count,maxColumns:sheet.properties.gridProperties.columnCount,
       headers:(header.values||[])[0]||[],rows:rows.slice(0,Math.max(0,highest-1)),

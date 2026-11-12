@@ -12,7 +12,8 @@ const b64digest=value=>crypto.createHash('sha256').update(value).digest('base64u
 function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=false,failMetadata=false,manifestMismatch=false,
   manifestChunkIndex='absent',manifestOverrides={},recordOverrides={},fullDigestMismatch=false,
   appendDigestMismatch=false,plannedAppendCount=276,appendOperationCount=276,unsafePlan=false,
-  sourceMismatch=false,fieldMismatchCodes=[],formulaMismatchCodes=[]}={}) {
+  sourceMismatch=false,fieldMismatchCodes=[],formulaMismatchCodes=[],failSnapshot=false,failAuditFormulaRead=false,
+  mutateFormulaAfterSnapshot=false,snapshotAdvanceMs=0,plannerAdvanceMs=0,diagnosticBudgetMs=270000}={}) {
   const fullDigest=b64digest('full-preview'),appendDigest=b64digest('append-preview');
   const sourceDigest=b64digest('source'),detailsDigest=b64digest('details'),chunkDigest=b64digest('chunk');
   const targets=[],next={'ФОП':2,'ЮО':2};
@@ -61,8 +62,9 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
   if(manifestMismatch)manifest.chunkDigest=b64digest('different chunk');
   const properties=new Map([['PQM_EXECUTION_SHARED_SECRET',secret],['PQM_EXECUTION_UNCERTAIN',id],
     [`PQM_EXECUTION_RUN_${id}`,JSON.stringify(record)]]);
-  let writes=0,sheetsWrites=0,locked=false;
-  const ctx={Date,Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
+  let writes=0,sheetsWrites=0,locked=false,snapshotReads=0,sourceReads=0,plannerCalls=0;
+  let mockNow=Date.now(),lastSnapshot=null,snapshotBaseline=null,mutationApplied=false;
+  const ctx={Date:{now:()=>mockNow},Map,Set,JSON,Math,Object,Array,String,Number,RegExp,Error,
     PQM_MIRROR_ENV:{environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox'},
     PQM_EXECUTION_CONTEXT_:null,PQM_GOOGLE_TABS:['ФОП','ЮО'],
     Utilities:{Charset:{UTF_8:'UTF_8'},computeHmacSha256Signature:(value,key)=>crypto.createHmac('sha256',key).update(value,'utf8').digest(),
@@ -76,19 +78,25 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     pqmExecutionCheckpointResolveManifest_:()=>manifest,
     pqmSandboxFullLoad_:()=>({state:{payload_digest:sourceMismatch?b64digest('other source'):sourceDigest},body:{items:[]},tabs:JSON.parse(JSON.stringify({
       'ФОП':{rows:byTab['ФОП']},'ЮО':{rows:byTab['ЮО']}}))}),
-    pqmGooglePlan_:()=>({changes:appendOperationCount===276?changes:changes.slice(0,appendOperationCount),
-      counts:{appended:plannedAppendCount,conflicts:0,errors:0}}),
+    pqmSandboxFetchRegistry_:()=>{sourceReads++;return {items:[{supplier_code:'TEST'}]};},
+    pqmSandboxControlledPqmState_:()=>({sourceMarker:true,supplier_code:'TEST'}),
+    pqmGooglePlan_:(_body,_tabs,options)=>{plannerCalls++;mockNow+=plannerAdvanceMs;
+      if(options&&typeof options.diagnosticBudgetCheck==='function')options.diagnosticBudgetCheck();
+      return {changes:appendOperationCount===276?changes:changes.slice(0,appendOperationCount),
+        counts:{appended:plannedAppendCount,conflicts:0,errors:0}};},
     pqmSandboxFullBlocked_:()=>unsafePlan,
     pqmSandboxFullState_:(_body,tabs)=>({payload_digest:sourceDigest,laterChunkStillPresent:
       Object.values(tabs).some(tab=>tab.rows.some(row=>row.codeDisplay===laterCode))}),
     pqmSandboxFullDigest_:value=>value.laterChunkStillPresent?b64digest('changed-plan'):
       value.state&&value.state.scope==='APPEND_ONLY'?(appendDigestMismatch?b64digest('different-append'):appendDigest):
         fullDigestMismatch?b64digest('different-full'):fullDigest,
-    pqmSandboxControlledDigest_:value=>value&&value.kind
+    pqmSandboxControlledDigest_:value=>Array.isArray(value)&&value[0]&&value[0].sourceMarker
+      ?sourceMismatch?b64digest('other source'):sourceDigest:value&&value.kind
       ?b64digest(JSON.stringify(canonical(value))):Array.isArray(value)||value&&value.values&&value.formulas&&value.service
         ?b64digest(JSON.stringify(canonical(value))):'cells-digest',
-    pqmGoogleSnapshot_:()=>JSON.parse(JSON.stringify({
-      'ФОП':{rows:byTab['ФОП']},'ЮО':{rows:byTab['ЮО']}})),
+    pqmGoogleSnapshot_:()=>{snapshotReads++;mockNow+=snapshotAdvanceMs;if(failSnapshot)throw new Error('mock read failed');
+      lastSnapshot=JSON.parse(JSON.stringify({'ФОП':{rows:byTab['ФОП']},'ЮО':{rows:byTab['ЮО']}}));
+      snapshotBaseline=JSON.stringify(lastSnapshot);return lastSnapshot;},
     pqmGoogleBlank_:value=>value===null||value===undefined||value==='',
     pqmSandboxExecutionComparableValue_:value=>value===null||value===undefined?'':String(value),
     pqmSandboxAppendRowMetadata_:()=>({cells:[],height:20}),
@@ -96,6 +104,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     Sheets:{Spreadsheets:{batchUpdate:()=>{sheetsWrites++;throw new Error('write forbidden in diagnostic mock');},Values:{batchGet:(_id,request)=>{
       const ranges=request.ranges||[];
       if(failMetadata)throw new Error('synthetic Sheets read failure');
+      if(failAuditFormulaRead&&ranges.some(range=>/!A\d+:O\d+$/.test(range)))throw new Error('synthetic formula read failure');
       return {valueRanges:ranges.map(range=>{
         const serviceMatch=range.match(/^'(.+)'!Q(\d+):S(\d+)$/);
         const formulaMatch=range.match(/^'(.+)'!A(\d+):O(\d+)$/);assert.ok(serviceMatch||formulaMatch);
@@ -103,6 +112,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
         for(let row=Number(first);row<=Number(last);row++){
           if(serviceMatch)rows.push(service.get(`${tab}:${row}`)||[]);
           else {
+            if(mutateFormulaAfterSnapshot&&!mutationApplied){mutationApplied=true;byTab[tab][Number(row)-2].formulas[0]='=1';}
             const record=byTab[tab][row-2]||{values:[],formulas:[]};
             rows.push(Array.from({length:15},(_,column)=>record.formulas[column]||record.values[column]||''));
           }
@@ -111,6 +121,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
       })};
     }}}}};
   vm.createContext(ctx);vm.runInContext(source,ctx);
+  ctx.PQM_APPEND_DIAGNOSTIC_SOFT_BUDGET_MS=diagnosticBudgetMs;
   const request={environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox',
     contract:'pqm-mirror-datetime-v1',action:'diagnose_append_plan',requestId:id,actor:'admin',trigger:'manual',
     diagnosticMode:'recovery',
@@ -132,8 +143,15 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     diagnosticMode:'audit',expectedDigest:appendDigest,planScope:'APPEND_ONLY',chunkIndex:0,planId:id,
     detailsDigest,fullPlanDigest:fullDigest,sourceDigest,totalAppendCount:targets.length,auditTargets,
     auditTargetsDigest:b64digest(JSON.stringify(canonical(auditTargets)))};
-  return {ctx,properties,request,envelope:recoveryEnvelope,auditRequest,auditEnvelope:sign(auditRequest),targets,manifest,record,sign,
-    get writes(){return writes;},get sheetsWrites(){return sheetsWrites;}};
+  const combinedRequest={...auditRequest,diagnosticMode:'audit_recovery',chunkId:manifest.chunkId,chunkDigest,
+    chunkIndex:0};
+  return {ctx,properties,request,envelope:recoveryEnvelope,auditRequest,auditEnvelope:sign(auditRequest),
+    combinedRequest,combinedEnvelope:sign(combinedRequest),targets,manifest,record,sign,
+    get writes(){return writes;},get sheetsWrites(){return sheetsWrites;},
+    get snapshotReads(){return snapshotReads;},get sourceReads(){return sourceReads;},
+    get plannerCalls(){return plannerCalls;},get locked(){return locked;},
+    get snapshotUnchanged(){return lastSnapshot!==null&&JSON.stringify(lastSnapshot)===snapshotBaseline;},
+    lockNow(){locked=true;}};
 
   function sign(value) {
     const payload=JSON.stringify(value),signature=crypto.createHmac('sha256',secret).update(payload).digest('base64url');
@@ -384,6 +402,114 @@ test('six legal-entity conflicts expose only mismatching field names',()=>{
   assert.equal(f.writes,0);
   assert.equal(f.sheetsWrites,0);
   assert.equal(JSON.stringify([...f.properties]),stateBefore);
+});
+
+test('combined audit and recovery use one shared snapshot and one reconstruction pass',()=>{
+  const f=fixture(),before=JSON.stringify([...f.properties]);
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(result.status,'AUDITED');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
+    {planned:276,confirmed:25,missing:251,conflict:0,unverified:0,remaining:251});
+  assert.equal(result.recoveryStatus,'DIAGNOSED');
+  assert.equal(result.firstChunkRecoveryEvidence,true);
+  assert.equal(f.snapshotReads,1);
+  assert.equal(f.sourceReads,1);
+  assert.equal(f.plannerCalls,1);
+  assert.equal(f.snapshotUnchanged,true);
+  assert.deepEqual(JSON.parse(JSON.stringify([...f.properties])),JSON.parse(before));
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);assert.equal(f.locked,false);
+  assert.deepEqual(Object.keys(result.stageDurationsMs).sort(),[
+    'dataAcquisitionMs','manifestVerificationMs','previewReconstructionMs','responseBuildMs','totalMs'].sort());
+});
+
+test('combined diagnostic blocks on an incomplete snapshot without retrying its read',()=>{
+  const f=fixture({failSnapshot:true});
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(result.status,'READ_INCOMPLETE');
+  assert.equal(result.counts.unverified,276);
+  assert.equal(result.recoveryStatus,'BLOCKED');
+  assert.equal(result.firstChunkRecoveryEvidence,false);
+  assert.equal(result.reconstructionChecks.fullPreviewDigest,'NOT_CHECKED');
+  assert.equal(f.snapshotReads,1);
+  assert.equal(f.plannerCalls,0);
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);assert.equal(f.locked,false);
+});
+
+test('an incomplete row audit cannot authorize recovery reconstruction',()=>{
+  const f=fixture({failAuditFormulaRead:true});
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(result.status,'READ_INCOMPLETE');
+  assert.equal(result.counts.confirmed,0);
+  assert.equal(result.counts.missing,251);
+  assert.equal(result.counts.unverified,25);
+  assert.equal(result.recoveryStatus,'BLOCKED');
+  assert.deepEqual(Object.values(result.reconstructionChecks),Array(4).fill('NOT_CHECKED'));
+  assert.ok(result.recoveryReasonCodes.includes('APPEND_AUDIT_INCOMPLETE'));
+  assert.equal(f.snapshotReads,1);assert.equal(f.sourceReads,0);assert.equal(f.plannerCalls,0);
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);
+});
+
+test('a first-chunk edit observed after snapshot acquisition blocks recovery evidence',()=>{
+  const f=fixture({mutateFormulaAfterSnapshot:true});
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(result.status,'AUDITED');
+  assert.equal(result.counts.conflict,1);
+  assert.equal(result.recoveryStatus,'BLOCKED');
+  assert.equal(result.firstChunkRecoveryEvidence,false);
+  assert.ok(result.recoveryReasonCodes.includes('APPEND_FIRST_CHUNK_AUDIT_CONFLICT'));
+  assert.deepEqual(Object.values(result.reconstructionChecks),Array(4).fill('NOT_CHECKED'));
+  assert.equal(f.snapshotReads,1);assert.equal(f.sourceReads,0);assert.equal(f.plannerCalls,0);
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);
+});
+
+test('combined diagnostic returns a controlled BLOCKED result when its time budget expires',()=>{
+  const f=fixture({diagnosticBudgetMs:100,snapshotAdvanceMs:101});
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(result.status,'READ_INCOMPLETE');
+  assert.equal(result.recoveryStatus,'BLOCKED');
+  assert.equal(result.firstChunkRecoveryEvidence,false);
+  assert.ok(result.reasonCodes.includes('DIAGNOSTIC_TIME_BUDGET_EXHAUSTED'));
+  assert.ok(result.recoveryReasonCodes.includes('DIAGNOSTIC_TIME_BUDGET_EXHAUSTED'));
+  assert.ok(result.recoveryReasonCodes.includes('APPEND_AUDIT_INCOMPLETE'));
+  assert.deepEqual(Object.values(result.reconstructionChecks),Array(4).fill('NOT_CHECKED'));
+  assert.equal(f.snapshotReads,1);assert.equal(f.sourceReads,0);assert.equal(f.plannerCalls,0);
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);assert.equal(f.locked,false);
+});
+
+test('combined diagnostic stops inside Preview reconstruction when the soft deadline expires',()=>{
+  const f=fixture({diagnosticBudgetMs:100,plannerAdvanceMs:101});
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(result.status,'AUDITED');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
+    {planned:276,confirmed:25,missing:251,conflict:0,unverified:0,remaining:251});
+  assert.equal(result.recoveryStatus,'BLOCKED');
+  assert.equal(result.firstChunkRecoveryEvidence,false);
+  assert.deepEqual(Object.values(result.reconstructionChecks),Array(4).fill('NOT_CHECKED'));
+  assert.ok(result.recoveryReasonCodes.includes('DIAGNOSTIC_TIME_BUDGET_EXHAUSTED'));
+  assert.equal(f.snapshotReads,1);assert.equal(f.sourceReads,1);assert.equal(f.plannerCalls,1);
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);assert.equal(f.locked,false);
+});
+
+test('repeated combined read-only diagnostic takes a fresh snapshot and never writes state',()=>{
+  const f=fixture(),before=JSON.stringify([...f.properties]);
+  const first=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  const second=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(first.firstChunkRecoveryEvidence,true);
+  assert.equal(second.firstChunkRecoveryEvidence,true);
+  assert.equal(f.snapshotReads,2);assert.equal(f.sourceReads,2);assert.equal(f.plannerCalls,2);
+  assert.deepEqual(JSON.parse(JSON.stringify([...f.properties])),JSON.parse(before));
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);assert.equal(f.locked,false);
+});
+
+test('combined diagnostic preserves zero-wait ScriptLock behavior',()=>{
+  const f=fixture();f.lockNow();
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.combinedEnvelope);
+  assert.equal(result.status,'READ_INCOMPLETE');
+  assert.equal(result.recoveryStatus,'BLOCKED');
+  assert.ok(result.reasonCodes.includes('EXECUTION_LOCK_BUSY'));
+  assert.equal(result.firstChunkRecoveryEvidence,false);
+  assert.equal(f.snapshotReads,0);assert.equal(f.sourceReads,0);assert.equal(f.plannerCalls,0);
+  assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);
 });
 
 test('Writer UI keeps a copyable APPEND report panel with field paths only',()=>{

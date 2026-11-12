@@ -52,6 +52,41 @@ class DiagnosticClient:
 
     def invoke(self, action, request_id, actor, **kwargs):
         self.calls.append((action,request_id,actor,kwargs))
+        if kwargs.get('diagnostic_mode')=='audit_recovery':
+            if self.recovery_error:
+                raise self.recovery_error
+            counts={'planned':kwargs['total_append_count'],'confirmed':self.confirmed,'missing':self.missing,
+                'conflict':self.conflict,'unverified':self.unverified,
+                'remaining':kwargs['total_append_count']-self.confirmed}
+            conflicts=[{'code':code,'fields':self.conflict_fields.get(code,[]),
+                'observed_digest':digest('observed:'+code) if not self.conflict_fields.get(code) else None}
+                for code in self.conflict_codes]
+            reconstruction_mismatch=any(value=='MISMATCH' for value in self.reconstruction_checks.values())
+            recovery_reasons=(['PREVIEW_RECONSTRUCTION_MISMATCH'] if reconstruction_mismatch else
+                ([] if self.first_chunk else ['MANIFEST_BINDING_MISMATCH']))
+            return {'status':'AUDITED' if not self.unverified else 'READ_INCOMPLETE','counts':counts,
+                'reason_codes':['TARGET_CONFLICT'] if self.conflict else [],'conflicts':conflicts,
+                'recovery_status':'BLOCKED' if reconstruction_mismatch else 'DIAGNOSED',
+                'recovery_reason_codes':recovery_reasons,
+                'manifest_binding':'PASS' if self.first_chunk else 'BLOCKED',
+                'manifest_mismatch_fields':self.manifest_fields,
+                'first_chunk_recovery_evidence':self.first_chunk and not self.conflict and not self.unverified,
+                'reconstruction_checks':{
+                    'full_preview_digest':self.reconstruction_checks['fullPreviewDigest'],
+                    'append_only_digest':self.reconstruction_checks['appendOnlyDigest'],
+                    'planned_append_count':self.reconstruction_checks['plannedAppendCount'],
+                    'append_operation_count':self.reconstruction_checks['appendOperationCount']},
+                'downstream_checks':{
+                    'source_binding':self.downstream_checks['sourceBinding'],
+                    'plan_safety':self.downstream_checks['planSafety'],
+                    'target_rows':self.downstream_checks['targetRows'],
+                    'row_values_and_formulas':self.downstream_checks['rowValuesAndFormulas'],
+                    'service_metadata':self.downstream_checks['serviceMetadata'],
+                    'manifest_rows':self.downstream_checks['manifestRows'],
+                    'append_row_metadata':self.downstream_checks['appendRowMetadata']},
+                'stage_durations_ms':{'dataAcquisitionMs':10,'previewReconstructionMs':5,
+                    'manifestVerificationMs':2,'responseBuildMs':1,'totalMs':18},
+                'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
         if kwargs.get('diagnostic_mode')=='audit':
             counts={'planned':kwargs['total_append_count'],'confirmed':self.confirmed,'missing':self.missing,
                 'conflict':self.conflict,'unverified':self.unverified,
@@ -163,10 +198,12 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
         action,request_id,actor,kwargs=client.calls[0]
         self.assertEqual((action,request_id,actor),('diagnose_append_plan',self.request_id,self.actor))
-        self.assertEqual(kwargs['diagnostic_mode'],'audit')
+        self.assertEqual(kwargs['diagnostic_mode'],'audit_recovery')
         self.assertEqual(len(kwargs['audit_targets']),276)
         self.assertEqual(len(kwargs['audit_targets'][0]),4)
-        self.assertEqual(sum(call[3].get('diagnostic_mode')=='audit' for call in client.calls),1)
+        self.assertEqual(sum(call[3].get('diagnostic_mode')=='audit_recovery' for call in client.calls),1)
+        self.assertEqual(len(client.calls),1)
+        self.assertIn('stage_durations_ms',result)
 
     def test_reconstruction_reason_is_split_into_safe_per_check_statuses(self):
         cases=(
@@ -208,13 +245,12 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
             'manifest_rows':'NOT_CHECKED','append_row_metadata':'NOT_CHECKED'})
         self.assertFalse(result['first_chunk_recovery_evidence'])
 
-    def test_older_apps_script_response_keeps_row_audit_and_blocks_only_recovery(self):
+    def test_older_apps_script_without_combined_contract_fails_closed_without_retry(self):
         error=writer.ExecutionPreflightError('old Apps Script response has no detailed checks',
             safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_CHECKS_INVALID'})
         client=DiagnosticClient(first_chunk=False,recovery_error=error)
         result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
-        self.assertEqual(result['counts']['confirmed'],25)
-        self.assertEqual(result['counts']['missing'],251)
+        self.assertEqual(result['counts']['unverified'],276)
         self.assertEqual(result['recovery_status'],'BLOCKED')
         self.assertIn('APPEND_DIAGNOSTIC_CHECKS_INVALID',result['recovery_reason_codes'])
         self.assertEqual(set(result['reconstruction_checks'].values()),{'NOT_CHECKED'})
@@ -245,7 +281,7 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         serialized=writer._canonical_json(result)
         self.assertNotIn('observed_digest',serialized)
         self.assertNotIn('cellsDigestValue',serialized)
-        self.assertTrue(all(call[3].get('diagnostic_mode') in {'audit','audit_fields','recovery'}
+        self.assertTrue(all(call[3].get('diagnostic_mode') in {'audit','audit_fields','recovery','audit_recovery'}
             for call in client.calls))
 
     def test_signed_audit_fields_payload_passes_only_the_additive_sandbox_egress_shape(self):
