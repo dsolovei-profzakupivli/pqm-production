@@ -64,6 +64,17 @@ class DiagnosticClient:
             reconstruction_mismatch=any(value=='MISMATCH' for value in self.reconstruction_checks.values())
             recovery_reasons=(['PREVIEW_RECONSTRUCTION_MISMATCH'] if reconstruction_mismatch else
                 ([] if self.first_chunk else ['MANIFEST_BINDING_MISMATCH']))
+            expected=kwargs['expected_plan_counts']
+            digest_diagnostics={'google_state_digest':'MATCH','plan_counts':{
+                key:{'expected':expected[key],'actual':expected[key],'status':'MATCH'}
+                for key in ('append','update','conflict','error')},
+                'append_identity_status':'MATCH','append_identity_mismatch_count':0,
+                'append_projection_status':'MATCH','append_projection_mismatch_count':0,
+                'update_identity_status':'MATCH','update_identity_mismatch_count':0,'update_identity_digest':'MATCH',
+                'value_comparison_status':'MATCH','value_mismatch_columns':[],'value_mismatch_column_count':0,
+                'formula_comparison_status':'MATCH','formula_mismatch_columns':[],'formula_mismatch_column_count':0,
+                'append_only_with_original_parent':'MATCH','full_counts_digest':'UNAVAILABLE',
+                'exact_cell_mismatch_counts':'UNAVAILABLE'}
             return {'status':'AUDITED' if not self.unverified else 'READ_INCOMPLETE','counts':counts,
                 'reason_codes':['TARGET_CONFLICT'] if self.conflict else [],'conflicts':conflicts,
                 'recovery_status':'BLOCKED' if reconstruction_mismatch else 'DIAGNOSED',
@@ -86,6 +97,7 @@ class DiagnosticClient:
                     'append_row_metadata':self.downstream_checks['appendRowMetadata']},
                 'stage_durations_ms':{'dataAcquisitionMs':10,'previewReconstructionMs':5,
                     'manifestVerificationMs':2,'responseBuildMs':1,'totalMs':18},
+                'digest_diagnostics':digest_diagnostics,
                 'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
         if kwargs.get('diagnostic_mode')=='audit':
             counts={'planned':kwargs['total_append_count'],'confirmed':self.confirmed,'missing':self.missing,
@@ -204,6 +216,8 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         self.assertEqual(sum(call[3].get('diagnostic_mode')=='audit_recovery' for call in client.calls),1)
         self.assertEqual(len(client.calls),1)
         self.assertIn('stage_durations_ms',result)
+        self.assertEqual(result['digest_diagnostics']['google_state_digest'],'MATCH')
+        self.assertEqual(result['digest_diagnostics']['plan_counts']['append']['status'],'MATCH')
 
     def test_reconstruction_reason_is_split_into_safe_per_check_statuses(self):
         cases=(

@@ -1008,7 +1008,9 @@ class ExecutionClient:
                legacy_manifest_rows=None,legacy_manifest_projection_digest=None,
                diagnostic_mode='recovery',audit_targets=None,audit_targets_digest=None,
                audit_field_targets=None,audit_field_targets_digest=None,
-               details_digest=None,full_plan_digest=None,source_digest=None,total_append_count=None):
+               details_digest=None,full_plan_digest=None,source_digest=None,total_append_count=None,
+               expected_plan_counts=None,expected_update_identity_digest=None,expected_update_identities=None,
+               expected_cell_digests=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
         if background_jobs.disabled() and not manual_override:
@@ -1075,7 +1077,22 @@ class ExecutionClient:
                 not is_canonical_sha256_b64url(chunk_digest) or plan_id!=request_id or
                 type(total_append_count) is not int or not 1<=total_append_count<=10000 or
                 not isinstance(audit_targets,list) or len(audit_targets)!=total_append_count or
-                not is_canonical_sha256_b64url(audit_targets_digest)):
+                not is_canonical_sha256_b64url(audit_targets_digest) or
+                not isinstance(expected_plan_counts,dict) or set(expected_plan_counts)!={'append','update','conflict','error'} or
+                any(type(expected_plan_counts.get(key)) is not int or expected_plan_counts[key]<0
+                    for key in ('append','update','conflict','error')) or
+                expected_plan_counts.get('append')!=total_append_count or
+                not is_canonical_sha256_b64url(expected_update_identity_digest) or
+                not isinstance(expected_update_identities,list) or len(expected_update_identities)>1000 or
+                expected_plan_counts.get('update')!=len(expected_update_identities) or
+                any(not isinstance(item,list) or len(item)!=3 or item[0] not in ('ФОП','ЮО') or
+                    type(item[1]) is not int or item[1]<2 or not isinstance(item[2],str) or
+                    not re.fullmatch(r'\d{8,10}',item[2]) for item in expected_update_identities) or
+                _append_plan_identity_digest([{'tab':item[0],'row':item[1],'code':item[2]}
+                    for item in expected_update_identities])!=expected_update_identity_digest or
+                not isinstance(expected_cell_digests,dict) or not expected_cell_digests or
+                len(expected_cell_digests)>30 or any(not re.fullmatch(r'(?:value|formula):[A-O]',str(key)) or
+                    not is_canonical_sha256_b64url(value) for key,value in expected_cell_digests.items())):
             raise ValueError('Sandbox APPEND audit/recovery binding is invalid')
         if action=='diagnose_append_plan' and diagnostic_mode=='recovery':
             seen=set()
@@ -1299,7 +1316,11 @@ class ExecutionClient:
             message.update(diagnosticMode='audit_recovery',planScope='APPEND_ONLY',chunkIndex=0,
                 chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id,detailsDigest=details_digest,
                 fullPlanDigest=full_plan_digest,sourceDigest=source_digest,totalAppendCount=total_append_count,
-                auditTargets=audit_targets,auditTargetsDigest=audit_targets_digest)
+                auditTargets=audit_targets,auditTargetsDigest=audit_targets_digest,
+                expectedPlanCounts=expected_plan_counts,
+                expectedUpdateIdentityDigest=expected_update_identity_digest,
+                expectedUpdateIdentities=expected_update_identities,
+                expectedCellDigests=expected_cell_digests)
         if chunk_id is not None:
             message.update(chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
             if chunk_phase is not None: message['chunkPhase']=chunk_phase
@@ -1640,6 +1661,90 @@ class ExecutionClient:
                         for key in timing_fields)):
                 raise ExecutionPreflightError('Combined APPEND timing information was invalid',
                     safe_error={'diagnostic_code':'APPEND_AUDIT_COMBINED_TIMINGS_INVALID'})
+            component=result.get('digestDiagnostics')
+            component_statuses={'MATCH','MISMATCH','UNAVAILABLE'}
+            component_counts=component.get('planCounts') if isinstance(component,dict) else None
+            component_keys=('append','update','conflict','error')
+            expected_counts={'append':expected_plan_counts['append'],'update':expected_plan_counts['update'],
+                'conflict':expected_plan_counts['conflict'],'error':expected_plan_counts['error']}
+            if (not isinstance(component,dict) or set(component)!={'googleStateDigest','planCounts',
+                    'appendIdentityStatus','appendIdentityMismatchCount','appendProjectionStatus',
+                    'appendProjectionMismatchCount','updateIdentityStatus','updateIdentityMismatchCount','updateIdentity',
+                    'valueComparisonStatus','valueMismatchColumns','formulaComparisonStatus','formulaMismatchColumns',
+                    'appendOnlyWithOriginalParent','valueMismatchColumnCount','formulaMismatchColumnCount',
+                    'fullCountsDigest','exactCellMismatchCounts'} or
+                    component.get('googleStateDigest') not in component_statuses or
+                    not isinstance(component_counts,dict) or set(component_counts)!=set(component_keys) or
+                    any(not isinstance(component_counts.get(key),dict) or
+                        set(component_counts[key])!={'expected','actual','status'} or
+                        component_counts[key].get('expected')!=expected_counts[key] or
+                        component_counts[key].get('status') not in component_statuses or
+                        (component_counts[key]['status']=='UNAVAILABLE' and component_counts[key]['actual'] is not None) or
+                        (component_counts[key]['status']!='UNAVAILABLE' and
+                         (type(component_counts[key]['actual']) is not int or component_counts[key]['actual']<0 or
+                          (component_counts[key]['status']=='MATCH')!=(component_counts[key]['actual']==expected_counts[key])))
+                        for key in component_keys) or
+                    component.get('appendIdentityMismatchCount') is not None and
+                        (type(component['appendIdentityMismatchCount']) is not int or
+                         not 0<=component['appendIdentityMismatchCount']<=2*total_append_count) or
+                    component.get('appendIdentityStatus') not in component_statuses or
+                    component.get('appendProjectionMismatchCount') is not None and
+                        (type(component['appendProjectionMismatchCount']) is not int or
+                         not 0<=component['appendProjectionMismatchCount']<=total_append_count) or
+                    component.get('appendProjectionStatus') not in component_statuses or
+                    component.get('updateIdentityMismatchCount') is not None and
+                        (type(component['updateIdentityMismatchCount']) is not int or
+                         not 0<=component['updateIdentityMismatchCount']<=2000) or
+                    component.get('updateIdentityStatus') not in component_statuses or
+                    component.get('updateIdentity') not in component_statuses or
+                    component.get('appendOnlyWithOriginalParent') not in component_statuses or
+                    component.get('valueComparisonStatus') not in component_statuses or
+                    component.get('formulaComparisonStatus') not in component_statuses or
+                    (component.get('valueMismatchColumnCount') is not None and
+                        (type(component['valueMismatchColumnCount']) is not int or
+                         component['valueMismatchColumnCount']!=len(component.get('valueMismatchColumns',[])))) or
+                    (component.get('valueComparisonStatus')=='UNAVAILABLE') !=
+                        (component.get('valueMismatchColumnCount') is None) or
+                    (component.get('formulaMismatchColumnCount') is not None and
+                        (type(component['formulaMismatchColumnCount']) is not int or
+                         component['formulaMismatchColumnCount']!=len(component.get('formulaMismatchColumns',[])))) or
+                    (component.get('formulaComparisonStatus')=='UNAVAILABLE') !=
+                        (component.get('formulaMismatchColumnCount') is None) or
+                    (component.get('appendIdentityStatus')=='MATCH' and component.get('appendIdentityMismatchCount')!=0) or
+                    (component.get('appendIdentityStatus')=='MISMATCH' and not component.get('appendIdentityMismatchCount')) or
+                    (component.get('appendProjectionStatus')=='MATCH' and component.get('appendProjectionMismatchCount')!=0) or
+                    (component.get('appendProjectionStatus')=='MISMATCH' and not component.get('appendProjectionMismatchCount')) or
+                    (component.get('updateIdentityStatus')=='MATCH' and
+                        (component.get('updateIdentityMismatchCount')!=0 or component.get('updateIdentity')!='MATCH')) or
+                    (component.get('updateIdentityStatus')=='MISMATCH' and
+                        component.get('updateIdentityMismatchCount')==0 and component.get('updateIdentity')=='MATCH') or
+                    (component.get('valueComparisonStatus')=='MATCH' and component.get('valueMismatchColumnCount')!=0) or
+                    (component.get('valueComparisonStatus')=='MISMATCH' and not component.get('valueMismatchColumnCount')) or
+                    (component.get('formulaComparisonStatus')=='MATCH' and component.get('formulaMismatchColumnCount')!=0) or
+                    (component.get('formulaComparisonStatus')=='MISMATCH' and not component.get('formulaMismatchColumnCount')) or
+                    any(component.get(status_key)=='UNAVAILABLE' and component.get(count_key) is not None or
+                        component.get(status_key)!='UNAVAILABLE' and component.get(count_key) is None
+                        for status_key,count_key in (('appendIdentityStatus','appendIdentityMismatchCount'),
+                            ('appendProjectionStatus','appendProjectionMismatchCount'),
+                            ('updateIdentityStatus','updateIdentityMismatchCount'))) or
+                    component.get('fullCountsDigest')!='UNAVAILABLE' or
+                    component.get('exactCellMismatchCounts')!='UNAVAILABLE'):
+                raise ExecutionPreflightError('Combined APPEND digest component report was invalid',
+                    safe_error={'diagnostic_code':'APPEND_AUDIT_COMPONENT_REPORT_INVALID'})
+            for key in ('valueMismatchColumns','formulaMismatchColumns'):
+                values=component.get(key)
+                if (not isinstance(values,list) or len(values)>15 or len(set(values))!=len(values) or
+                        any(not isinstance(value,str) or not re.fullmatch(r'[A-O]',value) for value in values)):
+                    raise ExecutionPreflightError('Combined APPEND component categories were invalid',
+                        safe_error={'diagnostic_code':'APPEND_AUDIT_COMPONENT_REPORT_INVALID'})
+            component_mismatch=(component['googleStateDigest']=='MISMATCH' or
+                any(item['status']=='MISMATCH' for item in component_counts.values()) or
+                any(component[key]=='MISMATCH' for key in ('appendIdentityStatus','appendProjectionStatus',
+                    'updateIdentityStatus','updateIdentity','valueComparisonStatus','formulaComparisonStatus',
+                    'appendOnlyWithOriginalParent')))
+            if component_mismatch and recovery_status!='BLOCKED':
+                raise ExecutionPreflightError('Combined APPEND component mismatch was not held',
+                    safe_error={'diagnostic_code':'APPEND_AUDIT_COMPONENT_MISMATCH_NOT_HELD'})
             return {'status':audit_status,
                 'counts':{key:counts[key] for key in count_fields},'reason_codes':reasons,
                 'conflicts':conflicts,
@@ -1659,6 +1764,24 @@ class ExecutionClient:
                     'manifest_rows':downstream_checks['manifestRows'],
                     'append_row_metadata':downstream_checks['appendRowMetadata']},
                 'stage_durations_ms':{key:timings[key] for key in timing_fields},
+                'digest_diagnostics':{'google_state_digest':component['googleStateDigest'],
+                    'plan_counts':component['planCounts'],
+                    'append_identity_status':component['appendIdentityStatus'],
+                    'append_identity_mismatch_count':component['appendIdentityMismatchCount'],
+                    'append_projection_status':component['appendProjectionStatus'],
+                    'append_projection_mismatch_count':component['appendProjectionMismatchCount'],
+                    'update_identity_status':component['updateIdentityStatus'],
+                    'update_identity_mismatch_count':component['updateIdentityMismatchCount'],
+                    'update_identity_digest':component['updateIdentity'],
+                    'value_comparison_status':component['valueComparisonStatus'],
+                    'value_mismatch_columns':component['valueMismatchColumns'],
+                    'value_mismatch_column_count':component['valueMismatchColumnCount'],
+                    'formula_comparison_status':component['formulaComparisonStatus'],
+                    'formula_mismatch_columns':component['formulaMismatchColumns'],
+                    'formula_mismatch_column_count':component['formulaMismatchColumnCount'],
+                    'append_only_with_original_parent':component['appendOnlyWithOriginalParent'],
+                    'full_counts_digest':component['fullCountsDigest'],
+                    'exact_cell_mismatch_counts':component['exactCellMismatchCounts']},
                 'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
         if action=='diagnose_append_plan' and diagnostic_mode=='recovery':
             count_fields=('planned','confirmed','missing','conflict','unverified','remaining')
@@ -3357,6 +3480,43 @@ def _append_audit_row_digest(item,request_id):
     return _sha256_b64(_canonical_json(projection).encode('utf-8'))
 
 
+def _append_plan_identity_digest(items):
+    identities=sorted([[item['tab'],item['row'],item['code']] for item in items],
+                      key=lambda item:(item[0],item[1],item[2]))
+    return _sha256_b64(_canonical_json(identities).encode('utf-8'))
+
+
+def _append_plan_cell_digests(details):
+    groups={}
+    for item in list(details.get('appends',[]))+list(details.get('updates',[])):
+        for cell in item.get('cells',[]):
+            column=ord(cell['column'])-ord('A')
+            formula=cell['formula'] is True
+            kind='formula' if formula else 'value'
+            value=cell.get('new_value') or '' if formula else _append_audit_comparable_value(
+                cell.get('new_value'),column)
+            key=f'{kind}:{cell["column"]}'
+            groups.setdefault(key,[]).append([item['tab'],item['row'],item['code'],value])
+    return {key:_sha256_b64(_canonical_json(sorted(rows,key=lambda item:(item[0],item[1],item[2]))).encode('utf-8'))
+            for key,rows in sorted(groups.items())}
+
+
+def _append_unavailable_digest_diagnostics(details):
+    counts=details.get('counts',{})
+    return {'google_state_digest':'UNAVAILABLE','plan_counts':{
+        key:{'expected':counts.get(key) if type(counts.get(key)) is int else None,
+             'actual':None,'status':'UNAVAILABLE'}
+        for key in ('append','update','conflict','error')},
+        'append_identity_status':'UNAVAILABLE','append_identity_mismatch_count':None,
+        'append_projection_status':'UNAVAILABLE','append_projection_mismatch_count':None,
+        'update_identity_status':'UNAVAILABLE','update_identity_mismatch_count':None,
+        'update_identity_digest':'UNAVAILABLE','value_comparison_status':'UNAVAILABLE',
+        'value_mismatch_columns':[],'value_mismatch_column_count':None,
+        'formula_comparison_status':'UNAVAILABLE','formula_mismatch_columns':[],
+        'formula_mismatch_column_count':None,'append_only_with_original_parent':'UNAVAILABLE',
+        'full_counts_digest':'UNAVAILABLE','exact_cell_mismatch_counts':'UNAVAILABLE'}
+
+
 def _append_audit_field_digests(item):
     values=['']*15;formulas=['']*15;formula_columns=set()
     for cell in item['cells']:
@@ -3502,7 +3662,12 @@ def diagnose_append_only_plan(path, client, request_id, actor):
                 audit_targets=audit_targets,audit_targets_digest=audit_targets_digest,
                 details_digest=plan['details_digest'],
                 full_plan_digest=plan['plan_digest'],source_digest=plan['source_digest'],
-                total_append_count=len(targets),diagnostic_mode='audit_recovery')
+                total_append_count=len(targets),diagnostic_mode='audit_recovery',
+                expected_plan_counts={key:details['counts'][key] for key in ('append','update','conflict','error')},
+                expected_update_identity_digest=_append_plan_identity_digest(details.get('updates',[])),
+                expected_update_identities=[[item['tab'],item['row'],item['code']]
+                    for item in details.get('updates',[])],
+                expected_cell_digests=_append_plan_cell_digests(details))
             counts=combined_result['counts'];audit_reasons.extend(combined_result['reason_codes'])
             conflict_reports=list(combined_result['conflicts'])
             first_chunk_recovery=combined_result['first_chunk_recovery_evidence']
@@ -3589,6 +3754,8 @@ def diagnose_append_only_plan(path, client, request_id, actor):
         'recovery_reason_codes':list(dict.fromkeys(recovery_reasons)),
         'recovery_field_mismatches':manifest_mismatch_fields,
         'reconstruction_checks':reconstruction_checks,'downstream_checks':downstream_checks,
+        'digest_diagnostics':combined_result.get('digest_diagnostics') if combined_result is not None
+            else _append_unavailable_digest_diagnostics(details),
         'first_chunk_recovery_evidence':first_chunk_recovery,'read_only':True,
         'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
     if combined_result is not None:

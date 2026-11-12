@@ -54,7 +54,17 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
                     'rowValuesAndFormulas':'MATCH','serviceMetadata':'MATCH','manifestRows':'MATCH',
                     'appendRowMetadata':'MATCH'},stageDurationsMs={'dataAcquisitionMs':1000,
                     'previewReconstructionMs':50,'manifestVerificationMs':20,'responseBuildMs':1,
-                    'totalMs':1071},readOnly=True)
+                    'totalMs':1071},digestDiagnostics={
+                    'googleStateDigest':'MATCH','planCounts':{key:{'expected':payload['expectedPlanCounts'][key],
+                    'actual':payload['expectedPlanCounts'][key],'status':'MATCH'}
+                    for key in ('append','update','conflict','error')},
+                    'appendIdentityStatus':'MATCH','appendIdentityMismatchCount':0,
+                    'appendProjectionStatus':'MATCH','appendProjectionMismatchCount':0,
+                    'updateIdentityStatus':'MATCH','updateIdentityMismatchCount':0,'updateIdentity':'MATCH',
+                    'valueComparisonStatus':'MATCH','valueMismatchColumns':[],'valueMismatchColumnCount':0,
+                    'formulaComparisonStatus':'MATCH','formulaMismatchColumns':[],'formulaMismatchColumnCount':0,
+                    'appendOnlyWithOriginalParent':'MATCH','fullCountsDigest':'UNAVAILABLE',
+                    'exactCellMismatchCounts':'UNAVAILABLE'},readOnly=True)
             if self.response_mutator: self.response_mutator(result)
             return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
         if payload.get('diagnosticMode')=='audit':
@@ -116,7 +126,9 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
             details_digest=self.digest('details'),full_plan_digest=self.digest('full'),
             source_digest=self.digest('source'),total_append_count=len(audit_targets),
             diagnostic_mode='audit_recovery',audit_targets=audit_targets,
-            audit_targets_digest=targets_digest)
+            audit_targets_digest=targets_digest,expected_plan_counts={'append':276,'update':0,'conflict':0,'error':0},
+            expected_update_identity_digest=self.digest(execution._canonical_json([])),
+            expected_update_identities=[],expected_cell_digests={'value:B':self.digest('expected-cell')})
 
     @staticmethod
     def digest(value):
@@ -218,6 +230,8 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
         self.assertEqual(result['counts']['missing'],251)
         self.assertTrue(result['first_chunk_recovery_evidence'])
         self.assertEqual(result['stage_durations_ms']['totalMs'],1071)
+        self.assertEqual(result['digest_diagnostics']['google_state_digest'],'MATCH')
+        self.assertEqual(result['digest_diagnostics']['append_only_with_original_parent'],'MATCH')
         raw=json.loads(self.calls[0].data)['parameters'][0]['payload']
         payload=json.loads(raw)
         self.assertEqual(payload['diagnosticMode'],'audit_recovery')
@@ -232,6 +246,20 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(execution.ExecutionPreflightError,'Combined APPEND recovery status was inconsistent'):
             self.invoke_combined()
         self.assertEqual(len(self.calls),1)
+
+    def test_combined_response_requires_safe_digest_component_report(self):
+        def mismatch_response(result):
+            result['digestDiagnostics'].update(googleStateDigest='MISMATCH',valueComparisonStatus='MISMATCH',
+                valueMismatchColumns=['I'],valueMismatchColumnCount=1)
+            result['recoveryStatus']='BLOCKED';result['recoveryReasonCodes']=['PREVIEW_COMPONENT_MISMATCH']
+            result['firstChunkRecoveryEvidence']=False
+        self.response_mutator=mismatch_response
+        result=self.invoke_combined()
+        self.assertEqual(result['digest_diagnostics']['google_state_digest'],'MISMATCH')
+        self.response_mutator=lambda result: result['digestDiagnostics'].update(
+            valueComparisonStatus='MISMATCH',valueMismatchColumns=['secret-value'],valueMismatchColumnCount=1)
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'component categories were invalid'):
+            self.invoke_combined()
 
     def test_combined_egress_rejects_missing_chunk_binding(self):
         self.invoke_combined();original=self.calls[0]

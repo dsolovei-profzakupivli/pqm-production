@@ -68,6 +68,13 @@ SANDBOX_LEGACY_WRITER_REQUEST_IDS = frozenset({'592128d9837d4b71bbeb330ef8aabf4b
 _original_getaddrinfo = socket.getaddrinfo
 
 
+def _sandbox_append_identity_digest(identities):
+    """Digest sorted [tab,row,code] identities using the Writer canonical JSON contract."""
+    normalized=sorted(identities,key=lambda item:(item[0],item[1],item[2]))
+    raw=json.dumps(normalized,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+    return base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).decode().rstrip('=')
+
+
 def validate_environment(env=None):
     env = os.environ if env is None else env
     for key, expected in POLICY.items():
@@ -542,7 +549,8 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             set(payload) == {'environment','scriptId','spreadsheetId','contract','action','requestId','actor',
                 'trigger','issuedAt','expiresAt','expectedDigest','planScope','chunkIndex','chunkId','chunkDigest',
                 'planId','detailsDigest','fullPlanDigest','sourceDigest','totalAppendCount','diagnosticMode',
-                'auditTargets','auditTargetsDigest'} and
+                'auditTargets','auditTargetsDigest','expectedPlanCounts','expectedUpdateIdentityDigest',
+                'expectedUpdateIdentities','expectedCellDigests'} and
             payload.get('diagnosticMode')=='audit_recovery' and payload.get('environment')=='SANDBOX' and
             payload.get('planScope')=='APPEND_ONLY' and isinstance(payload.get('requestId'),str) and
             re.fullmatch(r'[0-9a-f]{32}',payload['requestId']) and
@@ -561,7 +569,22 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             type(payload.get('totalAppendCount')) is int and 1<=payload['totalAppendCount']<=10000 and
             len(audit_targets or [])==payload['totalAppendCount'] and audit_targets_valid and
             is_canonical_sha256_b64url(payload.get('auditTargetsDigest')) and
-            payload.get('auditTargetsDigest')==audit_targets_digest)
+            payload.get('auditTargetsDigest')==audit_targets_digest and
+            isinstance(payload.get('expectedPlanCounts'),dict) and
+            set(payload['expectedPlanCounts'])=={'append','update','conflict','error'} and
+            all(type(payload['expectedPlanCounts'].get(key)) is int and payload['expectedPlanCounts'][key]>=0
+                for key in ('append','update','conflict','error')) and
+            payload['expectedPlanCounts']['append']==payload['totalAppendCount'] and
+            is_canonical_sha256_b64url(payload.get('expectedUpdateIdentityDigest')) and
+            isinstance(payload.get('expectedUpdateIdentities'),list) and len(payload['expectedUpdateIdentities'])<=1000 and
+            payload['expectedPlanCounts']['update']==len(payload['expectedUpdateIdentities']) and
+            all(isinstance(item,list) and len(item)==3 and item[0] in ('ФОП','ЮО') and
+                type(item[1]) is int and item[1]>=2 and isinstance(item[2],str) and
+                re.fullmatch(r'\d{8,10}',item[2]) for item in payload['expectedUpdateIdentities']) and
+            _sandbox_append_identity_digest(payload['expectedUpdateIdentities'])==payload['expectedUpdateIdentityDigest'] and
+            isinstance(payload.get('expectedCellDigests'),dict) and 1<=len(payload['expectedCellDigests'])<=30 and
+            all(re.fullmatch(r'(?:value|formula):[A-O]',str(key)) and is_canonical_sha256_b64url(value)
+                for key,value in payload['expectedCellDigests'].items()))
         audit_field_targets=payload.get('auditFieldTargets')
         audit_field_codes=set()
         audit_field_targets_valid=isinstance(audit_field_targets,list) and 1<=len(audit_field_targets)<=25

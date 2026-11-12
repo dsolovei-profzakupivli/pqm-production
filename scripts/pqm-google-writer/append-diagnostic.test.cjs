@@ -50,6 +50,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
   }
   const changes=targets.map(item=>({tab:item.tab,row:item.row,append:true,cells:{
     0:`=IF(B${item.row}="","",1)`,1:item.code}}));
+  let plannedUpdateCount=0;
   const manifestRows=targets.slice(0,25).map((item,index)=>({tab:item.tab,row:item.row,code:item.code,
     cellsDigest:'cells-digest',formulaA:`=IF(B${item.row}="","",1)`,
     planId:id,runId:id,serviceMetadata:{addedAt:'2026-11-11T20:00:00+02:00',planId:id,runId:id}}));
@@ -58,6 +59,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
   Object.assign(manifest,manifestOverrides);
   const record={state:'uncertain',chunkJournalVersion:1,planScope:'APPEND_ONLY',runId:id,planId:id,
     digest:appendDigest,inflight:0,uncertainChunk:0,nextChunk:0,steps:[],inflightManifest:{ref:'manifest'}};
+  record.googleDigest=b64digest('google');
   Object.assign(record,recordOverrides);
   if(manifestMismatch)manifest.chunkDigest=b64digest('different chunk');
   const properties=new Map([['PQM_EXECUTION_SHARED_SECRET',secret],['PQM_EXECUTION_UNCERTAIN',id],
@@ -83,12 +85,13 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     pqmGooglePlan_:(_body,_tabs,options)=>{plannerCalls++;mockNow+=plannerAdvanceMs;
       if(options&&typeof options.diagnosticBudgetCheck==='function')options.diagnosticBudgetCheck();
       return {changes:appendOperationCount===276?changes:changes.slice(0,appendOperationCount),
-        counts:{appended:plannedAppendCount,conflicts:0,errors:0}};},
+        counts:{appended:plannedAppendCount,updated:plannedUpdateCount,conflicts:0,errors:0}};},
     pqmSandboxFullBlocked_:()=>unsafePlan,
-    pqmSandboxFullState_:(_body,tabs)=>({payload_digest:sourceDigest,laterChunkStillPresent:
+    pqmSandboxFullState_:(_body,tabs)=>({payload_digest:sourceDigest,google_digest:b64digest('google'),laterChunkStillPresent:
       Object.values(tabs).some(tab=>tab.rows.some(row=>row.codeDisplay===laterCode))}),
     pqmSandboxFullDigest_:value=>value.laterChunkStillPresent?b64digest('changed-plan'):
-      value.state&&value.state.scope==='APPEND_ONLY'?(appendDigestMismatch?b64digest('different-append'):appendDigest):
+      value.state&&value.state.scope==='APPEND_ONLY'?(value.state.parent_plan_digest!==fullDigest?
+        b64digest('different-parent-append'):(appendDigestMismatch?b64digest('different-append'):appendDigest)):
         fullDigestMismatch?b64digest('different-full'):fullDigest,
     pqmSandboxControlledDigest_:value=>Array.isArray(value)&&value[0]&&value[0].sourceMarker
       ?sourceMismatch?b64digest('other source'):sourceDigest:value&&value.kind
@@ -99,6 +102,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
       snapshotBaseline=JSON.stringify(lastSnapshot);return lastSnapshot;},
     pqmGoogleBlank_:value=>value===null||value===undefined||value==='',
     pqmSandboxExecutionComparableValue_:value=>value===null||value===undefined?'':String(value),
+    pqmSandboxPreviewDisplayValue_:value=>value,
     pqmSandboxAppendRowMetadata_:()=>({cells:[],height:20}),
     pqmSandboxAppendVerifyMetadata_:()=>{if(failMetadata)throw new Error('synthetic read-back failure');},
     Sheets:{Spreadsheets:{batchUpdate:()=>{sheetsWrites++;throw new Error('write forbidden in diagnostic mock');},Values:{batchGet:(_id,request)=>{
@@ -137,6 +141,14 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
       service:{addedAtValid:true,planId:id,runId:id}};
     return [item.tab,item.code,item.row,b64digest(JSON.stringify(canonical(projection)))];
   });
+  const cellDigestGroups={'value:B':[],'formula:A':[]};
+  changes.forEach(change=>{
+    cellDigestGroups['formula:A'].push([change.tab,change.row,String(change.cells[1]||''),change.cells[0]]);
+    cellDigestGroups['value:B'].push([change.tab,change.row,String(change.cells[1]||''),change.cells[1]]);
+  });
+  const expectedCellDigests=Object.fromEntries(Object.entries(cellDigestGroups).map(([key,rows])=>
+    [key,b64digest(JSON.stringify(canonical(rows.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:a[1]-b[1]||
+      (a[2]<b[2]?-1:a[2]>b[2]?1:0)))))]));
   const auditRequest={environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox',
     contract:'pqm-mirror-datetime-v1',action:'diagnose_append_plan',requestId:id,actor:'admin',trigger:'manual',
     issuedAt:Math.floor(Date.now()/1000),expiresAt:Math.floor(Date.now()/1000)+300,
@@ -144,9 +156,11 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     detailsDigest,fullPlanDigest:fullDigest,sourceDigest,totalAppendCount:targets.length,auditTargets,
     auditTargetsDigest:b64digest(JSON.stringify(canonical(auditTargets)))};
   const combinedRequest={...auditRequest,diagnosticMode:'audit_recovery',chunkId:manifest.chunkId,chunkDigest,
-    chunkIndex:0};
+    chunkIndex:0,expectedPlanCounts:{append:plannedAppendCount,update:0,conflict:0,error:0},
+    expectedUpdateIdentityDigest:b64digest(JSON.stringify(canonical([]))),expectedUpdateIdentities:[],expectedCellDigests};
   return {ctx,properties,request,envelope:recoveryEnvelope,auditRequest,auditEnvelope:sign(auditRequest),
-    combinedRequest,combinedEnvelope:sign(combinedRequest),targets,manifest,record,sign,
+    combinedRequest,combinedEnvelope:sign(combinedRequest),targets,changes,manifest,record,sign,
+    setPlanUpdateCount(value){plannedUpdateCount=value;},
     get writes(){return writes;},get sheetsWrites(){return sheetsWrites;},
     get snapshotReads(){return snapshotReads;},get sourceReads(){return sourceReads;},
     get plannerCalls(){return plannerCalls;},get locked(){return locked;},
@@ -187,7 +201,7 @@ test('audits a 276-row plan with the first 25 exactly present and never writes s
 
 test('reports each preview reconstruction comparison separately without exposing digests',()=>{
   const cases=[
-    [{fullDigestMismatch:true},{fullPreviewDigest:'MISMATCH',appendOnlyDigest:'MATCH',
+    [{fullDigestMismatch:true},{fullPreviewDigest:'MISMATCH',appendOnlyDigest:'MISMATCH',
       plannedAppendCount:'MATCH',appendOperationCount:'MATCH'}],
     [{appendDigestMismatch:true},{fullPreviewDigest:'MATCH',appendOnlyDigest:'MISMATCH',
       plannedAppendCount:'MATCH',appendOperationCount:'MATCH'}],
@@ -412,6 +426,13 @@ test('combined audit and recovery use one shared snapshot and one reconstruction
     {planned:276,confirmed:25,missing:251,conflict:0,unverified:0,remaining:251});
   assert.equal(result.recoveryStatus,'DIAGNOSED');
   assert.equal(result.firstChunkRecoveryEvidence,true);
+  assert.equal(result.digestDiagnostics.googleStateDigest,'MATCH');
+  assert.equal(result.digestDiagnostics.appendIdentityStatus,'MATCH');
+  assert.equal(result.digestDiagnostics.appendIdentityMismatchCount,0);
+  assert.equal(result.digestDiagnostics.appendProjectionMismatchCount,0);
+  assert.equal(result.digestDiagnostics.valueComparisonStatus,'MATCH');
+  assert.equal(result.digestDiagnostics.formulaComparisonStatus,'MATCH');
+  assert.equal(result.digestDiagnostics.fullCountsDigest,'UNAVAILABLE');
   assert.equal(f.snapshotReads,1);
   assert.equal(f.sourceReads,1);
   assert.equal(f.plannerCalls,1);
@@ -420,6 +441,56 @@ test('combined audit and recovery use one shared snapshot and one reconstruction
   assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);assert.equal(f.locked,false);
   assert.deepEqual(Object.keys(result.stageDurationsMs).sort(),[
     'dataAcquisitionMs','manifestVerificationMs','previewReconstructionMs','responseBuildMs','totalMs'].sort());
+});
+
+test('digest component mismatches are reported without exposing digest or cell values and keep recovery blocked',()=>{
+  const cases=[
+    {name:'initial Google state',mutate:f=>{f.record.googleDigest=b64digest('other initial state');
+      f.properties.set(`PQM_EXECUTION_RUN_${f.request.requestId}`,JSON.stringify(f.record));},
+      assert:result=>assert.equal(result.digestDiagnostics.googleStateDigest,'MISMATCH')},
+    {name:'saved plan count',mutate:f=>{f.combinedRequest.expectedPlanCounts.error=1;},
+      assert:result=>assert.equal(result.digestDiagnostics.planCounts.error.status,'MISMATCH')},
+    {name:'value column',mutate:f=>{f.combinedRequest.expectedCellDigests['value:B']=b64digest('other column projection');},
+      assert:result=>{assert.equal(result.digestDiagnostics.valueComparisonStatus,'MISMATCH');
+        assert.deepEqual(JSON.parse(JSON.stringify(result.digestDiagnostics.valueMismatchColumns)),['B']);}},
+    {name:'formula column',mutate:f=>{f.combinedRequest.expectedCellDigests['formula:A']=b64digest('other formula projection');},
+      assert:result=>{assert.equal(result.digestDiagnostics.formulaComparisonStatus,'MISMATCH');
+        assert.deepEqual(JSON.parse(JSON.stringify(result.digestDiagnostics.formulaMismatchColumns)),['A']);}},
+    {name:'independent APPEND digest',mutate:f=>{f.combinedRequest.fullPlanDigest=b64digest('other original parent');},
+      assert:result=>assert.equal(result.digestDiagnostics.appendOnlyWithOriginalParent,'MISMATCH')}
+  ];
+  for(const scenario of cases){
+    const f=fixture();scenario.mutate(f);
+    const response=f.ctx.pqmSandboxAppendDiagnostic20261112(f.sign(f.combinedRequest));
+    scenario.assert(response);
+    assert.equal(response.recoveryStatus,'BLOCKED');
+    assert.equal(response.counts.confirmed,25);
+    const serialized=JSON.stringify(response);
+    assert.equal(serialized.includes('other column projection'),false);
+    assert.equal(serialized.includes('other initial state'),false);
+    assert.equal(response.digestDiagnostics.fullCountsDigest,'UNAVAILABLE');
+    assert.equal(response.digestDiagnostics.exactCellMismatchCounts,'UNAVAILABLE');
+    assert.equal(f.writes,0);assert.equal(f.sheetsWrites,0);
+  }
+});
+
+test('operation identities and all persisted plan counts are compared independently',()=>{
+  const identities=fixture();
+  identities.changes[0].row+=1;
+  const identityResult=identities.ctx.pqmSandboxAppendDiagnostic20261112(identities.combinedEnvelope);
+  assert.equal(identityResult.digestDiagnostics.appendIdentityStatus,'MISMATCH');
+  assert.ok(identityResult.digestDiagnostics.appendIdentityMismatchCount>0);
+  assert.equal(identityResult.digestDiagnostics.appendProjectionStatus,'MISMATCH');
+  assert.equal(identityResult.recoveryStatus,'BLOCKED');
+
+  const counts=fixture();counts.setPlanUpdateCount(1);
+  const countResult=counts.ctx.pqmSandboxAppendDiagnostic20261112(counts.combinedEnvelope);
+  assert.equal(countResult.digestDiagnostics.planCounts.update.expected,0);
+  assert.equal(countResult.digestDiagnostics.planCounts.update.actual,1);
+  assert.equal(countResult.digestDiagnostics.planCounts.update.status,'MISMATCH');
+  assert.equal(countResult.recoveryStatus,'BLOCKED');
+  assert.equal(identities.writes+counts.writes,0);
+  assert.equal(identities.sheetsWrites+counts.sheetsWrites,0);
 });
 
 test('combined diagnostic blocks on an incomplete snapshot without retrying its read',()=>{
@@ -524,7 +595,15 @@ test('Writer UI keeps a copyable APPEND report panel with field paths only',()=>
       planned_append_count:'MATCH',append_operation_count:'MATCH'},
     downstream_checks:{source_binding:'MATCH',plan_safety:'MATCH',target_rows:'NOT_CHECKED',
       row_values_and_formulas:'NOT_CHECKED',service_metadata:'NOT_CHECKED',manifest_rows:'NOT_CHECKED',
-      append_row_metadata:'NOT_CHECKED'}};`,context);
+      append_row_metadata:'NOT_CHECKED'},digest_diagnostics:{google_state_digest:'MISMATCH',
+      plan_counts:{append:{expected:276,actual:276,status:'MATCH'},update:{expected:2,actual:2,status:'MATCH'},
+        conflict:{expected:2,actual:2,status:'MATCH'},error:{expected:0,actual:0,status:'MATCH'}},
+      append_identity_status:'MATCH',append_identity_mismatch_count:0,append_projection_status:'MATCH',
+      append_projection_mismatch_count:0,update_identity_status:'MATCH',update_identity_mismatch_count:0,
+      update_identity_digest:'MATCH',value_comparison_status:'MISMATCH',value_mismatch_columns:['I'],
+      value_mismatch_column_count:1,formula_comparison_status:'MATCH',formula_mismatch_columns:[],
+      formula_mismatch_column_count:0,append_only_with_original_parent:'MATCH',
+      full_counts_digest:'UNAVAILABLE',exact_cell_mismatch_counts:'UNAVAILABLE'}};`,context);
   const html=vm.runInContext(`googleWriterAppendDiagnosticHtml('r')`,context);
   const text=vm.runInContext(`googleWriterAppendReportText(googleWriterAppendDiagnosticReport)`,context);
   assert.match(html,/google-writer-append-diagnostic-result/);assert.match(html,/Скопіювати короткий звіт/);
@@ -533,5 +612,7 @@ test('Writer UI keeps a copyable APPEND report panel with field paths only',()=>
   assert.match(html,/Значення й формули: NOT_CHECKED/);
   assert.match(text,/PREVIEW_RECONSTRUCTION_MISMATCH/);assert.match(text,/manifest.chunkDigest/);
   assert.match(text,/Повний digest Preview — MISMATCH/);assert.match(text,/Цільові рядки — NOT_CHECKED/);
+  assert.match(html,/стан Google-таблиць — MISMATCH/);assert.match(html,/значень: MISMATCH · 1 \(I\)/);
+  assert.match(text,/APPEND із початковим батьківським digest — MATCH/);
   assert.equal(/SENSITIVE_CELL_VALUE|observed_digest|[A-Za-z0-9_-]{43}/.test(html+text),false);
 });

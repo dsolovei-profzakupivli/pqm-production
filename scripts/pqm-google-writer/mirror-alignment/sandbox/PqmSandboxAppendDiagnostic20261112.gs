@@ -19,7 +19,8 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
     'spreadsheetId','totalAppendCount','trigger'];
   var recoveryKeys=baseKeys.concat(['chunkDigest','chunkId','chunkIndex','diagnosticMode','targetIdentities']);
   var auditKeys=baseKeys.concat(['auditTargets','auditTargetsDigest','chunkIndex','diagnosticMode']);
-  var auditRecoveryKeys=baseKeys.concat(['auditTargets','auditTargetsDigest','chunkDigest','chunkId','chunkIndex','diagnosticMode']);
+  var auditRecoveryKeys=baseKeys.concat(['auditTargets','auditTargetsDigest','chunkDigest','chunkId','chunkIndex',
+    'diagnosticMode','expectedCellDigests','expectedPlanCounts','expectedUpdateIdentities','expectedUpdateIdentityDigest']);
   var auditFieldKeys=baseKeys.concat(['auditFieldTargets','auditFieldTargetsDigest','chunkIndex','diagnosticMode']);
   var auditMode=request && request.diagnosticMode==='audit';
   var auditRecoveryMode=request && request.diagnosticMode==='audit_recovery';
@@ -52,7 +53,24 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
         request.auditTargets.length!==request.totalAppendCount ||
         !pqmSandboxIsCanonicalDigest_(request.auditTargetsDigest) ||
         pqmSandboxControlledDigest_(request.auditTargets)!==request.auditTargetsDigest ||
-        !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || !/^[0-9a-f]{32}$/.test(request.chunkId||''))) ||
+        !pqmSandboxIsCanonicalDigest_(request.chunkDigest) || !/^[0-9a-f]{32}$/.test(request.chunkId||'') ||
+        !request.expectedPlanCounts || Object.keys(request.expectedPlanCounts).sort().join('|')!==
+          'append|conflict|error|update' ||
+        ['append','update','conflict','error'].some(function(key){return !Number.isInteger(request.expectedPlanCounts[key])||
+          request.expectedPlanCounts[key]<0;}) || request.expectedPlanCounts.append!==request.totalAppendCount ||
+        !pqmSandboxIsCanonicalDigest_(request.expectedUpdateIdentityDigest) ||
+        !Array.isArray(request.expectedUpdateIdentities) || request.expectedUpdateIdentities.length>1000 ||
+        request.expectedPlanCounts.update!==request.expectedUpdateIdentities.length ||
+        request.expectedUpdateIdentities.some(function(item){return !Array.isArray(item)||item.length!==3||
+          ['ФОП','ЮО'].indexOf(item[0])<0||!Number.isInteger(item[1])||item[1]<2||typeof item[2]!=='string'||
+          !/^\d{8,10}$/.test(item[2]);}) ||
+        pqmSandboxControlledDigest_(request.expectedUpdateIdentities.slice().sort(function(a,b){return a[0]<b[0]?-1:
+          a[0]>b[0]?1:a[1]-b[1]||(a[2]<b[2]?-1:a[2]>b[2]?1:0);}))!==request.expectedUpdateIdentityDigest ||
+        !request.expectedCellDigests || typeof request.expectedCellDigests!=='object' ||
+        Array.isArray(request.expectedCellDigests) || Object.keys(request.expectedCellDigests).length<1 ||
+        Object.keys(request.expectedCellDigests).length>30 ||
+        Object.keys(request.expectedCellDigests).some(function(key){return !/^(?:value|formula):[A-O]$/.test(key)||
+          !pqmSandboxIsCanonicalDigest_(request.expectedCellDigests[key]);}))) ||
       (auditFieldsMode && (!Array.isArray(request.auditFieldTargets) ||
         request.auditFieldTargets.length<1 || request.auditFieldTargets.length>25 ||
         !pqmSandboxIsCanonicalDigest_(request.auditFieldTargetsDigest) ||
@@ -130,6 +148,7 @@ function pqmSandboxAppendDiagnosticBlocked_(request,code) {
       downstreamChecks:{sourceBinding:'NOT_CHECKED',planSafety:'NOT_CHECKED',targetRows:'NOT_CHECKED',
         rowValuesAndFormulas:'NOT_CHECKED',serviceMetadata:'NOT_CHECKED',manifestRows:'NOT_CHECKED',
         appendRowMetadata:'NOT_CHECKED'},
+      digestDiagnostics:pqmSandboxAppendDigestDiagnosticsUnavailable_(request),
       stageDurationsMs:{dataAcquisitionMs:0,previewReconstructionMs:0,manifestVerificationMs:0,
         responseBuildMs:0,totalMs:0},readOnly:true};
   }
@@ -326,6 +345,7 @@ function pqmSandboxAppendAuditRecoveryReadOnly_(request,properties) {
     if (firstChunkAuditConflict) blockedReasons.push('APPEND_FIRST_CHUNK_AUDIT_CONFLICT');
     recovery={status:'BLOCKED',reasonCodes:blockedReasons,manifestBinding:'BLOCKED',
       manifestMismatchFields:[],firstChunkRecoveryEvidence:false,
+      digestDiagnostics:pqmSandboxAppendDigestDiagnosticsUnavailable_(request),
       reconstructionChecks:{fullPreviewDigest:'NOT_CHECKED',appendOnlyDigest:'NOT_CHECKED',
         plannedAppendCount:'NOT_CHECKED',appendOperationCount:'NOT_CHECKED'},
       downstreamChecks:{sourceBinding:'NOT_CHECKED',planSafety:'NOT_CHECKED',targetRows:'NOT_CHECKED',
@@ -346,6 +366,7 @@ function pqmSandboxAppendAuditRecoveryReadOnly_(request,properties) {
     recoveryStatus:recovery.status,recoveryReasonCodes:recovery.reasonCodes,
     manifestBinding:recovery.manifestBinding,manifestMismatchFields:recovery.manifestMismatchFields,
     firstChunkRecoveryEvidence:recovery.firstChunkRecoveryEvidence,
+    digestDiagnostics:recovery.digestDiagnostics||pqmSandboxAppendDigestDiagnosticsUnavailable_(request),
     reconstructionChecks:recovery.reconstructionChecks,downstreamChecks:recovery.downstreamChecks,
     readOnly:true};
   timings.responseBuildMs=Date.now()-responseStarted;
@@ -362,6 +383,55 @@ function pqmSandboxAppendDiagnosticAuditUnavailable_(request,reason) {
   var total=request.totalAppendCount;
   return {status:'READ_INCOMPLETE',counts:{planned:total,confirmed:0,missing:0,conflict:0,
     unverified:total,remaining:total},reasonCodes:[reason],conflicts:[]};
+}
+
+function pqmSandboxAppendDigestDiagnosticsUnavailable_(request) {
+  var counts=request.expectedPlanCounts||{};
+  var planCounts={};
+  ['append','update','conflict','error'].forEach(function(key){
+    planCounts[key]={expected:Number.isInteger(counts[key])?counts[key]:null,actual:null,status:'UNAVAILABLE'};
+  });
+  return {googleStateDigest:'UNAVAILABLE',planCounts:planCounts,appendIdentityStatus:'UNAVAILABLE',
+    appendIdentityMismatchCount:null,appendProjectionStatus:'UNAVAILABLE',appendProjectionMismatchCount:null,
+    updateIdentityStatus:'UNAVAILABLE',updateIdentityMismatchCount:null,updateIdentity:'UNAVAILABLE',
+    valueComparisonStatus:'UNAVAILABLE',valueMismatchColumns:[],valueMismatchColumnCount:null,
+    formulaComparisonStatus:'UNAVAILABLE',formulaMismatchColumns:[],formulaMismatchColumnCount:null,
+    appendOnlyWithOriginalParent:'UNAVAILABLE',
+    fullCountsDigest:'UNAVAILABLE',exactCellMismatchCounts:'UNAVAILABLE'};
+}
+
+function pqmSandboxAppendIdentityMismatchCount_(expectedTargets,changes) {
+  function key(tab,row,code){return JSON.stringify([tab,row,code]);}
+  var expected={},actual={},mismatches=0;
+  expectedTargets.forEach(function(item){var value=key(item[0],item[2],item[1]);expected[value]=(expected[value]||0)+1;});
+  changes.forEach(function(change){var code=String(change.cells&&change.cells[1]||'').trim();
+    var value=key(change.tab,change.row,code);actual[value]=(actual[value]||0)+1;});
+  var keys={};Object.keys(expected).concat(Object.keys(actual)).forEach(function(value){keys[value]=true;});
+  Object.keys(keys).forEach(function(value){mismatches+=Math.abs((expected[value]||0)-(actual[value]||0));});
+  return mismatches;
+}
+
+function pqmSandboxAppendCurrentCellDigests_(plan,tabs) {
+  var groups={};
+  plan.changes.forEach(function(change){
+    var code=change.append?String(change.cells[1]||'').trim():
+      String((((tabs[change.tab]||{}).rows||[])[change.row-2]||{}).codeDisplay||'').trim();
+    Object.keys(change.cells||{}).forEach(function(rawColumn){
+      var column=Number(rawColumn),letter=String.fromCharCode(65+column),raw=change.cells[rawColumn];
+      var formula=typeof raw==='string'&&raw.charAt(0)==='=';
+      var kind=formula?'formula':'value',value=formula?raw:
+        pqmSandboxExecutionComparableValue_(pqmSandboxPreviewDisplayValue_(raw,column),column);
+      var groupKey=kind+':'+letter;
+      if(!groups[groupKey])groups[groupKey]=[];
+      groups[groupKey].push([change.tab,change.row,code,value]);
+    });
+  });
+  var result={};Object.keys(groups).sort().forEach(function(key){
+    groups[key].sort(function(a,b){return a[0]<b[0]?-1:a[0]>b[0]?1:a[1]-b[1]||
+      (a[2]<b[2]?-1:a[2]>b[2]?1:0);});
+    result[key]=pqmSandboxControlledDigest_(groups[key]);
+  });
+  return result;
 }
 
 function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request,sharedTabs,budget) {
@@ -505,6 +575,7 @@ function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request,loadData
   var downstreamChecks={sourceBinding:'NOT_CHECKED',planSafety:'NOT_CHECKED',targetRows:'NOT_CHECKED',
     rowValuesAndFormulas:'NOT_CHECKED',serviceMetadata:'NOT_CHECKED',manifestRows:'NOT_CHECKED',
     appendRowMetadata:'NOT_CHECKED'};
+  var digestDiagnostics=pqmSandboxAppendDigestDiagnosticsUnavailable_(request);
   function summary(status,counts,reasons,manifestBinding,firstChunkReady,manifestMismatchFields) {
     recordManifestTime();
     return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
@@ -514,6 +585,7 @@ function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request,loadData
       planId:request.planId,chunkIndex:0,counts:counts,reasonCodes:reasons,
       manifestBinding:manifestBinding,manifestMismatchFields:manifestMismatchFields||[],
       reconstructionChecks:reconstructionChecks,downstreamChecks:downstreamChecks,
+      digestDiagnostics:digestDiagnostics,
       firstChunkRecoveryEvidence:firstChunkReady===true,readOnly:true};
   }
   function allUnverified(code,manifestMismatchFields) {
@@ -622,6 +694,79 @@ function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request,loadData
     google_digest:rebuiltState.google_digest,changes_digest:pqmSandboxControlledDigest_(appendChanges),
     counts:{append:rebuiltPlan.counts.appended,update:0,conflict:rebuiltPlan.counts.conflicts,
       error:rebuiltPlan.counts.errors}}});
+  var appendWithOriginalParent=pqmSandboxFullDigest_({version:1,state:{scope:'APPEND_ONLY',
+    parent_plan_digest:request.fullPlanDigest,payload_digest:rebuiltState.payload_digest,
+    google_digest:rebuiltState.google_digest,changes_digest:pqmSandboxControlledDigest_(appendChanges),
+    counts:{append:rebuiltPlan.counts.appended,update:0,conflict:rebuiltPlan.counts.conflicts,
+      error:rebuiltPlan.counts.errors}}});
+  if (request.expectedPlanCounts && Array.isArray(request.expectedUpdateIdentities) &&
+      pqmSandboxIsCanonicalDigest_(request.expectedUpdateIdentityDigest) && request.expectedCellDigests) {
+  var currentCounts={append:rebuiltPlan.counts.appended,update:rebuiltPlan.counts.updated,
+    conflict:rebuiltPlan.counts.conflicts,error:rebuiltPlan.counts.errors};
+  var comparedCounts={};['append','update','conflict','error'].forEach(function(name){
+    var expected=request.expectedPlanCounts&&request.expectedPlanCounts[name],actual=currentCounts[name];
+    comparedCounts[name]={expected:Number.isInteger(expected)?expected:null,actual:Number.isInteger(actual)?actual:null,
+      status:Number.isInteger(expected)&&Number.isInteger(actual)?(expected===actual?'MATCH':'MISMATCH'):'UNAVAILABLE'};
+  });
+  var currentUpdateIds=rebuiltPlan.changes.filter(function(change){return !change.append;}).map(function(change){
+    var row=loaded.tabs[change.tab]&&loaded.tabs[change.tab].rows[change.row-2];
+    return [change.tab,change.row,String((row&&row.codeDisplay)||'').trim()];
+  }).sort(function(a,b){return a[0]<b[0]?-1:a[0]>b[0]?1:a[1]-b[1]||(a[2]<b[2]?-1:a[2]>b[2]?1:0);});
+  function identityMismatchCount(expected,actual) {
+    function key(item){return JSON.stringify(item);}
+    var counts={};expected.concat(actual).forEach(function(item,index){var value=key(item);
+      counts[value]=(counts[value]||0)+(index<expected.length?1:-1);});
+    return Object.keys(counts).reduce(function(total,value){return total+Math.abs(counts[value]);},0);
+  }
+  var currentCellDigests=pqmSandboxAppendCurrentCellDigests_(rebuiltPlan,loaded.tabs);
+  var valueMismatchColumns=[],formulaMismatchColumns=[],cellDigestKeys={};
+  Object.keys(request.expectedCellDigests||{}).concat(Object.keys(currentCellDigests)).forEach(function(name){cellDigestKeys[name]=true;});
+  Object.keys(cellDigestKeys).sort().forEach(function(name){
+    if (!request.expectedCellDigests || request.expectedCellDigests[name]!==currentCellDigests[name])
+      (name.indexOf('formula:')===0?formulaMismatchColumns:valueMismatchColumns).push(name.slice(name.indexOf(':')+1));
+  });
+  var expectedAppendDigestByCode={};request.auditTargets.forEach(function(item){expectedAppendDigestByCode[item[1]]=item[3];});
+  var currentAppendByCode={};appendChanges.forEach(function(change){currentAppendByCode[String(change.cells[1]||'').trim()]=change;});
+  var appendProjectionMismatchCount=0;
+  request.auditTargets.forEach(function(item){
+    var change=currentAppendByCode[item[1]],digest=null;
+    if (change) {
+      var values=Array(15).fill(''),formulas=Array(15).fill('');
+      Object.keys(change.cells||{}).forEach(function(rawColumn){
+        var column=Number(rawColumn),raw=change.cells[rawColumn];
+        if (column===0&&typeof raw==='string'&&raw.charAt(0)==='=') formulas[column]=raw;
+        else values[column]=pqmSandboxExecutionComparableValue_(pqmSandboxPreviewDisplayValue_(raw,column),column);
+      });
+      digest=pqmSandboxControlledDigest_({tab:change.tab,row:change.row,code:String(change.cells[1]||'').trim(),
+        values:values,formulas:formulas,service:{addedAtValid:true,planId:request.requestId,runId:request.requestId}});
+    }
+    if (!digest || digest!==expectedAppendDigestByCode[item[1]]) appendProjectionMismatchCount++;
+  });
+  var updateIdentityDigest=pqmSandboxControlledDigest_(currentUpdateIds);
+  var appendIdentityMismatchCount=pqmSandboxAppendIdentityMismatchCount_(request.auditTargets,appendChanges);
+  digestDiagnostics={googleStateDigest:pqmSandboxIsCanonicalDigest_(record.googleDigest)?
+      (record.googleDigest===rebuiltState.google_digest?'MATCH':'MISMATCH'):'UNAVAILABLE',
+    planCounts:comparedCounts,appendIdentityStatus:appendIdentityMismatchCount?'MISMATCH':'MATCH',
+    appendIdentityMismatchCount:appendIdentityMismatchCount,
+    appendProjectionStatus:appendProjectionMismatchCount?'MISMATCH':'MATCH',
+    appendProjectionMismatchCount:appendProjectionMismatchCount,
+    updateIdentityStatus:(identityMismatchCount(request.expectedUpdateIdentities,currentUpdateIds)||
+      updateIdentityDigest!==request.expectedUpdateIdentityDigest)?'MISMATCH':'MATCH',
+    updateIdentityMismatchCount:identityMismatchCount(request.expectedUpdateIdentities,currentUpdateIds),
+    updateIdentity:updateIdentityDigest===request.expectedUpdateIdentityDigest?'MATCH':'MISMATCH',
+    valueComparisonStatus:valueMismatchColumns.length?'MISMATCH':'MATCH',valueMismatchColumns:valueMismatchColumns,
+    valueMismatchColumnCount:valueMismatchColumns.length,
+    formulaComparisonStatus:formulaMismatchColumns.length?'MISMATCH':'MATCH',formulaMismatchColumns:formulaMismatchColumns,
+    formulaMismatchColumnCount:formulaMismatchColumns.length,
+    appendOnlyWithOriginalParent:appendWithOriginalParent===request.expectedDigest?'MATCH':'MISMATCH',
+    fullCountsDigest:'UNAVAILABLE',exactCellMismatchCounts:'UNAVAILABLE'};
+  var componentMismatch=digestDiagnostics.googleStateDigest==='MISMATCH'||
+    Object.keys(digestDiagnostics.planCounts).some(function(key){return digestDiagnostics.planCounts[key].status==='MISMATCH';})||
+    digestDiagnostics.appendIdentityStatus==='MISMATCH'||digestDiagnostics.appendProjectionStatus==='MISMATCH'||
+    digestDiagnostics.updateIdentityStatus==='MISMATCH'||digestDiagnostics.valueComparisonStatus==='MISMATCH'||
+    digestDiagnostics.formulaComparisonStatus==='MISMATCH'||digestDiagnostics.appendOnlyWithOriginalParent==='MISMATCH';
+  if (componentMismatch) return allUnverified('PREVIEW_COMPONENT_MISMATCH');
+  }
   reconstructionChecks.fullPreviewDigest=rebuiltFullDigest===request.fullPlanDigest?'MATCH':'MISMATCH';
   reconstructionChecks.appendOnlyDigest=rebuiltAppendDigest===request.expectedDigest?'MATCH':'MISMATCH';
   reconstructionChecks.plannedAppendCount=rebuiltPlan.counts.appended===total?'MATCH':'MISMATCH';
