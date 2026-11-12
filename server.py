@@ -11891,6 +11891,8 @@ class Handler(BaseHTTPRequestHandler):
                         can_close=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')),
                         can_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')),
                         can_preflight_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')))
+            data['can_diagnose_append']=bool(SANDBOX_MODE and google_writer_environment()=='SANDBOX' and
+                permissions.get('admin.manage') and permissions.get('google.writer.execute'))
             if not permissions.get('admin.manage'):
                 for run in data.get('runs',[]):
                     run.pop('close_reason',None);run.pop('closed_by',None)
@@ -12551,6 +12553,27 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
                     google_writer_execution.ExecutionConfigurationError):
                 return self.send_json({'status':'BLOCKED','reason_codes':['LOCAL_OR_REMOTE_EVIDENCE_UNAVAILABLE'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0})
+        if parsed.path == '/api/admin/google-writer/append-diagnostic':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'BLOCKED','reason_codes':['SANDBOX_ONLY'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'BLOCKED','reason_codes':['PERMISSION_REQUIRED'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'request_id'}:
+                    raise ValueError('Only the saved run identity is accepted')
+                result=google_writer_execution.diagnose_append_only_plan(
+                    DB_PATH,google_writer_client(),payload['request_id'],self.auth_user)
+                if result.get('read_only') is not True:
+                    raise ValueError('Read-only diagnostic contract was not returned')
+                return self.send_json(result)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'BLOCKED','reason_codes':['DIAGNOSTIC_EVIDENCE_UNAVAILABLE'],
                     'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0})
         if parsed.path == '/api/admin/google-writer/close-prewrite':
             permissions=getattr(self,'auth_access',{}).get('permissions',{})

@@ -1005,13 +1005,14 @@ class ExecutionClient:
                expected_checkpoint_digest=None, chunk_id=None, chunk_digest=None, plan_id=None,
                chunk_phase=None, chunk_added_at=None, chunk_details_digest=None,
                prewrite_stage=None,target_identity_digest=None,target_identities=None,
-               legacy_manifest_rows=None,legacy_manifest_projection_digest=None):
+               legacy_manifest_rows=None,legacy_manifest_projection_digest=None,
+               details_digest=None,full_plan_digest=None,source_digest=None,total_append_count=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
         if background_jobs.disabled() and not manual_override:
             raise ExecutionConfigurationError('Background jobs disabled')
         self.validate()
-        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'recover_apply_chunk', 'reconcile_partial', 'close_unknown_run','close_prewrite_failure','prewrite_close_preflight'} or trigger not in {'manual', 'scheduled'}:
+        if action not in {'preview', 'apply', 'resume_check', 'recover_append_chunk', 'recover_apply_chunk', 'reconcile_partial', 'close_unknown_run','close_prewrite_failure','prewrite_close_preflight','diagnose_append_plan'} or trigger not in {'manual', 'scheduled'}:
             raise ValueError('Unsupported execution action')
         if not re.fullmatch(r'[0-9a-f]{32}', request_id) or not actor or len(actor) > 128:
             raise ValueError('Invalid execution identity')
@@ -1048,6 +1049,28 @@ class ExecutionClient:
                 not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or '')) or
                 chunk_phase not in {'append','update'}):
             raise ValueError('Sandbox Apply chunk recovery preflight is invalid')
+        if action=='diagnose_append_plan' and (
+                self.environment!='SANDBOX' or trigger!='manual' or manual_override is not True or
+                plan_scope!='APPEND_ONLY' or not is_canonical_sha256_b64url(digest) or
+                not is_canonical_sha256_b64url(details_digest) or
+                not is_canonical_sha256_b64url(full_plan_digest) or
+                not is_canonical_sha256_b64url(source_digest) or
+                type(chunk_index) is not int or chunk_index!=0 or
+                not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
+                not is_canonical_sha256_b64url(chunk_digest) or plan_id!=request_id or
+                type(total_append_count) is not int or not 1<=total_append_count<=10000 or
+                not isinstance(target_identities,list) or len(target_identities)!=total_append_count or
+                len(target_identities)>10000):
+            raise ValueError('Sandbox APPEND diagnostic binding is invalid')
+        if action=='diagnose_append_plan':
+            seen=set()
+            for item in target_identities:
+                if (not isinstance(item,dict) or set(item)!={'tab','code','row'} or
+                        item.get('tab') not in {'ФОП','ЮО'} or
+                        not isinstance(item.get('code'),str) or not re.fullmatch(r'\d{8,10}',item['code']) or
+                        type(item.get('row')) is not int or item['row']<2 or item['code'] in seen):
+                    raise ValueError('Sandbox APPEND diagnostic targets are invalid')
+                seen.add(item['code'])
         if checkpoint_apply and (type(chunk_index) is not int or not 0 <= chunk_index <= 499):
             raise ValueError('Invalid Apply checkpoint index')
         if checkpoint_protocol and action == 'apply' and self.environment=='SANDBOX':
@@ -1056,12 +1079,12 @@ class ExecutionClient:
                     (chunk_index > 0 and not is_canonical_sha256_b64url(expected_checkpoint_digest))):
                 raise ValueError('Apply checkpoint receipt binding is required')
         chunk_binding=(chunk_id,chunk_digest,plan_id)
-        if action in {'apply','recover_append_chunk','recover_apply_chunk','close_prewrite_failure','prewrite_close_preflight'} and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
+        if action in {'apply','recover_append_chunk','recover_apply_chunk','close_prewrite_failure','prewrite_close_preflight','diagnose_append_plan'} and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
             if (not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
                     not is_canonical_sha256_b64url(chunk_digest) or
                     not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or ''))):
                 raise ValueError('Durable Apply chunk binding is invalid')
-            legacy_append=(action in {'recover_append_chunk','close_prewrite_failure','prewrite_close_preflight'} or (action=='apply' and plan_scope=='APPEND_ONLY'))
+            legacy_append=(action in {'recover_append_chunk','close_prewrite_failure','prewrite_close_preflight','diagnose_append_plan'} or (action=='apply' and plan_scope=='APPEND_ONLY'))
             if (legacy_append and (plan_scope!='APPEND_ONLY' or chunk_phase not in {None,'append'})) or (
                     not legacy_append and (chunk_phase not in {'append','update'} or
                         not is_canonical_sha256_b64url(chunk_details_digest) or
@@ -1154,6 +1177,8 @@ class ExecutionClient:
             # The additive dispatcher checks the immutable closure tombstone
             # before delegating APPEND_ONLY recovery to the pinned legacy code.
             api_function='pqmSandboxAllScopeExecution20261109'
+        elif action=='diagnose_append_plan':
+            api_function='pqmSandboxAppendDiagnostic20261112'
         issued = int(self.clock().timestamp())
         message = {'environment':self.environment, 'scriptId':script, 'spreadsheetId':sheet,
                    'contract':CONTRACT, 'action':action, 'requestId':request_id,
@@ -1177,6 +1202,11 @@ class ExecutionClient:
                     legacyManifestProjectionDigest=legacy_manifest_projection_digest)
             if action=='prewrite_close_preflight':
                 message.pop('closeId',None);message.pop('closeEvidenceDigest',None);message.pop('reasonDigest',None)
+        if action=='diagnose_append_plan':
+            message.update(planScope='APPEND_ONLY',chunkIndex=0,chunkId=chunk_id,
+                chunkDigest=chunk_digest,planId=plan_id,detailsDigest=details_digest,
+                fullPlanDigest=full_plan_digest,sourceDigest=source_digest,totalAppendCount=total_append_count,
+                targetIdentities=target_identities)
         if chunk_id is not None:
             message.update(chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
             if chunk_phase is not None: message['chunkPhase']=chunk_phase
@@ -1191,7 +1221,7 @@ class ExecutionClient:
         try:
             token = self.token_provider(self.environment)
         except Exception:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only execution credentials unavailable',
                     safe_error={'diagnostic_code':'OAUTH_TOKEN_SOURCE_FAILED'}) from None
             raise ExecutionPreflightError('Execution preflight rejected; Apps Script was not called') from None
@@ -1203,7 +1233,7 @@ class ExecutionClient:
         except Exception:
             token_valid=False
         if not token_valid:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only execution credentials rejected',
                     safe_error={'diagnostic_code':'OAUTH_TOKEN_PREFLIGHT_REJECTED'})
             raise ExecutionPreflightError('Execution preflight rejected; Apps Script was not called')
@@ -1216,7 +1246,7 @@ class ExecutionClient:
                 data=json.dumps(body).encode(), method='POST',
                 headers={'Authorization':'Bearer '+token['access_token'], 'Content-Type':'application/json'})
         except Exception:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only Execution API request could not be built',
                     safe_error={'diagnostic_code':'EXECUTION_REQUEST_BUILD_FAILED'}) from None
             raise ExecutionPreflightError('Execution preflight rejected; Apps Script was not called') from None
@@ -1227,7 +1257,7 @@ class ExecutionClient:
             raise ExecutionPreflightError('Execution transport preflight rejected; Apps Script was not called') from None
         except urllib.error.HTTPError as exc:
             status_code=exc.code if type(exc.code) is int and 100<=exc.code<=599 else None
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 code=('EXECUTION_API_HTTP_'+str(status_code) if status_code else 'EXECUTION_API_HTTP_ERROR')
                 raise ExecutionPreflightError('Read-only Execution API request was rejected',
                     safe_error={'diagnostic_code':code}) from None
@@ -1236,7 +1266,7 @@ class ExecutionClient:
             if status_code:safe['http_status']=status_code
             raise ExecutionOutcomeUnknown('Execution API response was incomplete; recovery required',safe_error=safe) from None
         except urllib.error.URLError as exc:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 reason=getattr(exc,'reason',None)
                 code='EXECUTION_API_TRANSPORT_TIMEOUT' if isinstance(reason,TimeoutError) else 'EXECUTION_API_TRANSPORT_ERROR'
                 raise ExecutionPreflightError('Read-only Execution API transport failed',
@@ -1246,29 +1276,29 @@ class ExecutionClient:
             raise ExecutionOutcomeUnknown('Execution transport result was unknown; recovery required',
                 safe_error={'stage':'execution_api_transport','category':category,'exception_type':'URLError'}) from None
         except TimeoutError:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only Execution API request timed out',
                     safe_error={'diagnostic_code':'EXECUTION_API_TRANSPORT_TIMEOUT'}) from None
             raise ExecutionOutcomeUnknown('Execution transport timed out; recovery required',
                 safe_error={'stage':'execution_api_transport','category':'transport_timeout','exception_type':'TimeoutError'}) from None
         except OSError:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only Execution API transport failed',
                     safe_error={'diagnostic_code':'EXECUTION_API_TRANSPORT_ERROR'}) from None
             raise ExecutionOutcomeUnknown('Execution transport failed; no automatic retry; recovery required',
                 safe_error={'stage':'execution_api_transport','category':'transport_error','exception_type':'OSError'}) from None
         except Exception:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only Execution API response was unreadable',
                     safe_error={'diagnostic_code':'EXECUTION_API_RESPONSE_UNREADABLE'}) from None
             raise ExecutionOutcomeUnknown('Execution outcome unknown; no automatic retry') from None
         if not isinstance(data,dict):
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only Execution API returned an invalid response envelope',
                     safe_error={'diagnostic_code':'EXECUTION_API_RESPONSE_INVALID'})
             raise ExecutionOutcomeUnknown('Execution response was invalid; reconciliation required')
         if data.get('done') is not True or 'error' in data:
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 code=('APPS_SCRIPT_FUNCTION_ERROR' if isinstance(data,dict) and 'error' in data
                       else 'EXECUTION_API_RESPONSE_INCOMPLETE')
                 raise ExecutionPreflightError('Read-only Apps Script execution did not return a result',
@@ -1295,7 +1325,7 @@ class ExecutionClient:
         if (not isinstance(result, dict) or result.get('environment') != self.environment or
                 result.get('scriptId') != script or result.get('spreadsheetId') != sheet or
                 result.get('contract') != CONTRACT or result.get('requestId') != request_id):
-            if action in {'resume_check','prewrite_close_preflight'}:
+            if action in {'resume_check','prewrite_close_preflight','diagnose_append_plan'}:
                 raise ExecutionPreflightError('Read-only Apps Script response identity rejected',
                     safe_error={'diagnostic_code':'EXECUTION_RESPONSE_IDENTITY_MISMATCH'})
             raise ExecutionOutcomeUnknown('Execution response identity mismatch; reconciliation required')
@@ -1351,6 +1381,45 @@ class ExecutionClient:
                 'target_code_matches':result['targetCodeMatches'],'run_marker_matches':result['runMarkerMatches'],
                 'reason_codes':reason_codes,'read_only':True,'sqlite_writes':0,'sheets_writes':0,
                 'properties_writes':0}
+        if action=='diagnose_append_plan':
+            count_fields=('planned','confirmed','missing','conflict','unverified','remaining')
+            counts=result.get('counts')
+            if (result.get('status') not in {'DIAGNOSED','READ_INCOMPLETE','BLOCKED'} or
+                    result.get('readOnly') is not True or result.get('requestId')!=request_id or
+                    result.get('planScope')!='APPEND_ONLY' or result.get('digest')!=digest or
+                    result.get('detailsDigest')!=details_digest or result.get('fullPlanDigest')!=full_plan_digest or
+                    result.get('sourceDigest')!=source_digest or
+                    result.get('chunkId')!=chunk_id or result.get('chunkDigest')!=chunk_digest or
+                    result.get('planId')!=plan_id or result.get('chunkIndex')!=0 or
+                    not isinstance(counts,dict) or
+                    any(type(counts.get(key)) is not int or counts[key]<0 for key in count_fields) or
+                    counts['planned']!=total_append_count or
+                    sum(counts[key] for key in ('confirmed','missing','conflict','unverified'))!=total_append_count or
+                    counts['remaining']!=total_append_count-counts['confirmed'] or
+                    type(result.get('firstChunkRecoveryEvidence')) is not bool):
+                raise ExecutionPreflightError('Read-only APPEND diagnostic receipt was incomplete',
+                    safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_RECEIPT_INVALID'})
+            first_chunk_size=min(APPEND_JOURNAL_PAGE_ROWS,total_append_count)
+            if (result.get('manifestBinding') not in {'PASS','BLOCKED'} or
+                    (result['status']=='DIAGNOSED' and counts['unverified']!=0) or
+                    (result['status']=='READ_INCOMPLETE' and counts['unverified']==0) or
+                    (result['status']=='BLOCKED' and result['firstChunkRecoveryEvidence']) or
+                    (result['firstChunkRecoveryEvidence'] and
+                     (result['status']!='DIAGNOSED' or result.get('manifestBinding')!='PASS' or
+                      counts['confirmed']<first_chunk_size))):
+                raise ExecutionPreflightError('Read-only APPEND diagnostic status was inconsistent',
+                    safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_STATUS_INVALID'})
+            reasons=result.get('reasonCodes',[])
+            if (not isinstance(reasons,list) or len(reasons)>12 or
+                    any(not isinstance(code,str) or not re.fullmatch(r'[A-Z0-9_]{1,48}',code) for code in reasons)):
+                raise ExecutionPreflightError('Read-only APPEND diagnostic reason codes were invalid',
+                    safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_REASON_INVALID'})
+            return {'status':result['status'],'request_id_matches':True,'plan_binding':'PASS',
+                'details_binding':'PASS','chunk_binding':'PASS','manifest_binding':result.get('manifestBinding'),
+                'counts':{key:counts[key] for key in count_fields},
+                'first_chunk_recovery_evidence':result['firstChunkRecoveryEvidence'],
+                'reason_codes':reasons,'read_only':True,'sqlite_writes':0,
+                'sheets_writes':0,'properties_writes':0}
         if action == 'preview' and not is_canonical_sha256_b64url(result.get('digest')):
             raise ExecutionOutcomeUnknown('Invalid Preview receipt')
         plan_details = None
@@ -2876,6 +2945,95 @@ def _prewrite_close_material(con, request_id, actor, close_id, reason, *, read_o
         'target_identities':identities,'original_status':'failed_safe',
         'original_result_digest':original_result_digest,'original_started_at':run[3],
         'evidence_digest':evidence_digest}
+
+
+def diagnose_append_only_plan(path, client, request_id, actor):
+    """Read-only aggregate audit of an immutable APPEND_ONLY preview against the live Sandbox sheet."""
+    def blocked(code):
+        return {'status':'BLOCKED','request_id':request_id,'counts':None,'reason_codes':[code],
+            'first_chunk_recovery_evidence':False,'read_only':True,
+            'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+    if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
+            not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or
+            not isinstance(actor,str) or not actor.strip() or len(actor)>128):
+        return blocked('IDENTITY_INVALID')
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    try:
+        with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+            con.execute('PRAGMA query_only=ON');con.execute('BEGIN');con.row_factory=sqlite3.Row
+            runs=con.execute('''SELECT status,actor,result_json FROM google_writer_runs
+                WHERE request_id=? AND environment='SANDBOX' ''',(request_id,)).fetchall()
+            plans=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,source_digest,details_json
+                FROM google_writer_plan_journal WHERE request_id=? AND environment='SANDBOX' ''',(request_id,)).fetchall()
+            chunks=con.execute('''SELECT chunk_id,plan_id,scope,plan_digest,source_digest,chunk_index,chunk_digest,status,
+                expected_json,receipt_json,verified_at FROM google_writer_chunk_journal
+                WHERE run_id=? AND environment='SANDBOX' ORDER BY chunk_index''',(request_id,)).fetchall()
+            if len(runs)!=1 or len(plans)!=1 or len(chunks)!=1:
+                return blocked('SQLITE_BINDING_CARDINALITY')
+            run,plan,chunk=runs[0],plans[0],chunks[0]
+            result=json.loads(run['result_json'] or '{}')
+            if (run['status']!='outcome_unknown' or run['actor']!=actor or
+                    result.get('plan_scope')!='APPEND_ONLY' or result.get('attempted_chunk')!=0 or
+                    result.get('outcome_unknown') not in (None,True)):
+                return blocked('RUN_NOT_HELD_ON_FIRST_APPEND')
+            if (plan['plan_id']!=request_id or plan['actor']!=actor or
+                    not is_canonical_sha256_b64url(plan['plan_digest']) or
+                    not is_canonical_sha256_b64url(plan['append_only_digest']) or
+                    not is_canonical_sha256_b64url(plan['details_digest']) or
+                    not is_canonical_sha256_b64url(plan['source_digest'])):
+                return blocked('PLAN_BINDING_INVALID')
+            details=json.loads(plan['details_json'])
+            if (_preview_details_digest(details)!=plan['details_digest'] or
+                    details.get('environment')!='SANDBOX' or details.get('plan_digest')!=plan['plan_digest'] or
+                    details.get('append_only_digest')!=plan['append_only_digest'] or
+                    details.get('source_digest')!=plan['source_digest'] or
+                    not isinstance(details.get('appends'),list) or
+                    not details['appends'] or details['counts'].get('append')!=len(details['appends']) or
+                    not is_canonical_sha256_b64url(details.get('plan_digest'))):
+                return blocked('PREVIEW_JOURNAL_INVALID')
+            if (chunk['plan_id']!=request_id or chunk['scope']!='APPEND_ONLY' or
+                    chunk['plan_digest']!=plan['append_only_digest'] or chunk['source_digest']!=plan['source_digest'] or
+                    chunk['chunk_index']!=0 or chunk['status'] not in {'prepared','inflight','outcome_unknown'} or
+                    chunk['verified_at'] is not None or not is_canonical_sha256_b64url(chunk['chunk_digest'])):
+                return blocked('FIRST_CHUNK_BINDING_INVALID')
+            expected=json.loads(chunk['expected_json'])
+            if (not isinstance(expected,dict) or expected.get('version')!=1 or
+                    expected.get('run_id')!=request_id or expected.get('plan_id')!=request_id or
+                    expected.get('scope')!='APPEND_ONLY' or expected.get('plan_digest')!=plan['append_only_digest'] or
+                    expected.get('source_digest')!=plan['source_digest'] or expected.get('chunk_index')!=0 or
+                    not isinstance(expected.get('rows'),list) or not expected['rows'] or
+                    len(expected['rows'])>APPEND_JOURNAL_PAGE_ROWS or
+                    expected['rows']!=details['appends'][:APPEND_JOURNAL_PAGE_ROWS] or
+                    _sha256_b64(_canonical_json(expected).encode('utf-8'))!=chunk['chunk_digest']):
+                return blocked('FIRST_CHUNK_MANIFEST_INVALID')
+            receipt=json.loads(chunk['receipt_json'] or '{}')
+            if receipt not in ({},None) or result.get('checkpoint_digest') or result.get('verified_totals'):
+                return blocked('UNEXPECTED_RECEIPT_OR_CHECKPOINT')
+            targets=[];seen=set()
+            for item in details['appends']:
+                if (not isinstance(item,dict) or item.get('operation')!='APPEND' or
+                        item.get('tab') not in {'ФОП','ЮО'} or not isinstance(item.get('code'),str) or
+                        not re.fullmatch(r'\d{8,10}',item['code']) or type(item.get('row')) is not int or
+                        item['row']<2 or item['code'] in seen):
+                    return blocked('PREVIEW_TARGETS_INVALID')
+                seen.add(item['code']);targets.append({'tab':item['tab'],'code':item['code'],'row':item['row']})
+            if not targets or len(targets)!=details['counts']['append']:
+                return blocked('PREVIEW_TARGET_COUNT_INVALID')
+    except (OSError,sqlite3.Error,ValueError,TypeError,KeyError,IndexError,json.JSONDecodeError):
+        return blocked('SQLITE_EVIDENCE_UNAVAILABLE')
+    try:
+        remote=client.invoke('diagnose_append_plan',request_id,actor,trigger='manual',
+            digest=plan['append_only_digest'],plan_scope='APPEND_ONLY',manual_authorized=True,
+            chunk_index=0,chunk_id=chunk['chunk_id'],chunk_digest=chunk['chunk_digest'],plan_id=request_id,
+            target_identities=targets,details_digest=plan['details_digest'],
+            full_plan_digest=plan['plan_digest'],source_digest=plan['source_digest'],
+            total_append_count=len(targets))
+    except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown):
+        return blocked('APPS_SCRIPT_READ_ONLY_AUDIT_UNAVAILABLE')
+    if not isinstance(remote,dict) or not isinstance(remote.get('counts'),dict):
+        return blocked('APPS_SCRIPT_EVIDENCE_INVALID')
+    return {**remote,'request_id':request_id,'planned':len(targets),
+        'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
 
 
 def prewrite_close_preflight(path, client, request_id, actor):

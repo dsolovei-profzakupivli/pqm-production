@@ -447,6 +447,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
         action = payload.get('action')
         function = body.get('function')
         all_scope_endpoint = function == 'pqmSandboxAllScopeExecution20261109'
+        append_diagnostic_endpoint = function == 'pqmSandboxAppendDiagnostic20261112'
         all_scope_shape = (all_scope_endpoint and action in {'apply', 'recover_apply_chunk'} and
             payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'ALL' and
             payload.get('requestId') not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
@@ -461,6 +462,43 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             (payload.get('chunkPhase') == 'update' and payload.get('chunkAddedAt') is None or
              payload.get('chunkPhase') == 'append' and isinstance(payload.get('chunkAddedAt'), str) and
              re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}', payload.get('chunkAddedAt'))))
+        diagnostic_targets = payload.get('targetIdentities')
+        diagnostic_codes = set()
+        diagnostic_targets_valid = isinstance(diagnostic_targets, list) and 1 <= len(diagnostic_targets) <= 10000
+        if diagnostic_targets_valid:
+            for item in diagnostic_targets:
+                if (not isinstance(item, dict) or set(item) != {'tab', 'code', 'row'} or
+                        item.get('tab') not in {'ФОП', 'ЮО'} or
+                        not isinstance(item.get('code'), str) or
+                        not re.fullmatch(r'\d{8,10}', item['code']) or
+                        type(item.get('row')) is not int or item['row'] < 2 or
+                        item['code'] in diagnostic_codes):
+                    diagnostic_targets_valid = False
+                    break
+                diagnostic_codes.add(item['code'])
+        append_diagnostic_shape = (append_diagnostic_endpoint and action == 'diagnose_append_plan' and
+            set(payload) == {'environment', 'scriptId', 'spreadsheetId', 'contract', 'action',
+                'requestId', 'actor', 'trigger', 'issuedAt', 'expiresAt', 'expectedDigest',
+                'planScope', 'chunkIndex', 'chunkId', 'chunkDigest', 'planId',
+                'detailsDigest', 'fullPlanDigest', 'sourceDigest', 'totalAppendCount', 'targetIdentities'} and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'APPEND_ONLY' and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload['requestId']) and
+            payload['requestId'] not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            isinstance(payload.get('actor'), str) and bool(payload['actor'].strip()) and
+            len(payload['actor']) <= 128 and payload.get('trigger') == 'manual' and
+            type(payload.get('issuedAt')) is int and type(payload.get('expiresAt')) is int and
+            payload['issuedAt'] < payload['expiresAt'] <= payload['issuedAt'] + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('detailsDigest')) and
+            is_canonical_sha256_b64url(payload.get('fullPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('sourceDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex'] == 0 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            type(payload.get('totalAppendCount')) is int and
+            payload.get('totalAppendCount') == len(diagnostic_targets or []) and diagnostic_targets_valid)
         close_unknown_shape = (all_scope_endpoint and action == 'close_unknown_run' and
             set(payload) == {'environment', 'scriptId', 'spreadsheetId', 'contract', 'action',
                 'requestId', 'actor', 'trigger', 'issuedAt', 'expiresAt', 'expectedDigest',
@@ -610,7 +648,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             is_canonical_sha256_b64url(payload.get('evidenceDigest'))
         )
         if (set(body) != {'function', 'devMode', 'parameters'} or
-                not (legacy_shape or all_scope_shape or close_unknown_shape or prewrite_preflight_shape or prewrite_close_shape) or body['devMode'] is not False or
+                not (legacy_shape or all_scope_shape or append_diagnostic_shape or close_unknown_shape or prewrite_preflight_shape or prewrite_close_shape) or body['devMode'] is not False or
                 len(body['parameters']) != 1 or
                 set(envelope) != {'payload', 'signature'} or
                 not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or
@@ -618,7 +656,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
                 action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run',
-                    'prewrite_close_preflight', 'close_prewrite_failure') or
+                    'prewrite_close_preflight', 'close_prewrite_failure', 'diagnose_append_plan') or
                 (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
                 (checkpoint_apply_enabled(environment) and payload['action'] == 'apply' and
