@@ -249,6 +249,21 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         # wall time in Europe/Kyiv (2026-11-12 00:00 is UTC+02).
         self.assertEqual(writer._append_audit_comparable_value(46338,8),1794434400000)
 
+    def test_column_i_text_date_formats_match_apps_script_and_kyiv_timezone(self):
+        expected=1794434400000
+        for value in ('12.11.2026','12.11.2026 00:00','12.11.2026 00:00:00',
+                      '2026-11-12','2026-11-12T00:00','2026-11-12 00:00:00',
+                      '2026-11-12T00:00:00+02:00','2026-11-11T22:00:00Z'):
+            with self.subTest(value=value):
+                self.assertEqual(writer._append_audit_comparable_value(value,8),expected)
+
+    def test_column_i_text_date_rejects_formats_apps_script_rejects(self):
+        for value in ('2026-11-12T00:00:00.123456','2026-11-12T00:00:00+14:01',
+                      '2026-02-30T00:00:00','12.11.1999 00:00:00',
+                      '2026-03-29T03:30:00'):
+            with self.subTest(value=value):
+                self.assertEqual(writer._append_audit_comparable_value(value,8),value)
+
     def test_previous_five_column_i_date_cases_match_legacy_serial_evidence(self):
         # These are the five operation positions in the retired v1 evidence.
         # The old verified comparator matched date values against Sheets serials.

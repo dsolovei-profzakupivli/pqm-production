@@ -3118,17 +3118,50 @@ def _append_audit_comparable_value(value,column):
                 naive=datetime(1970,1,1)+timedelta(milliseconds=serial_ms)
             elif isinstance(value,str):
                 text=value.strip()
-                if text.endswith('Z'): text=text[:-1]+'+00:00'
-                parsed=datetime.fromisoformat(text)
-                if parsed.tzinfo is not None:
-                    return int(parsed.timestamp()*1000)
-                naive=parsed
+                explicit=re.fullmatch(
+                    r'(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2})(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})',
+                    text)
+                if explicit:
+                    offset=explicit.group(5)
+                    if offset!='Z':
+                        hours=int(offset[1:3]);minutes=int(offset[4:6])
+                        if hours>14 or minutes>59 or (hours==14 and minutes!=0):
+                            return str(value)
+                    try:
+                        parsed=datetime.fromisoformat(text.replace('Z','+00:00'))
+                        delta=parsed.astimezone(timezone.utc)-datetime(1970,1,1,tzinfo=timezone.utc)
+                        return delta.days*86400000+delta.seconds*1000+delta.microseconds//1000
+                    except (TypeError,ValueError,OSError,OverflowError):
+                        return str(value)
+
+                uk=re.fullmatch(r'(\d{2})\.(\d{2})\.(\d{4})(?:[ T](\d{2}:\d{2})(?::(\d{2}))?)?',text)
+                iso=re.fullmatch(
+                    r'(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2})(?::(\d{2})(\.\d{1,3})?)?)?',
+                    text)
+                try:
+                    if uk:
+                        day,month,year=map(int,uk.group(1,2,3))
+                        hour,minute=map(int,uk.group(4).split(':')) if uk.group(4) else (0,0)
+                        second=int(uk.group(5) or 0)
+                        naive=datetime(year,month,day,hour,minute,second)
+                    elif iso:
+                        if int(iso.group(1)[:4])<2000:
+                            return str(value)
+                        wall=iso.group(1)+'T'+(iso.group(2) or '00:00')+':'+(iso.group(3) or '00')+(iso.group(4) or '.000')
+                        naive=datetime.fromisoformat(wall)
+                    else:
+                        return str(value)
+                except (TypeError,ValueError,OverflowError):
+                    return str(value)
+                if naive.year<2000:
+                    return str(value)
             else: return str(value)
             candidates=[]
             for fold in (0,1):
                 aware=naive.replace(tzinfo=KYIV,fold=fold)
                 if aware.utcoffset() is not None and aware.astimezone(KYIV).replace(tzinfo=None)==naive:
-                    instant=int(aware.timestamp()*1000)
+                    delta=aware.astimezone(timezone.utc)-datetime(1970,1,1,tzinfo=timezone.utc)
+                    instant=delta.days*86400000+delta.seconds*1000+delta.microseconds//1000
                     if instant not in candidates:candidates.append(instant)
             return candidates[0] if len(candidates)==1 else str(value)
         except (OverflowError,ValueError,OSError):
