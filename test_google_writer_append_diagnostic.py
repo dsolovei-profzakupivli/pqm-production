@@ -24,7 +24,8 @@ class DiagnosticClient:
     environment = 'SANDBOX'
 
     def __init__(self, *, status='DIAGNOSED', confirmed=25, missing=251, conflict=0, unverified=0,
-                 first_chunk=False, conflict_codes=None, conflict_fields=None, manifest_fields=None):
+                 first_chunk=False, conflict_codes=None, conflict_fields=None, manifest_fields=None,
+                 reconstruction_checks=None, downstream_checks=None, recovery_error=None):
         self.status=status
         self.confirmed=confirmed
         self.missing=missing
@@ -34,6 +35,19 @@ class DiagnosticClient:
         self.conflict_codes=list(conflict_codes or [])
         self.conflict_fields=dict(conflict_fields or {})
         self.manifest_fields=list(manifest_fields or [])
+        self.reconstruction_checks=dict(reconstruction_checks or {
+            'fullPreviewDigest':'MATCH','appendOnlyDigest':'MATCH',
+            'plannedAppendCount':'MATCH','appendOperationCount':'MATCH'})
+        if downstream_checks is None:
+            blocked_by_reconstruction=any(value=='MISMATCH' for value in self.reconstruction_checks.values())
+            downstream_checks={'sourceBinding':'MATCH','planSafety':'MATCH',
+                'targetRows':'NOT_CHECKED' if blocked_by_reconstruction else 'MATCH',
+                'rowValuesAndFormulas':'NOT_CHECKED' if blocked_by_reconstruction else 'MATCH',
+                'serviceMetadata':'NOT_CHECKED' if blocked_by_reconstruction else 'MATCH',
+                'manifestRows':'NOT_CHECKED' if blocked_by_reconstruction else 'MATCH',
+                'appendRowMetadata':'NOT_CHECKED' if blocked_by_reconstruction else 'MATCH'}
+        self.downstream_checks=dict(downstream_checks)
+        self.recovery_error=recovery_error
         self.calls=[]
 
     def invoke(self, action, request_id, actor, **kwargs):
@@ -54,14 +68,31 @@ class DiagnosticClient:
                 for item in kwargs['audit_field_targets']]
             return {'status':'AUDIT_DETAILS','conflicts':conflicts,'read_only':True,
                 'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+        if self.recovery_error:
+            raise self.recovery_error
         counts={'planned':kwargs['total_append_count'],'confirmed':self.confirmed,
             'missing':self.missing,'conflict':self.conflict,'unverified':self.unverified,
             'remaining':kwargs['total_append_count']-self.confirmed}
-        reasons=[] if self.first_chunk else ['MANIFEST_BINDING_MISMATCH']
+        reconstruction_mismatch=any(value=='MISMATCH' for value in self.reconstruction_checks.values())
+        reasons=(['PREVIEW_RECONSTRUCTION_MISMATCH'] if reconstruction_mismatch else
+            ([] if self.first_chunk else ['MANIFEST_BINDING_MISMATCH']))
         return {'status':'DIAGNOSED','counts':counts,
             'firstChunkRecoveryEvidence':self.first_chunk,
             'first_chunk_recovery_evidence':self.first_chunk,
             'reason_codes':reasons,'manifest_mismatch_fields':self.manifest_fields,
+            'reconstruction_checks':{
+                'full_preview_digest':self.reconstruction_checks['fullPreviewDigest'],
+                'append_only_digest':self.reconstruction_checks['appendOnlyDigest'],
+                'planned_append_count':self.reconstruction_checks['plannedAppendCount'],
+                'append_operation_count':self.reconstruction_checks['appendOperationCount']},
+            'downstream_checks':{
+                'source_binding':self.downstream_checks['sourceBinding'],
+                'plan_safety':self.downstream_checks['planSafety'],
+                'target_rows':self.downstream_checks['targetRows'],
+                'row_values_and_formulas':self.downstream_checks['rowValuesAndFormulas'],
+                'service_metadata':self.downstream_checks['serviceMetadata'],
+                'manifest_rows':self.downstream_checks['manifestRows'],
+                'append_row_metadata':self.downstream_checks['appendRowMetadata']},
             'read_only':True}
 
 
@@ -116,17 +147,18 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
             'counts':{'append':count,'update':0,'conflict':0,'error':0},
             'appends':appends,'updates':[],'conflicts':[],'errors':[]}
 
-    def test_276_row_audit_confirms_first_25_and_keeps_recovery_blocked(self):
-        client=DiagnosticClient()
+    def test_276_row_audit_reports_recovery_checks_separately(self):
+        client=DiagnosticClient(first_chunk=True)
         before=hashlib.sha256(Path(self.path).read_bytes()).hexdigest()
         result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
         after=hashlib.sha256(Path(self.path).read_bytes()).hexdigest()
         self.assertEqual(before,after,'read-only diagnostics must not modify SQLite')
         self.assertEqual(result['counts'],{'planned':276,'confirmed':25,'missing':251,
             'conflict':0,'unverified':0,'remaining':251})
-        self.assertFalse(result['first_chunk_recovery_evidence'])
-        self.assertEqual(result['recovery_status'],'BLOCKED')
-        self.assertIn('MANIFEST_BINDING_MISMATCH',result['recovery_reason_codes'])
+        self.assertTrue(result['first_chunk_recovery_evidence'])
+        self.assertEqual(result['recovery_status'],'READY')
+        self.assertEqual(set(result['reconstruction_checks'].values()),{'MATCH'})
+        self.assertEqual(set(result['downstream_checks'].values()),{'MATCH'})
         self.assertTrue(result['read_only'])
         self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
         action,request_id,actor,kwargs=client.calls[0]
@@ -135,6 +167,60 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         self.assertEqual(len(kwargs['audit_targets']),276)
         self.assertEqual(len(kwargs['audit_targets'][0]),4)
         self.assertEqual(sum(call[3].get('diagnostic_mode')=='audit' for call in client.calls),1)
+
+    def test_reconstruction_reason_is_split_into_safe_per_check_statuses(self):
+        cases=(
+            ('fullPreviewDigest',),('appendOnlyDigest',),('plannedAppendCount',),('appendOperationCount',))
+        for mismatch_name in cases:
+            with self.subTest(mismatch=mismatch_name[0]):
+                checks={'fullPreviewDigest':'MATCH','appendOnlyDigest':'MATCH',
+                    'plannedAppendCount':'MATCH','appendOperationCount':'MATCH'}
+                checks[mismatch_name[0]]='MISMATCH'
+                client=DiagnosticClient(first_chunk=False,reconstruction_checks=checks)
+                result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
+                self.assertEqual(result['counts']['confirmed'],25)
+                self.assertEqual(result['counts']['missing'],251)
+                self.assertEqual(result['recovery_status'],'BLOCKED')
+                self.assertEqual(result['reconstruction_checks'],{
+                    'full_preview_digest':checks['fullPreviewDigest'],
+                    'append_only_digest':checks['appendOnlyDigest'],
+                    'planned_append_count':checks['plannedAppendCount'],
+                    'append_operation_count':checks['appendOperationCount']})
+                self.assertEqual(result['downstream_checks']['target_rows'],'NOT_CHECKED')
+                self.assertIn('PREVIEW_RECONSTRUCTION_MISMATCH',result['recovery_reason_codes'])
+                serialized=writer._canonical_json(result)
+                self.assertNotIn(self.full_digest,serialized)
+                self.assertNotIn(self.append_digest,serialized)
+
+    def test_unchecked_downstream_conditions_are_reported_without_becoming_ready(self):
+        reconstruction={'fullPreviewDigest':'MISMATCH','appendOnlyDigest':'MATCH',
+            'plannedAppendCount':'MATCH','appendOperationCount':'MATCH'}
+        downstream={'sourceBinding':'MATCH','planSafety':'MATCH','targetRows':'NOT_CHECKED',
+            'rowValuesAndFormulas':'NOT_CHECKED','serviceMetadata':'NOT_CHECKED',
+            'manifestRows':'NOT_CHECKED','appendRowMetadata':'NOT_CHECKED'}
+        client=DiagnosticClient(first_chunk=False,reconstruction_checks=reconstruction,
+            downstream_checks=downstream)
+        result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
+        self.assertEqual(result['recovery_status'],'BLOCKED')
+        self.assertEqual(result['downstream_checks'],{
+            'source_binding':'MATCH','plan_safety':'MATCH','target_rows':'NOT_CHECKED',
+            'row_values_and_formulas':'NOT_CHECKED','service_metadata':'NOT_CHECKED',
+            'manifest_rows':'NOT_CHECKED','append_row_metadata':'NOT_CHECKED'})
+        self.assertFalse(result['first_chunk_recovery_evidence'])
+
+    def test_older_apps_script_response_keeps_row_audit_and_blocks_only_recovery(self):
+        error=writer.ExecutionPreflightError('old Apps Script response has no detailed checks',
+            safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_CHECKS_INVALID'})
+        client=DiagnosticClient(first_chunk=False,recovery_error=error)
+        result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
+        self.assertEqual(result['counts']['confirmed'],25)
+        self.assertEqual(result['counts']['missing'],251)
+        self.assertEqual(result['recovery_status'],'BLOCKED')
+        self.assertIn('APPEND_DIAGNOSTIC_CHECKS_INVALID',result['recovery_reason_codes'])
+        self.assertEqual(set(result['reconstruction_checks'].values()),{'NOT_CHECKED'})
+        self.assertEqual(set(result['downstream_checks'].values()),{'NOT_CHECKED'})
+        self.assertTrue(result['read_only'])
+        self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
 
     def test_conflicts_and_unverified_rows_are_reported_without_recovery_authorization(self):
         client=DiagnosticClient(confirmed=23,missing=250,conflict=2,unverified=1,first_chunk=False)

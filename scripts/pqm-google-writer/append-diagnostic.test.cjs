@@ -10,7 +10,9 @@ const id='7'.repeat(32),secret='sandbox-diagnostic-secret-'.padEnd(40,'S');
 const b64digest=value=>crypto.createHash('sha256').update(value).digest('base64url');
 
 function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=false,failMetadata=false,manifestMismatch=false,
-  manifestChunkIndex='absent',manifestOverrides={},recordOverrides={},fieldMismatchCodes=[],formulaMismatchCodes=[]}={}) {
+  manifestChunkIndex='absent',manifestOverrides={},recordOverrides={},fullDigestMismatch=false,
+  appendDigestMismatch=false,plannedAppendCount=276,appendOperationCount=276,unsafePlan=false,
+  sourceMismatch=false,fieldMismatchCodes=[],formulaMismatchCodes=[]}={}) {
   const fullDigest=b64digest('full-preview'),appendDigest=b64digest('append-preview');
   const sourceDigest=b64digest('source'),detailsDigest=b64digest('details'),chunkDigest=b64digest('chunk');
   const targets=[],next={'ФОП':2,'ЮО':2};
@@ -72,14 +74,16 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     LockService:{getScriptLock:()=>({tryLock:()=>{if(locked)return false;locked=true;return true;},releaseLock:()=>{locked=false;}})},
     pqmSandboxIsCanonicalDigest_:value=>typeof value==='string'&&/^[A-Za-z0-9_-]{43}$/.test(value),
     pqmExecutionCheckpointResolveManifest_:()=>manifest,
-    pqmSandboxFullLoad_:()=>({state:{payload_digest:sourceDigest},body:{items:[]},tabs:JSON.parse(JSON.stringify({
+    pqmSandboxFullLoad_:()=>({state:{payload_digest:sourceMismatch?b64digest('other source'):sourceDigest},body:{items:[]},tabs:JSON.parse(JSON.stringify({
       'ФОП':{rows:byTab['ФОП']},'ЮО':{rows:byTab['ЮО']}}))}),
-    pqmGooglePlan_:()=>({changes,counts:{appended:276,conflicts:0,errors:0}}),
-    pqmSandboxFullBlocked_:()=>false,
+    pqmGooglePlan_:()=>({changes:appendOperationCount===276?changes:changes.slice(0,appendOperationCount),
+      counts:{appended:plannedAppendCount,conflicts:0,errors:0}}),
+    pqmSandboxFullBlocked_:()=>unsafePlan,
     pqmSandboxFullState_:(_body,tabs)=>({payload_digest:sourceDigest,laterChunkStillPresent:
       Object.values(tabs).some(tab=>tab.rows.some(row=>row.codeDisplay===laterCode))}),
-    pqmSandboxFullDigest_:value=>value.state&&value.state.scope==='APPEND_ONLY'?appendDigest:
-      value.laterChunkStillPresent?b64digest('changed-plan'):fullDigest,
+    pqmSandboxFullDigest_:value=>value.laterChunkStillPresent?b64digest('changed-plan'):
+      value.state&&value.state.scope==='APPEND_ONLY'?(appendDigestMismatch?b64digest('different-append'):appendDigest):
+        fullDigestMismatch?b64digest('different-full'):fullDigest,
     pqmSandboxControlledDigest_:value=>value&&value.kind
       ?b64digest(JSON.stringify(canonical(value))):Array.isArray(value)||value&&value.values&&value.formulas&&value.service
         ?b64digest(JSON.stringify(canonical(value))):'cells-digest',
@@ -152,10 +156,56 @@ test('audits a 276-row plan with the first 25 exactly present and never writes s
   assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
     {planned:276,confirmed:25,missing:251,conflict:0,unverified:0,remaining:251});
   assert.equal(result.firstChunkRecoveryEvidence,true,JSON.stringify(result));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.reconstructionChecks)),{
+    fullPreviewDigest:'MATCH',appendOnlyDigest:'MATCH',plannedAppendCount:'MATCH',appendOperationCount:'MATCH'});
+  assert.deepEqual(JSON.parse(JSON.stringify(result.downstreamChecks)),{
+    sourceBinding:'MATCH',planSafety:'MATCH',targetRows:'MATCH',rowValuesAndFormulas:'MATCH',
+    serviceMetadata:'MATCH',manifestRows:'MATCH',appendRowMetadata:'MATCH'});
   assert.equal(result.readOnly,true);
   assert.equal(f.writes,0);
   assert.equal(JSON.stringify([...f.properties]),before);
   assert.equal(JSON.stringify(result).includes(f.targets[0].code),false,'supplier codes are never returned');
+});
+
+test('reports each preview reconstruction comparison separately without exposing digests',()=>{
+  const cases=[
+    [{fullDigestMismatch:true},{fullPreviewDigest:'MISMATCH',appendOnlyDigest:'MATCH',
+      plannedAppendCount:'MATCH',appendOperationCount:'MATCH'}],
+    [{appendDigestMismatch:true},{fullPreviewDigest:'MATCH',appendOnlyDigest:'MISMATCH',
+      plannedAppendCount:'MATCH',appendOperationCount:'MATCH'}],
+    [{plannedAppendCount:275},{fullPreviewDigest:'MATCH',appendOnlyDigest:'MATCH',
+      plannedAppendCount:'MISMATCH',appendOperationCount:'MATCH'}],
+    [{appendOperationCount:275},{fullPreviewDigest:'MATCH',appendOnlyDigest:'MATCH',
+      plannedAppendCount:'MATCH',appendOperationCount:'MISMATCH'}]
+  ];
+  for(const [options,expected] of cases){
+    const f=fixture(options),before=JSON.stringify([...f.properties]);
+    const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope);
+    assert.equal(result.status,'BLOCKED');
+    assert.ok(result.reasonCodes.includes('PREVIEW_RECONSTRUCTION_MISMATCH'));
+    assert.deepEqual(JSON.parse(JSON.stringify(result.reconstructionChecks)),expected);
+    assert.equal(result.firstChunkRecoveryEvidence,false);
+    assert.equal(JSON.stringify(result).includes('different-'),false,'digest values are never returned');
+    assert.equal(f.writes,0);
+    assert.equal(JSON.stringify([...f.properties]),before);
+  }
+});
+
+test('marks downstream checks NOT_CHECKED when a prerequisite blocks reconstruction',()=>{
+  const source=fixture({sourceMismatch:true});
+  const sourceResult=source.ctx.pqmSandboxAppendDiagnostic20261112(source.envelope);
+  assert.equal(sourceResult.status,'BLOCKED');
+  assert.deepEqual(JSON.parse(JSON.stringify(sourceResult.reconstructionChecks)),{
+    fullPreviewDigest:'NOT_CHECKED',appendOnlyDigest:'NOT_CHECKED',
+    plannedAppendCount:'NOT_CHECKED',appendOperationCount:'NOT_CHECKED'});
+  assert.equal(sourceResult.downstreamChecks.sourceBinding,'MISMATCH');
+  assert.equal(sourceResult.downstreamChecks.targetRows,'NOT_CHECKED');
+  const unsafe=fixture({unsafePlan:true});
+  const unsafeResult=unsafe.ctx.pqmSandboxAppendDiagnostic20261112(unsafe.envelope);
+  assert.equal(unsafeResult.status,'BLOCKED');
+  assert.equal(unsafeResult.downstreamChecks.planSafety,'MISMATCH');
+  assert.equal(unsafeResult.reconstructionChecks.fullPreviewDigest,'NOT_CHECKED');
+  assert.equal(source.writes,0);assert.equal(unsafe.writes,0);
 });
 
 test('accepts a strictly matching explicit v1 chunkIndex zero',()=>{
@@ -343,11 +393,19 @@ test('Writer UI keeps a copyable APPEND report panel with field paths only',()=>
   vm.runInContext(`googleWriterAppendDiagnosticReport={request_id:'r',status:'DIAGNOSED',
     counts:{planned:276,confirmed:19,missing:251,conflict:6,unverified:0,remaining:257},reason_codes:['TARGET_CONFLICT'],
     conflicts:[{code:'32835814',fields:['value:C'],detail_status:'VERIFIED'}],recovery_status:'BLOCKED',
-    recovery_reason_codes:['MANIFEST_BINDING_MISMATCH'],recovery_field_mismatches:['manifest.chunkDigest']};`,context);
+    recovery_reason_codes:['PREVIEW_RECONSTRUCTION_MISMATCH'],recovery_field_mismatches:['manifest.chunkDigest'],
+    reconstruction_checks:{full_preview_digest:'MISMATCH',append_only_digest:'MATCH',
+      planned_append_count:'MATCH',append_operation_count:'MATCH'},
+    downstream_checks:{source_binding:'MATCH',plan_safety:'MATCH',target_rows:'NOT_CHECKED',
+      row_values_and_formulas:'NOT_CHECKED',service_metadata:'NOT_CHECKED',manifest_rows:'NOT_CHECKED',
+      append_row_metadata:'NOT_CHECKED'}};`,context);
   const html=vm.runInContext(`googleWriterAppendDiagnosticHtml('r')`,context);
   const text=vm.runInContext(`googleWriterAppendReportText(googleWriterAppendDiagnosticReport)`,context);
   assert.match(html,/google-writer-append-diagnostic-result/);assert.match(html,/Скопіювати короткий звіт/);
   assert.match(html,/32835814/);assert.match(html,/value:C/);
-  assert.match(text,/MANIFEST_BINDING_MISMATCH/);assert.match(text,/manifest.chunkDigest/);
+  assert.match(html,/Повний digest Preview: MISMATCH/);assert.match(html,/APPEND_ONLY digest: MATCH/);
+  assert.match(html,/Значення й формули: NOT_CHECKED/);
+  assert.match(text,/PREVIEW_RECONSTRUCTION_MISMATCH/);assert.match(text,/manifest.chunkDigest/);
+  assert.match(text,/Повний digest Preview — MISMATCH/);assert.match(text,/Цільові рядки — NOT_CHECKED/);
   assert.equal(/SENSITIVE_CELL_VALUE|observed_digest|[A-Za-z0-9_-]{43}/.test(html+text),false);
 });

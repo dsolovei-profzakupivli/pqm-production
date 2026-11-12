@@ -53,7 +53,12 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
             chunkDigest=payload['chunkDigest'],planId=payload['planId'],chunkIndex=0,
             counts={'planned':payload['totalAppendCount'],'confirmed':25,'missing':251,
                 'conflict':0,'unverified':0,'remaining':251},reasonCodes=[],manifestBinding='PASS',
-            firstChunkRecoveryEvidence=True,readOnly=True)
+            firstChunkRecoveryEvidence=True,readOnly=True,
+            reconstructionChecks={'fullPreviewDigest':'MATCH','appendOnlyDigest':'MATCH',
+                'plannedAppendCount':'MATCH','appendOperationCount':'MATCH'},
+            downstreamChecks={'sourceBinding':'MATCH','planSafety':'MATCH','targetRows':'MATCH',
+                'rowValuesAndFormulas':'MATCH','serviceMetadata':'MATCH','manifestRows':'MATCH',
+                'appendRowMetadata':'MATCH'})
         if self.response_mutator:
             self.response_mutator(result)
         return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
@@ -88,6 +93,8 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
         self.assertEqual(result['counts'],{'planned':276,'confirmed':25,'missing':251,
             'conflict':0,'unverified':0,'remaining':251})
         self.assertTrue(result['first_chunk_recovery_evidence'])
+        self.assertEqual(set(result['reconstruction_checks'].values()),{'MATCH'})
+        self.assertEqual(set(result['downstream_checks'].values()),{'MATCH'})
         request=self.calls[0]
         self.assertEqual(runtime.validate_execution_request(request,'SANDBOX',
             execution.IDENTITIES['SANDBOX'][0],execution.IDENTITIES['SANDBOX'][1],self.deployment),
@@ -115,6 +122,36 @@ class AppendDiagnosticTransportTests(unittest.TestCase):
     def test_response_cannot_claim_first_chunk_recovery_with_inconsistent_counts(self):
         self.response_mutator=lambda result: result['counts'].update(confirmed=24,missing=252,remaining=252)
         with self.assertRaisesRegex(execution.ExecutionPreflightError,'status was inconsistent'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_response_requires_exact_safe_reconstruction_check_statuses(self):
+        self.response_mutator=lambda result: result['reconstructionChecks'].update(fullPreviewDigest='MAYBE')
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'checks were incomplete'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_older_apps_script_response_fails_closed_when_detailed_checks_are_absent(self):
+        def mutate(result):
+            result.pop('reconstructionChecks')
+            result.pop('downstreamChecks')
+        self.response_mutator=mutate
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'checks were incomplete'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_response_cannot_claim_nonblocked_reconstruction_mismatch(self):
+        def mutate(result):
+            result['reconstructionChecks']['fullPreviewDigest']='MISMATCH'
+            result['reasonCodes']=['PREVIEW_RECONSTRUCTION_MISMATCH']
+        self.response_mutator=mutate
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'reconstruction status was inconsistent'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_response_cannot_claim_recovery_when_any_followup_check_was_not_checked(self):
+        self.response_mutator=lambda result: result['downstreamChecks'].update(targetRows='NOT_CHECKED')
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'reconstruction status was inconsistent'):
             self.invoke()
         self.assertEqual(len(self.calls),1)
 

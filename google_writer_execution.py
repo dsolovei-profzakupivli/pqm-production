@@ -1523,6 +1523,10 @@ class ExecutionClient:
                 'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
         if action=='diagnose_append_plan' and diagnostic_mode=='recovery':
             count_fields=('planned','confirmed','missing','conflict','unverified','remaining')
+            reconstruction_check_names=('fullPreviewDigest','appendOnlyDigest','plannedAppendCount','appendOperationCount')
+            downstream_check_names=('sourceBinding','planSafety','targetRows','rowValuesAndFormulas',
+                'serviceMetadata','manifestRows','appendRowMetadata')
+            check_statuses={'MATCH','MISMATCH','NOT_CHECKED'}
             counts=result.get('counts')
             if (result.get('status') not in {'DIAGNOSED','READ_INCOMPLETE','BLOCKED'} or
                     result.get('readOnly') is not True or result.get('requestId')!=request_id or
@@ -1554,6 +1558,26 @@ class ExecutionClient:
                     any(not isinstance(code,str) or not re.fullmatch(r'[A-Z0-9_]{1,48}',code) for code in reasons)):
                 raise ExecutionPreflightError('Read-only APPEND diagnostic reason codes were invalid',
                     safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_REASON_INVALID'})
+            reconstruction_checks=result.get('reconstructionChecks')
+            downstream_checks=result.get('downstreamChecks')
+            if (not isinstance(reconstruction_checks,dict) or
+                    set(reconstruction_checks)!=set(reconstruction_check_names) or
+                    any(not isinstance(value,str) or value not in check_statuses
+                        for value in reconstruction_checks.values()) or
+                    not isinstance(downstream_checks,dict) or set(downstream_checks)!=set(downstream_check_names) or
+                    any(not isinstance(value,str) or value not in check_statuses
+                        for value in downstream_checks.values())):
+                raise ExecutionPreflightError('Read-only APPEND diagnostic checks were incomplete',
+                    safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_CHECKS_INVALID'})
+            reconstruction_mismatch=any(value=='MISMATCH' for value in reconstruction_checks.values())
+            recovery_claim_has_unchecked=any(value!='MATCH' for value in
+                list(reconstruction_checks.values())+list(downstream_checks.values()))
+            if (('PREVIEW_RECONSTRUCTION_MISMATCH' in reasons)!=reconstruction_mismatch or
+                    (reconstruction_mismatch and
+                     (result['firstChunkRecoveryEvidence'] or result['status']!='BLOCKED')) or
+                    (result['firstChunkRecoveryEvidence'] and recovery_claim_has_unchecked)):
+                raise ExecutionPreflightError('Read-only APPEND reconstruction status was inconsistent',
+                    safe_error={'diagnostic_code':'APPEND_DIAGNOSTIC_CHECKS_INVALID'})
             manifest_fields=result.get('manifestMismatchFields',[])
             if (not isinstance(manifest_fields,list) or len(manifest_fields)>250 or
                     any(not isinstance(field,str) or not re.fullmatch(
@@ -1566,6 +1590,18 @@ class ExecutionClient:
                 'counts':{key:counts[key] for key in count_fields},
                 'first_chunk_recovery_evidence':result['firstChunkRecoveryEvidence'],
                 'reason_codes':reasons,'manifest_mismatch_fields':manifest_fields,
+                'reconstruction_checks':{
+                    'full_preview_digest':reconstruction_checks['fullPreviewDigest'],
+                    'append_only_digest':reconstruction_checks['appendOnlyDigest'],
+                    'planned_append_count':reconstruction_checks['plannedAppendCount'],
+                    'append_operation_count':reconstruction_checks['appendOperationCount']},
+                'downstream_checks':{
+                    'source_binding':downstream_checks['sourceBinding'],'plan_safety':downstream_checks['planSafety'],
+                    'target_rows':downstream_checks['targetRows'],
+                    'row_values_and_formulas':downstream_checks['rowValuesAndFormulas'],
+                    'service_metadata':downstream_checks['serviceMetadata'],
+                    'manifest_rows':downstream_checks['manifestRows'],
+                    'append_row_metadata':downstream_checks['appendRowMetadata']},
                 'read_only':True,'sqlite_writes':0,
                 'sheets_writes':0,'properties_writes':0}
         if action == 'preview' and not is_canonical_sha256_b64url(result.get('digest')):
@@ -3200,10 +3236,17 @@ def _append_audit_field_digests(item):
 
 def diagnose_append_only_plan(path, client, request_id, actor):
     """Read-only saved-plan audit, independent from strict first-chunk recovery evidence."""
+    reconstruction_not_checked={'full_preview_digest':'NOT_CHECKED','append_only_digest':'NOT_CHECKED',
+        'planned_append_count':'NOT_CHECKED','append_operation_count':'NOT_CHECKED'}
+    downstream_not_checked={'source_binding':'NOT_CHECKED','plan_safety':'NOT_CHECKED','target_rows':'NOT_CHECKED',
+        'row_values_and_formulas':'NOT_CHECKED','service_metadata':'NOT_CHECKED','manifest_rows':'NOT_CHECKED',
+        'append_row_metadata':'NOT_CHECKED'}
     def blocked(code):
         return {'status':'BLOCKED','request_id':request_id,'counts':None,'reason_codes':[code],
             'first_chunk_recovery_evidence':False,'recovery_status':'BLOCKED',
             'recovery_reason_codes':['RECOVERY_NOT_CHECKED'],'read_only':True,
+            'reconstruction_checks':dict(reconstruction_not_checked),
+            'downstream_checks':dict(downstream_not_checked),
             'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
     if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
             not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or
@@ -3360,6 +3403,7 @@ def diagnose_append_only_plan(path, client, request_id, actor):
         audit_reasons.append('ROW_READBACK_UNVERIFIED')
 
     first_chunk_recovery=False;manifest_mismatch_fields=[]
+    reconstruction_checks=dict(reconstruction_not_checked);downstream_checks=dict(downstream_not_checked)
     if not recovery_reasons and chunk is not None:
         try:
             targets_for_recovery=[{'tab':item['tab'],'code':item['code'],'row':item['row']} for item in targets]
@@ -3372,6 +3416,8 @@ def diagnose_append_only_plan(path, client, request_id, actor):
             first_chunk_recovery=remote.get('first_chunk_recovery_evidence') is True
             recovery_reasons.extend(remote.get('reason_codes',[]))
             manifest_mismatch_fields=remote.get('manifest_mismatch_fields',[])
+            reconstruction_checks=remote['reconstruction_checks']
+            downstream_checks=remote['downstream_checks']
         except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,ValueError,KeyError,TypeError) as exc:
             safe=getattr(exc,'safe_error',None);code=safe.get('diagnostic_code') if isinstance(safe,dict) else None
             recovery_reasons.append(code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9_]{1,64}',code)
@@ -3388,6 +3434,7 @@ def diagnose_append_only_plan(path, client, request_id, actor):
         'recovery_status':'READY' if first_chunk_recovery else 'BLOCKED',
         'recovery_reason_codes':list(dict.fromkeys(recovery_reasons)),
         'recovery_field_mismatches':manifest_mismatch_fields,
+        'reconstruction_checks':reconstruction_checks,'downstream_checks':downstream_checks,
         'first_chunk_recovery_evidence':first_chunk_recovery,'read_only':True,
         'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
 

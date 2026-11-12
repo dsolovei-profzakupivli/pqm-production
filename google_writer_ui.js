@@ -7,6 +7,15 @@ function googleWriterAppendReportText(report){
   if(report.counts){const c=report.counts;lines.push(`Підтверджено ${c.confirmed}/${c.planned}; відсутні ${c.missing}; конфлікти ${c.conflict}; непідтверджено ${c.unverified}; залишок ${c.remaining}.`);}
   if(report.reason_codes?.length)lines.push(`Причини звірки: ${report.reason_codes.join(', ')}.`);
   for(const item of report.conflicts||[])lines.push(`${item.code}: ${item.fields.length?item.fields.join(', '):'поля не встановлено'} (${item.detail_status}).`);
+  const checkStatus=value=>['MATCH','MISMATCH','NOT_CHECKED'].includes(value)?value:'NOT_CHECKED';
+  const reconstructionLabels=[['full_preview_digest','Повний digest Preview'],['append_only_digest','APPEND_ONLY digest'],
+    ['planned_append_count','Кількість APPEND у плані'],['append_operation_count','Кількість APPEND-операцій']];
+  if(report.reconstruction_checks)lines.push(`Реконструкція: ${reconstructionLabels.map(([key,label])=>`${label} — ${checkStatus(report.reconstruction_checks[key])}`).join('; ')}.`);
+  const downstreamLabels=[['source_binding','Джерело'],['plan_safety','Безпечність плану'],['target_rows','Цільові рядки'],
+    ['row_values_and_formulas','Значення й формули'],['service_metadata','Службові метадані'],
+    ['manifest_rows','Рядки manifest'],['append_row_metadata','Метадані рядків']];
+  if(report.downstream_checks)lines.push(`Наступні перевірки: ${downstreamLabels.map(([key,label])=>
+    `${label} — ${checkStatus(report.downstream_checks[key])}`).join('; ')}.`);
   lines.push(`Recovery: ${report.recovery_status||'BLOCKED'}.`);
   if(report.recovery_reason_codes?.length)lines.push(`Причини recovery: ${report.recovery_reason_codes.join(', ')}.`);
   if(report.recovery_field_mismatches?.length)lines.push(`Поля manifest: ${report.recovery_field_mismatches.join(', ')}.`);
@@ -21,7 +30,15 @@ function googleWriterAppendDiagnosticHtml(requestId){
   const auditReasons=(report.reason_codes||[]).map(esc).join(', ')||'немає';
   const recoveryReasons=(report.recovery_reason_codes||[]).map(esc).join(', ')||'немає';
   const manifestFields=(report.recovery_field_mismatches||[]).map(esc).join(', ')||'немає';
-  return `<section class="google-writer-append-diagnostic-result" aria-live="polite"><header><strong>Read-only APPEND звірка · ${esc(report.status||'BLOCKED')}</strong><button type="button" class="ghost google-writer-append-report-dismiss" aria-label="Закрити результат">×</button></header>${counts}<p>Причини звірки: ${auditReasons}</p>${fields?`<ul>${fields}</ul>`:''}<p>Recovery: ${esc(report.recovery_status||'BLOCKED')} · причини: ${recoveryReasons}</p><p>Невідповідні поля manifest: ${manifestFields}</p><button type="button" class="ghost google-writer-append-report-copy">Скопіювати короткий звіт</button><span class="google-writer-append-report-copy-status" role="status"></span><p class="muted">Запис не запускався; HOLD збережено.</p></section>`;
+  const checkStatus=value=>['MATCH','MISMATCH','NOT_CHECKED'].includes(value)?value:'NOT_CHECKED';
+  const reconstructionLabels=[['full_preview_digest','Повний digest Preview'],['append_only_digest','APPEND_ONLY digest'],
+    ['planned_append_count','Кількість APPEND у плані'],['append_operation_count','Кількість APPEND-операцій']];
+  const downstreamLabels=[['source_binding','Джерело'],['plan_safety','Безпечність плану'],['target_rows','Цільові рядки'],
+    ['row_values_and_formulas','Значення й формули'],['service_metadata','Службові метадані'],
+    ['manifest_rows','Рядки manifest'],['append_row_metadata','Метадані рядків']];
+  const checkList=(title,labels,checks)=>checks?`<p><strong>${title}</strong></p><ul>${labels.map(([key,label])=>
+    `<li>${label}: ${checkStatus(checks[key])}</li>`).join('')}</ul>`:'';
+  return `<section class="google-writer-append-diagnostic-result" aria-live="polite"><header><strong>Read-only APPEND звірка · ${esc(report.status||'BLOCKED')}</strong><button type="button" class="ghost google-writer-append-report-dismiss" aria-label="Закрити результат">×</button></header>${counts}<p>Причини звірки: ${auditReasons}</p>${fields?`<ul>${fields}</ul>`:''}${checkList('Реконструкція Preview',reconstructionLabels,report.reconstruction_checks)}${checkList('Подальші read-only перевірки',downstreamLabels,report.downstream_checks)}<p>Recovery: ${esc(report.recovery_status||'BLOCKED')} · причини: ${recoveryReasons}</p><p>Невідповідні поля manifest: ${manifestFields}</p><button type="button" class="ghost google-writer-append-report-copy">Скопіювати короткий звіт</button><span class="google-writer-append-report-copy-status" role="status"></span><p class="muted">Запис не запускався; HOLD збережено.</p></section>`;
 }
 function googleWriterProgressLabel(run){
   const progress=run?.progress||{},state=progress.state||run?.status;
@@ -142,6 +159,14 @@ async function diagnoseGoogleWriterAppend(requestId){
       throw new Error('Read-only підтвердження відсутнє; запуск лишається заблокованим');
     const fieldPattern=/^(?:tab|row|duplicate|metadata:[QRS]|(?:value|formula):[A-O])$/;
     const manifestPattern=/^manifest(?:\.chunkIndex|\.chunkId|\.chunkDigest|\.planId|\.runId|\.rows(?:\.length|\[\d{1,2}\]\.(?:target|preview|tab|row|code|cellsDigest|formulaA|serviceMetadata(?:\.(?:addedAt|planId|runId))?)))?$/;
+    const checkMap=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&
+      Object.keys(value).length===keys.length&&keys.every(key=>Object.prototype.hasOwnProperty.call(value,key))?
+      Object.fromEntries(keys.map(key=>[key,['MATCH','MISMATCH','NOT_CHECKED'].includes(value[key])?value[key]:'NOT_CHECKED'])):null;
+    const reconstructionChecks=checkMap(result.reconstruction_checks,
+      ['full_preview_digest','append_only_digest','planned_append_count','append_operation_count']);
+    const downstreamChecks=checkMap(result.downstream_checks,
+      ['source_binding','plan_safety','target_rows','row_values_and_formulas','service_metadata','manifest_rows','append_row_metadata']);
+    if(!reconstructionChecks||!downstreamChecks)throw new Error('Статуси перевірок неповні; recovery заблоковано');
     const conflicts=Array.isArray(result.conflicts)?result.conflicts.filter(item=>item&&typeof item.code==='string'&&/^\d{8,10}$/.test(item.code)).map(item=>({
       code:item.code,fields:Array.isArray(item.fields)?item.fields.filter(field=>typeof field==='string'&&fieldPattern.test(field)):[],
       detail_status:['VERIFIED','MATCHED','ROW_CHANGED','UNVERIFIED'].includes(item.detail_status||item.status)?(item.detail_status||item.status):'UNVERIFIED'})):[];
@@ -150,10 +175,16 @@ async function diagnoseGoogleWriterAppend(requestId){
       reason_codes:Array.isArray(result.reason_codes)?result.reason_codes.filter(code=>typeof code==='string'&&/^[A-Z0-9_]{1,64}$/.test(code)):[],
       conflicts,recovery_status:result.recovery_status==='READY'?'READY':'BLOCKED',
       recovery_reason_codes:Array.isArray(result.recovery_reason_codes)?result.recovery_reason_codes.filter(code=>typeof code==='string'&&/^[A-Z0-9_]{1,64}$/.test(code)):[],
-      recovery_field_mismatches:Array.isArray(result.recovery_field_mismatches)?result.recovery_field_mismatches.filter(field=>typeof field==='string'&&manifestPattern.test(field)):[]};
+      recovery_field_mismatches:Array.isArray(result.recovery_field_mismatches)?result.recovery_field_mismatches.filter(field=>typeof field==='string'&&manifestPattern.test(field)):[],
+      reconstruction_checks:reconstructionChecks,downstream_checks:downstreamChecks};
   }catch(_error){googleWriterAppendDiagnosticReport={request_id:requestId,status:'BLOCKED',counts:null,
     reason_codes:['APPEND_AUDIT_UNAVAILABLE'],conflicts:[],recovery_status:'BLOCKED',
-    recovery_reason_codes:['APPEND_AUDIT_UNAVAILABLE'],recovery_field_mismatches:[]};}
+    recovery_reason_codes:['APPEND_AUDIT_UNAVAILABLE'],recovery_field_mismatches:[],
+    reconstruction_checks:{full_preview_digest:'NOT_CHECKED',append_only_digest:'NOT_CHECKED',
+      planned_append_count:'NOT_CHECKED',append_operation_count:'NOT_CHECKED'},
+    downstream_checks:{source_binding:'NOT_CHECKED',plan_safety:'NOT_CHECKED',target_rows:'NOT_CHECKED',
+      row_values_and_formulas:'NOT_CHECKED',service_metadata:'NOT_CHECKED',manifest_rows:'NOT_CHECKED',
+      append_row_metadata:'NOT_CHECKED'}};}
   finally{googleWriterBusy=false;await loadGoogleWriterJob();}
 }
 async function preflightGoogleWriterPrewriteClose(requestId){
