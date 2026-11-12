@@ -1006,6 +1006,7 @@ class ExecutionClient:
                chunk_phase=None, chunk_added_at=None, chunk_details_digest=None,
                prewrite_stage=None,target_identity_digest=None,target_identities=None,
                legacy_manifest_rows=None,legacy_manifest_projection_digest=None,
+               diagnostic_mode='recovery',audit_targets=None,audit_targets_digest=None,
                details_digest=None,full_plan_digest=None,source_digest=None,total_append_count=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
@@ -1049,7 +1050,7 @@ class ExecutionClient:
                 not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or '')) or
                 chunk_phase not in {'append','update'}):
             raise ValueError('Sandbox Apply chunk recovery preflight is invalid')
-        if action=='diagnose_append_plan' and (
+        if action=='diagnose_append_plan' and diagnostic_mode=='recovery' and (
                 self.environment!='SANDBOX' or trigger!='manual' or manual_override is not True or
                 plan_scope!='APPEND_ONLY' or not is_canonical_sha256_b64url(digest) or
                 not is_canonical_sha256_b64url(details_digest) or
@@ -1062,7 +1063,7 @@ class ExecutionClient:
                 not isinstance(target_identities,list) or len(target_identities)!=total_append_count or
                 len(target_identities)>10000):
             raise ValueError('Sandbox APPEND diagnostic binding is invalid')
-        if action=='diagnose_append_plan':
+        if action=='diagnose_append_plan' and diagnostic_mode=='recovery':
             seen=set()
             for item in target_identities:
                 if (not isinstance(item,dict) or set(item)!={'tab','code','row'} or
@@ -1071,6 +1072,29 @@ class ExecutionClient:
                         type(item.get('row')) is not int or item['row']<2 or item['code'] in seen):
                     raise ValueError('Sandbox APPEND diagnostic targets are invalid')
                 seen.add(item['code'])
+        if action=='diagnose_append_plan' and diagnostic_mode=='audit' and (
+                self.environment!='SANDBOX' or trigger!='manual' or manual_override is not True or
+                plan_scope!='APPEND_ONLY' or not is_canonical_sha256_b64url(digest) or
+                not is_canonical_sha256_b64url(details_digest) or
+                not is_canonical_sha256_b64url(full_plan_digest) or
+                not is_canonical_sha256_b64url(source_digest) or plan_id!=request_id or
+                type(total_append_count) is not int or not 1<=total_append_count<=10000 or
+                not isinstance(audit_targets,list) or len(audit_targets)!=total_append_count or
+                not is_canonical_sha256_b64url(audit_targets_digest)):
+            raise ValueError('Sandbox APPEND audit page binding is invalid')
+        if action=='diagnose_append_plan' and diagnostic_mode=='audit':
+            seen=set()
+            if _sha256_b64(_canonical_json(audit_targets).encode('utf-8'))!=audit_targets_digest:
+                raise ValueError('Sandbox APPEND audit target digest is invalid')
+            for item in audit_targets:
+                if (not isinstance(item,list) or len(item)!=4 or item[0] not in {'ФОП','ЮО'} or
+                        not isinstance(item[1],str) or not re.fullmatch(r'\d{8,10}',item[1]) or
+                        type(item[2]) is not int or item[2]<2 or item[1] in seen or
+                        not is_canonical_sha256_b64url(item[3])):
+                    raise ValueError('Sandbox APPEND audit rows are invalid')
+                seen.add(item[1])
+        if action=='diagnose_append_plan' and diagnostic_mode not in {'recovery','audit'}:
+            raise ValueError('Sandbox APPEND diagnostic mode is invalid')
         if checkpoint_apply and (type(chunk_index) is not int or not 0 <= chunk_index <= 499):
             raise ValueError('Invalid Apply checkpoint index')
         if checkpoint_protocol and action == 'apply' and self.environment=='SANDBOX':
@@ -1079,7 +1103,9 @@ class ExecutionClient:
                     (chunk_index > 0 and not is_canonical_sha256_b64url(expected_checkpoint_digest))):
                 raise ValueError('Apply checkpoint receipt binding is required')
         chunk_binding=(chunk_id,chunk_digest,plan_id)
-        if action in {'apply','recover_append_chunk','recover_apply_chunk','close_prewrite_failure','prewrite_close_preflight','diagnose_append_plan'} and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
+        chunk_bound_action=(action in {'apply','recover_append_chunk','recover_apply_chunk','close_prewrite_failure','prewrite_close_preflight'} or
+            (action=='diagnose_append_plan' and diagnostic_mode=='recovery'))
+        if chunk_bound_action and self.environment=='SANDBOX' and any(value is not None for value in chunk_binding):
             if (not re.fullmatch(r'[0-9a-f]{32}',str(chunk_id or '')) or
                     not is_canonical_sha256_b64url(chunk_digest) or
                     not re.fullmatch(r'[0-9a-f]{32}',str(plan_id or ''))):
@@ -1092,7 +1118,8 @@ class ExecutionClient:
                             not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}',chunk_added_at))) or
                         (chunk_phase=='update' and chunk_added_at is not None))):
                 raise ValueError('Durable Apply chunk phase binding is invalid')
-        elif any(value is not None for value in chunk_binding):
+        elif any(value is not None for value in chunk_binding) and not (
+                action=='diagnose_append_plan' and diagnostic_mode=='audit'):
             raise ValueError('Durable chunk binding is Sandbox Apply only')
         evidence_digest = None
         reconciliation_profile = None
@@ -1202,11 +1229,16 @@ class ExecutionClient:
                     legacyManifestProjectionDigest=legacy_manifest_projection_digest)
             if action=='prewrite_close_preflight':
                 message.pop('closeId',None);message.pop('closeEvidenceDigest',None);message.pop('reasonDigest',None)
-        if action=='diagnose_append_plan':
-            message.update(planScope='APPEND_ONLY',chunkIndex=0,chunkId=chunk_id,
+        if action=='diagnose_append_plan' and diagnostic_mode=='recovery':
+            message.update(diagnosticMode='recovery',planScope='APPEND_ONLY',chunkIndex=0,chunkId=chunk_id,
                 chunkDigest=chunk_digest,planId=plan_id,detailsDigest=details_digest,
                 fullPlanDigest=full_plan_digest,sourceDigest=source_digest,totalAppendCount=total_append_count,
                 targetIdentities=target_identities)
+        elif action=='diagnose_append_plan' and diagnostic_mode=='audit':
+            message.update(diagnosticMode='audit',planScope='APPEND_ONLY',chunkIndex=0,planId=plan_id,
+                detailsDigest=details_digest,fullPlanDigest=full_plan_digest,sourceDigest=source_digest,
+                totalAppendCount=total_append_count,auditTargets=audit_targets,
+                auditTargetsDigest=audit_targets_digest)
         if chunk_id is not None:
             message.update(chunkId=chunk_id,chunkDigest=chunk_digest,planId=plan_id)
             if chunk_phase is not None: message['chunkPhase']=chunk_phase
@@ -1217,6 +1249,8 @@ class ExecutionClient:
                            requestFingerprint=request_fingerprint,
                            evidence=evidence, evidenceDigest=evidence_digest)
         raw = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        if action=='diagnose_append_plan' and len(raw.encode('utf-16-le'))//2>32768:
+            raise ValueError('Sandbox APPEND diagnostic envelope exceeds the read-only limit')
         signature = base64.urlsafe_b64encode(hmac.new(self.shared_secret.encode(), raw.encode(), hashlib.sha256).digest()).decode().rstrip('=')
         try:
             token = self.token_provider(self.environment)
@@ -1381,7 +1415,32 @@ class ExecutionClient:
                 'target_code_matches':result['targetCodeMatches'],'run_marker_matches':result['runMarkerMatches'],
                 'reason_codes':reason_codes,'read_only':True,'sqlite_writes':0,'sheets_writes':0,
                 'properties_writes':0}
-        if action=='diagnose_append_plan':
+        if action=='diagnose_append_plan' and diagnostic_mode=='audit':
+            counts=result.get('counts')
+            count_fields=('planned','confirmed','missing','conflict','unverified','remaining')
+            reasons=result.get('reasonCodes',[])
+            if (result.get('diagnosticMode')!='audit' or
+                    result.get('status') not in {'AUDITED','READ_INCOMPLETE'} or
+                    result.get('readOnly') is not True or result.get('requestId')!=request_id or
+                    result.get('planScope')!='APPEND_ONLY' or result.get('digest')!=digest or
+                    result.get('detailsDigest')!=details_digest or
+                    result.get('fullPlanDigest')!=full_plan_digest or result.get('sourceDigest')!=source_digest or
+                    result.get('planId')!=plan_id or result.get('auditTargetsDigest')!=audit_targets_digest or
+                    not isinstance(counts,dict) or
+                    any(type(counts.get(key)) is not int or counts[key]<0 for key in count_fields) or
+                    counts['planned']!=len(audit_targets) or
+                    sum(counts[key] for key in ('confirmed','missing','conflict','unverified'))!=len(audit_targets) or
+                    counts['remaining']!=counts['planned']-counts['confirmed'] or
+                    (result['status']=='AUDITED' and counts['unverified']!=0) or
+                    (result['status']=='READ_INCOMPLETE' and counts['unverified']==0) or
+                    not isinstance(reasons,list) or len(reasons)>12 or
+                    any(not isinstance(code,str) or not re.fullmatch(r'[A-Z0-9_]{1,48}',code) for code in reasons)):
+                raise ExecutionPreflightError('Read-only APPEND audit page receipt was incomplete',
+                    safe_error={'diagnostic_code':'APPEND_AUDIT_PAGE_RECEIPT_INVALID'})
+            return {'status':result['status'],
+                'counts':{key:counts[key] for key in count_fields},'reason_codes':reasons,
+                'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+        if action=='diagnose_append_plan' and diagnostic_mode=='recovery':
             count_fields=('planned','confirmed','missing','conflict','unverified','remaining')
             counts=result.get('counts')
             if (result.get('status') not in {'DIAGNOSED','READ_INCOMPLETE','BLOCKED'} or
@@ -2947,11 +3006,62 @@ def _prewrite_close_material(con, request_id, actor, close_id, reason, *, read_o
         'evidence_digest':evidence_digest}
 
 
+def _append_audit_comparable_value(value,column):
+    if value is None or value=='': return ''
+    if column==7:
+        if isinstance(value,(int,float)) and not isinstance(value,bool):
+            try: return (datetime(1899,12,30)+timedelta(days=math.floor(value))).date().isoformat()
+            except (OverflowError,ValueError): return str(value)
+        if isinstance(value,str):
+            text=value.strip()
+            for pattern in ('%Y-%m-%d','%d.%m.%Y'):
+                try: return datetime.strptime(text,pattern).date().isoformat()
+                except ValueError: pass
+        return str(value)
+    if column==8:
+        try:
+            if isinstance(value,(int,float)) and not isinstance(value,bool):
+                wall=(datetime(1899,12,30)+timedelta(days=(value-25569))).replace(tzinfo=timezone.utc)
+                naive=wall.replace(tzinfo=None)
+            elif isinstance(value,str):
+                text=value.strip()
+                if text.endswith('Z'): text=text[:-1]+'+00:00'
+                parsed=datetime.fromisoformat(text)
+                if parsed.tzinfo is not None:
+                    return int(parsed.timestamp()*1000)
+                naive=parsed
+            else: return str(value)
+            candidates=[]
+            for fold in (0,1):
+                aware=naive.replace(tzinfo=KYIV,fold=fold)
+                if aware.utcoffset() is not None and aware.astimezone(KYIV).replace(tzinfo=None)==naive:
+                    instant=int(aware.timestamp()*1000)
+                    if instant not in candidates:candidates.append(instant)
+            return candidates[0] if len(candidates)==1 else str(value)
+        except (OverflowError,ValueError,OSError):
+            return str(value)
+    if isinstance(value,bool): return 'true' if value else 'false'
+    return str(value)
+
+
+def _append_audit_row_digest(item,request_id):
+    values=['']*15;formulas=['']*15
+    for cell in item['cells']:
+        column=ord(cell['column'])-ord('A')
+        if cell['formula']: formulas[column]=cell.get('new_value') or ''
+        else: values[column]=_append_audit_comparable_value(cell.get('new_value'),column)
+    projection={'tab':item['tab'],'row':item['row'],'code':item['code'],
+        'values':values,'formulas':formulas,
+        'service':{'addedAtValid':True,'planId':request_id,'runId':request_id}}
+    return _sha256_b64(_canonical_json(projection).encode('utf-8'))
+
+
 def diagnose_append_only_plan(path, client, request_id, actor):
-    """Read-only aggregate audit of an immutable APPEND_ONLY preview against the live Sandbox sheet."""
+    """Read-only saved-plan audit, independent from strict first-chunk recovery evidence."""
     def blocked(code):
         return {'status':'BLOCKED','request_id':request_id,'counts':None,'reason_codes':[code],
-            'first_chunk_recovery_evidence':False,'read_only':True,
+            'first_chunk_recovery_evidence':False,'recovery_status':'BLOCKED',
+            'recovery_reason_codes':['RECOVERY_NOT_CHECKED'],'read_only':True,
             'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
     if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
             not re.fullmatch(r'[0-9a-f]{32}',str(request_id or '')) or
@@ -2968,72 +3078,144 @@ def diagnose_append_only_plan(path, client, request_id, actor):
             chunks=con.execute('''SELECT chunk_id,plan_id,scope,plan_digest,source_digest,chunk_index,chunk_digest,status,
                 expected_json,receipt_json,verified_at FROM google_writer_chunk_journal
                 WHERE run_id=? AND environment='SANDBOX' ORDER BY chunk_index''',(request_id,)).fetchall()
-            if len(runs)!=1 or len(plans)!=1 or len(chunks)!=1:
-                return blocked('SQLITE_BINDING_CARDINALITY')
-            run,plan,chunk=runs[0],plans[0],chunks[0]
-            result=json.loads(run['result_json'] or '{}')
+            if len(runs)!=1 or len(plans)!=1:
+                return blocked('SQLITE_RUN_OR_PLAN_CARDINALITY')
+            run,plan=runs[0],plans[0]
+            run_result=json.loads(run['result_json'] or '{}')
             if (run['status']!='outcome_unknown' or run['actor']!=actor or
-                    result.get('plan_scope')!='APPEND_ONLY' or result.get('attempted_chunk')!=0 or
-                    result.get('outcome_unknown') not in (None,True)):
+                    run_result.get('plan_scope')!='APPEND_ONLY' or run_result.get('attempted_chunk')!=0 or
+                    run_result.get('outcome_unknown') not in (None,True)):
                 return blocked('RUN_NOT_HELD_ON_FIRST_APPEND')
             if (plan['plan_id']!=request_id or plan['actor']!=actor or
-                    not is_canonical_sha256_b64url(plan['plan_digest']) or
-                    not is_canonical_sha256_b64url(plan['append_only_digest']) or
-                    not is_canonical_sha256_b64url(plan['details_digest']) or
-                    not is_canonical_sha256_b64url(plan['source_digest'])):
+                    not all(is_canonical_sha256_b64url(plan[key]) for key in
+                        ('plan_digest','append_only_digest','details_digest','source_digest'))):
                 return blocked('PLAN_BINDING_INVALID')
             details=json.loads(plan['details_json'])
             if (_preview_details_digest(details)!=plan['details_digest'] or
                     details.get('environment')!='SANDBOX' or details.get('plan_digest')!=plan['plan_digest'] or
                     details.get('append_only_digest')!=plan['append_only_digest'] or
                     details.get('source_digest')!=plan['source_digest'] or
-                    not isinstance(details.get('appends'),list) or
-                    not details['appends'] or details['counts'].get('append')!=len(details['appends']) or
+                    not isinstance(details.get('appends'),list) or not details['appends'] or
+                    not isinstance(details.get('counts'),dict) or
+                    details['counts'].get('append')!=len(details['appends']) or
                     not is_canonical_sha256_b64url(details.get('plan_digest'))):
                 return blocked('PREVIEW_JOURNAL_INVALID')
-            if (chunk['plan_id']!=request_id or chunk['scope']!='APPEND_ONLY' or
-                    chunk['plan_digest']!=plan['append_only_digest'] or chunk['source_digest']!=plan['source_digest'] or
-                    chunk['chunk_index']!=0 or chunk['status'] not in {'prepared','inflight','outcome_unknown'} or
-                    chunk['verified_at'] is not None or not is_canonical_sha256_b64url(chunk['chunk_digest'])):
-                return blocked('FIRST_CHUNK_BINDING_INVALID')
-            expected=json.loads(chunk['expected_json'])
-            if (not isinstance(expected,dict) or expected.get('version')!=1 or
-                    expected.get('run_id')!=request_id or expected.get('plan_id')!=request_id or
-                    expected.get('scope')!='APPEND_ONLY' or expected.get('plan_digest')!=plan['append_only_digest'] or
-                    expected.get('source_digest')!=plan['source_digest'] or expected.get('chunk_index')!=0 or
-                    not isinstance(expected.get('rows'),list) or not expected['rows'] or
-                    len(expected['rows'])>APPEND_JOURNAL_PAGE_ROWS or
-                    expected['rows']!=details['appends'][:APPEND_JOURNAL_PAGE_ROWS] or
-                    _sha256_b64(_canonical_json(expected).encode('utf-8'))!=chunk['chunk_digest']):
-                return blocked('FIRST_CHUNK_MANIFEST_INVALID')
-            receipt=json.loads(chunk['receipt_json'] or '{}')
-            if receipt not in ({},None) or result.get('checkpoint_digest') or result.get('verified_totals'):
-                return blocked('UNEXPECTED_RECEIPT_OR_CHECKPOINT')
             targets=[];seen=set()
             for item in details['appends']:
                 if (not isinstance(item,dict) or item.get('operation')!='APPEND' or
                         item.get('tab') not in {'ФОП','ЮО'} or not isinstance(item.get('code'),str) or
                         not re.fullmatch(r'\d{8,10}',item['code']) or type(item.get('row')) is not int or
-                        item['row']<2 or item['code'] in seen):
+                        item['row']<2 or item['code'] in seen or not isinstance(item.get('cells'),list)):
                     return blocked('PREVIEW_TARGETS_INVALID')
-                seen.add(item['code']);targets.append({'tab':item['tab'],'code':item['code'],'row':item['row']})
+                cells=[];columns=set()
+                for cell in item['cells']:
+                    if (not isinstance(cell,dict) or cell.get('column') not in {'A','B','C','D','E','F','H','I','L'} or
+                            cell.get('column') in columns or type(cell.get('formula')) is not bool or
+                            not (cell.get('new_value') is None or isinstance(cell.get('new_value'),(str,int,float,bool))) or
+                            isinstance(cell.get('new_value'),float) and not math.isfinite(cell['new_value']) or
+                            cell.get('formula') and (not isinstance(cell.get('new_value'),str) or
+                                not cell['new_value'].startswith('='))):
+                        return blocked('PREVIEW_TARGETS_INVALID')
+                    columns.add(cell['column'])
+                    cells.append({'column':cell['column'],'new_value':cell.get('new_value'),
+                                  'formula':cell['formula']})
+                if ('A' not in columns or 'B' not in columns or
+                        not any(cell['column']=='A' and cell['formula'] for cell in cells) or
+                        not any(cell['column']=='B' and not cell['formula'] and
+                                str(cell['new_value'])==item['code'] for cell in cells)):
+                    return blocked('PREVIEW_TARGETS_INVALID')
+                seen.add(item['code'])
+                targets.append({'operation':'APPEND','tab':item['tab'],'row':item['row'],
+                    'code':item['code'],'cells':cells})
             if not targets or len(targets)!=details['counts']['append']:
                 return blocked('PREVIEW_TARGET_COUNT_INVALID')
     except (OSError,sqlite3.Error,ValueError,TypeError,KeyError,IndexError,json.JSONDecodeError):
         return blocked('SQLITE_EVIDENCE_UNAVAILABLE')
+
+    # Keep recovery independent: malformed/missing chunk evidence blocks recovery,
+    # but never prevents a factual sheet audit of the immutable saved Preview.
+    recovery_reasons=[];chunk=None;chunk_expected=None
+    if len(chunks)!=1:
+        recovery_reasons.append('RECOVERY_CHUNK_JOURNAL_CARDINALITY')
+    else:
+        chunk=chunks[0]
+        try: chunk_expected=json.loads(chunk['expected_json'])
+        except (TypeError,ValueError,json.JSONDecodeError): chunk_expected=None
+        try: chunk_receipt=json.loads(chunk['receipt_json'] or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError): chunk_receipt='invalid'
+        if (chunk['plan_id']!=request_id or chunk['scope']!='APPEND_ONLY' or
+                chunk['plan_digest']!=plan['append_only_digest'] or chunk['source_digest']!=plan['source_digest'] or
+                chunk['chunk_index']!=0 or chunk['status'] not in {'prepared','inflight','outcome_unknown'} or
+                chunk['verified_at'] is not None or not is_canonical_sha256_b64url(chunk['chunk_digest'])):
+            recovery_reasons.append('RECOVERY_CHUNK_BINDING_INVALID')
+        if (not isinstance(chunk_expected,dict) or chunk_expected.get('version')!=1 or
+                chunk_expected.get('run_id')!=request_id or chunk_expected.get('plan_id')!=request_id or
+                chunk_expected.get('scope')!='APPEND_ONLY' or
+                chunk_expected.get('plan_digest')!=plan['append_only_digest'] or
+                chunk_expected.get('source_digest')!=plan['source_digest'] or chunk_expected.get('chunk_index')!=0 or
+                not isinstance(chunk_expected.get('rows'),list) or
+                chunk_expected.get('rows')!=details['appends'][:APPEND_JOURNAL_PAGE_ROWS] or
+                not is_canonical_sha256_b64url(chunk['chunk_digest']) or
+                _sha256_b64(_canonical_json(chunk_expected).encode('utf-8'))!=chunk['chunk_digest']):
+            recovery_reasons.append('RECOVERY_CHUNK_MANIFEST_INVALID')
+        if chunk_receipt not in ({},None) or run_result.get('checkpoint_digest') or run_result.get('verified_totals'):
+            recovery_reasons.append('RECOVERY_RECEIPT_OR_CHECKPOINT_PRESENT')
+
+    counts={'planned':len(targets),'confirmed':0,'missing':0,'conflict':0,'unverified':0,'remaining':0}
+    audit_reasons=[]
+    audit_targets=[[item['tab'],item['code'],item['row'],_append_audit_row_digest(item,request_id)]
+                   for item in targets]
+    audit_targets_digest=_sha256_b64(_canonical_json(audit_targets).encode('utf-8'))
     try:
         remote=client.invoke('diagnose_append_plan',request_id,actor,trigger='manual',
             digest=plan['append_only_digest'],plan_scope='APPEND_ONLY',manual_authorized=True,
-            chunk_index=0,chunk_id=chunk['chunk_id'],chunk_digest=chunk['chunk_digest'],plan_id=request_id,
-            target_identities=targets,details_digest=plan['details_digest'],
-            full_plan_digest=plan['plan_digest'],source_digest=plan['source_digest'],
-            total_append_count=len(targets))
-    except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown):
-        return blocked('APPS_SCRIPT_READ_ONLY_AUDIT_UNAVAILABLE')
-    if not isinstance(remote,dict) or not isinstance(remote.get('counts'),dict):
-        return blocked('APPS_SCRIPT_EVIDENCE_INVALID')
-    return {**remote,'request_id':request_id,'planned':len(targets),
-        'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+            details_digest=plan['details_digest'],full_plan_digest=plan['plan_digest'],
+            source_digest=plan['source_digest'],plan_id=request_id,total_append_count=len(targets),
+            diagnostic_mode='audit',audit_targets=audit_targets,audit_targets_digest=audit_targets_digest)
+        counts=remote['counts'];audit_reasons.extend(remote['reason_codes'])
+    except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,ValueError,KeyError,TypeError) as exc:
+        safe=getattr(exc,'safe_error',None);code=safe.get('diagnostic_code') if isinstance(safe,dict) else None
+        if code is None and isinstance(exc,ValueError) and 'envelope exceeds the read-only limit' in str(exc):
+            code='APPEND_AUDIT_PAYLOAD_TOO_LARGE'
+        counts['unverified']=len(targets);counts['remaining']=len(targets)
+        audit_reasons=[code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9_]{1,64}',code)
+                       else 'APPS_SCRIPT_AUDIT_UNAVAILABLE']
+    counts['remaining']=counts['planned']-counts['confirmed']
+    if counts['missing'] and 'TARGET_ROWS_MISSING' not in audit_reasons:
+        audit_reasons.append('TARGET_ROWS_MISSING')
+    if counts['conflict'] and 'TARGET_CONFLICT' not in audit_reasons:
+        audit_reasons.append('TARGET_CONFLICT')
+    if counts['unverified'] and 'ROW_READBACK_UNVERIFIED' not in audit_reasons:
+        audit_reasons.append('ROW_READBACK_UNVERIFIED')
+
+    first_chunk_recovery=False
+    if not recovery_reasons and chunk is not None:
+        try:
+            targets_for_recovery=[{'tab':item['tab'],'code':item['code'],'row':item['row']} for item in targets]
+            remote=client.invoke('diagnose_append_plan',request_id,actor,trigger='manual',
+                digest=plan['append_only_digest'],plan_scope='APPEND_ONLY',manual_authorized=True,
+                chunk_index=0,chunk_id=chunk['chunk_id'],chunk_digest=chunk['chunk_digest'],plan_id=request_id,
+                target_identities=targets_for_recovery,details_digest=plan['details_digest'],
+                full_plan_digest=plan['plan_digest'],source_digest=plan['source_digest'],
+                total_append_count=len(targets),diagnostic_mode='recovery')
+            first_chunk_recovery=remote.get('first_chunk_recovery_evidence') is True
+            recovery_reasons.extend(remote.get('reason_codes',[]))
+        except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,ValueError,KeyError,TypeError) as exc:
+            safe=getattr(exc,'safe_error',None);code=safe.get('diagnostic_code') if isinstance(safe,dict) else None
+            recovery_reasons.append(code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9_]{1,64}',code)
+                                    else 'RECOVERY_EVIDENCE_UNAVAILABLE')
+    if first_chunk_recovery and (counts['unverified'] or counts['confirmed']<min(APPEND_JOURNAL_PAGE_ROWS,len(targets))):
+        first_chunk_recovery=False
+        recovery_reasons.append('RECOVERY_ROW_AUDIT_NOT_CONFIRMED')
+    if not first_chunk_recovery and not recovery_reasons:
+        recovery_reasons.append('RECOVERY_EVIDENCE_NOT_CONFIRMED')
+    return {'status':'DIAGNOSED' if counts['unverified']==0 else 'READ_INCOMPLETE',
+        'request_id':request_id,'planned':len(targets),'counts':counts,
+        'reason_codes':list(dict.fromkeys(audit_reasons)),
+        'recovery_status':'READY' if first_chunk_recovery else 'BLOCKED',
+        'recovery_reason_codes':list(dict.fromkeys(recovery_reasons)),
+        'first_chunk_recovery_evidence':first_chunk_recovery,'read_only':True,
+        'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
 
 
 def prewrite_close_preflight(path, client, request_id, actor):

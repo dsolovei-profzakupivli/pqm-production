@@ -18,7 +18,7 @@ class DiagnosticClient:
     environment = 'SANDBOX'
 
     def __init__(self, *, status='DIAGNOSED', confirmed=25, missing=251, conflict=0, unverified=0,
-                 first_chunk=True):
+                 first_chunk=False):
         self.status=status
         self.confirmed=confirmed
         self.missing=missing
@@ -29,16 +29,21 @@ class DiagnosticClient:
 
     def invoke(self, action, request_id, actor, **kwargs):
         self.calls.append((action,request_id,actor,kwargs))
+        if kwargs.get('diagnostic_mode')=='audit':
+            counts={'planned':kwargs['total_append_count'],'confirmed':self.confirmed,'missing':self.missing,
+                'conflict':self.conflict,'unverified':self.unverified,
+                'remaining':kwargs['total_append_count']-self.confirmed}
+            return {'status':'AUDITED' if not self.unverified else 'READ_INCOMPLETE',
+                'counts':counts,'reason_codes':[],'read_only':True,'sqlite_writes':0,
+                'sheets_writes':0,'properties_writes':0}
         counts={'planned':kwargs['total_append_count'],'confirmed':self.confirmed,
             'missing':self.missing,'conflict':self.conflict,'unverified':self.unverified,
             'remaining':kwargs['total_append_count']-self.confirmed}
-        return {'status':self.status,'requestId':request_id,'planScope':'APPEND_ONLY',
-            'digest':kwargs['digest'],'detailsDigest':kwargs['details_digest'],
-            'fullPlanDigest':kwargs['full_plan_digest'],'sourceDigest':kwargs['source_digest'],
-            'chunkId':kwargs['chunk_id'],'chunkDigest':kwargs['chunk_digest'],
-            'planId':kwargs['plan_id'],'chunkIndex':kwargs['chunk_index'],'counts':counts,
-            'manifest_binding':'PASS','first_chunk_recovery_evidence':self.first_chunk,
-            'reasonCodes':[],'readOnly':True}
+        reasons=[] if self.first_chunk else ['MANIFEST_BINDING_MISMATCH']
+        return {'status':'DIAGNOSED','counts':counts,
+            'firstChunkRecoveryEvidence':self.first_chunk,
+            'first_chunk_recovery_evidence':self.first_chunk,
+            'reason_codes':reasons,'read_only':True}
 
 
 class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
@@ -91,7 +96,7 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
             'counts':{'append':count,'update':0,'conflict':0,'error':0},
             'appends':appends,'updates':[],'conflicts':[],'errors':[]}
 
-    def test_276_row_audit_sends_only_bound_identities_and_returns_aggregate_counts(self):
+    def test_276_row_audit_confirms_first_25_and_keeps_recovery_blocked(self):
         client=DiagnosticClient()
         before=hashlib.sha256(Path(self.path).read_bytes()).hexdigest()
         result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
@@ -99,13 +104,17 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         self.assertEqual(before,after,'read-only diagnostics must not modify SQLite')
         self.assertEqual(result['counts'],{'planned':276,'confirmed':25,'missing':251,
             'conflict':0,'unverified':0,'remaining':251})
-        self.assertTrue(result['first_chunk_recovery_evidence'])
+        self.assertFalse(result['first_chunk_recovery_evidence'])
+        self.assertEqual(result['recovery_status'],'BLOCKED')
+        self.assertIn('MANIFEST_BINDING_MISMATCH',result['recovery_reason_codes'])
         self.assertTrue(result['read_only'])
         self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
         action,request_id,actor,kwargs=client.calls[0]
         self.assertEqual((action,request_id,actor),('diagnose_append_plan',self.request_id,self.actor))
-        self.assertEqual(len(kwargs['target_identities']),276)
-        self.assertEqual(set(kwargs['target_identities'][0]),{'tab','code','row'})
+        self.assertEqual(kwargs['diagnostic_mode'],'audit')
+        self.assertEqual(len(kwargs['audit_targets']),276)
+        self.assertEqual(len(kwargs['audit_targets'][0]),4)
+        self.assertEqual(sum(call[3].get('diagnostic_mode')=='audit' for call in client.calls),1)
 
     def test_conflicts_and_unverified_rows_are_reported_without_recovery_authorization(self):
         client=DiagnosticClient(confirmed=23,missing=250,conflict=2,unverified=1,first_chunk=False)
@@ -128,6 +137,25 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
         self.assertEqual(result['status'],'BLOCKED')
         self.assertEqual(client.calls,[])
+
+    def test_audit_row_digest_normalizes_google_date_and_datetime_values(self):
+        self.assertEqual(writer._append_audit_comparable_value('14.10.2026',7),'2026-10-14')
+        self.assertEqual(writer._append_audit_comparable_value('2026-10-14',7),'2026-10-14')
+        self.assertEqual(writer._append_audit_comparable_value('2026-11-12T10:30:00+02:00',8),
+            int(writer.datetime.fromisoformat('2026-11-12T10:30:00+02:00').timestamp()*1000))
+
+    def test_missing_or_invalid_chunk_does_not_block_fact_audit_but_blocks_recovery(self):
+        client=DiagnosticClient(first_chunk=True)
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute('DELETE FROM google_writer_chunk_journal WHERE run_id=?',(self.request_id,))
+        result=writer.diagnose_append_only_plan(self.path,client,self.request_id,self.actor)
+        self.assertEqual(result['counts']['confirmed'],25)
+        self.assertEqual(result['counts']['missing'],251)
+        self.assertFalse(result['first_chunk_recovery_evidence'])
+        self.assertEqual(result['recovery_status'],'BLOCKED')
+        self.assertIn('RECOVERY_CHUNK_JOURNAL_CARDINALITY',result['recovery_reason_codes'])
+        self.assertTrue(any(call[3].get('diagnostic_mode')=='audit' for call in client.calls))
+        self.assertFalse(any(call[3].get('diagnostic_mode')=='recovery' for call in client.calls))
 
 
 if __name__=='__main__':

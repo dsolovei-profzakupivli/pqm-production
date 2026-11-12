@@ -110,20 +110,43 @@ async function diagnoseGoogleWriterAppend(requestId){
       headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId})});
     if(result.read_only!==true||result.sqlite_writes!==0||result.sheets_writes!==0||result.properties_writes!==0)
       throw new Error('Read-only підтвердження відсутнє; запуск лишається заблокованим');
+    const labels={TARGET_ROWS_MISSING:'частину кодів не знайдено',TARGET_CONFLICT:'є дублікати або відмінності рядків',
+      SHEET_READ_INCOMPLETE:'читання Google Sheets неповне',FORMULA_READ_INCOMPLETE:'читання формул неповне',
+      SERVICE_METADATA_READ_INCOMPLETE:'читання Q/R/S неповне',
+      ROW_READBACK_UNVERIFIED:'частину рядків не вдалося перевірити',
+      APPEND_AUDIT_PAYLOAD_TOO_LARGE:'план завеликий для безпечного запиту звірки',
+      APPS_SCRIPT_AUDIT_UNAVAILABLE:'read-only звірка Apps Script недоступна',
+      SQLITE_RUN_OR_PLAN_CARDINALITY:'збережений запуск або план не є однозначним',
+      RUN_NOT_HELD_ON_FIRST_APPEND:'запуск не відповідає очікуваному стану HOLD',
+      PLAN_BINDING_INVALID:'прив’язка плану не збігається',PREVIEW_JOURNAL_INVALID:'збережений план неповний або некоректний',
+      PREVIEW_TARGETS_INVALID:'цілі збереженого плану некоректні',PREVIEW_TARGET_COUNT_INVALID:'кількість цілей не збігається',
+      RECOVERY_CHUNK_JOURNAL_CARDINALITY:'журнал порції не дає однозначного доказу recovery',
+      RECOVERY_CHUNK_BINDING_INVALID:'прив’язка порції для recovery не підтверджена',
+      RECOVERY_CHUNK_MANIFEST_INVALID:'manifest порції для recovery не підтверджений',
+      RECOVERY_RECEIPT_OR_CHECKPOINT_PRESENT:'стан receipt/checkpoint потребує окремої перевірки',
+      RECOVERY_ROW_AUDIT_NOT_CONFIRMED:'рядки не підтверджені в обсязі, потрібному для recovery',
+      RECOVERY_EVIDENCE_NOT_CONFIRMED:'суворі recovery-докази не підтверджені',
+      RECOVERY_EVIDENCE_UNAVAILABLE:'перевірка recovery-доказів недоступна',
+      UNCERTAINTY_MARKER_MISMATCH:'uncertainty marker не збігається',RUN_RECORD_INVALID:'run record некоректний',
+      RUN_RECORD_BINDING_MISMATCH:'bindings run record не збігаються',MANIFEST_READ_INCOMPLETE:'manifest не вдалося прочитати',
+      MANIFEST_BINDING_MISMATCH:'bindings manifest не збігаються',SOURCE_BINDING_MISMATCH:'digest джерела не збігається',
+      REBUILT_PLAN_UNSAFE:'відтворений план небезпечний',PREVIEW_RECONSTRUCTION_MISMATCH:'план не відтворюється точно',
+      SERVICE_METADATA_READ_INCOMPLETE:'читання метаданих неповне'};
+    const describe=codes=>(codes||[]).map(code=>`${labels[code]||'додаткову перевірку не пройдено'} [${code}]`).join('; ');
     const counts=result.counts;
     if(!counts){
-      const labels={SQLITE_EVIDENCE_UNAVAILABLE:'локальні докази SQLite недоступні',
-        FIRST_CHUNK_BINDING_INVALID:'binding першої порції не збігається',
-        FIRST_CHUNK_MANIFEST_INVALID:'manifest першої порції не підтверджено',
-        APPS_SCRIPT_READ_ONLY_AUDIT_UNAVAILABLE:'Apps Script недоступний',
-        PREVIEW_RECONSTRUCTION_MISMATCH:'план не вдалося відтворити без змін',
-        SHEET_OR_SOURCE_READ_INCOMPLETE:'читання джерела або вкладок неповне'};
-      toast(`BLOCKED · ${((result.reason_codes||[]).map(code=>labels[code]||'доказів недостатньо')).join('; ')||'доказів недостатньо'}. HOLD збережено.`, 'error');
+      const audit=describe(result.reason_codes)||'план або читання недоступні';
+      const recovery=describe(result.recovery_reason_codes)||'не перевірено';
+      toast(`Звірка BLOCKED · ${audit}. Recovery BLOCKED · ${recovery}. HOLD збережено.`, 'error');
       return;
     }
     const label=`APPEND звірка · підтверджено ${counts.confirmed}/${counts.planned}; відсутні ${counts.missing}; конфлікти ${counts.conflict}; не підтверджено ${counts.unverified}; залишок ${counts.remaining}.`;
-    const recovery=result.first_chunk_recovery_evidence===true?'Перша порція має точні докази для окремого розгляду recovery.':'Першу порцію не можна вважати підтвердженою для recovery.';
-    toast(`${label} ${recovery} Запис не запускався; HOLD збережено.`,counts.unverified||counts.conflict?'error':'success');
+    const auditReasons=describe(result.reason_codes),recoveryReasons=describe(result.recovery_reason_codes);
+    const recovery=result.first_chunk_recovery_evidence===true?'Recovery-докази першої порції підтверджені.':
+      `Recovery заблоковано${recoveryReasons?` · ${recoveryReasons}`:''}.`;
+    const auditNote=auditReasons?` Причини звірки: ${auditReasons}.`:'';
+    toast(`${label}${auditNote} ${recovery} Запис не запускався; HOLD збережено.`,
+      counts.unverified||counts.conflict||result.first_chunk_recovery_evidence!==true?'error':'success');
   }catch(error){toast(`BLOCKED · read-only звірка не завершена: ${error.message}. HOLD збережено.`, 'error');}
   finally{googleWriterBusy=false;await loadGoogleWriterJob();}
 }

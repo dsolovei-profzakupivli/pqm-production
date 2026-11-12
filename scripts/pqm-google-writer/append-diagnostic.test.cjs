@@ -73,7 +73,10 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
       Object.values(tabs).some(tab=>tab.rows.some(row=>row.codeDisplay===laterCode))}),
     pqmSandboxFullDigest_:value=>value.state&&value.state.scope==='APPEND_ONLY'?appendDigest:
       value.laterChunkStillPresent?b64digest('changed-plan'):fullDigest,
-    pqmSandboxControlledDigest_:()=> 'cells-digest',
+    pqmSandboxControlledDigest_:value=>Array.isArray(value)||value&&value.values&&value.formulas&&value.service
+      ?b64digest(JSON.stringify(canonical(value))):'cells-digest',
+    pqmGoogleSnapshot_:()=>JSON.parse(JSON.stringify({
+      'ФОП':{rows:byTab['ФОП']},'ЮО':{rows:byTab['ЮО']}})),
     pqmGoogleBlank_:value=>value===null||value===undefined||value==='',
     pqmSandboxExecutionComparableValue_:value=>value===null||value===undefined?'':String(value),
     pqmSandboxAppendRowMetadata_:()=>({cells:[],height:20}),
@@ -82,21 +85,54 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
       const ranges=request.ranges||[];
       if(failMetadata)throw new Error('synthetic Sheets read failure');
       return {valueRanges:ranges.map(range=>{
-        const match=range.match(/^'(.+)'!Q(\d+):S(\d+)$/);assert.ok(match);
-        const [,tab,first,last]=match,rows=[];
-        for(let row=Number(first);row<=Number(last);row++)rows.push(service.get(`${tab}:${row}`)||[]);
+        const serviceMatch=range.match(/^'(.+)'!Q(\d+):S(\d+)$/);
+        const formulaMatch=range.match(/^'(.+)'!A(\d+):O(\d+)$/);assert.ok(serviceMatch||formulaMatch);
+        const [,tab,first,last]=(serviceMatch||formulaMatch),rows=[];
+        for(let row=Number(first);row<=Number(last);row++){
+          if(serviceMatch)rows.push(service.get(`${tab}:${row}`)||[]);
+          else {
+            const record=byTab[tab][row-2]||{values:[],formulas:[]};
+            rows.push(Array.from({length:15},(_,column)=>record.formulas[column]||record.values[column]||''));
+          }
+        }
         return {values:rows};
       })};
     }}}}};
   vm.createContext(ctx);vm.runInContext(source,ctx);
   const request={environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox',
     contract:'pqm-mirror-datetime-v1',action:'diagnose_append_plan',requestId:id,actor:'admin',trigger:'manual',
+    diagnosticMode:'recovery',
     issuedAt:Math.floor(Date.now()/1000),expiresAt:Math.floor(Date.now()/1000)+300,
     expectedDigest:appendDigest,planScope:'APPEND_ONLY',chunkIndex:0,chunkId:manifest.chunkId,
     chunkDigest:chunkDigest,planId:id,detailsDigest,fullPlanDigest:fullDigest,sourceDigest,
     totalAppendCount:targets.length,targetIdentities:targets};
-  const payload=JSON.stringify(request),signature=crypto.createHmac('sha256',secret).update(payload).digest('base64url');
-  return {ctx,properties,request,envelope:{payload,signature},targets,get writes(){return writes;}};
+  const recoveryEnvelope=sign(request);
+  const auditTargets=targets.map(item=>{
+    const values=Array(15).fill(''),formulas=Array(15).fill('');
+    values[1]=item.code;formulas[0]=`=IF(B${item.row}="","",1)`;
+    const projection={tab:item.tab,row:item.row,code:item.code,values,formulas,
+      service:{addedAtValid:true,planId:id,runId:id}};
+    return [item.tab,item.code,item.row,b64digest(JSON.stringify(canonical(projection)))];
+  });
+  const auditRequest={environment:'SANDBOX',scriptId:'script-sandbox',spreadsheetId:'sheet-sandbox',
+    contract:'pqm-mirror-datetime-v1',action:'diagnose_append_plan',requestId:id,actor:'admin',trigger:'manual',
+    issuedAt:Math.floor(Date.now()/1000),expiresAt:Math.floor(Date.now()/1000)+300,
+    diagnosticMode:'audit',expectedDigest:appendDigest,planScope:'APPEND_ONLY',chunkIndex:0,planId:id,
+    detailsDigest,fullPlanDigest:fullDigest,sourceDigest,totalAppendCount:targets.length,auditTargets,
+    auditTargetsDigest:b64digest(JSON.stringify(canonical(auditTargets)))};
+  return {ctx,properties,request,envelope:recoveryEnvelope,auditRequest,auditEnvelope:sign(auditRequest),targets,
+    get writes(){return writes;}};
+
+  function sign(value) {
+    const payload=JSON.stringify(value),signature=crypto.createHmac('sha256',secret).update(payload).digest('base64url');
+    return {payload,signature};
+  }
+}
+
+function canonical(value){
+  if(Array.isArray(value))return value.map(canonical);
+  if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));
+  return value;
 }
 
 test('audits a 276-row plan with the first 25 exactly present and never writes state',()=>{
@@ -152,4 +188,32 @@ test('manifest mismatch and bad signature fail closed without property writes',(
   assert.throws(()=>bad.ctx.pqmSandboxAppendDiagnostic20261112(bad.envelope),/authorization rejected/);
   assert.equal(JSON.stringify([...bad.properties]),JSON.stringify([...fixture().properties]));
   assert.equal(bad.writes,0);
+});
+
+test('read-only row audit succeeds without checkpoint, run property or uncertainty marker',()=>{
+  const f=fixture(),before=JSON.stringify([...f.properties]);
+  f.properties.delete('PQM_EXECUTION_UNCERTAIN');
+  f.properties.delete(`PQM_EXECUTION_RUN_${id}`);
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.auditEnvelope);
+  assert.equal(result.status,'AUDITED',JSON.stringify(result));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
+    {planned:276,confirmed:25,missing:251,conflict:0,unverified:0,remaining:251});
+  assert.equal(result.firstChunkRecoveryEvidence,undefined);
+  assert.equal(f.writes,0);
+  assert.equal([...f.properties].some(([key])=>key.includes(id)),false);
+  assert.equal(JSON.stringify(result).includes(f.targets[0].code),false);
+  assert.notEqual(JSON.stringify([...f.properties]),before,'the fixture removes properties to prove the audit does not require them');
+});
+
+test('read-only audit classifies row conflicts and fails incomplete sheet reads closed',()=>{
+  const mismatch=fixture({valueMismatch:true});
+  const mismatchResult=mismatch.ctx.pqmSandboxAppendDiagnostic20261112(mismatch.auditEnvelope);
+  assert.equal(mismatchResult.counts.conflict,1);
+  assert.equal(mismatchResult.counts.confirmed,24);
+  const incomplete=fixture({failMetadata:true});
+  const incompleteResult=incomplete.ctx.pqmSandboxAppendDiagnostic20261112(incomplete.auditEnvelope);
+  assert.equal(incompleteResult.status,'READ_INCOMPLETE');
+  assert.equal(incompleteResult.counts.unverified,25);
+  assert.equal(incompleteResult.counts.missing,251);
+  assert.equal(incomplete.writes,0);
 });

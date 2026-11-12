@@ -13,11 +13,16 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
   if (different) throw new Error('PQM: execution authorization rejected');
   var request;
   try { request=JSON.parse(envelope.payload); } catch (_) { throw new Error('PQM: invalid APPEND diagnostic payload'); }
-  var keys=['action','actor','chunkDigest','chunkId','chunkIndex','contract','detailsDigest','environment',
-    'expectedDigest','expiresAt','fullPlanDigest','issuedAt','planId','planScope','requestId','scriptId',
-    'sourceDigest','spreadsheetId','targetIdentities','totalAppendCount','trigger'];
+  var baseKeys=['action','actor','contract','detailsDigest','environment','expectedDigest','expiresAt',
+    'fullPlanDigest','issuedAt','planId','planScope','requestId','scriptId','sourceDigest',
+    'spreadsheetId','totalAppendCount','trigger'];
+  var recoveryKeys=baseKeys.concat(['chunkDigest','chunkId','chunkIndex','diagnosticMode','targetIdentities']);
+  var auditKeys=baseKeys.concat(['auditTargets','auditTargetsDigest','chunkIndex','diagnosticMode']);
+  var auditMode=request && request.diagnosticMode==='audit';
+  var keys=auditMode?auditKeys:recoveryKeys;
   if (!request || Object.keys(request).sort().join('|')!==keys.sort().join('|') ||
-      request.action!=='diagnose_append_plan' || request.environment!=='SANDBOX' ||
+      request.action!=='diagnose_append_plan' || request.diagnosticMode!==(auditMode?'audit':'recovery') ||
+      request.environment!=='SANDBOX' ||
       request.planScope!=='APPEND_ONLY' || request.trigger!=='manual' ||
       request.contract!=='pqm-mirror-datetime-v1' ||
       request.scriptId!==PQM_MIRROR_ENV.scriptId || ScriptApp.getScriptId()!==PQM_MIRROR_ENV.scriptId ||
@@ -32,20 +37,26 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
       !pqmSandboxIsCanonicalDigest_(request.detailsDigest) ||
       !pqmSandboxIsCanonicalDigest_(request.fullPlanDigest) ||
       !pqmSandboxIsCanonicalDigest_(request.sourceDigest) ||
-      !pqmSandboxIsCanonicalDigest_(request.chunkDigest) ||
-      !/^[0-9a-f]{32}$/.test(request.chunkId||'') || request.chunkIndex!==0 ||
-      !Number.isInteger(request.totalAppendCount) || request.totalAppendCount<1 ||
-      request.totalAppendCount>10000 || !Array.isArray(request.targetIdentities) ||
-      request.targetIdentities.length!==request.totalAppendCount || request.targetIdentities.length>10000)
+      request.chunkIndex!==0 || !Number.isInteger(request.totalAppendCount) || request.totalAppendCount<1 ||
+      request.totalAppendCount>10000 || (auditMode && (!Array.isArray(request.auditTargets) ||
+        request.auditTargets.length!==request.totalAppendCount ||
+        !pqmSandboxIsCanonicalDigest_(request.auditTargetsDigest) ||
+        pqmSandboxControlledDigest_(request.auditTargets)!==request.auditTargetsDigest)) ||
+      (!auditMode && (!pqmSandboxIsCanonicalDigest_(request.chunkDigest) ||
+        !/^[0-9a-f]{32}$/.test(request.chunkId||'') || !Array.isArray(request.targetIdentities) ||
+        request.targetIdentities.length!==request.totalAppendCount || request.targetIdentities.length>10000)))
     throw new Error('PQM: APPEND diagnostic binding rejected');
-  var seen={};
-  request.targetIdentities.forEach(function(item) {
-    if (!item || Object.keys(item).sort().join(',')!=='code,row,tab' ||
-        ['ФОП','ЮО'].indexOf(item.tab)<0 || typeof item.code!=='string' ||
-        !/^\d{8,10}$/.test(item.code) || !Number.isInteger(item.row) || item.row<2 || seen[item.code])
-      throw new Error('PQM: APPEND diagnostic target rejected');
-    seen[item.code]=true;
-  });
+  if (auditMode) pqmSandboxValidateAppendAuditTargets_(request.auditTargets);
+  else {
+    var seen={};
+    request.targetIdentities.forEach(function(item) {
+      if (!item || Object.keys(item).sort().join(',')!=='code,row,tab' ||
+          ['ФОП','ЮО'].indexOf(item.tab)<0 || typeof item.code!=='string' ||
+          !/^\d{8,10}$/.test(item.code) || !Number.isInteger(item.row) || item.row<2 || seen[item.code])
+        throw new Error('PQM: APPEND diagnostic target rejected');
+      seen[item.code]=true;
+    });
+  }
   if (PQM_EXECUTION_CONTEXT_) throw new Error('PQM: nested execution rejected');
   var lock=LockService.getScriptLock();
   if (!lock.tryLock(0)) return pqmSandboxAppendDiagnosticBlocked_(request,'EXECUTION_LOCK_BUSY');
@@ -54,6 +65,7 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
     if (!spreadsheet || spreadsheet.getId()!==PQM_MIRROR_ENV.spreadsheetId)
       return pqmSandboxAppendDiagnosticBlocked_(request,'SPREADSHEET_IDENTITY_REJECTED');
     PQM_EXECUTION_CONTEXT_={spreadsheet:spreadsheet};
+    if (auditMode) return pqmSandboxAuditAppendRowsReadOnly_(request.spreadsheetId,request);
     var key='PQM_EXECUTION_RUN_'+request.requestId;
     return pqmSandboxDiagnoseAppendPlan_(request.spreadsheetId,properties,key,
       properties.getProperty(key),request);
@@ -64,6 +76,16 @@ function pqmSandboxAppendDiagnostic20261112(envelope) {
 }
 
 function pqmSandboxAppendDiagnosticBlocked_(request,code) {
+  if (request.diagnosticMode==='audit') {
+    var pageTotal=request.totalAppendCount;
+    return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
+      contract:request.contract,requestId:request.requestId,status:'READ_INCOMPLETE',diagnosticMode:'audit',
+      planScope:'APPEND_ONLY',digest:request.expectedDigest,detailsDigest:request.detailsDigest,
+      fullPlanDigest:request.fullPlanDigest,sourceDigest:request.sourceDigest,planId:request.planId,
+      auditTargetsDigest:request.auditTargetsDigest,
+      counts:{planned:pageTotal,confirmed:0,missing:0,conflict:0,unverified:pageTotal,remaining:pageTotal},
+      reasonCodes:[code],readOnly:true};
+  }
   var total=request.totalAppendCount;
   return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
     contract:request.contract,requestId:request.requestId,status:'BLOCKED',planScope:'APPEND_ONLY',
@@ -72,6 +94,123 @@ function pqmSandboxAppendDiagnosticBlocked_(request,code) {
     planId:request.planId,chunkIndex:0,
     counts:{planned:total,confirmed:0,missing:0,conflict:0,unverified:total,remaining:total},
     reasonCodes:[code],manifestBinding:'BLOCKED',firstChunkRecoveryEvidence:false,readOnly:true};
+}
+
+function pqmSandboxValidateAppendAuditTargets_(targets) {
+  var seen={};
+  targets.forEach(function(item) {
+    if (!Array.isArray(item) || item.length!==4 || ['ФОП','ЮО'].indexOf(item[0])<0 ||
+        typeof item[1]!=='string' || !/^\d{8,10}$/.test(item[1]) || !Number.isInteger(item[2]) ||
+        item[2]<2 || seen[item[1]] || !pqmSandboxIsCanonicalDigest_(item[3]))
+      throw new Error('PQM: APPEND audit identity rejected');
+    seen[item[1]]=true;
+  });
+}
+
+function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request) {
+  var targets=request.auditTargets,total=targets.length;
+  function response(status,counts,reasons) {
+    return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
+      contract:request.contract,requestId:request.requestId,status:status,diagnosticMode:'audit',
+      planScope:'APPEND_ONLY',digest:request.expectedDigest,detailsDigest:request.detailsDigest,
+      fullPlanDigest:request.fullPlanDigest,sourceDigest:request.sourceDigest,planId:request.planId,
+      auditTargetsDigest:request.auditTargetsDigest,counts:counts,reasonCodes:reasons,readOnly:true};
+  }
+  var counts={planned:total,confirmed:0,missing:0,conflict:0,unverified:0,remaining:0};
+  var reasons=[],tabs;
+  try { tabs=pqmGoogleSnapshot_(spreadsheetId,null); }
+  catch (_) {
+    counts.unverified=total;counts.remaining=total;
+    return response('READ_INCOMPLETE',counts,['SHEET_READ_INCOMPLETE']);
+  }
+  if (!tabs || PQM_GOOGLE_TABS.some(function(name){return !tabs[name] || !Array.isArray(tabs[name].rows);})) {
+    counts.unverified=total;counts.remaining=total;
+    return response('READ_INCOMPLETE',counts,['SHEET_READ_INCOMPLETE']);
+  }
+  var requested={};targets.forEach(function(item){requested[item[1]]=[];});
+  PQM_GOOGLE_TABS.forEach(function(name){
+    tabs[name].rows.forEach(function(row,index){
+      var code=String(row.codeDisplay||'').trim();
+      if (Object.prototype.hasOwnProperty.call(requested,code))
+        requested[code].push({tab:name,row:index+2,record:row});
+    });
+  });
+  var outcomes=targets.map(function(item){
+    var found=requested[item[1]]||[];
+    if (!found.length) return 'missing';
+    if (found.length!==1 || found[0].tab!==item[0] || found[0].row!==item[2]) return 'conflict';
+    return null;
+  });
+  var formulaByTab={},formulaFailed=false;
+  try {
+    var formulaRanges=[],formulaInfo=[];
+    PQM_GOOGLE_TABS.forEach(function(tabName){
+      var rows=targets.map(function(item,index){return outcomes[index]===null&&item[0]===tabName?item[2]:null;})
+        .filter(function(row){return row!==null;});
+      if (!rows.length) return;
+      var first=Math.min.apply(null,rows),last=Math.max.apply(null,rows);
+      formulaRanges.push("'"+tabName.replace(/'/g,"''")+"'!A"+first+':O'+last);
+      formulaInfo.push({tab:tabName,first:first});
+    });
+    var formulaResponse=formulaRanges.length?Sheets.Spreadsheets.Values.batchGet(spreadsheetId,
+      {ranges:formulaRanges,valueRenderOption:'FORMULA'}):{valueRanges:[]};
+    if (!formulaResponse || !Array.isArray(formulaResponse.valueRanges) ||
+        formulaResponse.valueRanges.length!==formulaRanges.length) throw new Error('incomplete');
+    formulaInfo.forEach(function(info,index){
+      var values=(formulaResponse.valueRanges[index]||{}).values;
+      if (!Array.isArray(values)) throw new Error('incomplete');
+      formulaByTab[info.tab]={first:info.first,values:values};
+    });
+  } catch (_) { formulaFailed=true;reasons.push('FORMULA_READ_INCOMPLETE'); }
+  var service={},serviceFailed=false;
+  try {
+    var ranges=[],rangeInfo=[];
+    PQM_GOOGLE_TABS.forEach(function(tabName){
+      var rows=targets.map(function(item,index){return outcomes[index]===null&&item[0]===tabName?item[2]:null;})
+        .filter(function(row){return row!==null;});
+      if (!rows.length) return;
+      var first=Math.min.apply(null,rows),last=Math.max.apply(null,rows);
+      ranges.push("'"+tabName.replace(/'/g,"''")+"'!Q"+first+':S'+last);
+      rangeInfo.push({tab:tabName,first:first});
+    });
+    var batch=ranges.length?Sheets.Spreadsheets.Values.batchGet(spreadsheetId,
+      {ranges:ranges,valueRenderOption:'UNFORMATTED_VALUE'}):{valueRanges:[]};
+    if (!batch || !Array.isArray(batch.valueRanges) || batch.valueRanges.length!==ranges.length)
+      throw new Error('incomplete');
+    rangeInfo.forEach(function(info,index){
+      var values=(batch.valueRanges[index]||{}).values;
+      if (!Array.isArray(values)) throw new Error('incomplete');
+      service[info.tab]={first:info.first,values:values};
+    });
+  } catch (_) { serviceFailed=true;reasons.push('SERVICE_METADATA_READ_INCOMPLETE'); }
+  targets.forEach(function(item,index){
+    if (outcomes[index]!==null) return;
+    if (formulaFailed || serviceFailed) {outcomes[index]='unverified';return;}
+    var actual=(requested[item[1]][0]||{}).record;
+    var formulaGroup=formulaByTab[item[0]],formulaRow=formulaGroup&&formulaGroup.values[item[2]-formulaGroup.first];
+    var metadataGroup=service[item[0]],metadata=metadataGroup&&metadataGroup.values[item[2]-metadataGroup.first];
+    if (!actual || !Array.isArray(formulaRow) || !Array.isArray(metadata)) {outcomes[index]='unverified';return;}
+    var addedAt=String(metadata[0]||''),planId=String(metadata[1]||''),runId=String(metadata[2]||'');
+    if (planId!==request.planId || runId!==request.requestId ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(addedAt)) {
+      outcomes[index]='conflict';return;
+    }
+    var values=Array(15).fill(''),formulas=Array(15).fill('');
+    for (var column=0;column<15;column++) {
+      var formulaValue=formulaRow[column];
+      if (typeof formulaValue==='string' && formulaValue.charAt(0)==='=') formulas[column]=formulaValue;
+      else values[column]=pqmSandboxExecutionComparableValue_((actual.values||[])[column],column);
+    }
+    var projection={tab:item[0],row:item[2],code:item[1],values:values,formulas:formulas,
+      service:{addedAtValid:true,planId:planId,runId:runId}};
+    if (pqmSandboxControlledDigest_(projection)!==item[3]) outcomes[index]='conflict';
+  });
+  outcomes.forEach(function(value){counts[value||'confirmed']++;});
+  counts.remaining=counts.planned-counts.confirmed;
+  if (counts.missing) reasons.push('TARGET_ROWS_MISSING');
+  if (counts.conflict) reasons.push('TARGET_CONFLICT');
+  if (counts.unverified) reasons.push('ROW_READBACK_UNVERIFIED');
+  return response(counts.unverified?'READ_INCOMPLETE':'AUDITED',counts,reasons);
 }
 
 function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request) {
