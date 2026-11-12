@@ -368,7 +368,12 @@ function pqmSandboxDiagnoseAppendPlan_(id,properties,key,stored,request) {
   var manifestHeaderMismatches=[];
   if (!manifest) manifestHeaderMismatches.push('manifest');
   else {
-    if (manifest.chunkIndex!==0) manifestHeaderMismatches.push('manifest.chunkIndex');
+    var hasManifestChunkIndex=Object.prototype.hasOwnProperty.call(manifest,'chunkIndex');
+    var legacyV1FirstAppendChunk=record.chunkJournalVersion===1 && record.planScope==='APPEND_ONLY' &&
+      request.planScope==='APPEND_ONLY' && request.chunkIndex===0 && record.inflight===0 &&
+      record.uncertainChunk===0 && record.nextChunk===0;
+    if (hasManifestChunkIndex ? manifest.chunkIndex!==0 : !legacyV1FirstAppendChunk)
+      manifestHeaderMismatches.push('manifest.chunkIndex');
     if (manifest.chunkId!==request.chunkId) manifestHeaderMismatches.push('manifest.chunkId');
     if (manifest.chunkDigest!==request.chunkDigest) manifestHeaderMismatches.push('manifest.chunkDigest');
     if (manifest.planId!==request.requestId) manifestHeaderMismatches.push('manifest.planId');

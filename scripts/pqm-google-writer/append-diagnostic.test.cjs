@@ -10,7 +10,7 @@ const id='7'.repeat(32),secret='sandbox-diagnostic-secret-'.padEnd(40,'S');
 const b64digest=value=>crypto.createHash('sha256').update(value).digest('base64url');
 
 function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=false,failMetadata=false,manifestMismatch=false,
-  fieldMismatchCodes=[],formulaMismatchCodes=[]}={}) {
+  manifestChunkIndex='absent',manifestOverrides={},recordOverrides={},fieldMismatchCodes=[],formulaMismatchCodes=[]}={}) {
   const fullDigest=b64digest('full-preview'),appendDigest=b64digest('append-preview');
   const sourceDigest=b64digest('source'),detailsDigest=b64digest('details'),chunkDigest=b64digest('chunk');
   const targets=[],next={'ФОП':2,'ЮО':2};
@@ -50,9 +50,12 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
   const manifestRows=targets.slice(0,25).map((item,index)=>({tab:item.tab,row:item.row,code:item.code,
     cellsDigest:'cells-digest',formulaA:`=IF(B${item.row}="","",1)`,
     planId:id,runId:id,serviceMetadata:{addedAt:'2026-11-11T20:00:00+02:00',planId:id,runId:id}}));
-  const manifest={chunkIndex:0,chunkId:'8'.repeat(32),chunkDigest,planId:id,runId:id,rows:manifestRows};
+  const manifest={chunkId:'8'.repeat(32),chunkDigest,planId:id,runId:id,rows:manifestRows};
+  if(manifestChunkIndex!=='absent')manifest.chunkIndex=manifestChunkIndex;
+  Object.assign(manifest,manifestOverrides);
   const record={state:'uncertain',chunkJournalVersion:1,planScope:'APPEND_ONLY',runId:id,planId:id,
     digest:appendDigest,inflight:0,uncertainChunk:0,nextChunk:0,steps:[],inflightManifest:{ref:'manifest'}};
+  Object.assign(record,recordOverrides);
   if(manifestMismatch)manifest.chunkDigest=b64digest('different chunk');
   const properties=new Map([['PQM_EXECUTION_SHARED_SECRET',secret],['PQM_EXECUTION_UNCERTAIN',id],
     [`PQM_EXECUTION_RUN_${id}`,JSON.stringify(record)]]);
@@ -125,7 +128,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     diagnosticMode:'audit',expectedDigest:appendDigest,planScope:'APPEND_ONLY',chunkIndex:0,planId:id,
     detailsDigest,fullPlanDigest:fullDigest,sourceDigest,totalAppendCount:targets.length,auditTargets,
     auditTargetsDigest:b64digest(JSON.stringify(canonical(auditTargets)))};
-  return {ctx,properties,request,envelope:recoveryEnvelope,auditRequest,auditEnvelope:sign(auditRequest),targets,sign,
+  return {ctx,properties,request,envelope:recoveryEnvelope,auditRequest,auditEnvelope:sign(auditRequest),targets,manifest,record,sign,
     get writes(){return writes;},get sheetsWrites(){return sheetsWrites;}};
 
   function sign(value) {
@@ -142,6 +145,8 @@ function canonical(value){
 
 test('audits a 276-row plan with the first 25 exactly present and never writes state',()=>{
   const f=fixture(),before=JSON.stringify([...f.properties]);
+  assert.equal(Object.prototype.hasOwnProperty.call(f.manifest,'chunkIndex'),false,
+    'the fixture preserves the actual APPEND_ONLY v1 manifest shape');
   const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope);
   assert.equal(result.status,'DIAGNOSED');
   assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
@@ -151,6 +156,80 @@ test('audits a 276-row plan with the first 25 exactly present and never writes s
   assert.equal(f.writes,0);
   assert.equal(JSON.stringify([...f.properties]),before);
   assert.equal(JSON.stringify(result).includes(f.targets[0].code),false,'supplier codes are never returned');
+});
+
+test('accepts a strictly matching explicit v1 chunkIndex zero',()=>{
+  const f=fixture({manifestChunkIndex:0}),before=JSON.stringify([...f.properties]);
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope);
+  assert.equal(result.status,'DIAGNOSED');
+  assert.equal(result.firstChunkRecoveryEvidence,true);
+  assert.equal(result.counts.confirmed,25);
+  assert.equal(f.writes,0);
+  assert.equal(JSON.stringify([...f.properties]),before);
+});
+
+test('rejects present malformed or nonzero manifest chunkIndex values',()=>{
+  for(const value of [1,'0',null]){
+    const f=fixture({manifestChunkIndex:value}),before=JSON.stringify([...f.properties]);
+    const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope);
+    assert.equal(result.status,'BLOCKED',`manifest.chunkIndex=${JSON.stringify(value)}`);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.manifestMismatchFields)),['manifest.chunkIndex']);
+    assert.equal(result.firstChunkRecoveryEvidence,false);
+    assert.equal(f.writes,0);
+    assert.equal(JSON.stringify([...f.properties]),before);
+  }
+});
+
+test('missing chunkIndex is accepted only for the bound v1 APPEND_ONLY first chunk',()=>{
+  for(const recordOverrides of [
+    {chunkJournalVersion:2},
+    {planScope:'ALL'},
+    {inflight:1},
+    {uncertainChunk:1},
+    {nextChunk:1}
+  ]){
+    const f=fixture({recordOverrides}),before=JSON.stringify([...f.properties]);
+    const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope);
+    assert.equal(result.status,'BLOCKED',JSON.stringify(recordOverrides));
+    assert.ok(result.reasonCodes.includes('RUN_RECORD_BINDING_MISMATCH'));
+    assert.equal(result.firstChunkRecoveryEvidence,false);
+    assert.equal(f.writes,0);
+    assert.equal(JSON.stringify([...f.properties]),before);
+  }
+  for(const [field,value] of [['chunkIndex',1],['planScope','ALL']]){
+    const f=fixture(),before=JSON.stringify([...f.properties]);
+    f.request[field]=value;f.envelope=f.sign(f.request);
+    assert.throws(()=>f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope),/APPEND diagnostic binding rejected/);
+    assert.equal(f.writes,0);
+    assert.equal(JSON.stringify([...f.properties]),before);
+  }
+});
+
+test('legacy missing chunkIndex does not relax other manifest header or row bindings',()=>{
+  for(const manifestOverrides of [
+    {chunkId:'9'.repeat(32)},
+    {chunkDigest:b64digest('wrong chunk digest')},
+    {planId:'8'.repeat(32)},
+    {runId:'8'.repeat(32)},
+    {rows:[]}
+  ]){
+    const f=fixture();Object.assign(f.manifest,manifestOverrides);
+    const before=JSON.stringify([...f.properties]);
+    const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope);
+    assert.equal(result.status,'BLOCKED',JSON.stringify(Object.keys(manifestOverrides)));
+    assert.equal(result.firstChunkRecoveryEvidence,false);
+    assert.ok(result.reasonCodes.includes('MANIFEST_BINDING_MISMATCH'));
+    assert.equal(f.writes,0);
+    assert.equal(JSON.stringify([...f.properties]),before);
+  }
+  const f=fixture();f.manifest.rows[0].cellsDigest=b64digest('different cell proof');
+  const before=JSON.stringify([...f.properties]);
+  const result=f.ctx.pqmSandboxAppendDiagnostic20261112(f.envelope);
+  assert.equal(result.firstChunkRecoveryEvidence,false);
+  assert.ok(result.reasonCodes.includes('MANIFEST_BINDING_MISMATCH'));
+  assert.ok(result.manifestMismatchFields.includes('manifest.rows[0].cellsDigest'));
+  assert.equal(f.writes,0);
+  assert.equal(JSON.stringify([...f.properties]),before);
 });
 
 test('classifies duplicate, wrong-tab and mismatching rows as conflicts',()=>{
