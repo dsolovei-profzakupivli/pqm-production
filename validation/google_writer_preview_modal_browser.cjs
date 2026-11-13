@@ -31,7 +31,7 @@ window.request=async(url,options={})=>{
   if(url.endsWith('/google-writer/preview-scope'))return{scope:'APPEND_ONLY',counts:{append:1234,update:0,conflict:2,error:0},ticket:'opaque-append-ticket'};
   if(url.endsWith('/google-writer/resume-preview'))return{status:'RESUME_READY',scope:'APPEND_ONLY',request_id:'r'.repeat(32),plan_digest:'P'.repeat(43),details_digest:'D'.repeat(43),checkpoint_digest:'C'.repeat(43),next_chunk:4,counts:{append:5,update:0,conflict:0,error:0},ticket:'opaque-resume-ticket',details:{version:1,environment:'SANDBOX',plan_digest:'P'.repeat(43),remaining_plan_digest:'R'.repeat(43),counts:{append:5,update:0,conflict:0,error:0},appends:Array.from({length:5},()=>({operation:'APPEND',tab:'ФОП',name:'Remaining',code:'000004',cells:[{column:'A',new_value:'=TODAY()',formula:true}]})),updates:[],conflicts:[],errors:[]}};
   if(url.endsWith('/google-writer/resume-append-only'))return{started:true,status:'APPEND_ONLY_RESUME_ACCEPTED'};
-  if(url.endsWith('/google-writer/apply')){if(failApply)throw Error('fixture apply error');if(applyGate)await applyGate;return{accepted:true};}
+  if(url.endsWith('/google-writer/apply')){if(failApply)throw Error('fixture apply error');if(applyGate)await applyGate;return{started:true,request_id:'fixture-request-id'};}
   throw Error('Unexpected mocked request: '+url);
 };
 </script><script>${script.replace(/<\/script/gi,'<\\/script')}</script>
