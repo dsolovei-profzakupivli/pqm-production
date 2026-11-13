@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Record tested revision
         run: |
           mkdir -p ci-evidence
@@ -30,6 +31,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
+      - name: Set up isolated Python environment for historical checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/pqm-release-python"
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -m pip install --disable-pip-version-check -r requirements.txt
       - name: Run Apps Script legacy reconciliation evidence regressions
         shell: bash
         run: |
@@ -37,7 +44,11 @@ jobs:
           node --test \
             scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs \
             scripts/pqm-google-writer/mirror-alignment/sandbox/legacy-reconciliation-evidence-v2.test.cjs
-          python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_c246_historical_integrity_snapshots_v1.py
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_google_writer_historical_integrity_snapshots_v1.py
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
+            test_google_writer_append_continuation_integrity_v3 \
+            test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks
       - name: Install Playwright and Chromium for browser regressions
         shell: bash
         run: |

@@ -154,6 +154,26 @@ def copy_candidate_manifests(source_root, validation_target, mode):
         shutil.copy2(source,target)
 
 
+def release_fixture_source(source_root, infrastructure_root, fixture_name, mode):
+    """Resolve a named fixture without ever falling back to product source.
+
+    Historical source archives may predate later immutable fixture archives.
+    In that mode only the allowlisted fixture basename may be sourced from the
+    current infrastructure checkout; tests verify each fixture's pinned SHA.
+    Candidate runs retain their strict source-root-only behavior.
+    """
+    if not isinstance(fixture_name, str) or Path(fixture_name).name != fixture_name:
+        raise ValueError("Release fixture must be an allowlisted basename")
+    historical = Path(source_root) / "validation/fixtures" / fixture_name
+    if historical.is_file():
+        return historical
+    if mode == "historical_integrity":
+        infrastructure = Path(infrastructure_root) / "validation/fixtures" / fixture_name
+        if infrastructure.is_file():
+            return infrastructure
+    return historical
+
+
 def normalize_windows_sqlite_uri(database):
     if not isinstance(database,str) or not database.startswith('file:'):
         return database
@@ -304,7 +324,7 @@ def main():
                              'google_writer_legacy_reconciliation_v3_immutable.zip',
                              'google_writer_legacy_sheet_bounds_v1_immutable.zip')
         for fixture_name in fixture_names:
-            fixture_source=ROOT/'validation/fixtures'/fixture_name
+            fixture_source=release_fixture_source(ROOT,INFRA_ROOT,fixture_name,mode)
             if fixture_name=='google_writer_historical_integrity_snapshots_v1_compact.zip':
                 fixture_source=INFRA_ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
@@ -432,32 +452,14 @@ def main():
             immutable_google_writer_source_overlays=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_immutable_google_writer_source_overlays.py')],
                 cwd=old_cwd,check=False)
-            historical_root=Path(tmp)/'historical-c246-source'
-            historical_root.mkdir()
-            # This is a separately pinned historical fixture; use the trusted
-            # infrastructure copy in both candidate and baseline runs rather
-            # than whatever archive happens to ship in the tested source tree.
-            baseline_archive=INFRA_ROOT/'validation/fixtures/messages_parent_c246edef.zip'
-            with zipfile.ZipFile(baseline_archive) as archive:
-                base=historical_root.resolve()
-                for member in archive.infolist():
-                    if member.is_dir():
-                        continue
-                    target=(historical_root/member.filename).resolve()
-                    if not target.is_relative_to(base):raise RuntimeError('Unsafe path in historical baseline fixture')
-                    target.parent.mkdir(parents=True,exist_ok=True)
-                    target.write_bytes(archive.read(member))
-            historical_env=os.environ.copy()
-            historical_env['PQM_RELEASE_SOURCE_ROOT']=str(historical_root)
-            historical_env['PQM_RELEASE_INFRA_ROOT']=str(INFRA_ROOT)
-            historical_env['PQM_RELEASE_MODE']='historical_integrity'
-            print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
-            historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
-                                    env=historical_env,check=False)
+            # c246 contracts are run by the mandatory workflow snapshot step
+            # before the container is built. The release image intentionally
+            # has no .git directory, so do not attempt a second Git-backed run
+            # from inside that image.
             writer_history_snapshots=subprocess.run(
                 [sys.executable,str(root/'validation/run_google_writer_historical_integrity_snapshots_v1.py')],
                 cwd=old_cwd,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and historic.returncode==0 and writer_history_snapshots.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
