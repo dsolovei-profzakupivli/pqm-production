@@ -11910,10 +11910,12 @@ class Handler(BaseHTTPRequestHandler):
                 candidate=google_writer_execution.load_append_only_resume_candidate(
                     DB_PATH,payload['request_id'],self.auth_user)
                 client=google_writer_client()
+                continuation_binding=google_writer_execution._append_continuation_guard_for_run(
+                    DB_PATH,candidate['request_id'],self.auth_user,candidate['next_chunk'])
                 checked=client.invoke('resume_check',candidate['request_id'],self.auth_user,
                     trigger='manual',digest=candidate['plan_digest'],plan_scope='APPEND_ONLY',
                     manual_authorized=True,chunk_index=candidate['next_chunk'],
-                    expected_checkpoint_digest=candidate['checkpoint_digest'])
+                    expected_checkpoint_digest=candidate['checkpoint_digest'],**continuation_binding)
                 details=checked['planDetails']
                 details_digest=google_writer_execution._preview_details_digest(details)
                 if (checked.get('checkpointDigest')!=candidate['checkpoint_digest'] or
@@ -11951,10 +11953,12 @@ class Handler(BaseHTTPRequestHandler):
                 if (candidate['plan_digest']!=ticket['digest'] or candidate['next_chunk']!=ticket['next_chunk'] or
                         candidate['checkpoint_digest']!=ticket['checkpoint_digest']):
                     raise ValueError('Saved checkpoint changed; obtain a new read-only continuation review')
+                continuation_binding=google_writer_execution._append_continuation_guard_for_run(
+                    DB_PATH,candidate['request_id'],self.auth_user,candidate['next_chunk'])
                 checked=client.invoke('resume_check',candidate['request_id'],self.auth_user,
                     trigger='manual',digest=candidate['plan_digest'],plan_scope='APPEND_ONLY',
                     manual_authorized=True,chunk_index=candidate['next_chunk'],
-                    expected_checkpoint_digest=candidate['checkpoint_digest'])
+                    expected_checkpoint_digest=candidate['checkpoint_digest'],**continuation_binding)
                 details_digest=google_writer_execution._preview_details_digest(checked['planDetails'])
                 if (details_digest!=ticket['details_digest'] or checked.get('checkpointDigest')!=ticket['checkpoint_digest'] or
                         checked.get('counts',{}).get('update')!=0 or checked.get('counts',{}).get('append')<=0):
@@ -12575,6 +12579,25 @@ class Handler(BaseHTTPRequestHandler):
                     google_writer_execution.ExecutionConfigurationError):
                 return self.send_json({'status':'BLOCKED','reason_codes':['DIAGNOSTIC_EVIDENCE_UNAVAILABLE'],
                     'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0})
+        if parsed.path == '/api/admin/google-writer/append-continuation-preview':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'BLOCKED','reason_codes':['SANDBOX_ONLY'],
+                    'writer_started':False,'google_writes':0,'script_properties_writes':0},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'BLOCKED','reason_codes':['PERMISSION_REQUIRED'],
+                    'writer_started':False,'google_writes':0,'script_properties_writes':0},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'source_request_id'}:
+                    raise ValueError('Only the fixed saved source request identity is accepted')
+                result=google_writer_execution.prepare_append_continuation_preview(
+                    DB_PATH,google_writer_client(),payload['source_request_id'],self.auth_user)
+                return self.send_json(result,200 if result.get('status')=='PREVIEW_READY' else 409)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'BLOCKED','reason_codes':['CONTINUATION_EVIDENCE_UNAVAILABLE'],
+                    'writer_started':False,'google_writes':0,'script_properties_writes':0},409)
         if parsed.path == '/api/admin/google-writer/close-prewrite':
             permissions=getattr(self,'auth_access',{}).get('permissions',{})
             if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
@@ -12645,14 +12668,26 @@ class Handler(BaseHTTPRequestHandler):
                     snapshot=google_writer_execution.load_preview_plan(DB_PATH,ticket['request_id'],
                         self.auth_user,ticket['parent_digest'],details_digest=ticket['details_digest'])
                     google_writer_execution.validate_preview_plan_scope(snapshot,ticket)
+                    continuation=snapshot['details'].get('append_continuation')
+                    if continuation is not None:
+                        if ticket.get('scope')!='APPEND_ONLY':
+                            raise ValueError('Continuation may only be applied as APPEND_ONLY')
+                        google_writer_execution.validate_append_continuation_closed(DB_PATH,snapshot,self.auth_user)
                     # Preview age is not an Apply authorization test. Recompute
                     # the plan now and require a fresh user confirmation if any
                     # source, destination, formula or operation detail changed.
                     live=client.invoke('preview',ticket['request_id'],self.auth_user,
                                        manual_authorized=True)
                     live_details_digest=google_writer_execution._preview_details_digest(live.get('planDetails'))
+                    expected_details_digest=(google_writer_execution._preview_details_digest(
+                        google_writer_execution._append_continuation_core_details(snapshot['details']))
+                        if continuation is not None else snapshot['details_digest'])
                     if (live.get('digest')!=snapshot['plan_digest'] or
-                            live_details_digest!=snapshot['details_digest']):
+                            live_details_digest!=expected_details_digest):
+                        if continuation is not None:
+                            return self.send_json({'status':'CONTINUATION_PREVIEW_STALE',
+                                'error':'Стан таблиці або план продовження змінився. Запис не розпочато; сформуйте новий read-only Preview залишку.',
+                                'request_id':ticket['request_id'],'started':False},409)
                         replacement_id=uuid.uuid4().hex
                         replacement=client.invoke('preview',replacement_id,self.auth_user,
                                                   manual_authorized=True)

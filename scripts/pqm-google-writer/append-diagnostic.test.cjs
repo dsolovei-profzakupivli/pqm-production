@@ -80,6 +80,7 @@ function fixture({rowsWritten=25,duplicate=false,wrongTab=false,valueMismatch=fa
     pqmExecutionCheckpointResolveManifest_:()=>manifest,
     pqmSandboxFullLoad_:()=>({state:{payload_digest:sourceMismatch?b64digest('other source'):sourceDigest},body:{items:[]},tabs:JSON.parse(JSON.stringify({
       'ФОП':{rows:byTab['ФОП']},'ЮО':{rows:byTab['ЮО']}}))}),
+    pqmSandboxFullSheetState_:tabs=>['ФОП','ЮО'].map(name=>({name,rows:tabs[name].rows})),
     pqmSandboxFetchRegistry_:()=>{sourceReads++;return {items:[{supplier_code:'TEST'}]};},
     pqmSandboxControlledPqmState_:()=>({sourceMarker:true,supplier_code:'TEST'}),
     pqmGooglePlan_:(_body,_tabs,options)=>{plannerCalls++;mockNow+=plannerAdvanceMs;
@@ -366,6 +367,10 @@ test('read-only row audit succeeds without checkpoint, run property or uncertain
   assert.deepEqual(JSON.parse(JSON.stringify(result.counts)),
     {planned:276,confirmed:25,missing:251,conflict:0,unverified:0,remaining:251});
   assert.equal(result.firstChunkRecoveryEvidence,undefined);
+  assert.equal(result.targetStatuses.length,276);
+  assert.deepEqual(result.targetStatuses.slice(0,25),Array(25).fill('CONFIRMED'));
+  assert.deepEqual(result.targetStatuses.slice(25),Array(251).fill('MISSING'));
+  assert.match(result.googleStateDigest,/^[A-Za-z0-9_-]{43}$/);
   assert.equal(f.writes,0);
   assert.equal([...f.properties].some(([key])=>key.includes(id)),false);
   assert.equal(JSON.stringify(result).includes(f.targets[0].code),false);
@@ -382,6 +387,8 @@ test('read-only audit classifies row conflicts and fails incomplete sheet reads 
   assert.equal(incompleteResult.status,'READ_INCOMPLETE');
   assert.equal(incompleteResult.counts.unverified,25);
   assert.equal(incompleteResult.counts.missing,251);
+  assert.deepEqual(incompleteResult.targetStatuses,[...Array(25).fill('UNVERIFIED'),...Array(251).fill('MISSING')]);
+  assert.equal(incompleteResult.googleStateDigest,null);
   assert.equal(incomplete.writes,0);
 });
 
@@ -615,4 +622,68 @@ test('Writer UI keeps a copyable APPEND report panel with field paths only',()=>
   assert.match(html,/стан Google-таблиць — MISMATCH/);assert.match(html,/значень: MISMATCH · 1 \(I\)/);
   assert.match(text,/APPEND із початковим батьківським digest — MATCH/);
   assert.equal(/SENSITIVE_CELL_VALUE|observed_digest|[A-Za-z0-9_-]{43}/.test(html+text),false);
+});
+
+test('APPEND diagnostic disables immediately, preserves the last report, and rejects a second click',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../../google_writer_ui.js'),'utf8').split('const googleWriterRunButton=')[0];
+  const context={esc:value=>String(value)};vm.createContext(context);vm.runInContext(source,context);
+  const button={disabled:false,textContent:'Перевірити APPEND без запису',attributes:{},
+    setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},
+    dataset:{requestId:'71487a74779f4445a186a8dbe6252fbc'}};
+  const previous={request_id:button.dataset.requestId,status:'DIAGNOSED'};
+  context.__previousReport=previous;vm.runInContext('googleWriterAppendDiagnosticReport=__previousReport',context);
+  context.setGoogleWriterAppendDiagnosticBusy(button,true);
+  assert.equal(button.disabled,true);assert.equal(button.textContent,'Виконується перевірка…');
+  assert.equal(button.attributes['aria-busy'],'true');
+  assert.equal(vm.runInContext('googleWriterAppendDiagnosticReport',context),previous);
+  let requests=0;context.request=()=>{requests++;};
+  vm.runInContext('googleWriterBusy=true',context);
+  await context.diagnoseGoogleWriterAppend(button.dataset.requestId,button);
+  assert.equal(requests,0);assert.equal(button.disabled,true);
+  context.setGoogleWriterAppendDiagnosticBusy(button,false);
+  assert.equal(button.disabled,false);assert.equal(button.textContent,'Перевірити APPEND без запису');
+  assert.equal(Object.hasOwn(button.attributes,'aria-busy'),false);
+  assert.equal(vm.runInContext('googleWriterAppendDiagnosticReport',context),previous);
+});
+
+test('APPEND diagnostic restores the visible button after success and timeout',async()=>{
+  const ui=fs.readFileSync(path.join(__dirname,'../../google_writer_ui.js'),'utf8').split('const googleWriterRunButton=')[0];
+  const response={read_only:true,sqlite_writes:0,sheets_writes:0,properties_writes:0,status:'DIAGNOSED',
+    counts:{planned:276,confirmed:25,missing:251,conflict:0,unverified:0,remaining:251},reason_codes:[],
+    conflicts:[],recovery_status:'BLOCKED',recovery_reason_codes:['PREVIEW_RECONSTRUCTION_MISMATCH'],
+    recovery_field_mismatches:[],
+    reconstruction_checks:{full_preview_digest:'MISMATCH',append_only_digest:'MISMATCH',
+      planned_append_count:'MATCH',append_operation_count:'MATCH'},
+    downstream_checks:{source_binding:'MATCH',plan_safety:'MATCH',target_rows:'MATCH',
+      row_values_and_formulas:'MATCH',service_metadata:'MATCH',manifest_rows:'MATCH',append_row_metadata:'MATCH'}};
+  async function runCase(failure){
+    const context={API:'/api',esc:value=>String(value)};vm.createContext(context);vm.runInContext(ui,context);
+    const previous={request_id:'71487a74779f4445a186a8dbe6252fbc',status:'DIAGNOSED'};
+    context.__previousReport=previous;
+    context.__jobState={can_diagnose_append:true,runs:[{request_id:previous.request_id,
+      status:'outcome_unknown',result:{plan_scope:'APPEND_ONLY',attempted_chunk:0}}]};
+    vm.runInContext('googleWriterAppendDiagnosticReport=__previousReport;googleWriterJobState=__jobState',context);
+    let finishRequest,requests=0,loads=0;
+    context.request=()=>{requests++;return new Promise((resolve,reject)=>{finishRequest=()=>failure?
+      reject(new Error('synthetic timeout')):resolve(response);});};
+    context.loadGoogleWriterJob=async()=>{loads++;};
+    const button={disabled:false,textContent:'Перевірити APPEND без запису',attributes:{},
+      setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},
+      dataset:{requestId:previous.request_id}};
+    const running=context.diagnoseGoogleWriterAppend(previous.request_id,button);
+    assert.equal(button.disabled,true);assert.equal(button.textContent,'Виконується перевірка…');
+    assert.equal(button.attributes['aria-busy'],'true');
+    assert.equal(vm.runInContext('googleWriterAppendDiagnosticReport',context),previous);
+    await context.diagnoseGoogleWriterAppend(previous.request_id,button);
+    assert.equal(requests,1,'busy guard prevents a second request');
+    finishRequest();await running;
+    assert.equal(button.disabled,false);assert.equal(button.textContent,'Перевірити APPEND без запису');
+    assert.equal(Object.hasOwn(button.attributes,'aria-busy'),false);
+    assert.equal(vm.runInContext('googleWriterBusy',context),false);
+    assert.equal(loads,1);
+    const finalReport=vm.runInContext('googleWriterAppendDiagnosticReport',context);
+    if(failure)assert.equal(finalReport.status,'BLOCKED');
+    else assert.equal(finalReport.status,'DIAGNOSED');
+  }
+  await runCase(false);await runCase(true);
 });

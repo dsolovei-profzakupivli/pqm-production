@@ -147,6 +147,11 @@ function pqmExecutionCheckpointStateDigest_(record) {
     state.planId = record.planId;
     state.runId = record.runId;
   }
+  if (record.continuationSourceRequestId) {
+    state.continuationSourceRequestId = record.continuationSourceRequestId;
+    state.continuationPlanDigest = record.continuationPlanDigest;
+    state.continuationGuardDigest = record.continuationGuardDigest;
+  }
   if (record.chunkJournalVersion === 2) {
     state.chunkJournalVersion = record.chunkJournalVersion;
     state.planId = record.planId;
@@ -194,6 +199,8 @@ function pqmExecutionApplyCheckpointStep_(adapter, id, loaded, request, properti
   if (phase === 'append' && append.selected.length) {
     record.lastStage='append_prewrite_guard';
     adapter.appendPrewriteGuard(id, append);
+    if (adapter.continuationPrewriteGuard)
+      adapter.continuationPrewriteGuard(id, loaded, request, record);
     var templates = {};
     append.selected.forEach(function(change) {
       if (!templates[change.tab]) templates[change.tab] = adapter.appendRowMetadata(id,

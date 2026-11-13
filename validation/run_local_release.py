@@ -122,22 +122,17 @@ def selected_suite(suite,mode):
 def copy_candidate_manifests(source_root, validation_target, mode):
     if mode == 'historical_integrity':
         return
-    Path(validation_target).mkdir(parents=True, exist_ok=True)
-    for manifest_name in ('sandbox_preview_append_only_v1.json',
-                          'sandbox_preview_workflow_v1.json',
-                          'local_release_20261107/partial_reconciliation_prepared_retry_v1.json',
-                          'local_release_20261108/google_writer_receipt_recovery_v1.json',
-                          'local_release_20261108/legacy_append_reconciliation_v1.json',
-                          'local_release_20261108/legacy_append_reconciliation_v2.json',
-                          'local_release_20261108/legacy_append_reconciliation_v3.json',
-                          'local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json',
-                          'local_release_20261109/google_writer_manifest_compatibility_v2.json',
-                          'local_release_20261110/google_writer_legacy_snapshot_execution_v2.json',
-                          'local_release_20261109/google_writer_legacy_source_snapshots_v1.json',
-                          'local_release_20261109/legacy_reconciliation_evidence_v2.json'):
-        source=Path(source_root)/'validation'/manifest_name
-        target=Path(validation_target)/manifest_name
-        target.parent.mkdir(parents=True,exist_ok=True)
+    source_validation=Path(source_root)/'validation'
+    target_validation=Path(validation_target)
+    target_validation.mkdir(parents=True, exist_ok=True)
+    manifests=list(source_validation.glob('sandbox_preview_*.json'))
+    for release_dir in source_validation.glob('local_release_*'):
+        if release_dir.is_dir():
+            manifests.extend(release_dir.rglob('*.json'))
+    for source in sorted(manifests):
+        relative=source.relative_to(source_validation)
+        target=target_validation/relative
+        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source,target)
 
 def main():

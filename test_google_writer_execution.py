@@ -100,6 +100,75 @@ class ExecutionTransportTests(unittest.TestCase):
             self.client('SANDBOX').invoke('apply',request_id,'uo',trigger='manual',digest=TEST_DIGEST,
                 plan_scope='ALL',manual_authorized=True,chunk_index=0)
 
+    def test_legacy_prewrite_close_payload_over_8192_is_not_subject_to_continuation_cap(self):
+        request_id=execution._LEGACY_PREWRITE_LIMIT_REQUEST_ID
+        target_identities=[];manifest_rows=[]
+        for index in range(25):
+            tab='ФОП' if index%2==0 else 'ЮО'
+            code=f'{30000000+index:08d}'
+            target_identities.append({'tab':tab,'code':code})
+            manifest_rows.append({'tab':tab,'row':7400+index,'code':code,
+                'formulaA':'='+'X'*400})
+        projection=[{'tab':item['tab'],'row':item['row'],'code':item['code'],
+            'formulaA':item['formulaA']} for item in manifest_rows]
+        projection_digest=execution._sha256_b64(execution._canonical_json(projection).encode())
+        target_digest=execution._sha256_b64(execution._canonical_json(
+            [[item['tab'],item['code']] for item in target_identities]).encode())
+        captured={}
+        def timeout(request,timeout):
+            captured['body']=json.loads(request.data)
+            raise TimeoutError('mock response unavailable after request dispatch')
+        client=self.client('SANDBOX',opener=timeout)
+        with self.assertRaises(execution.ExecutionOutcomeUnknown):
+            client.invoke('close_prewrite_failure',request_id,'sandbox-admin',trigger='manual',
+                digest=TEST_DIGEST,plan_scope='APPEND_ONLY',manual_authorized=True,
+                close_id='b'*32,close_evidence_digest=TEST_DIGEST,reason_digest=TEST_DIGEST,
+                chunk_index=0,chunk_id='c'*32,chunk_digest=TEST_DIGEST,plan_id=request_id,
+                prewrite_stage=execution._LEGACY_PREWRITE_LIMIT_STAGE,
+                target_identity_digest=target_digest,target_identities=target_identities,
+                legacy_manifest_rows=manifest_rows,
+                legacy_manifest_projection_digest=projection_digest)
+        payload=captured['body']['parameters'][0]['payload']
+        self.assertGreater(len(payload.encode('utf-16-le'))//2,8192)
+
+    def test_continuation_only_payload_limit_does_not_change_other_action_contracts(self):
+        request_id='b'*32
+        guards=[]
+        for index in range(25):
+            tab='ФОП' if index%2==0 else 'ЮО';row=7400+index
+            code_digest=execution._sha256_b64(execution._canonical_json(
+                [tab,row,f'{30000000+index:08d}']).encode())
+            guards.append({'tab':tab,'row':row,'identity_digest':code_digest,
+                'row_digest':TEST_DIGEST,'service_digest':TEST_DIGEST})
+        continuation={
+            'continuation_source_request_id':execution.APPEND_CONTINUATION_SOURCE_REQUEST_ID,
+            'continuation_plan_digest':TEST_DIGEST,'continuation_remaining_digest':TEST_DIGEST,
+            'continuation_guard_rows':guards}
+        client=self.client('SANDBOX')
+        original_dumps=json.dumps
+        def oversized_continuation(value,*args,**kwargs):
+            if isinstance(value,dict) and 'continuationSourceRequestId' in value:
+                return 'x'*8193
+            return original_dumps(value,*args,**kwargs)
+        with patch.object(execution.json,'dumps',side_effect=oversized_continuation):
+            with self.assertRaisesRegex(ValueError,'continuation envelope exceeds'):
+                client.invoke('apply',request_id,'uo',trigger='manual',digest=TEST_DIGEST,
+                    plan_scope='APPEND_ONLY',manual_authorized=True,chunk_index=0,
+                    chunk_id='c'*32,chunk_digest=TEST_DIGEST,plan_id=request_id,**continuation)
+        self.assertEqual(self.calls,[])
+        captured={}
+        def timeout(request,timeout):
+            captured['body']=json.loads(request.data)
+            raise TimeoutError('mock response unavailable after request dispatch')
+        client=self.client('SANDBOX',opener=timeout)
+        with self.assertRaises(execution.ExecutionOutcomeUnknown):
+            client.invoke('close_unknown_run','d'*32,'sandbox-admin',trigger='manual',
+                digest=TEST_DIGEST,plan_scope='ALL',manual_authorized=True,close_id='e'*32,
+                close_evidence_digest=TEST_DIGEST,reason_digest=TEST_DIGEST)
+        payload=json.loads(captured['body']['parameters'][0]['payload'])
+        self.assertEqual(payload['action'],'close_unknown_run')
+        self.assertNotIn('continuationSourceRequestId',payload)
+
     def test_shared_checkpoint_architecture_can_be_enabled_by_environment_only(self):
         self.assertTrue(execution_apply_contract.checkpoint_apply_enabled('SANDBOX'))
         self.assertFalse(execution_apply_contract.checkpoint_apply_enabled('PROD'))

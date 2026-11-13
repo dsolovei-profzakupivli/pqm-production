@@ -1010,7 +1010,9 @@ class ExecutionClient:
                audit_field_targets=None,audit_field_targets_digest=None,
                details_digest=None,full_plan_digest=None,source_digest=None,total_append_count=None,
                expected_plan_counts=None,expected_update_identity_digest=None,expected_update_identities=None,
-               expected_cell_digests=None):
+               expected_cell_digests=None,require_audit_statuses=False,
+               continuation_source_request_id=None,continuation_plan_digest=None,
+               continuation_remaining_digest=None,continuation_guard_rows=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
         if background_jobs.disabled() and not manual_override:
@@ -1189,6 +1191,32 @@ class ExecutionClient:
                 raise ValueError('Read-only APPEND audit cannot carry a chunk binding')
         elif any(value is not None for value in chunk_binding):
             raise ValueError('Durable chunk binding is Sandbox Apply only')
+        continuation_fields=(continuation_source_request_id,continuation_plan_digest,
+            continuation_remaining_digest,continuation_guard_rows)
+        if any(value is not None for value in continuation_fields):
+            if (action not in {'apply','resume_check'} or self.environment!='SANDBOX' or trigger!='manual' or
+                    manual_override is not True or plan_scope!='APPEND_ONLY' or
+                    type(chunk_index) is not int or
+                    not (0<=chunk_index<=10 if action=='apply' else 1<=chunk_index<=10) or
+                    not re.fullmatch(r'[0-9a-f]{32}',str(continuation_source_request_id or '')) or
+                    continuation_source_request_id!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
+                    not is_canonical_sha256_b64url(continuation_plan_digest) or
+                    not is_canonical_sha256_b64url(continuation_remaining_digest) or
+                    not isinstance(continuation_guard_rows,list) or
+                    len(continuation_guard_rows)!=APPEND_CONTINUATION_CONFIRMED):
+                raise ValueError('Sandbox APPEND continuation binding is invalid')
+            seen_guard_rows=set()
+            for item in continuation_guard_rows:
+                identity=(item.get('tab'),item.get('row'),item.get('identity_digest')) if isinstance(item,dict) else None
+                if (not isinstance(item,dict) or set(item)!={'tab','row','identity_digest','row_digest','service_digest'} or
+                        item.get('tab') not in {'ФОП','ЮО'} or
+                        type(item.get('row')) is not int or item['row']<2 or
+                        not is_canonical_sha256_b64url(item.get('identity_digest')) or
+                        not is_canonical_sha256_b64url(item.get('row_digest')) or
+                        not is_canonical_sha256_b64url(item.get('service_digest')) or
+                        identity in seen_guard_rows):
+                    raise ValueError('Sandbox APPEND continuation guard row is invalid')
+                seen_guard_rows.add(identity)
         evidence_digest = None
         reconciliation_profile = None
         if action == 'reconcile_partial':
@@ -1326,11 +1354,20 @@ class ExecutionClient:
             if chunk_phase is not None: message['chunkPhase']=chunk_phase
             if chunk_added_at is not None: message['chunkAddedAt']=chunk_added_at
             if chunk_details_digest is not None: message['chunkDetailsDigest']=chunk_details_digest
+        if any(value is not None for value in continuation_fields):
+            message.update(continuationSourceRequestId=continuation_source_request_id,
+                continuationPlanDigest=continuation_plan_digest,
+                continuationRemainingDigest=continuation_remaining_digest,
+                continuationGuardRows=[{'tab':item['tab'],'row':item['row'],'codeDigest':item['identity_digest'],
+                    'rowDigest':item['row_digest'],'serviceDigest':item['service_digest']}
+                    for item in continuation_guard_rows])
         if action == 'reconcile_partial':
             message.update(reconciliationId=reconciliation_id,
                            requestFingerprint=request_fingerprint,
                            evidence=evidence, evidenceDigest=evidence_digest)
         raw = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        if any(value is not None for value in continuation_fields) and len(raw.encode('utf-16-le'))//2>8192:
+            raise ValueError('Sandbox APPEND continuation envelope exceeds the execution limit')
         if action=='diagnose_append_plan' and len(raw.encode('utf-16-le'))//2>32768:
             raise ValueError('Sandbox APPEND diagnostic envelope exceeds the read-only limit')
         signature = base64.urlsafe_b64encode(hmac.new(self.shared_secret.encode(), raw.encode(), hashlib.sha256).digest()).decode().rstrip('=')
@@ -1519,6 +1556,38 @@ class ExecutionClient:
                     any(not isinstance(code,str) or not re.fullmatch(r'[A-Z0-9_]{1,48}',code) for code in reasons)):
                 raise ExecutionPreflightError('Read-only APPEND audit page receipt was incomplete',
                     safe_error={'diagnostic_code':'APPEND_AUDIT_PAGE_RECEIPT_INVALID'})
+            target_statuses=result.get('targetStatuses')
+            google_state_digest=result.get('googleStateDigest')
+            continuation_guard_rows=result.get('continuationGuardRows')
+            if require_audit_statuses and (
+                    not isinstance(target_statuses,list) or len(target_statuses)!=len(audit_targets) or
+                    any(value not in {'CONFIRMED','MISSING','CONFLICT','UNVERIFIED'} for value in target_statuses) or
+                    any(sum(value==status for value in target_statuses)!=counts[key] for key,status in
+                        (('confirmed','CONFIRMED'),('missing','MISSING'),('conflict','CONFLICT'),
+                         ('unverified','UNVERIFIED'))) or
+                    (result['status']=='AUDITED' and not is_canonical_sha256_b64url(google_state_digest)) or
+                    (result['status']=='READ_INCOMPLETE' and google_state_digest is not None) or
+                    not isinstance(continuation_guard_rows,list) or
+                    (result['status']=='READ_INCOMPLETE' and continuation_guard_rows) or
+                    (result['status']=='AUDITED' and counts['confirmed']==APPEND_CONTINUATION_CONFIRMED and
+                     len(continuation_guard_rows)!=APPEND_CONTINUATION_CONFIRMED) or
+                    (result['status']=='AUDITED' and counts['confirmed']!=APPEND_CONTINUATION_CONFIRMED and
+                     continuation_guard_rows)):
+                raise ExecutionPreflightError('Read-only APPEND status evidence was incomplete',
+                    safe_error={'diagnostic_code':'APPEND_AUDIT_STATUSES_INVALID'})
+            if require_audit_statuses:
+                seen_guard=set()
+                for item in continuation_guard_rows:
+                    identity=(item.get('tab'),item.get('row'),item.get('codeDigest')) if isinstance(item,dict) else None
+                    if (not isinstance(item,dict) or set(item)!={'tab','row','codeDigest','rowDigest','serviceDigest'} or
+                            item.get('tab') not in {'ФОП','ЮО'} or type(item.get('row')) is not int or
+                            item['row']<2 or not is_canonical_sha256_b64url(item.get('serviceDigest')) or
+                            not is_canonical_sha256_b64url(item.get('rowDigest')) or
+                            not is_canonical_sha256_b64url(item.get('codeDigest')) or
+                            identity in seen_guard):
+                        raise ExecutionPreflightError('Read-only APPEND service guard evidence was invalid',
+                            safe_error={'diagnostic_code':'APPEND_AUDIT_GUARD_ROWS_INVALID'})
+                    seen_guard.add(identity)
             conflicts=result.get('conflicts',[])
             target_codes={item[1] for item in audit_targets}
             if (not isinstance(conflicts,list) or len(conflicts)!=counts['conflict'] or
@@ -1541,6 +1610,13 @@ class ExecutionClient:
             return {'status':result['status'],
                 'counts':{key:counts[key] for key in count_fields},'reason_codes':reasons,
                 'conflicts':conflicts,
+                'target_statuses':target_statuses if require_audit_statuses else None,
+                'google_state_digest':google_state_digest if require_audit_statuses else None,
+                'continuation_guard_rows':([{'tab':item['tab'],'row':item['row'],
+                    'identity_digest':item['codeDigest'],'row_digest':item['rowDigest'],
+                    'service_digest':item['serviceDigest']}
+                    for item in continuation_guard_rows]
+                    if require_audit_statuses else None),
                 'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
         if action=='diagnose_append_plan' and diagnostic_mode=='audit_fields':
             conflicts=result.get('conflicts')
@@ -2046,6 +2122,8 @@ class ExecutionClient:
             if result.get('status')=='CHUNK_RECOVERED': safe['checkpointDigest']=result['checkpointDigest']
         if action == 'preview' and plan_details is not None:
             safe['planDetails'] = plan_details
+            if is_canonical_sha256_b64url(result.get('googleStateDigest')):
+                safe['google_state_digest']=result['googleStateDigest']
         if action == 'reconcile_partial':
             safe.update(reconciliationId=reconciliation_id,
                         requestFingerprint=request_fingerprint,
@@ -2191,6 +2269,109 @@ def validate_preview_plan_scope(snapshot, ticket):
     # excluded from the scoped operation count and are never sent to Apps Script.
     return {'scope':'APPEND_ONLY','append':len(appends),'update':0,
             'conflict':counts.get('conflict',0),'error':counts.get('error',0)}
+
+
+def _append_continuation_core_details(details):
+    if not isinstance(details,dict):
+        raise ValueError('Continuation Preview details are invalid')
+    core=dict(details);core.pop('append_continuation',None)
+    return core
+
+
+def validate_append_continuation_closed(path, snapshot, actor):
+    """Fail closed unless the source HOLD has a finalized, receipt-backed admin close."""
+    details=snapshot.get('details') if isinstance(snapshot,dict) else None
+    meta=details.get('append_continuation') if isinstance(details,dict) else None
+    if (not isinstance(meta,dict) or meta.get('version')!=1 or
+            meta.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
+            meta.get('confirmed_count')!=25 or meta.get('excluded_count')!=25 or
+            meta.get('missing_count')!=251 or
+            not is_canonical_sha256_b64url(meta.get('source_plan_digest')) or
+            not is_canonical_sha256_b64url(meta.get('source_details_digest')) or
+            not is_canonical_sha256_b64url(meta.get('source_append_digest')) or
+            not is_canonical_sha256_b64url(meta.get('source_payload_digest')) or
+            not is_canonical_sha256_b64url(meta.get('sheet_snapshot_digest')) or
+            not is_canonical_sha256_b64url(meta.get('operation_digest')) or
+            not isinstance(meta.get('preserved_rows'),list) or
+            len(meta.get('preserved_rows',[]))!=APPEND_CONTINUATION_CONFIRMED or
+            details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0} or
+            len(details.get('appends',[]))!=251 or details.get('updates') or
+            details.get('conflicts') or details.get('errors')):
+        raise ValueError('Continuation Preview binding is invalid')
+    ops=[_append_continuation_operation(item) for item in details['appends']]
+    if (len({item['code'] for item in ops})!=251 or
+            _append_continuation_operations_digest(ops)!=meta['operation_digest']):
+        raise ValueError('Continuation Preview operations changed')
+    preserved=[];preserved_seen=set()
+    for item in meta['preserved_rows']:
+        identity=(item.get('tab'),item.get('row'),item.get('identity_digest')) if isinstance(item,dict) else None
+        if (not isinstance(item,dict) or set(item)!={'tab','row','identity_digest','row_digest','service_digest'} or
+                item.get('tab') not in {'ФОП','ЮО'} or type(item.get('row')) is not int or item['row']<2 or
+                not is_canonical_sha256_b64url(item.get('identity_digest')) or
+                not is_canonical_sha256_b64url(item.get('row_digest')) or
+                not is_canonical_sha256_b64url(item.get('service_digest')) or identity in preserved_seen):
+            raise ValueError('Continuation preserved-row evidence is invalid')
+        preserved.append(identity);preserved_seen.add(identity)
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON');con.row_factory=sqlite3.Row
+        run=con.execute('''SELECT status,actor,result_json FROM google_writer_runs
+            WHERE request_id=? AND environment='SANDBOX' ''',(meta['source_request_id'],)).fetchone()
+        plan=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,source_digest,details_json
+            FROM google_writer_plan_journal
+            WHERE request_id=? AND environment='SANDBOX' ''',(meta['source_request_id'],)).fetchone()
+        closure=con.execute('''SELECT close_id,state,actor,plan_scope,evidence_digest,reason_digest,receipt_json
+            FROM google_writer_run_closures WHERE request_id=? AND environment='SANDBOX' ''',
+            (meta['source_request_id'],)).fetchone()
+    if (not run or not plan or not closure or run['status']!='closed_unknown' or
+            closure['state']!='closed_unknown' or closure['plan_scope']!='APPEND_ONLY' or
+            plan['plan_id']!=meta['source_request_id'] or plan['actor']!=actor or
+            plan['plan_digest']!=meta['source_plan_digest'] or
+            plan['details_digest']!=meta['source_details_digest'] or
+            plan['append_only_digest']!=meta['source_append_digest'] or
+            plan['source_digest']!=meta['source_payload_digest'] or
+            not is_canonical_sha256_b64url(plan['source_digest'])):
+        raise ValueError('Source HOLD requires a separately confirmed administrative close')
+    try:source_details=json.loads(plan['details_json'])
+    except (TypeError,json.JSONDecodeError):raise ValueError('Source plan evidence is invalid') from None
+    if (_preview_details_digest(source_details)!=plan['details_digest'] or
+            source_details.get('counts')!={'append':APPEND_CONTINUATION_EXPECTED_TOTAL,'update':0,'conflict':0,'error':0} or
+            len(source_details.get('appends',[]))!=APPEND_CONTINUATION_EXPECTED_TOTAL or
+            source_details.get('updates') or source_details.get('conflicts') or source_details.get('errors')):
+        raise ValueError('Original 276-operation plan evidence changed')
+    source_ops=[_append_continuation_operation(item) for item in source_details['appends']]
+    source_by_identity={(item['tab'],item['row'],item['code']):item for item in source_ops}
+    continuation_by_identity={(item['tab'],item['row'],item['code']):item for item in ops}
+    source_hashed_identities={(tab,row,_sha256_b64(_canonical_json([tab,row,code]).encode('utf-8')))
+        for tab,row,code in source_by_identity}
+    continuation_hashed_identities={(tab,row,_sha256_b64(_canonical_json([tab,row,code]).encode('utf-8')))
+        for tab,row,code in continuation_by_identity}
+    if (len(source_by_identity)!=APPEND_CONTINUATION_EXPECTED_TOTAL or
+            any(source_by_identity.get(identity)!=item for identity,item in continuation_by_identity.items()) or
+            any(identity not in source_hashed_identities for identity in preserved_seen) or
+            source_hashed_identities!=(continuation_hashed_identities|preserved_seen) or
+            continuation_hashed_identities&preserved_seen):
+        raise ValueError('Continuation operations do not partition the original plan')
+    run_result=json.loads(run['result_json'] or '{}')
+    if (not isinstance(run_result,dict) or run_result.get('plan_scope')!='APPEND_ONLY' or
+            run_result.get('attempted_chunk')!=0):
+        raise ValueError('Original HOLD run binding changed')
+    try:receipt=json.loads(closure['receipt_json'] or '{}')
+    except (TypeError,json.JSONDecodeError):raise ValueError('Source close receipt is invalid') from None
+    if (not isinstance(receipt,dict) or receipt.get('environment')!='SANDBOX' or
+            receipt.get('requestId')!=meta['source_request_id'] or receipt.get('closeId')!=closure['close_id'] or
+            receipt.get('status')!='ADMIN_CLOSED_UNKNOWN' or
+            receipt.get('planScope')!='APPEND_ONLY' or
+            receipt.get('disposition')!='OUTCOME_UNKNOWN_NOT_CONFIRMED' or
+            receipt.get('evidenceDigest')!=closure['evidence_digest'] or
+            receipt.get('reasonDigest')!=closure['reason_digest'] or
+            receipt.get('actor')!=closure['actor'] or
+            not is_canonical_sha256_b64url(receipt.get('runRecordDigest')) or
+            not is_canonical_sha256_b64url(receipt.get('digest')) or
+            receipt.get('digest')!=_close_receipt_digest(receipt)):
+        raise ValueError('Source close tombstone receipt is not confirmed')
+    return {'source_request_id':meta['source_request_id'],'closed':True,
+            'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED'}
 
 
 APPEND_JOURNAL_PAGE_ROWS = 25
@@ -2498,6 +2679,53 @@ def mark_append_chunk_inflight(path, chunk_id, *, now=None):
     stamp=(now or datetime.now(timezone.utc)).isoformat()
     with closing(sqlite3.connect(path,timeout=5)) as con, con:
         con.execute('BEGIN IMMEDIATE')
+        row=con.execute('''SELECT run_id,chunk_index,status,scope,plan_id,plan_digest,source_digest
+            FROM google_writer_chunk_journal
+            WHERE chunk_id=?''',(chunk_id,)).fetchone()
+        if not row or row[2]!='prepared':
+            return False
+        if row[3]=='APPEND_ONLY':
+            plan=con.execute('''SELECT details_json FROM google_writer_plan_journal
+                WHERE request_id=? AND environment='SANDBOX' ''',(row[0],)).fetchone()
+            try: details=json.loads(plan[0]) if plan else None
+            except (TypeError,json.JSONDecodeError): details=None
+            continuation=details.get('append_continuation') if isinstance(details,dict) else None
+            if continuation is not None:
+                prior=con.execute('''SELECT chunk_index,chunk_id,plan_id,plan_digest,source_digest,
+                    chunk_digest,status,expected_json,receipt_json FROM google_writer_chunk_journal
+                    WHERE run_id=? AND chunk_index<? ORDER BY chunk_index''',(row[0],row[1])).fetchall()
+                if (continuation.get('version')!=1 or continuation.get('source_request_id')!=
+                        APPEND_CONTINUATION_SOURCE_REQUEST_ID or len(prior)!=row[1] or
+                        not isinstance(details.get('appends'),list) or len(details['appends'])!=251):
+                    return False
+                for index,item in enumerate(prior):
+                    try: expected=json.loads(item[7]);receipt=json.loads(item[8] or '{}')
+                    except (TypeError,json.JSONDecodeError): return False
+                    chunk_rows=details['appends'][index*APPEND_JOURNAL_PAGE_ROWS:
+                        (index+1)*APPEND_JOURNAL_PAGE_ROWS]
+                    expected_digest=_sha256_b64(_canonical_json(expected).encode('utf-8'))
+                    expected_chunk_id=hashlib.sha256((row[0]+'|'+item[2]+'|APPEND_ONLY|'+str(index)+'|'+
+                        item[5]).encode()).hexdigest()[:32]
+                    counts=receipt.get('counts') if isinstance(receipt,dict) else None
+                    if (item[0]!=index or item[6]!='verified' or item[1]!=expected_chunk_id or
+                            item[2]!=row[4] or item[3]!=row[5] or item[4]!=row[6] or
+                            not isinstance(expected,dict) or
+                            expected.get('version')!=1 or expected.get('run_id')!=row[0] or
+                            expected.get('plan_id')!=row[4] or expected.get('scope')!='APPEND_ONLY' or
+                            expected.get('plan_digest')!=row[5] or expected.get('source_digest')!=row[6] or
+                            expected.get('chunk_index')!=index or expected.get('rows')!=chunk_rows or
+                            expected_digest!=item[5] or
+                            not isinstance(receipt,dict) or receipt.get('status') not in
+                                {'APPLY_CHUNK_VERIFIED','CHUNK_RECOVERED'} or
+                            receipt.get('digest')!=item[3] or receipt.get('planScope')!='APPEND_ONLY' or
+                            receipt.get('chunkIndex')!=index or receipt.get('nextChunk')!=index+1 or
+                            receipt.get('more') is not True or receipt.get('phase')!='append' or
+                            receipt.get('chunkId')!=item[1] or receipt.get('chunkDigest')!=item[5] or
+                            receipt.get('planId')!=item[2] or
+                            not is_canonical_sha256_b64url(receipt.get('checkpointDigest')) or
+                            not isinstance(counts,dict) or counts.get('append')!=len(chunk_rows) or
+                            counts.get('update')!=0):
+                        return False
         changed=con.execute("UPDATE google_writer_chunk_journal SET status='inflight',inflight_at=? WHERE chunk_id=? AND status='prepared'",
                             (stamp,chunk_id)).rowcount
         if changed!=1:
@@ -3533,7 +3761,8 @@ def _append_audit_field_digests(item):
     return result
 
 
-def diagnose_append_only_plan(path, client, request_id, actor):
+def diagnose_append_only_plan(path, client, request_id, actor, *, audit_only=False,
+                              include_target_statuses=False,allow_closed_unknown=False):
     """Read-only saved-plan audit, independent from strict first-chunk recovery evidence."""
     reconstruction_not_checked={'full_preview_digest':'NOT_CHECKED','append_only_digest':'NOT_CHECKED',
         'planned_append_count':'NOT_CHECKED','append_operation_count':'NOT_CHECKED'}
@@ -3566,7 +3795,9 @@ def diagnose_append_only_plan(path, client, request_id, actor):
                 return blocked('SQLITE_RUN_OR_PLAN_CARDINALITY')
             run,plan=runs[0],plans[0]
             run_result=json.loads(run['result_json'] or '{}')
-            if (run['status']!='outcome_unknown' or run['actor']!=actor or
+            allowed_status=(run['status']=='outcome_unknown' or
+                (allow_closed_unknown and run['status']=='closed_unknown'))
+            if (not allowed_status or run['actor']!=actor or
                     run_result.get('plan_scope')!='APPEND_ONLY' or run_result.get('attempted_chunk')!=0 or
                     run_result.get('outcome_unknown') not in (None,True)):
                 return blocked('RUN_NOT_HELD_ON_FIRST_APPEND')
@@ -3653,7 +3884,8 @@ def diagnose_append_only_plan(path, client, request_id, actor):
     first_chunk_recovery=False;manifest_mismatch_fields=[]
     reconstruction_checks=dict(reconstruction_not_checked);downstream_checks=dict(downstream_not_checked)
     combined_result=None
-    combined_eligible=not recovery_reasons and chunk is not None
+    combined_eligible=not audit_only and not recovery_reasons and chunk is not None
+    audit_target_statuses=None;audit_google_state_digest=None;audit_guard_rows=None
     if combined_eligible:
         try:
             combined_result=client.invoke('diagnose_append_plan',request_id,actor,trigger='manual',
@@ -3689,9 +3921,13 @@ def diagnose_append_only_plan(path, client, request_id, actor):
                 digest=plan['append_only_digest'],plan_scope='APPEND_ONLY',manual_authorized=True,
                 details_digest=plan['details_digest'],full_plan_digest=plan['plan_digest'],
                 source_digest=plan['source_digest'],plan_id=request_id,total_append_count=len(targets),
-                diagnostic_mode='audit',audit_targets=audit_targets,audit_targets_digest=audit_targets_digest)
+                diagnostic_mode='audit',audit_targets=audit_targets,audit_targets_digest=audit_targets_digest,
+                require_audit_statuses=include_target_statuses)
             counts=audit_result['counts'];audit_reasons.extend(audit_result['reason_codes'])
             conflict_reports=list(audit_result['conflicts'])
+            audit_target_statuses=audit_result.get('target_statuses')
+            audit_google_state_digest=audit_result.get('google_state_digest')
+            audit_guard_rows=audit_result.get('continuation_guard_rows')
         except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,ValueError,KeyError,TypeError) as exc:
             safe=getattr(exc,'safe_error',None);code=safe.get('diagnostic_code') if isinstance(safe,dict) else None
             if code is None and isinstance(exc,ValueError) and 'envelope exceeds the read-only limit' in str(exc):
@@ -3758,9 +3994,342 @@ def diagnose_append_only_plan(path, client, request_id, actor):
             else _append_unavailable_digest_diagnostics(details),
         'first_chunk_recovery_evidence':first_chunk_recovery,'read_only':True,
         'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
+    if include_target_statuses and audit_target_statuses is not None:
+        final_result['target_statuses']=[{'code':item['code'],'status':status}
+            for item,status in zip(targets,audit_target_statuses)]
+        final_result['google_state_digest']=audit_google_state_digest
+        final_result['continuation_guard_rows']=audit_guard_rows
     if combined_result is not None:
         final_result['stage_durations_ms']=combined_result['stage_durations_ms']
     return final_result
+
+
+APPEND_CONTINUATION_SOURCE_REQUEST_ID='71487a74779f4445a186a8dbe6252fbc'
+APPEND_CONTINUATION_EXPECTED_TOTAL=276
+APPEND_CONTINUATION_CONFIRMED=25
+
+
+def _append_continuation_operation(item):
+    if not isinstance(item,dict):
+        raise ValueError('Continuation operation is invalid')
+    cells=item.get('cells')
+    if not isinstance(cells,list):
+        raise ValueError('Continuation cells are unavailable')
+    normalized=[];seen=set()
+    for cell in cells:
+        if (not isinstance(cell,dict) or cell.get('column') not in {'A','B','C','D','E','F','H','I','L'} or
+                type(cell.get('formula')) is not bool or cell.get('column') in seen or
+                not (cell.get('new_value') is None or isinstance(cell.get('new_value'),(str,int,float,bool))) or
+                isinstance(cell.get('new_value'),float) and not math.isfinite(cell['new_value'])):
+            raise ValueError('Continuation cell binding is invalid')
+        formula=(cell['formula'] is True or (isinstance(cell.get('new_value'),str) and
+                  cell['new_value'].startswith('=')))
+        if formula and (not isinstance(cell.get('new_value'),str) or not cell['new_value'].startswith('=')):
+            raise ValueError('Continuation formula binding is invalid')
+        seen.add(cell['column'])
+        normalized.append({'column':cell['column'],'new_value':cell.get('new_value'),
+                           'formula':formula})
+    normalized.sort(key=lambda cell:cell['column'])
+    code=item.get('code')
+    if (item.get('operation')!='APPEND' or item.get('tab') not in {'ФОП','ЮО'} or
+            not isinstance(code,str) or not re.fullmatch(r'\d{8,10}',code) or
+            type(item.get('row')) is not int or item['row']<2 or
+            not any(cell['column']=='A' and cell['formula'] for cell in normalized) or
+            not any(cell['column']=='B' and not cell['formula'] and
+                    str(cell.get('new_value'))==code for cell in normalized)):
+        raise ValueError('Continuation APPEND identity is invalid')
+    return {'operation':'APPEND','tab':item['tab'],'row':item['row'],'code':code,'cells':normalized}
+
+
+def _append_continuation_operations_digest(operations):
+    normalized=[_append_continuation_operation(item) for item in operations]
+    normalized.sort(key=lambda item:(item['tab'],item['row'],item['code']))
+    if len({(item['tab'],item['row'],item['code']) for item in normalized})!=len(normalized):
+        raise ValueError('Continuation operation identities are duplicated')
+    return _sha256_b64(_canonical_json(normalized).encode('utf-8'))
+
+
+def _append_continuation_guard_for_chunk(path, request_id, actor, chunk_index, run_meta):
+    if type(chunk_index) is not int or not 0<=chunk_index<11:
+        raise ValueError('Continuation chunk index is invalid')
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON')
+        row=con.execute('''SELECT plan_digest,append_only_digest,details_digest,source_digest,details_json
+            FROM google_writer_plan_journal
+            WHERE request_id=? AND environment='SANDBOX' AND actor=?''',(request_id,actor)).fetchone()
+    if not row:
+        raise ValueError('Continuation plan is unavailable')
+    try: details=json.loads(row[4])
+    except (TypeError,json.JSONDecodeError):raise ValueError('Continuation plan is invalid') from None
+    metadata=details.get('append_continuation') if isinstance(details,dict) else None
+    if (not isinstance(run_meta,dict) or run_meta.get('continuation_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
+            row[2]!=run_meta.get('details_digest') or
+            row[3]!=details.get('source_digest') or
+            row[1]!=run_meta.get('plan_digest') or
+            _preview_details_digest(details)!=row[2] or
+            not isinstance(metadata,dict) or metadata.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
+            metadata.get('version')!=1 or not is_canonical_sha256_b64url(metadata.get('operation_digest')) or
+            not is_canonical_sha256_b64url(row[0]) or
+            details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0} or
+            not isinstance(details.get('appends'),list) or len(details['appends'])!=251):
+        raise ValueError('Continuation plan bindings are invalid')
+    operations=[_append_continuation_operation(item) for item in details['appends']]
+    if _append_continuation_operations_digest(operations)!=metadata['operation_digest']:
+        raise ValueError('Continuation plan operation digest changed')
+    start=chunk_index*APPEND_JOURNAL_PAGE_ROWS
+    remaining=operations[start:]
+    if len(remaining)!=251-start or not remaining:
+        raise ValueError('Continuation remaining operation count is invalid')
+    preserved=metadata.get('preserved_rows')
+    if not isinstance(preserved,list) or len(preserved)!=APPEND_CONTINUATION_CONFIRMED:
+        raise ValueError('Continuation preserved-row evidence is unavailable')
+    return {'continuation_source_request_id':metadata['source_request_id'],
+        'continuation_plan_digest':metadata['operation_digest'],
+        'continuation_remaining_digest':_append_continuation_operations_digest(remaining),
+        'continuation_guard_rows':[{'tab':item['tab'],'row':item['row'],'identity_digest':item['identity_digest'],
+            'row_digest':item['row_digest'],'service_digest':item['service_digest']} for item in preserved]}
+
+
+def _append_continuation_guard_for_run(path, request_id, actor, chunk_index):
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON')
+        row=con.execute('''SELECT result_json FROM google_writer_runs
+            WHERE request_id=? AND environment='SANDBOX' AND actor=? AND trigger='manual'
+              AND status IN ('partial','running')''',(request_id,actor)).fetchone()
+    if not row:
+        raise ValueError('Continuation run state is unavailable')
+    try: run_meta=json.loads(row[0] or '{}')
+    except (TypeError,json.JSONDecodeError): raise ValueError('Continuation run state is invalid') from None
+    if not isinstance(run_meta,dict):
+        raise ValueError('Continuation run state is invalid')
+    if not run_meta.get('continuation_request_id'):
+        return {}
+    return _append_continuation_guard_for_chunk(path,request_id,actor,chunk_index,run_meta)
+
+
+def _append_continuation_preview_response(path, client, actor, source_request_id, request_id):
+    snapshot=load_preview_plan(path,request_id,actor,
+        _append_continuation_candidate_digest(path,request_id,actor))
+    details=snapshot['details'];metadata=details.get('append_continuation')
+    if (not isinstance(metadata,dict) or metadata.get('source_request_id')!=source_request_id or
+            metadata.get('version')!=1 or metadata.get('confirmed_count')!=25 or
+            metadata.get('excluded_count')!=25 or metadata.get('missing_count')!=251 or
+            not all(is_canonical_sha256_b64url(metadata.get(key)) for key in
+                ('source_plan_digest','source_details_digest','source_append_digest','source_payload_digest',
+                 'sheet_snapshot_digest','operation_digest')) or
+            not isinstance(metadata.get('preserved_rows'),list) or len(metadata['preserved_rows'])!=25 or
+            details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0}):
+        raise ValueError('Saved continuation Preview binding mismatch')
+    for item in metadata['preserved_rows']:
+        if (not isinstance(item,dict) or set(item)!={'tab','row','identity_digest','row_digest','service_digest'} or
+                item.get('tab') not in {'ФОП','ЮО'} or type(item.get('row')) is not int or item['row']<2 or
+                not is_canonical_sha256_b64url(item.get('identity_digest')) or
+                not is_canonical_sha256_b64url(item.get('row_digest')) or
+                not is_canonical_sha256_b64url(item.get('service_digest'))):
+            raise ValueError('Saved continuation preserved-row evidence is invalid')
+    operations=[_append_continuation_operation(item) for item in details['appends']]
+    if (len(operations)!=251 or len({item['code'] for item in operations})!=251 or
+            _append_continuation_operations_digest(operations)!=metadata.get('operation_digest')):
+        raise ValueError('Saved continuation Preview operation digest mismatch')
+    ticket=preview_ticket(client,request_id,actor,snapshot['append_only_digest'],
+        plan_scope='APPEND_ONLY',parent_digest=snapshot['plan_digest'],
+        details_digest=snapshot['details_digest'])
+    return {'status':'PREVIEW_READY','source_request_id':source_request_id,'request_id':request_id,
+        'counts':details['counts'],'plan_digest':snapshot['plan_digest'],
+        'details_digest':snapshot['details_digest'],'ticket':ticket,'preview_created':False,
+        'writer_started':False,'google_writes':0,'script_properties_writes':0}
+
+
+def _append_continuation_candidate_digest(path, request_id, actor):
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON')
+        row=con.execute('''SELECT plan_digest,actor,details_json FROM google_writer_preview_plans
+            WHERE request_id=? AND environment='SANDBOX' ''',(request_id,)).fetchone()
+    if not row or row[1]!=actor:
+        raise ValueError('Saved continuation Preview is unavailable')
+    try:details=json.loads(row[2])
+    except (TypeError,json.JSONDecodeError):raise ValueError('Saved continuation Preview is invalid') from None
+    if not isinstance(details,dict) or not isinstance(details.get('append_continuation'),dict):
+        raise ValueError('Saved continuation Preview is unavailable')
+    return row[0]
+
+
+def prepare_append_continuation_preview(path, client, source_request_id, actor):
+    """Create a new ordinary APPEND_ONLY Preview from the saved 276-op plan and read-only audit.
+
+    This does not claim a run or call Apply/Resume/recovery/closure. It stores only the regular
+    immutable Preview snapshot in local Sandbox SQLite; Google Sheets and Script Properties are read-only.
+    """
+    def blocked(code):
+        return {'status':'BLOCKED','source_request_id':source_request_id,'reason_codes':[code],
+            'writer_started':False,'google_writes':0,'script_properties_writes':0}
+    if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
+            source_request_id!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
+            not isinstance(actor,str) or not actor.strip() or len(actor)>128):
+        return blocked('CONTINUATION_IDENTITY_INVALID')
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    try:
+        with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+            con.execute('PRAGMA query_only=ON');con.row_factory=sqlite3.Row
+            runs=con.execute('''SELECT status,actor,result_json FROM google_writer_runs
+                WHERE request_id=? AND environment='SANDBOX' ''',(source_request_id,)).fetchall()
+            plans=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,source_digest,details_json
+                FROM google_writer_plan_journal WHERE request_id=? AND environment='SANDBOX' ''',(source_request_id,)).fetchall()
+            closures=con.execute('SELECT state FROM google_writer_run_closures WHERE request_id=?',
+                                 (source_request_id,)).fetchall()
+            running=con.execute("SELECT COUNT(*) FROM google_writer_runs WHERE environment='SANDBOX' AND status='running'").fetchone()[0]
+            prior=[]
+            for (candidate_id,details_json,created_at) in con.execute('''SELECT request_id,details_json,created_at
+                    FROM google_writer_preview_plans WHERE environment='SANDBOX' AND actor=?
+                    ORDER BY created_at DESC,request_id DESC''',(actor,)).fetchall():
+                try: candidate=json.loads(details_json)
+                except (TypeError,json.JSONDecodeError): continue
+                meta=candidate.get('append_continuation') if isinstance(candidate,dict) else None
+                if isinstance(meta,dict) and meta.get('source_request_id')==source_request_id:
+                    prior.append((candidate_id,created_at))
+            source_closed=False
+            if closures:
+                if (len(closures)!=1 or closures[0][0]!='closed_unknown' or not prior):
+                    return blocked('SOURCE_RUN_NOT_HELD_FOR_NEW_PREVIEW')
+                prior_snapshot=load_preview_plan(path,prior[0][0],actor,
+                    _append_continuation_candidate_digest(path,prior[0][0],actor))
+                validate_append_continuation_closed(path,prior_snapshot,actor)
+                source_closed=True
+            if running:
+                return blocked('SOURCE_RUN_NOT_HELD_FOR_NEW_PREVIEW')
+            if len(runs)!=1 or len(plans)!=1:
+                return blocked('SOURCE_RUN_OR_PLAN_CARDINALITY')
+            run,plan=runs[0],plans[0]
+            try:run_result=json.loads(run['result_json'] or '{}');old=json.loads(plan['details_json'])
+            except (TypeError,json.JSONDecodeError):return blocked('SOURCE_EVIDENCE_INVALID')
+            if (run['status']!=('closed_unknown' if source_closed else 'outcome_unknown') or run['actor']!=actor or
+                    run_result.get('plan_scope')!='APPEND_ONLY' or run_result.get('attempted_chunk')!=0 or
+                    plan['plan_id']!=source_request_id or plan['actor']!=actor or
+                    not all(is_canonical_sha256_b64url(plan[key]) for key in
+                        ('plan_digest','append_only_digest','details_digest','source_digest')) or
+                    _preview_details_digest(old)!=plan['details_digest'] or
+                    old.get('plan_digest')!=plan['plan_digest'] or old.get('append_only_digest')!=plan['append_only_digest'] or
+                    old.get('source_digest')!=plan['source_digest'] or old.get('environment')!='SANDBOX' or
+                    old.get('counts')!={'append':APPEND_CONTINUATION_EXPECTED_TOTAL,'update':0,'conflict':0,'error':0} or
+                    len(old.get('appends',[]))!=APPEND_CONTINUATION_EXPECTED_TOTAL or
+                    old.get('updates') or old.get('conflicts') or old.get('errors')):
+                return blocked('SOURCE_PLAN_BINDING_INVALID')
+            old_ops=[_append_continuation_operation(item) for item in old['appends']]
+            if len({item['code'] for item in old_ops})!=APPEND_CONTINUATION_EXPECTED_TOTAL:
+                return blocked('SOURCE_PLAN_DUPLICATE_TARGET')
+    except (OSError,sqlite3.Error,ValueError,TypeError,KeyError,IndexError):
+        return blocked('SOURCE_SQLITE_EVIDENCE_UNAVAILABLE')
+
+    audit=diagnose_append_only_plan(path,client,source_request_id,actor,
+        audit_only=True,include_target_statuses=True,allow_closed_unknown=source_closed)
+    if (audit.get('status')!='DIAGNOSED' or audit.get('read_only') is not True or
+            audit.get('sqlite_writes')!=0 or audit.get('sheets_writes')!=0 or
+            audit.get('properties_writes')!=0):
+        return blocked('SOURCE_SHEETS_AUDIT_INCOMPLETE')
+    counts=audit.get('counts') or {};statuses=audit.get('target_statuses')
+    if (counts.get('planned')!=APPEND_CONTINUATION_EXPECTED_TOTAL or
+            counts.get('confirmed')!=APPEND_CONTINUATION_CONFIRMED or counts.get('missing')!=251 or
+            counts.get('conflict')!=0 or counts.get('unverified')!=0 or
+            audit.get('reason_codes')!=['TARGET_ROWS_MISSING'] or audit.get('conflicts')!=[] or
+            not is_canonical_sha256_b64url(audit.get('google_state_digest')) or
+            not isinstance(statuses,list) or len(statuses)!=APPEND_CONTINUATION_EXPECTED_TOTAL):
+        return blocked('SOURCE_SHEETS_AUDIT_NOT_EXACT')
+    status_by_code={};old_by_code={item['code']:item for item in old_ops}
+    for item in statuses:
+        if (not isinstance(item,dict) or set(item)!={'code','status'} or item.get('code') not in old_by_code or
+                item['code'] in status_by_code or item.get('status') not in
+                    {'CONFIRMED','MISSING','CONFLICT','UNVERIFIED'}):
+            return blocked('SOURCE_AUDIT_BINDING_INVALID')
+        status_by_code[item['code']]=item['status']
+    if (set(status_by_code)!=set(old_by_code) or
+            sum(value=='CONFIRMED' for value in status_by_code.values())!=APPEND_CONTINUATION_CONFIRMED or
+            sum(value=='MISSING' for value in status_by_code.values())!=251 or
+            any(value not in {'CONFIRMED','MISSING'} for value in status_by_code.values())):
+        return blocked('SOURCE_AUDIT_NOT_EXACT')
+    expected=[item for item in old_ops if status_by_code[item['code']]=='MISSING']
+    if len(expected)!=251:
+        return blocked('SOURCE_MISSING_SET_INVALID')
+    guard_rows=audit.get('continuation_guard_rows')
+    confirmed_identities={(item['tab'],item['row'],
+        _sha256_b64(_canonical_json([item['tab'],item['row'],item['code']]).encode('utf-8'))) for item in old_ops
+        if status_by_code[item['code']]=='CONFIRMED'}
+    if not isinstance(guard_rows,list) or len(guard_rows)!=APPEND_CONTINUATION_CONFIRMED:
+        return blocked('SOURCE_CONFIRMED_SERVICE_EVIDENCE_INCOMPLETE')
+    normalized_guard=[];guard_identities=set()
+    for item in guard_rows:
+        identity=(item.get('tab'),item.get('row'),item.get('identity_digest')) if isinstance(item,dict) else None
+        if (not isinstance(item,dict) or set(item)!={'tab','row','identity_digest','row_digest','service_digest'} or
+                identity not in confirmed_identities or identity in guard_identities or
+                not is_canonical_sha256_b64url(item.get('identity_digest')) or
+                not is_canonical_sha256_b64url(item.get('row_digest')) or
+                not is_canonical_sha256_b64url(item.get('service_digest'))):
+            return blocked('SOURCE_CONFIRMED_SERVICE_BINDING_INVALID')
+        guard_identities.add(identity)
+        normalized_guard.append({'tab':item['tab'],'row':item['row'],'identity_digest':item['identity_digest'],
+            'row_digest':item['row_digest'],'service_digest':item['service_digest']})
+    if guard_identities!=confirmed_identities:
+        return blocked('SOURCE_CONFIRMED_SERVICE_BINDING_INVALID')
+
+    new_request_id=uuid.uuid4().hex
+    try:
+        fresh=client.invoke('preview',new_request_id,actor,manual_authorized=True)
+    except (ExecutionConfigurationError,ExecutionPreflightError,ExecutionOutcomeUnknown,ValueError,KeyError,TypeError):
+        return blocked('CONTINUATION_PREVIEW_UNAVAILABLE')
+    details=fresh.get('planDetails') if isinstance(fresh,dict) else None
+    fresh_counts=details.get('counts') if isinstance(details,dict) else None
+    if (not isinstance(details,dict) or not isinstance(fresh_counts,dict) or
+            fresh.get('status')!='PREVIEW' or fresh.get('google_state_digest')!=audit['google_state_digest'] or
+            details.get('source_digest')!=plan['source_digest'] or
+            fresh_counts!={'append':251,'update':0,'conflict':0,'error':0} or
+            len(details.get('appends',[]))!=251 or details.get('updates') or
+            details.get('conflicts') or details.get('errors')):
+        return blocked('CONTINUATION_PREVIEW_NOT_EXACT')
+    try:
+        new_ops=[_append_continuation_operation(item) for item in details['appends']]
+    except (ValueError,TypeError,KeyError):
+        return blocked('CONTINUATION_PREVIEW_OPERATION_INVALID')
+    if (len({item['code'] for item in new_ops})!=251 or
+            {item['code'] for item in new_ops}!={item['code'] for item in expected} or
+            {item['code']:item for item in new_ops}!={item['code']:item for item in expected}):
+        return blocked('CONTINUATION_PREVIEW_PLAN_MISMATCH')
+    for candidate_id,_created_at in prior:
+        try:
+            previous_snapshot=load_preview_plan(path,candidate_id,actor,
+                _append_continuation_candidate_digest(path,candidate_id,actor))
+            previous_meta=previous_snapshot['details']['append_continuation']
+            previous_core=_append_continuation_core_details(previous_snapshot['details'])
+        except (OSError,sqlite3.Error,ValueError,TypeError,KeyError):
+            continue
+        if (previous_meta and previous_meta.get('sheet_snapshot_digest')==audit['google_state_digest'] and
+                previous_meta.get('preserved_rows')==normalized_guard and
+                previous_meta.get('source_plan_digest')==plan['plan_digest'] and
+                previous_meta.get('source_details_digest')==plan['details_digest'] and
+                previous_meta.get('source_append_digest')==plan['append_only_digest'] and
+                previous_meta.get('source_payload_digest')==plan['source_digest'] and
+                previous_snapshot['plan_digest']==fresh['digest'] and previous_core==details):
+            return _append_continuation_preview_response(path,client,actor,source_request_id,candidate_id)
+    details=dict(details)
+    operation_digest=_append_continuation_operations_digest(new_ops)
+    details['append_continuation']={'version':1,'source_request_id':source_request_id,
+        'source_plan_digest':plan['plan_digest'],'source_details_digest':plan['details_digest'],
+        'source_append_digest':plan['append_only_digest'],'source_payload_digest':plan['source_digest'],
+        'sheet_snapshot_digest':audit['google_state_digest'],
+        'confirmed_count':APPEND_CONTINUATION_CONFIRMED,'excluded_count':APPEND_CONTINUATION_CONFIRMED,
+        'missing_count':251,'operation_digest':operation_digest,'preserved_rows':normalized_guard}
+    try:
+        snapshot=store_preview_plan(path,new_request_id,actor,details)
+        ticket=preview_ticket(client,new_request_id,actor,details['append_only_digest'],plan_scope='APPEND_ONLY',
+            parent_digest=fresh['digest'],details_digest=snapshot['details_digest'])
+    except (OSError,sqlite3.Error,ValueError,TypeError):
+        return blocked('CONTINUATION_PREVIEW_SAVE_FAILED')
+    return {'status':'PREVIEW_READY','source_request_id':source_request_id,'request_id':new_request_id,
+        'counts':fresh_counts,'plan_digest':fresh['digest'],'details_digest':snapshot['details_digest'],
+        'ticket':ticket,'preview_created':True,'writer_started':False,
+        'google_writes':0,'script_properties_writes':0,
+        'continuation':{'confirmed':25,'excluded':25,'missing':251}}
 
 
 def prewrite_close_preflight(path, client, request_id, actor):
@@ -4227,6 +4796,30 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
                         try: saved_details=json.loads(saved[0])
                         except (TypeError,json.JSONDecodeError): saved_details={}
                         if isinstance(saved_details,dict):
+                            continuation=saved_details.get('append_continuation')
+                            if continuation is not None:
+                                if (environment!='SANDBOX' or plan_scope!='APPEND_ONLY' or
+                                        not isinstance(continuation,dict) or continuation.get('version')!=1 or
+                                        continuation.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
+                                        saved_details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0} or
+                                        not isinstance(saved_details.get('appends'),list) or
+                                        len(saved_details['appends'])!=251 or
+                                        not is_canonical_sha256_b64url(continuation.get('operation_digest')) or
+                                        not isinstance(continuation.get('preserved_rows'),list) or
+                                        len(continuation['preserved_rows'])!=APPEND_CONTINUATION_CONFIRMED or
+                                        _append_continuation_operations_digest(saved_details['appends'])!=
+                                            continuation.get('operation_digest')):
+                                    raise ValueError('Continuation Preview cannot be claimed')
+                                source_close=con.execute('''SELECT r.status,c.state,c.plan_scope,c.actor
+                                    FROM google_writer_runs r LEFT JOIN google_writer_run_closures c
+                                      ON c.request_id=r.request_id AND c.environment='SANDBOX'
+                                    WHERE r.request_id=? AND r.environment='SANDBOX' ''',
+                                    (continuation['source_request_id'],)).fetchone()
+                                if (not source_close or source_close!=('closed_unknown','closed_unknown',
+                                        'APPEND_ONLY',actor)):
+                                    return {'claimed':False,'status':'continuation_source_close_required',
+                                            'request_id':continuation['source_request_id']}
+                                initial['continuation_request_id']=continuation['source_request_id']
                             initial['planned_counts']={'append':len(saved_details.get('appends',[]))
                                 if isinstance(saved_details.get('appends'),list) else 0,
                                 'update':(len(saved_details.get('updates',[]))
@@ -4237,7 +4830,8 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
                                 if isinstance(saved_details.get('errors'),list) else 0}
                 initial.update(progress_state='preparing',last_progress_at=(now or datetime.now(timezone.utc)).isoformat(),
                     last_confirmed_progress_at=None)
-                continuation_enabled=(plan_scope in {'APPEND_ONLY','ALL'} and
+                continuation_enabled=('continuation_request_id' not in initial and
+                    plan_scope in {'APPEND_ONLY','ALL'} and
                     os.getenv('PQM_SANDBOX_AUTO_CONTINUE_CHUNKS','1').strip().lower() not in {'0','false','no','off'})
                 if continuation_enabled and details_digest:
                     digest_column='append_only_digest' if plan_scope=='APPEND_ONLY' else 'plan_digest'
@@ -4281,6 +4875,19 @@ def load_append_only_resume_candidate(path, request_id, actor):
             progress['verified_totals']['append']<1 or
             progress['verified_totals'].get('update')!=0):
         raise ValueError('Saved continuation checkpoint is incomplete or uncertain')
+    if progress.get('continuation_request_id'):
+        uri=Path(path).resolve().as_uri()+'?mode=ro'
+        with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+            con.execute('PRAGMA query_only=ON')
+            plan=con.execute('''SELECT plan_digest FROM google_writer_plan_journal
+                WHERE request_id=? AND environment='SANDBOX' AND actor=? AND append_only_digest=?
+                  AND details_digest=?''',(request_id,actor,progress.get('plan_digest'),
+                    progress.get('details_digest'))).fetchone()
+        if not plan:
+            raise ValueError('Continuation Preview journal is unavailable')
+        snapshot=load_preview_plan(path,request_id,actor,plan[0],
+            details_digest=progress.get('details_digest'))
+        validate_append_continuation_closed(path,snapshot,actor)
     return {'request_id':request_id,'actor':actor,'plan_digest':progress['plan_digest'],
             'next_chunk':progress['next_chunk'],'checkpoint_digest':progress['checkpoint_digest'],
             'verified_totals':progress['verified_totals'],'details_digest':progress.get('details_digest')}
@@ -4314,6 +4921,14 @@ def claim_append_only_resume(path, candidate, *, now=None):
                 progress.get('plan_digest')!=candidate['plan_digest'] or
                 progress.get('checkpoint_digest')!=candidate['checkpoint_digest']):
             return {'claimed':False,'status':'resume_checkpoint_changed'}
+        continuation_source=progress.get('continuation_request_id')
+        if continuation_source:
+            source=con.execute('''SELECT r.status,c.state,c.plan_scope,c.actor
+                FROM google_writer_runs r LEFT JOIN google_writer_run_closures c
+                  ON c.request_id=r.request_id AND c.environment='SANDBOX'
+                WHERE r.request_id=? AND r.environment='SANDBOX' ''',(continuation_source,)).fetchone()
+            if not source or source!=('closed_unknown','closed_unknown','APPEND_ONLY',actor):
+                return {'claimed':False,'status':'continuation_source_close_required'}
         progress=progress|{'status':'APPEND_ONLY_RESUME_CLAIMED',
                            'resume_attempts':int(progress.get('resume_attempts',0))+1,
                            'resume_claimed_at':(now or datetime.now(timezone.utc)).isoformat()}
@@ -4485,9 +5100,11 @@ def continue_append_only_checkpoint(path, client, request_id, actor, *, digest, 
                                     manual_authorized=True, max_append_chunks=4):
     """Read-only remote checkpoint preflight, CAS claim, then continue only the next verified page."""
     candidate=load_append_only_resume_candidate(path,request_id,actor)
+    continuation_binding=_append_continuation_guard_for_run(
+        path,request_id,actor,candidate['next_chunk'])
     checked=client.invoke('resume_check',request_id,actor,trigger='manual',digest=candidate['plan_digest'],
         plan_scope='APPEND_ONLY',manual_authorized=manual_authorized,chunk_index=candidate['next_chunk'],
-        expected_checkpoint_digest=candidate['checkpoint_digest'])
+        expected_checkpoint_digest=candidate['checkpoint_digest'],**continuation_binding)
     details=checked.get('planDetails') if isinstance(checked,dict) else None
     if (checked.get('status')!='RESUME_READY' or checked.get('digest')!=candidate['plan_digest'] or
             checked.get('checkpointDigest')!=candidate['checkpoint_digest'] or
@@ -4537,6 +5154,7 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
             if (background_jobs.disabled() and not manual_override) or not guard():
                 raise ExecutionConfigurationError('Execution guard changed before next Apply checkpoint')
             chunk_binding={}
+            continuation_binding={}
             stage='prepare_chunk'
             if getattr(client,'environment',None)=='SANDBOX' and plan_scope=='APPEND_ONLY':
                 try:
@@ -4544,6 +5162,8 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
                         run_state=con.execute('SELECT result_json FROM google_writer_runs WHERE request_id=? AND status=\'running\'',
                                               (request_id,)).fetchone()
                     run_meta=json.loads(run_state[0] or '{}') if run_state else {}
+                    continuation_binding=_append_continuation_guard_for_chunk(
+                        path,request_id,actor,chunk_index,run_meta) if run_meta.get('continuation_request_id') else {}
                     chunk=prepare_append_chunk(path,request_id,actor,digest,run_meta.get('details_digest'),chunk_index)
                     if chunk['status']!='prepared':
                         raise RuntimeError('Append chunk is not new; no remote replay is allowed')
@@ -4578,7 +5198,8 @@ def execute_claimed(path, client, request_id, actor, *, trigger='manual', digest
                 stage='apps_script_apply'
                 result = client.invoke('apply',request_id,actor,trigger=trigger,digest=digest,
                                        plan_scope=plan_scope,manual_authorized=manual_override,chunk_index=chunk_index,
-                                       expected_checkpoint_digest=checkpoint_digest,**chunk_binding)
+                                       expected_checkpoint_digest=checkpoint_digest,**chunk_binding,
+                                       **continuation_binding)
             except ExecutionOutcomeUnknown as apply_error:
                 if not chunk_binding:
                     raise

@@ -121,7 +121,9 @@ function pqmSandboxAppendDiagnosticBlocked_(request,code) {
       fullPlanDigest:request.fullPlanDigest,sourceDigest:request.sourceDigest,planId:request.planId,
       auditTargetsDigest:request.auditTargetsDigest,
       counts:{planned:pageTotal,confirmed:0,missing:0,conflict:0,unverified:pageTotal,remaining:pageTotal},
-      reasonCodes:[code],readOnly:true};
+      reasonCodes:[code],targetStatuses:(request.auditTargets||[]).map(function(){return 'UNVERIFIED';}),
+      continuationGuardRows:[],
+      googleStateDigest:null,readOnly:true};
   }
   if (request.diagnosticMode==='audit_fields') {
     return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
@@ -436,13 +438,17 @@ function pqmSandboxAppendCurrentCellDigests_(plan,tabs) {
 
 function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request,sharedTabs,budget) {
   var targets=request.auditTargets,total=targets.length;
+  var continuationGuardRows=[];
   function response(status,counts,reasons,conflicts) {
     return {environment:'SANDBOX',scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
       contract:request.contract,requestId:request.requestId,status:status,diagnosticMode:'audit',
       planScope:'APPEND_ONLY',digest:request.expectedDigest,detailsDigest:request.detailsDigest,
       fullPlanDigest:request.fullPlanDigest,sourceDigest:request.sourceDigest,planId:request.planId,
       auditTargetsDigest:request.auditTargetsDigest,counts:counts,reasonCodes:reasons,
-      conflicts:conflicts||[],readOnly:true};
+      conflicts:conflicts||[],targetStatuses:targets.map(function(_,index){
+        return !outcomes?'UNVERIFIED':(outcomes[index]===null?'CONFIRMED':String(outcomes[index]).toUpperCase());
+      }),continuationGuardRows:continuationGuardRows,googleStateDigest:status==='AUDITED'&&tabs?
+        pqmSandboxControlledDigest_(pqmSandboxFullSheetState_(tabs)):null,readOnly:true};
   }
   var counts={planned:total,confirmed:0,missing:0,conflict:0,unverified:0,remaining:0};
   var reasons=[],tabs;
@@ -469,6 +475,7 @@ function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request,sharedTabs,bud
     });
   });
   var conflictDetails=Array(total).fill(null);
+  var contentDigests=Array(total).fill(null);
   var outcomes=targets.map(function(item,index){
     var found=requested[item[1]]||[];
     if (!found.length) return 'missing';
@@ -548,6 +555,8 @@ function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request,sharedTabs,bud
     }
     var projection={tab:item[0],row:item[2],code:item[1],values:values,formulas:formulas,
       service:{addedAtValid:true,planId:planId,runId:runId}};
+    contentDigests[index]=pqmSandboxControlledDigest_({tab:item[0],row:item[2],code:item[1],
+      values:values,formulas:formulas});
     if (pqmSandboxControlledDigest_(projection)!==item[3]) {
       outcomes[index]='conflict';
       conflictDetails[index]={code:item[1],fields:[],observed_digest:pqmSandboxControlledDigest_(projection)};
@@ -555,6 +564,18 @@ function pqmSandboxAuditAppendRowsReadOnly_(spreadsheetId,request,sharedTabs,bud
   });
   outcomes.forEach(function(value){counts[value||'confirmed']++;});
   counts.remaining=counts.planned-counts.confirmed;
+  if (!counts.unverified && !counts.conflict) {
+    targets.forEach(function(item,index){
+      if (outcomes[index]!==null) return;
+      var group=service[item[0]],raw=group&&group.values[item[2]-group.first];
+      if (!Array.isArray(raw)) return;
+      var values=[0,1,2].map(function(column){return raw[column]===undefined?'':raw[column];});
+      continuationGuardRows.push({tab:item[0],row:item[2],
+        codeDigest:pqmSandboxControlledDigest_([item[0],item[2],item[1]]),
+        rowDigest:contentDigests[index],
+        serviceDigest:pqmSandboxControlledDigest_([item[0],item[1],item[2],values])});
+    });
+  }
   if (counts.missing) reasons.push('TARGET_ROWS_MISSING');
   if (counts.conflict) reasons.push('TARGET_CONFLICT');
   if (counts.unverified) reasons.push('ROW_READBACK_UNVERIFIED');

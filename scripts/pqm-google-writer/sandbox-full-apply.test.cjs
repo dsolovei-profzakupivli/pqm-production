@@ -117,6 +117,61 @@ function executionFixture(planDigest) {
     failAfterNextWrite(){failAfterWrite=true;}};
 }
 
+function continuationGuardFixture() {
+  const f=executionFixture('continuation-plan-digest');
+  const sourceId='71487a74779f4445a186a8dbe6252fbc';
+  const rows=[],sheetRows=new Map(),appends=[];
+  for(let i=0;i<25;i++){
+    const tab=i%2?'ЮО':'ФОП',row=2+i,code=String(70000000+i);
+    const values=Array(15).fill('');values[1]=code;
+    const formulas=Array(15).fill('');formulas[0]=`=IF(B${row}="","",1)`;
+    const loadedRow={values,formulas,codeDisplay:code};
+    rows.push({tab,row,code,values,formulas});sheetRows.set(`${tab}:${row}`,loadedRow);
+  }
+  for(let i=0;i<251;i++){
+    const tab=i%2?'ЮО':'ФОП',row=100+i,code=String(71000000+i);
+    appends.push({operation:'APPEND',tab,row,code,cells:[
+      {column:'A',new_value:`=IF(B${row}="","",1)`,formula:true},
+      {column:'B',new_value:code,formula:false},
+      {column:'I',new_value:46338,formula:false}]});
+  }
+  const normalizedAppends=appends.map(item=>({operation:'APPEND',tab:item.tab,row:item.row,code:item.code,
+    cells:item.cells.map(cell=>({column:cell.column,new_value:cell.new_value===undefined?null:cell.new_value,
+      formula:cell.formula===true||(typeof cell.new_value==='string'&&cell.new_value.startsWith('='))}))
+      .sort((a,b)=>a.column<b.column?-1:a.column>b.column?1:0)}))
+    .sort((a,b)=>a.tab<b.tab?-1:a.tab>b.tab?1:a.row-b.row||(a.code<b.code?-1:a.code>b.code?1:0));
+  const operationsDigest=f.context.pqmSandboxControlledDigest_(normalizedAppends);
+  const guardRows=rows.map(item=>{
+    const projected={tab:item.tab,row:item.row,code:item.code,values:item.values,formulas:item.formulas};
+    const service=['2026-11-11T10:46:00+02:00','old-plan-id','71487a74779f4445a186a8dbe6252fbc'];
+    return {tab:item.tab,row:item.row,
+      codeDigest:f.context.pqmSandboxControlledDigest_([item.tab,item.row,item.code]),
+      rowDigest:f.context.pqmSandboxControlledDigest_(projected),
+      serviceDigest:f.context.pqmSandboxControlledDigest_([item.tab,item.code,item.row,service])};
+  });
+  const loadedRows={'ФОП':[],'ЮО':[]};
+  rows.forEach(item=>{loadedRows[item.tab][item.row-2]={values:item.values,formulas:item.formulas,codeDisplay:item.code};});
+  f.context.pqmSandboxFullPreviewDetails_=()=>({appends:normalizedAppends,updates:[],conflicts:[],errors:[]});
+  f.context.Sheets={Spreadsheets:{Values:{batchGet:(_id,options)=>({valueRanges:options.ranges.map(range=>{
+    const match=range.match(/^'(.+)'!([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
+    assert.ok(match,`unexpected read range ${range}`);
+    const [,tab,start,startRow]=match,entry=sheetRows.get(`${tab}:${startRow}`);
+    if(options.valueRenderOption==='FORMULA')return {values:[entry?entry.values.map((value,index)=>
+      entry.formulas[index]||value):[]]};
+    return {values:[['2026-11-11T10:46:00+02:00','old-plan-id',sourceId]]};
+  })})}}};
+  const request={action:'apply',planScope:'APPEND_ONLY',trigger:'manual',chunkIndex:0,
+    continuationSourceRequestId:sourceId,
+    continuationPlanDigest:operationsDigest,
+    continuationRemainingDigest:operationsDigest,
+    continuationGuardRows:guardRows,_operations:normalizedAppends};
+  const record={continuationSourceRequestId:sourceId,continuationPlanDigest:request.continuationPlanDigest,
+    continuationGuardDigest:f.context.pqmSandboxControlledDigest_(guardRows)};
+  const loaded={plan:{counts:{appended:251,updated:0,conflicts:0,errors:0}},tabs:{
+    'ФОП':{rows:loadedRows['ФОП']},'ЮО':{rows:loadedRows['ЮО']}}};
+  return {f,request,record,loaded,sheetRows};
+}
+
 function realCheckpointExecutionFixture(planDigest,totalAppends=30) {
   const properties=new Map([['PQM_EXECUTION_SHARED_SECRET','S'.repeat(40)]]);
   let locked=false,version=0,writes=0,loseNextResponse=false,sheetDigest='sheet-state-0',payloadDigest='source-stable';
@@ -2094,4 +2149,52 @@ test('signed 25-row legacy preflight may exceed 8192 only within the scoped enve
     /invalid execution envelope/);
   assert.equal(f.writes,0);assert.equal(f.propertyWrites,0);
   assert.deepEqual([...f.props.entries()],propsBefore);
+});
+
+test('continuation prewrite guard checks the saved 25-row content and Q/R/S without writes, including resume preflight', () => {
+  for(const action of ['apply','resume_check']){
+    const fixture=continuationGuardFixture();fixture.request.action=action;
+    if(action==='resume_check'){
+      fixture.request.chunkIndex=4;
+      const remaining=fixture.request._operations.slice(100);
+      fixture.request.continuationRemainingDigest=fixture.f.context.pqmSandboxControlledDigest_(remaining);
+      fixture.f.context.pqmSandboxFullPreviewDetails_=()=>({appends:remaining,updates:[],conflicts:[],errors:[]});
+      fixture.loaded.plan.counts.appended=151;
+      delete fixture.request._operations;
+    }
+    const preview=fixture.f.context.pqmSandboxFullPreviewDetails_(fixture.loaded);
+    const normalized=preview.appends.map(item=>({operation:'APPEND',tab:item.tab,row:item.row,code:item.code,
+      cells:(item.cells||[]).map(cell=>{const formula=cell.formula===true||
+        (typeof cell.new_value==='string'&&cell.new_value.charAt(0)==='=');
+        return {column:cell.column,new_value:cell.new_value===undefined?null:cell.new_value,formula};})
+        .sort((a,b)=>a.column<b.column?-1:a.column>b.column?1:0)}))
+      .sort((a,b)=>a.tab<b.tab?-1:a.tab>b.tab?1:a.row-b.row||(a.code<b.code?-1:a.code>b.code?1:0));
+    assert.equal(fixture.f.context.pqmSandboxControlledDigest_(normalized),
+      fixture.request.continuationRemainingDigest);
+    assert.doesNotThrow(()=>fixture.f.context.pqmSandboxContinuationPrewriteGuard_(
+      'sheet-sandbox',fixture.loaded,fixture.request,fixture.record));
+  }
+  const fixture=continuationGuardFixture();
+  const row=fixture.sheetRows.get('ФОП:2');row.values[1]='different-code-value';
+  assert.throws(()=>fixture.f.context.pqmSandboxContinuationPrewriteGuard_(
+    'sheet-sandbox',fixture.loaded,fixture.request,fixture.record),/row content changed/);
+});
+
+test('continuation prewrite guard blocks changed service metadata, incomplete reads, and altered plan before any write', () => {
+  const service=continuationGuardFixture();
+  const originalRead=service.f.context.Sheets.Spreadsheets.Values.batchGet;
+  service.f.context.Sheets.Spreadsheets.Values.batchGet=(id,options)=>options.valueRenderOption==='FORMULA'
+    ?originalRead(id,options):({valueRanges:options.ranges.map(()=>({values:[['wrong','old-plan-id','71487a74779f4445a186a8dbe6252fbc']]}))});
+  assert.throws(()=>service.f.context.pqmSandboxContinuationPrewriteGuard_(
+    'sheet-sandbox',service.loaded,service.request,service.record),/metadata changed/);
+
+  const incomplete=continuationGuardFixture();
+  incomplete.f.context.Sheets.Spreadsheets.Values.batchGet=()=>({valueRanges:[]});
+  assert.throws(()=>incomplete.f.context.pqmSandboxContinuationPrewriteGuard_(
+    'sheet-sandbox',incomplete.loaded,incomplete.request,incomplete.record),/read incomplete/);
+
+  const altered=continuationGuardFixture();
+  altered.f.context.pqmSandboxFullPreviewDetails_=()=>({appends:[],updates:[],conflicts:[],errors:[]});
+  assert.throws(()=>altered.f.context.pqmSandboxContinuationPrewriteGuard_(
+    'sheet-sandbox',altered.loaded,altered.request,altered.record),/plan is incomplete/);
 });

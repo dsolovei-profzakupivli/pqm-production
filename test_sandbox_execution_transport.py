@@ -435,14 +435,15 @@ class SandboxExecutionTransportTests(unittest.TestCase):
             self.validate(incomplete_proof)
         self.assertEqual(self.calls,[])
 
-    def test_prewrite_preflight_allowance_does_not_allow_close_apply_or_resume(self):
-        for action,extra in (
-                ('close_prewrite_failure',{'closeId':'f'*32,'closeEvidenceDigest':self.preview_digest,
-                    'reasonDigest':self.append_only_digest}),
-                ('apply',{}),
-                ('resume_check',{})):
+    def test_prewrite_preflight_allowance_keeps_close_bound_and_rejects_apply_or_resume(self):
+        close_request=self.prewrite_request(action='close_prewrite_failure',
+            closeId='f'*32,closeEvidenceDigest=self.preview_digest,
+            reasonDigest=self.append_only_digest)
+        self.assertEqual(self.validate(close_request),'script.googleapis.com')
+        self.assertEqual(self.calls,[],'pure egress validation must not issue a remote request')
+        for action in ('apply','resume_check'):
             with self.subTest(action=action):
-                request=self.prewrite_request(action=action,**extra)
+                request=self.prewrite_request(action=action)
                 with self.assertRaisesRegex(runtime.SandboxExecutionPreflightRejected,
                         'Sandbox execution envelope is not approved'):
                     self.validate(request)

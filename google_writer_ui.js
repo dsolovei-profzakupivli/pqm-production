@@ -1,6 +1,7 @@
 /* Separate fourth-job controls; no credentials, Google API calls or legacy scheduler edits. */
 let googleWriterJobState=null,googleWriterSchedulePreview=null,googleWriterBusy=false,googleWriterProgressTimer=null;
 let googleWriterAppendDiagnosticReport=null;
+let googleWriterContinuationPreview=null;
 function googleWriterDigestDiagnosticText(diagnostics){
   if(!diagnostics)return [];
   const status=value=>['MATCH','MISMATCH','UNAVAILABLE'].includes(value)?value:'UNAVAILABLE';
@@ -58,6 +59,13 @@ function googleWriterAppendDiagnosticHtml(requestId){
     `<li>${label}: ${checkStatus(checks[key])}</li>`).join('')}</ul>`:'';
   const digestLines=googleWriterDigestDiagnosticText(report.digest_diagnostics).map(esc).map(line=>`<li>${line}</li>`).join('');
   return `<section class="google-writer-append-diagnostic-result" aria-live="polite"><header><strong>Read-only APPEND звірка · ${esc(report.status||'BLOCKED')}</strong><button type="button" class="ghost google-writer-append-report-dismiss" aria-label="Закрити результат">×</button></header>${counts}<p>Причини звірки: ${auditReasons}</p>${fields?`<ul>${fields}</ul>`:''}${checkList('Реконструкція Preview',reconstructionLabels,report.reconstruction_checks)}${checkList('Подальші read-only перевірки',downstreamLabels,report.downstream_checks)}<p>Recovery: ${esc(report.recovery_status||'BLOCKED')} · причини: ${recoveryReasons}</p><p>Невідповідні поля manifest: ${manifestFields}</p>${digestLines?`<p><strong>Компоненти Preview digest</strong></p><ul>${digestLines}</ul>`:''}<button type="button" class="ghost google-writer-append-report-copy">Скопіювати короткий звіт</button><span class="google-writer-append-report-copy-status" role="status"></span><p class="muted">Запис не запускався; HOLD збережено.</p></section>`;
+}
+function setGoogleWriterAppendDiagnosticBusy(button,busy){
+  if(!button)return;
+  button.disabled=!!busy;
+  button.textContent=busy?'Виконується перевірка…':'Перевірити APPEND без запису';
+  if(busy)button.setAttribute?.('aria-busy','true');
+  else button.removeAttribute?.('aria-busy');
 }
 function googleWriterProgressLabel(run){
   const progress=run?.progress||{},state=progress.state||run?.status;
@@ -119,6 +127,10 @@ async function loadGoogleWriterJob(){
       const appendDiagnostic= row.status==='outcome_unknown'&&data.can_diagnose_append&&
         result.plan_scope==='APPEND_ONLY'&&Number(result.attempted_chunk)===0?
         `<button class="ghost google-writer-append-diagnostic" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Перевірити APPEND без запису</button>`:'';
+      const continuationPreview=(row.request_id==='71487a74779f4445a186a8dbe6252fbc'&&
+        ['outcome_unknown','closed_unknown'].includes(row.status)&&result.plan_scope==='APPEND_ONLY'&&
+        Number(result.attempted_chunk)===0&&data.can_diagnose_append)?
+        `<button class="ghost google-writer-append-continuation-preview" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Перевірити Preview 251 відсутнього APPEND</button>`:'';
       const appendDiagnosticResult=googleWriterAppendDiagnosticHtml(row.request_id);
       const closeAction=row.status==='outcome_unknown'&&data.can_close?`<button class="ghost google-writer-close" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>${row.close_state==='prepared'?'Повторити закриття з тим самим ID':'Закрити запуск без повторного запису'}</button>`:'';
       const preflightAction=prewrite&&!prewriteClosed&&row.prewrite_close_eligible&&data.can_preflight_close_prewrite?
@@ -129,7 +141,7 @@ async function loadGoogleWriterJob(){
         row.close_state==='prepared'?'<p class="google-writer-error">Закриття очікує підтвердження Apps Script; HOLD збережено. Повторюйте лише з тим самим close ID.</p>':
         prewriteClosed?`<p class="muted">Адміністративно закрито як підтверджений збій до запису · ${esc(row.prewrite_closed_at?displayDate(row.prewrite_closed_at):'')} · запис у Google Sheets не виконувався${row.prewrite_close_reason?` · причина: ${esc(row.prewrite_close_reason)}`:''}</p>`:
         row.prewrite_close_state==='prepared'?'<p class="google-writer-error">Перевірку очікує Apps Script; блокування збережено. Повторюйте лише з тим самим close ID.</p>':'';
-      return `<article class="google-writer-hold"><strong>${closed?'Адміністративно закритий запуск':prewriteClosed?'Закритий prewrite-збій':'Заблокований запуск'}</strong><dl><div><dt>Request ID</dt><dd>${esc(row.request_id)}</dd></div><div><dt>Статус</dt><dd>${esc(row.status)}</dd></div><div><dt>Scope</dt><dd>${esc(scope)}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div><div><dt>Діагностика</dt><dd>${esc(diagnosis)}</dd></div></dl>${closeNote}${appendDiagnostic}${appendDiagnosticResult}${closeAction}${preflightAction}${prewriteAction}</article>`;
+      return `<article class="google-writer-hold"><strong>${closed?'Адміністративно закритий запуск':prewriteClosed?'Закритий prewrite-збій':'Заблокований запуск'}</strong><dl><div><dt>Request ID</dt><dd>${esc(row.request_id)}</dd></div><div><dt>Статус</dt><dd>${esc(row.status)}</dd></div><div><dt>Scope</dt><dd>${esc(scope)}</dd></div><div><dt>Порція</dt><dd>${esc(chunk)}</dd></div><div><dt>Діагностика</dt><dd>${esc(diagnosis)}</dd></div></dl>${closeNote}${appendDiagnostic}${appendDiagnosticResult}${continuationPreview}${closeAction}${preflightAction}${prewriteAction}</article>`;
     }).join('');
     card.innerHTML=`<header><strong>PQM → Google Sheets</strong><span>${data.automation_blocked?(data.configured_enabled?'Розклад збережено · заблоковано':'Розклад вимкнено'):data.configured_enabled?'Розклад увімкнено':'Розклад вимкнено'}</span></header>
       <dl><div><dt>Розклад</dt><dd>${esc(data.schedule)} · Europe/Kyiv</dd></div><div><dt>Останній результат</dt><dd>${esc(data.last_status)} · ${esc(data.last_finished_at?displayDate(data.last_finished_at):'—')}</dd></div><div><dt>Наступний запуск</dt><dd>${esc(data.next_run?displayDate(data.next_run):'—')}</dd></div></dl>
@@ -143,7 +155,8 @@ async function loadGoogleWriterJob(){
       <details><summary>Журнал запусків</summary><ul>${data.runs.map(row=>`<li>${esc(displayDate(row.started_at))} · ${esc(row.trigger)} · ${esc(row.actor||'')} · ${esc(row.status)} · ${esc(JSON.stringify(row.result?.counts||{}))}${row.resume_available&&data.can_execute&&data.channel_ready?` <button class="ghost google-writer-resume" type="button" data-request-id="${esc(row.request_id)}" ${googleWriterBusy?'disabled':''}>Продовжити підтверджений APPEND_ONLY checkpoint</button>`:''}</li>`).join('')||'<li>Запусків ще не було</li>'}</ul></details>`;
     card.querySelectorAll('.google-writer-resume').forEach(button=>button.onclick=()=>resumeGoogleWriterAppendOnly(button.dataset.requestId));
     card.querySelectorAll('.google-writer-close').forEach(button=>button.onclick=()=>closeGoogleWriterUnknownRun(button.dataset.requestId));
-    card.querySelectorAll('.google-writer-append-diagnostic').forEach(button=>button.onclick=()=>diagnoseGoogleWriterAppend(button.dataset.requestId));
+    card.querySelectorAll('.google-writer-append-diagnostic').forEach(button=>button.onclick=()=>diagnoseGoogleWriterAppend(button.dataset.requestId,button));
+    card.querySelectorAll('.google-writer-append-continuation-preview').forEach(button=>button.onclick=()=>prepareGoogleWriterAppendContinuation(button.dataset.requestId));
     card.querySelectorAll('.google-writer-append-report-dismiss').forEach(button=>button.onclick=()=>{googleWriterAppendDiagnosticReport=null;loadGoogleWriterJob();});
     card.querySelectorAll('.google-writer-append-report-copy').forEach(button=>button.onclick=async()=>{
       const status=button.parentElement.querySelector('.google-writer-append-report-copy-status');
@@ -165,12 +178,15 @@ async function loadGoogleWriterJob(){
     return null;
   }
 }
-async function diagnoseGoogleWriterAppend(requestId){
+async function diagnoseGoogleWriterAppend(requestId,triggerButton=null){
   if(googleWriterBusy||!googleWriterJobState?.can_diagnose_append)return;
   const run=googleWriterJobState.runs.find(item=>item.request_id===requestId&&item.status==='outcome_unknown'&&
     item.result?.plan_scope==='APPEND_ONLY'&&Number(item.result?.attempted_chunk)===0);
   if(!run)return;
+  const button=triggerButton||[...document.querySelectorAll('.google-writer-append-diagnostic')]
+    .find(item=>item.dataset.requestId===requestId);
   googleWriterBusy=true;
+  setGoogleWriterAppendDiagnosticBusy(button,true);
   try{
     const result=await request(`${API}/admin/google-writer/append-diagnostic`,{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId})});
@@ -235,7 +251,7 @@ async function diagnoseGoogleWriterAppend(requestId){
     downstream_checks:{source_binding:'NOT_CHECKED',plan_safety:'NOT_CHECKED',target_rows:'NOT_CHECKED',
       row_values_and_formulas:'NOT_CHECKED',service_metadata:'NOT_CHECKED',manifest_rows:'NOT_CHECKED',
       append_row_metadata:'NOT_CHECKED'},digest_diagnostics:null};}
-  finally{googleWriterBusy=false;await loadGoogleWriterJob();}
+  finally{googleWriterBusy=false;setGoogleWriterAppendDiagnosticBusy(button,false);await loadGoogleWriterJob();}
 }
 async function preflightGoogleWriterPrewriteClose(requestId){
   if(googleWriterBusy||!googleWriterJobState?.can_preflight_close_prewrite)return;
@@ -369,7 +385,9 @@ function confirmGoogleWriterPreview(preview,details,options={}){
   const notice=document.getElementById('googleWriterPreviewNotice');
   if(notice){notice.textContent=options.notice||'';notice.hidden=!options.notice;}
   const detailed=!!preview?.plan_digest;
-  appendButton.hidden=!!options.resume||!detailed||Number(counts.append||0)===0;
+  appendButton.hidden=!!options.resume||!!options.reviewOnly||!detailed||Number(counts.append||0)===0;
+  applyButton.hidden=!!options.reviewOnly||!!options.continuation;
+  appendButton.textContent=options.continuation?`Підтвердити APPEND ${Number(counts.append||0)}`:'Лише додати';
   applyButton.textContent=options.resume?'Продовжити порції':detailed?'Застосувати всі зміни':'Застосувати зміни';
   renderGoogleWriterPreviewDetails(details);
   applyButton.disabled=false;appendButton.disabled=false;
@@ -400,6 +418,56 @@ function confirmGoogleWriterPreview(preview,details,options={}){
       dialog.removeEventListener('click',onBackdrop);
     },{once:true});
   });
+}
+async function prepareGoogleWriterAppendContinuation(sourceRequestId){
+  if(googleWriterBusy||!googleWriterJobState?.can_diagnose_append||
+     sourceRequestId!=='71487a74779f4445a186a8dbe6252fbc')return;
+  const source=googleWriterJobState.runs.find(row=>row.request_id===sourceRequestId&&
+    ['outcome_unknown','closed_unknown'].includes(row.status)&&row.result?.plan_scope==='APPEND_ONLY'&&
+    Number(row.result?.attempted_chunk)===0);
+  if(!source)return;
+  googleWriterBusy=true;
+  try{
+    const prepared=await request(`${API}/admin/google-writer/append-continuation-preview`,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({source_request_id:sourceRequestId})});
+    if(prepared.status!=='PREVIEW_READY'||prepared.source_request_id!==sourceRequestId||
+       !/^[0-9a-f]{32}$/.test(prepared.request_id||'')||prepared.writer_started!==false||
+       prepared.google_writes!==0||prepared.script_properties_writes!==0||
+       JSON.stringify(prepared.counts)!==JSON.stringify({append:251,update:0,conflict:0,error:0}))
+      throw new Error(`Продовження заблоковано: ${(prepared.reason_codes||[]).join(', ')||'відповідь Preview неповна'}`);
+    const saved=await request(`${API}/google-writer/preview-details/${prepared.request_id}?plan_digest=${encodeURIComponent(prepared.plan_digest)}`);
+    const details=saved.details;
+    if(saved.details_digest!==prepared.details_digest||details?.plan_digest!==prepared.plan_digest||
+       JSON.stringify(details?.counts)!==JSON.stringify(prepared.counts)||details?.appends?.length!==251||
+       details?.updates?.length!==0||details?.conflicts?.length!==0||details?.errors?.length!==0)
+      throw new Error('Збережений Preview продовження не збігається з серверною відповіддю');
+    googleWriterContinuationPreview={...prepared,details};
+    const closed=source.status==='closed_unknown';
+    const choice=await confirmGoogleWriterPreview({request_id:prepared.request_id,ticket:prepared.ticket,
+      plan_digest:prepared.plan_digest,details_digest:prepared.details_digest,counts:prepared.counts},details,
+      {reviewOnly:!closed,continuation:closed,notice:closed?
+        'Старий запуск окремо закрито з результатом «невідомий». Перегляньте точний план із 251 APPEND; запис почнеться лише після явного підтвердження.':
+        'Це лише Preview. Спочатку окремо закрийте старий HOLD штатною адміністративною дією; Preview не закриває його й не дозволяє запис.'});
+    if(!choice||!closed)return;
+    await applyGoogleWriterAppendContinuation(googleWriterContinuationPreview);
+  }catch(error){toast(error.message,'error');}
+  finally{googleWriterBusy=false;await loadGoogleWriterJob();}
+}
+async function applyGoogleWriterAppendContinuation(preview){
+  if(!preview||preview.source_request_id!=='71487a74779f4445a186a8dbe6252fbc')return;
+  let result;
+  try{
+    result=await request(`${API}/google-writer/apply`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ticket:preview.ticket,confirmed:true})});
+  }catch(error){
+    if(error.httpStatus===409){toast(`Продовження не розпочато (${error.status||'перевірка відхилена'}): ${error.message}. Перегляньте новий Preview.`, 'error');return;}
+    toast(`Не отримано підтвердження запуску. Не повторюйте дію; перевірте журнал нового request ID ${preview.request_id}.`,'error');return;
+  }
+  if(result.started!==true||result.request_id!==preview.request_id){
+    toast(`API не підтвердив створення запуску ${preview.request_id}; перевірте журнал перед наступною дією.`,'error');return;
+  }
+  startGoogleWriterProgressPolling(result.request_id);
+  toast(`APPEND продовження прийнято: ${result.request_id} · 251 постачальник. Наступні порції потребуватимуть штатного підтвердженого checkpoint.`,'success');
 }
 async function manualGoogleWriter(){
   if(googleWriterBusy||!googleWriterJobState?.can_execute||!googleWriterJobState?.channel_ready||googleWriterJobState.blocked)return;

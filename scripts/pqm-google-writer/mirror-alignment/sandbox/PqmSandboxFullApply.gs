@@ -168,7 +168,7 @@ function pqmSandboxFullPreviewDetails_(loaded) {
       var column = Number(index), rawOld = oldRow ? oldRow.values[column] : '', rawNew = change.cells[index];
       return {column: letters[column], old_value: pqmSandboxPreviewDisplayValue_(rawOld, column),
         new_value: pqmSandboxPreviewDisplayValue_(rawNew, column),
-        formula: column === 0 && typeof rawNew === 'string' && rawNew.charAt(0) === '='};
+        formula: typeof rawNew === 'string' && rawNew.charAt(0) === '='};
     });
   }
   var appends = [], updates = [];
@@ -635,6 +635,7 @@ function pqmSandboxDailySync(execution) {
 function pqmSandboxCheckpointAdapter_() {
   return {
     appendLoad:pqmSandboxAppendLoad_, appendPrewriteGuard:pqmSandboxAppendPrewriteGuard_,
+    continuationPrewriteGuard:pqmSandboxContinuationPrewriteGuard_,
     appendRowMetadata:pqmSandboxAppendRowMetadata_,
     appendRequests:function(selected,tabs,context) {
       return pqmSandboxAppendRequests_(selected,tabs,Object.assign({},context,{journaled:true}));

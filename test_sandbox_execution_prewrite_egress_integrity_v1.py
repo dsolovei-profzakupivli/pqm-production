@@ -46,7 +46,8 @@ class GoogleWriterPrewriteEgressIntegrityV1(unittest.TestCase):
         guard=source[start:end]
         self.assertIn("action == 'prewrite_close_preflight'",guard)
         self.assertIn('prewrite_preflight_shape',guard)
-        self.assertIn("'prewrite_close_preflight')",guard)
+        self.assertRegex(guard,
+            r"action not in \([\s\S]*?['\"]prewrite_close_preflight['\"][\s\S]*?\)")
         self.assertIn("action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run',",guard)
         self.assertIn('prewrite_keys == expected_prewrite_keys',guard)
         self.assertIn("payload.get('planScope') == 'APPEND_ONLY'",guard)
@@ -61,7 +62,7 @@ class GoogleWriterPrewriteEgressIntegrityV1(unittest.TestCase):
         tests=canonical((ROOT/'test_sandbox_execution_transport.py').read_bytes()).decode('utf-8')
         self.assertIn('test_read_only_prewrite_preflight_is_allowed_with_exact_v20_contract',tests)
         self.assertIn('test_read_only_prewrite_preflight_rejects_invalid_bindings_and_shape',tests)
-        self.assertIn('test_prewrite_preflight_allowance_does_not_allow_close_apply_or_resume',tests)
+        self.assertIn('test_prewrite_preflight_allowance_keeps_close_bound_and_rejects_apply_or_resume',tests)
 
 
 if __name__=='__main__':
