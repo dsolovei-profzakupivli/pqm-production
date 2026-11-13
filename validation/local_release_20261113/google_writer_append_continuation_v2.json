@@ -1,0 +1,25 @@
+{
+  "contract": "pqm-sandbox-google-writer-append-continuation",
+  "version": 2,
+  "baseline": "85dc98bf5d0870266b2d895ad1a5e8be957dfcaa",
+  "normalization": "CRLF-to-LF only for text files; overlay test is self-pinned with a canonical placeholder",
+  "scope": [
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendDiagnostic20261112.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs",
+    "test_google_writer_append_continuation_integrity_v2.py"
+  ],
+  "files": {
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs": "9f32695e89af7058e5c42d78c58b309bf94c9a2b96de69e80e2e81bed583a818",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "635a430144c1810749ebbb6d15f5d1d4c6d99838f3ba2edbfaff7b48b37f9645",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendDiagnostic20261112.gs": "ac1d80f23fa93e21a54d77f314fdbe98d9aa93c9734f4e23ecba0d2c418b017e",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "b4d8b0419a84df445f6063adc85eb402282e74b30dc721a7a1e185daaa7f6904",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "e05edb659d86575b9d861d688f8f8b17c549b80a776233e7a4593b6119a8ef5c",
+    "test_google_writer_append_continuation_integrity_v2.py": "a327ec95da81d1caea0da558ebd13965ff7d7cb6b81f1f21b99454ce4ebf760c"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2"
+  }
+}

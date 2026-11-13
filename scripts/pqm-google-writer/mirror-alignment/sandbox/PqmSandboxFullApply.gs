@@ -168,7 +168,7 @@ function pqmSandboxFullPreviewDetails_(loaded) {
       var column = Number(index), rawOld = oldRow ? oldRow.values[column] : '', rawNew = change.cells[index];
       return {column: letters[column], old_value: pqmSandboxPreviewDisplayValue_(rawOld, column),
         new_value: pqmSandboxPreviewDisplayValue_(rawNew, column),
-        formula: typeof rawNew === 'string' && rawNew.charAt(0) === '='};
+        formula: column === 0 && typeof rawNew === 'string' && rawNew.charAt(0) === '='};
     });
   }
   var appends = [], updates = [];

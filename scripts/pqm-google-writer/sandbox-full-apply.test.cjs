@@ -64,6 +64,7 @@ function executionFixture(planDigest) {
   };
   vm.createContext(context);
   vm.runInContext(executionSource, context);
+  const fullPreviewDetails = context.pqmSandboxFullPreviewDetails_;
   vm.runInContext(`pqmSandboxFullPreviewDetails_=function(){return {version:1,environment:'SANDBOX',plan_digest:${JSON.stringify(planDigest)},
     append_only_digest:'${crypto.createHash('sha256').update('append-only fixture').digest('base64url')}',
     counts:{append:0,update:0,conflict:0,error:0},appends:[],updates:[],conflicts:[],errors:[]};}`,context);
@@ -112,7 +113,7 @@ function executionFixture(planDigest) {
     const signature = crypto.createHmac('sha256', 'S'.repeat(40)).update(payload).digest('base64url');
     return {payload, signature};
   }
-  return {context, properties, request, get applyCalls() {return applyCalls;},
+  return {context, properties, request, fullPreviewDetails, get applyCalls() {return applyCalls;},
     setSourceDigest(value){sourceDigest=value;},setSheetDigest(value){sheetDigest=value;},
     failAfterNextWrite(){failAfterWrite=true;}};
 }
@@ -2178,6 +2179,48 @@ test('continuation prewrite guard checks the saved 25-row content and Q/R/S with
   const row=fixture.sheetRows.get('ФОП:2');row.values[1]='different-code-value';
   assert.throws(()=>fixture.f.context.pqmSandboxContinuationPrewriteGuard_(
     'sheet-sandbox',fixture.loaded,fixture.request,fixture.record),/row content changed/);
+});
+
+test('APPEND Preview marks only column A as a formula and is repeatable without writes', () => {
+  const f=executionFixture('formula-preview-plan');
+  const loaded={plan_digest:'formula-preview-plan',append_only_digest:'formula-preview-append',
+    state:{payload_digest:'formula-preview-source'},body:{items:[{supplier_code:'1234567890',
+      supplier_name:'=literal supplier name'}]},tabs:{'ФОП':{rows:[]},'ЮО':{rows:[]}},
+    plan:{counts:{appended:1,updated:0,conflicts:0,errors:0},conflicts:[],errors:[],changes:[{
+      tab:'ФОП',row:2,append:true,cells:{0:'=IF(B2="","",1)',1:'1234567890',
+        2:'=literal supplier name'}}]}};
+  const before=[...f.properties.entries()];
+  const first=f.fullPreviewDetails(loaded),second=f.fullPreviewDetails(loaded);
+  const cells=Object.fromEntries(first.appends[0].cells.map(cell=>[cell.column,cell]));
+  assert.equal(cells.A.formula,true);
+  assert.equal(cells.C.formula,false);
+  assert.equal(cells.C.new_value,'=literal supplier name');
+  assert.deepEqual(JSON.parse(JSON.stringify(second)),JSON.parse(JSON.stringify(first)));
+  assert.equal(f.applyCalls,0);
+  assert.deepEqual([...f.properties.entries()],before);
+
+  const row=3,formula=f.context.pqmGoogleFreshnessFormula_(row,'uk_UA');
+  const selected=[{tab:'ФОП',row,append:true,cells:{0:formula,1:'1234567890',2:'=literal supplier name'}}];
+  const tabs={'ФОП':{id:2,rows:[{}],maxRows:100,templateRowHeight:27,formulaLocale:'uk_UA',conditionalFormats:[]},
+    'ЮО':{id:3,rows:[],maxRows:100,templateRowHeight:27,formulaLocale:'uk_UA',conditionalFormats:[]}};
+  const requests=f.context.pqmSandboxAppendRequests_(selected,tabs,{journaled:true,
+    planId:'continuation-formula-test-plan',runId:'a'.repeat(32),addedAt:'2026-11-13T10:00:00+02:00'});
+  const cellWrites=requests.filter(request=>request.updateCells);
+  const columnWrite=column=>cellWrites.find(request=>request.updateCells.range.startColumnIndex===column);
+  assert.equal(columnWrite(0).updateCells.rows[0].values[0].userEnteredValue.formulaValue,formula);
+  assert.equal(columnWrite(2).updateCells.rows[0].values[0].userEnteredValue.stringValue,'=literal supplier name');
+  assert.equal(columnWrite(13),undefined);
+  assert.equal(columnWrite(14),undefined);
+});
+
+test('legacy FOP name builder derives literal N/O values from the edited D text', () => {
+  const source=fs.readFileSync(path.join(sandboxSourceDir,'Код.gs'),'utf8'),context={};
+  vm.createContext(context);vm.runInContext(source,context);
+  assert.equal(context.formatFopShortName('Шевченко Тарас Григорович'),'ФОП ШЕВЧЕНКО Т.Г.');
+  assert.match(source,/"ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ " \+ newValue\.toUpperCase\(\)/);
+  assert.match(source,/sheet\.getRange\(startRow, 14\)\.setValue\(fullNameFOP\)/);
+  assert.match(source,/sheet\.getRange\(startRow, 15\)\.setValue\(shortNameFOP\)/);
+  assert.doesNotMatch(source,/setFormula\s*\(/);
 });
 
 test('continuation prewrite guard blocks changed service metadata, incomplete reads, and altered plan before any write', () => {
