@@ -1,0 +1,253 @@
+{
+  "archive": "validation/fixtures/google_writer_historical_integrity_snapshots_v1_compact.zip",
+  "archive_sha256": "797b4d2a52ee7038210a05b943b983dab9f044f9418fe50431d00a398794eac5",
+  "contract": "pqm-google-writer-historical-integrity-snapshots",
+  "snapshots": {
+    "admin_close_v1": {
+      "commit": "5c08d5037873500204dec68045793efcc6d93b51",
+      "files": {
+        "auth_access.py": "a344da35bada1544a0b3af58f2cea542a0e7651d69fc80c1dc4939407b9799aa",
+        "google_writer_execution.py": "088fa50c58feaf7cfae04ebf3748e6da56260071cb069ec475e3878065a82a7b",
+        "google_writer_ui.js": "6fd12bf949a8d0877a2e777e732247c20ba7700ffeb051c6590bed340e3116ae",
+        "scripts/pqm-google-writer/mirror-alignment/admin-close-unknown.test.cjs": "f0f792cc99d5b37b07997e5a6826f9277136fd8d00d72547fc5cb05cecb962f2",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "22b67b7234091cc7a611ad79911b15a1e0b98303d8fb204046c6d42091774f32",
+        "server.py": "982a3e763b7547f507aecd8d617b9110ff03fe533b70cc0ccfcb06df1871c7af",
+        "test_google_writer_admin_close.py": "3edb22b1661c4f33133840daeee306d3a7056ce4a1e5fcf6357c1683c61ea322",
+        "test_google_writer_admin_close_integrity_v1.py": "f21587c92786ab60cee7821984395e5a21ca2840a7d5da8fc635634a5c949050",
+        "validation/legacy_snapshots/google_writer_ui_admin_close_v1.js": "49864f96fbab0ea7119bd18c6df291b8ed3efa560ce128ac8db0b2ed92b30e7a",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494"
+      },
+      "test": "test_google_writer_admin_close_integrity_v1.py"
+    },
+    "append_continuation_v1": {
+      "commit": "85dc98bf5d0870266b2d895ad1a5e8be957dfcaa",
+      "files": {
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs": "bc97b6864916b18b50cf1a9258c954ef65c0941c9cd76ce422e40e455958c982",
+        "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "80f3188d0e8f356b64b7fc7644b9ca14245ff85fada3ac55ff217a1524bf97a9",
+        "test_google_writer_append_continuation.py": "e8f217087c06727f6e74a298a41b47bbcf5b58b5f47d91366d54b0ca874d565e",
+        "test_google_writer_append_continuation_integrity_v1.py": "8d4946d8a9c21ebbd927f16707d798fa14dc27ed5c1deda1b28016aa7035e5b9",
+        "test_google_writer_execution.py": "09e4ef6dcefd7eea1a70e474bce7b1c4b7b020c665dbde62a17316ad9e75543c",
+        "test_sandbox_execution_prewrite_egress_integrity_v1.py": "8398ecd225d1724c8c54277584c867e36379268f51cab6eaf673cd7060206c5d",
+        "test_sandbox_execution_transport.py": "d89866f6f1af4bb703fd74d1eb0512b1b55ea875fc8aa5259a9914974ba89ba3",
+        "validation/local_release_20260911/checkpointed_apply_v1.json": "fc8364697946ad8669c0f87f13112c6c9836007c5e3f40d58009fbe60f885b7e",
+        "validation/local_release_20260911/edr_status_evidence_v1.json": "c9c3d2484eccbaf982c47625f43c4c7dd3dbde8df9228a1cf7d71088af5f55e8",
+        "validation/local_release_20260911/google_edr_timezone_alias_v1.json": "b311cfe9f17eaebbd992b28222ec6e1612c45c055e476ba4caebaf99fbed99d7",
+        "validation/local_release_20260911/google_writer_update_append_v1.json": "ad8df0ead516fbdc6fd1f51e9f2abca0acf2b4244c395aaad730594a868ee2d7",
+        "validation/local_release_20260911/legacy_sheet_read_bounds_v1.json": "861c2c7e8438da033464722045c10452947c381a337f095b7dc83e9755b0e793",
+        "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40",
+        "validation/local_release_20260911/partial_reconciliation_first_append_only_v1.json": "bfab6425ec9bbad98bf36e85b4c96f018519b747548c44f8f6d7ec0a5f03a291",
+        "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
+        "validation/local_release_20260911/preview_digest_contract_v1.json": "5f55d204acd1f22d2550dd23160c00877f3a7f28292658147179e464e0e07a32",
+        "validation/local_release_20260911/sandbox_edr_google_nazk_contract_v2.json": "84b11fa0f453906aaa0138f1238f06c3843ac7105b4647f2504343e9b0e8ce10",
+        "validation/local_release_20260911/sandbox_edr_google_nazk_reconcile_v1.json": "4959074e4cd87f0b7158b45d2aaddc7c3c9d1e38ff04bb5c7246d040bf9659d5",
+        "validation/local_release_20260911/sandbox_edr_preview_skipped_rows_v1.json": "6a724179a879bab054036e9e0a80bbe4041c553e5edf140cabecc9f3f309bb1e",
+        "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",
+        "validation/local_release_20261108/google_writer_receipt_recovery_v1.json": "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b",
+        "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+        "validation/local_release_20261108/legacy_append_reconciliation_v2.json": "7aecd4a1eee8c35cbe8210336203030a2c1f1d77709e6bce5e9d01a588eb43dc",
+        "validation/local_release_20261108/legacy_append_reconciliation_v3.json": "d5c1b6d44d24e18076a2f95e2ab803476731719982f27d92e81de0a584235890",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494",
+        "validation/local_release_20261109/legacy_reconciliation_evidence_v2.json": "7694d1c0a720702a71d6a5a9ee380381298b8bd1aecab6ff32838d5fd56a03d5",
+        "validation/local_release_20261110/google_writer_legacy_snapshot_execution_v2.json": "a5c49e57da039983bb0efcf24b46e28cd41e521daab215221fc894713ded3f2f",
+        "validation/local_release_20261111/google_writer_execution_envelope_v1.json": "92620f4066b23414170590b27ba7c26a79eef76851b3e10ff469004d28e2c401",
+        "validation/local_release_20261111/google_writer_prewrite_diagnostics_v2.json": "61e31d839778b8c930f3d79d2402e1f710827ed25441920e5bf5cc85f2f51507",
+        "validation/local_release_20261111/google_writer_prewrite_egress_v1.json": "92d475bc10a69e1053204600bbb64edad2d40e36f336339ea6456ae08fb33e5e",
+        "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+        "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2",
+        "validation/run_local_release.py": "1b7479ce01467cc2d1a990d577070bf032a63efc3fac1f043ce9f5f475e27bb5",
+        "validation/sandbox_preview_append_only_v1.json": "a6b8a92df5f267ff0846e099a7190424644fa65273b07fcc9177ee292e9b65fd",
+        "validation/sandbox_preview_workflow_v1.json": "4101c9c711ebf97634deb067711906511951d9f8a654872c01e23ac2604f58f4"
+      },
+      "test": "test_google_writer_append_continuation_integrity_v1.py"
+    },
+    "execution_envelope_v1": {
+      "commit": "c9bc1fef7ccf2adae0185f87ba18cfd2ef42f897",
+      "files": {
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "a534eebdf8bbf672e00bf092f0c81a0fed5aa66c41144d5b750a6f139f44162e",
+        "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "6b5e5cbf191633323907c1819c360b8c9d46033a606c79ede7eb86e0f39048f5",
+        "test_sandbox_execution_envelope_limit_v1.py": "e73b8be52ecd875c21e86792fcb204b1f46dad6538c4e5a1ce6b523cd4e81857",
+        "test_sandbox_execution_transport.py": "6196e3d0d152f85de84d16e497637b6c2719cffec709c7597ad6e7f8c0504a0e",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261111/google_writer_execution_envelope_v1.json": "92620f4066b23414170590b27ba7c26a79eef76851b3e10ff469004d28e2c401",
+        "validation/local_release_20261111/google_writer_prewrite_diagnostics_v2.json": "61e31d839778b8c930f3d79d2402e1f710827ed25441920e5bf5cc85f2f51507",
+        "validation/local_release_20261111/google_writer_prewrite_egress_v1.json": "92d475bc10a69e1053204600bbb64edad2d40e36f336339ea6456ae08fb33e5e",
+        "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+        "validation/run_google_writer_execution_envelope_v1.py": "bfad4e744451651fa25c764133356d096a39b1359307412e86803b10fb2556b4"
+      },
+      "test": "test_sandbox_execution_envelope_limit_v1.py"
+    },
+    "legacy_reconciliation_evidence_v2": {
+      "commit": "9037e57728c09fe8aaea02d44b994da860944283",
+      "files": {
+        ".github/workflows/release-checks.yml": "4a64fdabfd40e324cfe5f82c046429c54377bcfa793d602613b627cebeac1721",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "8b0af8580913db3f867be76b8cfc5a58e11934e43e919f6bd968986d6bf4f7fa",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/legacy-reconciliation-evidence-v2.test.cjs": "abf0f1cd6d083c78d63f7f59be918624bd90e86e9264edbde5d863f5b98bd9c9",
+        "test_legacy_reconciliation_evidence_v2_integrity.py": "fe52d7a2e65f5b7c70dcd3b38d37b2865a8aa41b883d260315fbc2b4217600bd",
+        "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+        "validation/local_release_20261108/legacy_append_reconciliation_v2.json": "7aecd4a1eee8c35cbe8210336203030a2c1f1d77709e6bce5e9d01a588eb43dc",
+        "validation/local_release_20261108/legacy_append_reconciliation_v3.json": "d5c1b6d44d24e18076a2f95e2ab803476731719982f27d92e81de0a584235890",
+        "validation/local_release_20261109/legacy_reconciliation_evidence_v2.json": "7694d1c0a720702a71d6a5a9ee380381298b8bd1aecab6ff32838d5fd56a03d5"
+      },
+      "test": "test_legacy_reconciliation_evidence_v2_integrity.py"
+    },
+    "legacy_snapshot_execution_v2": {
+      "commit": "2f13f2b7ab2419a4f8376ac4590a94c94bbdd8f7",
+      "files": {
+        "google_writer_execution.py": "6ae7df6598edd7814305d6b6ced3501bd86ae217c8be0ab6b7ba998be5ba9ae3",
+        "sandbox_runtime.py": "e3a439b830f1a5451318021c7162d78d6ee85fbcc519a8764503c6c765950437",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "4d5ef0efcff0944b45b6ce0922f05daf3ead5d0a2a22d82f0e024932a09877dd",
+        "test_google_writer_all_scope_receipt_recovery_integrity_v1.py": "24991942aa2edb00c24d54216f2387e2c04b110c573cfb667dcaaf8b530d4584",
+        "test_google_writer_legacy_source_snapshots_history_v2.py": "60c6be3545e968123a575522097a7915b2c2e57d3bfa17cca03635ec5d843f52",
+        "test_google_writer_legacy_source_snapshots_integrity_v1.py": "5edca164e843a37aa93ae71dce9140da1c3b7a3b1e519cf1057b10402b9a965a",
+        "test_google_writer_manifest_compatibility_integrity_v2.py": "55a3115122bbc057d8adca8506e392a9690ce3999734d334119936c5538cc6fd",
+        "test_partial_reconciliation_legacy_20261108.py": "cad7522e729d5dae098065a064501cc1952838ae7167c7ef8283028fca5d094d",
+        "test_sandbox_execution_transport.py": "4010adb0d85e4c5b9bce9bfec2ae0287a628fb65d57a54a098bbd7766252eda5",
+        "validation/fixtures/google_writer_all_scope_receipt_recovery_v1_9037e57.zip": "9d2fc834edbfe5668ec2bf8388d6d67cd21c692904261aa5bfd6f0eec780eafa",
+        "validation/fixtures/google_writer_legacy_reconciliation_v3_immutable.zip": "2cb7702821c5db79c2bc52509710271876ce07d5c0781750cac560dfcff8d708",
+        "validation/fixtures/google_writer_legacy_sheet_bounds_v1_immutable.zip": "75fe3da7a6808b253424e1b35f3eece0633fec6ea480502c0fc2862ae8877448",
+        "validation/fixtures/google_writer_legacy_source_snapshots_v1_run_local_release.py": "11c8a1802e00146fa41ef73cc8dc78bd7c1f1696a5fee6c978c2f785942df46d",
+        "validation/local_release_20260911/legacy_sheet_read_bounds_v1.json": "861c2c7e8438da033464722045c10452947c381a337f095b7dc83e9755b0e793",
+        "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40",
+        "validation/local_release_20260911/partial_reconciliation_first_append_only_v1.json": "bfab6425ec9bbad98bf36e85b4c96f018519b747548c44f8f6d7ec0a5f03a291",
+        "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
+        "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",
+        "validation/local_release_20261108/google_writer_receipt_recovery_v1.json": "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b",
+        "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+        "validation/local_release_20261108/legacy_append_reconciliation_v2.json": "7aecd4a1eee8c35cbe8210336203030a2c1f1d77709e6bce5e9d01a588eb43dc",
+        "validation/local_release_20261108/legacy_append_reconciliation_v3.json": "d5c1b6d44d24e18076a2f95e2ab803476731719982f27d92e81de0a584235890",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494",
+        "validation/local_release_20261109/legacy_reconciliation_evidence_v2.json": "7694d1c0a720702a71d6a5a9ee380381298b8bd1aecab6ff32838d5fd56a03d5",
+        "validation/local_release_20261110/google_writer_legacy_snapshot_execution_v2.json": "a5c49e57da039983bb0efcf24b46e28cd41e521daab215221fc894713ded3f2f",
+        "validation/run_google_writer_legacy_source_snapshots_v1_history.py": "6edbff0729e811d55e86e73d51c8b6fc237deedc519239993d706630994a8903",
+        "validation/run_immutable_google_writer_source_overlays.py": "36493bfb34e3366e323920092788c8a3b43cc7221e3b6c82746065c78858f5e9",
+        "validation/run_local_release.py": "0647330d05ce7678d23205fe0f40435f1b771afd5d6f41fe05ca64ce911a34f3"
+      },
+      "test": "test_google_writer_legacy_source_snapshots_history_v2.py"
+    },
+    "manifest_compatibility_v2": {
+      "commit": "2f13f2b7ab2419a4f8376ac4590a94c94bbdd8f7",
+      "files": {
+        "google_writer_execution.py": "6ae7df6598edd7814305d6b6ced3501bd86ae217c8be0ab6b7ba998be5ba9ae3",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "4d5ef0efcff0944b45b6ce0922f05daf3ead5d0a2a22d82f0e024932a09877dd",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendApply.gs": "cefcb644afcd91f4340a4ce8692cfe7f779f50416487accaf097da15a9ec4d14",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "8b0af8580913db3f867be76b8cfc5a58e11934e43e919f6bd968986d6bf4f7fa",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs": "6eb721e4c0f550bf7352522bc55ff681193ff7dfd72255d52cf0fc452c184352",
+        "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "e5e4573e341992e1349510fbda2e8f92638f91ccff84960d126e8bb19da9f7bf",
+        "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "2ecc8412c5db25f4a121dcdd457c8cc13af35f1212ada26217aefea8b95c1c9b",
+        "test_google_writer_all_scope_recovery.py": "8d787c1359d77ff00a2a75470fe27d7cf333ee73fd618bd47053e663f4ff7ecf",
+        "test_google_writer_durable_append_recovery.py": "e66c60507c7a6a227ce401160ae3d67d4ccf3df39dd408327f8024a394b5144c",
+        "test_google_writer_manifest_compatibility_integrity_v2.py": "55a3115122bbc057d8adca8506e392a9690ce3999734d334119936c5538cc6fd",
+        "validation/fixtures/google_writer_all_scope_receipt_recovery_v1_9037e57.zip": "9d2fc834edbfe5668ec2bf8388d6d67cd21c692904261aa5bfd6f0eec780eafa",
+        "validation/fixtures/google_writer_legacy_source_snapshots_v1_run_local_release.py": "11c8a1802e00146fa41ef73cc8dc78bd7c1f1696a5fee6c978c2f785942df46d",
+        "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",
+        "validation/local_release_20261108/google_writer_receipt_recovery_v1.json": "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b",
+        "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+        "validation/local_release_20261108/legacy_append_reconciliation_v2.json": "7aecd4a1eee8c35cbe8210336203030a2c1f1d77709e6bce5e9d01a588eb43dc",
+        "validation/local_release_20261108/legacy_append_reconciliation_v3.json": "d5c1b6d44d24e18076a2f95e2ab803476731719982f27d92e81de0a584235890",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494",
+        "validation/local_release_20261109/legacy_reconciliation_evidence_v2.json": "7694d1c0a720702a71d6a5a9ee380381298b8bd1aecab6ff32838d5fd56a03d5",
+        "validation/run_google_writer_all_scope_receipt_recovery_v1_history.py": "de5292c04056e3548bfb6ed840076155fd5cc3ab209977808fb405d957a9947e",
+        "validation/run_google_writer_legacy_source_snapshots_v1_history.py": "6edbff0729e811d55e86e73d51c8b6fc237deedc519239993d706630994a8903",
+        "validation/run_local_release.py": "0647330d05ce7678d23205fe0f40435f1b771afd5d6f41fe05ca64ce911a34f3"
+      },
+      "test": "test_google_writer_manifest_compatibility_integrity_v2.py"
+    },
+    "preview_formula_v1": {
+      "commit": "5c08d5037873500204dec68045793efcc6d93b51",
+      "files": {
+        "google_writer_ui.js": "6fd12bf949a8d0877a2e777e732247c20ba7700ffeb051c6590bed340e3116ae",
+        "scripts/pqm-google-writer/mirror-alignment/preview-formula-display.test.cjs": "2f033b4275e65ef0540affce2cbc6c4709e18f7fc9f65c3482d8d7795dccd534",
+        "supplier_classification_contract_v1.json": "dd8e2d375b0ea0c6d7fb46715d33170f55eaa842c74535d12d2f00fe39da46d2",
+        "test_google_writer_preview_formula_integrity_v1.py": "3e8308646fa80b3f2297f04c07496f08f8df9548850153e3a9adbe3c14572a48",
+        "test_sandbox_messages_crlf_integrity_v2.json": "15d9706e4282c8ef799c468e93b855e27b657310fe1cb17a874fd27b13a05996",
+        "test_sandbox_messages_integrity_v1.json": "1bb3bdbe99b3f041b6bc6dbdfaf4768a5b21f75c84d7f4a6a61351726a731143",
+        "validation/legacy_snapshots/google_writer_ui_admin_close_v1.js": "49864f96fbab0ea7119bd18c6df291b8ed3efa560ce128ac8db0b2ed92b30e7a",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/sandbox_preview_append_only_v1.json": "a6b8a92df5f267ff0846e099a7190424644fa65273b07fcc9177ee292e9b65fd"
+      },
+      "test": "test_google_writer_preview_formula_integrity_v1.py"
+    },
+    "prewrite_diagnostics_v2": {
+      "commit": "6696a2d0b7425a2bd69c47641539a05072d47dbb",
+      "files": {
+        "google_writer_execution.py": "9beb6dbcd952bce6f1e97bc229373f35c908091c2577848c424a474cb93f527d",
+        "google_writer_ui.js": "24527e639a3a7ec8a358b0fb7b43164382cca6cc01ade869cfef65b2795ac795",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "e9d394577d87be8ef6c7cf07194adb54cb7692839e8918112de75d356cf5fbea",
+        "server.py": "f5e9104e1120ba5e772928a4a707a658d042304eec7617dec119c34a83245901",
+        "test_google_writer_execution.py": "a79bb5c13e6102310a73ce68587f98b82f6db31d91d820ff6f7070f8b91017ab",
+        "test_google_writer_prewrite_close.py": "f433fd30bea1d8e78949dc678a8b3cdabfd04a632b0d1a47d220498593ca1606",
+        "test_google_writer_prewrite_diagnostics_integrity_v2.py": "b0f6d2985861a7bfb800c8c73d00717ebb67de9cd958744d09d1cc13571b51f4",
+        "validation/google_writer_prewrite_preflight_ui.test.cjs": "44137e855913d940e30e22638eeb7d7c8f365ef7474a0294bbf7c278a9a6260a",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494",
+        "validation/local_release_20261111/google_writer_prewrite_diagnostics_v2.json": "61e31d839778b8c930f3d79d2402e1f710827ed25441920e5bf5cc85f2f51507",
+        "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+        "validation/run_google_writer_prewrite_diagnostics_v2.py": "cc77b2bb40990e1943bb60d4e0a3a446ec3272eaabfb7c4b7b6db40380dd8554"
+      },
+      "test": "test_google_writer_prewrite_diagnostics_integrity_v2.py"
+    },
+    "prewrite_egress_v1": {
+      "commit": "b4f35fc3c55ad2919dd1c08925fa2cfd13acd657",
+      "files": {
+        "sandbox_runtime.py": "be3f6671496207673f263ee6dd03de96742dfe09f4bba0fd83a7f60d1db57ebb",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "e9d394577d87be8ef6c7cf07194adb54cb7692839e8918112de75d356cf5fbea",
+        "test_sandbox_execution_prewrite_egress_integrity_v1.py": "fb98ebc0f7c377cf9fa9a4f290f69812ed71e74ec6c46e431177df72ebdaed06",
+        "test_sandbox_execution_transport.py": "3f734cd4b5ac205d4cdbddeec07aa3fc5688b5b02995cfb0b4acbce31b0517ca",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261111/google_writer_prewrite_diagnostics_v2.json": "61e31d839778b8c930f3d79d2402e1f710827ed25441920e5bf5cc85f2f51507",
+        "validation/local_release_20261111/google_writer_prewrite_egress_v1.json": "92d475bc10a69e1053204600bbb64edad2d40e36f336339ea6456ae08fb33e5e",
+        "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+        "validation/run_google_writer_prewrite_egress_v1.py": "0213a14590c0c70d81c3606dce511002a5c9c486f4d47ffb7badda39318ef16c"
+      },
+      "test": "test_sandbox_execution_prewrite_egress_integrity_v1.py"
+    },
+    "prewrite_readonly_v1": {
+      "commit": "1b142282e1c5170c9a8a918d085f82491fd1e58b",
+      "files": {
+        "auth_access.py": "236414565cfcdacb55f59f487546ae59866ecc20937b2ca4d3f9e26383712d0a",
+        "google_writer_execution.py": "5bea01f6770434c9cec94e4aab42af4f4d8349104813526bd82aa89fef1171ff",
+        "google_writer_ui.js": "fd00ae2ab70143bc84243ab582c972e62c23679c7bda80b22cedde4e3bd3fd1c",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "e9d394577d87be8ef6c7cf07194adb54cb7692839e8918112de75d356cf5fbea",
+        "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "ad0aa51b9132c7df87d9a6d9c440f1945f7e8b9751c03f4ce8751d385aee5c90",
+        "server.py": "f5e9104e1120ba5e772928a4a707a658d042304eec7617dec119c34a83245901",
+        "test_google_writer_prewrite_close.py": "55b03b6699bf16ec590d5d6e9521d9a04a81697dbb5c94eb4341aa7905226e6d",
+        "test_google_writer_prewrite_readonly_integrity_v1.py": "8c3b43a1c00d0c1c031234cab135456f88a879f3d967032c7f9dab56e8c6e6b1",
+        "validation/google_writer_prewrite_preflight_ui.test.cjs": "84a3d6ffdba8c08e29e74508ef7a745fe72952e1157602f583a77ddbb548b7bc",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494",
+        "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+        "validation/run_google_writer_prewrite_readonly_v1.py": "7e183ed7a1b22522bf169d2f81812fb263e5d9b44a2c07bda8d960361811dcfc"
+      },
+      "test": "test_google_writer_prewrite_readonly_integrity_v1.py"
+    },
+    "prewrite_stage_v1": {
+      "commit": "a39f1ac60db807d441d085241ccace1c529454cc",
+      "files": {
+        "google_writer_execution.py": "c273f4fcd1e64e0a330dfa2899a7eb5d2c2556023b819b1b0884e4e19358e510",
+        "google_writer_prewrite_stage_v1.json": "95cb9cf8635e81f431f7c6ef470db53b9770097d60454c704a4c8df0fafb88d0",
+        "run_google_writer_prewrite_stage_v1.py": "7ae2289df63095636d14b9b692634a274d24019704c3579466abb0fb45942e8d",
+        "scripts/pqm-google-writer/mirror-alignment/sandbox/prewrite-stage-contract.test.cjs": "75560f1de29fda1afe3004b8b26b30ced655e5a8be4824acc59154a9afcf3e28",
+        "test_google_writer_prewrite_stage_contract.py": "43b930b32220256876824f76cae7115419c7ebc57e0c844ec5e008e05d285d14",
+        "test_google_writer_prewrite_stage_integrity_v1.py": "29c4cb82ecb80e9967fa64e4aa9669d14f617b9e7ce4ab407e5450a0fcb4f199",
+        "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+        "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+        "validation/local_release_20261111/google_writer_execution_envelope_v1.json": "92620f4066b23414170590b27ba7c26a79eef76851b3e10ff469004d28e2c401",
+        "validation/local_release_20261111/google_writer_prewrite_diagnostics_v2.json": "61e31d839778b8c930f3d79d2402e1f710827ed25441920e5bf5cc85f2f51507",
+        "validation/local_release_20261111/google_writer_prewrite_egress_v1.json": "92d475bc10a69e1053204600bbb64edad2d40e36f336339ea6456ae08fb33e5e",
+        "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c"
+      },
+      "test": "test_google_writer_prewrite_stage_integrity_v1.py"
+    }
+  },
+  "version": 1
+}

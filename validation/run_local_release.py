@@ -10,6 +10,7 @@ from contextlib import closing
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ import unittest
 import zipfile
 
 ROOT=Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[1]).resolve()
+INFRA_ROOT=Path(os.environ.get('PQM_RELEASE_INFRA_ROOT') or Path(__file__).resolve().parents[1]).resolve()
 HISTORICAL_INTEGRITY_MODULES={
     'test_google_sandbox_baseline_compatibility',
     'test_halloween_motion_integration',
@@ -73,6 +75,22 @@ HISTORICAL_INTEGRITY_MODULES={
     # current source and the historical-routing runners.
     'test_sandbox_preview_append_only_integrity_v1',
     'test_sandbox_preview_workflow_integrity_v1',
+    # These writer overlays describe immutable releases. They are executed
+    # against byte-verified source snapshots by the historical snapshot runner,
+    # never against the current candidate tree.
+    'test_google_writer_admin_close_integrity_v1',
+    'test_google_writer_manifest_compatibility_integrity_v2',
+    'test_google_writer_preview_formula_integrity_v1',
+    'test_google_writer_prewrite_stage_integrity_v1',
+    'test_legacy_reconciliation_evidence_v2_integrity',
+    'test_google_writer_prewrite_diagnostics_integrity_v2',
+    'test_google_writer_prewrite_readonly_integrity_v1',
+    'test_sandbox_execution_envelope_limit_v1',
+    'test_sandbox_execution_prewrite_egress_integrity_v1',
+    'test_google_writer_append_continuation_integrity_v1',
+    # v2 pins its historical source runner; the new runner is checked by the
+    # current infrastructure overlay and this old assertion runs on its exact snapshot.
+    'test_google_writer_legacy_source_snapshots_history_v2',
 }
 EXACT_TREE_OVERLAY_MODULES={
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
@@ -135,9 +153,34 @@ def copy_candidate_manifests(source_root, validation_target, mode):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source,target)
 
+
+def normalize_windows_sqlite_uri(database):
+    if not isinstance(database,str) or not database.startswith('file:'):
+        return database
+    raw,separator,query=database[5:].partition('?')
+    if len(raw)>=3 and raw[1]==':' and raw[2] in {'\\','/'}:
+        return Path(raw).resolve().as_uri()+(('?'+query) if separator else '')
+    return database
+
+
+def install_windows_sqlite_uri_compatibility():
+    """Normalize only absolute Windows file: URIs in the disposable test process.
+
+    SQLite URI syntax requires a file URL (file:///C:/...) on Windows. Some
+    application read-only paths intentionally build POSIX-style file URIs for
+    Linux; this test-process adapter keeps those local tests portable without
+    changing application code or database permissions.
+    """
+    original_connect=sqlite3.connect
+    def connect(database,*args,**kwargs):
+        if kwargs.get('uri'):
+            database=normalize_windows_sqlite_uri(database)
+        return original_connect(database,*args,**kwargs)
+    sqlite3.connect=connect
+
 def main():
     mode=os.environ.get('PQM_RELEASE_MODE','')
-    full_candidate_run=not mode and len(sys.argv)==1
+    full_candidate_run=(not mode and len(sys.argv)==1) or mode=='baseline_full'
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
         root=Path(tmp)
         for source in ROOT.iterdir():
@@ -175,6 +218,11 @@ def main():
                             'run_google_writer_receipt_recovery_v1_history.py',
                             'run_google_writer_all_scope_receipt_recovery_v1_history.py',
                             'run_google_writer_legacy_source_snapshots_v1_history.py',
+                            'run_google_writer_historical_integrity_snapshots_v1.py',
+                            'run_google_writer_prewrite_diagnostics_v2.py',
+                            'run_google_writer_prewrite_readonly_v1.py',
+                            'run_google_writer_execution_envelope_v1.py',
+                            'run_google_writer_prewrite_egress_v1.py',
                             'run_legacy_append_reconciliation_v1_history.py',
                             'run_legacy_append_reconciliation_v2_history.py',
                             'run_immutable_google_writer_source_overlays.py',
@@ -182,10 +230,26 @@ def main():
                             'run_sandbox_preview_workflow_v1_history.py',
                             'run_messages_integrated_v1_history_addendum.py'):
             helper_source=ROOT/'validation'/helper_name
+            if not helper_source.is_file():
+                helper_source=INFRA_ROOT/'validation'/helper_name
             if helper_source.is_file():
                 shutil.copy2(helper_source,root/'validation'/helper_name)
+        # This byte-pinned fixture is consumed from the working-tree root by
+        # the historical Preview digest runner, rather than from validation/.
+        preview_runtime_fixture='sandbox_runtime_messages_integrated_v1_86ea864.py'
+        root_runtime_fixture=ROOT/preview_runtime_fixture
+        if not root_runtime_fixture.is_file():
+            root_runtime_fixture=INFRA_ROOT/preview_runtime_fixture
+        if root_runtime_fixture.is_file():
+            shutil.copy2(root_runtime_fixture,root/preview_runtime_fixture)
+        snapshot_tree=ROOT/'validation/legacy_snapshots'
+        if snapshot_tree.is_dir():
+            shutil.copytree(snapshot_tree,root/'validation/legacy_snapshots',
+                            dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__'))
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
+        validation_target=root/'validation'
+        validation_target.mkdir(parents=True,exist_ok=True)
         fixture_names=('supplier_classification_parent_integrity_6b9830b.zip', 'supplier_classification_parent_6b9830b.json', 'messages_v1_test_parent.zip',
                              'google_writer_supplier_types_integration_v1_97788.zip',
                              'integrated_classification_v1_overlay_6b9830b.zip', 'integrated_writer_v1_overlay_64f7fda.zip',
@@ -234,24 +298,28 @@ def main():
                              'google_writer_receipt_recovery_v1_exact_24554fef.zip',
                              'google_writer_all_scope_receipt_recovery_v1_9037e57.zip',
                              'google_writer_legacy_source_snapshots_v1_run_local_release.py',
+                             'google_writer_historical_integrity_snapshots_v1_compact.zip',
                              'legacy_append_reconciliation_v1_exact_1111eb9.zip',
                              'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
                              'google_writer_legacy_reconciliation_v3_immutable.zip',
                              'google_writer_legacy_sheet_bounds_v1_immutable.zip')
         for fixture_name in fixture_names:
             fixture_source=ROOT/'validation/fixtures'/fixture_name
+            if fixture_name=='google_writer_historical_integrity_snapshots_v1_compact.zip':
+                fixture_source=INFRA_ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
                 if mode=='historical_integrity':
                     continue
                 raise FileNotFoundError(f'Candidate release fixture missing: {fixture_name}')
             shutil.copy2(fixture_source,fixture_target/fixture_name)
-        validation_target=root/'validation'
-        validation_target.mkdir(parents=True,exist_ok=True)
+        history_ledger=INFRA_ROOT/'validation/google_writer_historical_integrity_snapshots_v1.json'
+        if history_ledger.is_file():
+            shutil.copy2(history_ledger,validation_target/'google_writer_historical_integrity_snapshots_v1.json')
         copy_candidate_manifests(ROOT, validation_target, mode)
         for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):
             shutil.copy2(ROOT/'validation'/helper, root/'validation'/helper)
         # The runner is itself pinned by the column-width integrity variant.
-        shutil.copy2(ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
+        shutil.copy2(INFRA_ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
         shutil.copy2(ROOT/'validation/docker_release_gate.py',root/'validation/docker_release_gate.py')
         # The integrated UI integrity manifest now guards the required host-runner
         # browser workflow, so include that exact CI file in the disposable tree.
@@ -281,6 +349,7 @@ def main():
         os.chdir(root)
         sys.path.insert(0,str(root))
         try:
+            install_windows_sqlite_uri_compatibility()
             import server
             server.init_db()
             server.init_reference_tables(server.DB_PATH)
@@ -288,7 +357,7 @@ def main():
             with closing(server.db()) as con:
                 with con:scheduler_runtime.migrate(con)
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
-            if mode=='historical_integrity' or full_candidate_run:
+            if mode=='historical_integrity' or full_candidate_run or mode=='baseline_candidate':
                 suite=selected_suite(suite,'historical_integrity' if mode=='historical_integrity' else 'candidate')
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             if mode=='historical_integrity' or not full_candidate_run:
@@ -365,7 +434,10 @@ def main():
                 cwd=old_cwd,check=False)
             historical_root=Path(tmp)/'historical-c246-source'
             historical_root.mkdir()
-            baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
+            # This is a separately pinned historical fixture; use the trusted
+            # infrastructure copy in both candidate and baseline runs rather
+            # than whatever archive happens to ship in the tested source tree.
+            baseline_archive=INFRA_ROOT/'validation/fixtures/messages_parent_c246edef.zip'
             with zipfile.ZipFile(baseline_archive) as archive:
                 base=historical_root.resolve()
                 for member in archive.infolist():
@@ -377,11 +449,15 @@ def main():
                     target.write_bytes(archive.read(member))
             historical_env=os.environ.copy()
             historical_env['PQM_RELEASE_SOURCE_ROOT']=str(historical_root)
+            historical_env['PQM_RELEASE_INFRA_ROOT']=str(INFRA_ROOT)
             historical_env['PQM_RELEASE_MODE']='historical_integrity'
             print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
             historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
                                     env=historical_env,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and historic.returncode==0 else 1
+            writer_history_snapshots=subprocess.run(
+                [sys.executable,str(root/'validation/run_google_writer_historical_integrity_snapshots_v1.py')],
+                cwd=old_cwd,check=False)
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and historic.returncode==0 and writer_history_snapshots.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
