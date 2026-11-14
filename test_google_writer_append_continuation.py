@@ -64,10 +64,13 @@ class ContinuationClient:
                 'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
         if action=='preview':
             if self.timeout_action=='preview':raise writer.ExecutionOutcomeUnknown('mock preview timeout')
+            updates=self.old_details.get('updates',[])
+            conflicts=self.old_details.get('conflicts',[])
             details={'version':1,'environment':'SANDBOX','plan_digest':_d('new-full-plan'),
                 'source_digest':self.old_details['source_digest'],'append_only_digest':_d('new-append-plan'),
-                'counts':{'append':len(self.preview_operations),'update':0,'conflict':0,'error':0},
-                'appends':self.preview_operations,'updates':[],'conflicts':[],'errors':[]}
+                'counts':{'append':len(self.preview_operations),'update':len(updates),
+                    'conflict':len(conflicts),'error':0},
+                'appends':self.preview_operations,'updates':updates,'conflicts':conflicts,'errors':[]}
             return {'status':'PREVIEW','digest':details['plan_digest'],
                 'google_state_digest':self.preview_digest,'planDetails':details}
         if action=='resume_check':
@@ -104,6 +107,29 @@ class AppendContinuationTests(unittest.TestCase):
 
     def client(self, **kwargs):
         return ContinuationClient(self.old,**kwargs)
+
+    def _make_v2_source(self, *, overlap=None):
+        """Upgrade only this test's synthetic source journal to the v2 historical shape."""
+        update_code='90000001';conflict_code='90000002'
+        updates=[{'operation':'UPDATE','tab':'ЮО','row':900,'code':update_code,
+            'cells':[{'column':'C','old_value':'old','new_value':'new','formula':False}]}]
+        # This source needs exactly two excluded UPDATEs and two conflicts, matching the
+        # agreed historical contract. All IDs are synthetic and disjoint from the APPEND set.
+        updates.append({'operation':'UPDATE','tab':'ФОП','row':901,'code':'90000003',
+            'cells':[{'column':'I','old_value':46338,'new_value':46339,'formula':False}]})
+        conflicts=[{'tab':'ФОП','code':conflict_code,'reason':'routing_mismatch'},
+            {'tab':'ЮО','code':'90000004','reason':'routing_mismatch'}]
+        if overlap=='update_append':updates[0]['code']=self.ops[0]['code']
+        elif overlap=='conflict_append':conflicts[0]['code']=self.ops[0]['code']
+        elif overlap=='conflict_update':conflicts[0]['code']=updates[0]['code']
+        elif overlap=='conflict_row':conflicts[0]['row']=self.ops[0]['row']
+        self.old.update(counts={'append':276,'update':2,'conflict':2,'error':0},
+            updates=updates,conflicts=conflicts,errors=[])
+        details_digest=writer._preview_details_digest(self.old)
+        with closing(sqlite3.connect(self.path)) as con,con:
+            con.execute('UPDATE google_writer_plan_journal SET details_digest=?,details_json=? WHERE request_id=?',
+                (details_digest,writer._preview_details_raw(self.old),self.source))
+        return self.old
 
     def _seed_separate_source_close(self):
         close_id='f'*32;reason_digest=_d('separate administrative decision')
@@ -168,12 +194,18 @@ class AppendContinuationTests(unittest.TestCase):
                     raise AssertionError('mock saw an apply without a durable in-flight chunk')
                 row_count=len(json.loads(chunk[3])['rows'])
                 more=index<10
-                return {'status':'APPLY_CHUNK_VERIFIED' if more else 'COMPLETE',
+                result={'status':'APPLY_CHUNK_VERIFIED' if more else 'COMPLETE',
                     'digest':kwargs['digest'],'planScope':'APPEND_ONLY','chunkIndex':index,
                     'nextChunk':index+1,'more':more,'phase':'append',
                     'checkpointDigest':_d(f'continuation-checkpoint-{index}'),
                     'chunkId':chunk[0],'chunkDigest':chunk[1],'planId':chunk[2],
                     'counts':{'append':row_count,'update':0,'batches':1}}
+                if kwargs.get('continuation_version')==2:
+                    result.update(continuationVersion=2,
+                        continuationSourceRequestId=kwargs['continuation_source_request_id'],
+                        continuationSourcePlanDigest=kwargs['continuation_source_plan_digest'],
+                        continuationExclusionsDigest=kwargs['continuation_exclusions_digest'])
+                return result
         return Client()
 
     def test_exact_25_confirmed_251_missing_builds_only_saved_missing_operations(self):
@@ -198,6 +230,118 @@ class AppendContinuationTests(unittest.TestCase):
             self.assertEqual(con.execute('SELECT status FROM google_writer_runs WHERE request_id=?',
                 (self.source,)).fetchone()[0],'outcome_unknown')
             self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_runs').fetchone()[0],1)
+
+    def test_v2_exclusions_are_audited_but_never_enter_preview_or_chunk_manifest(self):
+        self._make_v2_source()
+        client=self.client()
+        result=writer.prepare_append_continuation_preview(self.path,client,self.source,self.actor)
+        self.assertEqual(result['status'],'PREVIEW_READY')
+        self.assertEqual(result['counts'],{'append':251,'update':0,'conflict':0,'error':0})
+        self.assertEqual(result['excluded_counts'],{'update':2,'conflict':2,'error':0})
+        snapshot=writer.load_preview_plan(self.path,result['request_id'],self.actor,result['plan_digest'],
+            details_digest=result['details_digest'])
+        details=snapshot['details'];meta=details['append_continuation']
+        self.assertEqual(meta['version'],2)
+        self.assertEqual(meta['source_excluded_counts'],{'update':2,'conflict':2,'error':0})
+        self.assertEqual(meta['conflict_rows_unavailable'],2)
+        self.assertEqual((details['counts'],details['updates'],details['conflicts'],details['errors']),
+            ({'append':251,'update':0,'conflict':0,'error':0},[],[],[]))
+        chunks=[writer.prepare_append_chunk(self.path,result['request_id'],self.actor,
+            snapshot['append_only_digest'],snapshot['details_digest'],index) for index in range(11)]
+        self.assertEqual([len(chunk['expected']['rows']) for chunk in chunks],[25]*10+[1])
+        for chunk in chunks:
+            self.assertTrue(all(row.get('operation')=='APPEND' for row in chunk['expected']['rows']))
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_runs').fetchone()[0],1)
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_chunk_journal').fetchone()[0],11)
+            for (raw,) in con.execute('SELECT expected_json FROM google_writer_chunk_journal'):
+                manifest=json.loads(raw)
+                self.assertTrue(all(row.get('operation')=='APPEND' for row in manifest['rows']))
+                self.assertFalse(any(key in manifest for key in ('updates','conflicts')))
+
+    def test_v2_rejects_exclusion_overlap_without_inventing_conflict_rows(self):
+        for overlap in ('update_append','conflict_append','conflict_update','conflict_row'):
+            with self.subTest(overlap=overlap):
+                self._make_v2_source(overlap=overlap)
+                result=writer.prepare_append_continuation_preview(self.path,self.client(),self.source,self.actor)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertIn('SOURCE_EXCLUSIONS_INVALID',result['reason_codes'])
+                with closing(sqlite3.connect(self.path)) as con:
+                    self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_preview_plans').fetchone()[0],0)
+
+    def test_v2_preview_replay_reuses_immutable_candidate_and_ticket(self):
+        self._make_v2_source()
+        client=self.client()
+        first=writer.prepare_append_continuation_preview(self.path,client,self.source,self.actor)
+        second=writer.prepare_append_continuation_preview(self.path,client,self.source,self.actor)
+        self.assertEqual(first['status'],second['status'])
+        self.assertEqual(first['request_id'],second['request_id'])
+        self.assertEqual(first['ticket'],second['ticket'])
+        self.assertEqual(first['counts'],{'append':251,'update':0,'conflict':0,'error':0})
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_preview_plans').fetchone()[0],1)
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_runs').fetchone()[0],1)
+
+    def test_v2_fresh_preview_exclusion_change_blocks_without_saving(self):
+        self._make_v2_source()
+        client=self.client()
+        invoke=client.invoke
+        def changed_preview(action,request_id,actor,**kwargs):
+            response=invoke(action,request_id,actor,**kwargs)
+            if action=='preview':
+                response['planDetails']['conflicts'][0]=dict(response['planDetails']['conflicts'][0],row=7500)
+            return response
+        client.invoke=changed_preview
+        result=writer.prepare_append_continuation_preview(self.path,client,self.source,self.actor)
+        self.assertEqual(result['status'],'BLOCKED')
+        self.assertIn('CONTINUATION_EXCLUSIONS_CHANGED',result['reason_codes'])
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_preview_plans').fetchone()[0],0)
+            self.assertEqual(con.execute('SELECT status FROM google_writer_runs WHERE request_id=?',
+                (self.source,)).fetchone()[0],'outcome_unknown')
+
+    def test_v2_source_change_after_preview_fails_closed(self):
+        self._make_v2_source()
+        result=writer.prepare_append_continuation_preview(self.path,self.client(),self.source,self.actor)
+        snapshot=writer.load_preview_plan(self.path,result['request_id'],self.actor,result['plan_digest'],
+            details_digest=result['details_digest'])
+        metadata=snapshot['details']['append_continuation']
+        changed=dict(self.old);changed['updates']=[dict(item) for item in self.old['updates']]
+        changed['updates'][0]=dict(changed['updates'][0]);changed['updates'][0]['cells']=[
+            dict(changed['updates'][0]['cells'][0],new_value='changed-after-preview')]
+        changed_digest=writer._preview_details_digest(changed)
+        with closing(sqlite3.connect(self.path)) as con,con:
+            con.execute('UPDATE google_writer_plan_journal SET details_digest=?,details_json=? WHERE request_id=?',
+                (changed_digest,writer._preview_details_raw(changed),self.source))
+        with self.assertRaisesRegex(ValueError,'source digest binding changed'):
+            writer._append_continuation_v2_source_exclusions_from_db(self.path,self.actor,metadata)
+        self.assertEqual(snapshot['details']['counts'],{'append':251,'update':0,'conflict':0,'error':0})
+
+    def test_v2_resume_after_four_verified_chunks_and_timeout_does_not_replay(self):
+        self._make_v2_source()
+        result,snapshot=self._prepare_claimed_continuation()
+        client=self._checkpoint_mock_client(timeout_chunk=4)
+        stopped=writer.execute_claimed(self.path,client,result['request_id'],self.actor,
+            digest=snapshot['append_only_digest'],manual_authorized=True,plan_scope='APPEND_ONLY',
+            max_append_chunks=5)
+        self.assertEqual(stopped['status'],'OUTCOME_UNKNOWN_HOLD_NO_RETRY')
+        apply_calls=[call for call in client.calls if call[0]=='apply']
+        self.assertEqual([call[2]['chunk_index'] for call in apply_calls],[0,1,2,3,4])
+        with closing(sqlite3.connect(self.path)) as con:
+            rows=con.execute('SELECT chunk_index,status,receipt_json FROM google_writer_chunk_journal '
+                'WHERE run_id=? ORDER BY chunk_index',(result['request_id'],)).fetchall()
+        self.assertEqual([(row[0],row[1]) for row in rows],
+            [(0,'verified'),(1,'verified'),(2,'verified'),(3,'verified'),(4,'outcome_unknown')])
+        for index,(_chunk,status,receipt_raw) in enumerate(rows[:4]):
+            receipt=json.loads(receipt_raw)
+            self.assertEqual(receipt['continuationVersion'],2)
+            self.assertEqual(receipt['continuationSourceRequestId'],self.source)
+            self.assertEqual(receipt['continuationSourcePlanDigest'],
+                snapshot['details']['append_continuation']['source_plan_digest'])
+            self.assertEqual(receipt['continuationExclusionsDigest'],
+                snapshot['details']['append_continuation']['source_exclusions_digest'])
+        self.assertEqual(sum(call[0]=='apply' for call in client.calls),5,
+            'timeout does not trigger an automatic second write attempt')
 
     def test_table_change_between_audit_and_preview_blocks_without_saving_candidate(self):
         client=self.client(preview_digest=_d('changed-sheet'))

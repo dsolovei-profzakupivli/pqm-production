@@ -752,9 +752,41 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
             is_canonical_sha256_b64url(payload.get('reasonDigest')) and
             (prewrite_stage != 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' or
              is_canonical_sha256_b64url(payload.get('legacyManifestProjectionDigest'))))
+        continuation_v2_fields = {'continuationVersion','continuationSourcePlanDigest','continuationExclusionsDigest'}
+        continuation_v2_present = bool(set(payload) & continuation_v2_fields)
+        continuation_guard_rows=payload.get('continuationGuardRows')
+        continuation_guard_valid=(isinstance(continuation_guard_rows,list) and len(continuation_guard_rows)==25)
+        if continuation_guard_valid:
+            continuation_guard_seen=set()
+            for item in continuation_guard_rows:
+                identity=(item.get('tab'),item.get('row'),item.get('codeDigest')) if isinstance(item,dict) else None
+                if (not isinstance(item,dict) or set(item)!={'tab','row','codeDigest','rowDigest','serviceDigest'} or
+                        item.get('tab') not in {'ФОП','ЮО'} or type(item.get('row')) is not int or
+                        item['row']<2 or identity in continuation_guard_seen or
+                        not all(is_canonical_sha256_b64url(item.get(key)) for key in
+                            ('codeDigest','rowDigest','serviceDigest'))):
+                    continuation_guard_valid=False;break
+                continuation_guard_seen.add(identity)
+        continuation_v2_shape = (continuation_v2_present and
+            continuation_v2_fields.issubset(payload) and payload.get('continuationVersion') == 2 and
+            action in {'apply','resume_check'} and payload.get('environment') == 'SANDBOX' and
+            payload.get('planScope') == 'APPEND_ONLY' and payload.get('trigger') == 'manual' and
+            isinstance(payload.get('requestId'),str) and re.fullmatch(r'[0-9a-f]{32}',payload['requestId']) and
+            payload.get('requestId')!=payload.get('continuationSourceRequestId') and
+            type(payload.get('chunkIndex')) is int and 0<=payload['chunkIndex']<11 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('continuationPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('continuationRemainingDigest')) and
+            continuation_guard_valid and
+            payload.get('continuationSourceRequestId') == '71487a74779f4445a186a8dbe6252fbc' and
+            is_canonical_sha256_b64url(payload.get('continuationSourcePlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('continuationExclusionsDigest')) and
+            (action!='resume_check' or is_canonical_sha256_b64url(payload.get('expectedCheckpointDigest'))))
         legacy_shape = (function == 'pqmSandboxExecution' and
-            action in ('preview', 'apply', 'reconcile_partial') and
-            not (action == 'apply' and payload.get('planScope', 'ALL') == 'ALL'))
+            (action in ('preview', 'apply', 'reconcile_partial') or
+                (action=='resume_check' and continuation_v2_shape)) and
+            not (action == 'apply' and payload.get('planScope', 'ALL') == 'ALL') and
+            (not continuation_v2_present or continuation_v2_shape))
         allowed_reconciliation_fingerprints = (
             SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS |
             {SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT}
@@ -781,7 +813,7 @@ def validate_execution_request(request, environment, script_id, spreadsheet_id, 
                 payload['environment'] != environment or payload['scriptId'] != script_id or
                 payload['spreadsheetId'] != spreadsheet_id or
                 payload['contract'] != 'pqm-mirror-datetime-v1' or
-                action not in ('preview', 'apply', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run',
+                action not in ('preview', 'apply', 'resume_check', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run',
                     'prewrite_close_preflight', 'close_prewrite_failure', 'diagnose_append_plan') or
                 (action == 'reconcile_partial' and not reconciliation_allowed) or
                 (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or

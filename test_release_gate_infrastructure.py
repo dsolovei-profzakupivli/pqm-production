@@ -20,7 +20,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release-checks.yml").read_text(encoding="utf-8")
         c246_runner = "validation/run_c246_historical_integrity_snapshots_v1.py"
         historical_runner = "validation/run_google_writer_historical_integrity_snapshots_v1.py"
-        current_overlay = "test_google_writer_append_continuation_integrity_v3"
+        current_overlay = "test_google_writer_append_continuation_integrity_v4"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
 
         self.assertIn("node --test", workflow)
@@ -30,6 +30,9 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("python -m venv \"$RUNNER_TEMP/pqm-release-python\"", workflow)
         self.assertIn("pip install --disable-pip-version-check -r requirements.txt", workflow)
         self.assertIn("$RUNNER_TEMP/pqm-release-python/bin/python\" -B validation/run_c246_historical_integrity_snapshots_v1.py", workflow)
+        self.assertIn("git archive 7417591bbd8cb945a85e759d28036b72f97f8e9e", workflow)
+        self.assertIn("test_google_writer_append_continuation_integrity_v2", workflow)
+        self.assertIn("test_google_writer_append_continuation_integrity_v3", workflow)
         self.assertIn(c246_runner, workflow)
         self.assertIn(historical_runner, workflow)
         self.assertIn(current_overlay, workflow)
@@ -43,7 +46,12 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("c246 contracts are run by the mandatory workflow snapshot step", runner)
         self.assertNotIn("run_c246_historical_integrity_snapshots_v1.py", runner)
         self.assertIn("run_google_writer_historical_integrity_snapshots_v1.py", runner)
-        self.assertNotIn("'test_google_writer_append_continuation_integrity_v3'", runner.split("HISTORICAL_INTEGRITY_MODULES", 1)[1].split("]", 1)[0])
+        historical_modules = runner.split("HISTORICAL_INTEGRITY_MODULES", 1)[1].split("}\nEXACT_TREE_OVERLAY_MODULES", 1)[0]
+        self.assertNotIn("'test_google_writer_append_continuation_integrity_v2'", historical_modules)
+        self.assertNotIn("'test_google_writer_append_continuation_integrity_v3'", historical_modules)
+        exact_modules = runner.split("EXACT_TREE_OVERLAY_MODULES", 1)[1].split("}", 1)[0]
+        self.assertIn("'test_google_writer_append_continuation_integrity_v2'", exact_modules)
+        self.assertIn("'test_google_writer_append_continuation_integrity_v3'", exact_modules)
 
     def test_c246_route_manifest_is_pinned_and_covers_all_historical_modules_once(self):
         manifest_path = ROOT / "validation/c246_historical_integrity_snapshots_v1.json"

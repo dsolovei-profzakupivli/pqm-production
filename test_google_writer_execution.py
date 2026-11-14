@@ -169,6 +169,32 @@ class ExecutionTransportTests(unittest.TestCase):
         self.assertEqual(payload['action'],'close_unknown_run')
         self.assertNotIn('continuationSourceRequestId',payload)
 
+    def test_continuation_v2_resume_payload_carries_source_and_exclusion_bindings(self):
+        request_id='b'*32
+        guards=[]
+        for index in range(25):
+            tab='ФОП' if index%2==0 else 'ЮО';row=7440+index
+            identity=execution._canonical_json([tab,row,f'{30000000+index:08d}']).encode()
+            guards.append({'tab':tab,'row':row,'identity_digest':execution._sha256_b64(identity),
+                'row_digest':TEST_DIGEST,'service_digest':TEST_DIGEST})
+        client=self.client('SANDBOX')
+        result=client.invoke('resume_check',request_id,'sandbox-admin',trigger='manual',digest=TEST_DIGEST,
+            plan_scope='APPEND_ONLY',manual_authorized=True,chunk_index=4,
+            expected_checkpoint_digest=TEST_DIGEST,continuation_source_request_id=
+                execution.APPEND_CONTINUATION_SOURCE_REQUEST_ID,
+            continuation_plan_digest=TEST_DIGEST,continuation_remaining_digest=TEST_DIGEST,
+            continuation_guard_rows=guards,continuation_version=2,
+            continuation_source_plan_digest=TEST_DIGEST,continuation_exclusions_digest=TEST_DIGEST)
+        self.assertEqual(result['status'],'RESUME_READY')
+        request,_timeout=self.calls[0]
+        payload=json.loads(json.loads(request.data)['parameters'][0]['payload'])
+        self.assertEqual(payload['continuationVersion'],2)
+        self.assertEqual(payload['continuationSourceRequestId'],execution.APPEND_CONTINUATION_SOURCE_REQUEST_ID)
+        self.assertEqual(payload['continuationSourcePlanDigest'],TEST_DIGEST)
+        self.assertEqual(payload['continuationExclusionsDigest'],TEST_DIGEST)
+        self.assertLessEqual(len(json.loads(request.data)['parameters'][0]['payload'].encode('utf-16-le'))//2,8192)
+        self.assertEqual(payload['chunkIndex'],4)
+
     def test_shared_checkpoint_architecture_can_be_enabled_by_environment_only(self):
         self.assertTrue(execution_apply_contract.checkpoint_apply_enabled('SANDBOX'))
         self.assertFalse(execution_apply_contract.checkpoint_apply_enabled('PROD'))

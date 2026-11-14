@@ -44,10 +44,20 @@ jobs:
           node --test \
             scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs \
             scripts/pqm-google-writer/mirror-alignment/sandbox/legacy-reconciliation-evidence-v2.test.cjs
+          snapshot="$RUNNER_TEMP/pqm-append-continuation-history-7417591"
+          mkdir -p "$snapshot/validation/local_release_20261113"
+          git archive 7417591bbd8cb945a85e759d28036b72f97f8e9e | tar -x -C "$snapshot"
+          for suffix in v2 v3; do
+            cp "validation/local_release_20261113/google_writer_append_continuation_${suffix}.json" "$snapshot/validation/local_release_20261113/"
+            cp "test_google_writer_append_continuation_integrity_${suffix}.py" "$snapshot/"
+          done
+          (cd "$snapshot" && "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
+            test_google_writer_append_continuation_integrity_v2 \
+            test_google_writer_append_continuation_integrity_v3)
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_c246_historical_integrity_snapshots_v1.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_google_writer_historical_integrity_snapshots_v1.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_append_continuation_integrity_v3 \
+            test_google_writer_append_continuation_integrity_v4 \
             test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks
       - name: Install Playwright and Chromium for browser regressions
         shell: bash

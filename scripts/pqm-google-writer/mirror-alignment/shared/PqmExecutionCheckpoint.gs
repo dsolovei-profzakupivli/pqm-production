@@ -121,6 +121,12 @@ function pqmExecutionCheckpointReceipt_(request, receipt, step) {
   result.more = step.more;
   result.phase = step.phase;
   result.checkpointDigest = step.checkpointDigest || null;
+  if (request.continuationVersion === 2) {
+    result.continuationVersion = 2;
+    result.continuationSourceRequestId = request.continuationSourceRequestId;
+    result.continuationSourcePlanDigest = request.continuationSourcePlanDigest;
+    result.continuationExclusionsDigest = request.continuationExclusionsDigest;
+  }
     if (step.chunkId) {
       result.chunkId = step.chunkId;
       result.chunkDigest = step.chunkDigest;
@@ -151,6 +157,11 @@ function pqmExecutionCheckpointStateDigest_(record) {
     state.continuationSourceRequestId = record.continuationSourceRequestId;
     state.continuationPlanDigest = record.continuationPlanDigest;
     state.continuationGuardDigest = record.continuationGuardDigest;
+    if (record.continuationVersion === 2) {
+      state.continuationVersion = 2;
+      state.continuationSourcePlanDigest = record.continuationSourcePlanDigest;
+      state.continuationExclusionsDigest = record.continuationExclusionsDigest;
+    }
   }
   if (record.chunkJournalVersion === 2) {
     state.chunkJournalVersion = record.chunkJournalVersion;

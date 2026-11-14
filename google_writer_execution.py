@@ -1012,7 +1012,9 @@ class ExecutionClient:
                expected_plan_counts=None,expected_update_identity_digest=None,expected_update_identities=None,
                expected_cell_digests=None,require_audit_statuses=False,
                continuation_source_request_id=None,continuation_plan_digest=None,
-               continuation_remaining_digest=None,continuation_guard_rows=None):
+               continuation_remaining_digest=None,continuation_guard_rows=None,
+               continuation_version=None,continuation_source_plan_digest=None,
+               continuation_exclusions_digest=None):
         manual_override = (manual_authorized is True and trigger == 'manual' and
                            isinstance(actor, str) and bool(actor.strip()))
         if background_jobs.disabled() and not manual_override:
@@ -1191,8 +1193,16 @@ class ExecutionClient:
                 raise ValueError('Read-only APPEND audit cannot carry a chunk binding')
         elif any(value is not None for value in chunk_binding):
             raise ValueError('Durable chunk binding is Sandbox Apply only')
+        continuation_binding_present=any(value is not None for value in (
+            continuation_source_request_id,continuation_plan_digest,continuation_remaining_digest,
+            continuation_guard_rows,continuation_source_plan_digest,continuation_exclusions_digest))
+        # Version 1 is the original wire contract and intentionally has no version
+        # field; retain that behavior for existing callers and payloads.
+        if continuation_binding_present and continuation_version is None:
+            continuation_version=1
         continuation_fields=(continuation_source_request_id,continuation_plan_digest,
-            continuation_remaining_digest,continuation_guard_rows)
+            continuation_remaining_digest,continuation_guard_rows,continuation_version,
+            continuation_source_plan_digest,continuation_exclusions_digest)
         if any(value is not None for value in continuation_fields):
             if (action not in {'apply','resume_check'} or self.environment!='SANDBOX' or trigger!='manual' or
                     manual_override is not True or plan_scope!='APPEND_ONLY' or
@@ -1203,7 +1213,12 @@ class ExecutionClient:
                     not is_canonical_sha256_b64url(continuation_plan_digest) or
                     not is_canonical_sha256_b64url(continuation_remaining_digest) or
                     not isinstance(continuation_guard_rows,list) or
-                    len(continuation_guard_rows)!=APPEND_CONTINUATION_CONFIRMED):
+                    len(continuation_guard_rows)!=APPEND_CONTINUATION_CONFIRMED or
+                    type(continuation_version) is not int or continuation_version not in {1,2} or
+                    (continuation_version==1 and (continuation_source_plan_digest is not None or
+                        continuation_exclusions_digest is not None)) or
+                    (continuation_version==2 and (not is_canonical_sha256_b64url(continuation_source_plan_digest) or
+                        not is_canonical_sha256_b64url(continuation_exclusions_digest)))):
                 raise ValueError('Sandbox APPEND continuation binding is invalid')
             seen_guard_rows=set()
             for item in continuation_guard_rows:
@@ -1361,6 +1376,10 @@ class ExecutionClient:
                 continuationGuardRows=[{'tab':item['tab'],'row':item['row'],'codeDigest':item['identity_digest'],
                     'rowDigest':item['row_digest'],'serviceDigest':item['service_digest']}
                     for item in continuation_guard_rows])
+            if continuation_version==2:
+                message.update(continuationVersion=2,
+                    continuationSourcePlanDigest=continuation_source_plan_digest,
+                    continuationExclusionsDigest=continuation_exclusions_digest)
         if action == 'reconcile_partial':
             message.update(reconciliationId=reconciliation_id,
                            requestFingerprint=request_fingerprint,
@@ -2282,7 +2301,8 @@ def validate_append_continuation_closed(path, snapshot, actor):
     """Fail closed unless the source HOLD has a finalized, receipt-backed admin close."""
     details=snapshot.get('details') if isinstance(snapshot,dict) else None
     meta=details.get('append_continuation') if isinstance(details,dict) else None
-    if (not isinstance(meta,dict) or meta.get('version')!=1 or
+    continuation_version=meta.get('version') if isinstance(meta,dict) else None
+    if (not isinstance(meta,dict) or type(continuation_version) is not int or continuation_version not in {1,2} or
             meta.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
             meta.get('confirmed_count')!=25 or meta.get('excluded_count')!=25 or
             meta.get('missing_count')!=251 or
@@ -2334,11 +2354,22 @@ def validate_append_continuation_closed(path, snapshot, actor):
         raise ValueError('Source HOLD requires a separately confirmed administrative close')
     try:source_details=json.loads(plan['details_json'])
     except (TypeError,json.JSONDecodeError):raise ValueError('Source plan evidence is invalid') from None
-    if (_preview_details_digest(source_details)!=plan['details_digest'] or
-            source_details.get('counts')!={'append':APPEND_CONTINUATION_EXPECTED_TOTAL,'update':0,'conflict':0,'error':0} or
-            len(source_details.get('appends',[]))!=APPEND_CONTINUATION_EXPECTED_TOTAL or
-            source_details.get('updates') or source_details.get('conflicts') or source_details.get('errors')):
+    expected_source_counts=(APPEND_CONTINUATION_V2_SOURCE_COUNTS if continuation_version==2 else
+        {'append':APPEND_CONTINUATION_EXPECTED_TOTAL,'update':0,'conflict':0,'error':0})
+    if (not isinstance(source_details,dict) or
+            _preview_details_digest(source_details)!=plan['details_digest'] or
+            source_details.get('counts')!=expected_source_counts or
+            not isinstance(source_details.get('appends'),list) or
+            len(source_details['appends'])!=APPEND_CONTINUATION_EXPECTED_TOTAL or
+            (continuation_version==1 and (source_details.get('updates') or source_details.get('conflicts') or
+                source_details.get('errors')))):
         raise ValueError('Original 276-operation plan evidence changed')
+    if continuation_version==2:
+        exclusions=_append_continuation_v2_source_exclusions_from_db(path,actor,meta)
+        _append_continuation_v2_assert_disjoint(source_details['appends'],source_details,exclusions)
+        # The source exclusion summary deliberately carries only non-APPEND counts.
+        if meta.get('source_excluded_counts')!={'update':2,'conflict':2,'error':0}:
+            raise ValueError('Continuation v2 excluded counts changed')
     source_ops=[_append_continuation_operation(item) for item in source_details['appends']]
     source_by_identity={(item['tab'],item['row'],item['code']):item for item in source_ops}
     continuation_by_identity={(item['tab'],item['row'],item['code']):item for item in ops}
@@ -2684,6 +2715,11 @@ def mark_append_chunk_inflight(path, chunk_id, *, now=None):
             WHERE chunk_id=?''',(chunk_id,)).fetchone()
         if not row or row[2]!='prepared':
             return False
+        run_actor_row=con.execute('SELECT actor FROM google_writer_runs WHERE request_id=? AND environment=\'SANDBOX\'',
+            (row[0],)).fetchone()
+        if not run_actor_row:
+            return False
+        run_actor=run_actor_row[0]
         if row[3]=='APPEND_ONLY':
             plan=con.execute('''SELECT details_json FROM google_writer_plan_journal
                 WHERE request_id=? AND environment='SANDBOX' ''',(row[0],)).fetchone()
@@ -2691,13 +2727,48 @@ def mark_append_chunk_inflight(path, chunk_id, *, now=None):
             except (TypeError,json.JSONDecodeError): details=None
             continuation=details.get('append_continuation') if isinstance(details,dict) else None
             if continuation is not None:
+                continuation_version=continuation.get('version') if isinstance(continuation,dict) else None
                 prior=con.execute('''SELECT chunk_index,chunk_id,plan_id,plan_digest,source_digest,
                     chunk_digest,status,expected_json,receipt_json FROM google_writer_chunk_journal
                     WHERE run_id=? AND chunk_index<? ORDER BY chunk_index''',(row[0],row[1])).fetchall()
-                if (continuation.get('version')!=1 or continuation.get('source_request_id')!=
+                if (continuation_version not in {1,2} or continuation.get('source_request_id')!=
                         APPEND_CONTINUATION_SOURCE_REQUEST_ID or len(prior)!=row[1] or
                         not isinstance(details.get('appends'),list) or len(details['appends'])!=251):
                     return False
+                if continuation_version==2 and (
+                        continuation.get('source_excluded_counts')!={'update':2,'conflict':2,'error':0} or
+                        not all(is_canonical_sha256_b64url(continuation.get(key)) for key in
+                            ('source_plan_digest','source_exclusions_digest','source_update_exclusions_digest',
+                             'source_conflict_exclusions_digest'))):
+                    return False
+                if continuation_version==2:
+                    source=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,
+                            source_digest,details_json FROM google_writer_plan_journal
+                        WHERE request_id=? AND environment='SANDBOX' ''',
+                        (continuation.get('source_request_id'),)).fetchone()
+                    try: source_details=json.loads(source[6]) if source else None
+                    except (TypeError,json.JSONDecodeError): source_details=None
+                    if (not source or source[0]!=continuation.get('source_request_id') or source[1]!=run_actor or
+                            source[2]!=continuation.get('source_plan_digest') or
+                            source[3]!=continuation.get('source_append_digest') or
+                            source[4]!=continuation.get('source_details_digest') or
+                            source[5]!=continuation.get('source_payload_digest') or
+                            not isinstance(source_details,dict) or
+                            _preview_details_digest(source_details)!=source[4] or
+                            source_details.get('counts')!=APPEND_CONTINUATION_V2_SOURCE_COUNTS or
+                            not isinstance(source_details.get('errors'),list) or source_details['errors']):
+                        return False
+                    try:
+                        exclusions=_append_continuation_v2_exclusions(source_details)
+                        _append_continuation_v2_assert_disjoint(source_details.get('appends'),source_details,exclusions)
+                    except (ValueError,TypeError,KeyError):
+                        return False
+                    if (exclusions['digest']!=continuation.get('source_exclusions_digest') or
+                            exclusions['update_digest']!=continuation.get('source_update_exclusions_digest') or
+                            exclusions['conflict_digest']!=continuation.get('source_conflict_exclusions_digest') or
+                            exclusions['update_records']!=continuation.get('excluded_updates') or
+                            exclusions['conflict_records']!=continuation.get('excluded_conflicts')):
+                        return False
                 for index,item in enumerate(prior):
                     try: expected=json.loads(item[7]);receipt=json.loads(item[8] or '{}')
                     except (TypeError,json.JSONDecodeError): return False
@@ -2726,6 +2797,12 @@ def mark_append_chunk_inflight(path, chunk_id, *, now=None):
                             not isinstance(counts,dict) or counts.get('append')!=len(chunk_rows) or
                             counts.get('update')!=0):
                         return False
+                    if continuation_version==2 and (
+                            receipt.get('continuationVersion')!=2 or
+                            receipt.get('continuationSourceRequestId')!=continuation.get('source_request_id') or
+                            receipt.get('continuationSourcePlanDigest')!=continuation.get('source_plan_digest') or
+                            receipt.get('continuationExclusionsDigest')!=continuation.get('source_exclusions_digest')):
+                        return False
         changed=con.execute("UPDATE google_writer_chunk_journal SET status='inflight',inflight_at=? WHERE chunk_id=? AND status='prepared'",
                             (stamp,chunk_id)).rowcount
         if changed!=1:
@@ -2737,6 +2814,17 @@ def mark_append_chunk_inflight(path, chunk_id, *, now=None):
         run=con.execute("SELECT result_json FROM google_writer_runs WHERE request_id=? AND status='running'",(row[0],)).fetchone()
         if not run: raise RuntimeError('Append run no longer owns its journaled chunk')
         progress=json.loads(run[0] or '{}')
+        if row[1] > 0:
+            plan=con.execute('''SELECT details_json FROM google_writer_plan_journal
+                WHERE request_id=? AND environment='SANDBOX' ''',(row[0],)).fetchone()
+            try: details=json.loads(plan[0]) if plan else None
+            except (TypeError,json.JSONDecodeError): details=None
+            continuation=details.get('append_continuation') if isinstance(details,dict) else None
+            if isinstance(continuation,dict) and continuation.get('version')==2 and (
+                    progress.get('continuation_version')!=2 or
+                    progress.get('continuation_source_plan_digest')!=continuation.get('source_plan_digest') or
+                    progress.get('continuation_exclusions_digest')!=continuation.get('source_exclusions_digest')):
+                raise RuntimeError('Continuation v2 run lineage changed before next chunk')
         progress.update(attempted_chunk=row[1],attempted_phase='append',progress_state='remote_in_flight',
                         last_progress_at=stamp)
         con.execute("UPDATE google_writer_runs SET result_json=? WHERE request_id=? AND status='running'",
@@ -4007,6 +4095,7 @@ def diagnose_append_only_plan(path, client, request_id, actor, *, audit_only=Fal
 APPEND_CONTINUATION_SOURCE_REQUEST_ID='71487a74779f4445a186a8dbe6252fbc'
 APPEND_CONTINUATION_EXPECTED_TOTAL=276
 APPEND_CONTINUATION_CONFIRMED=25
+APPEND_CONTINUATION_V2_SOURCE_COUNTS={'append':276,'update':2,'conflict':2,'error':0}
 
 
 def _append_continuation_operation(item):
@@ -4049,6 +4138,148 @@ def _append_continuation_operations_digest(operations):
     return _sha256_b64(_canonical_json(normalized).encode('utf-8'))
 
 
+def _append_continuation_v2_exclusions(details):
+    """Return privacy-safe, deterministic bindings for the two excluded UPDATEs/conflicts.
+
+    Conflict records in the historical Preview do not carry a row number. We preserve that
+    fact explicitly; this helper never fabricates one. Google-side target-row auditing still
+    has to prove every continuation APPEND destination is empty or one of the 25 preserved rows.
+    """
+    if not isinstance(details,dict):
+        raise ValueError('Continuation v2 source details are invalid')
+    updates=details.get('updates');conflicts=details.get('conflicts');errors=details.get('errors')
+    source_counts=details.get('counts')
+    if (not isinstance(source_counts,dict) or set(source_counts)!={'append','update','conflict','error'} or
+            any(type(source_counts.get(key)) is not int for key in ('append','update','conflict','error')) or
+            source_counts.get('append') not in {251,276} or source_counts.get('update')!=2 or
+            source_counts.get('conflict')!=2 or source_counts.get('error')!=0 or
+            not isinstance(updates,list) or len(updates)!=2 or not isinstance(conflicts,list) or
+            len(conflicts)!=2 or not isinstance(errors,list) or errors):
+        raise ValueError('Continuation v2 excluded operation counts are invalid')
+    normalized_updates=[];update_codes=set();update_rows=set();update_records=[]
+    for item in updates:
+        if (not isinstance(item,dict) or item.get('operation')!='UPDATE' or item.get('tab') not in {'ФОП','ЮО'} or
+                not isinstance(item.get('code'),str) or not re.fullmatch(r'\d{8,10}',item['code']) or
+                type(item.get('row')) is not int or item['row']<2 or not isinstance(item.get('cells'),list) or
+                not item['cells']):
+            raise ValueError('Continuation v2 UPDATE exclusion is invalid')
+        columns=set();cells=[]
+        for cell in item['cells']:
+            if (not isinstance(cell,dict) or cell.get('column') not in {'C','D','E','F','H','I','L'} or
+                    cell['column'] in columns or type(cell.get('formula')) is not bool or
+                    not (cell.get('old_value') is None or isinstance(cell.get('old_value'),(str,int,float,bool))) or
+                    not (cell.get('new_value') is None or isinstance(cell.get('new_value'),(str,int,float,bool))) or
+                    isinstance(cell.get('old_value'),float) and not math.isfinite(cell['old_value']) or
+                    isinstance(cell.get('new_value'),float) and not math.isfinite(cell['new_value'])):
+                raise ValueError('Continuation v2 UPDATE cell exclusion is invalid')
+            columns.add(cell['column'])
+            cells.append({'column':cell['column'],'old_value':cell.get('old_value'),
+                          'new_value':cell.get('new_value'),'formula':cell['formula']})
+        cells.sort(key=lambda cell:cell['column'])
+        projection={'operation':'UPDATE','tab':item['tab'],'row':item['row'],'code':item['code'],'cells':cells}
+        identity=(item['tab'],item['row'],item['code'])
+        code_tab=(item['tab'],item['code'])
+        if identity in update_rows or item['code'] in update_codes:
+            raise ValueError('Continuation v2 UPDATE exclusion is duplicated')
+        update_rows.add(identity);update_codes.add(item['code']);normalized_updates.append(projection)
+        update_records.append({'tab':item['tab'],'row':item['row'],
+            'identity_digest':_sha256_b64(_canonical_json([item['tab'],item['row'],item['code']]).encode('utf-8')),
+            'change_digest':_sha256_b64(_canonical_json(projection).encode('utf-8')),
+            'columns':[cell['column'] for cell in cells]})
+    normalized_conflicts=[];conflict_codes=set();conflict_records=[]
+    allowed_conflict_reasons={'routing_mismatch'}
+    for item in conflicts:
+        if (not isinstance(item,dict) or item.get('tab') not in {'ФОП','ЮО'} or
+                not isinstance(item.get('code'),str) or not re.fullmatch(r'\d{8,10}',item['code']) or
+                item.get('reason') not in allowed_conflict_reasons or
+                ('row' in item and (type(item['row']) is not int or item['row']<2))):
+            raise ValueError('Continuation v2 conflict exclusion is invalid')
+        if item['code'] in conflict_codes:
+            raise ValueError('Continuation v2 conflict exclusion is duplicated')
+        conflict_codes.add(item['code'])
+        row_available='row' in item
+        projection={'tab':item['tab'],'code':item['code'],'reason':item['reason'],
+            'row_available':row_available,'row':item.get('row') if row_available else None}
+        normalized_conflicts.append(projection)
+        conflict_records.append({'tab':item['tab'],'reason':item['reason'],
+            'identity_digest':_sha256_b64(_canonical_json([item['tab'],item['code'],item['reason'],
+                row_available,item.get('row') if row_available else None]).encode('utf-8')),
+            'row_binding_available':row_available})
+    normalized_updates.sort(key=lambda item:(item['tab'],item['row'],item['code']))
+    normalized_conflicts.sort(key=lambda item:(item['tab'],item['code'],item['reason']))
+    material={'version':2,'updates':normalized_updates,'conflicts':normalized_conflicts}
+    return {'material':material,'digest':_sha256_b64(_canonical_json(material).encode('utf-8')),
+        'update_digest':_sha256_b64(_canonical_json(normalized_updates).encode('utf-8')),
+        'conflict_digest':_sha256_b64(_canonical_json(normalized_conflicts).encode('utf-8')),
+        'update_records':update_records,'conflict_records':conflict_records}
+
+
+def _append_continuation_v2_assert_disjoint(appends,details,exclusions):
+    append_codes=set();append_rows=set();append_pairs=set()
+    for item in appends:
+        normalized=_append_continuation_operation(item)
+        if normalized['code'] in append_codes or (normalized['tab'],normalized['row']) in append_rows:
+            raise ValueError('Continuation v2 APPEND identity is duplicated')
+        append_codes.add(normalized['code']);append_rows.add((normalized['tab'],normalized['row']))
+        append_pairs.add((normalized['tab'],normalized['code']))
+    updates=details['updates'];conflicts=details['conflicts']
+    for item in updates:
+        if (item['code'] in append_codes or (item['tab'],item['row']) in append_rows or
+                (item['tab'],item['code']) in append_pairs):
+            raise ValueError('Continuation v2 UPDATE overlaps APPEND targets')
+    for item in conflicts:
+        if item['code'] in append_codes or (item['tab'],item['code']) in append_pairs:
+            raise ValueError('Continuation v2 conflict overlaps APPEND supplier')
+        if 'row' in item and (item['tab'],item['row']) in append_rows:
+            raise ValueError('Continuation v2 conflict overlaps APPEND row')
+        if item['code'] in {update['code'] for update in updates}:
+            raise ValueError('Continuation v2 UPDATE overlaps conflict supplier')
+        if 'row' in item and (item['tab'],item['row']) in {
+                (update['tab'],update['row']) for update in updates}:
+            raise ValueError('Continuation v2 UPDATE overlaps conflict row')
+    return exclusions
+
+
+def _append_continuation_v2_source_exclusions_from_db(path, actor, metadata):
+    source_id=metadata.get('source_request_id') if isinstance(metadata,dict) else None
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON');con.row_factory=sqlite3.Row
+        row=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,source_digest,details_json
+            FROM google_writer_plan_journal WHERE request_id=? AND environment='SANDBOX' ''',(source_id,)).fetchone()
+    if not row or row['actor']!=actor or row['plan_id']!=source_id:
+        raise ValueError('Continuation v2 source journal is unavailable')
+    if (row['plan_digest']!=metadata.get('source_plan_digest') or
+            row['details_digest']!=metadata.get('source_details_digest') or
+            row['append_only_digest']!=metadata.get('source_append_digest') or
+            row['source_digest']!=metadata.get('source_payload_digest') or
+            not all(is_canonical_sha256_b64url(row[key]) for key in
+                ('plan_digest','append_only_digest','details_digest','source_digest'))):
+        raise ValueError('Continuation v2 source digest binding changed')
+    try:source=json.loads(row['details_json'])
+    except (TypeError,json.JSONDecodeError):raise ValueError('Continuation v2 source plan is invalid') from None
+    source_counts=source.get('counts') if isinstance(source,dict) else None
+    if (not isinstance(source,dict) or _preview_details_digest(source)!=row['details_digest'] or
+            source.get('plan_digest')!=row['plan_digest'] or
+            source.get('append_only_digest')!=row['append_only_digest'] or
+            source.get('source_digest')!=row['source_digest'] or
+            source.get('environment')!='SANDBOX' or
+            source_counts!=APPEND_CONTINUATION_V2_SOURCE_COUNTS or
+            any(type(source_counts.get(key)) is not int for key in ('append','update','conflict','error')) or
+            not isinstance(source.get('errors'),list) or source['errors'] or
+            not isinstance(source.get('appends'),list) or len(source['appends'])!=276):
+        raise ValueError('Continuation v2 source plan changed')
+    exclusions=_append_continuation_v2_exclusions(source)
+    _append_continuation_v2_assert_disjoint(source['appends'],source,exclusions)
+    if (exclusions['digest']!=metadata.get('source_exclusions_digest') or
+            exclusions['update_digest']!=metadata.get('source_update_exclusions_digest') or
+            exclusions['conflict_digest']!=metadata.get('source_conflict_exclusions_digest') or
+            exclusions['update_records']!=metadata.get('excluded_updates') or
+            exclusions['conflict_records']!=metadata.get('excluded_conflicts')):
+        raise ValueError('Continuation v2 source exclusions changed')
+    return exclusions
+
+
 def _append_continuation_guard_for_chunk(path, request_id, actor, chunk_index, run_meta):
     if type(chunk_index) is not int or not 0<=chunk_index<11:
         raise ValueError('Continuation chunk index is invalid')
@@ -4063,13 +4294,14 @@ def _append_continuation_guard_for_chunk(path, request_id, actor, chunk_index, r
     try: details=json.loads(row[4])
     except (TypeError,json.JSONDecodeError):raise ValueError('Continuation plan is invalid') from None
     metadata=details.get('append_continuation') if isinstance(details,dict) else None
+    version=metadata.get('version') if isinstance(metadata,dict) else None
     if (not isinstance(run_meta,dict) or run_meta.get('continuation_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
             row[2]!=run_meta.get('details_digest') or
             row[3]!=details.get('source_digest') or
             row[1]!=run_meta.get('plan_digest') or
             _preview_details_digest(details)!=row[2] or
             not isinstance(metadata,dict) or metadata.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
-            metadata.get('version')!=1 or not is_canonical_sha256_b64url(metadata.get('operation_digest')) or
+            version not in {1,2} or not is_canonical_sha256_b64url(metadata.get('operation_digest')) or
             not is_canonical_sha256_b64url(row[0]) or
             details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0} or
             not isinstance(details.get('appends'),list) or len(details['appends'])!=251):
@@ -4077,6 +4309,17 @@ def _append_continuation_guard_for_chunk(path, request_id, actor, chunk_index, r
     operations=[_append_continuation_operation(item) for item in details['appends']]
     if _append_continuation_operations_digest(operations)!=metadata['operation_digest']:
         raise ValueError('Continuation plan operation digest changed')
+    source_plan_digest=None;exclusions_digest=None
+    if version==2:
+        _append_continuation_v2_source_exclusions_from_db(path,actor,metadata)
+        if (run_meta.get('continuation_version')!=2 or
+                run_meta.get('continuation_source_plan_digest')!=metadata.get('source_plan_digest') or
+                run_meta.get('continuation_exclusions_digest')!=metadata.get('source_exclusions_digest')):
+            raise ValueError('Continuation v2 run lineage changed')
+        source_plan_digest=metadata['source_plan_digest']
+        exclusions_digest=metadata['source_exclusions_digest']
+    elif run_meta.get('continuation_version',1)!=1:
+        raise ValueError('Continuation version changed')
     start=chunk_index*APPEND_JOURNAL_PAGE_ROWS
     remaining=operations[start:]
     if len(remaining)!=251-start or not remaining:
@@ -4084,11 +4327,16 @@ def _append_continuation_guard_for_chunk(path, request_id, actor, chunk_index, r
     preserved=metadata.get('preserved_rows')
     if not isinstance(preserved,list) or len(preserved)!=APPEND_CONTINUATION_CONFIRMED:
         raise ValueError('Continuation preserved-row evidence is unavailable')
-    return {'continuation_source_request_id':metadata['source_request_id'],
+    result={'continuation_source_request_id':metadata['source_request_id'],
         'continuation_plan_digest':metadata['operation_digest'],
         'continuation_remaining_digest':_append_continuation_operations_digest(remaining),
         'continuation_guard_rows':[{'tab':item['tab'],'row':item['row'],'identity_digest':item['identity_digest'],
             'row_digest':item['row_digest'],'service_digest':item['service_digest']} for item in preserved]}
+    result['continuation_version']=version
+    if version==2:
+        result.update(continuation_source_plan_digest=source_plan_digest,
+            continuation_exclusions_digest=exclusions_digest)
+    return result
 
 
 def _append_continuation_guard_for_run(path, request_id, actor, chunk_index):
@@ -4114,7 +4362,7 @@ def _append_continuation_preview_response(path, client, actor, source_request_id
         _append_continuation_candidate_digest(path,request_id,actor))
     details=snapshot['details'];metadata=details.get('append_continuation')
     if (not isinstance(metadata,dict) or metadata.get('source_request_id')!=source_request_id or
-            metadata.get('version')!=1 or metadata.get('confirmed_count')!=25 or
+            metadata.get('version') not in {1,2} or metadata.get('confirmed_count')!=25 or
             metadata.get('excluded_count')!=25 or metadata.get('missing_count')!=251 or
             not all(is_canonical_sha256_b64url(metadata.get(key)) for key in
                 ('source_plan_digest','source_details_digest','source_append_digest','source_payload_digest',
@@ -4122,6 +4370,16 @@ def _append_continuation_preview_response(path, client, actor, source_request_id
             not isinstance(metadata.get('preserved_rows'),list) or len(metadata['preserved_rows'])!=25 or
             details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0}):
         raise ValueError('Saved continuation Preview binding mismatch')
+    if metadata.get('version')==2:
+        if (metadata.get('source_excluded_counts')!={'update':2,'conflict':2,'error':0} or
+                not all(is_canonical_sha256_b64url(metadata.get(key)) for key in
+                    ('source_exclusions_digest','source_update_exclusions_digest',
+                     'source_conflict_exclusions_digest')) or
+                not isinstance(metadata.get('excluded_updates'),list) or len(metadata['excluded_updates'])!=2 or
+                not isinstance(metadata.get('excluded_conflicts'),list) or len(metadata['excluded_conflicts'])!=2 or
+                metadata.get('conflict_rows_unavailable') not in {0,1,2}):
+            raise ValueError('Saved continuation v2 exclusion metadata is invalid')
+        _append_continuation_v2_source_exclusions_from_db(path,actor,metadata)
     for item in metadata['preserved_rows']:
         if (not isinstance(item,dict) or set(item)!={'tab','row','identity_digest','row_digest','service_digest'} or
                 item.get('tab') not in {'ФОП','ЮО'} or type(item.get('row')) is not int or item['row']<2 or
@@ -4136,10 +4394,13 @@ def _append_continuation_preview_response(path, client, actor, source_request_id
     ticket=preview_ticket(client,request_id,actor,snapshot['append_only_digest'],
         plan_scope='APPEND_ONLY',parent_digest=snapshot['plan_digest'],
         details_digest=snapshot['details_digest'])
-    return {'status':'PREVIEW_READY','source_request_id':source_request_id,'request_id':request_id,
+    result={'status':'PREVIEW_READY','source_request_id':source_request_id,'request_id':request_id,
         'counts':details['counts'],'plan_digest':snapshot['plan_digest'],
         'details_digest':snapshot['details_digest'],'ticket':ticket,'preview_created':False,
         'writer_started':False,'google_writes':0,'script_properties_writes':0}
+    if metadata.get('version')==2:
+        result['excluded_counts']=metadata['source_excluded_counts']
+    return result
 
 
 def _append_continuation_candidate_digest(path, request_id, actor):
@@ -4205,6 +4466,15 @@ def prepare_append_continuation_preview(path, client, source_request_id, actor):
             run,plan=runs[0],plans[0]
             try:run_result=json.loads(run['result_json'] or '{}');old=json.loads(plan['details_json'])
             except (TypeError,json.JSONDecodeError):return blocked('SOURCE_EVIDENCE_INVALID')
+            if not isinstance(run_result,dict) or not isinstance(old,dict):
+                return blocked('SOURCE_EVIDENCE_INVALID')
+            source_v2=(old.get('counts')==APPEND_CONTINUATION_V2_SOURCE_COUNTS and
+                isinstance(old.get('updates'),list) and len(old['updates'])==2 and
+                isinstance(old.get('conflicts'),list) and len(old['conflicts'])==2 and
+                isinstance(old.get('errors'),list) and not old['errors'])
+            source_v1=(old.get('counts')=={'append':APPEND_CONTINUATION_EXPECTED_TOTAL,
+                'update':0,'conflict':0,'error':0} and not old.get('updates') and
+                not old.get('conflicts') and not old.get('errors'))
             if (run['status']!=('closed_unknown' if source_closed else 'outcome_unknown') or run['actor']!=actor or
                     run_result.get('plan_scope')!='APPEND_ONLY' or run_result.get('attempted_chunk')!=0 or
                     plan['plan_id']!=source_request_id or plan['actor']!=actor or
@@ -4213,13 +4483,20 @@ def prepare_append_continuation_preview(path, client, source_request_id, actor):
                     _preview_details_digest(old)!=plan['details_digest'] or
                     old.get('plan_digest')!=plan['plan_digest'] or old.get('append_only_digest')!=plan['append_only_digest'] or
                     old.get('source_digest')!=plan['source_digest'] or old.get('environment')!='SANDBOX' or
-                    old.get('counts')!={'append':APPEND_CONTINUATION_EXPECTED_TOTAL,'update':0,'conflict':0,'error':0} or
-                    len(old.get('appends',[]))!=APPEND_CONTINUATION_EXPECTED_TOTAL or
-                    old.get('updates') or old.get('conflicts') or old.get('errors')):
+                    not (source_v1 or source_v2) or
+                    not isinstance(old.get('appends'),list) or
+                    len(old['appends'])!=APPEND_CONTINUATION_EXPECTED_TOTAL):
                 return blocked('SOURCE_PLAN_BINDING_INVALID')
             old_ops=[_append_continuation_operation(item) for item in old['appends']]
             if len({item['code'] for item in old_ops})!=APPEND_CONTINUATION_EXPECTED_TOTAL:
                 return blocked('SOURCE_PLAN_DUPLICATE_TARGET')
+            source_exclusions=None
+            if source_v2:
+                try:
+                    source_exclusions=_append_continuation_v2_exclusions(old)
+                    _append_continuation_v2_assert_disjoint(old['appends'],old,source_exclusions)
+                except (ValueError,TypeError,KeyError):
+                    return blocked('SOURCE_EXCLUSIONS_INVALID')
     except (OSError,sqlite3.Error,ValueError,TypeError,KeyError,IndexError):
         return blocked('SOURCE_SQLITE_EVIDENCE_UNAVAILABLE')
 
@@ -4280,13 +4557,27 @@ def prepare_append_continuation_preview(path, client, source_request_id, actor):
         return blocked('CONTINUATION_PREVIEW_UNAVAILABLE')
     details=fresh.get('planDetails') if isinstance(fresh,dict) else None
     fresh_counts=details.get('counts') if isinstance(details,dict) else None
+    expected_fresh_counts=({'append':251,'update':2,'conflict':2,'error':0} if source_v2 else
+        {'append':251,'update':0,'conflict':0,'error':0})
     if (not isinstance(details,dict) or not isinstance(fresh_counts,dict) or
             fresh.get('status')!='PREVIEW' or fresh.get('google_state_digest')!=audit['google_state_digest'] or
             details.get('source_digest')!=plan['source_digest'] or
-            fresh_counts!={'append':251,'update':0,'conflict':0,'error':0} or
-            len(details.get('appends',[]))!=251 or details.get('updates') or
-            details.get('conflicts') or details.get('errors')):
+            fresh_counts!=expected_fresh_counts or
+            not isinstance(details.get('appends'),list) or len(details['appends'])!=251 or
+            not isinstance(details.get('updates'),list) or len(details['updates'])!=expected_fresh_counts['update'] or
+            not isinstance(details.get('conflicts'),list) or len(details['conflicts'])!=expected_fresh_counts['conflict'] or
+            details.get('errors')):
         return blocked('CONTINUATION_PREVIEW_NOT_EXACT')
+    if source_v2:
+        try:
+            fresh_exclusions=_append_continuation_v2_exclusions(details)
+            _append_continuation_v2_assert_disjoint(details['appends'],details,fresh_exclusions)
+        except (ValueError,TypeError,KeyError):
+            return blocked('CONTINUATION_EXCLUSIONS_INVALID')
+        if (fresh_exclusions['digest']!=source_exclusions['digest'] or
+                fresh_exclusions['update_digest']!=source_exclusions['update_digest'] or
+                fresh_exclusions['conflict_digest']!=source_exclusions['conflict_digest']):
+            return blocked('CONTINUATION_EXCLUSIONS_CHANGED')
     try:
         new_ops=[_append_continuation_operation(item) for item in details['appends']]
     except (ValueError,TypeError,KeyError):
@@ -4295,6 +4586,13 @@ def prepare_append_continuation_preview(path, client, source_request_id, actor):
             {item['code'] for item in new_ops}!={item['code'] for item in expected} or
             {item['code']:item for item in new_ops}!={item['code']:item for item in expected}):
         return blocked('CONTINUATION_PREVIEW_PLAN_MISMATCH')
+    if source_v2:
+        # The parent digest continues to bind the complete fresh planner result. The immutable
+        # continuation view contains only APPENDs; excluded operations are represented by
+        # non-executable, digest-bound metadata below.
+        details=dict(details)
+        details['updates']=[];details['conflicts']=[];details['errors']=[]
+        details['counts']={'append':251,'update':0,'conflict':0,'error':0}
     for candidate_id,_created_at in prior:
         try:
             previous_snapshot=load_preview_plan(path,candidate_id,actor,
@@ -4313,23 +4611,37 @@ def prepare_append_continuation_preview(path, client, source_request_id, actor):
             return _append_continuation_preview_response(path,client,actor,source_request_id,candidate_id)
     details=dict(details)
     operation_digest=_append_continuation_operations_digest(new_ops)
-    details['append_continuation']={'version':1,'source_request_id':source_request_id,
+    continuation_meta={'version':2 if source_v2 else 1,'source_request_id':source_request_id,
         'source_plan_digest':plan['plan_digest'],'source_details_digest':plan['details_digest'],
         'source_append_digest':plan['append_only_digest'],'source_payload_digest':plan['source_digest'],
         'sheet_snapshot_digest':audit['google_state_digest'],
         'confirmed_count':APPEND_CONTINUATION_CONFIRMED,'excluded_count':APPEND_CONTINUATION_CONFIRMED,
         'missing_count':251,'operation_digest':operation_digest,'preserved_rows':normalized_guard}
+    if source_v2:
+        continuation_meta.update(source_excluded_counts={'update':2,'conflict':2,'error':0},
+            source_exclusions_digest=source_exclusions['digest'],
+            source_update_exclusions_digest=source_exclusions['update_digest'],
+            source_conflict_exclusions_digest=source_exclusions['conflict_digest'],
+            excluded_updates=source_exclusions['update_records'],
+            excluded_conflicts=source_exclusions['conflict_records'],
+            conflict_rows_unavailable=sum(not item['row_binding_available']
+                for item in source_exclusions['conflict_records']))
+    details['append_continuation']=continuation_meta
     try:
         snapshot=store_preview_plan(path,new_request_id,actor,details)
         ticket=preview_ticket(client,new_request_id,actor,details['append_only_digest'],plan_scope='APPEND_ONLY',
             parent_digest=fresh['digest'],details_digest=snapshot['details_digest'])
     except (OSError,sqlite3.Error,ValueError,TypeError):
         return blocked('CONTINUATION_PREVIEW_SAVE_FAILED')
-    return {'status':'PREVIEW_READY','source_request_id':source_request_id,'request_id':new_request_id,
-        'counts':fresh_counts,'plan_digest':fresh['digest'],'details_digest':snapshot['details_digest'],
+    response={'status':'PREVIEW_READY','source_request_id':source_request_id,'request_id':new_request_id,
+        'counts':details['counts'],
+        'plan_digest':fresh['digest'],'details_digest':snapshot['details_digest'],
         'ticket':ticket,'preview_created':True,'writer_started':False,
         'google_writes':0,'script_properties_writes':0,
         'continuation':{'confirmed':25,'excluded':25,'missing':251}}
+    if source_v2:
+        response['excluded_counts']={'update':2,'conflict':2,'error':0}
+    return response
 
 
 def prewrite_close_preflight(path, client, request_id, actor):
@@ -4798,8 +5110,9 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
                         if isinstance(saved_details,dict):
                             continuation=saved_details.get('append_continuation')
                             if continuation is not None:
+                                continuation_version=continuation.get('version') if isinstance(continuation,dict) else None
                                 if (environment!='SANDBOX' or plan_scope!='APPEND_ONLY' or
-                                        not isinstance(continuation,dict) or continuation.get('version')!=1 or
+                                        not isinstance(continuation,dict) or continuation_version not in {1,2} or
                                         continuation.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID or
                                         saved_details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0} or
                                         not isinstance(saved_details.get('appends'),list) or
@@ -4810,6 +5123,18 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
                                         _append_continuation_operations_digest(saved_details['appends'])!=
                                             continuation.get('operation_digest')):
                                     raise ValueError('Continuation Preview cannot be claimed')
+                                if continuation_version==2:
+                                    if (continuation.get('source_excluded_counts')!={'update':2,'conflict':2,'error':0} or
+                                            not all(is_canonical_sha256_b64url(continuation.get(key)) for key in
+                                                ('source_plan_digest','source_exclusions_digest',
+                                                 'source_update_exclusions_digest','source_conflict_exclusions_digest')) or
+                                            not isinstance(continuation.get('excluded_updates'),list) or
+                                            len(continuation['excluded_updates'])!=2 or
+                                            not isinstance(continuation.get('excluded_conflicts'),list) or
+                                            len(continuation['excluded_conflicts'])!=2 or
+                                            continuation.get('conflict_rows_unavailable') not in {0,1,2}):
+                                        raise ValueError('Continuation v2 Preview cannot be claimed')
+                                    _append_continuation_v2_source_exclusions_from_db(path,actor,continuation)
                                 source_close=con.execute('''SELECT r.status,c.state,c.plan_scope,c.actor
                                     FROM google_writer_runs r LEFT JOIN google_writer_run_closures c
                                       ON c.request_id=r.request_id AND c.environment='SANDBOX'
@@ -4820,6 +5145,10 @@ def claim_run(path, environment, request_id, actor, trigger, revision=None, now=
                                     return {'claimed':False,'status':'continuation_source_close_required',
                                             'request_id':continuation['source_request_id']}
                                 initial['continuation_request_id']=continuation['source_request_id']
+                                initial['continuation_version']=continuation_version
+                                if continuation_version==2:
+                                    initial['continuation_source_plan_digest']=continuation['source_plan_digest']
+                                    initial['continuation_exclusions_digest']=continuation['source_exclusions_digest']
                             initial['planned_counts']={'append':len(saved_details.get('appends',[]))
                                 if isinstance(saved_details.get('appends'),list) else 0,
                                 'update':(len(saved_details.get('updates',[]))
@@ -4982,6 +5311,12 @@ def checkpoint_run(path, request_id, step_result):
                 step_result.get('planScope')!=previous.get('plan_scope','ALL') or
                 (previous.get('plan_scope')=='APPEND_ONLY' and step_result.get('counts',{}).get('update',0)!=0)):
             raise RuntimeError('Apply checkpoint receipt was incomplete or outside its plan scope')
+        if previous.get('continuation_version')==2 and (
+                step_result.get('continuationVersion')!=2 or
+                step_result.get('continuationSourceRequestId')!=previous.get('continuation_request_id') or
+                step_result.get('continuationSourcePlanDigest')!=previous.get('continuation_source_plan_digest') or
+                step_result.get('continuationExclusionsDigest')!=previous.get('continuation_exclusions_digest')):
+            raise RuntimeError('Continuation v2 checkpoint receipt lineage mismatch')
         chunk_id=step_result.get('chunkId')
         if chunk_id is not None:
             chunk=con.execute('''SELECT plan_id,run_id,scope,phase,plan_digest,chunk_digest,status,expected_json
@@ -5000,9 +5335,13 @@ def checkpoint_run(path, request_id, step_result):
                         expected_append!=counts.get('append') or expected_update!=counts.get('update') or
                         step_result.get('planScope')!=chunk[2]):
                     raise RuntimeError('Apply chunk receipt did not match the durable write-ahead journal')
-                receipt_raw=_canonical_json({key:step_result.get(key) for key in (
+                receipt_fields={key:step_result.get(key) for key in (
                     'status','digest','planScope','chunkIndex','nextChunk','more','phase','checkpointDigest',
-                    'chunkId','chunkDigest','planId','counts')})
+                    'chunkId','chunkDigest','planId','counts')}
+                if previous.get('continuation_version')==2:
+                    receipt_fields.update({key:step_result.get(key) for key in ('continuationVersion',
+                        'continuationSourceRequestId','continuationSourcePlanDigest','continuationExclusionsDigest')})
+                receipt_raw=_canonical_json(receipt_fields)
                 if recovered_receipt:
                     changed=con.execute("UPDATE google_writer_apply_chunk_journal SET status='verified',verified_at=?,receipt_json=? WHERE chunk_id=? AND status IN ('inflight','outcome_unknown')",
                         (datetime.now(timezone.utc).isoformat(),receipt_raw,chunk_id)).rowcount
@@ -5024,9 +5363,13 @@ def checkpoint_run(path, request_id, step_result):
                         counts.get('append')!=len(expected.get('rows',[])) or counts.get('update')!=0 or
                         step_result.get('phase')!='append'):
                     raise RuntimeError('Append chunk receipt did not match the durable write-ahead journal')
-                receipt_raw=_canonical_json({key:step_result.get(key) for key in (
+                receipt_fields={key:step_result.get(key) for key in (
                     'status','digest','planScope','chunkIndex','nextChunk','more','phase','checkpointDigest',
-                    'chunkId','chunkDigest','planId','counts')})
+                    'chunkId','chunkDigest','planId','counts')}
+                if previous.get('continuation_version')==2:
+                    receipt_fields.update({key:step_result.get(key) for key in ('continuationVersion',
+                        'continuationSourceRequestId','continuationSourcePlanDigest','continuationExclusionsDigest')})
+                receipt_raw=_canonical_json(receipt_fields)
                 changed=con.execute("UPDATE google_writer_chunk_journal SET status='verified',verified_at=?,receipt_json=? WHERE chunk_id=? AND status='inflight'",
                     (datetime.now(timezone.utc).isoformat(),receipt_raw,chunk_id)).rowcount
                 if changed!=1: raise RuntimeError('Append chunk journal receipt compare-and-set failed')

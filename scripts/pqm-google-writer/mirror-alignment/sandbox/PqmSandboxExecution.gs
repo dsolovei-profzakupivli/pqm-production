@@ -1,4 +1,47 @@
 /* Server-authenticated API entrypoint; uses the existing planner and DailySync only. */
+function pqmSandboxContinuationExclusionsV2_(preview) {
+  if (!preview || !Array.isArray(preview.updates) || !Array.isArray(preview.conflicts))
+    throw new Error('PQM: continuation v2 exclusions unavailable');
+  var updates=preview.updates.map(function(item) {
+    if (!item || item.operation!=='UPDATE' || ['ФОП','ЮО'].indexOf(item.tab)<0 ||
+        !/^\d{8,10}$/.test(String(item.code||'')) || !Number.isInteger(item.row) || item.row<2 ||
+        !Array.isArray(item.cells) || !item.cells.length)
+      throw new Error('PQM: continuation v2 UPDATE exclusion invalid');
+    var seen=Object.create(null);
+    var cells=item.cells.map(function(cell) {
+      if (!cell || ['C','D','E','F','H','I','L'].indexOf(cell.column)<0 || seen[cell.column] ||
+          typeof cell.formula!=='boolean') throw new Error('PQM: continuation v2 UPDATE cell invalid');
+      seen[cell.column]=true;
+      return {column:cell.column,old_value:cell.old_value===undefined?null:cell.old_value,
+        new_value:cell.new_value===undefined?null:cell.new_value,formula:cell.formula};
+    }).sort(function(a,b) {return a.column<b.column?-1:a.column>b.column?1:0;});
+    return {operation:'UPDATE',tab:item.tab,row:item.row,code:String(item.code),cells:cells};
+  }).sort(function(a,b) {return a.tab<b.tab?-1:a.tab>b.tab?1:a.row-b.row||
+    (a.code<b.code?-1:a.code>b.code?1:0);});
+  var conflicts=preview.conflicts.map(function(item) {
+    if (!item || ['ФОП','ЮО'].indexOf(item.tab)<0 || !/^\d{8,10}$/.test(String(item.code||'')) ||
+        item.reason!=='routing_mismatch' || (Object.prototype.hasOwnProperty.call(item,'row') &&
+          (!Number.isInteger(item.row)||item.row<2)))
+      throw new Error('PQM: continuation v2 conflict exclusion invalid');
+    var rowAvailable=Object.prototype.hasOwnProperty.call(item,'row');
+    return {tab:item.tab,code:String(item.code),reason:item.reason,row_available:rowAvailable,
+      row:rowAvailable?item.row:null};
+  }).sort(function(a,b) {return a.tab<b.tab?-1:a.tab>b.tab?1:
+    (a.code<b.code?-1:a.code>b.code?1:a.reason<b.reason?-1:a.reason>b.reason?1:0);});
+  var updateCodes=Object.create(null), conflictCodes=Object.create(null);
+  updates.forEach(function(item) {
+    if (updateCodes[item.code]) throw new Error('PQM: duplicate continuation v2 UPDATE exclusion');
+    updateCodes[item.code]=true;
+  });
+  conflicts.forEach(function(item) {
+    if (conflictCodes[item.code]) throw new Error('PQM: duplicate continuation v2 conflict exclusion');
+    conflictCodes[item.code]=true;
+  });
+  if (updates.some(function(item){return conflictCodes[item.code];}))
+    throw new Error('PQM: overlapping continuation v2 exclusions');
+  return {version:2,updates:updates,conflicts:conflicts};
+}
+
 function pqmSandboxContinuationPrewriteGuard_(id,loaded,request,record) {
   var hasRequest=request.continuationSourceRequestId!==undefined;
   var hasRecord=!!(record&&record.continuationSourceRequestId);
@@ -12,13 +55,26 @@ function pqmSandboxContinuationPrewriteGuard_(id,loaded,request,record) {
       !Array.isArray(request.continuationGuardRows) || request.continuationGuardRows.length!==25 ||
       pqmSandboxControlledDigest_(request.continuationGuardRows)!==record.continuationGuardDigest)
     throw new Error('PQM: continuation prewrite binding changed');
+  var version=request.continuationVersion===undefined?1:request.continuationVersion;
+  if (version!==1 && version!==2) throw new Error('PQM: unsupported continuation version');
+  if (version===2 && (record.continuationVersion!==2 ||
+      request.continuationSourcePlanDigest!==record.continuationSourcePlanDigest ||
+      request.continuationExclusionsDigest!==record.continuationExclusionsDigest ||
+      !pqmSandboxIsCanonicalDigest_(request.continuationSourcePlanDigest) ||
+      !pqmSandboxIsCanonicalDigest_(request.continuationExclusionsDigest)))
+    throw new Error('PQM: continuation v2 lineage changed; no write');
+  if (version===1 && (request.continuationSourcePlanDigest!==undefined ||
+      request.continuationExclusionsDigest!==undefined || record.continuationVersion===2))
+    throw new Error('PQM: continuation v1 binding changed; no write');
   var remainingCount=251-request.chunkIndex*25;
+  var expectedUpdates=version===2?2:0, expectedConflicts=version===2?2:0;
   if (remainingCount<1 || loaded.plan.counts.appended!==remainingCount ||
-      loaded.plan.counts.updated!==0 || loaded.plan.counts.conflicts!==0 || loaded.plan.counts.errors!==0)
+      loaded.plan.counts.updated!==expectedUpdates || loaded.plan.counts.conflicts!==expectedConflicts ||
+      loaded.plan.counts.errors!==0)
     throw new Error('PQM: continuation plan counts changed; no write');
   var preview=pqmSandboxFullPreviewDetails_(loaded);
   if (!preview || !Array.isArray(preview.appends) || preview.appends.length!==remainingCount ||
-      preview.updates.length!==0 || preview.conflicts.length!==0 || preview.errors.length!==0)
+      preview.updates.length!==expectedUpdates || preview.conflicts.length!==expectedConflicts || preview.errors.length!==0)
     throw new Error('PQM: continuation plan is incomplete; no write');
   var operations=preview.appends.map(function(item) {
     var cells=(item.cells||[]).map(function(cell) {
@@ -31,13 +87,73 @@ function pqmSandboxContinuationPrewriteGuard_(id,loaded,request,record) {
   }).sort(function(a,b){return a.tab<b.tab?-1:a.tab>b.tab?1:a.row-b.row||
     (a.code<b.code?-1:a.code>b.code?1:0);});
   var seen=Object.create(null);
+  var seenCodes=Object.create(null),seenRows=Object.create(null);
   operations.forEach(function(item) {
     var identity=JSON.stringify([item.tab,item.row,item.code]);
-    if (seen[identity]) throw new Error('PQM: duplicate continuation operation; no write');
-    seen[identity]=true;
+    var rowIdentity=item.tab+':'+item.row;
+    if (seen[identity] || seenCodes[item.code] || seenRows[rowIdentity])
+      throw new Error('PQM: duplicate continuation operation; no write');
+    seen[identity]=true;seenCodes[item.code]=true;seenRows[rowIdentity]=true;
   });
   if (pqmSandboxControlledDigest_(operations)!==request.continuationRemainingDigest)
     throw new Error('PQM: continuation remaining operations changed; no write');
+  if (version===2) {
+    var exclusions=pqmSandboxContinuationExclusionsV2_(preview);
+    if (pqmSandboxControlledDigest_(exclusions)!==request.continuationExclusionsDigest)
+      throw new Error('PQM: continuation v2 exclusions changed; no write');
+    var appCodes=Object.create(null),appRows=Object.create(null),updateCodes=Object.create(null),updateRows=Object.create(null);
+    operations.forEach(function(item){appCodes[item.code]=true;appRows[item.tab+':'+item.row]=true;});
+    exclusions.updates.forEach(function(item){
+      if (appCodes[item.code] || appRows[item.tab+':'+item.row] || updateCodes[item.code])
+        throw new Error('PQM: continuation v2 UPDATE overlaps APPEND; no write');
+      updateCodes[item.code]=true;updateRows[item.tab+':'+item.row]=true;
+    });
+    exclusions.conflicts.forEach(function(item){
+      if (appCodes[item.code] || updateCodes[item.code] ||
+          (item.row_available && (appRows[item.tab+':'+item.row] || updateRows[item.tab+':'+item.row])))
+        throw new Error('PQM: continuation v2 conflict overlaps APPEND or UPDATE; no write');
+    });
+
+    // Re-read every still-missing destination before each chunk. Values API omits trailing
+    // blank cells/rows, so an empty/missing values array is accepted only after both complete
+    // batchGet responses return exactly one valueRange for every requested contiguous range.
+    var groupByTab=Object.create(null);
+    operations.forEach(function(item) {
+      var group=groupByTab[item.tab];
+      if (!group) groupByTab[item.tab]=group={tab:item.tab,start:item.row,end:item.row,targetRows:Object.create(null)};
+      group.start=Math.min(group.start,item.row);group.end=Math.max(group.end,item.row);
+      group.targetRows[item.row]=true;
+    });
+    var groups=Object.keys(groupByTab).sort().map(function(tab){return groupByTab[tab];});
+    var targetRanges=groups.map(function(group) {
+      return "'"+group.tab.replace(/'/g,"''")+"'!A"+group.start+':O'+group.end;
+    });
+    var targetServiceRanges=groups.map(function(group) {
+      return "'"+group.tab.replace(/'/g,"''")+"'!Q"+group.start+':S'+group.end;
+    });
+    var targetResponse=Sheets.Spreadsheets.Values.batchGet(id,{ranges:targetRanges,valueRenderOption:'FORMULA'});
+    var targetServiceResponse=Sheets.Spreadsheets.Values.batchGet(id,
+      {ranges:targetServiceRanges,valueRenderOption:'FORMULA'});
+    if (!targetResponse || !Array.isArray(targetResponse.valueRanges) ||
+        targetResponse.valueRanges.length!==targetRanges.length || !targetServiceResponse ||
+        !Array.isArray(targetServiceResponse.valueRanges) ||
+        targetServiceResponse.valueRanges.length!==targetServiceRanges.length)
+      throw new Error('PQM: continuation target read incomplete; no write');
+    groups.forEach(function(group,index) {
+      var expectedRows=group.end-group.start+1;
+      [targetResponse.valueRanges[index],targetServiceResponse.valueRanges[index]].forEach(function(range) {
+        if (!range || (range.values!==undefined && !Array.isArray(range.values)) ||
+            (range.values||[]).length>expectedRows)
+          throw new Error('PQM: continuation target read malformed; no write');
+        (range.values||[]).forEach(function(row,offset) {
+          if (!Array.isArray(row)) throw new Error('PQM: continuation target read malformed; no write');
+          var targetRow=group.start+offset;
+          if (group.targetRows[targetRow] && row.some(function(value){return !pqmGoogleBlank_(value);}))
+            throw new Error('PQM: continuation target row is no longer empty; no write');
+        });
+      });
+    });
+  }
 
   var rowRanges=[],serviceRanges=[];
   request.continuationGuardRows.forEach(function(item) {
@@ -118,7 +234,14 @@ function pqmSandboxExecution(envelope) {
     throw new Error('PQM: execution identity or lifetime rejected');
   var continuationFieldsPresent=request.continuationSourceRequestId!==undefined ||
     request.continuationPlanDigest!==undefined || request.continuationRemainingDigest!==undefined ||
-    request.continuationGuardRows!==undefined;
+    request.continuationGuardRows!==undefined || request.continuationVersion!==undefined ||
+    request.continuationSourcePlanDigest!==undefined || request.continuationExclusionsDigest!==undefined;
+  var continuationV2FieldsPresent=request.continuationVersion!==undefined ||
+    request.continuationSourcePlanDigest!==undefined || request.continuationExclusionsDigest!==undefined;
+  if (continuationV2FieldsPresent && (request.continuationVersion!==2 ||
+      !pqmSandboxIsCanonicalDigest_(request.continuationSourcePlanDigest) ||
+      !pqmSandboxIsCanonicalDigest_(request.continuationExclusionsDigest)))
+    throw new Error('PQM: continuation v2 envelope binding rejected');
   if (continuationFieldsPresent) {
     if (['apply','resume_check'].indexOf(request.action)<0 || request.environment!=='SANDBOX' || request.trigger!=='manual' ||
         request.planScope!=='APPEND_ONLY' || request.chunkIndex<0 || request.chunkIndex>10 ||
@@ -153,6 +276,12 @@ function pqmSandboxExecution(envelope) {
     function receipt(status,counts,digest) {
       var value = {environment:request.environment,scriptId:request.scriptId,spreadsheetId:request.spreadsheetId,
         contract:request.contract,requestId:request.requestId,status:status,counts:counts || {},digest:digest || null};
+      if (request.continuationVersion===2) {
+        value.continuationVersion=2;
+        value.continuationSourceRequestId=request.continuationSourceRequestId;
+        value.continuationSourcePlanDigest=request.continuationSourcePlanDigest;
+        value.continuationExclusionsDigest=request.continuationExclusionsDigest;
+      }
       if (request.action==='apply' || request.action==='recover_append_chunk') value.planScope = planScope;
       if ((request.action==='apply' || request.action==='recover_append_chunk') && request.chunkId) {
         value.chunkId=request.chunkId; value.chunkDigest=request.chunkDigest; value.planId=request.planId;
@@ -173,7 +302,11 @@ function pqmSandboxExecution(envelope) {
       if ((previous.continuationSourceRequestId && !continuationFieldsPresent) ||
           (continuationFieldsPresent && (previous.continuationSourceRequestId!==request.continuationSourceRequestId ||
             previous.continuationPlanDigest!==request.continuationPlanDigest ||
-            previous.continuationGuardDigest!==pqmSandboxControlledDigest_(request.continuationGuardRows))))
+            previous.continuationGuardDigest!==pqmSandboxControlledDigest_(request.continuationGuardRows) ||
+            (previous.continuationVersion===2 && (request.continuationVersion!==2 ||
+              previous.continuationSourcePlanDigest!==request.continuationSourcePlanDigest ||
+              previous.continuationExclusionsDigest!==request.continuationExclusionsDigest)) ||
+            (previous.continuationVersion!==2 && continuationV2FieldsPresent))))
         throw new Error('PQM: continuation checkpoint binding changed; no write');
       if (previous.state==='uncertain' || previous.inflight!==null) {
         if (request.action!=='resume_check') properties.setProperty('PQM_EXECUTION_UNCERTAIN',request.requestId);
@@ -257,6 +390,11 @@ function pqmSandboxExecution(envelope) {
       record.continuationSourceRequestId=request.continuationSourceRequestId;
       record.continuationPlanDigest=request.continuationPlanDigest;
       record.continuationGuardDigest=pqmSandboxControlledDigest_(request.continuationGuardRows);
+      if (request.continuationVersion===2) {
+        record.continuationVersion=2;
+        record.continuationSourcePlanDigest=request.continuationSourcePlanDigest;
+        record.continuationExclusionsDigest=request.continuationExclusionsDigest;
+      }
     }
     if (stored && ((previous.chunkJournalVersion===1 && !request.chunkId) ||
         (request.chunkId && previous.chunkJournalVersion!==1))) {

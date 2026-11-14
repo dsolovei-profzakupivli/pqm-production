@@ -1,0 +1,41 @@
+{
+  "contract": "pqm-sandbox-google-writer-append-continuation",
+  "version": 4,
+  "baseline": "94d5b409c8f36feb01004cb293655e118e9bfedf",
+  "normalization": "CRLF-to-LF only; overlay test self-pinned with canonical placeholder",
+  "scope": [
+    "google_writer_execution.py",
+    "sandbox_runtime.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs",
+    "test_google_writer_append_continuation.py",
+    "test_google_writer_append_diagnostic.py",
+    "test_google_writer_execution.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/continuation-v2-contract.test.cjs",
+    "validation/run_local_release.py",
+    ".github/workflows/release-checks.yml",
+    "test_release_gate_infrastructure.py",
+    ".gitattributes",
+    "test_google_writer_append_continuation_integrity_v4.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "ce3e1d1a5cf3191afa99a7767e260d45185d941fb283ffb86abb0058f684422c",
+    "sandbox_runtime.py": "27363845d3501de19e7465f28dc554ed73f64b306481935b9531fe9053c73213",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "36bcddc4a16bee6655e1221fa9c074dbbbc94ca9b7aa05a606d7355c9f461b70",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "bd08c83e4c37705ecd5e1d5eb0dbecfb400c9f0cc89368f5058f505f9712e5ad",
+    "test_google_writer_append_continuation.py": "8e802c7c7ee5cac62c8c3ce8dc5400f7d15025b128f908432e3c57d83a4ca689",
+    "test_google_writer_append_diagnostic.py": "73c72a72e90d3563e782c73c5b42284d9ad7bc6320b47dc7b6c656ba79e807ef",
+    "test_google_writer_execution.py": "23a8f0b56f815dc85a85250beb323d9314c21481c20f2731d0a92ad7ecfee758",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/continuation-v2-contract.test.cjs": "faf5b93d6605613a841f9cf9ecc83e31d28d7b5e9c83cfa47291fca1089f1bb5",
+    "validation/run_local_release.py": "440e4b9b92674c8df337f36eff11146adaf69bd957b9dd9f87baed441cd160ee",
+    ".github/workflows/release-checks.yml": "2150168ce2775ba7d902df570cff4ca51c3d89ba2e5ed7bb065b297edbf05a0d",
+    "test_release_gate_infrastructure.py": "25e099796476eabf1f63777e59f6a3e5d17b101690c37817f1ea357e04873d14",
+    ".gitattributes": "a4c53a04ee0e38ad91404b5f5cb747ff2001df92f0384664d1f4556f9638d45b",
+    "test_google_writer_append_continuation_integrity_v4.py": "2753d57d703f7f47da373cccab7982a6fd8412cdc3436335434ab82591b05add"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2",
+    "validation/local_release_20261113/google_writer_append_continuation_v2.json": "2fb4d7124cdd7039ff07c87b275551e678afafb4aa807b7b0f0c5536e9bf2089",
+    "validation/local_release_20261113/google_writer_append_continuation_v3.json": "ad378d8717b936a01671eb9837b842946f5636d74663f2382e23c24f4dbb7e63"
+  }
+}

@@ -99,6 +99,10 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_google_writer_legacy_source_snapshots_history_v2',
 }
 EXACT_TREE_OVERLAY_MODULES={
+    # Continuation v2 and v3 are immutable source contracts executed from
+    # their exact Git trees by the host workflow; v4 pins the current tree.
+    'test_google_writer_append_continuation_integrity_v2',
+    'test_google_writer_append_continuation_integrity_v3',
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
     # the candidate carries its own additive prepared-intent retry overlay.
     'test_partial_reconciliation_first_append_only_integrity_v1',

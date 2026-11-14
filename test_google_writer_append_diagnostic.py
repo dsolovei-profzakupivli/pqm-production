@@ -359,6 +359,47 @@ class GoogleWriterAppendDiagnosticTests(unittest.TestCase):
         with self.assertRaises(writer.ExecutionPreflightError):
             client.invoke('diagnose_append_plan',self.request_id,self.actor,**kwargs)
 
+    def test_continuation_v2_resume_check_egress_requires_complete_signed_lineage(self):
+        script_id=writer.IDENTITIES['SANDBOX'][0]
+        spreadsheet=writer.IDENTITIES['SANDBOX'][1]
+        deployment='TEST_SANDBOX_DEPLOYMENT_0123456789'
+        guard_rows=[{'tab':'ФОП' if i%2==0 else 'ЮО','row':2+i,
+            'codeDigest':digest(f'code-{i}'),'rowDigest':digest(f'row-{i}'),
+            'serviceDigest':digest(f'service-{i}')} for i in range(25)]
+        payload={'environment':'SANDBOX','scriptId':script_id,'spreadsheetId':spreadsheet,
+            'contract':'pqm-mirror-datetime-v1','action':'resume_check','requestId':'a'*32,
+            'actor':'continuation-admin','trigger':'manual','issuedAt':1_800_000_000,
+            'expiresAt':1_800_000_300,'expectedDigest':digest('continuation-plan'),
+            'expectedCheckpointDigest':digest('checkpoint'),'planScope':'APPEND_ONLY','chunkIndex':4,
+            'continuationSourceRequestId':'71487a74779f4445a186a8dbe6252fbc',
+            'continuationPlanDigest':digest('continuation-operations'),
+            'continuationRemainingDigest':digest('remaining-operations'),'continuationGuardRows':guard_rows,
+            'continuationVersion':2,'continuationSourcePlanDigest':digest('source-plan'),
+            'continuationExclusionsDigest':digest('excluded-update-conflict-bindings')}
+        def make_request(value):
+            raw=json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            body={'function':'pqmSandboxExecution','devMode':False,
+                'parameters':[{'payload':raw,'signature':'s'*43}]}
+            return urllib.request.Request('https://script.googleapis.com/v1/scripts/'+deployment+':run',
+                data=json.dumps(body).encode(),headers={'Authorization':'Bearer test'},method='POST')
+        env={'PQM_SANDBOX':'1','RENDER_SERVICE_ID':'srv-dalfd77f3r2c7392uub0',
+            'PQM_SANDBOX_EXECUTION_READY':'1','PQM_SANDBOX_EXECUTION_DEPLOYMENT_ID':deployment,
+            'PQM_SANDBOX_EDR_GOOGLE':'1'}
+        with patch.dict(os.environ,env,clear=True):
+            self.assertEqual(runtime.validate_execution_request(make_request(payload),'SANDBOX',
+                script_id,spreadsheet,deployment),'script.googleapis.com')
+            for field in ('continuationSourcePlanDigest','continuationExclusionsDigest',
+                          'continuationRemainingDigest','expectedCheckpointDigest'):
+                bad=dict(payload);bad.pop(field)
+                with self.subTest(field=field),self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+                    runtime.validate_execution_request(make_request(bad),'SANDBOX',script_id,spreadsheet,deployment)
+            bad=dict(payload);bad['continuationGuardRows']=guard_rows[:-1]
+            with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+                runtime.validate_execution_request(make_request(bad),'SANDBOX',script_id,spreadsheet,deployment)
+            bad=dict(payload);bad['continuationVersion']=1
+            with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+                runtime.validate_execution_request(make_request(bad),'SANDBOX',script_id,spreadsheet,deployment)
+
     def test_malformed_run_or_binding_is_blocked_before_apps_script_call(self):
         client=DiagnosticClient()
         with closing(sqlite3.connect(self.path)) as con, con:
