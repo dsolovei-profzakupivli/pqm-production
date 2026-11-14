@@ -181,6 +181,19 @@ def copy_pinned_release_file(source_root, target_root, relative_path, expected_s
     return target
 
 
+def stage_gitattributes(source_root, target_root):
+    """Stage checkout EOL rules in the disposable tree when the candidate has them."""
+    source=Path(source_root)/'.gitattributes'
+    if not source.is_file():
+        return None
+    target=Path(target_root)/'.gitattributes'
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(source,target)
+    if target.read_bytes()!=source.read_bytes():
+        raise RuntimeError('Staged .gitattributes differs from candidate source')
+    return target
+
+
 def release_fixture_source(source_root, infrastructure_root, fixture_name, mode):
     """Resolve a named fixture without ever falling back to product source.
 
@@ -230,6 +243,7 @@ def main():
     full_candidate_run=(not mode and len(sys.argv)==1) or mode=='baseline_full'
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
         root=Path(tmp)
+        stage_gitattributes(ROOT,root)
         for source in ROOT.iterdir():
             if source.name.startswith('.') or source.name in {'data','validation','__pycache__','backups','output','logs','evidence'}:continue
             if source.is_dir():shutil.copytree(source,root/source.name)

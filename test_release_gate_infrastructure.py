@@ -16,6 +16,24 @@ ROOT = Path(__file__).resolve().parent
 
 
 class ReleaseGateInfrastructureTests(unittest.TestCase):
+    def test_gitattributes_is_copied_into_candidate_staging_tree(self):
+        with tempfile.TemporaryDirectory(prefix="pqm-gitattributes-stage-") as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            target = base / "staged"
+            source.mkdir()
+            content = (
+                "/validation/run_c246_historical_integrity_snapshots_v1.py text eol=lf\n"
+                "/validation/c246_historical_integrity_snapshots_v1.json text eol=lf\n"
+            ).encode("utf-8")
+            (source / ".gitattributes").write_bytes(content)
+
+            staged = release.stage_gitattributes(source, target)
+
+            self.assertEqual(staged, target / ".gitattributes")
+            self.assertTrue(staged.is_file())
+            self.assertEqual(staged.read_bytes(), content)
+
     def test_workflow_routes_historical_and_current_integrity_checks(self):
         workflow = (ROOT / ".github/workflows/release-checks.yml").read_text(encoding="utf-8")
         c246_runner = "validation/run_c246_historical_integrity_snapshots_v1.py"

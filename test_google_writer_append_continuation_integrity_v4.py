@@ -7,7 +7,7 @@ import unittest
 
 
 MANIFEST = Path('validation/local_release_20261113/google_writer_append_continuation_v4.json')
-MANIFEST_SHA256 = "49b4468485d206b98f378d079faa7bb5763e5708e10144ece8eb1c4e1546a085"
+MANIFEST_SHA256 = "644737f2c2772e21b7c81f571678bec494641a336703375aa40b3988e1944b92"
 TEST_FILE = 'test_google_writer_append_continuation_integrity_v4.py'
 ROOT = Path(__file__).resolve().parent
 PRESERVED = {
