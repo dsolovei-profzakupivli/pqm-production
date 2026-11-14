@@ -5,6 +5,7 @@ No production/local database or credential is read. Outbound network is denied.
 """
 import os
 import gc
+import hashlib
 import logging
 from contextlib import closing
 from pathlib import Path
@@ -19,6 +20,11 @@ import zipfile
 
 ROOT=Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[1]).resolve()
 INFRA_ROOT=Path(os.environ.get('PQM_RELEASE_INFRA_ROOT') or Path(__file__).resolve().parents[1]).resolve()
+C246_RUNNER_SHA256='98817c305569e973b84edb3529f13a3426853fdf42de99cb99d389376206a39f'
+C246_STAGING_FILE_SHA256={
+    'validation/c246_historical_integrity_snapshots_v1.json':'9cc63f46d931ac18e83f1bcce8693c23604e740640031fc312b6e93d4b38eff8',
+    'validation/fixtures/c246_historical/af8202b4e968f09e55ac5c6855ad29a6f2c05bc1.zip':'e0931cc43d5c99a001771fdd12ef5bea6a87003400a458c9a3f197372671c865',
+}
 HISTORICAL_INTEGRITY_MODULES={
     'test_google_sandbox_baseline_compatibility',
     'test_halloween_motion_integration',
@@ -154,6 +160,23 @@ def copy_candidate_manifests(source_root, validation_target, mode):
         shutil.copy2(source,target)
 
 
+def copy_pinned_release_file(source_root, target_root, relative_path, expected_sha256):
+    """Copy an allowlisted release-test dependency only when its bytes are pinned."""
+    relative_path=Path(relative_path)
+    source=Path(source_root)/relative_path
+    if not source.is_file():
+        raise FileNotFoundError(f'Required pinned Release Gate file missing: {relative_path.as_posix()}')
+    source_sha256=hashlib.sha256(source.read_bytes()).hexdigest()
+    if source_sha256!=expected_sha256:
+        raise RuntimeError(f'Required pinned Release Gate file SHA-256 mismatch: {relative_path.as_posix()}')
+    target=Path(target_root)/relative_path
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copyfile(source,target)
+    if hashlib.sha256(target.read_bytes()).hexdigest()!=expected_sha256:
+        raise RuntimeError(f'Staged Release Gate file SHA-256 mismatch: {relative_path.as_posix()}')
+    return target
+
+
 def release_fixture_source(source_root, infrastructure_root, fixture_name, mode):
     """Resolve a named fixture without ever falling back to product source.
 
@@ -270,6 +293,11 @@ def main():
         fixture_target.mkdir(parents=True,exist_ok=True)
         validation_target=root/'validation'
         validation_target.mkdir(parents=True,exist_ok=True)
+        c246_manifest_relative=Path('validation/c246_historical_integrity_snapshots_v1.json')
+        c246_runner_relative=c246_manifest_relative.with_name(f'run_{c246_manifest_relative.stem}.py')
+        copy_pinned_release_file(ROOT,root,c246_runner_relative,C246_RUNNER_SHA256)
+        for relative_path,expected_sha256 in C246_STAGING_FILE_SHA256.items():
+            copy_pinned_release_file(ROOT,root,relative_path,expected_sha256)
         fixture_names=('supplier_classification_parent_integrity_6b9830b.zip', 'supplier_classification_parent_6b9830b.json', 'messages_v1_test_parent.zip',
                              'google_writer_supplier_types_integration_v1_97788.zip',
                              'integrated_classification_v1_overlay_6b9830b.zip', 'integrated_writer_v1_overlay_64f7fda.zip',
