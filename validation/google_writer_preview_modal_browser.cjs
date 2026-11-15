@@ -1,11 +1,18 @@
 /* Sandbox Google writer confirmation dialog acceptance; mocked API only. */
 const fs = require('node:fs');
 const path = require('node:path');
+const {spawnSync} = require('node:child_process');
 const assert = require('node:assert/strict');
 const {chromium} = globalThis.PQM_PLAYWRIGHT_TEST_MODULE || require('playwright');
 const testBrowser = globalThis.PQM_TEST_BROWSER_PATH || process.env.PQM_TEST_BROWSER;
 
 const root = path.resolve(__dirname, '..');
+const continuationUiTests = spawnSync(process.execPath,
+  ['--test', path.join(root, 'validation/google_writer_continuation_preview_ui.test.cjs')],
+  {cwd:root, encoding:'utf8'});
+if (continuationUiTests.error || continuationUiTests.status !== 0)
+  throw new Error(`Continuation Preview UI tests failed:\n${continuationUiTests.stdout || ''}\n${continuationUiTests.stderr || ''}`);
+console.log((continuationUiTests.stdout || '').trim());
 const read = file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
 
 const index = read('index.html');

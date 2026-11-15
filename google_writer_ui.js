@@ -419,6 +419,53 @@ function confirmGoogleWriterPreview(preview,details,options={}){
     },{once:true});
   });
 }
+function googleWriterContinuationCountFailures(counts,prefix='COUNT'){
+  const expected={append:251,update:0,conflict:0,error:0};
+  const failures=[];
+  for(const key of Object.keys(expected)){
+    if(!counts||typeof counts!=='object'||Array.isArray(counts)||
+       !Number.isSafeInteger(counts[key])||counts[key]!==expected[key])
+      failures.push(`${prefix}_${key.toUpperCase()}_MISMATCH`);
+  }
+  return failures;
+}
+function googleWriterContinuationPreviewResponseFailures(prepared,sourceRequestId){
+  const failures=[];
+  if(prepared?.status!=='PREVIEW_READY')failures.push('PREVIEW_STATUS_NOT_READY');
+  if(prepared?.source_request_id!==sourceRequestId)failures.push('SOURCE_REQUEST_ID_MISMATCH');
+  if(!/^[0-9a-f]{32}$/.test(prepared?.request_id||''))failures.push('REQUEST_ID_INVALID');
+  if(prepared?.writer_started!==false)failures.push('WRITER_STARTED');
+  if(prepared?.google_writes!==0)failures.push('GOOGLE_WRITES_NOT_ZERO');
+  if(prepared?.script_properties_writes!==0)failures.push('SCRIPT_PROPERTIES_WRITES_NOT_ZERO');
+  failures.push(...googleWriterContinuationCountFailures(prepared?.counts));
+  const excluded=prepared?.excluded_counts;
+  if(!excluded||typeof excluded!=='object'||Array.isArray(excluded)||
+     !Number.isSafeInteger(excluded.update)||excluded.update!==2||
+     !Number.isSafeInteger(excluded.conflict)||excluded.conflict!==2||
+     !Number.isSafeInteger(excluded.error)||excluded.error!==0)
+    failures.push('EXCLUDED_COUNTS_MISMATCH');
+  if(typeof prepared?.ticket!=='string'||!prepared.ticket)failures.push('TICKET_MISSING');
+  if(!/^[A-Za-z0-9_-]{43}$/.test(prepared?.plan_digest||''))failures.push('PLAN_DIGEST_INVALID');
+  if(!/^[A-Za-z0-9_-]{43}$/.test(prepared?.details_digest||''))failures.push('DETAILS_DIGEST_INVALID');
+  return failures;
+}
+function googleWriterContinuationSavedPreviewFailures(prepared,saved,sourceRequestId){
+  const failures=[];
+  const details=saved?.details,meta=details?.append_continuation;
+  if(saved?.details_digest!==prepared?.details_digest)failures.push('SAVED_DETAILS_DIGEST_MISMATCH');
+  if(details?.plan_digest!==prepared?.plan_digest)failures.push('SAVED_PLAN_DIGEST_MISMATCH');
+  failures.push(...googleWriterContinuationCountFailures(details?.counts,'SAVED_COUNT'));
+  if(!Array.isArray(details?.appends)||details.appends.length!==251)failures.push('SAVED_APPEND_ROWS_MISMATCH');
+  if(!Array.isArray(details?.updates)||details.updates.length!==0)failures.push('SAVED_UPDATE_ROWS_NOT_ZERO');
+  if(!Array.isArray(details?.conflicts)||details.conflicts.length!==0)failures.push('SAVED_CONFLICT_ROWS_NOT_ZERO');
+  if(!Array.isArray(details?.errors)||details.errors.length!==0)failures.push('SAVED_ERROR_ROWS_NOT_ZERO');
+  if(meta?.version!==2||meta?.source_request_id!==sourceRequestId)failures.push('SAVED_CONTINUATION_BINDING_MISMATCH');
+  if(meta?.source_excluded_counts?.update!==2||meta?.source_excluded_counts?.conflict!==2||
+     meta?.source_excluded_counts?.error!==0||!Array.isArray(meta?.excluded_updates)||
+     meta.excluded_updates.length!==2||!Array.isArray(meta?.excluded_conflicts)||
+     meta.excluded_conflicts.length!==2)failures.push('SAVED_EXCLUSION_BINDING_MISMATCH');
+  return failures;
+}
 async function prepareGoogleWriterAppendContinuation(sourceRequestId){
   if(googleWriterBusy||!googleWriterJobState?.can_diagnose_append||
      sourceRequestId!=='71487a74779f4445a186a8dbe6252fbc')return;
@@ -430,17 +477,17 @@ async function prepareGoogleWriterAppendContinuation(sourceRequestId){
   try{
     const prepared=await request(`${API}/admin/google-writer/append-continuation-preview`,{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({source_request_id:sourceRequestId})});
-    if(prepared.status!=='PREVIEW_READY'||prepared.source_request_id!==sourceRequestId||
-       !/^[0-9a-f]{32}$/.test(prepared.request_id||'')||prepared.writer_started!==false||
-       prepared.google_writes!==0||prepared.script_properties_writes!==0||
-       JSON.stringify(prepared.counts)!==JSON.stringify({append:251,update:0,conflict:0,error:0}))
-      throw new Error(`Продовження заблоковано: ${(prepared.reason_codes||[]).join(', ')||'відповідь Preview неповна'}`);
+    const responseFailures=googleWriterContinuationPreviewResponseFailures(prepared,sourceRequestId);
+    if(responseFailures.length){
+      const remoteCodes=Array.isArray(prepared?.reason_codes)?prepared.reason_codes.filter(code=>
+        typeof code==='string'&&/^[A-Z0-9_]{1,64}$/.test(code)):[];
+      throw new Error(`Продовження заблоковано: ${[...new Set([...responseFailures,...remoteCodes])].join(', ')}`);
+    }
     const saved=await request(`${API}/google-writer/preview-details/${prepared.request_id}?plan_digest=${encodeURIComponent(prepared.plan_digest)}`);
     const details=saved.details;
-    if(saved.details_digest!==prepared.details_digest||details?.plan_digest!==prepared.plan_digest||
-       JSON.stringify(details?.counts)!==JSON.stringify(prepared.counts)||details?.appends?.length!==251||
-       details?.updates?.length!==0||details?.conflicts?.length!==0||details?.errors?.length!==0)
-      throw new Error('Збережений Preview продовження не збігається з серверною відповіддю');
+    const savedFailures=googleWriterContinuationSavedPreviewFailures(prepared,saved,sourceRequestId);
+    if(savedFailures.length)
+      throw new Error(`Збережений Preview продовження заблоковано: ${savedFailures.join(', ')}`);
     googleWriterContinuationPreview={...prepared,details};
     const closed=source.status==='closed_unknown';
     const choice=await confirmGoogleWriterPreview({request_id:prepared.request_id,ticket:prepared.ticket,
