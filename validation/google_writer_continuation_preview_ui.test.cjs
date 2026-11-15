@@ -105,4 +105,4 @@ test('retains status, source binding, no-write and exclusion checks',async t=>{
       assert.doesNotMatch(messages[0].message,/PRIVATE_TICKET_SENTINEL|P{43}|D{43}/);
     });
   }
-});\n
+});
