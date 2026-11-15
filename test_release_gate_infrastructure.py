@@ -39,7 +39,8 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         c246_runner = "validation/run_c246_historical_integrity_snapshots_v1.py"
         historical_runner = "validation/run_google_writer_historical_integrity_snapshots_v1.py"
         historical_v4 = "test_google_writer_append_continuation_integrity_v4"
-        current_overlay = "test_google_writer_apply_result_integrity_v5"
+        historical_apply_overlay = "test_google_writer_apply_result_integrity_v5"
+        current_overlay = "test_google_writer_apply_result_integrity_v6"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
 
         self.assertIn("node --test", workflow)
@@ -50,11 +51,13 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("pip install --disable-pip-version-check -r requirements.txt", workflow)
         self.assertIn("$RUNNER_TEMP/pqm-release-python/bin/python\" -B validation/run_c246_historical_integrity_snapshots_v1.py", workflow)
         self.assertIn("git archive ce722e3ed654a0e30be3b048a292e1e7e6ba0828", workflow)
+        self.assertIn("git archive 2a4e4bff0bbbe84670d3bb10a5ba4b90347a7d78", workflow)
         self.assertIn("test_google_writer_append_continuation_integrity_v2", workflow)
         self.assertIn("test_google_writer_append_continuation_integrity_v3", workflow)
         self.assertIn(c246_runner, workflow)
         self.assertIn(historical_runner, workflow)
         self.assertIn(historical_v4, workflow)
+        self.assertIn(historical_apply_overlay, workflow)
         self.assertIn(current_overlay, workflow)
         self.assertNotIn(direct_historical_test, workflow)
         self.assertLess(workflow.index(c246_runner), workflow.index(historical_runner))
@@ -74,9 +77,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("'test_google_writer_append_continuation_integrity_v2'", exact_modules)
         self.assertIn("'test_google_writer_append_continuation_integrity_v3'", exact_modules)
         self.assertIn("'test_google_writer_append_continuation_integrity_v4'", exact_modules)
-        self.assertNotIn("'test_google_writer_apply_result_integrity_v5'", exact_modules)
+        self.assertIn("'test_google_writer_apply_result_integrity_v5'", exact_modules)
+        self.assertNotIn("'test_google_writer_apply_result_integrity_v6'", exact_modules)
         self.assertNotIn("'test_google_writer_apply_result_diagnostic'", exact_modules)
-        self.assertIn("test_google_writer_apply_result_integrity_v5", workflow)
+        self.assertIn("test_google_writer_apply_result_integrity_v6", workflow)
         browser_runner = (ROOT / "validation/google_writer_preview_modal_browser.cjs").read_text(encoding="utf-8")
         self.assertIn("validation/google_writer_apply_result_ui.test.cjs", browser_runner)
         self.assertIn("node validation/google_writer_preview_modal_browser.cjs", workflow)

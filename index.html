@@ -193,9 +193,10 @@
         <button type="button" data-freshness="gt90"><span>&gt;90 днів</span><strong>—</strong></button>
         <button type="button" data-freshness="not_checked"><span>Не перевірено</span><strong>—</strong></button>
       </div>
-      <section id="googleWriterApplyCompact" class="google-writer-apply-compact card" aria-live="polite" hidden>
-        <strong id="googleWriterApplyCompactStatus">Apply: —</strong>
-        <span id="googleWriterApplyCompactHttp">HTTP —</span>
+      <section id="googleWriterApplyCompact" class="google-writer-apply-compact card" aria-live="polite">
+        <span class="google-writer-apply-compact-title">Діагностика Google Writer</span>
+        <strong id="googleWriterApplyCompactStatus">Немає результату Apply</strong>
+        <span id="googleWriterApplyCompactHttp">Стан ще не перевірявся</span>
         <button id="googleWriterApplyDetailsOpen" type="button" class="ghost">Деталі</button>
       </section>
     </section>
@@ -226,9 +227,15 @@
 
   <dialog id="googleWriterApplyDetailsDialog" class="google-writer-apply-dialog" aria-labelledby="googleWriterApplyDetailsTitle">
     <form method="dialog">
-      <header><div><p class="eyebrow">PQM → Google Sheets</p><h2 id="googleWriterApplyDetailsTitle">Деталі Apply</h2></div>
+      <header><div><p class="eyebrow">PQM → Google Sheets</p><h2 id="googleWriterApplyDetailsTitle">Діагностика Google Writer</h2></div>
         <button id="googleWriterApplyDetailsClose" type="submit" class="dialog-close" aria-label="Закрити">×</button></header>
       <section id="googleWriterApplyDetailsBody" class="google-writer-apply-details" aria-live="polite"></section>
+      <section class="google-writer-apply-lookup" aria-label="Read-only перевірка попереднього continuation">
+        <label for="googleWriterApplyRequestId">Request ID попереднього запуску</label>
+        <div><input id="googleWriterApplyRequestId" type="text" maxlength="32" pattern="[0-9a-f]{32}" autocomplete="off" spellcheck="false" inputmode="text" aria-describedby="googleWriterApplyLookupStatus" placeholder="32 символи a–f та 0–9">
+          <button id="googleWriterApplyDiagnosticCheck" type="button" class="ghost">Перевірити стан</button></div>
+        <p id="googleWriterApplyLookupStatus" class="muted" role="status" aria-live="polite">Перевірка лише читає вже збережений стан; Preview та запис не запускаються.</p>
+      </section>
       <p id="googleWriterApplyCopyStatus" class="muted" role="status" aria-live="polite"></p>
       <footer><button id="googleWriterApplyDiagnosticRefresh" type="button" class="ghost">Оновити read-only стан</button>
         <button id="googleWriterApplyCopy" type="button" class="primary">Копіювати діагностику</button>

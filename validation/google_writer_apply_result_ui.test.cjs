@@ -9,10 +9,12 @@ const index=fs.readFileSync('index.html','utf8');
 const styles=fs.readFileSync('modules.css','utf8');
 const requestId='c1dc13464f0247c5a727204ebf28f8cc';
 const ticket='PRIVATE_TICKET_SENTINEL';
+const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 const ids=['googleWriterApplyCompact','googleWriterApplyCompactStatus','googleWriterApplyCompactHttp',
   'googleWriterApplyDetailsOpen','googleWriterApplyDetailsDialog','googleWriterApplyDetailsBody',
-  'googleWriterApplyCopy','googleWriterApplyCopyStatus','googleWriterApplyDiagnosticRefresh'];
-function harness(applyResult,storage=new Map()){
+  'googleWriterApplyCopy','googleWriterApplyCopyStatus','googleWriterApplyDiagnosticRefresh',
+  'googleWriterApplyRequestId','googleWriterApplyDiagnosticCheck','googleWriterApplyLookupStatus'];
+function harness(applyResult,storage=new Map(),diagnosticResult=null){
   const calls=[],nodes={},clipboard={text:''};
   const element=()=>({hidden:true,open:false,textContent:'',value:'',children:[],dataset:{},style:{},listeners:{},
     appendChild(node){this.children.push(node);this.textContent=this.children.map(x=>x.textContent).join('\n')},
@@ -30,7 +32,7 @@ function harness(applyResult,storage=new Map()){
         if(applyResult instanceof Error)throw applyResult;
         return applyResult;
       }
-      if(url===`/api/google-writer/continuation-status/${requestId}`)return{status:'outcome_unknown',confirmed_append:25,
+      if(url.startsWith('/api/google-writer/continuation-status/'))return diagnosticResult||{status:'outcome_unknown',request_id:requestId,confirmed_append:25,
         attempted_chunk:1,checkpoint:{present:true,next_chunk:1},receipts:{verified_count:1},read_only:true,
         digest:'D'.repeat(43),ticket:'SHOULD_NOT_ESCAPE'};
       throw Error('Unexpected mocked API call');
@@ -105,13 +107,113 @@ test('safe result survives a tab reload and does not persist a ticket or digest'
   assert.equal(restored.calls.filter(call=>call.url.startsWith('/api/google-writer/continuation-status/')).length,1);
 });
 
+test('without session result the permanent panel is neutral and details open without API writes',async()=>{
+  const h=harness({started:false});
+  assert.equal(h.nodes.googleWriterApplyCompact.hidden,false);
+  assert.equal(h.nodes.googleWriterApplyCompactStatus.textContent,'Немає результату Apply');
+  assert.match(h.nodes.googleWriterApplyCompactHttp.textContent,/ще не перевірявся/);
+  await h.nodes.googleWriterApplyDetailsOpen.click();
+  assert.equal(h.nodes.googleWriterApplyDetailsDialog.open,true);
+  assert.match(detailText(h),/Результат Apply: Немає результату Apply/);
+  assert.match(detailText(h),/Новий запуск розпочато: невідомо/);
+  assert.equal(h.calls.filter(call=>call.method==='POST').length,0);
+});
+
+test('manual read-only check accepts only a formatted request ID and confirms the echoed binding',async()=>{
+  const h=harness({started:false});
+  h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
+  assert.equal(h.calls.filter(call=>call.url===`/api/google-writer/continuation-status/${requestId}`&&call.method==='GET').length,1);
+  assert.equal(h.calls.filter(call=>call.method==='POST').length,0);
+  assert.match(h.nodes.googleWriterApplyLookupStatus.textContent,/підтверджено/);
+  assert.equal(h.nodes.googleWriterApplyCompactStatus.textContent,'Немає результату Apply');
+  assert.match(h.nodes.googleWriterApplyCompactHttp.textContent,/Стан: outcome_unknown/);
+  await h.nodes.googleWriterApplyCopy.click();
+  assert.match(h.clipboard.text,/Стан continuation run: outcome_unknown/);
+  assert.doesNotMatch(h.clipboard.text,/PRIVATE_TICKET_SENTINEL|SHOULD_NOT_ESCAPE|D{43}|c1dc13464f0247c5a727204ebf28f8cc/);
+});
+
+test('a valid saved Preview request ID can be checked later without storing its ticket',async()=>{
+  const h=harness({started:false});
+  await h.app.request('/api/admin/google-writer/append-continuation-preview',{method:'POST'});
+  const saved=JSON.parse([...h.storage.values()][0]);
+  assert.equal(saved.level,'none');
+  assert.equal(saved.diagnosticRequestId,requestId);
+  assert.doesNotMatch([...h.storage.values()].join(''),/PRIVATE_TICKET_SENTINEL/);
+  const restored=harness({started:false},h.storage);await tick();
+  assert.equal(restored.nodes.googleWriterApplyRequestId.value,requestId);
+  assert.equal(restored.calls.filter(call=>call.url===`/api/google-writer/continuation-status/${requestId}`).length,1);
+  assert.equal(restored.calls.filter(call=>call.method==='POST').length,0);
+});
+
+test('manual request ID overrides the Apply lookup without replacing its saved Apply identity',async()=>{
+  const storage=new Map([['pqm.googleWriter.applyResult.v1',JSON.stringify({version:1,requestId:'a'.repeat(32),
+    httpStatus:202,code:'APPLY_STARTED',level:'success',started:true})]]);
+  const h=harness({started:false},storage);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
+  assert.ok(h.calls.some(call=>call.url===`/api/google-writer/continuation-status/${requestId}`));
+  const saved=JSON.parse(storage.get('pqm.googleWriter.applyResult.v1'));
+  assert.equal(saved.requestId,'a'.repeat(32));
+  assert.equal(saved.diagnosticRequestId,requestId);
+});
+
+test('invalid manual request ID is rejected locally without any network call',async()=>{
+  const h=harness({started:false});h.nodes.googleWriterApplyRequestId.value='not-a-request-id';
+  await h.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
+  assert.match(h.nodes.googleWriterApplyLookupStatus.textContent,/32 символів/);
+  assert.equal(h.calls.length,0);
+  assert.equal(h.nodes.googleWriterApplyCompactStatus.textContent,'Немає результату Apply');
+});
+
+test('read-only BLOCKED and unavailable outcomes are distinguished without leaking data',async()=>{
+  const blocked=harness({started:false},new Map(),{status:'BLOCKED',reason_codes:['RECEIPT_BINDING_MISMATCH'],read_only:true,
+    ticket:'SECRET',digest:'D'.repeat(43)});
+  blocked.nodes.googleWriterApplyRequestId.value=requestId;await blocked.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
+  assert.match(blocked.nodes.googleWriterApplyLookupStatus.textContent,/BLOCKED.*RECEIPT_BINDING_MISMATCH/);
+  assert.match(detailText(blocked),/Результат read-only перевірки: BLOCKED/);
+  assert.doesNotMatch(detailText(blocked),/SECRET|D{43}/);
+  const restoredBlocked=harness({started:false},blocked.storage);
+  assert.equal(restoredBlocked.nodes.googleWriterApplyCompactStatus.textContent,'Немає результату Apply');
+  assert.match(detailText(restoredBlocked),/RECEIPT_BINDING_MISMATCH/);
+  assert.equal(restoredBlocked.calls.filter(call=>call.url.startsWith('/api/google-writer/continuation-status/')).length,0);
+  const unavailable=harness({started:false},new Map(),{status:'UNAVAILABLE',reason_codes:['CONTINUATION_PLAN_UNAVAILABLE'],read_only:true});
+  unavailable.nodes.googleWriterApplyRequestId.value=requestId;await unavailable.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
+  assert.match(unavailable.nodes.googleWriterApplyLookupStatus.textContent,/Не вдалося перевірити стан/);
+  assert.match(detailText(unavailable),/Результат read-only перевірки: неможливо перевірити/);
+  assert.equal(unavailable.nodes.googleWriterApplyCompactStatus.textContent,'Немає результату Apply');
+});
+
+test('a mismatched echoed request ID is BLOCKED and not persisted as a binding',async()=>{
+  const h=harness({started:false},new Map(),{status:'complete',request_id:'0'.repeat(32),confirmed_append:251,
+    checkpoint:{present:true,next_chunk:11},receipts:{verified_count:11},read_only:true});
+  h.nodes.googleWriterApplyRequestId.value=requestId;await h.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
+  assert.match(h.nodes.googleWriterApplyLookupStatus.textContent,/BLOCKED.*не відповідає/);
+  assert.match(detailText(h),/REQUEST_BINDING_MISMATCH/);
+  assert.equal(JSON.parse([...h.storage.values()][0]).requestId,null);
+});
+
+test('response without a read-only assertion cannot be presented as confirmed',async()=>{
+  const h=harness({started:false},new Map(),{status:'complete',request_id:requestId,read_only:false,
+    confirmed_append:251,checkpoint:{present:true,next_chunk:11},receipts:{verified_count:11}});
+  h.nodes.googleWriterApplyRequestId.value=requestId;await h.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
+  assert.match(h.nodes.googleWriterApplyLookupStatus.textContent,/BLOCKED.*read-only/);
+  assert.match(detailText(h),/READ_ONLY_NOT_CONFIRMED/);
+  assert.doesNotMatch(detailText(h),/Підтверджені APPEND: 251/);
+});
+
 test('status sits in desktop column four and details dialog wraps responsively',()=>{
   assert.match(index,/id="googleWriterApplyCompact" class="google-writer-apply-compact/);
   assert.doesNotMatch(index,/googleWriterApplyResult"[^>]*position:\s*fixed/);
   assert.match(index,/id="googleWriterApplyDetailsDialog" class="google-writer-apply-dialog/);
-  assert.match(styles,/grid-template-columns:minmax\(220px,1\.1fr\) minmax\(0,1fr\) minmax\(0,1fr\) minmax\(170px,\.9fr\)/);
+  assert.match(styles,/grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
   assert.match(styles,/grid-column:4/);
+  assert.match(styles,/\.edr-monitoring-heading>\.edr-monitoring-kpis\{grid-column:1\/-1;grid-row:2;grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
+  assert.match(styles,/@media\(max-width:800px\)[\s\S]*?grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
+  assert.match(styles,/@media\(max-width:700px\)[\s\S]*?grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(styles,/overflow-wrap:anywhere;word-break:break-word/);
   assert.match(styles,/@media\(max-width:700px\)[\s\S]*?\.google-writer-apply-details\{grid-template-columns:minmax\(0,1fr\)/);
   assert.match(index,/Копіювати діагностику/);
+  assert.match(index,/id="googleWriterApplyDiagnosticCheck"[^>]*>Перевірити стан/);
+  assert.match(index,/id="googleWriterApplyCompact" class="google-writer-apply-compact card" aria-live="polite">/);
+  assert.match(index,/Діагностика Google Writer/);
 });
