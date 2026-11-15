@@ -2977,6 +2977,275 @@ def append_continuation_status(path, request_id, actor):
         'receipts':{'verified_count':receipt_count},'read_only':True}
 
 
+def audit_saved_append_continuation(path, client, request_id, actor):
+    """Fresh, read-only audit of one saved continuation against its immutable 276-row source plan.
+
+    This deliberately does not create a Preview/ticket/run or write any local or remote state.
+    The Apps Script call uses the existing signed `diagnose_append_plan` audit mode.
+    """
+    def result(status, code, *, source=None, preserved=None, continuation=None, related=None):
+        response={'status':status,'reason_codes':[code] if code else [],
+            'source':source or {'planned':276,'confirmed':None,'missing':None,'conflict':None,'unverified':None},
+            'preserved':preserved or {'planned':25,'confirmed':None,'missing':None,
+                'conflict':None,'unverified':None},
+            'continuation':continuation or {'planned':251,'present':None,'missing':None,
+                'duplicate':None,'conflict':None,'unverified':None},
+            'related':related or {'source_run':'UNAVAILABLE','continuation_runs':[],
+                'source_chunks':{},'continuation_chunks':{},'source_checkpoint':False,
+                'continuation_checkpoints':0,'continuation_verified_receipts':0,
+                'additional_saved_previews':None},
+            'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+            'preview_created':False,'ticket_created':False,'writer_started':False}
+        if isinstance(request_id,str) and re.fullmatch(r'[0-9a-f]{32}',request_id):
+            response['request_id']=request_id
+        return response
+
+    if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
+            not isinstance(request_id,str) or not re.fullmatch(r'[0-9a-f]{32}',request_id) or
+            not isinstance(actor,str) or not actor.strip() or len(actor)>128):
+        return result('BLOCKED','IDENTITY_INVALID')
+
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    try:
+        with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+            con.execute('PRAGMA query_only=ON');con.row_factory=sqlite3.Row
+            plan_rows=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,
+                source_digest,details_json FROM google_writer_plan_journal
+                WHERE request_id=? AND environment='SANDBOX' ''',(request_id,)).fetchall()
+            if len(plan_rows)!=1:
+                return result('UNAVAILABLE','CONTINUATION_PLAN_UNAVAILABLE')
+            plan=dict(plan_rows[0])
+            preview_rows=con.execute('''SELECT environment,actor,plan_digest,append_only_digest,details_digest,details_json
+                FROM google_writer_preview_plans WHERE request_id=?''',(request_id,)).fetchall()
+            related_plan_rows=con.execute('''SELECT request_id,actor,details_json FROM google_writer_plan_journal
+                WHERE environment='SANDBOX' ''').fetchall()
+            related_preview_rows=con.execute('''SELECT request_id,actor,details_json FROM google_writer_preview_plans
+                WHERE environment='SANDBOX' ''').fetchall()
+            run_rows=con.execute('''SELECT request_id,actor,status,result_json FROM google_writer_runs
+                WHERE environment='SANDBOX' ''').fetchall()
+            chunk_rows=con.execute('''SELECT chunk_id,plan_id,run_id,status,receipt_json,expected_json
+                FROM google_writer_chunk_journal WHERE environment='SANDBOX' ''').fetchall()
+            apply_chunk_rows=con.execute('''SELECT chunk_id,plan_id,run_id,status,receipt_json,expected_json
+                FROM google_writer_apply_chunk_journal WHERE environment='SANDBOX' ''').fetchall()
+    except (OSError,sqlite3.Error):
+        return result('UNAVAILABLE','SQLITE_EVIDENCE_UNAVAILABLE')
+
+    if plan['actor']!=actor or plan['plan_id']!=request_id:
+        return result('BLOCKED','CONTINUATION_PLAN_BINDING_MISMATCH')
+    if len(preview_rows)!=1:
+        return result('UNAVAILABLE','CONTINUATION_PREVIEW_SNAPSHOT_UNAVAILABLE')
+    try:
+        snapshot=load_preview_plan(path,request_id,actor,plan['plan_digest'],details_digest=plan['details_digest'])
+    except (OSError,sqlite3.Error,ValueError,TypeError):
+        return result('BLOCKED','CONTINUATION_PLAN_INTEGRITY_MISMATCH')
+    preview=dict(preview_rows[0])
+    if (preview['environment']!='SANDBOX' or preview['actor']!=actor or
+            preview['plan_digest']!=plan['plan_digest'] or
+            preview['append_only_digest']!=plan['append_only_digest'] or
+            preview['details_digest']!=plan['details_digest'] or
+            preview['details_json']!=plan['details_json'] or
+            snapshot['details'].get('source_digest')!=plan['source_digest']):
+        return result('BLOCKED','CONTINUATION_PLAN_BINDING_MISMATCH')
+    details=snapshot['details'];meta=details.get('append_continuation')
+    if (not isinstance(meta,dict) or meta.get('version')!=2 or
+            meta.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID):
+        return result('BLOCKED','CONTINUATION_SOURCE_BINDING_MISMATCH')
+    try:
+        validate_append_continuation_closed(path,snapshot,actor)
+        source_rows=sqlite3.connect(uri,uri=True,timeout=5)
+        try:
+            source_rows.execute('PRAGMA query_only=ON');source_rows.row_factory=sqlite3.Row
+            source_plan=source_rows.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,
+                source_digest,details_json FROM google_writer_plan_journal
+                WHERE request_id=? AND environment='SANDBOX' ''',(meta['source_request_id'],)).fetchall()
+        finally:
+            source_rows.close()
+        if len(source_plan)!=1:
+            return result('UNAVAILABLE','SOURCE_PLAN_UNAVAILABLE')
+        source_plan=dict(source_plan[0]);source_details=json.loads(source_plan['details_json'])
+        source_ops=[_append_continuation_operation(item) for item in source_details['appends']]
+        continuation_ops=[_append_continuation_operation(item) for item in details['appends']]
+        exclusions=_append_continuation_v2_source_exclusions_from_db(path,actor,meta)
+        _append_continuation_v2_assert_disjoint(source_details['appends'],source_details,exclusions)
+    except (OSError,sqlite3.Error,ValueError,TypeError,KeyError,IndexError,json.JSONDecodeError):
+        return result('BLOCKED','SOURCE_OR_CONTINUATION_BINDING_INVALID')
+    if (len(source_ops)!=276 or len(continuation_ops)!=251 or
+            details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0} or
+            details.get('updates') or details.get('conflicts') or details.get('errors')):
+        return result('BLOCKED','CONTINUATION_PLAN_COUNTS_INVALID')
+
+    # Find every saved continuation Preview and run linked to this original plan. A malformed
+    # journal record prevents proving that the association scan was complete, so fail closed.
+    linked_plan_ids=set();scan_invalid=False
+    for row in related_plan_rows:
+        try: candidate=json.loads(row['details_json'])
+        except (TypeError,json.JSONDecodeError): scan_invalid=True;continue
+        candidate_meta=candidate.get('append_continuation') if isinstance(candidate,dict) else None
+        if isinstance(candidate_meta,dict) and candidate_meta.get('source_request_id')==meta['source_request_id']:
+            linked_plan_ids.add(row['request_id'])
+            if row['actor']!=actor: scan_invalid=True
+    preview_plan_ids=set()
+    for row in related_preview_rows:
+        try: candidate=json.loads(row['details_json'])
+        except (TypeError,json.JSONDecodeError): scan_invalid=True;continue
+        candidate_meta=candidate.get('append_continuation') if isinstance(candidate,dict) else None
+        if isinstance(candidate_meta,dict) and candidate_meta.get('source_request_id')==meta['source_request_id']:
+            preview_plan_ids.add(row['request_id'])
+            if row['actor']!=actor: scan_invalid=True
+    if request_id not in linked_plan_ids or request_id not in preview_plan_ids:
+        return result('BLOCKED','CONTINUATION_LINK_SCAN_MISMATCH')
+    if scan_invalid:
+        return result('UNAVAILABLE','RELATED_RUN_SCAN_INCOMPLETE')
+    linked_plan_ids|={meta['source_request_id'],request_id}
+    linked_runs=[];source_run=None;run_progress={}
+    for row in run_rows:
+        try: run_result=json.loads(row['result_json'] or '{}')
+        except (TypeError,json.JSONDecodeError):
+            return result('UNAVAILABLE','RELATED_RUN_SCAN_INCOMPLETE')
+        is_linked=(row['request_id'] in linked_plan_ids or
+            isinstance(run_result,dict) and run_result.get('continuation_request_id')==meta['source_request_id'])
+        if not is_linked: continue
+        if row['actor']!=actor:
+            return result('BLOCKED','RELATED_RUN_ACTOR_MISMATCH')
+        if row['request_id']==meta['source_request_id']:
+            source_run=row['status'];run_progress[row['request_id']]=run_result
+        else:
+            linked_runs.append({'status':row['status'],'scope':run_result.get('plan_scope')
+                if isinstance(run_result,dict) else None,
+                'attempted_chunk':run_result.get('attempted_chunk')
+                if isinstance(run_result,dict) and type(run_result.get('attempted_chunk')) is int else None})
+            run_progress[row['request_id']]=run_result
+    linked_run_ids=set(run_progress)
+    def summarize_chunks(rows):
+        states={};receipt_count=0;unresolved=0
+        for row in rows:
+            if row['plan_id'] not in linked_plan_ids and row['run_id'] not in linked_run_ids: continue
+            state=row['status']
+            allowed_states={'prepared','inflight','verified','outcome_unknown','reconciled'}
+            if not isinstance(state,str) or state not in allowed_states:
+                raise ValueError('Related chunk state is invalid')
+            if (not isinstance(row['chunk_id'],str) or not re.fullmatch(r'[0-9a-f]{32}',row['chunk_id']) or
+                    not isinstance(row['plan_id'],str) or not isinstance(row['run_id'],str)):
+                raise ValueError('Related chunk identity is invalid')
+            states[state]=states.get(state,0)+1
+            if state in {'prepared','inflight','outcome_unknown'}: unresolved+=1
+            try: receipt=json.loads(row['receipt_json'] or '{}')
+            except (TypeError,json.JSONDecodeError): receipt=None
+            if isinstance(receipt,dict) and receipt.get('status') in {
+                    'APPLY_CHUNK_VERIFIED','CHUNK_RECOVERED','COMPLETE'}:
+                receipt_count+=1
+        return {'count':sum(states.values()),'states':states,'unresolved':unresolved,'receipt_count':receipt_count}
+    try:
+        source_chunks=summarize_chunks(chunk_rows+apply_chunk_rows)
+        continuation_chunk_rows=[row for row in chunk_rows+apply_chunk_rows
+        if row['plan_id']==request_id or row['run_id']==request_id]
+        continuation_chunks=summarize_chunks(continuation_chunk_rows)
+    except (KeyError,ValueError,TypeError):
+        return result('UNAVAILABLE','RELATED_CHUNK_SCAN_INVALID')
+    continuation_statuses=[]
+    for candidate_id in sorted(linked_plan_ids-{meta['source_request_id']}):
+        try: status=append_continuation_status(path,candidate_id,actor)
+        except (OSError,sqlite3.Error,ValueError,PermissionError):
+            return result('UNAVAILABLE','RELATED_RECEIPT_READ_FAILED')
+        status=dict(status);status['request_id']=candidate_id
+        continuation_statuses.append(status)
+        if status.get('status') not in {'preview_saved','running','partial','outcome_unknown','failed_safe','complete','closed_unknown','closed_prewrite','BLOCKED','UNAVAILABLE'}:
+            return result('UNAVAILABLE','RELATED_RECEIPT_READ_INVALID')
+    current_status=next((item for item in continuation_statuses if item.get('request_id')==request_id),None)
+    if current_status is None:
+        return result('UNAVAILABLE','CONTINUATION_STATUS_UNAVAILABLE')
+
+    try:
+        source_audit=diagnose_append_only_plan(path,client,meta['source_request_id'],actor,
+            audit_only=True,include_target_statuses=True,allow_closed_unknown=True)
+    except (OSError,sqlite3.Error,ValueError,TypeError,ExecutionConfigurationError,
+            ExecutionPreflightError,ExecutionOutcomeUnknown,KeyError):
+        return result('UNAVAILABLE','APPS_SCRIPT_AUDIT_UNAVAILABLE')
+    if (not isinstance(source_audit,dict) or source_audit.get('request_id')!=meta['source_request_id'] or
+            source_audit.get('read_only') is not True or source_audit.get('sqlite_writes')!=0 or
+            source_audit.get('sheets_writes')!=0 or source_audit.get('properties_writes')!=0):
+        return result('UNAVAILABLE','READ_ONLY_AUDIT_CONTRACT_UNCONFIRMED')
+    if source_audit.get('status') not in {'DIAGNOSED','READ_INCOMPLETE'}:
+        return result('UNAVAILABLE','APPS_SCRIPT_AUDIT_UNAVAILABLE')
+    source_counts=source_audit.get('counts');target_statuses=source_audit.get('target_statuses')
+    if (not isinstance(source_counts,dict) or source_counts.get('planned')!=276 or
+            not isinstance(target_statuses,list) or len(target_statuses)!=276):
+        return result('UNAVAILABLE','APPS_SCRIPT_AUDIT_INCOMPLETE')
+    status_by_code={}
+    for item in target_statuses:
+        if (not isinstance(item,dict) or set(item)!={'code','status'} or
+                not isinstance(item.get('code'),str) or
+                item.get('status') not in {'CONFIRMED','MISSING','CONFLICT','UNVERIFIED'} or
+                item.get('code') in status_by_code):
+            return result('UNAVAILABLE','APPS_SCRIPT_AUDIT_BINDING_INVALID')
+        status_by_code[item['code']]=item['status']
+    source_by_code={item['code']:item for item in source_ops}
+    continuation_by_code={item['code']:item for item in continuation_ops}
+    if set(status_by_code)!=set(source_by_code) or len(source_by_code)!=276 or len(continuation_by_code)!=251:
+        return result('BLOCKED','APPS_SCRIPT_AUDIT_TARGET_SET_MISMATCH')
+    source_summary={key:sum(value==state for value in status_by_code.values()) for key,state in
+        (('confirmed','CONFIRMED'),('missing','MISSING'),('conflict','CONFLICT'),('unverified','UNVERIFIED'))}
+    if any(type(source_counts.get(key)) is not int or source_counts[key]!=source_summary[key]
+            for key in ('confirmed','missing','conflict','unverified')):
+        return result('BLOCKED','APPS_SCRIPT_AUDIT_COUNTS_MISMATCH',
+            source={'planned':276,**source_summary})
+    continuation_summary={key:sum(status_by_code[code]==state for code in continuation_by_code)
+        for key,state in (('present','CONFIRMED'),('missing','MISSING'),('conflict','CONFLICT'),('unverified','UNVERIFIED'))}
+    preserved_codes=set(source_by_code)-set(continuation_by_code)
+    if len(preserved_codes)!=25:
+        return result('BLOCKED','PRESERVED_TARGET_SET_MISMATCH')
+    preserved_summary={'planned':25,**{key:sum(status_by_code[code]==state for code in preserved_codes)
+        for key,state in (('confirmed','CONFIRMED'),('missing','MISSING'),('conflict','CONFLICT'),
+                          ('unverified','UNVERIFIED'))}}
+    conflicts=source_audit.get('conflicts')
+    if not isinstance(conflicts,list):
+        return result('UNAVAILABLE','APPS_SCRIPT_AUDIT_CONFLICT_DETAILS_UNAVAILABLE')
+    conflict_fields={}
+    for item in conflicts:
+        if (not isinstance(item,dict) or not isinstance(item.get('code'),str) or
+                not isinstance(item.get('fields'),list) or item.get('detail_status') not in {'VERIFIED','UNVERIFIED'} or
+                item['code'] in conflict_fields):
+            return result('UNAVAILABLE','APPS_SCRIPT_AUDIT_CONFLICT_DETAILS_INVALID')
+        conflict_fields[item['code']]=item['fields']
+    if set(conflict_fields)!={code for code,status in status_by_code.items() if status=='CONFLICT'}:
+        return result('UNAVAILABLE','APPS_SCRIPT_AUDIT_CONFLICT_DETAILS_INCOMPLETE')
+    continuation_summary['duplicate']=sum('duplicate' in conflict_fields.get(code,[])
+        for code in continuation_by_code if status_by_code.get(code)=='CONFLICT')
+    saved_missing={code for code,status in status_by_code.items() if status=='MISSING'}
+    plan_matches=(saved_missing==set(continuation_by_code) and
+        all(source_by_code[code]==continuation_by_code[code] for code in continuation_by_code))
+    guards=source_audit.get('continuation_guard_rows')
+    preserved_match=(isinstance(guards,list) and len(guards)==25 and guards==meta['preserved_rows'])
+    source_expected=(source_summary=={'confirmed':25,'missing':251,'conflict':0,'unverified':0})
+    related={'source_run':source_run or 'MISSING','continuation_runs':[
+            {'status':item['status'],'scope':item['scope'],
+             'attempted_chunk_present':item['attempted_chunk'] is not None} for item in linked_runs],
+        'source_chunks':source_chunks,'continuation_chunks':continuation_chunks,
+        'source_checkpoint':bool(run_progress.get(meta['source_request_id'],{}).get('checkpoint_digest')),
+        'continuation_checkpoints':sum(bool(item.get('checkpoint',{}).get('present')) for item in continuation_statuses),
+        'continuation_verified_receipts':sum(item.get('receipts',{}).get('verified_count',0)
+            for item in continuation_statuses),
+        'additional_saved_previews':max(0,len(preview_plan_ids)-1)}
+    uncertain_runs=any(item['status'] in {'running','outcome_unknown','partial','failed_safe'} for item in linked_runs)
+    competing_attempts=any(item['request_id']!=request_id and item['status'] not in {'preview_saved'}
+        for item in continuation_statuses if isinstance(item.get('request_id'),str))
+    unresolved=(uncertain_runs or competing_attempts or source_chunks['unresolved']>0 or
+        continuation_chunks['unresolved']>0 or related['additional_saved_previews']>0)
+    mismatched=(not plan_matches or not preserved_match or not source_expected or
+        preserved_summary!={'planned':25,'confirmed':25,'missing':0,'conflict':0,'unverified':0} or
+        continuation_summary['conflict']>0 or continuation_summary['unverified']>0 or
+        current_status.get('status')!='preview_saved' or unresolved)
+    if source_audit.get('status')!='DIAGNOSED' or source_summary['unverified']:
+        overall='UNAVAILABLE';code='GOOGLE_SHEETS_READ_INCOMPLETE'
+    elif mismatched:
+        overall='BLOCKED';code='CONTINUATION_AUDIT_MISMATCH_OR_UNRESOLVED_STATE'
+    else:
+        overall='VERIFIED';code=None
+    return result(overall,code,source={'planned':276,**source_summary},
+        preserved=preserved_summary,
+        continuation={'planned':251,**continuation_summary},related=related)
+
+
 def claim_interrupted_append_chunk_recovery(path, request_id, *, now=None,
                                             stale_seconds=APPEND_RECOVERY_STALE_SECONDS,
                                             lease_seconds=APPEND_RECOVERY_LEASE_SECONDS):

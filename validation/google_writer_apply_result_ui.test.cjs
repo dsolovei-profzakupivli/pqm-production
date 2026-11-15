@@ -13,8 +13,11 @@ const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 const ids=['googleWriterApplyCompact','googleWriterApplyCompactStatus','googleWriterApplyCompactHttp',
   'googleWriterApplyDetailsOpen','googleWriterApplyDetailsDialog','googleWriterApplyDetailsBody',
   'googleWriterApplyCopy','googleWriterApplyCopyStatus','googleWriterApplyDiagnosticRefresh',
-  'googleWriterApplyRequestId','googleWriterApplyDiagnosticCheck','googleWriterApplyLookupStatus'];
-function harness(applyResult,storage=new Map(),diagnosticResult=null){
+  'googleWriterApplyRequestId','googleWriterApplyDiagnosticCheck','googleWriterApplyLookupStatus',
+  'googleWriterSavedContinuationAudit','googleWriterSavedContinuationAuditStatus',
+  'googleWriterSavedContinuationAuditResult','googleWriterSavedContinuationAuditCopy',
+  'googleWriterSavedContinuationAuditCopyStatus'];
+function harness(applyResult,storage=new Map(),diagnosticResult=null,auditResult=null){
   const calls=[],nodes={},clipboard={text:''};
   const element=()=>({hidden:true,open:false,textContent:'',value:'',children:[],dataset:{},style:{},listeners:{},
     appendChild(node){this.children.push(node);this.textContent=this.children.map(x=>x.textContent).join('\n')},
@@ -35,6 +38,16 @@ function harness(applyResult,storage=new Map(),diagnosticResult=null){
       if(url.startsWith('/api/google-writer/continuation-status/'))return diagnosticResult||{status:'outcome_unknown',request_id:requestId,confirmed_append:25,
         attempted_chunk:1,checkpoint:{present:true,next_chunk:1},receipts:{verified_count:1},read_only:true,
         digest:'D'.repeat(43),ticket:'SHOULD_NOT_ESCAPE'};
+      if(url.startsWith('/api/admin/google-writer/saved-continuation-audit/'))return auditResult||{
+        status:'VERIFIED',request_id:requestId,reason_codes:[],source:{planned:276,confirmed:25,missing:251,conflict:0,unverified:0},
+        preserved:{planned:25,confirmed:25,missing:0,conflict:0,unverified:0},
+        continuation:{planned:251,present:0,missing:251,duplicate:0,conflict:0,unverified:0},
+        related:{source_run:'closed_unknown',continuation_runs:[],source_chunks:{count:1,states:{outcome_unknown:1},unresolved:1,receipt_count:0},
+          continuation_chunks:{count:0,states:{},unresolved:0,receipt_count:0},source_checkpoint:false,
+          continuation_checkpoints:0,continuation_verified_receipts:0,additional_saved_previews:0},
+        read_only:true,sqlite_writes:0,sheets_writes:0,properties_writes:0,
+        preview_created:false,ticket_created:false,writer_started:false,
+        digest:'D'.repeat(43),ticket:'DO_NOT_COPY',supplier_name:'PRIVATE'};
       throw Error('Unexpected mocked API call');
     }};
   vm.createContext(app);vm.runInContext(source,app,{filename:'google_writer_apply_result.js'});
@@ -46,6 +59,8 @@ async function invokeApply(h,applyPayload={ticket,confirmed:true}){
   await new Promise(resolve=>setTimeout(resolve,0));
 }
 function detailText(h){return h.nodes.googleWriterApplyDetailsBody.children.map(item=>
+  item.children.map(child=>child.textContent).join(': ')).join('\n');}
+function savedAuditText(h){return h.nodes.googleWriterSavedContinuationAuditResult.children.map(item=>
   item.children.map(child=>child.textContent).join(': ')).join('\n');}
 
 test('HTTP 409 with started:false is BLOCKED, preserves the exact code, and never retries Apply',async()=>{
@@ -201,6 +216,87 @@ test('response without a read-only assertion cannot be presented as confirmed',a
   assert.doesNotMatch(detailText(h),/Підтверджені APPEND: 251/);
 });
 
+test('saved continuation audit reads the saved plan and copies only safe verified counts',async()=>{
+  const h=harness({started:false});h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  assert.equal(h.calls.filter(call=>call.url===`/api/admin/google-writer/saved-continuation-audit/${requestId}`&&call.method==='GET').length,1);
+  assert.equal(h.calls.filter(call=>call.method==='POST').length,0);
+  assert.equal(h.nodes.googleWriterSavedContinuationAuditStatus.textContent,'VERIFIED');
+  assert.match(savedAuditText(h),/Продовження · відсутні: 251/);
+  assert.match(savedAuditText(h),/Продовження · вже присутні й підтверджені: 0/);
+  assert.match(savedAuditText(h),/Раніше підтверджені 25 · підтверджено: 25/);
+  assert.match(savedAuditText(h),/Перевірені receipts continuation: 0/);
+  await h.nodes.googleWriterSavedContinuationAuditCopy.click();
+  assert.match(h.clipboard.text,/Продовження · відсутні: 251/);
+  assert.match(h.clipboard.text,/Google Sheets writes: 0/);
+  assert.doesNotMatch(h.clipboard.text,/DO_NOT_COPY|PRIVATE|D{43}|ticket|digest|requestId|c1dc134/);
+  await tick();
+  assert.equal(h.nodes.googleWriterSavedContinuationAuditCopyStatus.textContent,'Безпечний звіт скопійовано.');
+});
+
+test('saved continuation audit reports duplicate and conflict counts as BLOCKED',async()=>{
+  const result={status:'BLOCKED',request_id:requestId,reason_codes:['CONTINUATION_AUDIT_MISMATCH_OR_UNRESOLVED_STATE'],
+    source:{planned:276,confirmed:25,missing:250,conflict:1,unverified:0},
+    preserved:{planned:25,confirmed:24,missing:0,conflict:1,unverified:0},
+    continuation:{planned:251,present:0,missing:250,duplicate:1,conflict:1,unverified:0},
+    related:{source_run:'closed_unknown',continuation_runs:[],source_chunks:{count:0,states:{},unresolved:0,receipt_count:0},
+      continuation_chunks:{count:0,states:{},unresolved:0,receipt_count:0},source_checkpoint:false,
+      continuation_checkpoints:0,continuation_verified_receipts:0,additional_saved_previews:0},
+    read_only:true,sqlite_writes:0,sheets_writes:0,properties_writes:0,preview_created:false,ticket_created:false,writer_started:false};
+  const h=harness({started:false},new Map(),null,result);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  assert.match(h.nodes.googleWriterSavedContinuationAuditStatus.textContent,/BLOCKED/);
+  assert.match(savedAuditText(h),/дублікати: 1/);
+  assert.match(savedAuditText(h),/конфлікти: 1/);
+});
+
+test('saved continuation audit incomplete or Apps Script unavailable stays UNAVAILABLE',async()=>{
+  const result={status:'UNAVAILABLE',request_id:requestId,reason_codes:['GOOGLE_SHEETS_READ_INCOMPLETE'],
+    source:{planned:276,confirmed:25,missing:250,conflict:0,unverified:1},
+    preserved:{planned:25,confirmed:25,missing:0,conflict:0,unverified:0},
+    continuation:{planned:251,present:0,missing:250,duplicate:0,conflict:0,unverified:1},
+    read_only:true,sqlite_writes:0,sheets_writes:0,properties_writes:0,
+    preview_created:false,ticket_created:false,writer_started:false};
+  const h=harness({started:false},new Map(),null,result);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  assert.match(h.nodes.googleWriterSavedContinuationAuditStatus.textContent,/UNAVAILABLE.*GOOGLE_SHEETS_READ_INCOMPLETE/);
+  assert.match(savedAuditText(h),/Продовження · неперевірені: 1/);
+  assert.doesNotMatch(savedAuditText(h),/VERIFIED/);
+});
+
+test('saved continuation audit missing receipt and unresolved run are visibly BLOCKED',async()=>{
+  const result={status:'BLOCKED',request_id:requestId,reason_codes:['RECEIPT_BINDING_MISMATCH'],
+    source:{planned:276,confirmed:25,missing:251,conflict:0,unverified:0},
+    preserved:{planned:25,confirmed:25,missing:0,conflict:0,unverified:0},
+    continuation:{planned:251,present:0,missing:251,duplicate:0,conflict:0,unverified:0},
+    related:{source_run:'closed_unknown',continuation_runs:[{status:'outcome_unknown',scope:'APPEND_ONLY',attempted_chunk_present:true}],
+      source_chunks:{count:1,states:{outcome_unknown:1},unresolved:1,receipt_count:0},
+      continuation_chunks:{count:1,states:{verified:1},unresolved:0,receipt_count:0},source_checkpoint:false,
+      continuation_checkpoints:0,continuation_verified_receipts:0,additional_saved_previews:0},
+    read_only:true,sqlite_writes:0,sheets_writes:0,properties_writes:0,
+    preview_created:false,ticket_created:false,writer_started:false};
+  const h=harness({started:false},new Map(),null,result);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  assert.match(h.nodes.googleWriterSavedContinuationAuditStatus.textContent,/BLOCKED/);
+  assert.match(savedAuditText(h),/Пов’язані continuation-запуски: 1/);
+  assert.match(savedAuditText(h),/Перевірені receipts continuation: 0/);
+});
+
+test('saved continuation audit rejects invalid ID and a response with unsafe side-effect flags',async()=>{
+  const invalid=harness({started:false});invalid.nodes.googleWriterApplyRequestId.value='not-an-id';
+  await invalid.nodes.googleWriterSavedContinuationAudit.click();
+  assert.equal(invalid.calls.length,0);
+  assert.match(invalid.nodes.googleWriterSavedContinuationAuditStatus.textContent,/REQUEST_ID_INVALID/);
+  const unsafe=harness({started:false},new Map(),null,{status:'VERIFIED',request_id:requestId,
+    source:{planned:276,confirmed:25,missing:251,conflict:0,unverified:0},
+    preserved:{planned:25,confirmed:25,missing:0,conflict:0,unverified:0},
+    continuation:{planned:251,present:0,missing:251,duplicate:0,conflict:0,unverified:0},
+    read_only:true,sqlite_writes:1,sheets_writes:0,properties_writes:0,
+    preview_created:false,ticket_created:false,writer_started:false});
+  unsafe.nodes.googleWriterApplyRequestId.value=requestId;await unsafe.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  assert.match(unsafe.nodes.googleWriterSavedContinuationAuditStatus.textContent,/BLOCKED.*READ_ONLY_CONTRACT_UNCONFIRMED/);
+});
+
 test('status sits in desktop column four and details dialog wraps responsively',()=>{
   assert.match(index,/id="googleWriterApplyCompact" class="google-writer-apply-compact/);
   assert.doesNotMatch(index,/googleWriterApplyResult"[^>]*position:\s*fixed/);
@@ -211,9 +307,12 @@ test('status sits in desktop column four and details dialog wraps responsively',
   assert.match(styles,/@media\(max-width:800px\)[\s\S]*?grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
   assert.match(styles,/@media\(max-width:700px\)[\s\S]*?grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(styles,/overflow-wrap:anywhere;word-break:break-word/);
-  assert.match(styles,/@media\(max-width:700px\)[\s\S]*?\.google-writer-apply-details\{grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(styles,/@media\(max-width:700px\)[\s\S]*?\.google-writer-apply-details,\.google-writer-saved-continuation-audit-result\{grid-template-columns:minmax\(0,1fr\)/);
   assert.match(index,/Копіювати діагностику/);
   assert.match(index,/id="googleWriterApplyDiagnosticCheck"[^>]*>Перевірити стан/);
+  assert.match(index,/id="googleWriterSavedContinuationAudit"[^>]*>Звірити збережене продовження/);
+  assert.match(index,/id="googleWriterSavedContinuationAuditCopy"[^>]*>Копіювати звіт/);
+  assert.match(index,/googleWriterSavedContinuationAudit/);
   assert.match(index,/id="googleWriterApplyCompact" class="google-writer-apply-compact card" aria-live="polite">/);
   assert.match(index,/Діагностика Google Writer/);
 });

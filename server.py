@@ -11896,6 +11896,34 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError,PermissionError,RuntimeError,sqlite3.Error):
                 return self.send_json({'status':'UNAVAILABLE','reason_codes':['CONTINUATION_STATUS_UNAVAILABLE'],
                     'read_only':True},200)
+        saved_continuation_audit_match=re.fullmatch(
+            r'/api/admin/google-writer/saved-continuation-audit/([0-9a-f]{32})',parsed.path)
+        if saved_continuation_audit_match:
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['SANDBOX_ONLY'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                    'preview_created':False,'ticket_created':False,'writer_started':False},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['PERMISSION_REQUIRED'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                    'preview_created':False,'ticket_created':False,'writer_started':False},403)
+            try:
+                result=google_writer_execution.audit_saved_append_continuation(
+                    DB_PATH,google_writer_client(),saved_continuation_audit_match.group(1),self.auth_user)
+                if (result.get('read_only') is not True or result.get('sqlite_writes')!=0 or
+                        result.get('sheets_writes')!=0 or result.get('properties_writes')!=0 or
+                        result.get('preview_created') is not False or result.get('ticket_created') is not False or
+                        result.get('writer_started') is not False):
+                    return self.send_json({'status':'UNAVAILABLE','reason_codes':['READ_ONLY_CONTRACT_UNCONFIRMED'],
+                        'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                        'preview_created':False,'ticket_created':False,'writer_started':False},200)
+                return self.send_json(result)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['AUDIT_EVIDENCE_UNAVAILABLE'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                    'preview_created':False,'ticket_created':False,'writer_started':False},200)
         if parsed.path == '/api/google-writer/status':
             data=google_writer_status(self.auth_user)
             permissions=getattr(self,'auth_access',{}).get('permissions',{})

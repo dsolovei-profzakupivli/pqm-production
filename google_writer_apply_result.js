@@ -15,11 +15,16 @@
   const requestIdInput=doc?.getElementById('googleWriterApplyRequestId');
   const checkButton=doc?.getElementById('googleWriterApplyDiagnosticCheck');
   const lookupStatus=doc?.getElementById('googleWriterApplyLookupStatus');
+  const savedAuditButton=doc?.getElementById('googleWriterSavedContinuationAudit');
+  const savedAuditStatus=doc?.getElementById('googleWriterSavedContinuationAuditStatus');
+  const savedAuditResult=doc?.getElementById('googleWriterSavedContinuationAuditResult');
+  const savedAuditCopy=doc?.getElementById('googleWriterSavedContinuationAuditCopy');
+  const savedAuditCopyStatus=doc?.getElementById('googleWriterSavedContinuationAuditCopyStatus');
   const originalRequest=root.request;
   if(typeof originalRequest!=='function')return;
   let continuation=null;
   let state={version:1,requestId:null,httpStatus:null,code:null,level:'none',started:null,
-    description:'Збереженого результату Apply немає.',diagnostic:null};
+    description:'Збереженого результату Apply немає.',diagnostic:null,savedContinuationAudit:null};
   const REQUEST_ID_RE=/^[0-9a-f]{32}$/;
   const safeCode=value=>{
     if(typeof value!=='string'||value.length>64||/^[0-9a-f]{32,}$/i.test(value))return 'APPLY_RESULT_UNCLASSIFIED';
@@ -39,6 +44,40 @@
     if(value?.receipts&&Number.isInteger(value.receipts.verified_count)&&value.receipts.verified_count>=0)
       result.receipts={verified_count:value.receipts.verified_count};
     return result;
+  };
+  const safeCount=value=>Number.isInteger(value)&&value>=0?value:null;
+  const safeRunState=value=>typeof value==='string'&&/^[a-z_]{1,32}$/.test(value)?value:'UNAVAILABLE';
+  const safeChunkSummary=value=>{
+    const states={};
+    if(value?.states&&typeof value.states==='object'&&!Array.isArray(value.states))
+      for(const [key,count] of Object.entries(value.states))
+        if(['prepared','inflight','verified','outcome_unknown','reconciled'].includes(key)&&Number.isInteger(count)&&count>=0)
+          states[key]=count;
+    return {count:safeCount(value?.count),states,unresolved:safeCount(value?.unresolved),
+      receipt_count:safeCount(value?.receipt_count)};
+  };
+  const safeSavedContinuationAudit=value=>{
+    if(!value||!['VERIFIED','BLOCKED','UNAVAILABLE'].includes(value.status))return null;
+    const source=value.source||{},continuation=value.continuation||{},related=value.related||{};
+    return {status:value.status,reason_codes:Array.isArray(value.reason_codes)?value.reason_codes.map(safeCode):[],
+      source:{planned:safeCount(source.planned),confirmed:safeCount(source.confirmed),missing:safeCount(source.missing),
+        conflict:safeCount(source.conflict),unverified:safeCount(source.unverified)},
+      preserved:{planned:safeCount(value.preserved?.planned),confirmed:safeCount(value.preserved?.confirmed),
+        missing:safeCount(value.preserved?.missing),conflict:safeCount(value.preserved?.conflict),
+        unverified:safeCount(value.preserved?.unverified)},
+      continuation:{planned:safeCount(continuation.planned),present:safeCount(continuation.present),
+        missing:safeCount(continuation.missing),duplicate:safeCount(continuation.duplicate),
+        conflict:safeCount(continuation.conflict),unverified:safeCount(continuation.unverified)},
+      related:{source_run:safeRunState(related.source_run),
+        continuation_runs:Array.isArray(related.continuation_runs)?related.continuation_runs.slice(0,20).map(item=>({
+          status:safeRunState(item?.status),scope:item?.scope==='APPEND_ONLY'?'APPEND_ONLY':'UNKNOWN',
+          attempted_chunk_present:item?.attempted_chunk_present===true})):[],
+        source_chunks:safeChunkSummary(related.source_chunks),
+        continuation_chunks:safeChunkSummary(related.continuation_chunks),
+        source_checkpoint:related.source_checkpoint===true,
+        continuation_checkpoints:safeCount(related.continuation_checkpoints),
+        continuation_verified_receipts:safeCount(related.continuation_verified_receipts),
+        additional_saved_previews:safeCount(related.additional_saved_previews)}};
   };
   const descriptionFor=code=>({
     APPLY_REQUEST_PENDING:'Запит надіслано; очікується відповідь сервера. Не натискайте Apply повторно.',
@@ -76,6 +115,36 @@
     if(d.reason_codes?.length)rows.push(['Причини діагностики',d.reason_codes.join(', ')]);
     return rows;
   }
+  function savedAuditRows(){
+    const audit=state?.savedContinuationAudit;
+    if(!audit)return [['Звірка збереженого продовження','ще не запускалася']];
+    const rows=[['Звірка збереженого продовження',audit.status]];
+    if(audit.reason_codes.length)rows.push(['Причини',audit.reason_codes.join(', ')]);
+    rows.push(['Початковий план · підтверджено',audit.source.confirmed??'не перевірено'],
+      ['Початковий план · відсутні',audit.source.missing??'не перевірено'],
+      ['Початковий план · конфлікти',audit.source.conflict??'не перевірено'],
+      ['Раніше підтверджені 25 · підтверджено',audit.preserved.confirmed??'не перевірено'],
+      ['Раніше підтверджені 25 · відсутні',audit.preserved.missing??'не перевірено'],
+      ['Раніше підтверджені 25 · конфлікти',audit.preserved.conflict??'не перевірено'],
+      ['Продовження · вже присутні й підтверджені',audit.continuation.present??'не перевірено'],
+      ['Продовження · відсутні',audit.continuation.missing??'не перевірено'],
+      ['Продовження · дублікати',audit.continuation.duplicate??'не перевірено'],
+      ['Продовження · конфлікти',audit.continuation.conflict??'не перевірено'],
+      ['Продовження · неперевірені',audit.continuation.unverified??'не перевірено'],
+      ['Стан початкового запуску',audit.related.source_run],
+      ['Пов’язані continuation-запуски',audit.related.continuation_runs.length],
+      ['Порції початкового запуску',audit.related.source_chunks.count??'не перевірено'],
+      ['Порції continuation',audit.related.continuation_chunks.count??'не перевірено'],
+      ['Checkpoint continuation',audit.related.continuation_checkpoints??'не перевірено'],
+      ['Перевірені receipts continuation',audit.related.continuation_verified_receipts??'не перевірено'],
+      ['Інші збережені Preview',audit.related.additional_saved_previews??'не перевірено']);
+    return rows;
+  }
+  function savedAuditText(){
+    return ['PQM Google Writer — read-only звірка продовження',...savedAuditRows().map(([label,value])=>`${label}: ${value}`),
+      'SQLite writes: 0','Google Sheets writes: 0','Script Properties writes: 0',
+      'Новий Preview, ключ підтвердження, запуск, порція або checkpoint: не створювалися'].join('\n');
+  }
   function render(){
     if(compact){
       compact.hidden=false;compact.dataset.state=state.level==='none'?
@@ -94,6 +163,16 @@
       const description=doc.createElement('dd');description.textContent=String(value);
       item.append(term,description);detailsBody.appendChild(item);
     }
+    if(savedAuditResult){
+      savedAuditResult.replaceChildren();
+      for(const [label,value] of savedAuditRows()){
+        const item=doc.createElement('dl');item.className='google-writer-apply-detail';
+        const term=doc.createElement('dt');term.textContent=label;
+        const description=doc.createElement('dd');description.textContent=String(value);
+        item.append(term,description);savedAuditResult.appendChild(item);
+      }
+    }
+    if(savedAuditCopy)savedAuditCopy.disabled=!state?.savedContinuationAudit;
   }
   function diagnosticText(){
     return ['PQM Google Writer — безпечна діагностика',...diagnosticRows().map(([label,value])=>`${label}: ${value}`)].join('\n');
@@ -110,6 +189,50 @@
       }
       if(copyStatus)copyStatus.textContent='Безпечну діагностику скопійовано.';
     }catch{if(copyStatus)copyStatus.textContent='Не вдалося скопіювати. Відкрийте деталі й скопіюйте текст вручну.';}
+  }
+  async function copySavedAudit(){
+    if(!state?.savedContinuationAudit)return;
+    try{
+      if(root.navigator?.clipboard?.writeText)await root.navigator.clipboard.writeText(savedAuditText());
+      else {
+        const textarea=doc.createElement('textarea');textarea.value=savedAuditText();textarea.setAttribute('readonly','');
+        textarea.style.position='fixed';textarea.style.opacity='0';doc.body.appendChild(textarea);textarea.select();
+        if(!doc.execCommand('copy'))throw new Error('clipboard unavailable');textarea.remove();
+      }
+      if(savedAuditCopyStatus)savedAuditCopyStatus.textContent='Безпечний звіт скопійовано.';
+    }catch{if(savedAuditCopyStatus)savedAuditCopyStatus.textContent='Не вдалося скопіювати звіт.';}
+  }
+  async function auditSavedContinuation(){
+    const requestId=requestIdInput?.value?.trim()||'';
+    if(!REQUEST_ID_RE.test(requestId)){
+      state.savedContinuationAudit=safeSavedContinuationAudit({status:'UNAVAILABLE',reason_codes:['REQUEST_ID_INVALID']});
+      if(savedAuditStatus)savedAuditStatus.textContent='UNAVAILABLE · REQUEST_ID_INVALID';
+      save();render();return false;
+    }
+    if(savedAuditButton){savedAuditButton.disabled=true;savedAuditButton.textContent='Виконується read-only звірка…';}
+    if(savedAuditStatus)savedAuditStatus.textContent='Читаються збережений план і поточний стан Google Sheets…';
+    if(savedAuditCopyStatus)savedAuditCopyStatus.textContent='';
+    try{
+      const response=await originalRequest(`/api/admin/google-writer/saved-continuation-audit/${requestId}`);
+      let audit=safeSavedContinuationAudit(response);
+      if(response?.request_id!==requestId)audit=safeSavedContinuationAudit({status:'BLOCKED',reason_codes:['REQUEST_BINDING_MISMATCH']});
+      else if(response?.read_only!==true||response?.sqlite_writes!==0||response?.sheets_writes!==0||
+          response?.properties_writes!==0||response?.preview_created!==false||response?.ticket_created!==false||
+          response?.writer_started!==false)
+        audit=safeSavedContinuationAudit({status:'BLOCKED',reason_codes:['READ_ONLY_CONTRACT_UNCONFIRMED']});
+      if(!audit)audit=safeSavedContinuationAudit({status:'UNAVAILABLE',reason_codes:['AUDIT_RESPONSE_INVALID']});
+      state.savedContinuationAudit=audit;
+      if(response?.request_id===requestId)state.diagnosticRequestId=requestId;
+      if(savedAuditStatus)savedAuditStatus.textContent=`${audit.status}${audit.reason_codes.length?' · '+audit.reason_codes.join(', '):''}`;
+      save();render();return audit.status==='VERIFIED';
+    }catch(error){
+      state.savedContinuationAudit=safeSavedContinuationAudit({status:'UNAVAILABLE',
+        reason_codes:[safeCode(error?.code||'SAVED_CONTINUATION_AUDIT_UNAVAILABLE')]});
+      if(savedAuditStatus)savedAuditStatus.textContent=`UNAVAILABLE · ${state.savedContinuationAudit.reason_codes.join(', ')}`;
+      save();render();return false;
+    }finally{
+      if(savedAuditButton){savedAuditButton.disabled=false;savedAuditButton.textContent='Звірити збережене продовження';}
+    }
   }
   async function refreshDiagnostic(requestIdOverride=null){
     const requestId=(requestIdOverride!==null?requestIdOverride:state?.diagnosticRequestId||state?.requestId||requestIdInput?.value)?.trim();
@@ -156,7 +279,8 @@
           (saved.level==='not_started'?'blocked':saved.level):'stop',
         started:saved.started===true?true:saved.started===false?false:null,
         description:descriptionFor(safeCode(saved.code)),diagnosticRequestId:REQUEST_ID_RE.test(saved.diagnosticRequestId||'')?saved.diagnosticRequestId:null,
-          diagnostic:saved.diagnostic?safeDiagnostic(saved.diagnostic):null};render();
+          diagnostic:saved.diagnostic?safeDiagnostic(saved.diagnostic):null,
+          savedContinuationAudit:safeSavedContinuationAudit(saved.savedContinuationAudit)};render();
       if(requestIdInput&&state.diagnosticRequestId)requestIdInput.value=state.diagnosticRequestId;
       if(state.diagnosticRequestId||state.requestId)void refreshDiagnostic();
     }
@@ -168,6 +292,8 @@
   if(refresh)refresh.addEventListener('click',()=>void refreshDiagnostic());
   if(checkButton)checkButton.addEventListener('click',()=>void refreshDiagnostic(requestIdInput?.value||''));
   if(copyButton)copyButton.addEventListener('click',()=>copyDiagnostic());
+  if(savedAuditButton)savedAuditButton.addEventListener('click',()=>void auditSavedContinuation());
+  if(savedAuditCopy)savedAuditCopy.addEventListener('click',()=>void copySavedAudit());
   root.request=async function(url,options={}){
     const method=String(options.method||'GET').toUpperCase();
     const isPreview=method==='POST'&&String(url).includes('/admin/google-writer/append-continuation-preview');
@@ -208,5 +334,5 @@
       throw error;
     }
   };
-  root.PqmGoogleWriterApplyResult={refreshDiagnostic,render,diagnosticText};
+  root.PqmGoogleWriterApplyResult={refreshDiagnostic,render,diagnosticText,auditSavedContinuation,savedAuditText};
 })(globalThis);

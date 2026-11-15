@@ -1,0 +1,40 @@
+{
+  "contract": "pqm-sandbox-saved-continuation-audit",
+  "version": 7,
+  "baseline": "86b6ad82105fdcd7fa530a872943525af812ec47",
+  "normalization": "CRLF-to-LF only; overlay test self-pinned with canonical placeholder",
+  "scope": [
+    "google_writer_apply_result.js",
+    "google_writer_execution.py",
+    "index.html",
+    "modules.css",
+    "server.py",
+    "validation/google_writer_apply_result_ui.test.cjs",
+    "test_google_writer_saved_continuation_audit.py",
+    "test_release_gate_infrastructure.py",
+    "validation/run_local_release.py",
+    ".github/workflows/release-checks.yml",
+    "test_google_writer_apply_result_integrity_v7.py"
+  ],
+  "files": {
+    "google_writer_apply_result.js": "bef260cfb436465bea859496a80966cef8a07c14624ac5a5f656af5ee487d5fd",
+    "google_writer_execution.py": "2a09933f5ffcfb17621e96889a3900be66daad1d58eaea61c8ed6edf4bec94dc",
+    "index.html": "6aa44019b9445754ef4fc7eb870758752c82f56b39314ccb03245ebb0a079a61",
+    "modules.css": "b440aa25655f189c011b9f305937bc2660d6d979a87963fc0170faea377a206e",
+    "server.py": "598923280335a969ae725aac41703171908eaf4a8027fd365e7966790a34c09e",
+    "validation/google_writer_apply_result_ui.test.cjs": "6a8b084ec3c373621fbc087da21462140d9e687fa5f495386cdea8a637e2d8e9",
+    "test_google_writer_saved_continuation_audit.py": "05294707ccb847541b3afdbfb8a973901acaa1483d886ae4aebf10c195eb5680",
+    "test_release_gate_infrastructure.py": "bdfa36ee45ac147aee094f48e1cc1e88c1c964ef1351d1f64c16c9dd68627576",
+    "validation/run_local_release.py": "201206398fd0c64c2b1b8573401753888e8ab282d07e04938c358da5a27ef6c8",
+    ".github/workflows/release-checks.yml": "982b7a803ab6bf89bb2fa83fd674e582d1c292f67b95d6b58216eab1941387e5",
+    "test_google_writer_apply_result_integrity_v7.py": "664a89fb25c857d7f7f3afb0c8b4d6c30cb636dd3019dfe493f62d2f5716f6ff"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261115/google_writer_apply_result_v6.json": "65b509634de88ede330bd4202107de023d9e0c62cfb4487a34bc919aa7f4d802",
+    "validation/local_release_20261115/google_writer_apply_result_v5.json": "d029a33dec13613634f2704ecaa0bf76038a01435ecf6d67f3d17585ee16f45d",
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2",
+    "validation/local_release_20261113/google_writer_append_continuation_v2.json": "2fb4d7124cdd7039ff07c87b275551e678afafb4aa807b7b0f0c5536e9bf2089",
+    "validation/local_release_20261113/google_writer_append_continuation_v3.json": "ad378d8717b936a01671eb9837b842946f5636d74663f2382e23c24f4dbb7e63",
+    "validation/local_release_20261113/google_writer_append_continuation_v4.json": "644737f2c2772e21b7c81f571678bec494641a336703375aa40b3988e1944b92"
+  }
+}
