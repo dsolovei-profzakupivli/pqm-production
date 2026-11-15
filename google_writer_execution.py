@@ -2977,13 +2977,46 @@ def append_continuation_status(path, request_id, actor):
         'receipts':{'verified_count':receipt_count},'read_only':True}
 
 
+def _saved_continuation_audit_checks(*, plan_matches, preserved_match, source_expected,
+        preserved_expected, source_chunks_unresolved, continuation_chunks_unresolved,
+        additional_saved_previews, preview_state, linked_runs_unresolved,
+        continuation_conflicts, continuation_unverified, competing_attempts):
+    """Return safe per-condition diagnostics; these never decide or relax audit policy."""
+    def match(value): return 'MATCH' if value else 'MISMATCH'
+    return {
+        'plan_matches':{'status':match(plan_matches)},
+        'preserved_match':{'status':match(preserved_match)},
+        'source_counts':{'status':match(source_expected)},
+        'preserved_counts':{'status':match(preserved_expected)},
+        'source_chunks_unresolved':{'status':match(source_chunks_unresolved==0),
+            'count':source_chunks_unresolved},
+        'continuation_chunks_unresolved':{'status':match(continuation_chunks_unresolved==0),
+            'count':continuation_chunks_unresolved},
+        'additional_saved_previews':{'status':match(additional_saved_previews==0),
+            'count':additional_saved_previews},
+        'continuation_preview':{'status':match(preview_state=='preview_saved'),
+            'state':preview_state},
+        'linked_runs_unresolved':{'status':match(linked_runs_unresolved==0),
+            'count':linked_runs_unresolved},
+        'competing_attempts':{'status':match(competing_attempts==0),
+            'count':competing_attempts},
+        'continuation_conflicts':{'status':match(continuation_conflicts==0),
+            'count':continuation_conflicts},
+        'continuation_unverified':{'status':match(continuation_unverified==0),
+            'count':continuation_unverified}}
+
+
+def _saved_continuation_audit_checks_block(checks):
+    return any(item.get('status')!='MATCH' for item in checks.values())
+
+
 def audit_saved_append_continuation(path, client, request_id, actor):
     """Fresh, read-only audit of one saved continuation against its immutable 276-row source plan.
 
     This deliberately does not create a Preview/ticket/run or write any local or remote state.
     The Apps Script call uses the existing signed `diagnose_append_plan` audit mode.
     """
-    def result(status, code, *, source=None, preserved=None, continuation=None, related=None):
+    def result(status, code, *, source=None, preserved=None, continuation=None, related=None, checks=None):
         response={'status':status,'reason_codes':[code] if code else [],
             'source':source or {'planned':276,'confirmed':None,'missing':None,'conflict':None,'unverified':None},
             'preserved':preserved or {'planned':25,'confirmed':None,'missing':None,
@@ -2998,6 +3031,12 @@ def audit_saved_append_continuation(path, client, request_id, actor):
             'preview_created':False,'ticket_created':False,'writer_started':False}
         if isinstance(request_id,str) and re.fullmatch(r'[0-9a-f]{32}',request_id):
             response['request_id']=request_id
+        response['checks']=checks if isinstance(checks,dict) else {
+            name:{'status':'NOT_CHECKED'} for name in (
+                'plan_matches','preserved_match','source_counts','preserved_counts',
+                'source_chunks_unresolved','continuation_chunks_unresolved',
+                'additional_saved_previews','continuation_preview','linked_runs_unresolved',
+                'competing_attempts','continuation_conflicts','continuation_unverified')}
         return response
 
     if (getattr(client,'environment','SANDBOX')!='SANDBOX' or
@@ -3226,15 +3265,19 @@ def audit_saved_append_continuation(path, client, request_id, actor):
         'continuation_verified_receipts':sum(item.get('receipts',{}).get('verified_count',0)
             for item in continuation_statuses),
         'additional_saved_previews':max(0,len(preview_plan_ids)-1)}
-    uncertain_runs=any(item['status'] in {'running','outcome_unknown','partial','failed_safe'} for item in linked_runs)
-    competing_attempts=any(item['request_id']!=request_id and item['status'] not in {'preview_saved'}
+    uncertain_runs=sum(item['status'] in {'running','outcome_unknown','partial','failed_safe'} for item in linked_runs)
+    competing_attempts=sum(item['request_id']!=request_id and item['status'] not in {'preview_saved'}
         for item in continuation_statuses if isinstance(item.get('request_id'),str))
-    unresolved=(uncertain_runs or competing_attempts or source_chunks['unresolved']>0 or
-        continuation_chunks['unresolved']>0 or related['additional_saved_previews']>0)
-    mismatched=(not plan_matches or not preserved_match or not source_expected or
-        preserved_summary!={'planned':25,'confirmed':25,'missing':0,'conflict':0,'unverified':0} or
-        continuation_summary['conflict']>0 or continuation_summary['unverified']>0 or
-        current_status.get('status')!='preview_saved' or unresolved)
+    checks=_saved_continuation_audit_checks(plan_matches=plan_matches,preserved_match=preserved_match,
+        source_expected=source_expected,
+        preserved_expected=preserved_summary=={'planned':25,'confirmed':25,'missing':0,'conflict':0,'unverified':0},
+        source_chunks_unresolved=source_chunks['unresolved'],
+        continuation_chunks_unresolved=continuation_chunks['unresolved'],
+        additional_saved_previews=related['additional_saved_previews'],
+        preview_state=current_status.get('status'),linked_runs_unresolved=uncertain_runs,
+        competing_attempts=competing_attempts,continuation_conflicts=continuation_summary['conflict'],
+        continuation_unverified=continuation_summary['unverified'])
+    mismatched=_saved_continuation_audit_checks_block(checks)
     if source_audit.get('status')!='DIAGNOSED' or source_summary['unverified']:
         overall='UNAVAILABLE';code='GOOGLE_SHEETS_READ_INCOMPLETE'
     elif mismatched:
@@ -3243,7 +3286,7 @@ def audit_saved_append_continuation(path, client, request_id, actor):
         overall='VERIFIED';code=None
     return result(overall,code,source={'planned':276,**source_summary},
         preserved=preserved_summary,
-        continuation={'planned':251,**continuation_summary},related=related)
+        continuation={'planned':251,**continuation_summary},related=related,checks=checks)
 
 
 def claim_interrupted_append_chunk_recovery(path, request_id, *, now=None,

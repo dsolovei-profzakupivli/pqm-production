@@ -120,6 +120,11 @@ class SavedContinuationAuditTests(unittest.TestCase):
     def test_full_saved_plan_audit_verifies_25_and_251_without_creating_state(self):
         result=self._run(self._audit_reply())
         self.assertEqual(result['status'],'VERIFIED')
+        self.assertTrue(all(item['status']=='MATCH' for item in result['checks'].values()))
+        self.assertEqual(result['checks']['source_chunks_unresolved']['count'],0)
+        self.assertEqual(result['checks']['continuation_chunks_unresolved']['count'],0)
+        self.assertEqual(result['checks']['additional_saved_previews']['count'],0)
+        self.assertEqual(result['checks']['continuation_preview']['state'],'preview_saved')
         self.assertEqual(result['source'],{'planned':276,'confirmed':25,'missing':251,'conflict':0,'unverified':0})
         self.assertEqual(result['preserved'],{'planned':25,'confirmed':25,'missing':0,'conflict':0,'unverified':0})
         self.assertEqual(result['continuation'],{'planned':251,'present':0,'missing':251,
@@ -131,6 +136,41 @@ class SavedContinuationAuditTests(unittest.TestCase):
         self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
         self.assertFalse(result['preview_created']);self.assertFalse(result['ticket_created']);self.assertFalse(result['writer_started'])
         self.assertEqual(result['request_id'],self.request_id)
+
+    def test_each_saved_audit_blocking_condition_has_a_safe_specific_diagnostic(self):
+        values={'plan_matches':True,'preserved_match':True,'source_expected':True,
+            'preserved_expected':True,'source_chunks_unresolved':0,
+            'continuation_chunks_unresolved':0,'additional_saved_previews':0,
+            'preview_state':'preview_saved','linked_runs_unresolved':0,
+            'continuation_conflicts':0,'continuation_unverified':0,'competing_attempts':0}
+        expected={'plan_matches','preserved_match','source_counts','preserved_counts',
+            'source_chunks_unresolved','continuation_chunks_unresolved','additional_saved_previews',
+            'continuation_preview','linked_runs_unresolved','competing_attempts',
+            'continuation_conflicts','continuation_unverified'}
+        baseline=writer._saved_continuation_audit_checks(**values)
+        self.assertEqual(set(baseline),expected)
+        self.assertTrue(all(check['status']=='MATCH' for check in baseline.values()))
+        self.assertFalse(writer._saved_continuation_audit_checks_block(baseline))
+        cases={
+            'plan_matches':('plan_matches',False),
+            'preserved_match':('preserved_match',False),
+            'source_chunks_unresolved':('source_chunks_unresolved',1),
+            'continuation_chunks_unresolved':('continuation_chunks_unresolved',1),
+            'additional_saved_previews':('additional_saved_previews',1),
+            'continuation_preview':('preview_state','complete'),
+            'source_counts':('source_expected',False),
+            'preserved_counts':('preserved_expected',False),
+            'linked_runs_unresolved':('linked_runs_unresolved',1),
+            'competing_attempts':('competing_attempts',1),
+            'continuation_conflicts':('continuation_conflicts',1),
+            'continuation_unverified':('continuation_unverified',1)}
+        for check_name,(field,value) in cases.items():
+            with self.subTest(check=check_name):
+                changed=dict(values);changed[field]=value
+                result=writer._saved_continuation_audit_checks(**changed)
+                self.assertEqual(result[check_name]['status'],'MISMATCH')
+                self.assertEqual([key for key,item in result.items() if item['status']=='MISMATCH'],[check_name])
+                self.assertTrue(writer._saved_continuation_audit_checks_block(result))
 
     def test_duplicate_and_conflict_in_saved_targets_are_blocked(self):
         for duplicate,expected_duplicate in ((True,1),(False,0)):
@@ -216,6 +256,7 @@ class SavedContinuationAuditTests(unittest.TestCase):
         self.assertEqual(before,after)
         self.assertEqual(result['status'],'BLOCKED')
         self.assertEqual(result['reason_codes'],['CONTINUATION_PLAN_BINDING_MISMATCH'])
+        self.assertTrue(all(item['status']=='NOT_CHECKED' for item in result['checks'].values()))
         validate.assert_not_called()
 
     def test_get_route_is_sandbox_scoped_and_requires_both_permissions(self):

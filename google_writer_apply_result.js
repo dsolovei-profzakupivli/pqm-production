@@ -56,6 +56,36 @@
     return {count:safeCount(value?.count),states,unresolved:safeCount(value?.unresolved),
       receipt_count:safeCount(value?.receipt_count)};
   };
+  const AUDIT_CHECKS={
+    plan_matches:'План збігається з відсутніми операціями',
+    preserved_match:'Збережені 25 рядків відповідають контрольним даним',
+    source_counts:'Лічильники початкового плану',
+    preserved_counts:'Лічильники раніше підтверджених рядків',
+    source_chunks_unresolved:'Невирішені порції початкового запуску',
+    continuation_chunks_unresolved:'Невирішені порції продовження',
+    additional_saved_previews:'Додаткові збережені Preview',
+    continuation_preview:'Стан збереженого Preview продовження',
+    linked_runs_unresolved:'Невирішені пов’язані запуски',
+    competing_attempts:'Інші спроби продовження',
+    continuation_conflicts:'Конфлікти продовження',
+    continuation_unverified:'Неперевірені операції продовження'};
+  const safeAuditChecks=value=>{
+    if(!value||typeof value!=='object'||Array.isArray(value))return null;
+    const result={};
+    for(const key of Object.keys(AUDIT_CHECKS)){
+      const check=value[key];if(!check||typeof check!=='object'||Array.isArray(check)){
+        result[key]={status:'NOT_CHECKED'};continue;
+      }
+      const status=['MATCH','MISMATCH','NOT_CHECKED'].includes(check.status)?check.status:'NOT_CHECKED';
+      const safe={status};
+      if(Object.prototype.hasOwnProperty.call(check,'count'))safe.count=safeCount(check.count);
+      if(Object.prototype.hasOwnProperty.call(check,'state'))safe.state=
+        ['preview_saved','running','partial','outcome_unknown','failed_safe','complete','closed_unknown',
+          'closed_prewrite','BLOCKED','UNAVAILABLE'].includes(check.state)?check.state:'UNAVAILABLE';
+      result[key]=safe;
+    }
+    return result;
+  };
   const safeSavedContinuationAudit=value=>{
     if(!value||!['VERIFIED','BLOCKED','UNAVAILABLE'].includes(value.status))return null;
     const source=value.source||{},continuation=value.continuation||{},related=value.related||{};
@@ -77,7 +107,8 @@
         source_checkpoint:related.source_checkpoint===true,
         continuation_checkpoints:safeCount(related.continuation_checkpoints),
         continuation_verified_receipts:safeCount(related.continuation_verified_receipts),
-        additional_saved_previews:safeCount(related.additional_saved_previews)}};
+        additional_saved_previews:safeCount(related.additional_saved_previews)},
+      checks:safeAuditChecks(value.checks)};
   };
   const descriptionFor=code=>({
     APPLY_REQUEST_PENDING:'Запит надіслано; очікується відповідь сервера. Не натискайте Apply повторно.',
@@ -138,6 +169,23 @@
       ['Checkpoint continuation',audit.related.continuation_checkpoints??'не перевірено'],
       ['Перевірені receipts continuation',audit.related.continuation_verified_receipts??'не перевірено'],
       ['Інші збережені Preview',audit.related.additional_saved_previews??'не перевірено']);
+    if(audit.checks){
+      const checkRows=Object.entries(AUDIT_CHECKS).map(([key,label])=>{
+        const check=audit.checks[key];if(!check)return null;
+        const parts=[check.status];
+        if(check.count!==undefined)parts.push(`кількість: ${check.count??'не перевірено'}`);
+        if(check.state)parts.push(`стан: ${check.state}`);
+        return [label,parts.join(' · ')];
+      }).filter(Boolean);
+      if(audit.status==='BLOCKED'){
+        const failed=checkRows.filter(([,value])=>value.startsWith('MISMATCH'))
+          .map(([label])=>label);
+        rows.push(['Конкретні умови BLOCKED',failed.length?failed.join('; '):'Підстава не деталізована сервером']);
+      }
+      rows.push(...checkRows);
+    }else if(audit.status==='BLOCKED'){
+      rows.push(['Конкретні умови BLOCKED','Ця версія відповіді не містить деталізації перевірок']);
+    }
     return rows;
   }
   function savedAuditText(){

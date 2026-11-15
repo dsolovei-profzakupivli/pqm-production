@@ -234,6 +234,36 @@ test('saved continuation audit reads the saved plan and copies only safe verifie
   assert.equal(h.nodes.googleWriterSavedContinuationAuditCopyStatus.textContent,'Безпечний звіт скопійовано.');
 });
 
+test('saved continuation audit explains the exact safe BLOCKED checks in the copied report',async()=>{
+  const checks={
+    plan_matches:{status:'MATCH'},preserved_match:{status:'MATCH'},source_counts:{status:'MATCH'},
+    preserved_counts:{status:'MATCH'},source_chunks_unresolved:{status:'MISMATCH',count:1},
+    continuation_chunks_unresolved:{status:'MATCH',count:0},additional_saved_previews:{status:'MATCH',count:0},
+    continuation_preview:{status:'MATCH',state:'preview_saved'},linked_runs_unresolved:{status:'MATCH',count:0},
+    competing_attempts:{status:'MATCH',count:0},continuation_conflicts:{status:'MATCH',count:0},
+    continuation_unverified:{status:'MATCH',count:0},private_field:'NEVER_COPY'};
+  delete checks.preserved_counts;
+  const result={status:'BLOCKED',request_id:requestId,reason_codes:['CONTINUATION_AUDIT_MISMATCH_OR_UNRESOLVED_STATE'],
+    source:{planned:276,confirmed:25,missing:251,conflict:0,unverified:0},
+    preserved:{planned:25,confirmed:25,missing:0,conflict:0,unverified:0},
+    continuation:{planned:251,present:0,missing:251,duplicate:0,conflict:0,unverified:0},checks,
+    related:{source_run:'closed_unknown',continuation_runs:[],source_chunks:{count:1,states:{outcome_unknown:1},unresolved:1,receipt_count:0},
+      continuation_chunks:{count:0,states:{},unresolved:0,receipt_count:0},source_checkpoint:false,
+      continuation_checkpoints:0,continuation_verified_receipts:0,additional_saved_previews:0},
+    read_only:true,sqlite_writes:0,sheets_writes:0,properties_writes:0,preview_created:false,ticket_created:false,writer_started:false};
+  const h=harness({started:false},new Map(),null,result);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  assert.match(savedAuditText(h),/Причини: CONTINUATION_AUDIT_MISMATCH_OR_UNRESOLVED_STATE/);
+  assert.match(savedAuditText(h),/Конкретні умови BLOCKED: Невирішені порції початкового запуску/);
+  assert.match(savedAuditText(h),/Невирішені порції початкового запуску: MISMATCH · кількість: 1/);
+  assert.match(savedAuditText(h),/Додаткові збережені Preview: MATCH · кількість: 0/);
+  assert.match(savedAuditText(h),/Лічильники раніше підтверджених рядків: NOT_CHECKED/);
+  await h.nodes.googleWriterSavedContinuationAuditCopy.click();
+  assert.match(h.clipboard.text,/Конкретні умови BLOCKED: Невирішені порції початкового запуску/);
+  assert.match(h.clipboard.text,/Стан збереженого Preview продовження: MATCH · стан: preview_saved/);
+  assert.doesNotMatch(h.clipboard.text,/NEVER_COPY|private_field|ticket|digest|c1dc134/);
+});
+
 test('saved continuation audit reports duplicate and conflict counts as BLOCKED',async()=>{
   const result={status:'BLOCKED',request_id:requestId,reason_codes:['CONTINUATION_AUDIT_MISMATCH_OR_UNRESOLVED_STATE'],
     source:{planned:276,confirmed:25,missing:250,conflict:1,unverified:0},
