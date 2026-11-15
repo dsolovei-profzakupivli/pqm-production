@@ -23,9 +23,10 @@
   const savedAuditCopyStatus=doc?.getElementById('googleWriterSavedContinuationAuditCopyStatus');
   const originalRequest=root.request;
   if(typeof originalRequest!=='function')return;
-  let continuation=null;
+  let continuation=null,applyLockMode=null,applyRequestInFlight=false,diagnosticBusy=false,savedAuditBusy=false;
   let state={version:1,requestId:null,httpStatus:null,code:null,level:'none',started:null,
-    description:'Збереженого результату Apply немає.',diagnostic:null,savedContinuationAudit:null};
+    description:'Збереженого результату Apply немає.',diagnostic:null,savedContinuationAudit:null,
+    diagnosticCheckedAt:null,savedAuditCheckedAt:null,applyLockMode:null};
   const REQUEST_ID_RE=/^[0-9a-f]{32}$/;
   const safeCode=value=>{
     if(typeof value!=='string'||value.length>64||/^[0-9a-f]{32,}$/i.test(value))return 'APPLY_RESULT_UNCLASSIFIED';
@@ -47,6 +48,18 @@
     return result;
   };
   const safeCount=value=>Number.isInteger(value)&&value>=0?value:null;
+  const checkedAtText=value=>{
+    if(typeof value!=='string'||Number.isNaN(Date.parse(value)))return '';
+    return new Intl.DateTimeFormat('uk-UA',{timeZone:'Europe/Kyiv',day:'2-digit',month:'2-digit',
+      year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(value));
+  };
+  const lastCheckSuffix=value=>{const text=checkedAtText(value);return text?` · Остання успішна перевірка: ${text}`:'';};
+  function readOnlyButtonsBusy(busy){
+    for(const [button,label] of [[refresh,'Оновити read-only стан'],[checkButton,'Перевірити стан']])if(button){
+      button.disabled=!!busy;button.textContent=busy?'Виконується запит…':label;
+      if(busy)button.setAttribute?.('aria-busy','true');else button.removeAttribute?.('aria-busy');
+    }
+  }
   const safeRunState=value=>typeof value==='string'&&/^[a-z_]{1,32}$/.test(value)?value:'UNAVAILABLE';
   const safeChunkSummary=value=>{
     const states={};
@@ -157,6 +170,7 @@
     CONTINUATION_PREVIEW_STALE:'Стан таблиці або плану змінився після Preview. Новий запуск не розпочато.',
     CONTINUATION_BINDING_INVALID:'Прив’язки continuation не пройшли перевірку.',
     PREVIEW_BINDING_INVALID:'Збережений Preview не пройшов перевірку.',
+    APPLY_NOT_STARTED_CONFIRMED:'Read-only перевірка підтвердила, що запуск не створений; можна отримати новий Preview.',
     APPLY_CHANNEL_UNAVAILABLE:'Захищений канал недоступний; потрібна перевірка журналу.',
     APPLY_PRECHECK_UNAVAILABLE:'Передзаписна перевірка не завершилася однозначно.',
     APPLY_REQUEST_REJECTED:'Запит відхилено сервером до підтвердженого запуску.',
@@ -173,6 +187,7 @@
       ['Код відповіді',applyExists?safeCode(state?.code):'немає результату Apply'],
       ['Безпечний опис',state?.description||'Збереженого результату Apply немає.'],
       ['Новий запуск розпочато',applyExists?started:'невідомо']];
+    if(state?.diagnosticCheckedAt)rows.push(['Остання успішна read-only перевірка',checkedAtText(state.diagnosticCheckedAt)]);
     if(!d||d.status==='UNAVAILABLE'||d.status==='BLOCKED'){
       rows.push(['Результат read-only перевірки',!d?'ще не перевірявся':d.status==='BLOCKED'?'BLOCKED':'неможливо перевірити'],
         ['Стан continuation run','не підтверджено'],['Підтверджені APPEND','не підтверджено'],
@@ -192,6 +207,7 @@
     const audit=state?.savedContinuationAudit;
     if(!audit)return [['Звірка збереженого продовження','ще не запускалася']];
     const rows=[['Звірка збереженого продовження',audit.status]];
+    if(state?.savedAuditCheckedAt)rows.push(['Остання успішна read-only звірка',checkedAtText(state.savedAuditCheckedAt)]);
     if(audit.reason_codes.length)rows.push(['Причини',audit.reason_codes.join(', ')]);
     rows.push(['Початковий план · підтверджено',audit.source.confirmed??'не перевірено'],
       ['Початковий план · відсутні',audit.source.missing??'не перевірено'],
@@ -311,13 +327,15 @@
     }catch{if(savedAuditCopyStatus)savedAuditCopyStatus.textContent='Не вдалося скопіювати звіт.';}
   }
   async function auditSavedContinuation(){
+    if(savedAuditBusy)return false;
     const requestId=requestIdInput?.value?.trim()||'';
     if(!REQUEST_ID_RE.test(requestId)){
       state.savedContinuationAudit=safeSavedContinuationAudit({status:'UNAVAILABLE',reason_codes:['REQUEST_ID_INVALID']});
       if(savedAuditStatus)savedAuditStatus.textContent='UNAVAILABLE · REQUEST_ID_INVALID';
       save();render();return false;
     }
-    if(savedAuditButton){savedAuditButton.disabled=true;savedAuditButton.textContent='Виконується read-only звірка…';}
+    savedAuditBusy=true;
+    if(savedAuditButton){savedAuditButton.disabled=true;savedAuditButton.textContent='Виконується запит…';savedAuditButton.setAttribute?.('aria-busy','true');}
     if(savedAuditStatus)savedAuditStatus.textContent='Читаються збережений план і поточний стан Google Sheets…';
     if(savedAuditCopyStatus)savedAuditCopyStatus.textContent='';
     try{
@@ -328,26 +346,31 @@
           response?.properties_writes!==0||response?.preview_created!==false||response?.ticket_created!==false||
           response?.writer_started!==false)
         audit=safeSavedContinuationAudit({status:'BLOCKED',reason_codes:['READ_ONLY_CONTRACT_UNCONFIRMED']});
+      else state.savedAuditCheckedAt=new Date().toISOString();
       if(!audit)audit=safeSavedContinuationAudit({status:'UNAVAILABLE',reason_codes:['AUDIT_RESPONSE_INVALID']});
       state.savedContinuationAudit=audit;
       if(response?.request_id===requestId)state.diagnosticRequestId=requestId;
-      if(savedAuditStatus)savedAuditStatus.textContent=`${audit.status}${audit.reason_codes.length?' · '+audit.reason_codes.join(', '):''}`;
+      if(savedAuditStatus)savedAuditStatus.textContent=`${audit.status}${audit.reason_codes.length?' · '+audit.reason_codes.join(', '):''}${lastCheckSuffix(state.savedAuditCheckedAt)}`;
       save();render();return audit.status==='VERIFIED';
     }catch(error){
       state.savedContinuationAudit=safeSavedContinuationAudit({status:'UNAVAILABLE',
         reason_codes:[safeCode(error?.code||'SAVED_CONTINUATION_AUDIT_UNAVAILABLE')]});
-      if(savedAuditStatus)savedAuditStatus.textContent=`UNAVAILABLE · ${state.savedContinuationAudit.reason_codes.join(', ')}`;
+      if(savedAuditStatus)savedAuditStatus.textContent=`Не вдалося виконати звірку · ${state.savedContinuationAudit.reason_codes.join(', ')}${lastCheckSuffix(state.savedAuditCheckedAt)}`;
       save();render();return false;
     }finally{
-      if(savedAuditButton){savedAuditButton.disabled=false;savedAuditButton.textContent='Звірити збережене продовження';}
+      savedAuditBusy=false;
+      if(savedAuditButton){savedAuditButton.disabled=false;savedAuditButton.textContent='Звірити збережене продовження';savedAuditButton.removeAttribute?.('aria-busy');}
     }
   }
-  async function refreshDiagnostic(requestIdOverride=null){
+  async function refreshDiagnostic(requestIdOverride=null,explicitUserCheck=false){
+    if(diagnosticBusy)return false;
     const requestId=(requestIdOverride!==null?requestIdOverride:state?.diagnosticRequestId||state?.requestId||requestIdInput?.value)?.trim();
     if(!REQUEST_ID_RE.test(requestId||'')){
       if(lookupStatus)lookupStatus.textContent='Введіть request ID із 32 символів a–f та 0–9.';
       return false;
     }
+    diagnosticBusy=true;readOnlyButtonsBusy(true);
+    if(lookupStatus)lookupStatus.textContent='Виконується запит до read-only стану…';
     try{
       const result=await originalRequest(`/api/google-writer/continuation-status/${requestId}`);
       const diagnostic=safeDiagnostic(result);
@@ -364,17 +387,30 @@
           diagnostic.status==='BLOCKED'?`BLOCKED · ${(diagnostic.reason_codes||[]).join(', ')||'CONTINUATION_DATA_MISMATCH'}`:
           `Стан continuation підтверджено: ${diagnostic.status}.`;
         // Persist an identifier only after the endpoint echoes the exact, validated binding.
-        if(result?.request_id===requestId)state.diagnosticRequestId=requestId;
+        if(result?.request_id===requestId){
+          state.diagnosticRequestId=requestId;
+          if(result?.read_only===true)state.diagnosticCheckedAt=new Date().toISOString();
+          const noRunConfirmed=diagnostic.status==='preview_saved'&&diagnostic.confirmed_append===0&&
+            diagnostic.attempted_chunk===undefined&&diagnostic.checkpoint?.present===false&&
+            diagnostic.receipts?.verified_count===0;
+          if(explicitUserCheck&&applyLockMode==='unknown'&&!applyRequestInFlight&&requestId===state.requestId&&noRunConfirmed){
+            applyLockMode=null;state.applyLockMode=null;state.started=false;state.level='blocked';
+            state.code='APPLY_NOT_STARTED_CONFIRMED';state.description=descriptionFor(state.code);
+            if(lookupStatus)lookupStatus.textContent='Read-only перевірка підтвердила: запуск не створено.';
+          }
+        }
       }
+      if(lookupStatus&&state.diagnosticCheckedAt)lookupStatus.textContent+=lastCheckSuffix(state.diagnosticCheckedAt);
       save();render();return true;
     }catch{
       state.diagnostic={status:'UNAVAILABLE',reason_codes:['CONTINUATION_STATUS_UNAVAILABLE']};
-      if(lookupStatus)lookupStatus.textContent='Не вдалося перевірити стан · CONTINUATION_STATUS_UNAVAILABLE';
+      if(lookupStatus)lookupStatus.textContent=`Не вдалося перевірити стан · CONTINUATION_STATUS_UNAVAILABLE${lastCheckSuffix(state.diagnosticCheckedAt)}`;
       save();render();return false;
-    }
+    }finally{diagnosticBusy=false;readOnlyButtonsBusy(false);}
   }
   function clearReadOnlyState(){
     state.diagnostic=null;state.diagnosticRequestId=null;state.savedContinuationAudit=null;
+    state.diagnosticCheckedAt=null;state.savedAuditCheckedAt=null;
     if(requestIdInput)requestIdInput.value='';
     if(lookupStatus)lookupStatus.textContent='Локальний read-only стан очищено; серверні дані не змінювалися.';
     if(savedAuditStatus)savedAuditStatus.textContent='Звірку ще не запускали.';
@@ -382,9 +418,13 @@
     save();render();return true;
   }
   function setResult(next){
+    applyLockMode=next.started===true?'started':next.started!==false&&next.level==='stop'?'unknown':null;
+    applyRequestInFlight=false;
     state={version:1,requestId:next.requestId,httpStatus:next.httpStatus??null,code:safeCode(next.code),
       level:next.level,started:next.started===true?true:next.started===false?false:null,
-      description:descriptionFor(safeCode(next.code)),diagnosticRequestId:next.requestId,diagnostic:null};
+      description:descriptionFor(safeCode(next.code)),diagnosticRequestId:next.requestId,diagnostic:null,
+      diagnosticCheckedAt:null,savedAuditCheckedAt:state.savedAuditCheckedAt,
+      savedContinuationAudit:state.savedContinuationAudit,applyLockMode};
     save();render();void refreshDiagnostic();
   }
   try{
@@ -396,7 +436,12 @@
         started:saved.started===true?true:saved.started===false?false:null,
         description:descriptionFor(safeCode(saved.code)),diagnosticRequestId:REQUEST_ID_RE.test(saved.diagnosticRequestId||'')?saved.diagnosticRequestId:null,
           diagnostic:saved.diagnostic?safeDiagnostic(saved.diagnostic):null,
-          savedContinuationAudit:safeSavedContinuationAudit(saved.savedContinuationAudit)};render();
+          savedContinuationAudit:safeSavedContinuationAudit(saved.savedContinuationAudit),
+          diagnosticCheckedAt:typeof saved.diagnosticCheckedAt==='string'&&Number.isFinite(Date.parse(saved.diagnosticCheckedAt))?saved.diagnosticCheckedAt:null,
+          savedAuditCheckedAt:typeof saved.savedAuditCheckedAt==='string'&&Number.isFinite(Date.parse(saved.savedAuditCheckedAt))?saved.savedAuditCheckedAt:null,
+          applyLockMode:['unknown','started'].includes(saved.applyLockMode)?saved.applyLockMode:
+            saved.started===true?'started':saved.applyLocked===true||saved.level==='stop'&&saved.started===null?'unknown':null};
+      applyLockMode=state.applyLockMode;render();
       if(requestIdInput&&state.diagnosticRequestId)requestIdInput.value=state.diagnosticRequestId;
       if(state.diagnosticRequestId||state.requestId)void refreshDiagnostic();
     }
@@ -405,27 +450,36 @@
   if(openDetails)openDetails.addEventListener('click',()=>{
     if(detailsDialog?.showModal)detailsDialog.showModal();else if(detailsDialog)detailsDialog.open=true;
   });
-  if(refresh)refresh.addEventListener('click',()=>void refreshDiagnostic());
+  if(refresh)refresh.addEventListener('click',()=>void refreshDiagnostic(null,true));
   if(clearReadOnly)clearReadOnly.addEventListener('click',clearReadOnlyState);
-  if(checkButton)checkButton.addEventListener('click',()=>void refreshDiagnostic(requestIdInput?.value||''));
+  if(checkButton)checkButton.addEventListener('click',()=>void refreshDiagnostic(requestIdInput?.value||'',true));
   if(copyButton)copyButton.addEventListener('click',()=>copyDiagnostic());
   if(savedAuditButton)savedAuditButton.addEventListener('click',()=>void auditSavedContinuation());
   if(savedAuditCopy)savedAuditCopy.addEventListener('click',()=>void copySavedAudit());
   root.request=async function(url,options={}){
     const method=String(options.method||'GET').toUpperCase();
     const isPreview=method==='POST'&&String(url).includes('/admin/google-writer/append-continuation-preview');
+    const isOrdinaryPreview=method==='POST'&&String(url).endsWith('/google-writer/preview');
     const isApply=method==='POST'&&String(url).endsWith('/google-writer/apply');
     let applyPayload=null;
     if(isApply){try{applyPayload=JSON.parse(options.body||'{}');}catch{}}
+    if(isApply&&(applyLockMode==='unknown'||applyLockMode==='started'&&continuation)){
+      throw Object.assign(new Error('Повторний Apply заблоковано до read-only перевірки стану.'),
+        {blockedLocally:true,code:'APPLY_READ_ONLY_CHECK_REQUIRED'});
+    }
     const matchingApply=Boolean(isApply&&continuation&&applyPayload?.ticket===continuation.ticket&&
       applyPayload?.confirmed===true);
     if(matchingApply){
+      applyRequestInFlight=true;applyLockMode='unknown';
       state={version:1,requestId:continuation.requestId,httpStatus:null,code:'APPLY_REQUEST_PENDING',
-        level:'stop',started:null,description:descriptionFor('APPLY_REQUEST_PENDING'),diagnostic:null};
+        level:'stop',started:null,description:descriptionFor('APPLY_REQUEST_PENDING'),diagnostic:null,
+        diagnosticCheckedAt:null,savedAuditCheckedAt:state.savedAuditCheckedAt,
+        savedContinuationAudit:state.savedContinuationAudit,applyLockMode:'unknown'};
       save();render();
     }
     try{
       const result=await originalRequest(url,options);
+      if(matchingApply)applyRequestInFlight=false;
       if(isPreview&&result?.status==='PREVIEW_READY'&&REQUEST_ID_RE.test(result.request_id||'')&&typeof result.ticket==='string'){
         continuation={requestId:result.request_id,ticket:result.ticket};
         if(state.level==='none'){
@@ -434,6 +488,7 @@
           save();
         }
       }
+      if(isOrdinaryPreview&&result?.status==='PREVIEW')continuation=null;
       if(matchingApply){
         if(result?.started===true&&result.request_id===continuation.requestId)
           setResult({requestId:continuation.requestId,httpStatus:202,code:'APPLY_STARTED',level:'success',started:true});
@@ -443,7 +498,9 @@
       }
       return result;
     }catch(error){
+      if(error?.blockedLocally)throw error;
       if(matchingApply){
+        applyRequestInFlight=false;
         const code=safeCode(error?.code||error?.status||'APPLY_OUTCOME_UNCONFIRMED');
         setResult({requestId:continuation.requestId,httpStatus:Number.isInteger(error?.httpStatus)?error.httpStatus:null,
           code,level:error?.started===false?'blocked':'stop',started:error?.started===false?false:null});
@@ -451,5 +508,6 @@
       throw error;
     }
   };
-  root.PqmGoogleWriterApplyResult={refreshDiagnostic,clearReadOnlyState,render,diagnosticText,auditSavedContinuation,savedAuditText};
+  root.PqmGoogleWriterApplyResult={refreshDiagnostic,clearReadOnlyState,render,diagnosticText,auditSavedContinuation,savedAuditText,
+    canApplyContinuation:requestId=>applyLockMode===null&&!applyRequestInFlight};
 })(globalThis);

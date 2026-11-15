@@ -2297,6 +2297,59 @@ def _append_continuation_core_details(details):
     return core
 
 
+def validate_append_continuation_v2_live_preview(path, actor, snapshot, live):
+    """Fail closed unless Apply's fresh full plan matches the saved v2 continuation view.
+
+    The parent planner digest binds the complete plan (including excluded UPDATEs and
+    conflicts). The continuation details digest binds its executable APPEND-only projection.
+    Exclusions are independently reloaded from the immutable source journal and compared
+    with both the fresh planner output and the saved, non-executable exclusion records.
+    """
+    saved_details=snapshot.get('details') if isinstance(snapshot,dict) else None
+    metadata=saved_details.get('append_continuation') if isinstance(saved_details,dict) else None
+    live_details=live.get('planDetails') if isinstance(live,dict) else None
+    if (not isinstance(metadata,dict) or metadata.get('version')!=2 or
+            not isinstance(saved_details,dict) or not isinstance(live,dict) or
+            live.get('status')!='PREVIEW' or not isinstance(live_details,dict)):
+        raise ValueError('Continuation v2 preview binding is invalid')
+    # Keep this full-plan binding strict; the projection check below is an additional test.
+    if live.get('digest')!=snapshot.get('plan_digest'):
+        raise ValueError('Continuation v2 parent plan digest changed')
+    if live_details.get('source_digest')!=saved_details.get('source_digest'):
+        raise ValueError('Continuation v2 source binding changed')
+    expected_full_counts={'append':251,'update':2,'conflict':2,'error':0}
+    counts=live_details.get('counts')
+    if (not isinstance(counts,dict) or set(counts)!=set(expected_full_counts) or
+            any(type(counts.get(key)) is not int or counts.get(key)!=value
+                for key,value in expected_full_counts.items()) or
+            not isinstance(live_details.get('appends'),list) or len(live_details['appends'])!=251 or
+            not isinstance(live_details.get('updates'),list) or len(live_details['updates'])!=2 or
+            not isinstance(live_details.get('conflicts'),list) or len(live_details['conflicts'])!=2 or
+            not isinstance(live_details.get('errors'),list) or live_details['errors']):
+        raise ValueError('Continuation v2 live plan counts changed')
+
+    source_exclusions=_append_continuation_v2_source_exclusions_from_db(path,actor,metadata)
+    live_exclusions=_append_continuation_v2_exclusions(live_details)
+    _append_continuation_v2_assert_disjoint(live_details['appends'],live_details,live_exclusions)
+    for key in ('digest','update_digest','conflict_digest','update_records','conflict_records'):
+        source_key={'digest':'source_exclusions_digest','update_digest':'source_update_exclusions_digest',
+            'conflict_digest':'source_conflict_exclusions_digest','update_records':'excluded_updates',
+            'conflict_records':'excluded_conflicts'}[key]
+        if live_exclusions[key]!=source_exclusions[key] or live_exclusions[key]!=metadata.get(source_key):
+            raise ValueError('Continuation v2 exclusions changed')
+
+    # Prepare the same normalized, filtered v2 view that was persisted at Preview time.
+    live_core=dict(live_details)
+    live_core['updates']=[]
+    live_core['conflicts']=[]
+    live_core['errors']=[]
+    live_core['counts']={'append':251,'update':0,'conflict':0,'error':0}
+    saved_core=_append_continuation_core_details(saved_details)
+    if _preview_details_digest(live_core)!=_preview_details_digest(saved_core):
+        raise ValueError('Continuation v2 APPEND projection changed')
+    return True
+
+
 def validate_append_continuation_closed(path, snapshot, actor):
     """Fail closed unless the source HOLD has a finalized, receipt-backed admin close."""
     details=snapshot.get('details') if isinstance(snapshot,dict) else None

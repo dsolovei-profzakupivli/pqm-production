@@ -99,8 +99,8 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_google_writer_legacy_source_snapshots_history_v2',
 }
 EXACT_TREE_OVERLAY_MODULES={
-    # Continuation v2-v4 and Apply Result v5-v8 are immutable source contracts
-    # executed from exact Git trees by the host workflow; v9 pins current audit/UI.
+    # Continuation v2-v4 and Apply Result v5-v9 are immutable source contracts
+    # executed from exact Git trees by the host workflow; v5/v10 are current overlays.
     'test_google_writer_append_continuation_integrity_v2',
     'test_google_writer_append_continuation_integrity_v3',
     'test_google_writer_append_continuation_integrity_v4',

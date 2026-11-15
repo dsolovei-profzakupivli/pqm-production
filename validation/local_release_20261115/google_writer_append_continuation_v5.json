@@ -1,0 +1,28 @@
+{
+  "contract": "pqm-sandbox-google-writer-append-continuation",
+  "version": 5,
+  "baseline": "b988f140af37c45bd5461735cf40d18cd00d741a",
+  "normalization": "CRLF-to-LF only; overlay test self-pinned with canonical placeholder",
+  "scope": [
+    "google_writer_execution.py",
+    "server.py",
+    "test_google_writer_append_continuation.py",
+    "google_writer_ui.js",
+    "validation/google_writer_continuation_preview_ui.test.cjs",
+    "test_google_writer_append_continuation_integrity_v5.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "8f6542ebbba8cb2b03759559242008e1e940ec6df0ce35c4a835377b9df18ab7",
+    "server.py": "9d9b305a72282031d08d8e2262c689c713d27345f03e9578b5d33fe54ab1e8e3",
+    "test_google_writer_append_continuation.py": "45e3c141538b366b77d938e7ccfbda5117c5c6a90c40d82b53b71df1055a3670",
+    "google_writer_ui.js": "aa8b04429bad245076fa3e6ff54a126f3555f809c35b916685b997ba811e3e3f",
+    "validation/google_writer_continuation_preview_ui.test.cjs": "52cc8f2e7d8c8367de556f9873fa8225164c5325568028a79b78df5dc4b1e0bb",
+    "test_google_writer_append_continuation_integrity_v5.py": "9a58b0eeb73ebf0ad4fc8abc6293faeb9a8a0c95197bb6f4c6f2e4bd2febf50c"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2",
+    "validation/local_release_20261113/google_writer_append_continuation_v2.json": "2fb4d7124cdd7039ff07c87b275551e678afafb4aa807b7b0f0c5536e9bf2089",
+    "validation/local_release_20261113/google_writer_append_continuation_v3.json": "ad378d8717b936a01671eb9837b842946f5636d74663f2382e23c24f4dbb7e63",
+    "validation/local_release_20261113/google_writer_append_continuation_v4.json": "644737f2c2772e21b7c81f571678bec494641a336703375aa40b3988e1944b92"
+  }
+}

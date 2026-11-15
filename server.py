@@ -12719,12 +12719,21 @@ class Handler(BaseHTTPRequestHandler):
                     # source, destination, formula or operation detail changed.
                     live=client.invoke('preview',ticket['request_id'],self.auth_user,
                                        manual_authorized=True)
-                    live_details_digest=google_writer_execution._preview_details_digest(live.get('planDetails'))
-                    expected_details_digest=(google_writer_execution._preview_details_digest(
-                        google_writer_execution._append_continuation_core_details(snapshot['details']))
-                        if continuation is not None else snapshot['details_digest'])
-                    if (live.get('digest')!=snapshot['plan_digest'] or
-                            live_details_digest!=expected_details_digest):
+                    if continuation is not None and continuation.get('version')==2:
+                        try:
+                            google_writer_execution.validate_append_continuation_v2_live_preview(
+                                DB_PATH,self.auth_user,snapshot,live)
+                            continuation_preview_stale=False
+                        except (ValueError,TypeError,KeyError,sqlite3.Error):
+                            continuation_preview_stale=True
+                    else:
+                        live_details_digest=google_writer_execution._preview_details_digest(live.get('planDetails'))
+                        expected_details_digest=(google_writer_execution._preview_details_digest(
+                            google_writer_execution._append_continuation_core_details(snapshot['details']))
+                            if continuation is not None else snapshot['details_digest'])
+                        continuation_preview_stale=(live.get('digest')!=snapshot['plan_digest'] or
+                            live_details_digest!=expected_details_digest)
+                    if continuation_preview_stale:
                         if continuation is not None:
                             return self.send_json({'status':'CONTINUATION_PREVIEW_STALE',
                                 'code':'CONTINUATION_PREVIEW_STALE',

@@ -1,4 +1,5 @@
 """Mock-only safety tests for the fixed Sandbox APPEND continuation path."""
+import copy
 import json
 import sqlite3
 import tempfile
@@ -316,6 +317,76 @@ class AppendContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'source digest binding changed'):
             writer._append_continuation_v2_source_exclusions_from_db(self.path,self.actor,metadata)
         self.assertEqual(snapshot['details']['counts'],{'append':251,'update':0,'conflict':0,'error':0})
+
+    def _v2_saved_and_live_preview(self):
+        self._make_v2_source()
+        client=self.client()
+        result=writer.prepare_append_continuation_preview(self.path,client,self.source,self.actor)
+        self.assertEqual(result['status'],'PREVIEW_READY')
+        snapshot=writer.load_preview_plan(self.path,result['request_id'],self.actor,result['plan_digest'],
+            details_digest=result['details_digest'])
+        live=client.invoke('preview',result['request_id'],self.actor,manual_authorized=True)
+        return result,snapshot,live
+
+    def test_v2_apply_preview_accepts_unchanged_full_and_filtered_plan(self):
+        _result,snapshot,live=self._v2_saved_and_live_preview()
+        self.assertTrue(writer.validate_append_continuation_v2_live_preview(
+            self.path,self.actor,snapshot,live))
+
+    def test_v2_apply_preview_rejects_changed_parent_digest_and_append_projection(self):
+        _result,snapshot,live=self._v2_saved_and_live_preview()
+        changed_parent=copy.deepcopy(live);changed_parent['digest']=_d('changed-parent')
+        with self.assertRaisesRegex(ValueError,'parent plan digest changed'):
+            writer.validate_append_continuation_v2_live_preview(self.path,self.actor,snapshot,changed_parent)
+        changed_append=copy.deepcopy(live)
+        changed_append['planDetails']['appends'][0]['cells'][2]['new_value']='changed-date'
+        with self.assertRaisesRegex(ValueError,'APPEND projection changed'):
+            writer.validate_append_continuation_v2_live_preview(self.path,self.actor,snapshot,changed_append)
+
+    def test_v2_apply_preview_rejects_changed_append_order(self):
+        _result,snapshot,live=self._v2_saved_and_live_preview()
+        changed=copy.deepcopy(live)
+        changed['planDetails']['appends'][0],changed['planDetails']['appends'][1]=(
+            changed['planDetails']['appends'][1],changed['planDetails']['appends'][0])
+        with self.assertRaisesRegex(ValueError,'APPEND projection changed'):
+            writer.validate_append_continuation_v2_live_preview(self.path,self.actor,snapshot,changed)
+
+    def test_v2_apply_preview_rejects_changed_update_and_conflict_exclusions(self):
+        _result,snapshot,live=self._v2_saved_and_live_preview()
+        changed_update=copy.deepcopy(live)
+        changed_update['planDetails']['updates'][0]['cells'][0]['new_value']='changed-update'
+        with self.assertRaisesRegex(ValueError,'exclusions changed'):
+            writer.validate_append_continuation_v2_live_preview(self.path,self.actor,snapshot,changed_update)
+        changed_conflict=copy.deepcopy(live)
+        changed_conflict['planDetails']['conflicts'][0]['code']='90000005'
+        with self.assertRaisesRegex(ValueError,'exclusions changed'):
+            writer.validate_append_continuation_v2_live_preview(self.path,self.actor,snapshot,changed_conflict)
+
+    def test_v2_apply_preview_rejects_changed_exclusion_bindings_before_run(self):
+        _result,snapshot,live=self._v2_saved_and_live_preview()
+        changed_update_binding=copy.deepcopy(live)
+        changed_update_binding['planDetails']['updates'][0]['row']+=1
+        with self.assertRaisesRegex(ValueError,'exclusions changed'):
+            writer.validate_append_continuation_v2_live_preview(
+                self.path,self.actor,snapshot,changed_update_binding)
+        changed_source_binding=copy.deepcopy(live)
+        changed_source_binding['planDetails']['source_digest']=_d('wrong-source')
+        with self.assertRaisesRegex(ValueError,'source binding changed'):
+            writer.validate_append_continuation_v2_live_preview(
+                self.path,self.actor,snapshot,changed_source_binding)
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM google_writer_runs').fetchone()[0],1,
+                'stale validation must happen before continuation run creation')
+
+    def test_apply_route_runs_v2_preview_validation_before_claim_run(self):
+        route=Path(__file__).with_name('server.py').read_text(encoding='utf-8')
+        start=route.index("if parsed.path in {'/api/google-writer/preview','/api/google-writer/apply'}:")
+        end=route.index("if parsed.path == '/api/google-writer/",start+1)
+        apply_route=route[start:end]
+        validate_at=apply_route.index('validate_append_continuation_v2_live_preview(')
+        claim_at=apply_route.index('google_writer_execution.claim_run(')
+        self.assertLess(validate_at,claim_at,
+            'v2 parent, exclusions and APPEND projection must be checked before any run is claimed')
 
     def test_v2_resume_after_four_verified_chunks_and_timeout_does_not_replay(self):
         self._make_v2_source()
