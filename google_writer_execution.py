@@ -2860,6 +2860,123 @@ def chunk_journal_state(path, request_id):
             'unknown_chunks':sum(r[2] for r in rows if r[1] in {'inflight','outcome_unknown'})}
 
 
+def append_continuation_status(path, request_id, actor):
+    """Return a sanitized, read-only view of an immutable continuation and its verified receipts."""
+    if (not isinstance(request_id,str) or not re.fullmatch(r'[0-9a-f]{32}',request_id) or
+            not isinstance(actor,str) or not actor):
+        raise ValueError('Continuation status identity rejected')
+    uri=Path(path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as con:
+        con.execute('PRAGMA query_only=ON');con.row_factory=sqlite3.Row
+        plan=con.execute('''SELECT plan_id,actor,plan_digest,append_only_digest,details_digest,source_digest,details_json
+            FROM google_writer_plan_journal WHERE request_id=? AND environment='SANDBOX' ''',
+            (request_id,)).fetchone()
+        run=con.execute('''SELECT actor,status,result_json FROM google_writer_runs
+            WHERE request_id=? AND environment='SANDBOX' ''',(request_id,)).fetchone()
+        chunks=con.execute('''SELECT chunk_id,plan_id,run_id,scope,plan_digest,source_digest,chunk_index,
+            chunk_digest,status,expected_json,receipt_json FROM google_writer_chunk_journal
+            WHERE run_id=? ORDER BY chunk_index''',(request_id,)).fetchall()
+    if not plan or plan['actor']!=actor or plan['plan_id']!=request_id:
+        return {'status':'UNAVAILABLE','reason_codes':['CONTINUATION_PLAN_UNAVAILABLE'],'read_only':True}
+    try: details=json.loads(plan['details_json'])
+    except (TypeError,json.JSONDecodeError): details=None
+    if (not isinstance(details,dict) or details.get('environment')!='SANDBOX' or
+            details.get('plan_digest')!=plan['plan_digest'] or
+            details.get('append_only_digest')!=plan['append_only_digest'] or
+            details.get('source_digest')!=plan['source_digest'] or
+            _preview_details_digest(details)!=plan['details_digest'] or
+            not isinstance(details.get('append_continuation'),dict) or
+            details['append_continuation'].get('version') not in {1,2} or
+            not all(is_canonical_sha256_b64url(plan[key]) for key in
+                ('plan_digest','append_only_digest','details_digest','source_digest')) or
+            details.get('counts')!={'append':251,'update':0,'conflict':0,'error':0} or
+            not isinstance(details.get('counts'),dict) or
+            any(type(details['counts'].get(key)) is not int for key in ('append','update','conflict','error')) or
+            not isinstance(details.get('appends'),list) or len(details['appends'])!=251 or
+            details.get('updates') or details.get('conflicts') or details.get('errors')):
+        return {'status':'UNAVAILABLE','reason_codes':['CONTINUATION_PLAN_INTEGRITY_MISMATCH'],'read_only':True}
+    if run and run['actor']!=actor:
+        return {'status':'UNAVAILABLE','reason_codes':['CONTINUATION_RUN_ACTOR_MISMATCH'],'read_only':True}
+    if not run and chunks:
+        return {'status':'UNAVAILABLE','reason_codes':['ORPHAN_CHUNK_JOURNAL'],'read_only':True}
+    run_result={}
+    if run:
+        try: run_result=json.loads(run['result_json'] or '{}')
+        except (TypeError,json.JSONDecodeError): run_result=None
+        if (not isinstance(run_result,dict) or run_result.get('plan_scope')!='APPEND_ONLY' or
+                run_result.get('plan_digest')!=plan['append_only_digest']):
+            return {'status':'UNAVAILABLE','reason_codes':['CONTINUATION_RUN_BINDING_MISMATCH'],'read_only':True}
+    confirmed=0;receipt_count=0;latest_checkpoint=None;latest_checkpoint_digest=None;attempted=[];receipt_gap=False
+    for index,row in enumerate(chunks):
+        if row['chunk_index']!=index:
+            return {'status':'BLOCKED','reason_codes':['CHUNK_SEQUENCE_GAP'],'read_only':True}
+        start=index*APPEND_JOURNAL_PAGE_ROWS
+        expected_rows=details['appends'][start:start+APPEND_JOURNAL_PAGE_ROWS]
+        manifest={'version':1,'plan_id':request_id,'run_id':request_id,'scope':'APPEND_ONLY',
+            'plan_digest':plan['append_only_digest'],'source_digest':plan['source_digest'],
+            'chunk_index':index,'rows':expected_rows}
+        manifest_raw=_canonical_json(manifest)
+        chunk_digest=_sha256_b64(manifest_raw.encode('utf-8'))
+        chunk_id=hashlib.sha256((request_id+'|'+request_id+'|APPEND_ONLY|'+str(index)+'|'+chunk_digest).encode()).hexdigest()[:32]
+        try: saved_expected=json.loads(row['expected_json']);receipt=json.loads(row['receipt_json'] or '{}')
+        except (TypeError,json.JSONDecodeError):
+            return {'status':'BLOCKED','reason_codes':['JOURNAL_JSON_INVALID'],'read_only':True}
+        if (row['chunk_id']!=chunk_id or row['plan_id']!=request_id or row['run_id']!=request_id or
+                row['scope']!='APPEND_ONLY' or row['plan_digest']!=plan['append_only_digest'] or
+                row['source_digest']!=plan['source_digest'] or row['chunk_digest']!=chunk_digest or
+                saved_expected!=manifest):
+            return {'status':'BLOCKED','reason_codes':['CHUNK_BINDING_MISMATCH'],'read_only':True}
+        if row['status'] in {'inflight','outcome_unknown'}:
+            attempted.append(index)
+        if row['status'] not in {'verified','reconciled'}:
+            if row['status'] not in {'prepared','inflight','outcome_unknown'}:
+                return {'status':'BLOCKED','reason_codes':['CHUNK_STATUS_INVALID'],'read_only':True}
+            receipt_gap=True
+            continue
+        if receipt_gap:
+            return {'status':'BLOCKED','reason_codes':['NONCONTIGUOUS_VERIFIED_RECEIPTS'],'read_only':True}
+        count=len(expected_rows);is_more=(start+count)<len(details['appends'])
+        receipt_status=receipt.get('status') if isinstance(receipt,dict) else None
+        valid_statuses=({'APPLY_CHUNK_VERIFIED','CHUNK_RECOVERED'} if is_more else {'COMPLETE','CHUNK_RECOVERED'})
+        valid_receipt=(isinstance(receipt,dict) and
+            receipt.get('digest')==plan['append_only_digest'] and receipt.get('planScope')=='APPEND_ONLY' and
+            receipt.get('phase')=='append' and receipt.get('chunkIndex')==index and
+            receipt.get('nextChunk')==index+1 and receipt.get('chunkId')==chunk_id and
+            receipt.get('chunkDigest')==chunk_digest and receipt.get('planId')==request_id and
+            receipt.get('more') is is_more and
+            receipt_status in valid_statuses and
+            isinstance(receipt.get('counts'),dict) and receipt['counts'].get('append')==count and
+            receipt['counts'].get('update')==0 and
+            type(receipt.get('chunkIndex')) is int and type(receipt.get('nextChunk')) is int and
+            type(receipt['counts'].get('append')) is int and type(receipt['counts'].get('update')) is int and
+            is_canonical_sha256_b64url(receipt.get('checkpointDigest')))
+        if not valid_receipt:
+            return {'status':'BLOCKED','reason_codes':['RECEIPT_BINDING_MISMATCH'],'read_only':True}
+        confirmed+=count;receipt_count+=1;latest_checkpoint=index+1
+        latest_checkpoint_digest=receipt['checkpointDigest']
+    if len(attempted)>1:
+        return {'status':'BLOCKED','reason_codes':['MULTIPLE_UNRESOLVED_CHUNKS'],'read_only':True}
+    stored_attempt=run_result.get('attempted_chunk') if run else None
+    if stored_attempt is not None and (type(stored_attempt) is not int or stored_attempt not in attempted):
+        return {'status':'BLOCKED','reason_codes':['ATTEMPTED_CHUNK_MISMATCH'],'read_only':True}
+    if attempted and stored_attempt not in (None,attempted[0]):
+        return {'status':'BLOCKED','reason_codes':['ATTEMPTED_CHUNK_MISMATCH'],'read_only':True}
+    if run and receipt_count:
+        verified=run_result.get('verified_totals')
+        if (not isinstance(verified,dict) or type(verified.get('append')) is not int or verified.get('append')!=confirmed or
+                run_result.get('checkpoint_digest')!=latest_checkpoint_digest or
+                run_result.get('next_chunk')!=latest_checkpoint):
+            return {'status':'BLOCKED','reason_codes':['RUN_CHECKPOINT_MISMATCH'],'read_only':True}
+    elif run and isinstance(run_result.get('verified_totals'),dict) and run_result['verified_totals'].get('append',0)!=0:
+        return {'status':'BLOCKED','reason_codes':['RUN_RECEIPT_COUNT_MISMATCH'],'read_only':True}
+    if run and run['status']=='complete' and confirmed!=251:
+        return {'status':'BLOCKED','reason_codes':['COMPLETE_WITHOUT_ALL_RECEIPTS'],'read_only':True}
+    return {'status':run['status'] if run else 'preview_saved','request_id':request_id,
+        'confirmed_append':confirmed,'attempted_chunk':attempted[0] if attempted else stored_attempt,
+        'checkpoint':{'present':latest_checkpoint is not None,'next_chunk':latest_checkpoint},
+        'receipts':{'verified_count':receipt_count},'read_only':True}
+
+
 def claim_interrupted_append_chunk_recovery(path, request_id, *, now=None,
                                             stale_seconds=APPEND_RECOVERY_STALE_SECONDS,
                                             lease_seconds=APPEND_RECOVERY_LEASE_SECONDS):

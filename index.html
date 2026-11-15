@@ -193,6 +193,11 @@
         <button type="button" data-freshness="gt90"><span>&gt;90 днів</span><strong>—</strong></button>
         <button type="button" data-freshness="not_checked"><span>Не перевірено</span><strong>—</strong></button>
       </div>
+      <section id="googleWriterApplyCompact" class="google-writer-apply-compact card" aria-live="polite" hidden>
+        <strong id="googleWriterApplyCompactStatus">Apply: —</strong>
+        <span id="googleWriterApplyCompactHttp">HTTP —</span>
+        <button id="googleWriterApplyDetailsOpen" type="button" class="ghost">Деталі</button>
+      </section>
     </section>
     <section class="card edr-monitoring-toolbar">
       <div class="search-wrap"><span>⌕</span><input id="edrMonitoringSearch" placeholder="Пошук за кодом, назвою, ПІБ, текстом з примітки"></div>
@@ -218,6 +223,18 @@
     <div id="edrMonitoringChips" class="filter-chips edr-monitoring-chips" hidden></div>
     <section class="card edr-monitoring-table-card data-module-table"><div class="table-scroll"><table class="edr-monitoring-table"><thead><tr><th data-edr-column="selected"><input id="edrMonitoringSelectPage" type="checkbox" aria-label="Вибрати поточну сторінку"></th><th data-edr-column="freshness" data-edr-sort="freshness">Маркер актуальності</th><th data-edr-column="supplier_code" data-edr-sort="supplier_code">Код ЄДРПОУ/РНОКПП</th><th data-edr-column="supplier_name" data-edr-sort="supplier_name">Найменування</th><th data-edr-column="edr_full_name" data-edr-sort="edr_full_name">Повна назва з ЄДР</th><th data-edr-column="edr_short_name" data-edr-sort="edr_short_name">Скорочена назва з ЄДР</th><th data-edr-column="manager_name" data-edr-sort="manager_name">ПІБ для перевірки</th><th data-edr-column="edr_status" data-edr-sort="edr_status">Статус ЄДР</th><th data-edr-column="prozorro_status" data-edr-sort="prozorro_status">Статус Prozorro</th><th data-edr-column="termination_details" data-edr-sort="termination_details">Реквізити припинення</th><th data-edr-column="latest_application_date" data-edr-sort="latest_application_date">Дата останньої заявки</th><th data-edr-column="verification_date" data-edr-sort="verification_date">Дата перевірки</th><th data-edr-column="verification_officer" data-edr-sort="verification_officer">УО</th><th data-edr-column="google_note" data-edr-sort="google_note">Примітка з Google</th></tr></thead><tbody id="edrMonitoringBody"></tbody></table></div><footer class="supplier-pagination"><span id="edrMonitoringPageInfo"></span><div><button id="edrMonitoringPrev" class="ghost" type="button">←</button><button id="edrMonitoringNext" class="ghost" type="button">→</button></div></footer></section>
   </main>
+
+  <dialog id="googleWriterApplyDetailsDialog" class="google-writer-apply-dialog" aria-labelledby="googleWriterApplyDetailsTitle">
+    <form method="dialog">
+      <header><div><p class="eyebrow">PQM → Google Sheets</p><h2 id="googleWriterApplyDetailsTitle">Деталі Apply</h2></div>
+        <button id="googleWriterApplyDetailsClose" type="submit" class="dialog-close" aria-label="Закрити">×</button></header>
+      <section id="googleWriterApplyDetailsBody" class="google-writer-apply-details" aria-live="polite"></section>
+      <p id="googleWriterApplyCopyStatus" class="muted" role="status" aria-live="polite"></p>
+      <footer><button id="googleWriterApplyDiagnosticRefresh" type="button" class="ghost">Оновити read-only стан</button>
+        <button id="googleWriterApplyCopy" type="button" class="primary">Копіювати діагностику</button>
+        <button id="googleWriterApplyDetailsDone" type="submit" class="ghost">Закрити</button></footer>
+    </form>
+  </dialog>
 
   <main id="frameworkAnalyticsView" class="module-view" hidden>
     <section class="module-heading"><div><p class="eyebrow">КВАЛІФІКАЦІЙНІ ВІДБОРИ PROZORRO MARKET</p><h1>Відбори</h1><p>Актуальний стан відборів та реєстри постачальників</p></div><div class="kpi-row"><article class="kpi"><span>Відбори</span><strong id="frameworksTotal">0</strong></article></div></section>
@@ -393,6 +410,7 @@
   <script src="app.js"></script>
   <script src="nazk_preview.js"></script>
   <script src="google_writer_ui.js"></script>
+  <script src="google_writer_apply_result.js"></script>
   <script src="navigation_admin.js"></script>
   <script src="formed_protocol_ui.js"></script>
   <script src="history_columns.js"></script>

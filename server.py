@@ -11883,6 +11883,19 @@ class Handler(BaseHTTPRequestHandler):
             refs = reference_status(DB_PATH)
             refs["nazk"]["manual_operation"] = scheduler_execution_snapshot("nazk_registry")
             return self.send_json(refs)
+        continuation_status_match=re.fullmatch(r'/api/google-writer/continuation-status/([0-9a-f]{32})',parsed.path)
+        if continuation_status_match:
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['SANDBOX_ONLY'],'read_only':True},404)
+            if not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['PERMISSION_REQUIRED'],'read_only':True},403)
+            try:
+                return self.send_json(google_writer_execution.append_continuation_status(
+                    DB_PATH,continuation_status_match.group(1),self.auth_user))
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['CONTINUATION_STATUS_UNAVAILABLE'],
+                    'read_only':True},200)
         if parsed.path == '/api/google-writer/status':
             data=google_writer_status(self.auth_user)
             permissions=getattr(self,'auth_access',{}).get('permissions',{})
@@ -12686,7 +12699,9 @@ class Handler(BaseHTTPRequestHandler):
                             live_details_digest!=expected_details_digest):
                         if continuation is not None:
                             return self.send_json({'status':'CONTINUATION_PREVIEW_STALE',
+                                'code':'CONTINUATION_PREVIEW_STALE',
                                 'error':'Стан таблиці або план продовження змінився. Запис не розпочато; сформуйте новий read-only Preview залишку.',
+                                'safe_description':'Стан таблиці або плану змінився після Preview. Новий запуск не розпочато.',
                                 'request_id':ticket['request_id'],'started':False},409)
                         replacement_id=uuid.uuid4().hex
                         replacement=client.invoke('preview',replacement_id,self.auth_user,
@@ -12707,6 +12722,9 @@ class Handler(BaseHTTPRequestHandler):
                     plan_scope=ticket.get('scope','ALL'),plan_digest=ticket['digest'],
                     details_digest=ticket.get('details_digest'))
                 if not claimed['claimed']:
+                    claimed['started']=False
+                    claimed['code']=re.sub(r'[^A-Za-z0-9_]+','_',str(claimed.get('status') or 'APPLY_NOT_CLAIMED')).upper()[:64]
+                    claimed['safe_description']='Новий worker не запущено. Перевірте збережений стан запуску перед будь-якою наступною дією.'
                     return self.send_json(claimed,200 if claimed['status'] in {'complete','partial','failed_safe'} else 409)
                 try:
                     threading.Thread(target=google_writer_execution.execute_claimed,
@@ -12719,7 +12737,20 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('Не вдалося створити worker; Google не викликався') from None
                 return self.send_json({'started':True,'request_id':ticket['request_id']},202)
             except (ValueError,google_writer_execution.ExecutionOutcomeUnknown) as exc:
-                return self.send_json({'error':str(exc)},409)
+                text=str(exc).lower()
+                code=('APPLY_PRECHECK_UNAVAILABLE' if isinstance(exc,google_writer_execution.ExecutionOutcomeUnknown) else
+                    'APPLY_CHANNEL_UNAVAILABLE' if 'канал' in text or 'channel' in text else
+                    'CONTINUATION_BINDING_INVALID' if 'continuation' in text else
+                    'PREVIEW_BINDING_INVALID' if 'preview' in text or 'digest' in text or 'plan' in text else
+                    'APPLY_REQUEST_REJECTED')
+                safe_description={
+                    'APPLY_PRECHECK_UNAVAILABLE':'Не вдалося підтвердити стан перед записом. Новий worker не запущено.',
+                    'APPLY_CHANNEL_UNAVAILABLE':'Захищений канал запису недоступний. Новий worker не запущено.',
+                    'CONTINUATION_BINDING_INVALID':'Прив’язки continuation не пройшли перевірку. Новий worker не запущено.',
+                    'PREVIEW_BINDING_INVALID':'Збережений Preview не пройшов перевірку. Новий worker не запущено.',
+                    'APPLY_REQUEST_REJECTED':'Запит відхилено до запуску worker.'}[code]
+                return self.send_json({'code':code,'safe_description':safe_description,'error':str(exc),
+                    'started':False,'read_only_precheck':True},409)
         if parsed.path == '/api/google-writer/preview-scope':
             if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
                 return self.send_json({'error':'Sandbox-only Preview scope'},404)

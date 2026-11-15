@@ -104,3 +104,28 @@
 @media(max-width:1050px){.violation-review-header{grid-template-columns:repeat(2,minmax(0,1fr))}.bids-status-grid{grid-template-columns:repeat(3,minmax(120px,1fr))}.google-runtime-panel dl,.bids-sync-panel dl,.powerbi-panel dl{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:700px){.reference-toolbar>div:first-child{width:100%;justify-content:space-between}.operational-responses{grid-template-columns:1fr}.operational-responses>*{grid-column:1!important}.operational-response{grid-template-columns:1fr}.operational-edit-response{justify-self:start}.violation-guidance-grid,.violation-review-header{grid-template-columns:1fr}.supplier-nazk-completed-history table{min-width:850px}.bids-status-grid,.google-runtime-panel dl,.bids-sync-panel dl,.powerbi-panel dl{grid-template-columns:1fr}}
 @media(max-width:520px){.section-header{align-items:stretch;flex-direction:column}.section-actions{justify-content:flex-start}.reference-tabs{gap:0}.reference-tabs>button{flex:1 1 auto;padding-inline:8px}.reference-toolbar{align-items:stretch}.reference-toolbar>*{width:100%;min-width:0!important}.scheduler-status-panel,.google-runtime-panel,.bids-sync-panel,.powerbi-panel,.admin-data-section{padding:11px}.admin-sync-actions{flex-wrap:wrap}.admin-sync-actions button{flex:1 1 170px}}
+
+/* Apply status occupies the fourth desktop column; details stay in a wide, wrapping dialog. */
+.edr-monitoring-heading{display:grid;grid-template-columns:minmax(220px,1.1fr) minmax(0,1fr) minmax(0,1fr) minmax(170px,.9fr);gap:12px;align-items:stretch}
+.edr-monitoring-heading>.edr-monitoring-kpis{grid-column:2/4;grid-template-columns:repeat(3,minmax(0,1fr));min-width:0}
+.google-writer-apply-compact{grid-column:4;grid-row:1;align-self:stretch;min-width:0;padding:10px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 8px;align-content:center;border:1px solid var(--line);background:var(--surface,#fff)}
+.google-writer-apply-compact[hidden]{display:none!important}
+.google-writer-apply-compact strong{min-width:0;overflow-wrap:anywhere}
+.google-writer-apply-compact span{font-size:12px;color:var(--muted)}
+.google-writer-apply-compact button{grid-column:1/-1;justify-self:start;white-space:normal}
+.google-writer-apply-compact[data-state="success"]{border-color:#73b895;background:var(--green2,#e8f6f0)}
+.google-writer-apply-compact[data-state="blocked"],.google-writer-apply-compact[data-state="stop"]{border-color:#d99ba0;background:var(--red2,#fff0f0)}
+.google-writer-apply-dialog{width:min(960px,calc(100vw - 32px));max-width:none;max-height:calc(100vh - 32px);padding:0;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--surface,#fff);color:var(--ink,#172335)}
+.google-writer-apply-dialog::backdrop{background:rgba(15,23,42,.55)}
+.google-writer-apply-dialog>form{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto;max-height:calc(100vh - 32px);min-width:0}
+.google-writer-apply-dialog>form>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 22px;border-bottom:1px solid var(--line)}
+.google-writer-apply-dialog h2{margin:2px 0 0;overflow-wrap:anywhere}
+.google-writer-apply-dialog .eyebrow{margin:0}
+.google-writer-apply-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:18px 22px;overflow-y:auto;overflow-x:hidden;min-width:0;min-height:0}
+.google-writer-apply-detail{min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--soft,#f4f7f9)}
+.google-writer-apply-detail dt{font-size:12px;color:var(--muted)}
+.google-writer-apply-detail dd{margin:4px 0 0;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;user-select:text}
+.google-writer-apply-dialog #googleWriterApplyCopyStatus{min-height:1.2em;margin:0;padding:0 22px;color:var(--muted)}
+.google-writer-apply-dialog>form>footer{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;padding:14px 22px;border-top:1px solid var(--line)}
+@media(max-width:1100px){.edr-monitoring-heading{display:flex;flex-direction:column;align-items:stretch}.edr-monitoring-heading>.edr-monitoring-kpis{width:100%;grid-template-columns:repeat(3,minmax(0,1fr))}.google-writer-apply-compact{grid-column:auto;grid-row:auto;grid-template-columns:minmax(0,1fr) auto;align-items:center}.google-writer-apply-compact button{grid-column:auto;justify-self:end}}
+@media(max-width:700px){.edr-monitoring-heading>.edr-monitoring-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.google-writer-apply-compact{grid-template-columns:minmax(0,1fr) auto}.google-writer-apply-compact button{grid-column:auto}.google-writer-apply-dialog{width:calc(100vw - 20px);max-height:calc(100vh - 20px)}.google-writer-apply-dialog>form{max-height:calc(100vh - 20px)}.google-writer-apply-dialog>form>header,.google-writer-apply-details{padding:14px}.google-writer-apply-details{grid-template-columns:minmax(0,1fr);gap:8px}.google-writer-apply-dialog>form>footer{padding:12px;justify-content:stretch}.google-writer-apply-dialog>form>footer button{flex:1 1 140px}}

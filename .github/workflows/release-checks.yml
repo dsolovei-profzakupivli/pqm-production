@@ -54,10 +54,15 @@ jobs:
           (cd "$snapshot" && "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
             test_google_writer_append_continuation_integrity_v2 \
             test_google_writer_append_continuation_integrity_v3)
+          v4_snapshot="$RUNNER_TEMP/pqm-append-continuation-v4-ce722e3"
+          mkdir -p "$v4_snapshot"
+          git archive ce722e3ed654a0e30be3b048a292e1e7e6ba0828 | tar -x -C "$v4_snapshot"
+          (cd "$v4_snapshot" && "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
+            test_google_writer_append_continuation_integrity_v4)
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_c246_historical_integrity_snapshots_v1.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_google_writer_historical_integrity_snapshots_v1.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_append_continuation_integrity_v4 \
+            test_google_writer_apply_result_integrity_v5 \
             test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks
       - name: Install Playwright and Chromium for browser regressions
         shell: bash

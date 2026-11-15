@@ -8,7 +8,8 @@ const testBrowser = globalThis.PQM_TEST_BROWSER_PATH || process.env.PQM_TEST_BRO
 
 const root = path.resolve(__dirname, '..');
 const continuationUiTests = spawnSync(process.execPath,
-  ['--test', path.join(root, 'validation/google_writer_continuation_preview_ui.test.cjs')],
+  ['--test', path.join(root, 'validation/google_writer_continuation_preview_ui.test.cjs'),
+    path.join(root, 'validation/google_writer_apply_result_ui.test.cjs')],
   {cwd:root, encoding:'utf8'});
 if (continuationUiTests.error || continuationUiTests.status !== 0)
   throw new Error(`Continuation Preview UI tests failed:\n${continuationUiTests.stdout || ''}\n${continuationUiTests.stderr || ''}`);
@@ -18,6 +19,10 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\
 const index = read('index.html');
 const dialog = index.match(/<dialog id="googleWriterPreviewDialog"[\s\S]*?<\/dialog>/)?.[0];
 assert(dialog, 'shared PQM dialog markup must exist in index.html');
+assert(index.includes('id="googleWriterApplyCompact"'), 'compact Apply status must exist in the fourth desktop column');
+assert.match(index, /<dialog id="googleWriterApplyDetailsDialog"/, 'wide Apply details dialog must exist');
+assert.match(index, /<script src="google_writer_apply_result\.js"><\/script>/,
+  'persistent Apply result handler must load after the Google Writer UI');
 const script = read('google_writer_ui.js');
 const styles = `${read('styles.css')}\n${read('theme.css')}`;
 const harness = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><style>${styles}</style></head><body>

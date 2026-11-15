@@ -507,7 +507,8 @@ async function applyGoogleWriterAppendContinuation(preview){
     result=await request(`${API}/google-writer/apply`,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({ticket:preview.ticket,confirmed:true})});
   }catch(error){
-    if(error.httpStatus===409){toast(`Продовження не розпочато (${error.status||'перевірка відхилена'}): ${error.message}. Перегляньте новий Preview.`, 'error');return;}
+    if(error.httpStatus===409&&error.started===false){toast(`Новий запуск не розпочато (${error.code||error.status||'APPLY_REJECTED'}). Деталі залишено в постійній панелі; перевірте журнал перед наступною дією.`, 'error');return;}
+    if(error.httpStatus===409){toast(`STOP: сервер відхилив запит (${error.code||error.status||'APPLY_RESULT_UNCONFIRMED'}). Стан перевіряється в постійній панелі; не повторюйте Apply.`, 'error');return;}
     toast(`Не отримано підтвердження запуску. Не повторюйте дію; перевірте журнал нового request ID ${preview.request_id}.`,'error');return;
   }
   if(result.started!==true||result.request_id!==preview.request_id){
