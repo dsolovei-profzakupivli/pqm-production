@@ -3010,6 +3010,94 @@ def _saved_continuation_audit_checks_block(checks):
     return any(item.get('status')!='MATCH' for item in checks.values())
 
 
+def _saved_unresolved_source_chunk_diagnostics(source_request_id, source_details, source_plan,
+        chunk_rows, status_by_code):
+    """Summarize unresolved source chunk evidence without exposing IDs, digests or row values."""
+    operations=source_details.get('appends') if isinstance(source_details,dict) else None
+    if not isinstance(operations,list): return []
+    operation_by_identity={(item.get('tab'),item.get('row'),item.get('code')):item
+        for item in operations if isinstance(item,dict)}
+    diagnostics=[]
+    for row in chunk_rows:
+        if row['plan_id']!=source_request_id and row['run_id']!=source_request_id: continue
+        if row['status'] not in {'prepared','inflight','outcome_unknown'}: continue
+        try: expected=json.loads(row['expected_json'])
+        except (TypeError,ValueError,json.JSONDecodeError): expected=None
+        index=row['chunk_index'] if type(row['chunk_index']) is int and 0<=row['chunk_index']<=499 else None
+        phase=row['phase'] if row['phase'] in {'append','update'} else \
+            'append' if row['phase'] is None and row['scope']=='APPEND_ONLY' else 'unknown'
+        if isinstance(expected,dict) and isinstance(expected.get('operations'),list):
+            expected_ops=expected['operations']
+        elif isinstance(expected,dict) and isinstance(expected.get('rows'),list):
+            expected_ops=expected['rows']
+        else:
+            expected_ops=None
+        count=len(expected_ops) if isinstance(expected_ops,list) and len(expected_ops)<=500 else None
+        source_slice=(operations[index*APPEND_JOURNAL_PAGE_ROWS:(index+1)*APPEND_JOURNAL_PAGE_ROWS]
+            if index is not None and phase=='append' else [])
+        if (isinstance(expected,dict) and isinstance(expected.get('operations'),list) and
+                all(isinstance(item,dict) for item in expected_ops or [])):
+            try: operation_match=expected_ops==[_apply_operation_projection(item) for item in source_slice]
+            except (TypeError,ValueError,KeyError): operation_match=False
+        else:
+            operation_match=expected_ops==source_slice if isinstance(expected_ops,list) else False
+        bindings={
+            'journal_plan_id':'MATCH' if row['plan_id']==source_plan['plan_id'] else 'MISMATCH',
+            'journal_run_id':'MATCH' if row['run_id']==source_request_id else 'MISMATCH',
+            'journal_scope':'MATCH' if row['scope']=='APPEND_ONLY' else 'MISMATCH',
+            'journal_phase':'MATCH' if row['scope']=='APPEND_ONLY' and row['phase'] in (None,'append') else 'MISMATCH',
+            'manifest_version':'MATCH' if isinstance(expected,dict) and expected.get('version')==1 else 'MISMATCH',
+            'manifest_plan_id':'MATCH' if isinstance(expected,dict) and expected.get('plan_id')==source_plan['plan_id'] else 'MISMATCH',
+            'manifest_run_id':'MATCH' if isinstance(expected,dict) and expected.get('run_id')==source_request_id else 'MISMATCH',
+            'manifest_scope':'MATCH' if isinstance(expected,dict) and expected.get('scope')=='APPEND_ONLY' else 'MISMATCH',
+            'manifest_chunk_index':'MATCH' if isinstance(expected,dict) and index is not None and expected.get('chunk_index')==index else 'MISMATCH',
+            'manifest_plan_digest':'MATCH' if isinstance(expected,dict) and expected.get('plan_digest')==source_plan['append_only_digest'] else 'MISMATCH',
+            'manifest_source_digest':'MATCH' if isinstance(expected,dict) and expected.get('source_digest')==source_plan['source_digest'] else 'MISMATCH',
+            'plan_operations':'MATCH' if operation_match else 'MISMATCH',
+        }
+        rows_match=all(value=='MATCH' for value in bindings.values()) and phase=='append'
+        manifest_match=False
+        if isinstance(expected,dict) and is_canonical_sha256_b64url(row['chunk_digest']):
+            expected_digest=_sha256_b64(_canonical_json(expected).encode('utf-8'))
+            expected_chunk_id=hashlib.sha256((source_request_id+'|'+str(source_plan['plan_id'])+'|'+
+                str(row['scope'])+'|'+str(index)+'|'+expected_digest).encode('utf-8')).hexdigest()[:32] \
+                if index is not None else None
+            manifest_match=(row['chunk_digest']==expected_digest and row['chunk_id']==expected_chunk_id and rows_match)
+            bindings['journal_chunk_digest']='MATCH' if row['chunk_digest']==expected_digest else 'MISMATCH'
+            bindings['journal_chunk_id']='MATCH' if row['chunk_id']==expected_chunk_id else 'MISMATCH'
+        else:
+            bindings['journal_chunk_digest']='MISMATCH'
+            bindings['journal_chunk_id']='MISMATCH'
+        sheet_counts={'confirmed':0,'missing':0,'conflict':0,'unverified':0}
+        matched=0;sheet_status='UNAVAILABLE'
+        if isinstance(expected_ops,list) and count is not None:
+            valid=True;seen=set()
+            for item in expected_ops:
+                identity=(item.get('tab'),item.get('row'),item.get('code')) if isinstance(item,dict) else None
+                if identity not in operation_by_identity or identity in seen:
+                    valid=False;continue
+                seen.add(identity);matched+=1
+                state=status_by_code.get(identity[2])
+                if state not in {'CONFIRMED','MISSING','CONFLICT','UNVERIFIED'}:
+                    valid=False;continue
+                key={'CONFIRMED':'confirmed','MISSING':'missing','CONFLICT':'conflict','UNVERIFIED':'unverified'}[state]
+                sheet_counts[key]+=1
+            if valid and matched==count: sheet_status='MATCH'
+        try: receipt=json.loads(row['receipt_json'] or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError): receipt='INVALID'
+        receipt_state=('INVALID' if receipt=='INVALID' or not isinstance(receipt,(dict,type(None))) else
+            'MISSING' if receipt in ({},None) else 'PRESENT_UNVERIFIED')
+        diagnostics.append({'state':row['status'],'chunk_index':index,
+            'scope':row['scope'] if row['scope'] in {'APPEND_ONLY','ALL'} else 'UNKNOWN',
+            'phase':phase,'expected_operations':count,'plan_operations_matched':matched,
+            'verified_at_present':row['verified_at'] is not None,
+            'operations_match':'MATCH' if operation_match else 'MISMATCH',
+            'manifest_binding':'MATCH' if manifest_match else 'MISMATCH' if expected is not None else 'UNAVAILABLE',
+            'bindings':bindings,'sheet_status':sheet_status,'sheet_counts':sheet_counts if sheet_status=='MATCH' else None,
+            'receipt_state':receipt_state})
+    return diagnostics
+
+
 def audit_saved_append_continuation(path, client, request_id, actor):
     """Fresh, read-only audit of one saved continuation against its immutable 276-row source plan.
 
@@ -3062,9 +3150,11 @@ def audit_saved_append_continuation(path, client, request_id, actor):
                 WHERE environment='SANDBOX' ''').fetchall()
             run_rows=con.execute('''SELECT request_id,actor,status,result_json FROM google_writer_runs
                 WHERE environment='SANDBOX' ''').fetchall()
-            chunk_rows=con.execute('''SELECT chunk_id,plan_id,run_id,status,receipt_json,expected_json
+            chunk_rows=con.execute('''SELECT chunk_id,plan_id,run_id,status,receipt_json,expected_json,
+                    chunk_index,scope,chunk_digest,NULL AS phase,verified_at
                 FROM google_writer_chunk_journal WHERE environment='SANDBOX' ''').fetchall()
-            apply_chunk_rows=con.execute('''SELECT chunk_id,plan_id,run_id,status,receipt_json,expected_json
+            apply_chunk_rows=con.execute('''SELECT chunk_id,plan_id,run_id,status,receipt_json,expected_json,
+                    chunk_index,scope,chunk_digest,phase,verified_at
                 FROM google_writer_apply_chunk_journal WHERE environment='SANDBOX' ''').fetchall()
     except (OSError,sqlite3.Error):
         return result('UNAVAILABLE','SQLITE_EVIDENCE_UNAVAILABLE')
@@ -3090,7 +3180,7 @@ def audit_saved_append_continuation(path, client, request_id, actor):
             meta.get('source_request_id')!=APPEND_CONTINUATION_SOURCE_REQUEST_ID):
         return result('BLOCKED','CONTINUATION_SOURCE_BINDING_MISMATCH')
     try:
-        validate_append_continuation_closed(path,snapshot,actor)
+        source_close=validate_append_continuation_closed(path,snapshot,actor)
         source_rows=sqlite3.connect(uri,uri=True,timeout=5)
         try:
             source_rows.execute('PRAGMA query_only=ON');source_rows.row_factory=sqlite3.Row
@@ -3256,10 +3346,38 @@ def audit_saved_append_continuation(path, client, request_id, actor):
     guards=source_audit.get('continuation_guard_rows')
     preserved_match=(isinstance(guards,list) and len(guards)==25 and guards==meta['preserved_rows'])
     source_expected=(source_summary=={'confirmed':25,'missing':251,'conflict':0,'unverified':0})
-    related={'source_run':source_run or 'MISSING','continuation_runs':[
+    source_unresolved_details=_saved_unresolved_source_chunk_diagnostics(
+        meta['source_request_id'],source_details,source_plan,chunk_rows+apply_chunk_rows,status_by_code)
+    source_progress=run_progress.get(meta['source_request_id'],{})
+    related={'source_run':source_run or 'MISSING',
+        'source_run_evidence':{'scope':source_progress.get('plan_scope')
+                if source_progress.get('plan_scope') in {'APPEND_ONLY','ALL'} else 'UNKNOWN',
+            'attempted_chunk':source_progress.get('attempted_chunk')
+                if type(source_progress.get('attempted_chunk')) is int and source_progress.get('attempted_chunk')>=0 else None,
+            'outcome_unknown':source_progress.get('outcome_unknown')
+                if type(source_progress.get('outcome_unknown')) is bool else None},
+        'source_close':{'status':'VALIDATED','closed':source_close.get('closed') is True,
+            'disposition':source_close.get('disposition')
+                if source_close.get('disposition')=='OUTCOME_UNKNOWN_NOT_CONFIRMED' else 'UNAVAILABLE',
+            'receipt_verified':True},
+        'continuation_runs':[
             {'status':item['status'],'scope':item['scope'],
              'attempted_chunk_present':item['attempted_chunk'] is not None} for item in linked_runs],
-        'source_chunks':source_chunks,'continuation_chunks':continuation_chunks,
+        'source_chunks':source_chunks,'source_unresolved_chunk_details':source_unresolved_details,
+        'source_recovery':{'status':source_audit.get('recovery_status')
+                if source_audit.get('recovery_status') in {'READY','BLOCKED'} else 'UNAVAILABLE',
+            'reason_codes':[item for item in source_audit.get('recovery_reason_codes',[])
+                if isinstance(item,str) and re.fullmatch(r'[A-Z0-9_]{1,64}',item)]
+                if isinstance(source_audit.get('recovery_reason_codes'),list) else [],
+            'manifest_mismatch_fields':[item for item in source_audit.get('manifest_mismatch_fields',[])
+                if isinstance(item,str) and re.fullmatch(
+                    r'manifest(?:\.chunkIndex|\.chunkId|\.chunkDigest|\.planId|\.runId|\.rows|\.rows\.length|'
+                    r'\.rows\[\d{1,2}\]\.(?:target|preview|tab|row|code|cellsDigest|formulaA|'
+                    r'serviceMetadata(?:\.(?:addedAt|planId|runId))?))?',item)]
+                if isinstance(source_audit.get('manifest_mismatch_fields'),list) else [],
+            'first_chunk_recovery_evidence':source_audit.get('first_chunk_recovery_evidence')
+                if type(source_audit.get('first_chunk_recovery_evidence')) is bool else None},
+        'continuation_chunks':continuation_chunks,
         'source_checkpoint':bool(run_progress.get(meta['source_request_id'],{}).get('checkpoint_digest')),
         'continuation_checkpoints':sum(bool(item.get('checkpoint',{}).get('present')) for item in continuation_statuses),
         'continuation_verified_receipts':sum(item.get('receipts',{}).get('verified_count',0)

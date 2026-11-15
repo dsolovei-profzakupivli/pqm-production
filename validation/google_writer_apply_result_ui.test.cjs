@@ -16,7 +16,7 @@ const ids=['googleWriterApplyCompact','googleWriterApplyCompactStatus','googleWr
   'googleWriterApplyRequestId','googleWriterApplyDiagnosticCheck','googleWriterApplyLookupStatus',
   'googleWriterSavedContinuationAudit','googleWriterSavedContinuationAuditStatus',
   'googleWriterSavedContinuationAuditResult','googleWriterSavedContinuationAuditCopy',
-  'googleWriterSavedContinuationAuditCopyStatus'];
+  'googleWriterSavedContinuationAuditCopyStatus','googleWriterApplyReadOnlyClear'];
 function harness(applyResult,storage=new Map(),diagnosticResult=null,auditResult=null){
   const calls=[],nodes={},clipboard={text:''};
   const element=()=>({hidden:true,open:false,textContent:'',value:'',children:[],dataset:{},style:{},listeners:{},
@@ -280,6 +280,61 @@ test('saved continuation audit reports duplicate and conflict counts as BLOCKED'
   assert.match(savedAuditText(h),/конфлікти: 1/);
 });
 
+test('saved audit exposes unresolved source chunk evidence without identifiers or digests',async()=>{
+  const result={status:'BLOCKED',request_id:requestId,reason_codes:['CONTINUATION_AUDIT_MISMATCH_OR_UNRESOLVED_STATE'],
+    source:{planned:276,confirmed:25,missing:251,conflict:0,unverified:0},
+    preserved:{planned:25,confirmed:25,missing:0,conflict:0,unverified:0},
+    continuation:{planned:251,present:0,missing:251,duplicate:0,conflict:0,unverified:0},
+    checks:{source_chunks_unresolved:{status:'MISMATCH',count:1}},
+    related:{source_run:'closed_unknown',source_run_evidence:{scope:'APPEND_ONLY',attempted_chunk:0,outcome_unknown:true},
+      source_close:{status:'VALIDATED',closed:true,disposition:'OUTCOME_UNKNOWN_NOT_CONFIRMED',receipt_verified:true},
+      source_chunks:{count:1,states:{outcome_unknown:1},unresolved:1,receipt_count:0},
+      continuation_runs:[],continuation_chunks:{count:0,states:{},unresolved:0,receipt_count:0},
+      source_checkpoint:false,continuation_checkpoints:0,continuation_verified_receipts:0,additional_saved_previews:0,
+      source_recovery:{status:'BLOCKED',reason_codes:['MANIFEST_BINDING_MISMATCH'],
+        manifest_mismatch_fields:['manifest.chunkIndex','PRIVATE_VALUE'],first_chunk_recovery_evidence:false},
+      source_unresolved_chunk_details:[{state:'outcome_unknown',chunk_index:0,scope:'APPEND_ONLY',phase:'append',
+        expected_operations:25,plan_operations_matched:25,operations_match:'MATCH',manifest_binding:'MISMATCH',
+        bindings:{journal_plan_id:'MATCH',journal_run_id:'MATCH',journal_scope:'MATCH',journal_phase:'MATCH',
+          manifest_version:'MATCH',manifest_plan_id:'MATCH',manifest_run_id:'MATCH',manifest_scope:'MATCH',
+          manifest_chunk_index:'MISMATCH',manifest_plan_digest:'MATCH',manifest_source_digest:'MATCH',
+          plan_operations:'MATCH',journal_chunk_digest:'MATCH',journal_chunk_id:'MATCH'},
+        sheet_status:'MATCH',sheet_counts:{confirmed:25,missing:0,conflict:0,unverified:0},receipt_state:'MISSING',
+        chunk_id:'SECRET_ID',digest:'SECRET_DIGEST',code:'PRIVATE_SUPPLIER'}]},
+    read_only:true,sqlite_writes:0,sheets_writes:0,properties_writes:0,preview_created:false,ticket_created:false,writer_started:false};
+  const h=harness({started:false},new Map(),null,result);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  const text=savedAuditText(h);
+  assert.match(text,/Невирішена порція початкового запуску 0: outcome_unknown; APPEND_ONLY\/append; operations=25; plan match=MATCH; manifest=MISMATCH; sheet=MATCH; receipt=MISSING/);
+  assert.match(text,/manifest_chunk_index=MISMATCH/);
+  assert.match(text,/confirmed=25, missing=0, conflict=0, unverified=0/);
+  assert.match(text,/Причини recovery перевірки: MANIFEST_BINDING_MISMATCH/);
+  assert.match(text,/Поля manifest із розбіжностями: manifest\.chunkIndex/);
+  assert.match(text,/Сфера\/attempted_chunk початкового запуску: APPEND_ONLY \/ 0/);
+  assert.match(text,/Адміністративне закриття: VALIDATED; OUTCOME_UNKNOWN_NOT_CONFIRMED; receipt перевірено/);
+  await h.nodes.googleWriterSavedContinuationAuditCopy.click();
+  assert.match(h.clipboard.text,/Невирішена порція початкового запуску 0/);
+  assert.doesNotMatch(h.clipboard.text,/SECRET_ID|SECRET_DIGEST|PRIVATE_SUPPLIER|PRIVATE_VALUE|c1dc134/);
+});
+
+test('clear read-only state is local only and preserves the Apply result',async()=>{
+  const storage=new Map([['pqm.googleWriter.applyResult.v1',JSON.stringify({version:1,requestId,httpStatus:202,
+    code:'APPLY_STARTED',level:'success',started:true,diagnosticRequestId:requestId,
+    diagnostic:null,savedContinuationAudit:null})]]);
+  const h=harness({started:false},storage);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
+  const callsBefore=h.calls.length;
+  await h.nodes.googleWriterApplyReadOnlyClear.click();
+  assert.equal(h.calls.length,callsBefore);
+  assert.equal(h.nodes.googleWriterApplyRequestId.value,'');
+  assert.match(h.nodes.googleWriterApplyLookupStatus.textContent,/локальний read-only стан очищено/i);
+  assert.equal(h.nodes.googleWriterSavedContinuationAuditCopy.disabled,true);
+  assert.equal(h.nodes.googleWriterApplyCompactStatus.textContent,'SUCCESS');
+  assert.equal(h.nodes.googleWriterApplyCompactHttp.textContent,'HTTP 202');
+  assert.equal(JSON.parse([...h.storage.values()][0]).savedContinuationAudit,null);
+  assert.equal(JSON.parse([...h.storage.values()][0]).diagnosticRequestId,null);
+});
+
 test('saved continuation audit incomplete or Apps Script unavailable stays UNAVAILABLE',async()=>{
   const result={status:'UNAVAILABLE',request_id:requestId,reason_codes:['GOOGLE_SHEETS_READ_INCOMPLETE'],
     source:{planned:276,confirmed:25,missing:250,conflict:0,unverified:1},
@@ -338,6 +393,13 @@ test('status sits in desktop column four and details dialog wraps responsively',
   assert.match(styles,/@media\(max-width:700px\)[\s\S]*?grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(styles,/overflow-wrap:anywhere;word-break:break-word/);
   assert.match(styles,/@media\(max-width:700px\)[\s\S]*?\.google-writer-apply-details,\.google-writer-saved-continuation-audit-result\{grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(index,/class="google-writer-apply-scroll" data-testid="google-writer-apply-scroll"/);
+  assert.match(index,/id="googleWriterApplyReadOnlyClear"[^>]*>Очистити read-only стан/);
+  assert.match(styles,/\.google-writer-apply-dialog>form\{display:grid;grid-template-rows:auto minmax\(0,1fr\) auto/);
+  assert.match(styles,/\.google-writer-apply-scroll\{[^}]*overflow:auto/);
+  assert.match(styles,/\.google-writer-apply-dialog>form>header\{position:sticky/);
+  assert.match(styles,/\.google-writer-apply-dialog>form>footer\{position:sticky/);
+  assert.match(styles,/max-height:calc\(100dvh - 32px\)/);
   assert.match(index,/Копіювати діагностику/);
   assert.match(index,/id="googleWriterApplyDiagnosticCheck"[^>]*>Перевірити стан/);
   assert.match(index,/id="googleWriterSavedContinuationAudit"[^>]*>Звірити збережене продовження/);

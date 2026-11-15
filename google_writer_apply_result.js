@@ -12,6 +12,7 @@
   const copyButton=doc?.getElementById('googleWriterApplyCopy');
   const copyStatus=doc?.getElementById('googleWriterApplyCopyStatus');
   const refresh=doc?.getElementById('googleWriterApplyDiagnosticRefresh');
+  const clearReadOnly=doc?.getElementById('googleWriterApplyReadOnlyClear');
   const requestIdInput=doc?.getElementById('googleWriterApplyRequestId');
   const checkButton=doc?.getElementById('googleWriterApplyDiagnosticCheck');
   const lookupStatus=doc?.getElementById('googleWriterApplyLookupStatus');
@@ -56,6 +57,43 @@
     return {count:safeCount(value?.count),states,unresolved:safeCount(value?.unresolved),
       receipt_count:safeCount(value?.receipt_count)};
   };
+  const safeUnresolvedChunks=value=>Array.isArray(value)?value.slice(0,50).map(item=>{
+    const bindings={};
+    const allowed=['journal_plan_id','journal_run_id','journal_scope','journal_phase','manifest_version',
+      'manifest_plan_id','manifest_run_id','manifest_scope','manifest_chunk_index','manifest_plan_digest',
+      'manifest_source_digest','plan_operations','journal_chunk_digest','journal_chunk_id'];
+    for(const key of allowed)bindings[key]=['MATCH','MISMATCH','NOT_CHECKED'].includes(item?.bindings?.[key])?
+      item.bindings[key]:'NOT_CHECKED';
+    const counts=item?.sheet_counts||{};
+    return {state:safeRunState(item?.state),chunk_index:safeCount(item?.chunk_index),
+      scope:['APPEND_ONLY','ALL'].includes(item?.scope)?item.scope:'UNKNOWN',
+      phase:['append','update'].includes(item?.phase)?item.phase:'unknown',
+      expected_operations:safeCount(item?.expected_operations),
+      plan_operations_matched:safeCount(item?.plan_operations_matched),
+      verified_at_present:item?.verified_at_present===true,
+      operations_match:['MATCH','MISMATCH','NOT_CHECKED'].includes(item?.operations_match)?item.operations_match:'NOT_CHECKED',
+      manifest_binding:['MATCH','MISMATCH','UNAVAILABLE'].includes(item?.manifest_binding)?item.manifest_binding:'UNAVAILABLE',
+      bindings,sheet_status:['MATCH','MISMATCH','UNAVAILABLE'].includes(item?.sheet_status)?item.sheet_status:'UNAVAILABLE',
+      sheet_counts:{confirmed:safeCount(counts.confirmed),missing:safeCount(counts.missing),
+        conflict:safeCount(counts.conflict),unverified:safeCount(counts.unverified)},
+      receipt_state:['MISSING','PRESENT_UNVERIFIED','INVALID'].includes(item?.receipt_state)?item.receipt_state:'INVALID'};
+  }):[];
+  const safeSourceRecovery=value=>({
+    status:['READY','BLOCKED','UNAVAILABLE'].includes(value?.status)?value.status:'UNAVAILABLE',
+    reason_codes:Array.isArray(value?.reason_codes)?value.reason_codes.slice(0,20).map(safeCode):[],
+    manifest_mismatch_fields:Array.isArray(value?.manifest_mismatch_fields)?value.manifest_mismatch_fields.slice(0,250).filter(field=>
+      typeof field==='string'&&/^manifest(?:\.chunkIndex|\.chunkId|\.chunkDigest|\.planId|\.runId|\.rows|\.rows\.length|\.rows\[\d{1,2}\]\.(?:target|preview|tab|row|code|cellsDigest|formulaA|serviceMetadata(?:\.(?:addedAt|planId|runId))?))?$/.test(field)):[],
+    first_chunk_recovery_evidence:typeof value?.first_chunk_recovery_evidence==='boolean'?
+      value.first_chunk_recovery_evidence:null});
+  const safeSourceRunEvidence=value=>({
+    scope:['APPEND_ONLY','ALL'].includes(value?.scope)?value.scope:'UNKNOWN',
+    attempted_chunk:safeCount(value?.attempted_chunk),
+    outcome_unknown:typeof value?.outcome_unknown==='boolean'?value.outcome_unknown:null});
+  const safeSourceClose=value=>({
+    status:value?.status==='VALIDATED'?'VALIDATED':'UNAVAILABLE',
+    closed:value?.closed===true,
+    disposition:value?.disposition==='OUTCOME_UNKNOWN_NOT_CONFIRMED'?'OUTCOME_UNKNOWN_NOT_CONFIRMED':'UNAVAILABLE',
+    receipt_verified:value?.receipt_verified===true});
   const AUDIT_CHECKS={
     plan_matches:'План збігається з відсутніми операціями',
     preserved_match:'Збережені 25 рядків відповідають контрольним даним',
@@ -99,6 +137,8 @@
         missing:safeCount(continuation.missing),duplicate:safeCount(continuation.duplicate),
         conflict:safeCount(continuation.conflict),unverified:safeCount(continuation.unverified)},
       related:{source_run:safeRunState(related.source_run),
+        source_run_evidence:safeSourceRunEvidence(related.source_run_evidence),
+        source_close:safeSourceClose(related.source_close),
         continuation_runs:Array.isArray(related.continuation_runs)?related.continuation_runs.slice(0,20).map(item=>({
           status:safeRunState(item?.status),scope:item?.scope==='APPEND_ONLY'?'APPEND_ONLY':'UNKNOWN',
           attempted_chunk_present:item?.attempted_chunk_present===true})):[],
@@ -107,7 +147,9 @@
         source_checkpoint:related.source_checkpoint===true,
         continuation_checkpoints:safeCount(related.continuation_checkpoints),
         continuation_verified_receipts:safeCount(related.continuation_verified_receipts),
-        additional_saved_previews:safeCount(related.additional_saved_previews)},
+        additional_saved_previews:safeCount(related.additional_saved_previews),
+        source_unresolved_chunk_details:safeUnresolvedChunks(related.source_unresolved_chunk_details),
+        source_recovery:safeSourceRecovery(related.source_recovery)},
       checks:safeAuditChecks(value.checks)};
   };
   const descriptionFor=code=>({
@@ -163,12 +205,30 @@
       ['Продовження · конфлікти',audit.continuation.conflict??'не перевірено'],
       ['Продовження · неперевірені',audit.continuation.unverified??'не перевірено'],
       ['Стан початкового запуску',audit.related.source_run],
+      ['Сфера/attempted_chunk початкового запуску',`${audit.related.source_run_evidence.scope} / ${audit.related.source_run_evidence.attempted_chunk??'не зафіксовано'}`],
+      ['Прапорець outcome_unknown',audit.related.source_run_evidence.outcome_unknown===true?'так':
+        audit.related.source_run_evidence.outcome_unknown===false?'ні':'не підтверджено'],
+      ['Адміністративне закриття',`${audit.related.source_close.status}; ${audit.related.source_close.disposition}; receipt ${audit.related.source_close.receipt_verified?'перевірено':'не підтверджено'}`],
       ['Пов’язані continuation-запуски',audit.related.continuation_runs.length],
       ['Порції початкового запуску',audit.related.source_chunks.count??'не перевірено'],
       ['Порції continuation',audit.related.continuation_chunks.count??'не перевірено'],
       ['Checkpoint continuation',audit.related.continuation_checkpoints??'не перевірено'],
       ['Перевірені receipts continuation',audit.related.continuation_verified_receipts??'не перевірено'],
       ['Інші збережені Preview',audit.related.additional_saved_previews??'не перевірено']);
+    rows.push(['Перевірка recovery початкового запуску',audit.related.source_recovery.status],
+      ['Причини recovery перевірки',audit.related.source_recovery.reason_codes.join(', ')||'немає підтверджених кодів'],
+      ['Поля manifest із розбіжностями',audit.related.source_recovery.manifest_mismatch_fields.join(', ')||'не повідомлені'],
+      ['Доказ першої порції для recovery',audit.related.source_recovery.first_chunk_recovery_evidence===true?'MATCH':
+        audit.related.source_recovery.first_chunk_recovery_evidence===false?'MISMATCH':'NOT_CHECKED']);
+    for(const [index,chunk] of audit.related.source_unresolved_chunk_details.entries()){
+      const label=`Невирішена порція початкового запуску ${chunk.chunk_index??index}`;
+      rows.push([label,`${chunk.state}; ${chunk.scope}/${chunk.phase}; operations=${chunk.expected_operations??'UNAVAILABLE'}; plan match=${chunk.operations_match}; manifest=${chunk.manifest_binding}; sheet=${chunk.sheet_status}; receipt=${chunk.receipt_state}`]);
+      rows.push([`${label} verified_at`,chunk.verified_at_present?'є':'відсутній']);
+      const badBindings=Object.entries(chunk.bindings).filter(([,status])=>status!=='MATCH');
+      if(badBindings.length)rows.push([`${label} · поля прив’язки`,badBindings.map(([field,status])=>`${field}=${status}`).join(', ')]);
+      if(chunk.sheet_status==='MATCH')rows.push([`${label} sheet counts`,
+        `confirmed=${chunk.sheet_counts.confirmed??'UNAVAILABLE'}, missing=${chunk.sheet_counts.missing??'UNAVAILABLE'}, conflict=${chunk.sheet_counts.conflict??'UNAVAILABLE'}, unverified=${chunk.sheet_counts.unverified??'UNAVAILABLE'}`]);
+    }
     if(audit.checks){
       const checkRows=Object.entries(AUDIT_CHECKS).map(([key,label])=>{
         const check=audit.checks[key];if(!check)return null;
@@ -313,6 +373,14 @@
       save();render();return false;
     }
   }
+  function clearReadOnlyState(){
+    state.diagnostic=null;state.diagnosticRequestId=null;state.savedContinuationAudit=null;
+    if(requestIdInput)requestIdInput.value='';
+    if(lookupStatus)lookupStatus.textContent='Локальний read-only стан очищено; серверні дані не змінювалися.';
+    if(savedAuditStatus)savedAuditStatus.textContent='Звірку ще не запускали.';
+    if(savedAuditCopyStatus)savedAuditCopyStatus.textContent='';
+    save();render();return true;
+  }
   function setResult(next){
     state={version:1,requestId:next.requestId,httpStatus:next.httpStatus??null,code:safeCode(next.code),
       level:next.level,started:next.started===true?true:next.started===false?false:null,
@@ -338,6 +406,7 @@
     if(detailsDialog?.showModal)detailsDialog.showModal();else if(detailsDialog)detailsDialog.open=true;
   });
   if(refresh)refresh.addEventListener('click',()=>void refreshDiagnostic());
+  if(clearReadOnly)clearReadOnly.addEventListener('click',clearReadOnlyState);
   if(checkButton)checkButton.addEventListener('click',()=>void refreshDiagnostic(requestIdInput?.value||''));
   if(copyButton)copyButton.addEventListener('click',()=>copyDiagnostic());
   if(savedAuditButton)savedAuditButton.addEventListener('click',()=>void auditSavedContinuation());
@@ -382,5 +451,5 @@
       throw error;
     }
   };
-  root.PqmGoogleWriterApplyResult={refreshDiagnostic,render,diagnosticText,auditSavedContinuation,savedAuditText};
+  root.PqmGoogleWriterApplyResult={refreshDiagnostic,clearReadOnlyState,render,diagnosticText,auditSavedContinuation,savedAuditText};
 })(globalThis);

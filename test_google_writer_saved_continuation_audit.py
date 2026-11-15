@@ -101,11 +101,15 @@ class SavedContinuationAuditTests(unittest.TestCase):
             'request_id':self.source_id,
             'counts':{'planned':276,**counts},'target_statuses':statuses,
             'continuation_guard_rows':self.preserved_rows,'conflicts':conflicts,
+            'recovery_status':'BLOCKED','recovery_reason_codes':['MANIFEST_BINDING_MISMATCH'],
+            'manifest_mismatch_fields':['manifest.chunkIndex'],
+            'first_chunk_recovery_evidence':False,
             'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0}
 
     def _run(self, audit):
         before=hashlib.sha256(Path(self.path).read_bytes()).hexdigest()
-        with patch.object(writer,'validate_append_continuation_closed',return_value={'closed':True}), \
+        with patch.object(writer,'validate_append_continuation_closed',return_value={'closed':True,
+                'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED'}), \
              patch.object(writer,'diagnose_append_only_plan',return_value=audit) as call:
             result=writer.audit_saved_append_continuation(self.path,
                 type('Client',(),{'environment':'SANDBOX'})(),self.request_id,self.actor)
@@ -231,6 +235,61 @@ class SavedContinuationAuditTests(unittest.TestCase):
         self.assertEqual(result['status'],'BLOCKED')
         self.assertEqual(result['related']['continuation_verified_receipts'],0)
         self.assertEqual(result['continuation']['missing'],251)
+
+    def _insert_unresolved_source_chunk(self, *, journal_index=0, manifest_index=None, status='outcome_unknown', receipt='{}'):
+        if manifest_index is None: manifest_index=journal_index
+        rows=self.source_ops[journal_index*writer.APPEND_JOURNAL_PAGE_ROWS:
+            (journal_index+1)*writer.APPEND_JOURNAL_PAGE_ROWS]
+        expected={'version':1,'plan_id':self.source_id,'run_id':self.source_id,'scope':'APPEND_ONLY',
+            'plan_digest':self.source_append_digest,'source_digest':self.source_digest,
+            'chunk_index':manifest_index,'rows':rows}
+        chunk_digest=writer._sha256_b64(writer._canonical_json(expected).encode('utf-8'))
+        chunk_id=hashlib.sha256((self.source_id+'|'+self.source_id+'|APPEND_ONLY|'+
+            str(journal_index)+'|'+chunk_digest).encode('utf-8')).hexdigest()[:32]
+        with closing(sqlite3.connect(self.path)) as con, con:
+            con.execute('''INSERT INTO google_writer_chunk_journal(chunk_id,plan_id,run_id,environment,scope,
+                plan_digest,source_digest,chunk_index,chunk_digest,status,expected_json,prepared_at,receipt_json)
+                VALUES(?,?,?,'SANDBOX','APPEND_ONLY',?,?,?,?,?,?,?,?)''',
+                (chunk_id,self.source_id,self.source_id,self.source_append_digest,self.source_digest,
+                 journal_index,chunk_digest,status,writer._canonical_json(expected),
+                 '2026-11-11T20:01:00Z',receipt))
+
+    def test_unresolved_source_chunk_details_are_read_only_and_bind_to_first_25(self):
+        self._insert_unresolved_source_chunk()
+        result=self._run(self._audit_reply())
+        self.assertEqual(result['status'],'BLOCKED')
+        self.assertEqual(result['checks']['source_chunks_unresolved'],{'status':'MISMATCH','count':1})
+        details=result['related']['source_unresolved_chunk_details']
+        self.assertEqual(len(details),1)
+        chunk=details[0]
+        self.assertEqual((chunk['state'],chunk['chunk_index'],chunk['scope'],chunk['phase']),
+            ('outcome_unknown',0,'APPEND_ONLY','append'))
+        self.assertEqual((chunk['expected_operations'],chunk['plan_operations_matched'],
+            chunk['operations_match'],chunk['manifest_binding']), (25,25,'MATCH','MATCH'))
+        self.assertEqual(chunk['sheet_status'],'MATCH')
+        self.assertEqual(chunk['sheet_counts'],{'confirmed':25,'missing':0,'conflict':0,'unverified':0})
+        self.assertEqual(chunk['receipt_state'],'MISSING')
+        self.assertEqual(result['related']['source_recovery'],{'status':'BLOCKED',
+            'reason_codes':['MANIFEST_BINDING_MISMATCH'],'manifest_mismatch_fields':['manifest.chunkIndex'],
+            'first_chunk_recovery_evidence':False})
+        self.assertEqual(result['related']['source_run_evidence'],{'scope':'APPEND_ONLY',
+            'attempted_chunk':0,'outcome_unknown':True})
+        self.assertEqual(result['related']['source_close'],{'status':'VALIDATED','closed':True,
+            'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED','receipt_verified':True})
+        self.assertEqual((result['sqlite_writes'],result['sheets_writes'],result['properties_writes']),(0,0,0))
+
+    def test_unresolved_source_chunk_reports_manifest_index_and_rows_mismatch_without_values(self):
+        self._insert_unresolved_source_chunk(journal_index=0,manifest_index=1)
+        result=self._run(self._audit_reply())
+        chunk=result['related']['source_unresolved_chunk_details'][0]
+        self.assertEqual(chunk['manifest_binding'],'MISMATCH')
+        self.assertEqual(chunk['bindings']['manifest_chunk_index'],'MISMATCH')
+        self.assertEqual(chunk['bindings']['plan_operations'],'MATCH')
+        self.assertEqual(chunk['sheet_status'],'MATCH')
+        self.assertEqual(chunk['sheet_counts'],{'confirmed':25,'missing':0,'conflict':0,'unverified':0})
+        serialized=json.dumps(result['related'],ensure_ascii=False)
+        self.assertNotIn(self.source_ops[25]['code'],serialized)
+        self.assertNotIn(self.source_append_digest,serialized)
 
     def test_unresolved_continuation_run_blocks_without_repeating_any_operation(self):
         with closing(sqlite3.connect(self.path)) as con, con:

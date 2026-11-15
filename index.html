@@ -229,23 +229,26 @@
     <form method="dialog">
       <header><div><p class="eyebrow">PQM → Google Sheets</p><h2 id="googleWriterApplyDetailsTitle">Діагностика Google Writer</h2></div>
         <button id="googleWriterApplyDetailsClose" type="submit" class="dialog-close" aria-label="Закрити">×</button></header>
-      <section id="googleWriterApplyDetailsBody" class="google-writer-apply-details" aria-live="polite"></section>
-      <section class="google-writer-apply-lookup" aria-label="Read-only перевірка попереднього continuation">
-        <label for="googleWriterApplyRequestId">Request ID попереднього запуску</label>
-        <div><input id="googleWriterApplyRequestId" type="text" maxlength="32" pattern="[0-9a-f]{32}" autocomplete="off" spellcheck="false" inputmode="text" aria-describedby="googleWriterApplyLookupStatus" placeholder="32 символи a–f та 0–9">
-          <button id="googleWriterApplyDiagnosticCheck" type="button" class="ghost">Перевірити стан</button></div>
-        <p id="googleWriterApplyLookupStatus" class="muted" role="status" aria-live="polite">Перевірка лише читає вже збережений стан; Preview та запис не запускаються.</p>
-      </section>
-      <section class="google-writer-saved-continuation-audit" aria-label="Звірка збереженого продовження">
-        <p class="muted">Звірка використовує вже збережений план і читає Google Sheets. Вона не створює Preview, ticket, запуск або порцію.</p>
-        <div><button id="googleWriterSavedContinuationAudit" type="button" class="ghost">Звірити збережене продовження</button>
-          <span id="googleWriterSavedContinuationAuditStatus" class="muted" role="status" aria-live="polite">Звірку ще не запускали.</span></div>
-        <section id="googleWriterSavedContinuationAuditResult" class="google-writer-saved-continuation-audit-result" aria-live="polite"></section>
-        <div><button id="googleWriterSavedContinuationAuditCopy" type="button" class="ghost" disabled>Копіювати звіт</button>
-          <span id="googleWriterSavedContinuationAuditCopyStatus" class="muted" role="status" aria-live="polite"></span></div>
-      </section>
-      <p id="googleWriterApplyCopyStatus" class="muted" role="status" aria-live="polite"></p>
+      <div class="google-writer-apply-scroll" data-testid="google-writer-apply-scroll">
+        <section id="googleWriterApplyDetailsBody" class="google-writer-apply-details" aria-live="polite"></section>
+        <section class="google-writer-apply-lookup" aria-label="Read-only перевірка попереднього continuation">
+          <label for="googleWriterApplyRequestId">Request ID попереднього запуску</label>
+          <div><input id="googleWriterApplyRequestId" type="text" maxlength="32" pattern="[0-9a-f]{32}" autocomplete="off" spellcheck="false" inputmode="text" aria-describedby="googleWriterApplyLookupStatus" placeholder="32 символи a–f та 0–9">
+            <button id="googleWriterApplyDiagnosticCheck" type="button" class="ghost">Перевірити стан</button></div>
+          <p id="googleWriterApplyLookupStatus" class="muted" role="status" aria-live="polite">Перевірка лише читає вже збережений стан; Preview та запис не запускаються.</p>
+        </section>
+        <section class="google-writer-saved-continuation-audit" aria-label="Звірка збереженого продовження">
+          <p class="muted">Звірка використовує вже збережений план і читає Google Sheets. Вона не створює Preview, ticket, запуск або порцію.</p>
+          <div><button id="googleWriterSavedContinuationAudit" type="button" class="ghost">Звірити збережене продовження</button>
+            <span id="googleWriterSavedContinuationAuditStatus" class="muted" role="status" aria-live="polite">Звірку ще не запускали.</span></div>
+          <section id="googleWriterSavedContinuationAuditResult" class="google-writer-saved-continuation-audit-result" aria-live="polite"></section>
+          <div><button id="googleWriterSavedContinuationAuditCopy" type="button" class="ghost" disabled>Копіювати звіт</button>
+            <span id="googleWriterSavedContinuationAuditCopyStatus" class="muted" role="status" aria-live="polite"></span></div>
+        </section>
+        <p id="googleWriterApplyCopyStatus" class="muted" role="status" aria-live="polite"></p>
+      </div>
       <footer><button id="googleWriterApplyDiagnosticRefresh" type="button" class="ghost">Оновити read-only стан</button>
+        <button id="googleWriterApplyReadOnlyClear" type="button" class="ghost">Очистити read-only стан</button>
         <button id="googleWriterApplyCopy" type="button" class="primary">Копіювати діагностику</button>
         <button id="googleWriterApplyDetailsDone" type="submit" class="ghost">Закрити</button></footer>
     </form>

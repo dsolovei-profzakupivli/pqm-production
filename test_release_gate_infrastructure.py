@@ -42,7 +42,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         historical_apply_v5 = "test_google_writer_apply_result_integrity_v5"
         historical_apply_v6 = "test_google_writer_apply_result_integrity_v6"
         previous_overlay = "test_google_writer_apply_result_integrity_v7"
-        current_overlay = "test_google_writer_apply_result_integrity_v8"
+        current_overlay = "test_google_writer_apply_result_integrity_v9"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
 
         self.assertIn("node --test", workflow)
@@ -63,6 +63,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn(historical_apply_v6, workflow)
         self.assertIn("git archive 86b6ad82105fdcd7fa530a872943525af812ec47", workflow)
         self.assertIn("git archive 8bf5fb0188bebf6f2b35583ec018848c914b714c", workflow)
+        self.assertIn("git archive 926ae60ff3412a9c236c903b70623881459d871c", workflow)
         self.assertIn(previous_overlay, workflow)
         self.assertIn(current_overlay, workflow)
         self.assertNotIn(direct_historical_test, workflow)
@@ -70,7 +71,9 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertLess(workflow.index(historical_apply_v5), workflow.index(historical_runner))
         self.assertLess(workflow.index(historical_runner), workflow.index(historical_apply_v6))
         self.assertLess(workflow.index(historical_apply_v6), workflow.index(previous_overlay))
-        self.assertLess(workflow.index(previous_overlay), workflow.index(current_overlay))
+        self.assertIn("test_google_writer_apply_result_integrity_v8)", workflow)
+        self.assertLess(workflow.index(previous_overlay), workflow.index("test_google_writer_apply_result_integrity_v8)"))
+        self.assertLess(workflow.index("test_google_writer_apply_result_integrity_v8)"), workflow.index(current_overlay))
         self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
 
         runner = (ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
@@ -90,6 +93,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("'test_google_writer_apply_result_integrity_v6'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v7'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v8'", exact_modules)
+        self.assertIn("'test_google_writer_apply_result_integrity_v9'", exact_modules)
         self.assertNotIn("'test_google_writer_apply_result_diagnostic'", exact_modules)
         self.assertIn("test_google_writer_apply_result_integrity_v7", workflow)
         self.assertIn("test_google_writer_apply_result_integrity_v8", workflow)
@@ -97,6 +101,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         browser_runner = (ROOT / "validation/google_writer_preview_modal_browser.cjs").read_text(encoding="utf-8")
         self.assertIn("validation/google_writer_apply_result_ui.test.cjs", browser_runner)
         self.assertIn("node validation/google_writer_preview_modal_browser.cjs", workflow)
+        layout_runner = (ROOT / "validation/google_writer_apply_modal_layout_browser.cjs").read_text(encoding="utf-8")
+        self.assertIn("innerWidth", layout_runner)
+        self.assertIn("footer stays fixed while scrolling", layout_runner)
+        self.assertIn("node validation/google_writer_apply_modal_layout_browser.cjs", workflow)
 
     def test_c246_route_manifest_is_pinned_and_covers_all_historical_modules_once(self):
         manifest_path = ROOT / "validation/c246_historical_integrity_snapshots_v1.json"

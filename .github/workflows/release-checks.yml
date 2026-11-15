@@ -76,8 +76,13 @@ jobs:
           git archive 8bf5fb0188bebf6f2b35583ec018848c914b714c | tar -x -C "$v7_snapshot"
           (cd "$v7_snapshot" && "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
             test_google_writer_apply_result_integrity_v7)
+          v8_snapshot="$RUNNER_TEMP/pqm-apply-result-v8-926ae60"
+          mkdir -p "$v8_snapshot"
+          git archive 926ae60ff3412a9c236c903b70623881459d871c | tar -x -C "$v8_snapshot"
+          (cd "$v8_snapshot" && "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
+            test_google_writer_apply_result_integrity_v8)
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_apply_result_integrity_v8 \
+            test_google_writer_apply_result_integrity_v9 \
             test_google_writer_saved_continuation_audit \
             test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks
       - name: Install Playwright and Chromium for browser regressions
@@ -99,6 +104,7 @@ jobs:
           node validation/protocol_names_card_browser.cjs
           node validation/chat_messages_browser.cjs
           node validation/google_writer_preview_modal_browser.cjs
+          node validation/google_writer_apply_modal_layout_browser.cjs
       - name: Build release image
         shell: bash
         run: |
