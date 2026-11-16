@@ -1,10 +1,13 @@
 """Regression tests for local Release Gate staging and isolation adapters."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 import zipfile
 
@@ -39,10 +42,58 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             "validation/run_integrated_writer_ui_v1_history.py",
             "validation/run_integrated_writer_ui_v2_history.py",
             "validation/run_integrated_writer_ui_v3_history.py",
+            "validation/run_integrated_writer_ui_v4_history.py",
         )
         for relative in required:
             with self.subTest(path=relative):
                 self.assertTrue((ROOT / relative).is_file(), f"missing staged runner: {relative}")
+
+    def test_integrated_snapshot_archives_are_available_to_the_docker_gate(self):
+        required = (
+            "validation/fixtures/pqm_sync_ui_integrated_v1_3eda816.zip",
+            "validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip",
+            "validation/fixtures/pqm_sync_ui_integrated_v3_8c6ba07.zip",
+            "validation/fixtures/pqm_sync_ui_integrated_v4_654bd0de.zip",
+        )
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        docker_gate = (ROOT / "validation/docker_release_gate.py").read_text(encoding="utf-8")
+        runner_source = (ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
+        self.assertIn("validation/run_local_release.py", docker_gate)
+        self.assertIn("test_release_gate_infrastructure.py", docker_gate)
+        self.assertNotIn("*.zip", dockerignore)
+        for relative in required:
+            with self.subTest(path=relative):
+                self.assertIn(Path(relative).name, runner_source)
+                self.assertTrue((ROOT / relative).is_file(), f"missing immutable Docker fixture: {relative}")
+
+    def test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd(self):
+        docker_gate = (ROOT / "validation/docker_release_gate.py").read_text(encoding="utf-8")
+        self.assertIn("validation/run_local_release.py", docker_gate)
+        archive = ROOT / "validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip"
+        original_is_file = Path.is_file
+
+        def archive_missing(path):
+            if path == archive:
+                return False
+            return original_is_file(path)
+
+        expected_cwd = Path.cwd()
+        with patch.dict(os.environ, {"PQM_RELEASE_MODE": ""}):
+            with patch.object(sys, "argv", ["run_local_release.py", "test_nazk_workflow.py"]):
+                with patch.object(Path, "is_file", archive_missing):
+                    with patch.object(
+                        release.subprocess, "run", return_value=SimpleNamespace(returncode=1)
+                    ) as run:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "Integrated v2 immutable snapshot could not be staged"
+                        ):
+                            release.main()
+
+        run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["cwd"], expected_cwd)
+        self.assertTrue(
+            str(run.call_args.args[0][1]).endswith("run_integrated_writer_ui_v2_history.py")
+        )
 
     def test_workflow_routes_historical_and_current_integrity_checks(self):
         workflow = (ROOT / ".github/workflows/release-checks.yml").read_text(encoding="utf-8")
@@ -57,12 +108,14 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         historical_apply_v10 = "test_google_writer_apply_result_integrity_v10"
         integrated_v1 = "test_google_writer_integrated_candidate_integrity_v1"
         previous_overlay = "test_google_writer_integrated_candidate_integrity_v3"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v4"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
         integrated_v2_snapshot = "0d7e05984fb9b1fc7276b4cc1d8176dec383ef08"
         integrated_v3_runner = "validation/run_integrated_writer_ui_v3_history.py"
+        integrated_v4_runner = "validation/run_integrated_writer_ui_v4_history.py"
+        integrated_v4_snapshot = "654bd0de0e5b3de6be61c5293a9fc00cf17217c3"
         integrated_v3_snapshot = "8c6ba07372196b1919a88beb7da3078e6c53d4d0"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
 
@@ -96,9 +149,15 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn(integrated_v1_runner, workflow)
         self.assertIn(integrated_v2_runner, workflow)
         self.assertIn(integrated_v3_runner, workflow)
+        self.assertIn(integrated_v4_runner, workflow)
         self.assertIn("PQM_INTEGRATED_V3_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v3_8c6ba07.zip", workflow)
+        self.assertIn("PQM_INTEGRATED_V4_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v4_654bd0de.zip", workflow)
         self.assertIn("PQM_INTEGRATED_V1_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v1_3eda816.zip", workflow)
         self.assertIn("PQM_INTEGRATED_V2_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip", workflow)
+        self.assertIn(
+            "test_release_gate_infrastructure.ReleaseGateInfrastructureTests."
+            "test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd", workflow
+        )
         self.assertIn(current_overlay, workflow)
         self.assertNotIn(previous_overlay, workflow)
         self.assertNotIn(direct_historical_test, workflow)
@@ -114,7 +173,8 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertLess(workflow.index(historical_apply_v10), workflow.index(integrated_v1_runner))
         self.assertLess(workflow.index(integrated_v1_runner), workflow.index(integrated_v2_runner))
         self.assertLess(workflow.index(integrated_v2_runner), workflow.index(integrated_v3_runner))
-        self.assertLess(workflow.index(integrated_v3_runner), workflow.index(current_overlay))
+        self.assertLess(workflow.index(integrated_v3_runner), workflow.index(integrated_v4_runner))
+        self.assertLess(workflow.index(integrated_v4_runner), workflow.index(current_overlay))
         self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
         self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
 
@@ -142,6 +202,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn(integrated_v3_snapshot, integrated_v3_history_runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v3", integrated_v3_history_runner)
         self.assertIn("ARCHIVE_RELATIVE = Path('validation/fixtures/pqm_sync_ui_integrated_v3_8c6ba07.zip')", integrated_v3_history_runner)
+        integrated_v4_history_runner = (ROOT / integrated_v4_runner).read_text(encoding="utf-8")
+        self.assertIn(integrated_v4_snapshot, integrated_v4_history_runner)
+        self.assertIn("test_google_writer_integrated_candidate_integrity_v4", integrated_v4_history_runner)
+        self.assertIn("ARCHIVE_RELATIVE = Path('validation/fixtures/pqm_sync_ui_integrated_v4_654bd0de.zip')", integrated_v4_history_runner)
         self.assertIn("'test_legacy_reconciliation_evidence_v2_integrity'", runner)
         self.assertIn("c246 contracts are run by the mandatory workflow snapshot step", runner)
         self.assertNotIn("run_c246_historical_integrity_snapshots_v1.py", runner)
@@ -156,6 +220,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("'test_google_writer_integrated_candidate_integrity_v2'", exact_modules)
         self.assertIn("'test_google_writer_integrated_candidate_integrity_v3'", exact_modules)
         self.assertIn("'test_google_writer_integrated_candidate_integrity_v4'", exact_modules)
+        self.assertIn("'test_google_writer_integrated_candidate_integrity_v5'", exact_modules)
         self.assertIn("'test_google_writer_append_continuation_integrity_v2'", exact_modules)
         self.assertIn("'test_google_writer_append_continuation_integrity_v3'", exact_modules)
         self.assertIn("'test_google_writer_append_continuation_integrity_v4'", exact_modules)
@@ -171,9 +236,11 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("run_integrated_writer_ui_v1_history.py", runner)
         self.assertIn("run_integrated_writer_ui_v2_history.py", runner)
         self.assertIn("run_integrated_writer_ui_v3_history.py", runner)
-        self.assertIn("test_google_writer_integrated_candidate_integrity_v4", runner)
+        self.assertIn("run_integrated_writer_ui_v4_history.py", runner)
+        self.assertIn("test_google_writer_integrated_candidate_integrity_v5", runner)
         self.assertIn("pqm_sync_ui_integrated_v1_3eda816.zip", runner)
         self.assertIn("pqm_sync_ui_integrated_v2_0d7e059.zip", runner)
+        self.assertIn("pqm_sync_ui_integrated_v4_654bd0de.zip", runner)
         self.assertNotIn("'test_google_writer_update_append_v2_integrity'", exact_modules)
         self.assertNotIn("'test_google_writer_update_append_v3_integrity'", exact_modules)
         self.assertNotIn("'test_google_writer_apply_result_diagnostic'", exact_modules)

@@ -101,15 +101,18 @@ jobs:
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v2_history.py
           PQM_INTEGRATED_V3_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v3_8c6ba07.zip \
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v3_history.py
+          PQM_INTEGRATED_V4_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v4_654bd0de.zip \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v4_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v4 \
+            test_google_writer_integrated_candidate_integrity_v5 \
             test_google_writer_update_append_v2_integrity \
             test_google_writer_update_append_v3_integrity \
             validation.local_release_20260911.test_edr_sync_v2 \
             validation.local_release_20260911.test_permanent_edr_sync_safety \
             validation.local_release_20260911.test_sandbox_edr_review \
             test_google_writer_saved_continuation_audit \
-            test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks
+            test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks \
+            test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd
       - name: Install Playwright and Chromium for browser regressions
         shell: bash
         run: |

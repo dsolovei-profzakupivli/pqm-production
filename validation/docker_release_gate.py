@@ -52,6 +52,7 @@ def main():
         ["node", "validation/appeals_declension_ui.cjs"],
         ["node", "validation/supplier_ux.cjs"],
         [sys.executable, "validation/run_local_release.py", "test_nazk_workflow.py"],
+        [sys.executable, "validation/run_local_release.py", "test_release_gate_infrastructure.py"],
         [sys.executable, "validation/run_local_release.py", "test_nazk_task_relevance.py"],
         [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
     ]

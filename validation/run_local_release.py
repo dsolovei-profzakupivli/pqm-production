@@ -99,8 +99,8 @@ HISTORICAL_INTEGRITY_MODULES={
     'test_google_writer_legacy_source_snapshots_history_v2',
 }
 EXACT_TREE_OVERLAY_MODULES={
-    # Continuation v2-v5, Apply Result v5-v10, and integrated candidate v1-v3
-    # run from exact Git snapshots. Integrated candidate v4 pins current files.
+    # Continuation v2-v5, Apply Result v5-v10, and integrated candidate v1-v4
+    # run from exact Git snapshots. Integrated candidate v5 pins current files.
     'test_google_writer_append_continuation_integrity_v2',
     'test_google_writer_append_continuation_integrity_v3',
     'test_google_writer_append_continuation_integrity_v4',
@@ -117,6 +117,7 @@ EXACT_TREE_OVERLAY_MODULES={
     'test_google_writer_integrated_candidate_integrity_v2',
     'test_google_writer_integrated_candidate_integrity_v3',
     'test_google_writer_integrated_candidate_integrity_v4',
+    'test_google_writer_integrated_candidate_integrity_v5',
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
     # the candidate carries its own additive prepared-intent retry overlay.
     'test_partial_reconciliation_first_append_only_integrity_v1',
@@ -253,6 +254,7 @@ def install_windows_sqlite_uri_compatibility():
     sqlite3.connect=connect
 
 def main():
+    old_cwd=Path.cwd()
     mode=os.environ.get('PQM_RELEASE_MODE','')
     full_candidate_run=(not mode and len(sys.argv)==1) or mode=='baseline_full'
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
@@ -296,6 +298,7 @@ def main():
                             'run_integrated_writer_ui_v1_history.py',
                             'run_integrated_writer_ui_v2_history.py',
                             'run_integrated_writer_ui_v3_history.py',
+                            'run_integrated_writer_ui_v4_history.py',
                             'run_google_writer_historical_integrity_snapshots_v1.py',
                             'run_google_writer_prewrite_diagnostics_v2.py',
                             'run_google_writer_prewrite_readonly_v1.py',
@@ -394,6 +397,8 @@ def main():
                              'google_writer_historical_integrity_snapshots_v1_compact.zip',
                              'pqm_sync_ui_integrated_v1_3eda816.zip',
                              'pqm_sync_ui_integrated_v2_0d7e059.zip',
+                            'pqm_sync_ui_integrated_v3_8c6ba07.zip',
+                            'pqm_sync_ui_integrated_v4_654bd0de.zip',
                              'legacy_append_reconciliation_v1_exact_1111eb9.zip',
                              'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
                              'google_writer_legacy_reconciliation_v3_immutable.zip',
@@ -403,10 +408,6 @@ def main():
             if fixture_name=='google_writer_historical_integrity_snapshots_v1_compact.zip':
                 fixture_source=INFRA_ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
-                if fixture_name in {'pqm_sync_ui_integrated_v1_3eda816.zip','pqm_sync_ui_integrated_v2_0d7e059.zip'}:
-                    # Host runs can materialize exact Git snapshots on demand;
-                    # the Docker Gate requires workflow-staged archive fixtures.
-                    continue
                 if mode=='historical_integrity':
                     continue
                 raise FileNotFoundError(f'Candidate release fixture missing: {fixture_name}')
@@ -444,7 +445,6 @@ def main():
                 raise RuntimeError('Outbound network forbidden in release tests')
             return original_connect(sock,address)
         socket.socket.connect=isolated_connect
-        old_cwd=Path.cwd()
         os.chdir(root)
         sys.path.insert(0,str(root))
         try:
@@ -555,11 +555,14 @@ def main():
             integrated_v3_history=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v3_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v4_current=subprocess.run(
+            integrated_v4_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v4_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v5_current=subprocess.run(
                 [sys.executable,'-B','-m','unittest','-v',
-                 'test_google_writer_integrated_candidate_integrity_v4'],
+                 'test_google_writer_integrated_candidate_integrity_v5'],
                 cwd=ROOT,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_current.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_current.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
