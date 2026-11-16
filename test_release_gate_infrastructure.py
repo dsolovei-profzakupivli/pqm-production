@@ -143,6 +143,27 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_v5_integrity_is_excluded_from_candidate_staging_suite(self):
+        class NamedTest:
+            def __init__(self, test_id):
+                self.test_id = test_id
+
+            def id(self):
+                return self.test_id
+
+            def __call__(self, *args, **kwargs):
+                return None
+
+        tests = unittest.TestSuite([
+            NamedTest("test_google_writer_integrated_candidate_integrity_v5.V5.test_old_snapshot"),
+            NamedTest("test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_current"),
+        ])
+        selected = release.selected_suite(tests, "candidate")
+        self.assertEqual(
+            [test.id() for test in selected],
+            ["test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_current"],
+        )
+
     def test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd(self):
         with tempfile.TemporaryDirectory(prefix="pqm-missing-v2-source-") as temporary:
             fake_source = Path(temporary)

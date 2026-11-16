@@ -117,6 +117,7 @@ EXACT_TREE_OVERLAY_MODULES={
     'test_google_writer_integrated_candidate_integrity_v2',
     'test_google_writer_integrated_candidate_integrity_v3',
     'test_google_writer_integrated_candidate_integrity_v4',
+    'test_google_writer_integrated_candidate_integrity_v5',
     'test_google_writer_integrated_candidate_integrity_v6',
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
     # the candidate carries its own additive prepared-intent retry overlay.
