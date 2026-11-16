@@ -100,8 +100,8 @@ HISTORICAL_INTEGRITY_MODULES={
 }
 EXACT_TREE_OVERLAY_MODULES={
     # Continuation v2-v5 and Apply Result v5-v10 are immutable source contracts
-    # executed from their exact Git snapshots; the integrated candidate overlay
-    # is evaluated against the current checkout by the mandatory workflow.
+    # executed from their exact Git snapshots. Integrated candidate v2 is
+    # evaluated against the current checkout by the aggregate runner below.
     'test_google_writer_append_continuation_integrity_v2',
     'test_google_writer_append_continuation_integrity_v3',
     'test_google_writer_append_continuation_integrity_v4',
@@ -112,6 +112,10 @@ EXACT_TREE_OVERLAY_MODULES={
     'test_google_writer_apply_result_integrity_v8',
     'test_google_writer_apply_result_integrity_v9',
     'test_google_writer_apply_result_integrity_v10',
+    # Integrated UI v1 stays bound to its immutable 3eda816 snapshot; v2 pins
+    # the current checkout. Both are invoked explicitly by the aggregate runner.
+    'test_google_writer_integrated_candidate_integrity_v1',
+    'test_google_writer_integrated_candidate_integrity_v2',
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
     # the candidate carries its own additive prepared-intent retry overlay.
     'test_partial_reconciliation_first_append_only_integrity_v1',
@@ -374,6 +378,7 @@ def main():
                              'google_writer_all_scope_receipt_recovery_v1_9037e57.zip',
                              'google_writer_legacy_source_snapshots_v1_run_local_release.py',
                              'google_writer_historical_integrity_snapshots_v1_compact.zip',
+                             'pqm_sync_ui_integrated_v1_3eda816.zip',
                              'legacy_append_reconciliation_v1_exact_1111eb9.zip',
                              'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
                              'google_writer_legacy_reconciliation_v3_immutable.zip',
@@ -383,6 +388,10 @@ def main():
             if fixture_name=='google_writer_historical_integrity_snapshots_v1_compact.zip':
                 fixture_source=INFRA_ROOT/'validation/fixtures'/fixture_name
             if not fixture_source.is_file():
+                if fixture_name=='pqm_sync_ui_integrated_v1_3eda816.zip':
+                    # Host runs can materialize this exact Git snapshot on demand;
+                    # the Docker Gate requires the workflow-staged archive fixture.
+                    continue
                 if mode=='historical_integrity':
                     continue
                 raise FileNotFoundError(f'Candidate release fixture missing: {fixture_name}')
@@ -435,7 +444,12 @@ def main():
             if mode=='historical_integrity' or full_candidate_run or mode=='baseline_candidate':
                 suite=selected_suite(suite,'historical_integrity' if mode=='historical_integrity' else 'candidate')
             result=unittest.TextTestRunner(verbosity=2).run(suite)
-            if mode=='historical_integrity' or not full_candidate_run:
+            if mode=='historical_integrity':
+                integrated_v1_history=subprocess.run(
+                    [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v1_history.py')],
+                    cwd=old_cwd,check=False)
+                return 0 if result.wasSuccessful() and integrated_v1_history.returncode==0 else 1
+            if not full_candidate_run:
                 return 0 if result.wasSuccessful() else 1
             candidate_ok=result.wasSuccessful()
             v1_overlay=subprocess.run(
@@ -514,7 +528,14 @@ def main():
             writer_history_snapshots=subprocess.run(
                 [sys.executable,str(root/'validation/run_google_writer_historical_integrity_snapshots_v1.py')],
                 cwd=old_cwd,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 else 1
+            integrated_v1_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v1_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v2_current=subprocess.run(
+                [sys.executable,'-B','-m','unittest','-v',
+                 'test_google_writer_integrated_candidate_integrity_v2'],
+                cwd=ROOT,check=False)
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_current.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

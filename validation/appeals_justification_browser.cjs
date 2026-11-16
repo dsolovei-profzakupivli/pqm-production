@@ -26,7 +26,8 @@ const statusLinkHelpers=[
 const marketplaceHelper=fragment('function zakupivliComplaintLink(', '\nfunction requestBlockingBadge(');
 const activeCardRendererStart=app.indexOf('violationDetailHtml=function(item)',app.indexOf('function violationObjectLinks('));
 const activeCardRenderer=app.slice(activeCardRendererStart,app.indexOf('\nconst violationDetailHtmlBase',activeCardRendererStart));
-assert(activeCardRenderer.includes('class="violation-platform-heading"')&&activeCardRenderer.includes('zakupivliComplaintLink(item)'),'active appeal card renderer puts the supplier-filtered marketplace link beside its heading');
+const platformHeadingStart=activeCardRenderer.indexOf('<h3 class="violation-platform-heading"'),marketplaceLinkCall=activeCardRenderer.indexOf('${zakupivliComplaintLink(item)}',platformHeadingStart),platformHeadingEnd=activeCardRenderer.indexOf('</h3>',platformHeadingStart);
+assert(platformHeadingStart>=0&&marketplaceLinkCall>platformHeadingStart&&marketplaceLinkCall<platformHeadingEnd,'active appeal card renderer places the supplier-filtered marketplace link inside its platform heading');
 assert(marketplaceHelper.includes('item?.defendant_code')&&!marketplaceHelper.includes('item?.id')&&!marketplaceHelper.includes('item?.author_code'),'marketplace target uses supplier code and never guesses from internal ID or customer code');
 assert(marketplaceHelper.includes('/complaints/list')&&marketplaceHelper.includes('?defendant_srn=')&&marketplaceHelper.includes("complaints/list',href"),'valid supplier codes filter the complaints list and invalid codes use the unfiltered list');
 assert(app.includes('requestLabel(item.status,requestStatusLabels)'),'appeals table and card use the shared Ukrainian status label helper');
