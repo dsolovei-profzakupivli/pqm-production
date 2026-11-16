@@ -20,18 +20,25 @@ const statusLinkHelpers=[
   fragment('const requestStatusLabels=', '\nconst requestReasonLabels='),
   fragment('function requestLabel(', '\nfunction requestDocumentLinks('),
   fragment('function requestViolationUrl(', '\nfunction zakupivliComplaintLink('),
+  fragment('function bindAppealHeader(item){', '\nfunction zakupivliComplaintLink('),
   fragment('function zakupivliComplaintLink(', '\nfunction requestBlockingBadge('),
   fragment('function violationObjectLinks(', '\nfunction violationHasCompleteRejection(')
 ].join('\n');
 const marketplaceHelper=fragment('function zakupivliComplaintLink(', '\nfunction requestBlockingBadge(');
 const activeCardRendererStart=app.indexOf('violationDetailHtml=function(item)',app.indexOf('function violationObjectLinks('));
 const activeCardRenderer=app.slice(activeCardRendererStart,app.indexOf('\nconst violationDetailHtmlBase',activeCardRendererStart));
-const platformHeadingStart=activeCardRenderer.indexOf('<h3 class="violation-platform-heading"'),marketplaceLinkCall=activeCardRenderer.indexOf('${zakupivliComplaintLink(item)}',platformHeadingStart),platformHeadingEnd=activeCardRenderer.indexOf('</h3>',platformHeadingStart);
-assert(platformHeadingStart>=0&&marketplaceLinkCall>platformHeadingStart&&marketplaceLinkCall<platformHeadingEnd,'active appeal card renderer places the supplier-filtered marketplace link inside its platform heading');
+const platformHeadingStart=activeCardRenderer.indexOf('<h3 class="violation-platform-heading"'),platformHeadingEnd=activeCardRenderer.indexOf('</h3>',platformHeadingStart);
+assert(platformHeadingStart>=0&&platformHeadingEnd>platformHeadingStart&&!activeCardRenderer.includes('zakupivliComplaintLink(item)'),'active appeal card renderer leaves the marketplace button in the appeal dialog header');
 assert(marketplaceHelper.includes('item?.defendant_code')&&!marketplaceHelper.includes('item?.id')&&!marketplaceHelper.includes('item?.author_code'),'marketplace target uses supplier code and never guesses from internal ID or customer code');
 assert(marketplaceHelper.includes('/complaints/list')&&marketplaceHelper.includes('?defendant_srn=')&&marketplaceHelper.includes("complaints/list',href"),'valid supplier codes filter the complaints list and invalid codes use the unfiltered list');
 assert(app.includes('requestLabel(item.status,requestStatusLabels)'),'appeals table and card use the shared Ukrainian status label helper');
 const dialog=index.match(/<dialog id="requestJustificationDialog"[\s\S]*?<\/dialog>/)?.[0];assert(dialog,'read-only justification dialog markup missing');
+const appealDialog=index.match(/<dialog id="requestDetailsDialog"[\s\S]*?<\/dialog>/)?.[0];assert(appealDialog,'appeal detail dialog markup missing');
+const appealHeaderDecision=appealDialog.match(/<div class="appeal-header-decision">([\s\S]*?)<\/div>/)?.[1];assert(appealHeaderDecision,'appeal header decision tools missing');
+assert(/id="requestCopyJustification"[\s\S]*?<span id="requestHeaderMarketplace"><\/span>/.test(appealHeaderDecision),'marketplace button follows copy justification in the appeal header');
+assert(/id="requestHeaderDecision"[\s\S]*?id="requestCopyJustification"/.test(appealHeaderDecision),'administrator decision remains before copy in the same right-side header row');
+assert(/<span id="requestHeaderMarketplace"><\/span>[\s\S]*?<button value="cancel" class="dialog-close">×<\/button>/.test(appealDialog),'marketplace button precedes close in the appeal header');
+assert(read('styles.css').includes('.appeal-header-decision,.appeal-header-actions{display:flex;align-items:center;gap:8px}')&&read('styles.css').includes('#requestHeaderMarketplace{display:inline-flex;flex:0 0 auto;margin-left:31px}'),'header layout preserves 39px after copy and keeps close adjacent');
 assert(index.includes('data-column-key="decision_justification">Сценарій</th>'),'scenario header and stable preference key must be preserved');
 const requestsTable=index.match(/<table class="supplier-table requests-table">[\s\S]*?<\/table>/)?.[0];assert(requestsTable,'appeals table markup missing');
 const reportLoader=fragment('async function loadViolationReports(', '\nconst internalDecisionLabels=');
@@ -75,9 +82,9 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
  await context.route('https://my.zakupivli.pro/**',route=>route.fulfill({status:200,contentType:'text/html',body:'<title>Fixture complaint</title>'}));
  try{
   const page=await context.newPage({viewport:{width:390,height:844}});
-  await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('modules.css')}\n${read('theme.css')}</style></head><body><main id="requestsView"><button id="refreshScenarioList">Оновити список</button><div class="supplier-table-scroll">${requestsTable}</div><section id="cardLayoutFixture" class="request-details-dialog-wide"><div class="violation-top-row"><div><div class="violation-party-heading"><h3>Постачальник <span class="violation-thresholds">0/3 · 0/5</span></h3><button class="violation-card-declension">Відмінювання</button></div></div><div></div><div><h3 class="violation-platform-heading">Закупівля · Договір · Звернення</h3></div></div></section></main>${dialog}<script>
+  await page.setContent(`<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${read('styles.css')}\n${read('modules.css')}\n${read('theme.css')}</style></head><body><main id="requestsView"><button id="refreshScenarioList">Оновити список</button><div class="supplier-table-scroll">${requestsTable}</div><section id="cardLayoutFixture" class="request-details-dialog-wide"><div class="violation-top-row"><div><div class="violation-party-heading"><h3>Постачальник <span class="violation-thresholds">0/3 · 0/5</span></h3><button class="violation-card-declension">Відмінювання</button></div></div><div></div><div><h3 class="violation-platform-heading">Закупівля · Договір · Звернення</h3></div></div></section></main>${appealDialog}${dialog}<script>
     const $=selector=>document.querySelector(selector),esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    let violationReports=${JSON.stringify(saved)};let cardOpens=0,writeCalls=0,cardContextFetches=0,listRefreshes=0;
+    let violationReports=${JSON.stringify(saved)};let cardOpens=0,writeCalls=0,cardContextFetches=0,listRefreshes=0;window.copiedText='';const copyText=value=>{window.copiedText=String(value)};
     const localScenarioCache=new Map();
     function openViolationReport(index){cardOpens++;window.lastOpened=index;cardContextFetches++;localScenarioCache.set(violationReports[index].id,violationReports[index].scenario_summary)}
   </script><script>${helpers}</script><script>${statusLinkHelpers}</script><script>
@@ -112,7 +119,22 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
    assert(marketplace.legal.includes('Звернення щодо постачальника на Zakupivli.Pro'),'icon tooltip identifies supplier-filtered marketplace results');
    assert(marketplace.legal.includes('target="_blank"')&&marketplace.legal.includes('rel="noopener noreferrer"'),'platform link opens separately without exposing opener context');
    assert(marketplace.legal.includes('/assets/zakupivli-pro-mark.svg'),'existing Zakupivli.Pro mark is reused');
-   await page.locator('#cardLayoutFixture .violation-platform-heading').evaluate((el,html)=>el.insertAdjacentHTML('beforeend',html),marketplace.legal);
+   assert.equal(await page.locator('#cardLayoutFixture .violation-platform-heading .violation-zakupivli-link').count(),0,'marketplace button is not duplicated in the card');
+   await page.evaluate(()=>bindAppealHeader({defendant_code:'43012009',review:{internal_decision:'warning',decision_justification:'Copied appeal justification'}}));
+   await page.locator('#requestDetailsDialog').evaluate(el=>el.showModal());
+   await page.setViewportSize({width:1440,height:900});
+   await page.locator('#requestCopyJustification').click();
+   assert.equal(await page.evaluate(()=>window.copiedText),'Copied appeal justification','header copy control still copies the saved justification');
+   const titleLayout=await page.evaluate(()=>{const title=document.querySelector('#requestDetailsTitle'),subtitle=document.querySelector('#requestDetailsSubtitle');title.textContent='UA-D-2026-11-03-000002';subtitle.textContent='03.11.2026, 13:23 · Задоволено';const h=title.getBoundingClientRect(),p=subtitle.getBoundingClientRect();return{titleTop:h.top,titleBottom:h.bottom,subtitleTop:p.top,subtitleHeight:p.height}});
+   assert(titleLayout.subtitleTop>=titleLayout.titleBottom-1&&titleLayout.subtitleHeight<24,'appeal identifier and date/time/status stay on two text rows');
+   const actionRows=await page.evaluate(()=>['#requestHeaderDecision','#requestCopyJustification','#requestHeaderMarketplace a','#requestDetailsDialog .dialog-close'].map(selector=>{const rect=document.querySelector(selector).getBoundingClientRect();return rect.top+rect.height/2}));
+   assert(Math.max(...actionRows)-Math.min(...actionRows)<=1,'decision, copy, marketplace, and close share one vertically aligned header row');
+   const headerGaps=await page.evaluate(()=>{const copy=document.querySelector('#requestCopyJustification').getBoundingClientRect(),link=document.querySelector('#requestHeaderMarketplace a').getBoundingClientRect(),close=document.querySelector('#requestDetailsDialog .dialog-close').getBoundingClientRect();return{copyToLink:link.left-copy.right,linkToClose:close.left-link.right}});
+   assert(Math.abs(headerGaps.copyToLink-39)<=1,'copy-to-marketplace gap is 39px: '+headerGaps.copyToLink);
+   assert(Math.abs(headerGaps.linkToClose-8)<=1,'marketplace link is followed by the close button: '+headerGaps.linkToClose);
+   await page.locator('#requestDetailsDialog .dialog-close').click();
+   assert.equal(await page.locator('#requestDetailsDialog').evaluate(el=>el.open),false,'close control still closes the appeal dialog');
+   await page.setViewportSize({width:390,height:844});
    assert.equal(marketplace.status,'Відхилено',`${theme}: declinedNoViolation gets the agreed Ukrainian label`);
    assert.equal(marketplace.statusClass,'declined',`${theme}: technical declined status keeps the existing declined color class`);
    assert.equal(marketplace.unknown,'futureUnknownStatus',`${theme}: unknown status remains visible as received`);
@@ -182,10 +204,13 @@ assert.deepEqual(Array.from(vm.runInContext('effectiveOrder({},'+JSON.stringify(
    await page.locator('tr[data-request-index="0"] td').nth(0).click();
    assert.equal(await page.evaluate(()=>window.lastOpened),0,`${theme}: one ordinary row click opens the appeal`);
   }
-  const [platformTab]=await Promise.all([page.waitForEvent('popup'),page.locator('#cardLayoutFixture .violation-zakupivli-link').last().click()]);
+  await page.evaluate(()=>bindAppealHeader({defendant_code:'43012009',review:{internal_decision:'warning',decision_justification:'Copied appeal justification'}}));
+  await page.locator('#requestDetailsDialog').evaluate(el=>el.showModal());
+  const [platformTab]=await Promise.all([page.waitForEvent('popup'),page.locator('#requestHeaderMarketplace .violation-zakupivli-link').click()]);
   await platformTab.waitForLoadState('domcontentloaded');
   assert.equal(platformTab.url(),'https://my.zakupivli.pro/cabinet/ecatalog/gov/complaints/list?defendant_srn=43012009','one click opens supplier-filtered marketplace complaints in a separate tab');
   await platformTab.close();
+  await page.locator('#requestDetailsDialog .dialog-close').click();
   assert.equal(await page.evaluate(()=>cardOpens),2,'only ordinary row clicks open cards; eye clicks do not bubble into card opening');
   assert.equal(await page.evaluate(()=>writeCalls),0,'viewer does not initiate writes or regeneration');
   await page.locator('#refreshScenarioList').click();

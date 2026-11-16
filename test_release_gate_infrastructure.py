@@ -41,14 +41,17 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         historical_v4 = "test_google_writer_append_continuation_integrity_v4"
         historical_apply_v5 = "test_google_writer_apply_result_integrity_v5"
         historical_apply_v6 = "test_google_writer_apply_result_integrity_v6"
-        previous_overlay = "test_google_writer_apply_result_integrity_v7"
+        previous_apply_overlay = "test_google_writer_apply_result_integrity_v7"
         historical_apply_v9 = "test_google_writer_apply_result_integrity_v9"
         historical_continuation_v5 = "test_google_writer_append_continuation_integrity_v5"
         historical_apply_v10 = "test_google_writer_apply_result_integrity_v10"
         integrated_v1 = "test_google_writer_integrated_candidate_integrity_v1"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v2"
+        previous_overlay = "test_google_writer_integrated_candidate_integrity_v2"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v3"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
+        integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
+        integrated_v2_snapshot = "0d7e05984fb9b1fc7276b4cc1d8176dec383ef08"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
 
         self.assertIn("node --test", workflow)
@@ -74,25 +77,30 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("git archive 926ae60ff3412a9c236c903b70623881459d871c", workflow)
         self.assertIn("git archive b988f140af37c45bd5461735cf40d18cd00d741a", workflow)
         self.assertIn("git archive 9b38a258c0d279f33541dac6e95d12d3057a9b70", workflow)
-        self.assertIn(previous_overlay, workflow)
+        self.assertIn(previous_apply_overlay, workflow)
         self.assertIn(historical_apply_v9, workflow)
         self.assertIn(historical_continuation_v5, workflow)
         self.assertIn(historical_apply_v10, workflow)
         self.assertIn(integrated_v1_runner, workflow)
+        self.assertIn(integrated_v2_runner, workflow)
         self.assertIn("PQM_INTEGRATED_V1_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v1_3eda816.zip", workflow)
+        self.assertIn("PQM_INTEGRATED_V2_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip", workflow)
         self.assertIn(current_overlay, workflow)
+        self.assertNotIn(previous_overlay, workflow)
         self.assertNotIn(direct_historical_test, workflow)
         self.assertLess(workflow.index(c246_runner), workflow.index(historical_runner))
         self.assertLess(workflow.index(historical_apply_v5), workflow.index(historical_runner))
         self.assertLess(workflow.index(historical_runner), workflow.index(historical_apply_v6))
-        self.assertLess(workflow.index(historical_apply_v6), workflow.index(previous_overlay))
+        self.assertLess(workflow.index(historical_apply_v6), workflow.index(previous_apply_overlay))
         self.assertIn("test_google_writer_apply_result_integrity_v8)", workflow)
-        self.assertLess(workflow.index(previous_overlay), workflow.index("test_google_writer_apply_result_integrity_v8)"))
+        self.assertLess(workflow.index(previous_apply_overlay), workflow.index("test_google_writer_apply_result_integrity_v8)"))
         self.assertLess(workflow.index("test_google_writer_apply_result_integrity_v8)"), workflow.index(historical_apply_v9))
         self.assertLess(workflow.index(historical_apply_v9), workflow.index(historical_continuation_v5))
         self.assertLess(workflow.index(historical_continuation_v5), workflow.index(historical_apply_v10))
-        self.assertLess(workflow.index(historical_apply_v10), workflow.index(current_overlay))
-        self.assertLess(workflow.index(integrated_v1_runner), workflow.index(current_overlay))
+        self.assertLess(workflow.index(historical_apply_v10), workflow.index(integrated_v1_runner))
+        self.assertLess(workflow.index(integrated_v1_runner), workflow.index(integrated_v2_runner))
+        self.assertLess(workflow.index(integrated_v2_runner), workflow.index(current_overlay))
+        self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
         self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
 
         snapshot_route = workflow.split('writer_v5_v10_snapshot=', 1)[1].split(integrated_v1_runner, 1)[0]
@@ -106,10 +114,15 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
 
         runner = (ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
         integrated_history_runner = (ROOT / integrated_v1_runner).read_text(encoding="utf-8")
+        integrated_v2_history_runner = (ROOT / integrated_v2_runner).read_text(encoding="utf-8")
         self.assertIn(integrated_v1_snapshot, integrated_history_runner)
         self.assertIn("git', 'archive', '--format=zip'", integrated_history_runner)
         self.assertIn(integrated_v1, integrated_history_runner)
         self.assertIn("ARCHIVE_RELATIVE = Path('validation/fixtures/pqm_sync_ui_integrated_v1_3eda816.zip')", integrated_history_runner)
+        self.assertIn(integrated_v2_snapshot, integrated_v2_history_runner)
+        self.assertIn("'git', 'archive', '--format=zip'", integrated_v2_history_runner)
+        self.assertIn("test_google_writer_integrated_candidate_integrity_v2", integrated_v2_history_runner)
+        self.assertIn("ARCHIVE_RELATIVE = Path('validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip')", integrated_v2_history_runner)
         self.assertIn("'test_legacy_reconciliation_evidence_v2_integrity'", runner)
         self.assertIn("c246 contracts are run by the mandatory workflow snapshot step", runner)
         self.assertNotIn("run_c246_historical_integrity_snapshots_v1.py", runner)
@@ -133,8 +146,11 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("'test_google_writer_apply_result_integrity_v9'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v10'", exact_modules)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v2", runner)
+        self.assertIn("test_google_writer_integrated_candidate_integrity_v3", runner)
         self.assertIn("run_integrated_writer_ui_v1_history.py", runner)
+        self.assertIn("run_integrated_writer_ui_v2_history.py", runner)
         self.assertIn("pqm_sync_ui_integrated_v1_3eda816.zip", runner)
+        self.assertIn("pqm_sync_ui_integrated_v2_0d7e059.zip", runner)
         self.assertNotIn("'test_google_writer_update_append_v2_integrity'", exact_modules)
         self.assertNotIn("'test_google_writer_update_append_v3_integrity'", exact_modules)
         self.assertNotIn("'test_google_writer_apply_result_diagnostic'", exact_modules)

@@ -667,9 +667,10 @@ html[data-theme] #referenceAmcu tbody tr.amcu-our-supplier .registry-flag.suppli
 .registry-secondary-label{display:block;margin-top:3px;color:var(--muted);font-size:.8em;font-weight:normal}
 #requestDetailsDialog>form>header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
 .appeal-header-decision,.appeal-header-actions{display:flex;align-items:center;gap:8px}
-.appeal-header-tools{display:flex;align-items:center;justify-content:flex-end;gap:39px;min-width:0}
+.appeal-header-tools{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}
 .appeal-header-actions{flex:none}
 .appeal-header-decision .icon-button{flex:none}
+#requestHeaderMarketplace{display:inline-flex;flex:0 0 auto;margin-left:31px}
 .appeal-header-actions .dialog-close{position:static}
 #requestHeaderDecision{padding:4px 9px;border-radius:8px;background:var(--line)}
 #requestHeaderDecision[data-decision="warning"]{color:var(--success,#237844);border:1px solid currentColor}
