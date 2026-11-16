@@ -231,7 +231,7 @@ class PermanentSyncSafetyTests(unittest.TestCase):
                 finally:
                     con.close()
 
-    def test_gjkm_clear_is_blocked_for_older_equal_day_only_or_invalid_timestamp(self):
+    def test_confirmed_gjkm_blanks_clear_independently_of_verification_timestamp(self):
         cases = [
             ("19.09.2026 12:00:00", "older"),
             ("20.09.2026 12:00:00", "equal"),
@@ -247,17 +247,14 @@ class PermanentSyncSafetyTests(unittest.TestCase):
                     source = snapshot(row(checked=checked, officer="Officer B", manager="",
                                           date_only=(label == "date_only")))
                     plan = sync.build_preview(con, source)
-                    self.assertTrue(any(x["field"] in {"termination_decision_details", "edr_notes"}
-                                        and x["action"] == "blocked"
-                                        for x in plan["items"][0]["mirror_field_changes"]))
-                    self.assertTrue(plan["conflicts"])
-                    before = con.total_changes
-                    with self.assertRaises(ValueError):
-                        sync.apply(con, source, source["source_fingerprint"], confirmed=True,
-                            actor="audit", synced_at="2026-09-25T12:00:00")
-                    self.assertEqual(con.total_changes, before)
+                    self.assertEqual(set(plan["items"][0]["mirror_clear_fields"]),
+                                     {"termination_decision_details", "edr_notes"})
+                    result = sync.apply(con, source, source["source_fingerprint"], confirmed=True,
+                        actor="audit", synced_at="2026-09-25T12:00:00")
                     self.assertEqual(tuple(con.execute("SELECT termination_decision_details,edr_notes FROM supplier_edr_profiles").fetchone()),
-                                     ("Old G", "Old M"))
+                                     ("", ""))
+                    self.assertEqual(result["google_mirror_clears"], 2)
+                    self.assertEqual(current(con), ("2026-09-20", "Officer A"))
                 finally:
                     con.close()
 
@@ -283,11 +280,11 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         source = snapshot(row(checked="", officer="", manager=""))
         source["rows"][0]["Примітки"] = "New M"
         preview = sync.build_preview(self.con, source)
-        self.assertIn("verification_date_required", preview["conflicts"][0]["reasons"])
-        with self.assertRaises(ValueError):
-            sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
-                       actor="audit", synced_at="2026-09-25T12:00:00")
-        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "Confirmed note")
+        self.assertTrue(preview["items"][0]["independent_mirror_only"])
+        self.assertIn("edr_notes", preview["items"][0]["changed_fields"])
+        sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                   actor="audit", synced_at="2026-09-25T12:00:00")
+        self.assertEqual(self.con.execute("SELECT edr_notes FROM supplier_edr_profiles").fetchone()[0], "New M")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
 
     def test_same_day_later_verified_manager_timestamp_is_accepted(self):
@@ -381,15 +378,20 @@ class PermanentSyncSafetyTests(unittest.TestCase):
 
     def test_malformed_google_record_date_cannot_look_like_intentional_clear(self):
         profile(self.con)
-        self.con.execute("UPDATE supplier_edr_profiles SET termination_record_date='2026-08-01'")
+        self.con.execute("UPDATE supplier_edr_profiles SET termination_record_date='2026-08-01',termination_decision_details='Old G'")
         source = snapshot(row(checked="20.09.2026", officer="Officer A", manager=""))
         source["rows"][0]["Дата запису"] = "not-a-date"
         preview = sync.build_preview(self.con, source)
         self.assertIn("malformed_termination_record_date", preview["conflicts"][0]["reasons"])
+        google_g = next(change for change in preview["items"][0]["mirror_field_changes"]
+                        if change["field"] == "termination_decision_details")
+        self.assertEqual(google_g["action"], "blocked")
+        self.assertEqual(google_g["reason"], "incomplete_or_invalid_mirror_source")
         with self.assertRaises(ValueError):
             sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
                        actor="audit", synced_at="2026-09-25T12:00:00")
-        self.assertEqual(self.con.execute("SELECT termination_record_date FROM supplier_edr_profiles").fetchone()[0], "2026-08-01")
+        self.assertEqual(tuple(self.con.execute("SELECT termination_decision_details,termination_record_date FROM supplier_edr_profiles").fetchone()),
+                         ("Old G", "2026-08-01"))
 
     def test_older_name_and_manager_do_not_replace_newer_profile(self):
         profile(self.con)

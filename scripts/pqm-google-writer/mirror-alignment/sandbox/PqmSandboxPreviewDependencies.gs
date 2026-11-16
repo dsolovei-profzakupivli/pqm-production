@@ -222,6 +222,32 @@ function pqmGooglePlan_(body, tabs, options) {
     // Append is a distinct operation: existing identities are never updated,
     // even when their I is blank. Duplicate/routing checks above still apply.
     if (found && options.appendOnly === true) { count('unchanged'); return; }
+    function planIndependentProzorroStatus() {
+      // Column F is owned by PQM. A date gate may preserve D/E/I/L, but it
+      // must not suppress an independently valid status reconciliation.
+      if (!found) return false;
+      var value = x.prozorro_status_google;
+      if (pqmGoogleBlank_(value)) return false;
+      var proposed = pqmGoogleProzorroCategory_(value);
+      var current = pqmGoogleProzorroCategory_(found.data.values[5]);
+      if (!proposed || current === null) {
+        count('conflicts'); conflict('unknown_prozorro_status', key, name); return true;
+      }
+      if (proposed === current) return false;
+      if (tabs[name].merges.some(function(r) {
+        return (r.startRowIndex || 0) <= found.row - 1 && r.endRowIndex >= found.row &&
+          PQM_GOOGLE_OWNED.some(function(c) { return c >= (r.startColumnIndex || 0) && c < r.endColumnIndex; });
+      })) { count('conflicts'); conflict('merged_owned_cell', key, name); return true; }
+      if (PQM_GOOGLE_OWNED.some(function(c) { return !!found.data.formulas[c]; })) {
+        count('conflicts'); conflict('formula_in_owned_cell', key, name); return true;
+      }
+      if (pqmGoogleProtected_(tabs[name], found.row, [5])) {
+        count('conflicts'); conflict('protected_owned_cell', key, name); return true;
+      }
+      changes.push({tab: name, row: found.row, append: false, cells: {5: value}});
+      count('updated');
+      return true;
+    }
     var verificationValue = x.verification_date;
     if (!found && x.verification_datetime_precision === 'day')
       gaps.push({tab:name, supplier_code:key, reason:'calendar_only_append_without_I_L'});
@@ -229,11 +255,13 @@ function pqmGooglePlan_(body, tabs, options) {
       var checkedPqm = pqmVerificationDatetime_(verificationValue);
       var checkedGoogle = pqmVerificationDatetime_(found.data.values[8]);
       if (checkedPqm.kind === 'invalid') {
-        count('conflicts'); conflict('invalid_pqm_verification_date', key, name); return;
+        count('conflicts'); conflict('invalid_pqm_verification_date', key, name);
+        planIndependentProzorroStatus(); return;
       }
       if (checkedGoogle.kind === 'invalid') {
         count('conflicts'); conflict(checkedGoogle.kind === 'blank' ?
-          'missing_google_verification_date' : 'invalid_google_verification_date', key, name); return;
+          'missing_google_verification_date' : 'invalid_google_verification_date', key, name);
+        planIndependentProzorroStatus(); return;
       }
       if (checkedPqm.kind === 'blank' || (checkedGoogle.kind === 'datetime' && checkedPqm.value <= checkedGoogle.value)) {
         if (checkedPqm.kind === 'blank') count('pqm_blank_google_preserved');
@@ -241,8 +269,10 @@ function pqmGooglePlan_(body, tabs, options) {
         else if (pqmGoogleOfficerComparable_(x.verification_officer) !== pqmGoogleOfficerComparable_(found.data.values[11]))
           count('same_date_google_officer_preserved');
         else count('same_date_equivalent');
-        count('unchanged'); issue(checkedPqm.kind === 'blank' ?
-          'missing_pqm_verification_date' : 'verification_date_not_newer', key, name); return;
+        issue(checkedPqm.kind === 'blank' ?
+          'missing_pqm_verification_date' : 'verification_date_not_newer', key, name);
+        if (!planIndependentProzorroStatus()) count('unchanged');
+        return;
       }
     }
     if (found && tabs[name].merges.some(function(r) {
@@ -272,7 +302,8 @@ function pqmGooglePlan_(body, tabs, options) {
       7: x.google_sync_last_decided_application_date};
     var pqmOfficer = x.verification_officer;
     if (pqmVerificationDatetime_(verificationValue).kind === 'datetime' && pqmGoogleBlank_(pqmOfficer)) {
-      count('conflicts'); conflict('missing_verification_officer', key, name); return;
+      count('conflicts'); conflict('missing_verification_officer', key, name);
+      planIndependentProzorroStatus(); return;
     }
     // All owned fields use the same full verification-instant gate.
     var cells = {};
@@ -326,7 +357,15 @@ function pqmGooglePlan_(body, tabs, options) {
     if (pqmGoogleProtected_(tabs[name], plannedRow, Object.keys(cells).map(Number))) {
       count('conflicts'); conflict('protected_owned_cell', key, name); return;
     }
-    if (invalidField) return; // Never expose a partially valid row as an Apply plan.
+    if (invalidField) {
+      // E/H validation errors keep their conflict visible, but must not erase a
+      // separate, valid F-only update for an existing supplier.
+      if (found && Object.prototype.hasOwnProperty.call(cells, '5')) {
+        changes.push({tab: name, row: found.row, append: false, cells: {5: cells[5]}});
+        count('updated');
+      }
+      return;
+    } // Never expose a partially valid row as an Apply plan.
     if (found) count('pqm_newer_written');
     else if (Object.prototype.hasOwnProperty.call(cells, '8')) count('google_blank_filled');
     if (!found || Object.keys(cells).length) {
@@ -614,4 +653,3 @@ function pqmGoogleTranslatedAppendFormula_(formula, template, target) {
     return ref.slice(0, ref.length - row.length) + String(Number(row) + target - template);
   });
 }
-

@@ -331,6 +331,155 @@ test('Google and PQM whitespace variants are conflicts, never normalized into on
   assert.equal(plan.issues[0].reason, 'identifier_text_conflict');
 });
 
+test('PQM-owned F status is reconciled independently of blank, equal, older, or newer dates', () => {
+  const cases = [
+    {label: 'missing PQM date', pqmDate: '', googleDate: '2026-10-10'},
+    {label: 'older PQM date', pqmDate: '2026-10-09T13:04:05+03:00', googleDate: '2026-10-10T13:04:05+03:00'},
+    {label: 'equal date', pqmDate: '2026-10-10T13:04:05+03:00', googleDate: '2026-10-10T13:04:05+03:00'},
+    {label: 'newer PQM date', pqmDate: '2026-10-11T13:04:05+03:00', googleDate: '2026-10-10T13:04:05+03:00'}
+  ];
+  for (const item of cases) {
+    const googleValues = Array(15).fill('');
+    Object.assign(googleValues, {1: '12345678', 2: 'ТОВ Контроль', 3: 'Керівник А',
+      4: 'Зареєстровано', 5: 'Неактивний', 7: fnum('2026-10-10'),
+      8: item.googleDate ? fnum(item.googleDate) : '', 11: 'УО'});
+    const pqmItem = makeItem({google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
+      google_sync_last_decided_application_decision: 'admit', prozorro_status_google: 'Активний', verification_date: item.pqmDate,
+      verification_datetime_precision: item.pqmDate ? 'second' : '', verification_officer: 'УО'});
+    const f = setup(pqmItem, {code: '12345678', values: googleValues});
+    const plan = f.context.pqmGooglePlan_(f.body, f.tabs);
+    assert.equal(plan.changes.length, 1, item.label);
+    assert.equal(plan.changes[0].cells[5], 'Активний', item.label);
+    if (item.label !== 'newer PQM date') assert.equal(plan.changes[0].cells[8], undefined, item.label);
+  }
+});
+
+test('Sandbox deployed fallback reconciles F even when its I date gate preserves or rejects the verification group', () => {
+  const sandboxFallback = fs.readFileSync(path.join(__dirname,
+    'mirror-alignment/sandbox/PqmSandboxPreviewDependencies.gs'), 'utf8');
+  const cases = [
+    {label: 'PQM I missing', pqmDate: '', googleDate: fnum('2026-10-10')},
+    {label: 'PQM I older', pqmDate: '2026-10-09T13:04:05+03:00', googleDate: fnum('2026-10-10T13:04:05+03:00')},
+    {label: 'I dates equal', pqmDate: '2026-10-10T13:04:05+03:00', googleDate: fnum('2026-10-10T13:04:05+03:00')},
+    {label: 'PQM I newer', pqmDate: '2026-10-11T13:04:05+03:00', googleDate: fnum('2026-10-10T13:04:05+03:00'), iWritten: true},
+    {label: 'PQM I invalid', pqmDate: 'not-a-date', googleDate: fnum('2026-10-10T13:04:05+03:00'), blocked: true, fOnly: true},
+    {label: 'Google I invalid', pqmDate: '2026-10-11T13:04:05+03:00', googleDate: 'not-a-date', blocked: true, fOnly: true},
+    {label: 'missing UO blocks a newer I group', pqmDate: '2026-10-11T13:04:05+03:00',
+      googleDate: fnum('2026-10-10T13:04:05+03:00'), blocked: true, fOnly: true, officer: ''},
+    {label: 'unknown PQM EDR value blocks the E update', pqmDate: '2026-10-11T13:04:05+03:00',
+      googleDate: fnum('2026-10-10T13:04:05+03:00'), blocked: true, fOnly: true, edr: 'unverified'},
+    {label: 'invalid PQM H blocks the H update', pqmDate: '2026-10-11T13:04:05+03:00',
+      googleDate: fnum('2026-10-10T13:04:05+03:00'), error: true, fOnly: true,
+      applicationDate: 'not-a-date'}
+  ];
+  for (const item of cases) {
+    const values = Array(15).fill('');
+    Object.assign(values, {1: '12345678', 2: 'ТОВ Контроль', 3: 'Керівник А',
+      4: 'Зареєстровано', 5: 'Неактивний', 7: fnum('2026-10-10'), 8: item.googleDate, 11: 'УО'});
+    const f = setup(makeItem({google_sync_eligible: true, google_sync_has_active_qualification: true,
+      google_sync_has_admission_history: true, google_sync_last_decided_application_decision: 'admit',
+      prozorro_status_google: 'Активний', verification_date: item.pqmDate,
+      verification_datetime_precision: item.pqmDate ? 'second' : '',
+      verification_officer: Object.hasOwn(item, 'officer') ? item.officer : 'УО',
+      edr_status_current: item.edr || 'Зареєстровано',
+      google_sync_last_decided_application_date: item.applicationDate || '2026-10-10'}),
+    {code: '12345678', values});
+    vm.runInContext(sandboxFallback, f.context);
+    const plan = f.context.pqmGooglePlan_(f.body, f.tabs);
+    assert.equal(plan.changes.length, 1, item.label);
+    assert.equal(plan.changes[0].cells[5], 'Активний', item.label);
+    if (!item.iWritten) {
+      assert.equal(plan.changes[0].cells[8], undefined, item.label);
+      assert.deepEqual(Object.keys(plan.changes[0].cells), ['5'], item.label);
+    }
+    if (item.fOnly) assert.deepEqual(Object.keys(plan.changes[0].cells), ['5'], item.label);
+    assert.equal(plan.counts.conflicts > 0, !!item.blocked, item.label);
+    assert.equal(plan.counts.errors > 0, !!item.error, item.label);
+  }
+
+  const protectedValues = Array(15).fill('');
+  Object.assign(protectedValues, {1: '12345678', 2: 'ТОВ Контроль', 4: 'Зареєстровано',
+    5: 'Неактивний', 7: fnum('2026-10-10'), 8: fnum('2026-10-10'), 11: 'УО'});
+  const protectedFixture = setup(makeItem({google_sync_eligible: true,
+    google_sync_last_decided_application_decision: 'admit', prozorro_status_google: 'Активний',
+    verification_date: '', verification_officer: ''}), {code: '12345678', values: protectedValues});
+  vm.runInContext(sandboxFallback, protectedFixture.context);
+  protectedFixture.tabs['ЮО'].protectedRanges = [{range: {startRowIndex: 1, endRowIndex: 2,
+    startColumnIndex: 5, endColumnIndex: 6}}];
+  const protectedPlan = protectedFixture.context.pqmGooglePlan_(protectedFixture.body, protectedFixture.tabs);
+  assert.equal(protectedPlan.changes.length, 0);
+  assert.equal(protectedPlan.counts.conflicts, 1);
+  assert.equal(protectedPlan.conflicts[0].reason, 'protected_owned_cell');
+
+  const equalValues = Array(15).fill('');
+  Object.assign(equalValues, {1: '12345678', 2: 'ТОВ Контроль', 4: 'Зареєстровано',
+    5: '✅ Активний', 7: fnum('2026-10-10'), 8: '', 11: 'УО'});
+  const equalFixture = setup(makeItem({google_sync_eligible: true,
+    google_sync_last_decided_application_decision: 'admit', prozorro_status_google: 'Активний',
+    verification_date: ''}), {code: '12345678', values: equalValues});
+  vm.runInContext(sandboxFallback, equalFixture.context);
+  const equalPlan = equalFixture.context.pqmGooglePlan_(equalFixture.body, equalFixture.tabs);
+  assert.equal(equalPlan.changes.length, 0);
+  assert.equal(equalPlan.counts.unchanged, 1);
+
+  const unknownFixture = setup(makeItem({google_sync_eligible: true,
+    google_sync_last_decided_application_decision: 'admit', prozorro_status_google: 'невідомо',
+    verification_date: ''}), {code: '12345678', values: protectedValues});
+  vm.runInContext(sandboxFallback, unknownFixture.context);
+  const unknownPlan = unknownFixture.context.pqmGooglePlan_(unknownFixture.body, unknownFixture.tabs);
+  assert.equal(unknownPlan.changes.length, 0);
+  assert.equal(unknownPlan.counts.conflicts, 1);
+  assert.equal(unknownPlan.conflicts[0].reason, 'unknown_prozorro_status');
+});
+
+test('equal PQM and Google F values do not write F, and missing decision evidence never writes F', () => {
+  const googleValues = Array(15).fill('');
+  Object.assign(googleValues, {1: '12345678', 2: 'ТОВ Контроль', 3: 'Керівник А',
+    4: 'Зареєстровано', 5: 'Активний', 7: fnum('2026-10-10'), 8: fnum('2026-10-10'), 11: 'УО'});
+  const same = setup(makeItem({google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
+    google_sync_last_decided_application_decision: 'admit', prozorro_status_google: 'Активний', verification_date: ''}),
+    {code: '12345678', values: googleValues});
+  const samePlan = same.context.pqmGooglePlan_(same.body, same.tabs);
+  assert.equal(samePlan.changes.length, 0);
+  assert.equal(samePlan.counts.unchanged, 1);
+
+  const unknown = setup(makeItem({google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
+    google_sync_last_decided_application_decision: '', prozorro_status_google: 'невідомий статус', verification_date: ''}),
+    {code: '12345678', values: googleValues});
+  const unknownPlan = unknown.context.pqmGooglePlan_(unknown.body, unknown.tabs);
+  assert.equal(unknownPlan.changes.length, 0);
+  assert.equal(unknownPlan.counts.conflicts, 1);
+});
+
+test('Writer never plans PQM values into Google-owned G/J/K/M columns', () => {
+  const googleValues = Array(15).fill('');
+  Object.assign(googleValues, {1: '12345678', 2: 'ТОВ Контроль', 3: 'Керівник А',
+    4: 'Зареєстровано', 5: 'Активний', 6: 'Google G', 7: fnum('2026-10-10'),
+    8: '', 9: '2026-01-01', 10: 'Google K', 11: 'УО', 12: 'Google M'});
+  const item = makeItem({google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
+    google_sync_last_decided_application_decision: 'admit', prozorro_status_google: 'Активний',
+    verification_date: '', termination_decision_details: 'PQM G', termination_record_date: '2026-02-02',
+    termination_record_number: 'PQM K', edr_notes: 'PQM M'});
+  const f = setup(item, {code: '12345678', values: googleValues});
+  const plan = f.context.pqmGooglePlan_(f.body, f.tabs);
+  assert.ok(plan.changes.every(change => [6, 9, 10, 12].every(column =>
+    !Object.hasOwn(change.cells, column))));
+});
+
+test('protected F cell remains blocked even when its status differs from PQM', () => {
+  const googleValues = Array(15).fill('');
+  Object.assign(googleValues, {1: '12345678', 2: 'ТОВ Контроль', 3: 'Керівник А',
+    4: 'Зареєстровано', 5: 'Неактивний', 7: fnum('2026-10-10'), 8: '', 11: 'УО'});
+  const f = setup(makeItem({google_sync_has_active_qualification: true, google_sync_has_admission_history: true,
+    google_sync_last_decided_application_decision: 'admit', prozorro_status_google: 'Активний', verification_date: ''}),
+    {code: '12345678', values: googleValues});
+  f.context.pqmGoogleProtected_ = (_tabs, _row, columns) => columns.includes(5);
+  const plan = f.context.pqmGooglePlan_(f.body, f.tabs);
+  assert.equal(plan.changes.length, 0);
+  assert.equal(plan.counts.conflicts, 1);
+  assert.equal(plan.issues[0].reason, 'protected_owned_cell');
+});
+
 function fnum(value) {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return Date.parse(value + 'T00:00:00Z') / 86400000 + 25569;

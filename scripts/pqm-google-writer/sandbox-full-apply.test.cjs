@@ -530,7 +530,7 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
       daytime: {i: '2026-06-05', l: 'Officer A'}, final: ['2026-09-25', 'Officer B']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
       startingGjkm: ['Old G', '2026-09-20', 'Old K', 'Old M'],
-      // Newer verified Google observations fully mirror G/J/K/M, including clears.
+      // Google owns these values. Nonblank values update PQM; confirmed blanks clear it.
       daytime: {i: '2026-09-21', g: 'Changed G', j: '', k: 'Changed K', m: ''},
       final: ['2026-09-21', 'Officer A']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
@@ -595,8 +595,8 @@ for (const environment of ['prod', 'sandbox']) test(environment + ': eight compl
       assert.deepEqual(evening.gjkm, ['Changed G', '', 'Changed K', '']);
       assert.equal(google.j, '', 'the verified Google J cell is intentionally empty');
       assert.equal(google.m, '', 'the verified Google M cell is intentionally empty');
-      assert.equal(evening.gjkm[1], '', 'newer Google J blank clears PQM');
-      assert.equal(evening.gjkm[3], '', 'newer Google M blank clears PQM');
+      assert.equal(evening.gjkm[1], '', 'confirmed blank Google J clears PQM');
+      assert.equal(evening.gjkm[3], '', 'confirmed blank Google M clears PQM');
     }
     if (index === 7) assert.equal(evening.status, 'Припинено');
     item.verification_date = evening.date; item.verification_officer = evening.officer;

@@ -15,6 +15,24 @@ except ImportError:
 
 
 class SandboxEdrReviewTests(unittest.TestCase):
+    def test_independent_mirrors_remain_reviewable_when_verification_fields_are_date_blocked(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_status,
+          full_name,short_name,edr_checked_at,edr_officer,termination_decision_details,edr_notes,synced_at)
+          VALUES('12345678','СТАРИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
+          '2026-09-15','УО','old G','old M','old')""")
+        values = row(checked='', manager='НОВИЙ КЕРІВНИК', status='Припинено')
+        values[6], values[12] = 'new G', 'new M'
+        preview = sync.build_preview(con, snapshot(values))
+        details = sandbox_edr_review.details(preview)
+        mirrors = {item['field']: item for item in details
+                   if item['field'] in {'termination_decision_details', 'edr_notes'}}
+        self.assertTrue(preview['items'][0]['independent_mirror_only'])
+        self.assertEqual(mirrors['termination_decision_details']['action'], 'update')
+        self.assertEqual(mirrors['termination_decision_details']['planned_pqm_value'], 'new G')
+        self.assertEqual(mirrors['edr_notes']['action'], 'update')
+        self.assertEqual(mirrors['edr_notes']['planned_pqm_value'], 'new M')
+
     def test_google_grid_requires_kyiv_timezone_and_preserves_cell_presence(self):
         class Response:
             def __init__(self, body): self.body = json.dumps(body).encode()
@@ -70,7 +88,7 @@ class SandboxEdrReviewTests(unittest.TestCase):
                              {'PQM_SANDBOX': '1', 'PQM_SANDBOX_EDR_GOOGLE': '0'}):
             self.assertTrue(server.google_integration_status()['enabled'])
 
-    def test_blank_google_owned_values_are_reviewed_as_clears(self):
+    def test_confirmed_blank_google_owned_values_clear_pqm(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
           (supplier_code,full_name,edr_status,edr_checked_at,edr_officer,
@@ -83,14 +101,17 @@ class SandboxEdrReviewTests(unittest.TestCase):
         google[12] = ''
         source = snapshot(google)
         before = con.total_changes
-        preview = sync.build_preview(con, source)
+        preview = sync.build_preview(con, source, sandbox_mode=True)
         details = sandbox_edr_review.details(preview)
         self.assertEqual(con.total_changes, before)
         self.assertEqual(next(x for x in details if x['field'] == 'verification_pair')['action'], 'accept_google_pair')
-        clear_rows = [x for x in details if x['field'] in {'termination_decision_details', 'edr_notes'}]
-        self.assertEqual({x['field'] for x in clear_rows}, {'termination_decision_details', 'edr_notes'})
-        self.assertTrue(all(x['action'] == 'clear' for x in clear_rows))
-        self.assertTrue(all(x['planned_pqm_value'] == '' for x in clear_rows))
+        mirror_rows = [x for x in details if x['field'] in {'termination_decision_details', 'edr_notes'}]
+        self.assertEqual({item['action'] for item in mirror_rows}, {'clear'})
+        result = sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                            actor='admin', synced_at='2026-09-15T18:00:00', sandbox_mode=True)
+        cleared = con.execute("SELECT termination_decision_details,edr_notes FROM supplier_edr_profiles").fetchone()
+        self.assertEqual(tuple(cleared), ('',''))
+        self.assertEqual(result['google_mirror_clears'], 2)
         self.assertEqual(sandbox_edr_review.summary_additions(preview, details)['m_note_clears'], 1)
         self.assertEqual(len(details), len(sandbox_edr_review.details(preview)))
 

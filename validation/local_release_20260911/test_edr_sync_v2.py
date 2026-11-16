@@ -569,19 +569,243 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(again["verification_events"], 0)
         self.assertEqual(again["changed_fields"], {})
 
-    def test_newer_blank_termination_cell_clears_and_archives_previous_value(self):
+    def test_confirmed_blank_google_mirror_values_clear_pqm_values(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,
-          termination_decision_details,edr_officer,synced_at) VALUES
-          ('12345678','Припинено','2026-08-01','Запис № 7','УО','old')""")
-        source = snapshot(row(status="Зареєстровано"))
-        result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin", synced_at="2026-09-15T18:00:00")
-        profile = con.execute("SELECT termination_decision_details FROM supplier_edr_profiles").fetchone()[0]
-        self.assertEqual(profile, "")
+          termination_decision_details,termination_record_date,termination_record_number,edr_notes,
+          edr_officer,manager_name,full_name,short_name,synced_at) VALUES
+          ('12345678','Зареєстровано','2026-08-01','Запис № 7','2026-07-01','N-7','Примітка','УО',
+           'НОВИЙ КЕРІВНИК','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА','old')""")
+        values = row(status="Зареєстровано")
+        values[6] = values[9] = values[10] = values[12] = ''
+        source = snapshot(values)
+        result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin",
+                            synced_at="2026-09-15T18:00:00")
+        profile = con.execute("""SELECT termination_decision_details,termination_record_date,
+          termination_record_number,edr_notes FROM supplier_edr_profiles""").fetchone()
+        self.assertEqual(tuple(profile), ('','','',''))
         self.assertEqual(result["termination_clears"], 1)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='termination_historical'").fetchone()[0], 1)
-        event = con.execute("SELECT snapshot_json FROM supplier_edr_verification_events WHERE event_type='google_mirror_clear'").fetchone()
-        self.assertEqual(json.loads(event[0])["previous_values"]["termination_decision_details"], "Запис № 7")
+        self.assertEqual(result["google_mirror_clears"], 4)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='google_mirror_clear'").fetchone()[0], 1)
+
+    def test_google_owned_gjkm_values_update_independently_of_verification_date(self):
+        date_pairs = [
+            ('newer', '2026-09-15T12:00:00+03:00', '2026-09-14T12:00:00+03:00'),
+            ('equal', '2026-09-15T12:00:00+03:00', '2026-09-15T12:00:00+03:00'),
+            ('older', '2026-09-14T12:00:00+03:00', '2026-09-15T12:00:00+03:00'),
+            ('missing', '', '2026-09-15T12:00:00+03:00'),
+        ]
+        for label, incoming_date, current_date in date_pairs:
+            with self.subTest(date_case=label):
+                con = database()
+                con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_status,
+                  full_name,short_name,edr_checked_at,edr_officer,termination_decision_details,
+                  termination_record_date,termination_record_number,edr_notes,synced_at)
+                  VALUES('12345678','НОВИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
+                  ?,'УО','old G','2026-01-01','old K','old M','old')""", (current_date,))
+                values = row(checked=incoming_date, status='Зареєстровано')
+                values[3] = ''  # do not introduce a manager identity transition in this mirror-only case
+                values[6], values[9], values[10], values[12] = ('new G', '2026-02-02', 'new K', 'new M')
+                source = snapshot(values)
+                preview = sync.build_preview(con, source)
+                plan = preview['items'][0]
+                self.assertEqual(set(plan['changed_fields']), set(sync.INDEPENDENT_GOOGLE_MIRROR_FIELDS))
+                self.assertEqual(plan['row_state'], 'eligible')
+                self.assertFalse(plan['datetime_gate']['accepted']) if label in {'older','missing','equal'} else None
+                result = sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                                    actor='test', synced_at='2026-09-16T12:00:00')
+                actual = con.execute("""SELECT termination_decision_details,termination_record_date,
+                  termination_record_number,edr_notes,manager_name,edr_status,edr_checked_at
+                  FROM supplier_edr_profiles WHERE supplier_code='12345678'""").fetchone()
+                self.assertEqual(tuple(actual[:4]), ('new G','2026-02-02','new K','new M'))
+                expected_date = incoming_date if label == 'newer' else current_date
+                self.assertEqual(tuple(actual[4:]), ('НОВИЙ КЕРІВНИК','Зареєстровано',expected_date or ''))
+                self.assertEqual(result['changed_fields'], {field: 1 for field in sync.INDEPENDENT_GOOGLE_MIRROR_FIELDS})
+
+    def test_confirmed_google_blanks_clear_mirrors_even_without_a_usable_verification_date(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,
+          termination_decision_details,termination_record_date,termination_record_number,edr_notes,synced_at)
+          VALUES('12345678','2026-09-15','old G','2026-08-01','old K','old M','old')""")
+        values = row(checked='')
+        values[6] = values[9] = values[10] = values[12] = ''
+        source = snapshot(values)
+        plan = sync.build_preview(con, source)['items'][0]
+        self.assertEqual(set(plan['mirror_clear_fields']), set(sync.INDEPENDENT_GOOGLE_MIRROR_FIELDS))
+        self.assertFalse(plan['datetime_gate']['accepted'])
+        result = sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                            actor='test', synced_at='2026-09-16T12:00:00')
+        actual = con.execute("""SELECT termination_decision_details,termination_record_date,
+          termination_record_number,edr_notes FROM supplier_edr_profiles""").fetchone()
+        self.assertEqual(tuple(actual), ('','','',''))
+        self.assertEqual(result['google_mirror_clears'], 4)
+        self.assertEqual(result['termination_clears'], 1)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM supplier_edr_verification_events WHERE event_type='google_mirror_clear'").fetchone()[0], 1)
+
+    def test_google_mirror_plan_is_identical_in_sandbox_and_production_modes(self):
+        for sandbox_mode in (False, True):
+            with self.subTest(sandbox_mode=sandbox_mode):
+                con = database()
+                con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,
+                  termination_decision_details,synced_at)
+                  VALUES('12345678','2026-09-15','old G','old')""")
+                values = row(checked='')
+                values[6] = 'new G'
+                source = snapshot(values)
+                plan = sync.build_preview(con, source, sandbox_mode=sandbox_mode)['items'][0]
+                self.assertIn('termination_decision_details', plan['changed_fields'])
+                sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                           actor='test', synced_at='2026-09-16T12:00:00',
+                           sandbox_mode=sandbox_mode)
+                self.assertEqual(con.execute("SELECT termination_decision_details FROM supplier_edr_profiles").fetchone()[0],
+                                 'new G')
+
+    def test_mirror_values_update_when_other_edr_changes_are_blocked_by_missing_date(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_status,
+          full_name,short_name,edr_checked_at,edr_officer,termination_decision_details,edr_notes,synced_at)
+          VALUES('12345678','СТАРИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
+          '2026-09-15','УО','old G','old M','old')""")
+        values = row(checked='', manager='НОВИЙ КЕРІВНИК', status='Припинено')
+        values[6], values[12] = 'new G', 'new M'
+        source = snapshot(values)
+        preview = sync.build_preview(con, source)
+        plan = preview['items'][0]
+        self.assertTrue(plan['independent_mirror_only'])
+        self.assertEqual(plan['row_state'], 'conflict')
+        self.assertEqual(set(plan['changed_fields']), {'termination_decision_details', 'edr_notes'})
+        sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                   actor='test', synced_at='2026-09-16T12:00:00', sandbox_mode=True)
+        actual = con.execute("""SELECT termination_decision_details,edr_notes,manager_name,edr_status
+          FROM supplier_edr_profiles WHERE supplier_code='12345678'""").fetchone()
+        self.assertEqual(tuple(actual), ('new G','new M','СТАРИЙ КЕРІВНИК','Зареєстровано'))
+
+    def test_approved_same_timestamp_conflict_applies_only_google_owned_mirrors(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,edr_officer,
+          termination_decision_details,termination_record_date,termination_record_number,edr_notes,synced_at)
+          VALUES('12345678','Зареєстровано','2026-09-15T12:00:00+03:00','УО','old G','2026-01-01','old K','old M','old')""")
+        values = row(checked='2026-09-15T12:00:00+03:00', status='Припинено', manager='')
+        values[6], values[9], values[10], values[12] = ('new G', '2026-02-02', 'new K', 'new M')
+        source = snapshot(values)
+        plan = sync.build_preview(con, source)['items'][0]
+        self.assertEqual(plan['row_state'], 'conflict')
+        self.assertTrue(plan['independent_mirror_only'])
+        self.assertEqual(plan['conflicts'], ['same_timestamp_verification_conflict'])
+        result = sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                            actor='test', synced_at='2026-09-16T12:00:00')
+        actual = con.execute("""SELECT edr_status,edr_checked_at,edr_officer,termination_decision_details,
+          termination_record_date,termination_record_number,edr_notes FROM supplier_edr_profiles""").fetchone()
+        self.assertEqual(tuple(actual), ('Зареєстровано','2026-09-15T12:00:00+03:00','УО',
+          'new G','2026-02-02','new K','new M'))
+        self.assertEqual(result['verification_events'], 0)
+        self.assertEqual(result['changed_fields'], {field: 1 for field in sync.INDEPENDENT_GOOGLE_MIRROR_FIELDS})
+
+    def test_unapproved_row_conflict_blocks_mirror_updates(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,
+          termination_decision_details,synced_at)
+          VALUES('12345678','Зареєстровано','2026-09-15','old G','old')""")
+        values = row(checked='', manager='')
+        values[6], values[9] = 'new G', 'not-a-date'
+        source = snapshot(values)
+        plan = sync.build_preview(con, source)['items'][0]
+        self.assertEqual(plan['row_state'], 'conflict')
+        self.assertFalse(plan['independent_mirror_only'])
+        self.assertIn('malformed_termination_record_date', plan['conflicts'])
+        sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                   actor='test', synced_at='2026-09-16T12:00:00', sandbox_mode=True)
+        actual = con.execute("SELECT termination_decision_details FROM supplier_edr_profiles").fetchone()[0]
+        self.assertEqual(actual, 'old G')
+
+    def test_equal_google_mirror_values_are_noop(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,edr_officer,
+          termination_decision_details,termination_record_date,termination_record_number,edr_notes,synced_at)
+          VALUES('12345678','2026-09-15','УО','G','2026-01-01','K','M','old')""")
+        values = row(checked='2026-09-15', officer='УО')
+        values[6], values[9], values[10], values[12] = ('G','2026-01-01','K','M')
+        source = snapshot(values)
+        preview = sync.build_preview(con, source)
+        self.assertFalse(set(preview['items'][0]['changed_fields']) & sync.INDEPENDENT_GOOGLE_MIRROR_FIELDS)
+        self.assertEqual(preview['summary']['google_mirror_updates'], 0)
+
+    def test_missing_trailing_google_mirror_columns_are_not_treated_as_blank(self):
+        con = database()
+        con.execute("INSERT INTO supplier_edr_profiles(supplier_code,termination_decision_details,edr_notes,synced_at) VALUES('12345678','keep G','keep M','old')")
+        values = row(checked='', manager='')
+        source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)], 'ЮО': [list(sync.HEADERS), values[:12]]})
+        preview = sync.build_preview(con, source)
+        note = next(change for change in preview['items'][0]['mirror_field_changes'] if change['field']=='edr_notes')
+        self.assertEqual(note['action'], 'blocked')
+        self.assertEqual(note['reason'], 'missing_source_column')
+        google_g = next(change for change in preview['items'][0]['mirror_field_changes']
+                        if change['field']=='termination_decision_details')
+        self.assertEqual(google_g['action'], 'blocked')
+        self.assertEqual(google_g['reason'], 'incomplete_or_invalid_mirror_source')
+        self.assertNotIn('edr_notes', preview['items'][0]['changed_fields'])
+        self.assertNotIn('termination_decision_details', preview['items'][0]['changed_fields'])
+        before = con.total_changes
+        with self.assertRaises(ValueError):
+            sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                       actor='test', synced_at='2026-09-16T12:00:00')
+        self.assertEqual(con.total_changes, before)
+        self.assertEqual(tuple(con.execute("SELECT termination_decision_details,edr_notes FROM supplier_edr_profiles").fetchone()),
+                         ('keep G', 'keep M'))
+
+    def test_available_mirror_columns_apply_when_another_google_column_is_missing(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_status,full_name,
+          short_name,edr_checked_at,edr_officer,termination_decision_details,termination_record_date,
+          termination_record_number,edr_notes,synced_at) VALUES
+          ('12345678','НОВИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
+           '2026-09-15','УО','old G','2025-01-01','old K','keep M','old')""")
+        values = row(checked='')
+        values[6], values[9], values[10] = 'new G', '2026-01-01', 'new K'
+        source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)], 'ЮО': [list(sync.HEADERS), values[:12]]})
+        preview = sync.build_preview(con, source)
+        plan = preview['items'][0]
+        self.assertTrue(plan['independent_mirror_only'])
+        self.assertIn('missing_source_column:Примітки', plan['conflicts'])
+        sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                   actor='test', synced_at='2026-09-16T12:00:00')
+        actual = con.execute("""SELECT termination_decision_details,termination_record_date,
+          termination_record_number,edr_notes FROM supplier_edr_profiles WHERE supplier_code='12345678'""").fetchone()
+        self.assertEqual(tuple(actual), ('new G','2026-01-01','new K','keep M'))
+
+    def test_available_mirror_value_applies_when_verification_date_column_is_unavailable(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,termination_decision_details,synced_at)
+          VALUES('12345678','old G','old')""")
+        values = row(checked='')
+        values[6] = 'new G'
+        source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)], 'ЮО': [list(sync.HEADERS), values[:7]]})
+        preview = sync.build_preview(con, source)
+        plan = preview['items'][0]
+        self.assertTrue(plan['independent_mirror_only'])
+        self.assertIn('missing_source_column:Дата перевірки', plan['conflicts'])
+        sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                   actor='test', synced_at='2026-09-16T12:00:00')
+        self.assertEqual(con.execute("SELECT termination_decision_details FROM supplier_edr_profiles").fetchone()[0], 'new G')
+
+    def test_eligible_supplier_can_receive_mirror_profile_without_verification_date(self):
+        con = database()
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES('s1','12345678','ТОВ','2026-09-01')")
+        con.execute("INSERT INTO qualifications(id,status,submission_id) VALUES('q1','active','s1')")
+        values = row(checked='')
+        values[6], values[9], values[10], values[12] = ('G','2026-01-01','K','M')
+        source = snapshot(values)
+        plan = sync.build_preview(con, source)['items'][0]
+        self.assertTrue(plan['apply_allowed'])
+        self.assertEqual(plan['row_state'], 'conflict')
+        self.assertTrue(plan['independent_mirror_only'])
+        result = sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                            actor='test', synced_at='2026-09-16T12:00:00')
+        actual = con.execute("""SELECT termination_decision_details,termination_record_date,
+          termination_record_number,edr_notes,edr_checked_at FROM supplier_edr_profiles
+          WHERE supplier_code='12345678'""").fetchone()
+        self.assertEqual(tuple(actual), ('G','2026-01-01','K','M',''))
+        self.assertEqual(result['inserted'], 1)
 
     def test_status_and_marker(self):
         con = database()
