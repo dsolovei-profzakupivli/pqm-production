@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = Path('validation/local_release_20261116/pqm_sync_ui_integrated_v6.json')
-MANIFEST_SHA256 = 'b816295227f59fe468be5680fd227a1ab32d90e4174388a31981ca31d3876ac6'
+MANIFEST_SHA256 = 'ad5b848f40d2f745bcc7c9f1941d80d4535a6b76845896bd2b062317902131ce'
 TEST_FILE = 'test_google_writer_integrated_candidate_integrity_v6.py'
 PREVIOUS_MANIFEST = Path('validation/local_release_20261116/pqm_sync_ui_integrated_v5.json')
 PREVIOUS_TEST = 'test_google_writer_integrated_candidate_integrity_v5.py'
@@ -76,6 +76,7 @@ class GoogleWriterIntegratedCandidateIntegrityV6(unittest.TestCase):
         infra = (ROOT / 'test_release_gate_infrastructure.py').read_text(encoding='utf-8')
         self.assertIn('run_integrated_writer_ui_v5_history.py', runner)
         self.assertIn('pqm_sync_ui_integrated_v5_cd01e13.zip', runner)
+        self.assertIn('PQM_RELEASE_SOURCE_ROOT=str(ROOT)', runner)
         self.assertIn('test_google_writer_integrated_candidate_integrity_v6', runner)
         self.assertIn('test_v5_historical_runner_uses_pinned_fixture_without_git', infra)
 

@@ -85,10 +85,10 @@
     "test_google_writer_integrated_candidate_integrity_v3.py": "44dfbde5be108c359d07b3d3c911d654fb95822a79591b5e4953f3fe95eca1dd",
     "test_google_writer_integrated_candidate_integrity_v4.py": "f93dc0f5e978b0e0fe4138ca736a92995fad1969c9cdeef930be2b4c810a81f2",
     "test_google_writer_integrated_candidate_integrity_v5.py": "7a9500faafd10f354259fc755314dfa4b89c094465c6c04d02289adfbefc8f9c",
-    "test_google_writer_integrated_candidate_integrity_v6.py": "1cfac89d5b3689a0c6e9b2def8fc3667c03f462bb9ed16f238617c5543226597",
+    "test_google_writer_integrated_candidate_integrity_v6.py": "fb21a681044d68f008d54a4eb4e8a8d10e5685c6e7a181dcbdbd05703e165541",
     "test_google_writer_update_append_v2_integrity.py": "a95903efafadc795b87d71f8d57d00615622cbe896553a9bbd02b6c438d483e3",
     "test_google_writer_update_append_v3_integrity.py": "220111068a51b9645a68eb4f1b326b9dce7fed8dfc6205285f952a8c432fb551",
-    "test_release_gate_infrastructure.py": "bfb0c6b7770d1f948fcb33cbcf6ee414f96a12f36326792fc00388a05c2da33a",
+    "test_release_gate_infrastructure.py": "a24374f901ca2e9d814e477dbe0023e803492ff6aefef6722080c9016f7bcade",
     "validation/appeals_justification_browser.cjs": "7385c428e7075cee8417861dc1c39519b971afcf32d13696d678a8a4a13ec994",
     "validation/docker_release_gate.py": "e31c6e5ac9a83f11b1c0b57c62d0487bd90a770c2e954b10393c3da3afd01224",
     "validation/fixtures/pqm_sync_ui_integrated_v1_3eda816.zip": "1f055adbe828840277aafe2e233ec9e32b0e5b00a1f0c32689557a235a4765d2",
@@ -114,6 +114,6 @@
     "validation/run_integrated_writer_ui_v3_history.py": "8636a03bb6c416009b0f95fbd00b4a499db3eb0972fbc0e54a852a08e132da05",
     "validation/run_integrated_writer_ui_v4_history.py": "99d104f02c1bf77ab4adf0f55f275fc3e8f4c8581a1beb8e26805742d36a0945",
     "validation/run_integrated_writer_ui_v5_history.py": "1683fcef34cc72eeaffb4df14e83a4dcf1bc37e964a034c46c3399ee011aed9e",
-    "validation/run_local_release.py": "3c67ae8d9ac4f40e4530b29706539305ba4200812ff5820871ffc50909f8908b"
+    "validation/run_local_release.py": "7b5eb2024854cc7f93d86bd9b460f7cdbf6c6565894c69befd780c7f171c2d67"
   }
 }

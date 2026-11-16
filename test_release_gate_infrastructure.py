@@ -19,6 +19,15 @@ import validation.run_c246_historical_integrity_snapshots_v1 as c246_snapshots
 ROOT = Path(__file__).resolve().parent
 
 
+def repository_root(test_file=__file__):
+    """Use the original checkout when tests are copied into a disposable tree."""
+    configured = os.environ.get("PQM_RELEASE_SOURCE_ROOT")
+    return Path(configured).resolve() if configured else Path(test_file).resolve().parent
+
+
+REPOSITORY_ROOT = repository_root()
+
+
 class ReleaseGateInfrastructureTests(unittest.TestCase):
     def test_gitattributes_is_copied_into_candidate_staging_tree(self):
         with tempfile.TemporaryDirectory(prefix="pqm-gitattributes-stage-") as temporary:
@@ -58,29 +67,56 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             "validation/fixtures/pqm_sync_ui_integrated_v4_654bd0de.zip",
             "validation/fixtures/pqm_sync_ui_integrated_v5_cd01e13.zip",
         )
-        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        dockerignore = (REPOSITORY_ROOT / ".dockerignore").read_text(encoding="utf-8")
         docker_gate = (ROOT / "validation/docker_release_gate.py").read_text(encoding="utf-8")
         runner_source = (ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
+        dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("validation/run_local_release.py", docker_gate)
         self.assertIn("test_release_gate_infrastructure.py", docker_gate)
+        self.assertIn("COPY . .", dockerfile)
         self.assertNotIn("*.zip", dockerignore)
         for relative in required:
             with self.subTest(path=relative):
                 self.assertIn(Path(relative).name, runner_source)
                 self.assertTrue((ROOT / relative).is_file(), f"missing immutable Docker fixture: {relative}")
+                self.assertEqual((ROOT / relative).read_bytes(), (REPOSITORY_ROOT / relative).read_bytes())
 
-    def test_v5_historical_runner_uses_pinned_fixture_without_git(self):
-        with tempfile.TemporaryDirectory(prefix="pqm-integrated-v5-no-git-") as temporary:
+    def test_staged_test_resolves_repository_root_outside_temporary_directory(self):
+        with tempfile.TemporaryDirectory(prefix="pqm-release-test-root-") as temporary:
+            staged_test = Path(temporary) / "test_release_gate_infrastructure.py"
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(REPOSITORY_ROOT)}):
+                resolved = repository_root(staged_test)
+            self.assertEqual(resolved, REPOSITORY_ROOT)
+            self.assertNotEqual(staged_test.parent.resolve(), resolved)
+            self.assertTrue((resolved / ".dockerignore").is_file())
+
+    def test_docker_context_check_runs_from_a_staged_temporary_tree(self):
+        with tempfile.TemporaryDirectory(prefix="pqm-docker-context-staged-test-") as temporary:
             package = Path(temporary)
+            shutil.copy2(__file__, package / Path(__file__).name)
             validation = package / "validation"
             (validation / "fixtures").mkdir(parents=True)
-            runner = "validation/run_integrated_writer_ui_v5_history.py"
-            fixture = "validation/fixtures/pqm_sync_ui_integrated_v5_cd01e13.zip"
-            shutil.copy2(ROOT / runner, package / runner)
-            shutil.copy2(ROOT / fixture, package / fixture)
+            for relative in (
+                "validation/run_local_release.py",
+                "validation/docker_release_gate.py",
+                "validation/run_c246_historical_integrity_snapshots_v1.py",
+                "validation/fixtures/pqm_sync_ui_integrated_v1_3eda816.zip",
+                "validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip",
+                "validation/fixtures/pqm_sync_ui_integrated_v3_8c6ba07.zip",
+                "validation/fixtures/pqm_sync_ui_integrated_v4_654bd0de.zip",
+                "validation/fixtures/pqm_sync_ui_integrated_v5_cd01e13.zip",
+            ):
+                target = package / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPOSITORY_ROOT / relative, target)
+            environment = os.environ.copy()
+            environment["PQM_RELEASE_SOURCE_ROOT"] = str(REPOSITORY_ROOT)
             result = subprocess.run(
-                [sys.executable, "-B", str(package / runner)],
+                [sys.executable, "-B", "-m", "unittest", "-v",
+                 "test_release_gate_infrastructure.ReleaseGateInfrastructureTests."
+                 "test_integrated_snapshot_archives_are_available_to_the_docker_gate"],
                 cwd=package,
+                env=environment,
                 check=False,
                 capture_output=True,
                 text=True,
