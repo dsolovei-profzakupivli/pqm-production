@@ -3030,6 +3030,13 @@ def application_filter(params: dict) -> tuple[str, list]:
     if date_to:
         where.append("SUBSTR(s.date_published,1,10)<=?")
         args.append(date_to)
+    for key, column in (('review_officer', 'af.review_officer'), ('protocol_officer', 'af.protocol_officer')):
+        value = params.get(key, [''])[0]
+        if value:
+            where.append(f"COALESCE({column},'')=?")
+            args.append('' if value == '__unassigned__' else value)
+    if params.get('actual_status') == ['1']:
+        where.append("q.status IN ('active','unsuccessful','pending')")
     assigned_officer = effective_officer_sql()
     if officer == "__unassigned__":
         where.append(f"{assigned_officer}=''")
@@ -3079,6 +3086,23 @@ def application_stats(params: dict) -> dict:
     result = {key: (value or 0) for key, value in dict(row).items()}
     result["officers"] = [dict(item) for item in officers]
     return result
+
+
+def work_queue_application_statistics(con, params: dict, *, review_progress: bool) -> list[dict]:
+    clause, args = application_filter({key: params[key] for key in ('date_from', 'date_to') if key in params})
+    source = f''' FROM submissions s JOIN frameworks f ON f.id=s.framework_id
+        LEFT JOIN qualifications q ON q.id=s.qualification_id
+        LEFT JOIN application_fields af ON af.submission_id=s.id
+        LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}'''
+    officers = "COALESCE(af.review_officer,'') review_officer, COALESCE(af.protocol_officer,'') protocol_officer"
+    if review_progress:
+        sql = """SELECT COALESCE(af.review_officer,'') review_officer,
+            COUNT(DISTINCT s.id) total,
+            COUNT(DISTINCT CASE WHEN af.protocol_decision IN ('admit','reject') THEN s.id END) reviewed,
+            COUNT(DISTINCT CASE WHEN COALESCE(af.protocol_decision,'')='' THEN s.id END) pending"""
+        return [dict(row) for row in con.execute(sql + source + ' GROUP BY 1 ORDER BY 1', args)]
+    sql = f"SELECT {officers}, COALESCE(f.dk_code,'') dk_code, COALESCE(fo.category,'') category, q.status, COUNT(DISTINCT s.id) total"
+    return [dict(row) for row in con.execute(sql + source + ' GROUP BY 1,2,3,4,5', args)]
 
 
 def application_selection(params: dict) -> dict:
@@ -3305,6 +3329,10 @@ def application_history(params: dict) -> dict:
         value = params.get(key, [''])[0].strip()
         if value:
             where.append(f'INSTR(CASEFOLD(COALESCE({sql},\'\')),?)>0'); args.append(value.casefold())
+    review_officers = [value.strip() for value in params.get('review_officer', []) if value.strip()]
+    if review_officers:
+        where.append(f"af.review_officer IN ({','.join('?' for _ in review_officers)})")
+        args.extend(review_officers)
     code = re.sub(r'\D', '', params.get('code', [''])[0])
     remarks = params.get('remarks', [''])[0].strip().casefold()
     if remarks:
@@ -3331,6 +3359,9 @@ def application_history(params: dict) -> dict:
       LEFT JOIN qualifications q ON q.id=COALESCE(final_q.id,s.qualification_id)
       WHERE """ + ' AND '.join(where)
     with db() as con:
+        review_officer_options = [row[0] for row in con.execute(
+            "SELECT DISTINCT review_officer FROM application_fields WHERE TRIM(review_officer)<>'' ORDER BY CASEFOLD(review_officer)"
+        )]
         total = con.execute('SELECT COUNT(*)'+source, args).fetchone()[0]
         items = [dict(row) for row in con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,
           s.date_published,s.framework_id,f.pretty_id,f.title framework_title,f.dk_code,
@@ -3353,7 +3384,8 @@ def application_history(params: dict) -> dict:
         item['documents'], item['decision_documents'], item['registry_documents'] = groups['supplier'], groups['decision'], groups['registry']
         item['document_groups'] = groups
         item['decision'] = decision_label(item['status'])
-    return {'items':items,'total':total,'page':page,'pages':max(1,(total+size-1)//size),'size':size}
+    return {'items':items,'total':total,'page':page,'pages':max(1,(total+size-1)//size),
+            'size':size,'review_officers':review_officer_options}
 
 
 def pqm_schema_metadata() -> dict:
@@ -5838,7 +5870,9 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     if search:
         where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR EXISTS "
           "(SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=combined.supplier_code "
-          "AND INSTR(CASEFOLD(ep.full_name),?)>0) OR EXISTS "
+          "AND (INSTR(CASEFOLD(ep.full_name),?)>0 OR INSTR(CASEFOLD(ep.short_name),?)>0)) OR EXISTS "
+          "(SELECT 1 FROM submissions named WHERE named.supplier_code=combined.supplier_code "
+          "AND INSTR(CASEFOLD(named.supplier_name),?)>0) OR EXISTS "
           "(SELECT 1 FROM submissions ss JOIN qualifications qq ON qq.submission_id=ss.id "
           "JOIN frameworks ff ON ff.id=ss.framework_id WHERE ss.supplier_code=combined.supplier_code "
           "AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
@@ -5850,7 +5884,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
           "(SELECT 1 FROM registry_contracts rf JOIN frameworks ff ON ff.id=rf.framework_id "
           "WHERE rf.supplier_code=combined.supplier_code AND (INSTR(CASEFOLD(ff.pretty_id),?)>0 "
           "OR INSTR(CASEFOLD(ff.title),?)>0)))")
-        args.extend([search] * 9)
+        args.extend([search] * 11)
     if status == "active":
         where.append("active_count>0")
     elif status == "suspended":
@@ -5983,6 +6017,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
         )}
         supplier_codes = [row["code"] for row in rows]
         page_application_stats = {}
+        submitted_names = {}
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
             dk_clause = " AND " + dk_predicate if dk_args else ""
@@ -5994,6 +6029,15 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
               FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
               WHERE s.supplier_code IN ({placeholders}){dk_clause} AND {applicant_scope}
               GROUP BY s.supplier_code""", stats_args)}
+            submitted_names = dict(con.execute(f"""
+                SELECT supplier_code,supplier_name FROM (
+                    SELECT supplier_code,supplier_name,ROW_NUMBER() OVER (
+                        PARTITION BY supplier_code ORDER BY julianday(date_published) DESC,id DESC
+                    ) position
+                    FROM submissions WHERE supplier_code IN ({placeholders})
+                        AND TRIM(COALESCE(supplier_name,''))<>''
+                ) WHERE position=1
+            """, supplier_codes).fetchall())
         if not canonical_states:
             canonical_states = edr_sync_v2.canonical_supplier_edr_states(con, supplier_codes)
         manager_matches = {}
@@ -6131,6 +6175,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
             profile = {**profile, "edr_checked_at": verification.get("occurred_at") or "",
                        "edr_officer": verification.get("officer") or "",
                        "verification_event_type": verification.get("event_type") or ""}
+        item["application_name"] = submitted_names.get(item.get("code"), "")
         item["name"] = edr_sync_v2.current_supplier_name(profile.get("full_name"), item.get("name"))
         item["edr_profile"] = ({**profile,
             "edr_status": canonical_state.get("edr_status_current",
@@ -11690,7 +11735,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/violation-reports":
             return self.send_json(list_violation_reports(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/uo-work-queue":
-            query = {key: values[0] if values else "" for key, values in urllib.parse.parse_qs(parsed.query).items()}
+            params = urllib.parse.parse_qs(parsed.query)
+            summary = params.get("summary", [""])[0]
+            if summary in {"review-progress", "application-statistics"}:
+                with db() as con:
+                    return self.send_json({"items": work_queue_application_statistics(
+                        con, params, review_progress=summary == "review-progress")})
+            query = {key: values[0] if values else "" for key, values in params.items()}
             with db() as con:
                 return self.send_json(get_uo_work_queue(
                     con, query, self.auth_user, violation_report_owned_by_pqm))
@@ -12719,12 +12770,21 @@ class Handler(BaseHTTPRequestHandler):
                     # source, destination, formula or operation detail changed.
                     live=client.invoke('preview',ticket['request_id'],self.auth_user,
                                        manual_authorized=True)
-                    live_details_digest=google_writer_execution._preview_details_digest(live.get('planDetails'))
-                    expected_details_digest=(google_writer_execution._preview_details_digest(
-                        google_writer_execution._append_continuation_core_details(snapshot['details']))
-                        if continuation is not None else snapshot['details_digest'])
-                    if (live.get('digest')!=snapshot['plan_digest'] or
-                            live_details_digest!=expected_details_digest):
+                    if continuation is not None and continuation.get('version')==2:
+                        try:
+                            google_writer_execution.validate_append_continuation_v2_live_preview(
+                                DB_PATH,self.auth_user,snapshot,live)
+                            continuation_preview_stale=False
+                        except (ValueError,TypeError,KeyError,sqlite3.Error):
+                            continuation_preview_stale=True
+                    else:
+                        live_details_digest=google_writer_execution._preview_details_digest(live.get('planDetails'))
+                        expected_details_digest=(google_writer_execution._preview_details_digest(
+                            google_writer_execution._append_continuation_core_details(snapshot['details']))
+                            if continuation is not None else snapshot['details_digest'])
+                        continuation_preview_stale=(live.get('digest')!=snapshot['plan_digest'] or
+                            live_details_digest!=expected_details_digest)
+                    if continuation_preview_stale:
                         if continuation is not None:
                             return self.send_json({'status':'CONTINUATION_PREVIEW_STALE',
                                 'code':'CONTINUATION_PREVIEW_STALE',

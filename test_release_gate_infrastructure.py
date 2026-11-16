@@ -42,7 +42,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         historical_apply_v5 = "test_google_writer_apply_result_integrity_v5"
         historical_apply_v6 = "test_google_writer_apply_result_integrity_v6"
         previous_overlay = "test_google_writer_apply_result_integrity_v7"
-        current_overlay = "test_google_writer_apply_result_integrity_v9"
+        historical_apply_v9 = "test_google_writer_apply_result_integrity_v9"
+        historical_continuation_v5 = "test_google_writer_append_continuation_integrity_v5"
+        historical_apply_v10 = "test_google_writer_apply_result_integrity_v10"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v1"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
 
         self.assertIn("node --test", workflow)
@@ -56,6 +59,8 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("git archive 2a4e4bff0bbbe84670d3bb10a5ba4b90347a7d78", workflow)
         self.assertIn("test_google_writer_append_continuation_integrity_v2", workflow)
         self.assertIn("test_google_writer_append_continuation_integrity_v3", workflow)
+        self.assertIn("test_google_writer_update_append_v2_integrity", workflow)
+        self.assertIn("test_google_writer_update_append_v3_integrity", workflow)
         self.assertIn(c246_runner, workflow)
         self.assertIn(historical_runner, workflow)
         self.assertIn(historical_v4, workflow)
@@ -64,7 +69,12 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("git archive 86b6ad82105fdcd7fa530a872943525af812ec47", workflow)
         self.assertIn("git archive 8bf5fb0188bebf6f2b35583ec018848c914b714c", workflow)
         self.assertIn("git archive 926ae60ff3412a9c236c903b70623881459d871c", workflow)
+        self.assertIn("git archive b988f140af37c45bd5461735cf40d18cd00d741a", workflow)
+        self.assertIn("git archive 9b38a258c0d279f33541dac6e95d12d3057a9b70", workflow)
         self.assertIn(previous_overlay, workflow)
+        self.assertIn(historical_apply_v9, workflow)
+        self.assertIn(historical_continuation_v5, workflow)
+        self.assertIn(historical_apply_v10, workflow)
         self.assertIn(current_overlay, workflow)
         self.assertNotIn(direct_historical_test, workflow)
         self.assertLess(workflow.index(c246_runner), workflow.index(historical_runner))
@@ -73,7 +83,18 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertLess(workflow.index(historical_apply_v6), workflow.index(previous_overlay))
         self.assertIn("test_google_writer_apply_result_integrity_v8)", workflow)
         self.assertLess(workflow.index(previous_overlay), workflow.index("test_google_writer_apply_result_integrity_v8)"))
-        self.assertLess(workflow.index("test_google_writer_apply_result_integrity_v8)"), workflow.index(current_overlay))
+        self.assertLess(workflow.index("test_google_writer_apply_result_integrity_v8)"), workflow.index(historical_apply_v9))
+        self.assertLess(workflow.index(historical_apply_v9), workflow.index(historical_continuation_v5))
+        self.assertLess(workflow.index(historical_continuation_v5), workflow.index(historical_apply_v10))
+        self.assertLess(workflow.index(historical_apply_v10), workflow.index(current_overlay))
+        self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
+
+        snapshot_route = workflow.split('writer_v5_v10_snapshot=', 1)[1].split(current_overlay, 1)[0]
+        self.assertIn('git archive 9b38a258c0d279f33541dac6e95d12d3057a9b70', snapshot_route)
+        self.assertIn('(cd "$writer_v5_v10_snapshot"', snapshot_route)
+        self.assertIn(historical_continuation_v5, snapshot_route)
+        self.assertIn(historical_apply_v10, snapshot_route)
+        self.assertNotIn(current_overlay, snapshot_route)
         self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
 
         runner = (ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
@@ -89,11 +110,16 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("'test_google_writer_append_continuation_integrity_v2'", exact_modules)
         self.assertIn("'test_google_writer_append_continuation_integrity_v3'", exact_modules)
         self.assertIn("'test_google_writer_append_continuation_integrity_v4'", exact_modules)
+        self.assertIn("'test_google_writer_append_continuation_integrity_v5'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v5'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v6'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v7'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v8'", exact_modules)
         self.assertIn("'test_google_writer_apply_result_integrity_v9'", exact_modules)
+        self.assertIn("'test_google_writer_apply_result_integrity_v10'", exact_modules)
+        self.assertNotIn("'test_google_writer_integrated_candidate_integrity_v1'", exact_modules)
+        self.assertNotIn("'test_google_writer_update_append_v2_integrity'", exact_modules)
+        self.assertNotIn("'test_google_writer_update_append_v3_integrity'", exact_modules)
         self.assertNotIn("'test_google_writer_apply_result_diagnostic'", exact_modules)
         self.assertIn("test_google_writer_apply_result_integrity_v7", workflow)
         self.assertIn("test_google_writer_apply_result_integrity_v8", workflow)

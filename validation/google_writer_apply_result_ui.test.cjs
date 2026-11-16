@@ -134,6 +134,66 @@ test('without session result the permanent panel is neutral and details open wit
   assert.equal(h.calls.filter(call=>call.method==='POST').length,0);
 });
 
+test('Apply cannot be repeated after an uncertain result until an explicit read-only check confirms no run',async()=>{
+  const h=harness(Object.assign(new Error('lost response'),{httpStatus:0}),new Map(),{
+    status:'preview_saved',request_id:requestId,confirmed_append:0,read_only:true,
+    checkpoint:{present:false},receipts:{verified_count:0}});
+  await invokeApply(h);
+  assert.equal(h.app.PqmGoogleWriterApplyResult.canApplyContinuation(requestId),false);
+  const postsBefore=h.calls.filter(call=>call.url.endsWith('/google-writer/apply')).length;
+  await assert.rejects(h.app.request('/api/google-writer/apply',{method:'POST',body:JSON.stringify({ticket,confirmed:true})}),
+    error=>error.code==='APPLY_READ_ONLY_CHECK_REQUIRED'&&error.blockedLocally===true);
+  assert.equal(h.calls.filter(call=>call.url.endsWith('/google-writer/apply')).length,postsBefore);
+  h.nodes.googleWriterApplyRequestId.value=requestId;
+  await h.app.PqmGoogleWriterApplyResult.refreshDiagnostic(requestId,true);
+  assert.equal(h.app.PqmGoogleWriterApplyResult.canApplyContinuation(requestId),true);
+  assert.equal(h.nodes.googleWriterApplyCompactStatus.textContent,'BLOCKED');
+  assert.match(h.nodes.googleWriterApplyLookupStatus.textContent,/запуск не створено/);
+});
+
+test('Apply remains blocked when read-only check still reports an uncertain run',async()=>{
+  const h=harness(Object.assign(new Error('lost response'),{httpStatus:0}));await invokeApply(h);
+  assert.equal(h.app.PqmGoogleWriterApplyResult.canApplyContinuation(requestId),false);
+  await h.app.PqmGoogleWriterApplyResult.refreshDiagnostic(requestId,true);
+  assert.equal(h.app.PqmGoogleWriterApplyResult.canApplyContinuation(requestId),false);
+  assert.match(h.nodes.googleWriterApplyCompactStatus.textContent,/STOP/);
+  assert.equal(h.calls.filter(call=>call.url.endsWith('/google-writer/apply')).length,1);
+});
+
+test('read-only state buttons show busy text and last successful check time',async()=>{
+  let resolveStatus;
+  const statusPromise=new Promise(resolve=>{resolveStatus=resolve;});
+  const h=harness({started:false},new Map(),statusPromise);
+  h.nodes.googleWriterApplyRequestId.value=requestId;
+  const pending=h.app.PqmGoogleWriterApplyResult.refreshDiagnostic(requestId,true);
+  assert.equal(h.nodes.googleWriterApplyDiagnosticCheck.disabled,true);
+  assert.equal(h.nodes.googleWriterApplyDiagnosticRefresh.disabled,true);
+  assert.equal(h.nodes.googleWriterApplyDiagnosticCheck.textContent,'Виконується запит…');
+  resolveStatus({status:'preview_saved',request_id:requestId,confirmed_append:0,read_only:true,
+    checkpoint:{present:false},receipts:{verified_count:0}});
+  await pending;
+  assert.equal(h.nodes.googleWriterApplyDiagnosticCheck.disabled,false);
+  assert.match(h.nodes.googleWriterApplyLookupStatus.textContent,/Остання успішна перевірка/);
+});
+
+test('saved continuation audit blocks duplicate clicks and shows its successful check time',async()=>{
+  let resolveAudit;
+  const auditPromise=new Promise(resolve=>{resolveAudit=resolve;});
+  const h=harness({started:false},new Map(),null,auditPromise);
+  h.nodes.googleWriterApplyRequestId.value=requestId;
+  const pending=h.app.PqmGoogleWriterApplyResult.auditSavedContinuation();
+  assert.equal(h.nodes.googleWriterSavedContinuationAudit.disabled,true);
+  assert.equal(h.nodes.googleWriterSavedContinuationAudit.textContent,'Виконується запит…');
+  assert.equal(await h.app.PqmGoogleWriterApplyResult.auditSavedContinuation(),false);
+  assert.equal(h.calls.filter(call=>call.url.startsWith('/api/admin/google-writer/saved-continuation-audit/')).length,1);
+  resolveAudit({status:'VERIFIED',request_id:requestId,reason_codes:[],source:{planned:276,confirmed:25,missing:251},
+    preserved:{planned:25,confirmed:25},continuation:{planned:251,missing:251},related:{},checks:{},read_only:true,
+    sqlite_writes:0,sheets_writes:0,properties_writes:0,preview_created:false,ticket_created:false,writer_started:false});
+  await pending;
+  assert.equal(h.nodes.googleWriterSavedContinuationAudit.disabled,false);
+  assert.match(h.nodes.googleWriterSavedContinuationAuditStatus.textContent,/Остання успішна перевірка/);
+});
+
 test('manual read-only check accepts only a formatted request ID and confirms the echoed binding',async()=>{
   const h=harness({started:false});
   h.nodes.googleWriterApplyRequestId.value=requestId;
@@ -165,6 +225,7 @@ test('manual request ID overrides the Apply lookup without replacing its saved A
   const storage=new Map([['pqm.googleWriter.applyResult.v1',JSON.stringify({version:1,requestId:'a'.repeat(32),
     httpStatus:202,code:'APPLY_STARTED',level:'success',started:true})]]);
   const h=harness({started:false},storage);h.nodes.googleWriterApplyRequestId.value=requestId;
+  await tick();
   await h.nodes.googleWriterApplyDiagnosticCheck.click();await tick();
   assert.ok(h.calls.some(call=>call.url===`/api/google-writer/continuation-status/${requestId}`));
   const saved=JSON.parse(storage.get('pqm.googleWriter.applyResult.v1'));
@@ -221,7 +282,7 @@ test('saved continuation audit reads the saved plan and copies only safe verifie
   await h.nodes.googleWriterSavedContinuationAudit.click();await tick();
   assert.equal(h.calls.filter(call=>call.url===`/api/admin/google-writer/saved-continuation-audit/${requestId}`&&call.method==='GET').length,1);
   assert.equal(h.calls.filter(call=>call.method==='POST').length,0);
-  assert.equal(h.nodes.googleWriterSavedContinuationAuditStatus.textContent,'VERIFIED');
+  assert.match(h.nodes.googleWriterSavedContinuationAuditStatus.textContent,/^VERIFIED · Остання успішна перевірка:/);
   assert.match(savedAuditText(h),/Продовження · відсутні: 251/);
   assert.match(savedAuditText(h),/Продовження · вже присутні й підтверджені: 0/);
   assert.match(savedAuditText(h),/Раніше підтверджені 25 · підтверджено: 25/);

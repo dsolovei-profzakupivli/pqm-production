@@ -663,3 +663,58 @@ html[data-theme] #referenceAmcu tbody tr.amcu-our-supplier .registry-flag.suppli
 #adminSyncPanel .google-runtime-panel dd { margin:3px 0 0; overflow-wrap:anywhere; }
 @media(max-width:900px) { #adminSyncPanel .google-runtime-panel dl { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:480px) { #adminSyncPanel .google-runtime-panel dl { grid-template-columns:minmax(0,1fr); } }
+
+.registry-secondary-label{display:block;margin-top:3px;color:var(--muted);font-size:.8em;font-weight:normal}
+#requestDetailsDialog>form>header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
+.appeal-header-decision,.appeal-header-actions{display:flex;align-items:center;gap:8px}
+.appeal-header-tools{display:flex;align-items:center;justify-content:flex-end;gap:39px;min-width:0}
+.appeal-header-actions{flex:none}
+.appeal-header-decision .icon-button{flex:none}
+.appeal-header-actions .dialog-close{position:static}
+#requestHeaderDecision{padding:4px 9px;border-radius:8px;background:var(--line)}
+#requestHeaderDecision[data-decision="warning"]{color:var(--success,#237844);border:1px solid currentColor}
+#requestHeaderDecision[data-decision="decline"]{color:var(--danger,#bc3131);border:1px solid currentColor}
+#historyReviewOfficerFilter{position:relative;width:auto;flex:1 0 150px}
+#historyReviewOfficerOptions{position:absolute;z-index:10;display:grid;min-width:100%;max-height:240px;overflow:auto;background:var(--panel,#fff);border:1px solid var(--line);border-radius:8px}
+#historyReviewOfficerOptions label{white-space:nowrap;padding:4px 8px}
+html[data-theme="dark"] #historyReviewOfficerOptions{background:#132840}
+@media(min-width:1150px){
+  #referenceAmcu .amcu-toolbar{flex-wrap:nowrap;gap:6px}
+  #referenceAmcu .amcu-toolbar>div:first-child{flex:0 1 160px;min-width:100px;display:flex;flex-direction:column}
+  #referenceAmcu .amcu-toolbar>div:first-child small{white-space:normal}
+  #referenceAmcu #refAmcuSearch{width:0;min-width:105px;flex:1 2 155px}
+  #referenceAmcu .amcu-toolbar .reference-date-filter{flex:0 0 auto}
+  #referenceAmcu #refAmcuAuthority,#referenceAmcu #refAmcuSupplierScope{min-width:100px}
+  #referenceAmcu .amcu-toolbar>button{flex-shrink:0;white-space:nowrap}
+}
+@media(max-width:650px){
+  #requestDetailsDialog>form>header{grid-template-columns:minmax(0,1fr)}
+  #requestDetailsDialog>form>header>div:first-child{overflow-wrap:anywhere}
+  .appeal-header-tools{max-width:100%}
+}
+.queue-summary-right{min-width:0}
+.queue-current-summary{padding-block:10px}
+.queue-statistics-filters{display:grid;gap:8px;margin-block:10px}
+.queue-statistics-filters>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.queue-statistics-filters label{min-width:0;display:grid;gap:3px}
+.queue-statistics-filters :is(select,input){width:100%;min-width:0}
+.queue-statistics-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-block:12px}
+.queue-statistics-kpis button{display:grid;place-items:center;padding:6px;white-space:normal;font-size:.9em}
+.queue-statistics-kpis strong{font-size:1.35em}
+.queue-statistics-table{overflow-x:auto;margin-top:8px}
+.queue-statistics-table table{width:100%;border-collapse:collapse}
+.queue-statistics-table :is(th,td){padding:4px;text-align:right;border-bottom:1px solid var(--line)}
+.queue-statistics-table th:first-child{text-align:left}
+.queue-statistics-table button{padding:3px 6px}
+.queue-review-progress{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;padding-block:8px;border-bottom:1px solid var(--line)}
+.queue-review-progress button{padding:4px 7px;white-space:normal}
+.queue-review-scale{grid-column:1/-1;display:flex;height:7px;border-radius:6px;overflow:hidden;background:var(--line)}
+.queue-review-scale .admitted{background:#45a671}
+.queue-review-scale .pending{background:#d9a42d}
+.queue-statistics-kpis button.admitted,#requestHeaderDecision[data-decision="warning"]{color:#207648;background:#e5f6ec;border-color:#77ad8d}
+.queue-statistics-kpis button.rejected,#requestHeaderDecision[data-decision="decline"]{color:#a92939;background:#fcecef;border-color:#cc8590}
+.queue-statistics-kpis button.pending{color:#745309;background:#fff4d4;border-color:#c8a75b}
+html[data-theme="dark"] .queue-statistics-kpis button.admitted,html[data-theme="dark"] #requestHeaderDecision[data-decision="warning"]{color:#b8edca;background:#173e38}
+html[data-theme="dark"] .queue-statistics-kpis button.rejected,html[data-theme="dark"] #requestHeaderDecision[data-decision="decline"]{color:#ffb9c1;background:#482932}
+html[data-theme="dark"] .queue-statistics-kpis button.pending{color:#ffe29a;background:#48381d}
+@media(min-width:1101px){.work-queue-operational-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}}

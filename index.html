@@ -60,12 +60,28 @@
         <h3>За УО протоколу</h3><div id="queueProtocolOfficerCards" class="qualification-summary-cards"></div>
         <h3>За категоріями</h3><div id="queueProtocolCategoryCards" class="qualification-summary-cards category-summary-cards"></div>
         <h3>Контроль після синхронізації публікації рішень</h3><div id="queuePublicationControl" class="publication-control-cards"></div>
+        <h3>Прогрес розгляду заявок за УО</h3><div id="queueReviewProgress" aria-live="polite"></div>
       </article>
-      <article class="card qualification-summary-card">
+      <div class="queue-summary-right">
+      <article class="card qualification-summary-card queue-current-summary">
         <div class="qualification-summary-heading"><div><h2>Поточні заявки</h2><p class="muted">Надійшли сьогодні та очікують рішення</p></div><strong id="queueQualificationTotal">0</strong></div>
         <h3>За УО протоколу</h3><div id="queueQualificationCards" class="qualification-summary-cards"></div>
         <h3>За категоріями</h3><div id="queueCategoryCards" class="qualification-summary-cards category-summary-cards"></div>
       </article>
+      <article class="card qualification-summary-card">
+        <h2>Статистика всіх заявок за період</h2>
+        <form id="queueStatisticsFilters" class="queue-statistics-filters">
+          <div><label>Від <input id="queueStatisticsFrom" type="date" required></label><label>До <input id="queueStatisticsTo" type="date" required></label></div>
+          <div><label>Код ДК <select data-statistics-filter="dk_code"></select></label><label>Категорія <select data-statistics-filter="category"></select></label></div>
+          <div><label>УО розгляду <select data-statistics-filter="review_officer"></select></label><label>УО протоколу <select data-statistics-filter="protocol_officer"></select></label></div>
+          <div><button type="submit" class="ghost">Застосувати</button><button id="queueStatisticsReset" type="button" class="ghost">Скинути</button></div>
+        </form>
+        <div id="queueStatisticsKpis" class="queue-statistics-kpis"></div>
+        <label>Розподіл за УО <select id="queueStatisticsGroup"><option value="review_officer">УО розгляду</option><option value="protocol_officer">УО протоколу</option></select></label>
+        <div class="queue-statistics-table"><table><thead><tr><th>УО</th><th>Допущено</th><th>Відхилено</th><th>Очікує</th><th>Усього</th></tr></thead><tbody id="queueStatisticsRows"></tbody></table></div>
+        <p id="queueStatisticsMessage" class="muted" aria-live="polite"></p>
+      </article>
+      </div>
     </section>
     <section class="card work-queue-toolbar">
       <input id="queueSearch" type="search" placeholder="Пошук за постачальником, кодом або об’єктом…">
@@ -124,7 +140,7 @@
       </div></details>
       <select id="profileSelect" aria-label="Профіль"></select>
       <button id="saveProfileBtn" class="ghost toolbar-save-profile">Зберегти</button>
-      <button id="clearFiltersBtn" class="icon-btn toolbar-icon-action pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button>
+      <button id="clearFiltersBtn" class="icon-btn toolbar-icon-action pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button><span id="queueRegistryScope" class="muted" hidden></span>
       <details class="toolbar-settings"><summary class="icon-btn" title="Налаштування" aria-label="Налаштування">⚙</summary><div class="toolbar-settings-panel"><button id="renameProfileBtn" class="ghost">Перейменувати профіль</button><button id="deleteProfileBtn" class="ghost">Видалити профіль</button><button id="restoreProfileBtn" class="ghost">Відновити системний</button><button id="createSystemProfileBtn" class="ghost">+ Системний профіль</button><button id="cardsBtn" class="ghost">KPI-картки</button><button id="columnsBtn" class="ghost">Колонки</button></div></details>
       <span id="saveState" class="save-state"><i></i> Усі зміни збережено</span>
     </section>
@@ -142,7 +158,7 @@
       <div class="history-filter-row history-filter-primary">
       <input data-history="search" placeholder="Пошук у всіх полях…"><input data-history="code" placeholder="ЄДРПОУ / РНОКПП">
       <input data-history="supplier" placeholder="Постачальник"><input data-history="cpv" placeholder="Код ДК"><input data-history="framework" placeholder="Назва відбору">
-      <input data-history="contract" placeholder="Реквізити договору"><input data-history="manager" placeholder="ПІБ керівника"><input data-history="officer" placeholder="УО протоколу">
+      <input data-history="contract" placeholder="Реквізити договору"><input data-history="manager" placeholder="ПІБ керівника"><input data-history="officer" placeholder="УО протоколу"><details id="historyReviewOfficerFilter" class="multi-filter"><summary>УО розгляду</summary><div id="historyReviewOfficerOptions"></div></details>
       </div>
       <div class="history-filter-row history-filter-secondary">
       <input data-history="remarks" placeholder="Зауваження — пошук за фрагментом тексту" aria-label="Зауваження">
@@ -296,7 +312,7 @@
   </main>
   <main id="administrationView" class="module-view" hidden>
     <section class="module-heading"><div><p class="eyebrow">Службові налаштування PQM</p><h1>Адміністрування</h1><p class="muted">Налаштування, що не належать до щоденного розгляду заявок</p></div></section>
-    <div class="reference-tabs card"><button type="button" data-admin-tab="frameworks" class="active">Відбори</button><button type="button" data-admin-tab="remarks">Конструктор зауважень</button><button type="button" data-admin-tab="templates">Шаблони документів</button><button type="button" data-admin-tab="sync">Синхронізація / Дані</button><button type="button" data-admin-tab="officers">Довідник УО</button><button type="button" data-admin-tab="accounts" data-admin-only>Доступ до PQM</button><button type="button" data-admin-tab="navigation">Навігація</button></div>
+    <div class="reference-tabs card"><button type="button" data-admin-tab="frameworks" class="active">Відбори</button><button type="button" data-admin-tab="remarks">Конструктор зауважень</button><button type="button" data-admin-tab="templates">Шаблони документів</button><button type="button" data-admin-tab="sync">Синхронізація / Дані</button><button type="button" data-admin-tab="sheets">PQM ↔ Google Sheets</button><button type="button" data-admin-tab="officers">Довідник УО</button><button type="button" data-admin-tab="accounts" data-admin-only>Доступ до PQM</button><button type="button" data-admin-tab="navigation">Навігація</button></div>
     <section id="adminFrameworksPanel" class="admin-panel">
       <div class="card admin-framework-toolbar"><input id="adminFrameworkSearch" type="search" placeholder="Пошук за ID, назвою або кодом ДК…"><select id="adminFrameworkStatus"><option value="">Усі статуси</option><option>Активний</option><option>Закритий</option><option>Не відбувся</option><option>Статус не визначено</option></select><select id="adminFrameworkCategory"><option value="">Усі категорії</option></select><select id="adminFrameworkOfficer"><option value="">Усі УО</option><option value="__unassigned__">Не призначено</option></select><span class="admin-framework-actions"><button id="adminFrameworkReset" class="ghost pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button><button id="adminFrameworkAdd" class="primary">+ Додати відбір</button></span><button id="adminFrameworkImportNew" class="ghost">Імпортувати нові відбори</button><span id="adminFrameworkCount" class="muted"></span></div>
       <datalist id="adminFrameworkCategoryOptions"></datalist>
@@ -322,6 +338,7 @@
       <section class="powerbi-panel card"><header class="section-header"><div><h2>База для Power BI</h2><p id="powerbiHeadline" class="muted">Чинний набір зберігається до успішного завершення експорту</p></div><div class="section-actions"><button id="powerbiExportBtn" type="button" class="primary" disabled>Оновити базу Power BI</button></div></header><dl><div><dt>Постійний шлях</dt><dd id="powerbiPath">—</dd></div><div><dt>Останній успішний експорт</dt><dd id="powerbiUpdated">—</dd></div><div><dt>Розмір</dt><dd id="powerbiSize">—</dd></div><div><dt>Рядків у наборах</dt><dd id="powerbiRows">—</dd></div></dl><div id="powerbiDatasets" class="powerbi-datasets"></div><p id="powerbiStatusMessage" class="muted"></p></section>
     </section>
     <section id="adminOfficersPanel" class="admin-panel" hidden><div class="card admin-officer-add"><input id="adminOfficerName" placeholder="ПІБ уповноваженої особи"><input id="adminOfficerRole" value="УО" placeholder="Роль"><button id="adminOfficerAdd" class="primary">+ Додати УО</button></div><section class="card"><div class="supplier-table-scroll"><table class="supplier-table"><thead><tr><th>ПІБ</th><th>Роль</th><th>Статус</th><th>Активні відбори</th><th>Дії</th></tr></thead><tbody id="adminOfficersBody"></tbody></table></div></section></section>
+    <div id="adminSheetsPanel" class="admin-panel" hidden><section class="card"><h2>PQM ↔ Google Sheets</h2><div id="googleWriterJobRoot"></div></section></div>
     <section id="adminAccountsPanel" class="admin-panel" data-admin-only hidden>
       <section class="card user-management"><div><p class="eyebrow">Доступ до PQM</p><h2>Користувачі та паролі</h2><p class="muted">Адміністратори створюють акаунти УО, глядачів та інших адміністраторів. Пароль зберігається лише як захищений хеш.</p></div>
         <form id="adminUserForm" class="admin-user-form"><label>Логін<input id="adminUserLogin" autocomplete="off" required placeholder="наприклад d.savva"></label><label>Тип акаунта<select id="adminUserRole" required><option value="officer">УО</option><option value="viewer">Глядач</option><option value="admin">Адміністратор</option></select></label><label id="adminUserOfficerField">Уповноважена особа<select id="adminUserOfficer" required></select></label><label>Пароль<input id="adminUserPassword" type="password" minlength="10" autocomplete="new-password" required></label><label>Повторіть пароль<input id="adminUserPasswordConfirm" type="password" minlength="10" autocomplete="new-password" required></label><button class="primary" type="submit">Створити користувача</button></form>
@@ -399,7 +416,7 @@
   <dialog id="supplierNoteDialog" class="compact-dialog supplier-note-dialog"><form method="dialog"><header><div><h2>Спільна примітка постачальника</h2><p id="supplierNoteSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div class="supplier-note-body"><label>Примітка<textarea id="supplierNoteText" rows="5"></textarea></label><small id="supplierNoteMeta" class="muted"></small></div><footer><button id="supplierNoteClear" type="button" class="ghost">Очистити</button><span></span><button value="cancel" class="ghost">Скасувати</button><button id="supplierNoteSave" value="default" class="primary">Зберегти</button></footer></form></dialog>
   <dialog id="googleNoteDialog" class="compact-dialog supplier-note-dialog"><form method="dialog"><header><div><h2>Примітка з Google</h2><p id="googleNoteSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div class="supplier-note-body"><p id="googleNoteText" class="source-note-text"></p><small class="muted">Read-only · джерело: Google Sheet «Результати_Перевірки_ЄДР»</small></div><footer><span></span><button value="cancel" class="primary">Закрити</button></footer></form></dialog>
   <dialog id="submissionNazkDialog" class="request-details-dialog submission-nazk-dialog"><form method="dialog"><header><div><h2>Перевірка довідки НАЗК</h2><p id="submissionNazkSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="submissionNazkBody" class="request-details-body"></div><footer><button id="submissionNazkComplete" type="button" class="primary">Підтвердити перевірку</button><button value="cancel" class="ghost">Закрити</button></footer></form></dialog>
-  <dialog id="requestDetailsDialog" class="request-details-dialog request-details-dialog-wide"><form method="dialog"><header><div><h2 id="requestDetailsTitle">Звернення замовника</h2><p id="requestDetailsSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="requestDetailsBody" class="request-details-body"></div><footer><button id="requestDetailsSave" type="button" class="primary" hidden>Зберегти</button><button value="cancel" class="ghost">Закрити</button></footer></form></dialog>
+  <dialog id="requestDetailsDialog" class="request-details-dialog request-details-dialog-wide"><form method="dialog"><header><div><h2 id="requestDetailsTitle">Звернення замовника</h2><p id="requestDetailsSubtitle"></p></div><div class="appeal-header-tools"><div class="appeal-header-decision"><span id="requestHeaderDecision" aria-live="polite"></span><button id="requestCopyJustification" type="button" class="ghost icon-button" title="Копіювати обґрунтування" aria-label="Копіювати обґрунтування" hidden><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></div><div class="appeal-header-actions"><span id="requestHeaderMarketplace"></span><button value="cancel" class="dialog-close">×</button></div></div></header><div id="requestDetailsBody" class="request-details-body"></div><footer><button id="requestDetailsSave" type="button" class="primary" hidden>Зберегти</button><button value="cancel" class="ghost">Закрити</button></footer></form></dialog>
   <dialog id="operationalTaskDialog" class="request-details-dialog request-details-dialog-wide"><form method="dialog"><header><div><h2 id="operationalTaskTitle">Операційна задача</h2><p id="operationalTaskSubtitle"></p></div><button value="cancel" class="dialog-close">×</button></header><div id="operationalTaskBody" class="request-details-body"></div><footer><button id="operationalTaskSave" type="button" class="primary">Зберегти</button><button value="cancel" class="ghost">Закрити</button></footer></form></dialog>
 
   <dialog id="bulkDialog"><form method="dialog"><header><div><h2>Масове заповнення</h2><p>Зміни для вибраних заявок</p></div><button value="cancel" class="dialog-close">×</button></header><div id="bulkFields" class="form-grid"></div><p id="bulkSummary" role="status" aria-live="polite"></p><div id="bulkResults"></div><footer><button value="cancel" class="ghost">Закрити</button><button id="bulkRetryBtn" type="button" class="ghost" hidden>Звірити та повторити непідтверджені</button><button id="applyBulkBtn" value="default" class="primary">Застосувати</button></footer></form></dialog>
@@ -426,6 +443,7 @@
   <script src="ui_improvements.js"></script>
   <script src="audit_search.js"></script>
   <script src="app.js"></script>
+  <script src="queue_statistics_ui.js"></script>
   <script src="nazk_preview.js"></script>
   <script src="google_writer_ui.js"></script>
   <script src="google_writer_apply_result.js"></script>
