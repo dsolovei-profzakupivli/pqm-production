@@ -99,8 +99,10 @@ jobs:
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v1_history.py
           PQM_INTEGRATED_V2_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip \
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v2_history.py
+          PQM_INTEGRATED_V3_ARCHIVE_OUT=validation/fixtures/pqm_sync_ui_integrated_v3_8c6ba07.zip \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v3_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v3 \
+            test_google_writer_integrated_candidate_integrity_v4 \
             test_google_writer_update_append_v2_integrity \
             test_google_writer_update_append_v3_integrity \
             validation.local_release_20260911.test_edr_sync_v2 \
