@@ -88,7 +88,7 @@
     "test_google_writer_integrated_candidate_integrity_v6.py": "fb21a681044d68f008d54a4eb4e8a8d10e5685c6e7a181dcbdbd05703e165541",
     "test_google_writer_update_append_v2_integrity.py": "a95903efafadc795b87d71f8d57d00615622cbe896553a9bbd02b6c438d483e3",
     "test_google_writer_update_append_v3_integrity.py": "220111068a51b9645a68eb4f1b326b9dce7fed8dfc6205285f952a8c432fb551",
-    "test_release_gate_infrastructure.py": "a24374f901ca2e9d814e477dbe0023e803492ff6aefef6722080c9016f7bcade",
+    "test_release_gate_infrastructure.py": "570a8b2a8b96f7c68d7cb28d64b81f87e1caf6941b0d0717d47c51b511f5e0c6",
     "validation/appeals_justification_browser.cjs": "7385c428e7075cee8417861dc1c39519b971afcf32d13696d678a8a4a13ec994",
     "validation/docker_release_gate.py": "e31c6e5ac9a83f11b1c0b57c62d0487bd90a770c2e954b10393c3da3afd01224",
     "validation/fixtures/pqm_sync_ui_integrated_v1_3eda816.zip": "1f055adbe828840277aafe2e233ec9e32b0e5b00a1f0c32689557a235a4765d2",

@@ -144,33 +144,38 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd(self):
-        docker_gate = (ROOT / "validation/docker_release_gate.py").read_text(encoding="utf-8")
-        self.assertIn("validation/run_local_release.py", docker_gate)
-        archive = ROOT / "validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip"
-        original_is_file = Path.is_file
+        with tempfile.TemporaryDirectory(prefix="pqm-missing-v2-source-") as temporary:
+            fake_source = Path(temporary)
+            fake_validation = fake_source / "validation"
+            (fake_validation / "fixtures").mkdir(parents=True)
+            (fake_validation / "local_release_20260911").mkdir()
+            expected_archive = fake_validation / "fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip"
+            self.assertFalse(expected_archive.exists())
+            expected_cwd = Path.cwd()
+            with patch.object(release, "ROOT", fake_source):
+                with patch.object(release, "stage_gitattributes", return_value=None):
+                    with patch.object(release, "copy_pinned_release_file", return_value=None):
+                        with patch.dict(os.environ, {"PQM_RELEASE_MODE": ""}):
+                            with patch.object(sys, "argv", ["run_local_release.py", "test_nazk_workflow.py"]):
+                                with patch.object(
+                                    release.subprocess, "run",
+                                    return_value=SimpleNamespace(returncode=1),
+                                ) as run:
+                                    with self.assertRaisesRegex(
+                                        RuntimeError,
+                                        "Integrated v2 immutable snapshot could not be staged",
+                                    ):
+                                        release.main()
 
-        def archive_missing(path):
-            if path == archive:
-                return False
-            return original_is_file(path)
-
-        expected_cwd = Path.cwd()
-        with patch.dict(os.environ, {"PQM_RELEASE_MODE": ""}):
-            with patch.object(sys, "argv", ["run_local_release.py", "test_nazk_workflow.py"]):
-                with patch.object(Path, "is_file", archive_missing):
-                    with patch.object(
-                        release.subprocess, "run", return_value=SimpleNamespace(returncode=1)
-                    ) as run:
-                        with self.assertRaisesRegex(
-                            RuntimeError, "Integrated v2 immutable snapshot could not be staged"
-                        ):
-                            release.main()
-
-        run.assert_called_once()
-        self.assertEqual(run.call_args.kwargs["cwd"], expected_cwd)
-        self.assertTrue(
-            str(run.call_args.args[0][1]).endswith("run_integrated_writer_ui_v2_history.py")
-        )
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs["cwd"], expected_cwd)
+            self.assertTrue(
+                str(run.call_args.args[0][1]).endswith("run_integrated_writer_ui_v2_history.py")
+            )
+            self.assertEqual(
+                run.call_args.kwargs["env"]["PQM_INTEGRATED_V2_ARCHIVE_OUT"],
+                str(expected_archive),
+            )
 
     def test_workflow_routes_historical_and_current_integrity_checks(self):
         workflow = (ROOT / ".github/workflows/release-checks.yml").read_text(encoding="utf-8")

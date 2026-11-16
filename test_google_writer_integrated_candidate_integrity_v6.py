@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = Path('validation/local_release_20261116/pqm_sync_ui_integrated_v6.json')
-MANIFEST_SHA256 = 'ad5b848f40d2f745bcc7c9f1941d80d4535a6b76845896bd2b062317902131ce'
+MANIFEST_SHA256 = '1c1c1a201f7a87a3fc44c53ecd02575dce5165f3f670e6a812d8101750376583'
 TEST_FILE = 'test_google_writer_integrated_candidate_integrity_v6.py'
 PREVIOUS_MANIFEST = Path('validation/local_release_20261116/pqm_sync_ui_integrated_v5.json')
 PREVIOUS_TEST = 'test_google_writer_integrated_candidate_integrity_v5.py'
