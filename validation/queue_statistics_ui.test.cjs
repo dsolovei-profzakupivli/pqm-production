@@ -20,14 +20,14 @@ function makeNode(value = '') {
   const classes = new Set();
   const summary = {textContent:'',title:''};
   return {
-    value, dataset:{}, options:[], innerHTML:'', textContent:'', hidden:false, disabled:false,
+    value, dataset:{}, options:[], innerHTML:'', textContent:'', hidden:false, disabled:false, style:{},
     listeners:{}, classes, summary,
     classList:{toggle(name,active){if(active)classes.add(name);else classes.delete(name);},contains(name){return classes.has(name);}},
     addEventListener(type,handler){this.listeners[type]=handler;},
     replaceChildren(...children){this.options=children;},
     setAttribute(){}, removeAttribute(){},
-    querySelector(selector){return selector==='summary'?summary:null;},
-    querySelectorAll(){return [];},
+    querySelector(selector){return selector==='summary'?summary:selector==='thead'?{getBoundingClientRect:()=>({height:28})}:null;},
+    querySelectorAll(selector){return selector==='tr'?[...this.innerHTML.matchAll(/<tr>/g)].map(()=>({getBoundingClientRect:()=>({height:30})})):[];},
     closest(){return null;},
   };
 }
@@ -102,6 +102,18 @@ test('inverted statistics date range is rejected without issuing a request',asyn
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(h.calls.length,0);
   assert.equal(h.nodes.queueStatisticsMessage.textContent,'Дата «До» має бути не раніше дати «Від»');
+});
+
+test('statistics table shows at most five rows before internal scrolling and clears the limit for five or fewer',async()=>{
+  for(const count of [3,5,8]){
+    const items=Array.from({length:count},(_,index)=>({review_officer:`УО ${index}`,protocol_officer:`УО ${index}`,dk_code:'',category:'',status:'active',total:1}));
+    const h=harness(items);
+    h.context.window.refreshQueueApplicationStatistics();
+    await new Promise(resolve=>setImmediate(resolve));
+    const scroll=h.nodes.queueStatisticsTable.classList.contains('queue-statistics-table--scroll');
+    assert.equal(scroll,count>5);
+    assert.equal(h.nodes.queueStatisticsTable.style.maxHeight,count>5?'178px':'');
+  }
 });
 
 test('filter edits remain distinct from applied dates; grouping does not change aggregate totals',async()=>{

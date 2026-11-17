@@ -20,11 +20,13 @@ html[data-theme="dark"] #workQueueView .queue-summary-total{color:#86bdff!import
 #workQueueView .qualification-summary-officer strong{font-size:20px;line-height:1.1;margin:3px 0}
 #workQueueView .qualification-summary-officer small{white-space:normal;line-height:1.15}
 #workQueueView .qualification-summary-category{min-height:59px}
-#workQueueView .queue-protocol-officers>.protocol-officer-card{display:flex;flex-direction:column;gap:5px;min-height:92px;padding:7px 9px}
+#workQueueView .queue-protocol-officers>.protocol-officer-card{display:flex;flex-direction:column;gap:5px;min-height:104px;padding:7px 9px}
 #workQueueView .protocol-officer-card[data-protocol-officer="Не призначено"]{background:#f4f6f8;border-color:#cbd4dc}
 #workQueueView .protocol-officer-main{display:block;width:100%;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}
-#workQueueView .protocol-officer-main span{display:block;font-size:12px;font-weight:650}
+#workQueueView .protocol-officer-main span{display:block;min-height:30px;font-size:12px;font-weight:650;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
 #workQueueView .protocol-officer-main strong{display:block;font-size:19px;margin:3px 0 0}
+#workQueueView #queueQualificationCards>.qualification-summary-officer{min-height:96px}
+#workQueueView #queueQualificationCards>.qualification-summary-officer span{min-height:30px;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
 #workQueueView .protocol-officer-progress{display:grid;gap:3px;margin-top:auto}
 #workQueueView .protocol-progress-track{height:4px;overflow:hidden;border-radius:4px;background:#e1e8e3;cursor:help}
 #workQueueView .protocol-progress-track>span{display:block;height:100%;background:#43a66d;transition:width .18s ease}

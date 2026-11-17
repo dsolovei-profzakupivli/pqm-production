@@ -131,6 +131,16 @@
       return (row[field]||unassigned)===value;
     });
   }
+  function fitTableViewport() {
+    if (!tableWrap.classList.contains('queue-statistics-table--scroll')) {
+      tableWrap.style.maxHeight='';
+      return;
+    }
+    const header=tableWrap.querySelector('thead');
+    const firstFive=[...table.querySelectorAll('tr')].slice(0,5);
+    const height=(header?.getBoundingClientRect().height||0)+firstFive.reduce((sum,row)=>sum+row.getBoundingClientRect().height,0);
+    if(height>0)tableWrap.style.maxHeight=`${Math.ceil(height)}px`;
+  }
 
   function renderStatistics() {
     if (!period) return;
@@ -151,6 +161,7 @@
     }).join('');
     tableWrap.classList.toggle('queue-statistics-table--scroll',sorted.length>5);
     tableWrap.dataset.rowCount=String(sorted.length);
+    fitTableViewport();
     const other=totals.total-totals.active-totals.unsuccessful-totals.pending;
     message.textContent=!groups.size?'Заявок за цими умовами немає':other?`Заявки без одного з трьох статусів Prozorro · ${number(other)}`:'';
     renderFilterPresentation();
