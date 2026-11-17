@@ -23,7 +23,6 @@ function click(id,data){node('#'+id).onclick({target:{closest:()=>({dataset:data
 function clean(){for(const field of fields.slice(0,4))assert.equal(node('#'+field).value,'');for(const key of ['marketplace','registry','supplier','framework','dk'])assert.equal(c.filterSelections[key].size,0);assert.equal(selected.size,0);assert.equal(snapshots.entries().length,0);assert.equal(c.deepLinkSubmissionId,'');assert.equal(c.page,1);assert.equal(c.activeModule,'applications');assert.equal(JSON.stringify(profile),unchanged)}
 stale();const oldRevision=snapshots.revision;click('queueQualificationCards',{qualificationOfficer:'Officer A'});clean();assert.equal(c.officerFilter,'Officer A');assert.equal(c.categoryFilter,'');assert.equal(node('#dateFromFilter').value,'2026-10-09');assert.equal(node('#dateToFilter').value,'');assert.deepEqual([...c.filterSelections.status],['Очікує рішення']);assert(snapshots.revision>oldRevision);
 stale();click('queueCategoryCards',{qualificationCategory:'Їжа'});clean();assert.equal(c.categoryFilter,'Їжа');assert.equal(c.officerFilter,'');
-stale();click('queueProtocolOfficerCards',{protocolOfficer:'Officer B'});clean();assert.equal(c.officerFilter,'Officer B');assert.equal(c.filterSelections.status.size,0);assert.equal(node('#dateFromFilter').value,'2026-10-01');assert.equal(node('#dateToFilter').value,'2026-10-08');
 stale();click('queueProtocolCategoryCards',{protocolCategory:'Газ/ЕЕ'});clean();assert.equal(c.categoryFilter,'Газ/ЕЕ');assert.equal(c.officerFilter,'');
 stale();click('queuePublicationControl',{publicationState:'active'});clean();assert.deepEqual([...c.filterSelections.status],['Допущено']);assert.equal(c.categoryFilter,'');assert.equal(c.officerFilter,'');
 // Consecutive navigation replaces the first KPI's conditions, not combines them.
@@ -31,7 +30,7 @@ click('queueQualificationCards',{qualificationOfficer:'Не призначено
 // Exact fixture IDs/count from the resulting scope (including the compound date/status conditions).
 const records=[{id:'yes',officer:'__unassigned__',status:'Очікує рішення',date:'2026-10-09'},{id:'old',officer:'__unassigned__',status:'Очікує рішення',date:'2026-10-08'},{id:'other',officer:'Officer A',status:'Очікує рішення',date:'2026-10-10'},{id:'rejected',officer:'__unassigned__',status:'Відхилено',date:'2026-10-10'}];
 assert.deepEqual(records.filter(r=>r.officer===c.officerFilter&&c.filterSelections.status.has(r.status)&&r.date>=node('#dateFromFilter').value).map(r=>r.id),['yes']);
-assert.deepEqual(summaries.frameworkFilter,[]);assert.equal(c.loaded,6);assert.equal(c.invalidated,6);
+assert.deepEqual(summaries.frameworkFilter,[]);assert.equal(c.loaded,5);assert.equal(c.invalidated,5);
 // Even an empty selection invalidates a pending select-all of the same filter scope.
 snapshots.sync({status:'Очікує рішення'});const pendingScope=snapshots.scope,pendingRevision=snapshots.revision;
 c.openApplicationsFromQueue({officer:'Не призначено'});
@@ -47,5 +46,5 @@ assert.equal((src.match(/resetApplicationsForExternalKpi\(\)/g)||[]).length,2);
  c.loadRows=async()=>{loaded.push(c.officerFilter);return true};
  const first=c.openApplicationsFromQueue({officer:'First'}),second=c.openApplicationsFromQueue({officer:'Last'});
  resolve();await Promise.all([first,second]);assert.deepEqual(loaded,['Last']);assert.equal(selected.size,0);
- console.log('EXTERNAL_KPI_FILTERS=PASS (five entry points, rapid pending navigation, IDs/count, selection, profile invariance)');
+ console.log('EXTERNAL_KPI_FILTERS=PASS (qualification/category/publication entry points, rapid pending navigation, IDs/count, selection, profile invariance)');
 })().catch(error=>{console.error(error);process.exitCode=1});

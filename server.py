@@ -104,6 +104,7 @@ from reference_directories import (
     refresh_amcu, refresh_nazk, start_reference_refresh,
 )
 from uo_work_queue import get_uo_work_queue
+from uo_work_progress import work_queue_application_statistics as _work_queue_application_statistics
 
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
@@ -2985,6 +2986,7 @@ def application_filter(params: dict) -> tuple[str, list]:
     date_from = params.get("date_from", [""])[0].strip()
     date_to = params.get("date_to", [""])[0].strip()
     officer = params.get("officer", [""])[0].strip()
+    protocol_card_officer = params.get("protocol_card_officer", [""])[0].strip()
     category = params.get("category", [""])[0].strip()
     submission_id = params.get("submission_id", [""])[0].strip()
     protocol_decision = params.get("protocol_decision", [""])[0].strip()
@@ -3035,6 +3037,10 @@ def application_filter(params: dict) -> tuple[str, list]:
         if value:
             where.append(f"COALESCE({column},'')=?")
             args.append('' if value == '__unassigned__' else value)
+    if protocol_card_officer:
+        protocol_group = "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено')"
+        where.append(f"CASEFOLD({protocol_group})=CASEFOLD(?)")
+        args.append(protocol_card_officer)
     if params.get('actual_status') == ['1']:
         where.append("q.status IN ('active','unsuccessful','pending')")
     assigned_officer = effective_officer_sql()
@@ -3088,22 +3094,10 @@ def application_stats(params: dict) -> dict:
     return result
 
 
-def work_queue_application_statistics(con, params: dict, *, review_progress: bool) -> list[dict]:
-    clause, args = application_filter({key: params[key] for key in ('date_from', 'date_to') if key in params})
-    source = f''' FROM submissions s JOIN frameworks f ON f.id=s.framework_id
-        LEFT JOIN qualifications q ON q.id=s.qualification_id
-        LEFT JOIN application_fields af ON af.submission_id=s.id
-        LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}'''
-    officers = "COALESCE(af.review_officer,'') review_officer, COALESCE(af.protocol_officer,'') protocol_officer"
-    if review_progress:
-        sql = """SELECT COALESCE(af.review_officer,'') review_officer,
-            COUNT(DISTINCT s.id) total,
-            COUNT(DISTINCT CASE WHEN af.protocol_decision IN ('admit','reject') THEN s.id END) reviewed,
-            COUNT(DISTINCT CASE WHEN COALESCE(af.protocol_decision,'')='' THEN s.id END) pending"""
-        return [dict(row) for row in con.execute(sql + source + ' GROUP BY 1 ORDER BY 1', args)]
-    sql = f"SELECT {officers}, COALESCE(f.dk_code,'') dk_code, COALESCE(fo.category,'') category, q.status, COUNT(DISTINCT s.id) total"
-    return [dict(row) for row in con.execute(sql + source + ' GROUP BY 1,2,3,4,5', args)]
-
+def work_queue_application_statistics(con, params: dict, *, review_progress: bool,
+                                     group_by: str = "review_officer") -> list[dict]:
+    clause, args = application_filter({key: params[key] for key in ("date_from", "date_to") if key in params})
+    return _work_queue_application_statistics(con, clause, args, review_progress=review_progress, group_by=group_by)
 
 def application_selection(params: dict) -> dict:
     """One read-only filtered snapshot, without LIMIT/OFFSET or external refresh."""
@@ -11740,7 +11734,8 @@ class Handler(BaseHTTPRequestHandler):
             if summary in {"review-progress", "application-statistics"}:
                 with db() as con:
                     return self.send_json({"items": work_queue_application_statistics(
-                        con, params, review_progress=summary == "review-progress")})
+                        con, params, review_progress=summary == "review-progress",
+                        group_by=params.get("group_by", ["review_officer"])[0])})
             query = {key: values[0] if values else "" for key, values in params.items()}
             with db() as con:
                 return self.send_json(get_uo_work_queue(

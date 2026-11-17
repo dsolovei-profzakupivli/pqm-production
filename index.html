@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="ui_improvements.css">
   <link rel="stylesheet" href="ui_final.css">
   <link id="personalThemeStyles" rel="stylesheet" href="theme.css">
+  <link rel="stylesheet" href="uo_work_page.css">
   <script src="theme_ui.js"></script>
   <link rel="stylesheet" href="nazk_preview.css">
 </head>
@@ -54,38 +55,61 @@
       <button data-queue-overdue="1"><span>Прострочено</span><strong id="queueKpiOverdue">0</strong></button>
     </section>
     <section class="work-queue-operational-grid">
-      <article class="card qualification-summary-card">
-        <div class="qualification-summary-heading"><div><h2>Заявки до поточного протоколу</h2><p class="muted">За датою надходження у вибраному періоді</p></div><strong id="queueProtocolTotal">0</strong></div>
-        <div class="protocol-period"><label>Від <input id="queueProtocolFrom" type="date"></label><label>До <input id="queueProtocolTo" type="date"></label><button id="queueProtocolApply" class="ghost" type="button">Застосувати</button></div>
-        <h3>За УО протоколу</h3><div id="queueProtocolOfficerCards" class="qualification-summary-cards"></div>
+      <article class="card qualification-summary-card queue-protocol-summary">
+        <div class="qualification-summary-heading queue-summary-heading">
+          <h2>Заявки до поточного протоколу</h2>
+          <div class="protocol-period" aria-label="Період заявок до поточного протоколу">
+            <label>Від <input id="queueProtocolFrom" type="date"></label>
+            <label>До <input id="queueProtocolTo" type="date"></label>
+            <button id="queueProtocolApply" class="ghost icon-button queue-icon-action" type="button" title="Застосувати" aria-label="Застосувати">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 5 5"/></svg>
+            </button>
+          </div>
+          <strong id="queueProtocolTotal" class="queue-summary-total">0</strong>
+        </div>
         <h3>За категоріями</h3><div id="queueProtocolCategoryCards" class="qualification-summary-cards category-summary-cards"></div>
-        <h3>Контроль після синхронізації публікації рішень</h3><div id="queuePublicationControl" class="publication-control-cards"></div>
-        <h3>Прогрес розгляду заявок за УО</h3><div id="queueReviewProgress" aria-live="polite"></div>
+        <h3>За УО протоколу</h3><div id="queueProtocolOfficerCards" class="qualification-summary-cards queue-protocol-officers"></div>
+        <section class="queue-publication-control">
+          <h3>Контроль після синхронізації публікації рішень</h3><div id="queuePublicationControl" class="publication-control-cards"></div>
+        </section>
       </article>
       <div class="queue-summary-right">
       <article class="card qualification-summary-card queue-current-summary">
-        <div class="qualification-summary-heading"><div><h2>Поточні заявки</h2><p class="muted">Надійшли сьогодні та очікують рішення</p></div><strong id="queueQualificationTotal">0</strong></div>
-        <h3>За УО протоколу</h3><div id="queueQualificationCards" class="qualification-summary-cards"></div>
+        <div class="qualification-summary-heading queue-summary-heading">
+          <h2 title="Надійшли сьогодні та очікують рішення">Поточні заявки <span class="queue-info" title="Надійшли сьогодні та очікують рішення" aria-label="Надійшли сьогодні та очікують рішення">ⓘ</span></h2>
+          <strong id="queueQualificationTotal" class="queue-summary-total">0</strong>
+        </div>
         <h3>За категоріями</h3><div id="queueCategoryCards" class="qualification-summary-cards category-summary-cards"></div>
+        <h3>За УО протоколу</h3><div id="queueQualificationCards" class="qualification-summary-cards"></div>
       </article>
-      <article class="card qualification-summary-card">
-        <h2>Статистика всіх заявок за період</h2>
+      <article class="card qualification-summary-card queue-statistics-card">
+        <header class="queue-statistics-heading">
+          <h2>Статистика всіх заявок за період</h2>
+          <div class="queue-statistics-actions">
+            <button type="submit" form="queueStatisticsFilters" class="ghost icon-button queue-icon-action" title="Застосувати" aria-label="Застосувати">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 5 5"/></svg>
+            </button>
+            <button id="queueStatisticsReset" type="button" class="ghost icon-button queue-icon-action" title="Очистити" aria-label="Очистити">×</button>
+          </div>
+        </header>
         <form id="queueStatisticsFilters" class="queue-statistics-filters">
-          <div class="queue-statistics-period"><label id="queueStatisticsFromField">Від <input id="queueStatisticsFrom" type="date" required></label><label id="queueStatisticsToField">До <input id="queueStatisticsTo" type="date" required></label></div>
-          <details id="queueStatisticsFilterPanel" class="advanced-filters queue-statistics-filter-details">
-            <summary id="queueStatisticsFilterSummary">Фільтри</summary>
-            <div class="queue-statistics-filter-panel">
-              <label>Код ДК <select data-statistics-filter="dk_code"></select></label>
-              <label>Категорія <select data-statistics-filter="category"></select></label>
-              <label>УО розгляду <select data-statistics-filter="review_officer"></select></label>
-              <label>УО протоколу <select data-statistics-filter="protocol_officer"></select></label>
-            </div>
-          </details>
+          <div class="queue-statistics-controls">
+            <label id="queueStatisticsFromField">Від <input id="queueStatisticsFrom" type="date" required></label>
+            <label id="queueStatisticsToField">До <input id="queueStatisticsTo" type="date" required></label>
+            <details id="queueStatisticsFilterPanel" class="advanced-filters queue-statistics-filter-details">
+              <summary id="queueStatisticsFilterSummary">Фільтри</summary>
+              <div class="queue-statistics-filter-panel">
+                <label>Категорія <select data-statistics-filter="category"></select></label>
+                <div class="queue-statistics-dk-field"><span>Код ДК</span><details id="queueStatisticsDkFilter" class="multi-filter queue-statistics-dk-filter"><summary>Усі коди ДК</summary><div id="queueStatisticsDkOptions" class="multi-panel queue-statistics-dk-options"></div></details></div>
+                <label>УО розгляду <select data-statistics-filter="review_officer"></select></label>
+                <label>УО протоколу <select data-statistics-filter="protocol_officer"></select></label>
+              </div>
+            </details>
+            <label id="queueStatisticsGroupField" class="queue-statistics-group">Розподіл за УО <select id="queueStatisticsGroup"><option value="protocol_officer">УО протоколу</option><option value="review_officer">УО розгляду</option></select></label>
+          </div>
           <p id="queueStatisticsPending" class="muted queue-statistics-pending" aria-live="polite" hidden></p>
-          <div><button type="submit" class="ghost">Застосувати</button><button id="queueStatisticsReset" type="button" class="ghost">Скинути</button></div>
         </form>
         <div id="queueStatisticsKpis" class="queue-statistics-kpis"></div>
-        <label id="queueStatisticsGroupField" class="queue-statistics-group">Розподіл за УО <select id="queueStatisticsGroup"><option value="review_officer">УО розгляду</option><option value="protocol_officer">УО протоколу</option></select></label>
         <div class="queue-statistics-table"><table><thead><tr><th>УО</th><th>Допущено</th><th>Відхилено</th><th>Очікує</th><th>Усього</th></tr></thead><tbody id="queueStatisticsRows"></tbody></table></div>
         <p id="queueStatisticsMessage" class="muted" aria-live="polite"></p>
       </article>

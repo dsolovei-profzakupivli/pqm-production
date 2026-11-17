@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from uo_work_queue import default_protocol_period, get_current_qualification_summary, get_uo_work_queue
+from uo_work_progress import work_queue_application_statistics
 
 
 class UoWorkQueueTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class UoWorkQueueTests(unittest.TestCase):
           CREATE TABLE submissions(id TEXT PRIMARY KEY,framework_id TEXT,supplier_name TEXT,supplier_code TEXT,date_published TEXT,qualification_id TEXT);
           CREATE TABLE qualifications(id TEXT PRIMARY KEY,status TEXT);
           CREATE TABLE registry_contracts(qualification_id TEXT,status TEXT);
-          CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,protocol_officer TEXT,protocol_date TEXT DEFAULT '',protocol_decision TEXT DEFAULT '',marketplace_decision TEXT DEFAULT '');
+          CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,review_officer TEXT DEFAULT '',protocol_officer TEXT,protocol_date TEXT DEFAULT '',protocol_decision TEXT DEFAULT '',marketplace_decision TEXT DEFAULT '');
           CREATE TABLE supplier_managers(id INTEGER PRIMARY KEY,manager_tax_id TEXT);
           CREATE TABLE submission_nazk_controls(id INTEGER PRIMARY KEY,submission_id TEXT,supplier_code TEXT,manager_id INTEGER,manager_name TEXT,nazk_certificate_required INTEGER,nazk_certificate_checked INTEGER,created_at TEXT);
           CREATE TABLE supplier_registry_summary(supplier_code TEXT PRIMARY KEY,supplier_name TEXT,active_count INTEGER);
@@ -109,6 +110,43 @@ class UoWorkQueueTests(unittest.TestCase):
             "protocol_from": "2026-08-25", "protocol_to": "2026-08-25"
         })
         self.assertEqual(summary["protocol"]["total"], 1)
+
+    def test_review_progress_api_keeps_review_officer_grouping_by_default(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-progress-a", "f1", "ТОВ А", "701", "2026-08-25T09:00:00", "q-pending"),
+            ("s-progress-b", "f1", "ТОВ Б", "702", "2026-08-25T10:00:00", "q-pending"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer,protocol_decision) VALUES (?,?,?,?)", [
+            ("s-progress-a", "ОЛЕНА ЄРЬОМІНА", "ДМИТРО САВВА", "admit"),
+            ("s-progress-b", "ОЛЕНА ЄРЬОМІНА", "ТЕТЯНА ФЕДЧЕНКО", ""),
+        ])
+        rows=work_queue_application_statistics(self.con,"SUBSTR(s.date_published,1,10) BETWEEN ? AND ?",["2026-08-25","2026-08-25"],review_progress=True)
+        self.assertEqual(rows,[{"review_officer":"ОЛЕНА ЄРЬОМІНА","total":2,"reviewed":1,"pending":1}])
+
+    def test_review_progress_api_can_group_by_protocol_officer_and_uses_card_cohort(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-progress-a", "f1", "ТОВ А", "701", "2026-08-25T09:00:00", "q-pending"),
+            ("s-progress-b", "f1", "ТОВ Б", "702", "2026-08-25T10:00:00", "q-pending"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer,protocol_decision) VALUES (?,?,?,?)", [
+            ("s-progress-a", "ОЛЕНА ЄРЬОМІНА", "ДМИТРО САВВА", "admit"),
+            ("s-progress-b", "ОЛЕНА ЄРЬОМІНА", "", ""),
+        ])
+        rows=work_queue_application_statistics(self.con,"SUBSTR(s.date_published,1,10) BETWEEN ? AND ?",["2026-08-25","2026-08-25"],review_progress=True,group_by="protocol_officer")
+        self.assertEqual(rows,[
+            {"protocol_officer":"Дмитро САВВА","total":1,"reviewed":1,"pending":0},
+            {"protocol_officer":"Світлана НАМЯСЕНКО","total":1,"reviewed":0,"pending":1},
+        ])
+        self.assertEqual(sum(row["total"] for row in rows),2)
+
+    def test_review_progress_api_returns_no_groups_for_empty_period(self):
+        rows=work_queue_application_statistics(self.con,"SUBSTR(s.date_published,1,10) BETWEEN ? AND ?",["1900-01-01","1900-01-02"],review_progress=True,group_by="protocol_officer")
+        self.assertEqual(rows,[])
+
+    def test_application_statistics_protocol_field_uses_the_protocol_card_fallback(self):
+        rows=work_queue_application_statistics(self.con,"1=1",[],review_progress=False)
+        row=next(item for item in rows if item["protocol_officer"])
+        self.assertEqual(row["protocol_officer"],"Світлана НАМЯСЕНКО")
 
     def test_publication_control_uses_synced_status_without_local_action(self):
         self.con.executemany("INSERT INTO qualifications VALUES (?,?)", [
