@@ -271,7 +271,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         previous_integrated_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         previous_current_overlay = "test_google_writer_integrated_candidate_integrity_v8"
         previous_integrated_overlay_v9 = "test_google_writer_integrated_candidate_integrity_v9"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v10"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v11"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
@@ -283,6 +283,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         integrated_v7_runner = "validation/run_integrated_writer_ui_v7_history.py"
         integrated_v8_runner = "validation/run_integrated_writer_ui_v8_history.py"
         integrated_v9_runner = "validation/run_integrated_writer_ui_v9_history.py"
+        integrated_v10_runner = "validation/run_integrated_writer_ui_v10_history.py"
         integrated_v4_snapshot = "654bd0de0e5b3de6be61c5293a9fc00cf17217c3"
         integrated_v3_snapshot = "8c6ba07372196b1919a88beb7da3078e6c53d4d0"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
@@ -323,6 +324,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn(integrated_v7_runner, workflow)
         self.assertIn(integrated_v8_runner, workflow)
         self.assertIn(integrated_v9_runner, workflow)
+        self.assertIn(integrated_v10_runner, workflow)
         for version in ("V1", "V2", "V3", "V4"):
             self.assertNotIn(f"PQM_INTEGRATED_{version}_ARCHIVE_OUT=validation/fixtures/", workflow)
         self.assertIn(
@@ -330,6 +332,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             "test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd", workflow
         )
         self.assertIn(current_overlay, workflow)
+        self.assertIn("validation.local_release_20260911.test_uo_work_queue_http", workflow)
         self.assertNotIn(previous_overlay, workflow)
         self.assertNotIn(direct_historical_test, workflow)
         self.assertLess(workflow.index(c246_runner), workflow.index(historical_runner))
@@ -351,7 +354,8 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertLess(workflow.index(integrated_v7_runner), workflow.index(integrated_v8_runner))
         self.assertLess(workflow.index(integrated_v8_runner), workflow.index(integrated_v9_runner))
         self.assertLess(workflow.index(integrated_v9_runner), workflow.index(current_overlay))
-        current_integrity_start = workflow.index("test_google_writer_integrated_candidate_integrity_v10 \\")
+        self.assertLess(workflow.index(integrated_v10_runner), workflow.index(current_overlay))
+        current_integrity_start = workflow.index("test_google_writer_integrated_candidate_integrity_v11 \\")
         current_integrity_end = workflow.index("\n      - name: Install Playwright", current_integrity_start)
         current_integrity_command = workflow[current_integrity_start:current_integrity_end]
         self.assertIn(current_overlay, current_integrity_command)

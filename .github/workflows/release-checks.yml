@@ -104,10 +104,12 @@ jobs:
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v7_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v8_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v9_history.py
-          # Immutable integrated v1-v9 checks ran on their pinned snapshots above;
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v10_history.py
+          # Immutable integrated v1-v10 checks ran on their pinned snapshots above;
           # only the current integrated overlay runs against this checkout.
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v10 \
+            test_google_writer_integrated_candidate_integrity_v11 \
+            validation.local_release_20260911.test_uo_work_queue_http \
             test_google_writer_update_append_v2_integrity \
             test_google_writer_update_append_v3_integrity \
             validation.local_release_20260911.test_edr_sync_v2 \

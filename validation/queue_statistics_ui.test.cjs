@@ -269,7 +269,8 @@ test('approved Work UO layout order, filters, dark palette and long-table behavi
   const typeField=stats.match(/<label>Тип <select data-statistics-filter="supplier_type">([\s\S]*?)<\/select><\/label>/)?.[1]||'';
   for(const [value,label] of [['','Усі'],['individual_entrepreneur','ФОП'],['legal_entity','ЮО та інші'],['foreign_legal_entity','Нерезидент'],['unknown','Потребує перевірки']])
     assert.ok(typeField.includes(`<option value="${value}">${label}</option>`),`type option ${label} uses the registry value`);
-  assert.match(serverSource,/entity_type=\(params\.get\("entity_type", \[""\]\)\[0\][\s\S]+if summary == "application-statistics" else ""\)/);
+  assert.match(serverSource,/entity_type=params\.get\("entity_type", \[""\]\)\[0\]/);
+  assert.doesNotMatch(serverSource,/entity_type=\(params\.get\("entity_type", \[""\]\)\[0\][\s\S]+if summary == "application-statistics" else ""\)/);
   assert.match(stats,/id="queueStatisticsFilterApply"[^>]*>Застосувати/);
   assert.match(stats,/id="queueStatisticsFilterClear"[^>]*>Очистити/);
   assert.ok(stats.indexOf('queueStatisticsFromField')<stats.indexOf('queueStatisticsFilterToggle'));

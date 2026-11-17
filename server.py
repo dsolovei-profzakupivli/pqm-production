@@ -3095,9 +3095,11 @@ def application_stats(params: dict) -> dict:
 
 
 def work_queue_application_statistics(con, params: dict, *, review_progress: bool,
-                                     group_by: str = "review_officer") -> list[dict]:
+                                     group_by: str = "review_officer",
+                                     entity_type: str = "") -> list[dict]:
     clause, args = application_filter({key: params[key] for key in ("date_from", "date_to") if key in params})
-    return _work_queue_application_statistics(con, clause, args, review_progress=review_progress, group_by=group_by)
+    return _work_queue_application_statistics(con, clause, args, review_progress=review_progress,
+                                              group_by=group_by, entity_type=entity_type)
 
 def application_selection(params: dict) -> dict:
     """One read-only filtered snapshot, without LIMIT/OFFSET or external refresh."""
@@ -11737,8 +11739,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"items": work_queue_application_statistics(
                             con, params, review_progress=summary == "review-progress",
                             group_by=params.get("group_by", ["review_officer"])[0],
-                            entity_type=(params.get("entity_type", [""])[0]
-                                         if summary == "application-statistics" else ""))})
+                            entity_type=params.get("entity_type", [""])[0])})
                 except ValueError as exc:
                     return self.send_json({"error": str(exc)}, 400)
             query = {key: values[0] if values else "" for key, values in params.items()}
