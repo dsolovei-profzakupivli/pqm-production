@@ -35,8 +35,9 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     document.querySelector('#queueProtocolTo').value='2026-10-31';
     document.querySelector('#queueProtocolTotal').textContent='28';
     document.querySelector('#queueQualificationTotal').textContent='16';
-    document.querySelector('#queueProtocolCategoryCards').innerHTML=['Ліки','Інше','Обладнання'].map((name,i)=>`<button class="qualification-summary-officer qualification-summary-category"><span>${name}</span><strong>${[12,9,7][i]}</strong><small>категорія</small></button>`).join('');
-    document.querySelector('#queueCategoryCards').innerHTML=['Ліки','Інше','Обладнання'].map((name,i)=>`<button class="qualification-summary-officer qualification-summary-category"><span>${name}</span><strong>${[8,5,3][i]}</strong><small>категорія</small></button>`).join('');
+    const categories=['Їжа','Інше','Газ/ЕЕ','Пальне','Вугілля'];
+    document.querySelector('#queueProtocolCategoryCards').innerHTML=categories.map((name,i)=>`<button class="qualification-summary-officer qualification-summary-category"><span>${name}</span><strong>${[12,9,7,4,2][i]}</strong><small>категорія</small></button>`).join('');
+    document.querySelector('#queueCategoryCards').innerHTML=categories.map((name,i)=>`<button class="qualification-summary-officer qualification-summary-category"><span>${name}</span><strong>${[8,5,3,2,1][i]}</strong><small>категорія</small></button>`).join('');
     document.querySelector('#queueProtocolOfficerCards').innerHTML=officers.slice(0,5).map((name,i)=>`<article class="qualification-summary-officer protocol-officer-card" data-protocol-officer="${name}"><button type="button" class="protocol-officer-main"><span>${name}</span><strong>${[9,7,5,4,3][i]}</strong></button><div class="protocol-officer-progress"><div class="protocol-progress-track" title="Розглянуто: ${[4,7,0,1,2][i]} із ${[9,7,5,4,3][i]} (${Math.round([4,7,0,1,2][i]*100/[9,7,5,4,3][i])}%)"><span style="width:${Math.round([4,7,0,1,2][i]*100/[9,7,5,4,3][i])}%"></span></div><div class="protocol-progress-meta"><span>${Math.round([4,7,0,1,2][i]*100/[9,7,5,4,3][i])}%</span><button class="protocol-pending-count" type="button" title="Не розглянуто: ${[5,0,5,3,1][i]}. Відкрити в реєстрі заявок" ${i===1?'disabled':''}>${[5,0,5,3,1][i]}</button></div></div></article>`).join('');
     document.querySelector('#queueQualificationCards').innerHTML=officers.slice(0,3).map((name,i)=>`<button class="qualification-summary-officer"><span>${name}</span><strong>${[8,5,3][i]}</strong><small>очікує рішення</small></button>`).join('');
     document.querySelector('#queuePublicationControl').innerHTML='<button class="publication-kpi publication-kpi--admitted"><span>Допущено</span><strong>18</strong></button><button class="publication-kpi publication-kpi--rejected"><span>Відхилено</span><strong>4</strong></button><button class="publication-kpi publication-kpi--pending"><span>Все ще очікує рішення</span><strong>6</strong></button>';
@@ -49,6 +50,10 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     document.querySelector('#queueStatisticsFrom').value='2026-10-01';
     document.querySelector('#queueStatisticsTo').value='2026-10-31';
     document.querySelector('#queueStatisticsGroup').value='review_officer';
+    document.querySelector('[data-statistics-filter="category"]').innerHTML='<option value="">Усі</option><option>Їжа</option>';
+    document.querySelector('[data-statistics-filter="review_officer"]').innerHTML='<option value="">Усі</option><option>Дмитро САВВА</option>';
+    document.querySelector('[data-statistics-filter="protocol_officer"]').innerHTML='<option value="">Усі</option><option>Олена ЄРЬОМІНА</option>';
+    document.querySelector('#queueStatisticsDkOptions').innerHTML=['02100000-6','03000000-1','45000000-7'].map(value=>`<label><input type="checkbox"> ${value}</label>`).join('');
   },{theme,officers});
   return page;
 }
@@ -63,9 +68,27 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       const left=await page.locator('.queue-protocol-summary').boundingBox();
       const right=await page.locator('.queue-current-summary').boundingBox();
       assert.ok(Math.abs(left.y-right.y)<2,'top summary blocks align');
+      const protocolHeader=await page.evaluate(()=>{
+        const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{left:r.left,right:r.right};};
+        return{title:rect('.queue-protocol-summary h2'),period:rect('.queue-protocol-summary .protocol-period'),total:rect('#queueProtocolTotal'),card:rect('.queue-protocol-summary')};
+      });
+      assert.ok(protocolHeader.period.left>=protocolHeader.title.right+8,'protocol dates and search sit slightly to the right of the title');
+      assert.ok(protocolHeader.card.right-protocolHeader.total.right<20,'protocol total stays close to the card right edge');
       const leftCategories=await page.locator('#queueProtocolCategoryCards').boundingBox();
       const rightCategories=await page.locator('#queueCategoryCards').boundingBox();
       assert.ok(Math.abs(leftCategories.y-rightCategories.y)<2,'category cards begin on the same line');
+      for(const selector of ['#queueProtocolCategoryCards>.qualification-summary-category','#queueCategoryCards>.qualification-summary-category']){
+        const positions=await page.locator(selector).evaluateAll(nodes=>nodes.map(node=>({name:node.textContent.trim(),top:node.getBoundingClientRect().top,left:node.getBoundingClientRect().left,width:node.getBoundingClientRect().width,background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,borderWidth:getComputedStyle(node).borderLeftWidth})));
+        assert.equal(positions.length,5,`${selector} renders all five categories`);
+        assert.ok(positions.every(item=>Math.abs(item.top-positions[0].top)<2),`${selector} keeps all five categories on one row: ${JSON.stringify(positions)}`);
+        assert.ok(positions.every(item=>item.width>0&&item.borderWidth==='1px'),`${selector} cards have compact widths and thin outlines`);
+        if(theme==='light')assert.ok(positions.every(item=>item.background==='rgb(238, 243, 255)'&&item.border==='rgb(134, 168, 223)'),`${selector} uses the approved light-blue category palette: ${JSON.stringify(positions)}`);
+        else assert.ok(positions.every(item=>item.background==='rgb(28, 53, 81)'&&item.border==='rgb(75, 121, 168)'),`${selector} keeps dark-blue fills with blue outlines: ${JSON.stringify(positions)}`);
+      }
+      const officerPalette=await page.locator('#queueProtocolOfficerCards>.protocol-officer-card:not([data-protocol-officer="Не призначено"])').first().evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,borderWidth:getComputedStyle(node).borderLeftWidth}));
+      assert.equal(officerPalette.borderWidth,'1px','officer cards use a thin outline');
+      if(theme==='light')assert.deepEqual(officerPalette,{background:'rgb(237, 246, 232)',border:'rgb(141, 182, 122)',borderWidth:'1px'},'light officer cards use the approved green palette');
+      else assert.deepEqual(officerPalette,{background:'rgb(23, 62, 56)',border:'rgb(63, 123, 104)',borderWidth:'1px'},'dark officer cards retain green fills with green outlines');
       for(const selector of ['#queueProtocolOfficerCards>.protocol-officer-card','#queueQualificationCards>.qualification-summary-officer']){
         const names=page.locator(selector);
         const cards=await names.evaluateAll(nodes=>nodes.map(card=>{const name=card.querySelector('span'),main=card.querySelector('.protocol-officer-main'),progress=card.querySelector('.protocol-officer-progress');return{height:card.getBoundingClientRect().height,name:{clientWidth:name.clientWidth,scrollWidth:name.scrollWidth,clientHeight:name.clientHeight,scrollHeight:name.scrollHeight,text:name.textContent},mainBottom:main?.getBoundingClientRect().bottom,progressTop:progress?.getBoundingClientRect().top};}));
@@ -76,9 +99,17 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       const rows=await page.locator('#queueStatisticsRows tr').count();assert.equal(rows,8);
       const table=await page.locator('.queue-statistics-table').evaluate(el=>({client:el.clientHeight,scroll:el.scrollHeight,overflow:getComputedStyle(el).overflowY}));
       assert.ok(table.scroll>table.client,'more than five rows scroll inside the table');
-      const actions=await page.locator('.queue-statistics-actions').boundingBox();
-      const title=await page.locator('.queue-statistics-heading h2').boundingBox();
-      assert.ok(actions.x>title.x+title.width,'statistics actions stay on the title row at right');
+      const toolbar=await page.locator('.queue-statistics-controls').evaluate(el=>[...el.children].map(node=>({id:node.id||node.querySelector('input,select')?.id||node.getAttribute('data-statistics-filter')||node.textContent.trim().slice(0,16),left:node.getBoundingClientRect().left,top:node.getBoundingClientRect().top,right:node.getBoundingClientRect().right})));
+      assert.equal(toolbar.length,6,'statistics toolbar contains dates, filters, grouping, search and reset');
+      assert.ok(toolbar.every(item=>Math.abs(item.top-toolbar[0].top)<2),`all toolbar controls share one row at wide width: ${JSON.stringify(toolbar)}`);
+      assert.ok(toolbar.every((item,index)=>index===0||item.left>=toolbar[index-1].right-1),`toolbar controls keep the requested order: ${JSON.stringify(toolbar)}`);
+      const typeOptions=await page.locator('[data-statistics-filter="supplier_type"] option').evaluateAll(nodes=>nodes.map(option=>[option.value,option.textContent.trim()]));
+      assert.deepEqual(typeOptions,[['','Усі'],['individual_entrepreneur','ФОП'],['legal_entity','ЮО та інші'],['foreign_legal_entity','Нерезидент'],['unknown','Потребує перевірки']]);
+      const firstFilterLabel=await page.locator('.queue-statistics-filter-fields label').first().textContent();
+      assert.match(firstFilterLabel,/Тип/,'supplier type is the first filter in the side panel');
+      const cardPalette=await page.locator('.queue-statistics-card').evaluate(el=>({background:getComputedStyle(el).backgroundColor,border:getComputedStyle(el).borderTopColor}));
+      if(theme==='light')assert.deepEqual(cardPalette,{background:'rgb(240, 246, 255)',border:'rgb(141, 180, 229)'},'light statistics card has the approved blue tint');
+      else assert.deepEqual(cardPalette,{background:'rgb(32, 54, 80)',border:'rgb(100, 136, 181)'},'dark statistics card has the approved blue tint');
       const controls=await page.locator('.queue-statistics-controls').evaluate(el=>getComputedStyle(el).display);
       assert.equal(controls,'flex');
       const kpis=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>({bg:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderTopColor})));
@@ -97,6 +128,21 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       }
       const screenshot=path.join(OUT,`work-uo-${theme}-wide.png`);
       await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:screenshot});evidence.push(screenshot);
+      const workspace=page.locator('#queueStatisticsWorkspace'),panel=page.locator('#queueStatisticsFilterPanel');
+      await panel.evaluate(node=>node.hidden=false);
+      await workspace.evaluate(node=>node.classList.add('is-filter-open'));
+      const panelLayout=await page.evaluate(()=>{
+        const card=document.querySelector('.queue-statistics-card'),work=document.querySelector('#queueStatisticsWorkspace'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel');
+        const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
+        const workspaceStyle=getComputedStyle(work),panelStyle=getComputedStyle(panel);
+        return{viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,card:rect(card),workspace:rect(work),results:rect(results),panel:rect(panel),columns:workspaceStyle.gridTemplateColumns,areas:workspaceStyle.gridTemplateAreas,panelArea:panelStyle.gridArea,panelPosition:panelStyle.position};
+      });
+      assert.ok(panelLayout.panel.right<=panelLayout.card.right+1,`filter panel stays within the card's right edge: ${JSON.stringify(panelLayout)}`);
+      assert.ok(panelLayout.scroll<=panelLayout.viewport+2,`filter panel does not cause page overflow: ${JSON.stringify(panelLayout)}`);
+      assert.ok(panelLayout.panel.left>=panelLayout.results.right-1,`filter panel does not cover the table: ${JSON.stringify(panelLayout)}`);
+      assert.equal(await panel.evaluate(node=>getComputedStyle(node).position),'static','filter panel participates in layout instead of overlaying the table');
+      const panelShot=path.join(OUT,`work-uo-${theme}-filter-panel.png`);
+      await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:panelShot});evidence.push(panelShot);
       await page.close();
     }
     for(const count of [3,5,8]){
@@ -123,6 +169,29 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       if(zoom>1) {await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:shot});evidence.push(shot);}
       await page.close();
     }
-    console.log(JSON.stringify({result:'PASS',responsiveCases:['wide light','wide dark','3 rows','5 rows','8 rows','100%','125%','150%'],screenshots:evidence},null,2));
+    for(const width of [650,480,360]){
+      const page=await makePage(browser,'light',width,900);
+      const layout=await page.locator('#queueCategoryCards>.qualification-summary-category').evaluateAll(nodes=>({viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,tops:nodes.map(node=>Math.round(node.getBoundingClientRect().top)),cardRights:nodes.map(node=>Math.round(node.getBoundingClientRect().right)),cardLefts:nodes.map(node=>Math.round(node.getBoundingClientRect().left))}));
+      assert.ok(layout.scroll<=layout.viewport+2,`no horizontal overflow at ${width}px: ${JSON.stringify(layout)}`);
+      assert.ok(new Set(layout.tops).size>1,`categories wrap at narrow width ${width}px`);
+      await page.close();
+    }
+    for(const width of [1280,800,480]){
+      const page=await makePage(browser,'dark',width,900);
+      await page.locator('#queueStatisticsFilterPanel').evaluate(node=>node.hidden=false);
+      await page.locator('#queueStatisticsWorkspace').evaluate(node=>node.classList.add('is-filter-open'));
+      const layout=await page.evaluate(()=>{
+        const card=document.querySelector('.queue-statistics-card'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel'),viewport=document.documentElement.clientWidth;
+        const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+        return{viewport,scroll:document.documentElement.scrollWidth,card:rect(card),results:rect(results),panel:rect(panel)};
+      });
+      const sideBySide=layout.panel.left>=layout.results.right-1||layout.panel.right<=layout.results.left+1;
+      const stacked=layout.panel.bottom<=layout.results.top+1||layout.panel.top>=layout.results.bottom-1;
+      assert.ok(layout.scroll<=layout.viewport+2,`responsive filter panel has no page overflow at ${width}px: ${JSON.stringify(layout)}`);
+      assert.ok(layout.panel.left>=layout.card.left&&layout.panel.right<=layout.card.right+1,`responsive filter panel stays inside the statistics card at ${width}px: ${JSON.stringify(layout)}`);
+      assert.ok(sideBySide||stacked,`responsive filter panel does not cover results at ${width}px: ${JSON.stringify(layout)}`);
+      await page.close();
+    }
+    console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','3 rows','5 rows','8 rows','100%','125%','150%'],screenshots:evidence},null,2));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

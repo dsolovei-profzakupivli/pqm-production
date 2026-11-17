@@ -11732,10 +11732,15 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed.query)
             summary = params.get("summary", [""])[0]
             if summary in {"review-progress", "application-statistics"}:
-                with db() as con:
-                    return self.send_json({"items": work_queue_application_statistics(
-                        con, params, review_progress=summary == "review-progress",
-                        group_by=params.get("group_by", ["review_officer"])[0])})
+                try:
+                    with db() as con:
+                        return self.send_json({"items": work_queue_application_statistics(
+                            con, params, review_progress=summary == "review-progress",
+                            group_by=params.get("group_by", ["review_officer"])[0],
+                            entity_type=(params.get("entity_type", [""])[0]
+                                         if summary == "application-statistics" else ""))})
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
             query = {key: values[0] if values else "" for key, values in params.items()}
             with db() as con:
                 return self.send_json(get_uo_work_queue(

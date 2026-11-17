@@ -8,9 +8,12 @@
   ];
   const controls = $$('[data-statistics-filter]');
   const progress = $('#queueProtocolOfficerCards');
-  const dkDetails = $('#queueStatisticsDkFilter');
+  const dkSearch = $('#queueStatisticsDkSearch');
+  const dkSummary = $('#queueStatisticsDkSummary');
   const dkOptions = $('#queueStatisticsDkOptions');
   const filterPanel = $('#queueStatisticsFilterPanel');
+  const filterToggle = $('#queueStatisticsFilterToggle');
+  const workspace = $('#queueStatisticsWorkspace');
   const kpis = $('#queueStatisticsKpis');
   const table = $('#queueStatisticsRows');
   const tableWrap = $('.queue-statistics-table');
@@ -30,6 +33,8 @@
   let statisticsRequest = 0, progressRequest = 0;
   let progressPeriod = '', progressItems = [], initialized = false;
   let dkSelection = new Set();
+  let appliedSelection = {};
+  let appliedDkSelection = new Set();
 
   group.value = 'review_officer';
   const periodParams = (start, end) => ({date_from:start.value, date_to:end.value});
@@ -121,12 +126,13 @@
     if (statuses.some(([code])=>code===row.status)) counts[row.status]+=Number(row.total||0);
   }
   function currentSelection() {
-    const selection=Object.fromEntries(controls.filter(control=>control.value).map(control=>[control.dataset.statisticsFilter,control.value]));
-    if(dkSelection.size)selection.dk_code=[...dkSelection];
+    const selection={...appliedSelection};
+    if(appliedDkSelection.size)selection.dk_code=[...appliedDkSelection];
     return selection;
   }
   function matchesSelection(row,selection) {
     return Object.entries(selection).every(([field,value])=>{
+      if(field==='supplier_type')return true;
       if(field==='dk_code')return value.includes(row.dk_code||'');
       return (row[field]||unassigned)===value;
     });
@@ -167,30 +173,62 @@
     renderFilterPresentation();
   }
 
-  function renderDkFilter(rows) {
-    const previous=dkSelection;
-    const values=[...new Set(rows.map(row=>row.dk_code).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'uk'));
-    dkSelection=new Set(values.filter(value=>previous.has(value)));
-    dkOptions.innerHTML=values.map(value=>`<label><input type="checkbox" data-statistics-dk-option value="${esc(value)}" ${dkSelection.has(value)?'checked':''}> ${esc(value)}</label>`).join('')||'<span class="muted">Немає кодів ДК за період</span>';
-    const summary=dkDetails.querySelector('summary');
-    summary.textContent=dkSelection.size?`Коди ДК · ${dkSelection.size}`:'Усі коди ДК';
-    dkDetails.classList.toggle('filter-active',dkSelection.size>0);
+  function renderDkFilter(rows,preserveSelection=false) {
+    const values=[...new Set([...rows.map(row=>row.dk_code).filter(Boolean),...(preserveSelection?[...appliedDkSelection]:[])])].sort((a,b)=>a.localeCompare(b,'uk'));
+    if(!preserveSelection){
+      const available=new Set(values);
+      appliedDkSelection=new Set([...appliedDkSelection].filter(value=>available.has(value)));
+    }
+    dkSelection=new Set(appliedDkSelection);
+    renderDkOptions(values);
+  }
+
+  function renderDkOptions(values=[...new Set(statistics.map(row=>row.dk_code).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'uk'))) {
+    const query=dkSearch.value.trim().toLocaleLowerCase('uk');
+    const visible=values.filter(value=>String(value).toLocaleLowerCase('uk').includes(query)||dkSelection.has(value));
+    dkOptions.innerHTML=visible.map(value=>`<label><input type="checkbox" data-statistics-dk-option value="${esc(value)}" ${dkSelection.has(value)?'checked':''}> ${esc(value)}</label>`).join('')||'<span class="muted">Кодів ДК за цим пошуком немає</span>';
+    dkSummary.textContent=dkSelection.size?`Вибрано: ${dkSelection.size}`:'Усі коди';
   }
 
   function renderFilterPresentation() {
-    const activeCount=controls.filter(control=>Boolean(control.value)).length+(dkSelection.size?1:0);
+    const activeCount=Object.values(appliedSelection).filter(Boolean).length+(appliedDkSelection.size?1:0);
     filterSummary.textContent=activeCount?`Фільтри · ${activeCount}`:'Фільтри';
-    filterPanel.classList.toggle('filter-active',activeCount>0);
-    controls.forEach(control=>control.closest('label')?.classList.toggle('filter-active',Boolean(control.value)));
+    filterToggle.classList.toggle('filter-active',activeCount>0);
+    controls.forEach(control=>{
+      const applied=appliedSelection[control.dataset.statisticsFilter]||'';
+      control.closest('label')?.classList.toggle('filter-active',Boolean(applied&&control.value===applied));
+      control.closest('label')?.classList.toggle('filter-pending',control.value!==applied);
+    });
+    const dkField=dkOptions.closest('.queue-statistics-dk-field');
+    const draftDk=[...dkSelection].sort().join('\0'), appliedDk=[...appliedDkSelection].sort().join('\0');
+    dkField?.classList.toggle('filter-active',appliedDkSelection.size>0&&draftDk===appliedDk);
+    dkField?.classList.toggle('filter-pending',draftDk!==appliedDk);
     fromField.classList.toggle('filter-active',Boolean(period?.date_from)&&from.value===period.date_from);
     toField.classList.toggle('filter-active',Boolean(period?.date_to)&&to.value===period.date_to);
     groupField.classList.toggle('filter-active',group.value!=='review_officer');
     const datesPending=Boolean(period)&&(from.value!==period.date_from||to.value!==period.date_to);
-    pending.hidden=!datesPending;
-    pending.textContent=datesPending?'Зміни періоду ще не застосовано. Натисніть лупу «Застосувати», щоб оновити статистику.':'';
+    const filtersPending=controls.some(control=>control.value!==(appliedSelection[control.dataset.statisticsFilter]||''))||draftDk!==appliedDk;
+    pending.hidden=!datesPending&&!filtersPending;
+    pending.textContent=[datesPending?'Зміни періоду ще не застосовано. Натисніть пошук, щоб оновити статистику.':'',filtersPending?'Зміни фільтрів ще не застосовано. Натисніть «Застосувати» в панелі.':''].filter(Boolean).join(' ');
   }
 
-  async function loadStatistics() {
+  function setFilterPanelOpen(open) {
+    filterPanel.hidden=!open;
+    filterToggle.setAttribute('aria-expanded',String(open));
+    filterToggle.title=open?'Закрити фільтри':'Відкрити фільтри';
+    workspace.classList.toggle('is-filter-open',open);
+  }
+
+  function applyDraftFilters(closePanel=true) {
+    const previousType=appliedSelection.supplier_type||'';
+    appliedSelection=Object.fromEntries(controls.filter(control=>control.value).map(control=>[control.dataset.statisticsFilter,control.value]));
+    appliedDkSelection=new Set(dkSelection);
+    if(previousType!==(appliedSelection.supplier_type||''))loadStatistics(true);
+    else renderStatistics();
+    if(closePanel)setFilterPanelOpen(false);
+  }
+
+  async function loadStatistics(preserveSelection=false) {
     const dates=periodParams(from,to), ticket=++statisticsRequest;
     if (dates.date_from>dates.date_to) {message.textContent='Дата «До» має бути не раніше дати «Від»';return;}
     period=null;
@@ -198,17 +236,24 @@
     table.replaceChildren();
     message.textContent='Завантаження…';
     try {
-      const data=await summary('application-statistics',dates);
+      const entityType=appliedSelection.supplier_type||'';
+      const data=await summary('application-statistics',dates,entityType?{entity_type:entityType}:{});
       if (ticket!==statisticsRequest) return;
       statistics=Array.isArray(data.items)?data.items:[];
       period=dates;
-      renderDkFilter(statistics);
+      renderDkFilter(statistics,preserveSelection);
       for (const control of controls) {
-        const key=control.dataset.statisticsFilter, previous=control.value, isOfficer=key.endsWith('_officer');
+        const key=control.dataset.statisticsFilter, previous=appliedSelection[key]||'', isOfficer=key.endsWith('_officer');
+        if(key==='supplier_type')continue;
         const values=[...new Set(statistics.map(row=>row[key]).filter(value=>value||isOfficer))].sort((a,b)=>a.localeCompare(b,'uk'));
+        if(preserveSelection&&previous&&!values.includes(previous))values.push(previous);
+        values.sort((a,b)=>a.localeCompare(b,'uk'));
         control.replaceChildren(new Option('Усі',''),...values.map(value=>new Option(isOfficer?officerName(value):value,value||unassigned)));
         control.value=[...control.options].some(option=>option.value===previous)?previous:'';
       }
+      appliedSelection=Object.fromEntries(controls.filter(control=>control.value).map(control=>[control.dataset.statisticsFilter,control.value]));
+      dkSelection=new Set(appliedDkSelection);
+      renderDkOptions();
       renderStatistics();
     } catch(error) {
       if (ticket===statisticsRequest) message.textContent=error.message;
@@ -238,19 +283,37 @@
     to.value=initialPeriod.date_to;
     controls.forEach(control=>control.value='');
     dkSelection.clear();
+    appliedDkSelection.clear();
+    appliedSelection={};
+    dkSearch.value='';
     group.value='review_officer';
+    setFilterPanelOpen(false);
     loadStatistics();
     renderFilterPresentation();
   };
-  [...controls,group].forEach(control=>control.onchange=renderStatistics);
+  controls.forEach(control=>control.onchange=renderFilterPresentation);
+  group.onchange=renderStatistics;
+  filterToggle.onclick=()=>setFilterPanelOpen(filterPanel.hidden);
+  $('#queueStatisticsFilterApply').onclick=()=>applyDraftFilters(true);
+  $('#queueStatisticsFilterClear').onclick=()=>{
+    controls.forEach(control=>control.value='');
+    dkSelection.clear();
+    dkSearch.value='';
+    renderDkOptions();
+    applyDraftFilters(false);
+  };
+  $('#queueStatisticsDkClear').onclick=()=>{
+    dkSelection.clear();
+    renderDkOptions();
+    renderFilterPresentation();
+  };
+  dkSearch.addEventListener('input',()=>renderDkOptions());
   dkOptions.onchange=event=>{
     const input=event.target.closest('[data-statistics-dk-option]');
     if(!input)return;
     input.checked?dkSelection.add(input.value):dkSelection.delete(input.value);
-    const summary=dkDetails.querySelector('summary');
-    summary.textContent=dkSelection.size?`Коди ДК · ${dkSelection.size}`:'Усі коди ДК';
-    dkDetails.classList.toggle('filter-active',dkSelection.size>0);
-    renderStatistics();
+    renderDkOptions();
+    renderFilterPresentation();
   };
   for (const root of [kpis,table]) root.onclick=event=>{
     const button=event.target.closest('[data-statistics-action]');

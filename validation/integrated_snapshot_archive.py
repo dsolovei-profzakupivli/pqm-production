@@ -28,6 +28,10 @@ SELF_MANIFEST_RULES = {
         re.compile(rb'(?m)^MANIFEST_SHA256 = "(?:<manifest-sha256>|[0-9a-f]{64})"$'),
         b'MANIFEST_SHA256 = "<manifest-sha256>"',
     ),
+    "test_google_writer_integrated_candidate_integrity_v9.py": (
+        re.compile(rb'(?m)^MANIFEST_SHA256 = "(?:<manifest-sha256>|[0-9a-f]{64})"$'),
+        b'MANIFEST_SHA256 = "<manifest-sha256>"',
+    ),
 }
 
 

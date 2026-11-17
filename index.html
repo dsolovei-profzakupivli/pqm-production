@@ -85,33 +85,47 @@
       <article class="card qualification-summary-card queue-statistics-card">
         <header class="queue-statistics-heading">
           <h2>Статистика всіх заявок за період</h2>
-          <div class="queue-statistics-actions">
-            <button type="submit" form="queueStatisticsFilters" class="ghost icon-button queue-icon-action" title="Застосувати" aria-label="Застосувати">
-              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 5 5"/></svg>
-            </button>
-            <button id="queueStatisticsReset" type="button" class="ghost icon-button queue-icon-action" title="Очистити" aria-label="Очистити">×</button>
-          </div>
         </header>
         <form id="queueStatisticsFilters" class="queue-statistics-filters">
           <div class="queue-statistics-controls">
             <label id="queueStatisticsFromField">Від <input id="queueStatisticsFrom" type="date" required></label>
             <label id="queueStatisticsToField">До <input id="queueStatisticsTo" type="date" required></label>
-            <details id="queueStatisticsFilterPanel" class="advanced-filters queue-statistics-filter-details">
-              <summary id="queueStatisticsFilterSummary">Фільтри</summary>
-              <div class="queue-statistics-filter-panel">
+            <button id="queueStatisticsFilterToggle" class="ghost queue-statistics-filter-toggle" type="button" aria-controls="queueStatisticsFilterPanel" aria-expanded="false" title="Відкрити фільтри">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16l-6.5 7.5v5l-3 1.5v-6.5L4 5z"/></svg>
+              <span id="queueStatisticsFilterSummary">Фільтри</span>
+            </button>
+            <label id="queueStatisticsGroupField" class="queue-statistics-group">Розподіл за УО <select id="queueStatisticsGroup"><option value="protocol_officer">УО протоколу</option><option value="review_officer">УО розгляду</option></select></label>
+            <button id="queueStatisticsSearch" type="submit" class="ghost icon-button queue-icon-action" title="Застосувати період" aria-label="Застосувати період">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 5 5"/></svg>
+            </button>
+            <button id="queueStatisticsReset" type="button" class="ghost icon-button queue-icon-action" title="Скинути все" aria-label="Скинути все">×</button>
+          </div>
+          <p id="queueStatisticsPending" class="muted queue-statistics-pending" aria-live="polite" hidden></p>
+          <div id="queueStatisticsWorkspace" class="queue-statistics-workspace">
+            <div class="queue-statistics-results">
+              <div id="queueStatisticsKpis" class="queue-statistics-kpis"></div>
+              <div class="queue-statistics-table"><table><thead><tr><th>УО</th><th>Допущено</th><th>Відхилено</th><th>Очікує</th><th>Усього</th></tr></thead><tbody id="queueStatisticsRows"></tbody></table></div>
+              <p id="queueStatisticsMessage" class="muted" aria-live="polite"></p>
+            </div>
+            <aside id="queueStatisticsFilterPanel" class="queue-statistics-filter-panel" aria-label="Фільтри статистики" hidden>
+              <div class="queue-statistics-filter-fields">
+                <label>Тип <select data-statistics-filter="supplier_type"><option value="">Усі</option><option value="individual_entrepreneur">ФОП</option><option value="legal_entity">ЮО та інші</option><option value="foreign_legal_entity">Нерезидент</option><option value="unknown">Потребує перевірки</option></select></label>
                 <label>Категорія <select data-statistics-filter="category"></select></label>
-                <div class="queue-statistics-dk-field"><span>Код ДК</span><details id="queueStatisticsDkFilter" class="multi-filter queue-statistics-dk-filter"><summary>Усі коди ДК</summary><div id="queueStatisticsDkOptions" class="multi-panel queue-statistics-dk-options"></div></details></div>
+                <div class="queue-statistics-dk-field">
+                  <div class="queue-statistics-dk-heading"><label for="queueStatisticsDkSearch">Код ДК</label><span id="queueStatisticsDkSummary">Усі коди</span><button id="queueStatisticsDkClear" type="button" class="ghost">Очистити вибір</button></div>
+                  <input id="queueStatisticsDkSearch" type="search" autocomplete="off" placeholder="Пошук за кодом або частиною">
+                  <div id="queueStatisticsDkOptions" class="queue-statistics-dk-options" role="group" aria-label="Коди ДК"></div>
+                </div>
                 <label>УО розгляду <select data-statistics-filter="review_officer"></select></label>
                 <label>УО протоколу <select data-statistics-filter="protocol_officer"></select></label>
               </div>
-            </details>
-            <label id="queueStatisticsGroupField" class="queue-statistics-group">Розподіл за УО <select id="queueStatisticsGroup"><option value="protocol_officer">УО протоколу</option><option value="review_officer">УО розгляду</option></select></label>
+              <div class="queue-statistics-filter-actions">
+                <button id="queueStatisticsFilterApply" class="primary" type="button">Застосувати</button>
+                <button id="queueStatisticsFilterClear" class="ghost" type="button">Очистити</button>
+              </div>
+            </aside>
           </div>
-          <p id="queueStatisticsPending" class="muted queue-statistics-pending" aria-live="polite" hidden></p>
         </form>
-        <div id="queueStatisticsKpis" class="queue-statistics-kpis"></div>
-        <div class="queue-statistics-table"><table><thead><tr><th>УО</th><th>Допущено</th><th>Відхилено</th><th>Очікує</th><th>Усього</th></tr></thead><tbody id="queueStatisticsRows"></tbody></table></div>
-        <p id="queueStatisticsMessage" class="muted" aria-live="polite"></p>
       </article>
       </div>
     </section>

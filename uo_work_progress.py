@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import supplier_classification
+import supplier_manual_classification
 from uo_work_queue import _officer_label
 
 
 def work_queue_application_statistics(con, clause: str, args: list, *, review_progress: bool,
-                                     group_by: str = "review_officer") -> list[dict]:
+                                     group_by: str = "review_officer",
+                                     entity_type: str = "") -> list[dict]:
+    if entity_type:
+        if entity_type not in supplier_classification.ENTITY_TYPES:
+            raise ValueError("Невідомий тип постачальника")
+        supplier_types = supplier_classification.build_index(con)
+        manual_types = supplier_manual_classification.build_index(con)
+        con.create_function("SUPPLIER_ENTITY_TYPE", 1,
+            lambda code: supplier_manual_classification.apply_effective(
+                supplier_classification.resolve(supplier_types, code),
+                manual_types.get(str(code or "")))['entity_type'], deterministic=True)
+        clause = f"({clause}) AND SUPPLIER_ENTITY_TYPE(s.supplier_code)=?"
+        args = [*args, entity_type]
     source = f''' FROM submissions s JOIN frameworks f ON f.id=s.framework_id
         LEFT JOIN qualifications q ON q.id=s.qualification_id
         LEFT JOIN application_fields af ON af.submission_id=s.id

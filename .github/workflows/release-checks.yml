@@ -103,8 +103,10 @@ jobs:
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v6_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v7_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v8_history.py
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v9_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
             test_google_writer_integrated_candidate_integrity_v9 \
+            test_google_writer_integrated_candidate_integrity_v10 \
             test_google_writer_update_append_v2_integrity \
             test_google_writer_update_append_v3_integrity \
             validation.local_release_20260911.test_edr_sync_v2 \

@@ -3,6 +3,7 @@ import sqlite3
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from uo_work_queue import default_protocol_period, get_current_qualification_summary, get_uo_work_queue
 from uo_work_progress import work_queue_application_statistics
@@ -147,6 +148,67 @@ class UoWorkQueueTests(unittest.TestCase):
         rows=work_queue_application_statistics(self.con,"1=1",[],review_progress=False)
         row=next(item for item in rows if item["protocol_officer"])
         self.assertEqual(row["protocol_officer"],"Світлана НАМЯСЕНКО")
+
+    def test_application_statistics_filters_supplier_type_before_server_aggregation(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-type-fop", "f1", "ФОП", "111", "2026-08-25T09:00:00", "q-pending"),
+            ("s-type-legal", "f1", "ЮО", "222", "2026-08-25T10:00:00", "q-complete"),
+            ("s-type-foreign", "f1", "Нерезидент", "333", "2026-08-25T11:00:00", "q-complete"),
+            ("s-type-unknown", "f1", "Невідомий", "444", "2026-08-25T12:00:00", "q-pending"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer,protocol_decision) VALUES (?,?,?,?)", [
+            ("s-type-fop", "УО А", "УО П", ""),
+            ("s-type-legal", "УО Б", "УО П", "admit"),
+            ("s-type-foreign", "УО А", "УО Q", "reject"),
+            ("s-type-unknown", "УО Б", "УО Q", ""),
+        ])
+        classifications = {
+            "111": {"entity_type": "individual_entrepreneur"},
+            "222": {"entity_type": "legal_entity"},
+            "333": {"entity_type": "foreign_legal_entity"},
+            "444": {"entity_type": "unknown"},
+        }
+        with patch("uo_work_progress.supplier_classification.build_index", return_value=classifications), \
+             patch("uo_work_progress.supplier_manual_classification.build_index", return_value={}):
+            fops = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="individual_entrepreneur")
+            legal = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="legal_entity")
+            foreign = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="foreign_legal_entity")
+            unknown = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="unknown")
+        self.assertEqual(sum(row["total"] for row in fops), 1)
+        self.assertEqual((fops[0]["status"], fops[0]["review_officer"]), ("pending", "УО А"))
+        self.assertEqual(sum(row["total"] for row in legal), 1)
+        self.assertEqual((legal[0]["status"], legal[0]["review_officer"]), ("active", "УО Б"))
+        self.assertEqual((sum(row["total"] for row in foreign), sum(row["total"] for row in unknown)), (1, 1))
+        manual = {"111": {"is_active": 1, "subject_type": "legal_entity", "residency": "UA",
+            "google_group": "legal_other", "revision": 1, "changed_by": "test",
+            "changed_officer_id": 1, "changed_officer_name": "Test", "changed_at": "2026-01-01T00:00:00Z"}}
+        with patch("uo_work_progress.supplier_classification.build_index", return_value=classifications), \
+             patch("uo_work_progress.supplier_manual_classification.build_index", return_value=manual):
+            manual_legal = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="legal_entity")
+        self.assertEqual(sum(row["total"] for row in manual_legal), 2,
+            "manual classification takes precedence exactly as in the supplier registry")
+
+    def test_application_statistics_type_filter_composes_with_date_and_rejects_unknown_values(self):
+        self.con.execute("INSERT INTO submissions VALUES ('s-type-fop','f1','ФОП','111','2026-08-25T09:00:00','q-pending')")
+        with patch("uo_work_progress.supplier_classification.build_index", return_value={"111": {"entity_type": "individual_entrepreneur"}}), \
+             patch("uo_work_progress.supplier_manual_classification.build_index", return_value={}):
+            rows = work_queue_application_statistics(self.con,
+                "SUBSTR(s.date_published,1,10)>=? AND SUBSTR(s.date_published,1,10)<=?",
+                ["2026-08-25", "2026-08-25"], review_progress=False,
+                entity_type="individual_entrepreneur")
+            empty = work_queue_application_statistics(self.con,
+                "SUBSTR(s.date_published,1,10)=?", ["1900-01-01"], review_progress=False,
+                entity_type="individual_entrepreneur")
+            with self.assertRaisesRegex(ValueError, "Невідомий тип постачальника"):
+                work_queue_application_statistics(self.con, "1=1", [], review_progress=False,
+                    entity_type="not-a-type")
+        self.assertEqual(sum(row["total"] for row in rows), 1)
+        self.assertEqual(empty, [])
 
     def test_publication_control_uses_synced_status_without_local_action(self):
         self.con.executemany("INSERT INTO qualifications VALUES (?,?)", [
