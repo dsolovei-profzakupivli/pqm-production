@@ -1,7 +1,12 @@
 """Tests for deterministic and complete Release Gate package staging."""
 from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from validation.release_test_package import (
     PACKAGE_MANIFEST,
@@ -9,11 +14,12 @@ from validation.release_test_package import (
     load_package_manifest,
     package_dependency_map,
     preflight_dependency_map,
+    resolve_package_source_root,
     stage_dependency_map,
 )
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = resolve_package_source_root(__file__)
 
 
 class ReleaseTestPackageTests(unittest.TestCase):
@@ -22,9 +28,9 @@ class ReleaseTestPackageTests(unittest.TestCase):
         dependencies = {path for path, _sources in package_dependency_map(
             ROOT, ROOT, manifest=manifest
         )}
-        for version in range(1, 13):
-            self.assertIn(f"validation/run_integrated_writer_ui_v{version}_history.py", dependencies)
         for version in range(1, 14):
+            self.assertIn(f"validation/run_integrated_writer_ui_v{version}_history.py", dependencies)
+        for version in range(1, 15):
             self.assertIn(f"test_google_writer_integrated_candidate_integrity_v{version}.py", dependencies)
             self.assertIn(
                 f"validation/local_release_20261116/pqm_sync_ui_integrated_v{version}.json",
@@ -73,7 +79,7 @@ class ReleaseTestPackageTests(unittest.TestCase):
             self.assertFalse((staged / ".git").exists())
             self.assertEqual(source_missing, [])
             self.assertEqual(staging_missing, [])
-            for version in range(1, 13):
+            for version in range(1, 14):
                 self.assertTrue(
                     (staged / f"validation/run_integrated_writer_ui_v{version}_history.py").is_file()
                 )
@@ -142,6 +148,123 @@ class ReleaseTestPackageTests(unittest.TestCase):
             self.assertIn("STAGING missing:", message)
             self.assertIn("source_payload.py", message)
             self.assertFalse((staged / ".git").exists())
+
+    def test_flattened_test_copy_runs_manifest_readers_from_another_working_directory(self):
+        with tempfile.TemporaryDirectory(prefix="pqm-flat-source-") as source_tmp, \
+             tempfile.TemporaryDirectory(prefix="pqm-flat-stage-") as stage_tmp, \
+             tempfile.TemporaryDirectory(prefix="pqm-flat-cwd-") as cwd_tmp:
+            source = Path(source_tmp)
+            stage = Path(stage_tmp)
+            cwd = Path(cwd_tmp)
+            (source / "validation").mkdir(parents=True)
+            shutil.copy2(ROOT / "validation/release_test_package_v1.json",
+                         source / "validation/release_test_package_v1.json")
+            for version in range(1, 14):
+                shutil.copy2(
+                    ROOT / f"validation/run_integrated_writer_ui_v{version}_history.py",
+                    source / f"validation/run_integrated_writer_ui_v{version}_history.py",
+                )
+            for name in ("integrated_snapshot_archive.py", "integrated_git_snapshot.py"):
+                shutil.copy2(ROOT / "validation" / name, source / "validation" / name)
+
+            (stage / "validation").mkdir()
+            shutil.copy2(Path(__file__), stage / "test_release_test_package.py")
+            shutil.copy2(ROOT / "validation/release_test_package.py",
+                         stage / "validation/release_test_package.py")
+            shutil.copy2(ROOT / "validation/release_test_package_v1.json",
+                         stage / "validation/release_test_package_v1.json")
+
+            environment = os.environ.copy()
+            environment["PQM_RELEASE_SOURCE_ROOT"] = str(source)
+            environment["PYTHONPATH"] = str(stage)
+            environment.pop("PYTHONHOME", None)
+            command = [
+                sys.executable, "-B", "-m", "unittest", "-v",
+                "test_release_test_package.ReleaseTestPackageTests.test_single_manifest_covers_history_runners_tests_and_support",
+                "test_release_test_package.ReleaseTestPackageTests.test_runner_dependencies_stage_between_separate_gitless_roots",
+            ]
+            result = subprocess.run(command, cwd=cwd, env=environment,
+                                    capture_output=True, text=True, timeout=60)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Ran 2 tests", result.stderr)
+            self.assertIn("OK", result.stderr)
+            self.assertFalse((source / ".git").exists())
+            self.assertFalse((stage / ".git").exists())
+            self.assertFalse((cwd / ".git").exists())
+
+    def test_source_root_resolution_validates_explicit_environment_and_control_file(self):
+        with tempfile.TemporaryDirectory(prefix="pqm-source-root-") as source_tmp, \
+             tempfile.TemporaryDirectory(prefix="pqm-flat-module-") as module_tmp:
+            source = Path(source_tmp)
+            (source / "validation").mkdir(parents=True)
+            module = Path(module_tmp) / "test_release_test_package.py"
+            shutil.copy2(ROOT / "validation/release_test_package_v1.json",
+                         source / "validation/release_test_package_v1.json")
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.touch()
+
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(source)}):
+                self.assertEqual(resolve_package_source_root(module), source.resolve())
+
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(source / "missing")}):
+                with self.assertRaisesRegex(RuntimeError, "does not name an existing directory"):
+                    resolve_package_source_root(module)
+
+            empty_root = Path(module_tmp) / "empty-root"
+            empty_root.mkdir()
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(empty_root)}):
+                with self.assertRaisesRegex(RuntimeError, "missing or invalid package manifest"):
+                    resolve_package_source_root(module)
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": "  "}):
+                with self.assertRaisesRegex(RuntimeError, "is set but empty"):
+                    resolve_package_source_root(module)
+
+            malformed = Path(module_tmp) / "bad-root"
+            (malformed / "validation").mkdir(parents=True)
+            (malformed / "validation/release_test_package_v1.json").write_text("{", encoding="utf-8")
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(malformed)}):
+                with self.assertRaisesRegex(RuntimeError, "missing or invalid package manifest"):
+                    resolve_package_source_root(module)
+
+            invalid_shape = Path(module_tmp) / "bad-shape"
+            (invalid_shape / "validation").mkdir(parents=True)
+            (invalid_shape / "validation/release_test_package_v1.json").write_text(
+                '{"schema_version":1,"integrated_history_versions":"not-a-list"}',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(invalid_shape)}):
+                with self.assertRaisesRegex(RuntimeError, "missing or invalid package manifest"):
+                    resolve_package_source_root(module)
+
+            invalid_top_level = Path(module_tmp) / "bad-top-level"
+            (invalid_top_level / "validation").mkdir(parents=True)
+            (invalid_top_level / "validation/release_test_package_v1.json").write_text(
+                "[]", encoding="utf-8"
+            )
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(invalid_top_level)}):
+                with self.assertRaisesRegex(RuntimeError, "missing or invalid package manifest"):
+                    resolve_package_source_root(module)
+
+            with patch.dict(os.environ, {}, clear=True):
+                discovered = resolve_package_source_root(ROOT / "validation/local_release_20260911/test_release_test_package.py")
+                self.assertEqual(discovered, ROOT.resolve())
+                with self.assertRaisesRegex(FileNotFoundError, "Could not find"):
+                    resolve_package_source_root(module)
+
+    def test_invalid_explicit_source_root_never_falls_back_to_nearby_manifest(self):
+        with tempfile.TemporaryDirectory(prefix="pqm-invalid-explicit-root-") as temporary:
+            parent = Path(temporary)
+            (parent / "validation").mkdir()
+            shutil.copy2(ROOT / "validation/release_test_package_v1.json",
+                         parent / "validation/release_test_package_v1.json")
+            module = parent / "nested" / "test_release_test_package.py"
+            module.parent.mkdir()
+            module.touch()
+            invalid_explicit = parent / "does-not-exist"
+            with patch.dict(os.environ, {"PQM_RELEASE_SOURCE_ROOT": str(invalid_explicit)}):
+                with self.assertRaisesRegex(RuntimeError, "does not name an existing directory"):
+                    resolve_package_source_root(module)
 
 
 if __name__ == "__main__":

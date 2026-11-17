@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 import shutil
 from typing import Iterable
 
@@ -14,8 +16,80 @@ PACKAGE_HELPER = Path("validation/release_test_package.py")
 def load_package_manifest(source_root: Path) -> dict:
     path = Path(source_root) / PACKAGE_MANIFEST
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != 1:
+    if not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
         raise RuntimeError(f"Unsupported release test package manifest: {path}")
+    required = {
+        "integrated_history_versions": list,
+        "integrity_test_versions": list,
+        "integrity_manifest_dir": str,
+        "required_local_release_tests": list,
+        "snapshot_support_files": list,
+        "supplemental_validation_files": list,
+        "pinned_release_files": dict,
+        "infrastructure_auxiliary_files": list,
+        "release_fixture_basenames": list,
+        "root_level_release_files": list,
+        "infrastructure_release_runner": str,
+        "candidate_docker_gate": str,
+        "candidate_workflow": str,
+    }
+    for key, expected_type in required.items():
+        if not isinstance(payload.get(key), expected_type):
+            raise RuntimeError(f"Invalid release test package manifest field {key!r}: {path}")
+    for key in (
+        "integrated_history_versions", "integrity_test_versions",
+        "required_local_release_tests", "snapshot_support_files",
+        "supplemental_validation_files", "infrastructure_auxiliary_files",
+        "release_fixture_basenames", "root_level_release_files",
+    ):
+        values = payload[key]
+        if any((type(value) is not int if key.endswith("versions") else not isinstance(value, str))
+               for value in values):
+            raise RuntimeError(f"Invalid release test package manifest values in {key!r}: {path}")
+        if len(values) != len(set(values)):
+            raise RuntimeError(f"Duplicate release test package manifest values in {key!r}: {path}")
+    if any(version < 1 for key in ("integrated_history_versions", "integrity_test_versions")
+           for version in payload[key]):
+        raise RuntimeError(f"Invalid release test package manifest version: {path}")
+    if any(not isinstance(name, str) or not isinstance(digest, str)
+           or not re.fullmatch(r"[0-9a-f]{64}", digest)
+           for name, digest in payload["pinned_release_files"].items()):
+        raise RuntimeError(f"Invalid pinned file map in release test package manifest: {path}")
+    return payload
+
+
+def resolve_package_source_root(anchor_file: Path,
+                                env_name: str = "PQM_RELEASE_SOURCE_ROOT") -> Path:
+    """Resolve the candidate source root without assuming a module directory depth.
+
+    An explicit environment value is authoritative: invalid paths or manifests
+    fail closed instead of falling back to a nearby checkout or staging tree.
+    Without it, walk upward from the module location until the package manifest
+    control file is found.
+    """
+    configured = os.environ.get(env_name)
+    if configured is not None:
+        if not configured.strip():
+            raise RuntimeError(f"{env_name} is set but empty")
+        candidate = Path(configured).expanduser().resolve()
+        if not candidate.is_dir():
+            raise RuntimeError(f"{env_name} does not name an existing directory: {candidate}")
+        try:
+            load_package_manifest(candidate)
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            raise RuntimeError(f"{env_name} points to a missing or invalid package manifest: {candidate}") from exc
+        return candidate
+
+    anchor = Path(anchor_file).expanduser().resolve()
+    for candidate in (anchor.parent, *anchor.parents):
+        if (candidate / PACKAGE_MANIFEST).is_file():
+            # A discovered control file must itself be valid; do not skip a
+            # malformed nearer manifest and silently select another root.
+            load_package_manifest(candidate)
+            return candidate
+    raise FileNotFoundError(
+        f"Could not find {PACKAGE_MANIFEST.as_posix()} above test module {anchor}"
+    )
     return payload
 
 
