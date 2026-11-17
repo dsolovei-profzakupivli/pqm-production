@@ -1,6 +1,9 @@
 /* Approved compact layout for the Sandbox Work UO page. */
-#workQueueView .work-queue-operational-grid{align-items:start;gap:14px}
-#workQueueView .queue-summary-right{display:grid;align-content:start;gap:18px;min-width:0}
+#workQueueView>.module-heading{margin-bottom:8px}
+#workQueueView>.module-heading h1{margin:2px 0 0}
+#workQueueView .work-queue-operational-grid{grid-template-columns:minmax(0,2fr) minmax(0,3fr);align-items:start;gap:12px}
+#workQueueView .queue-summary-left{display:grid;align-content:start;gap:8px;min-width:0}
+#workQueueView .queue-statistics-card{align-self:start;min-width:0}
 #workQueueView .qualification-summary-card{padding:12px 14px;margin:0;min-width:0}
 #workQueueView .queue-summary-heading{display:flex;align-items:center;gap:8px;min-height:39px;margin:0 0 9px}
 #workQueueView .queue-summary-heading>h2{flex:0 0 auto;margin:0;font-size:16px;line-height:1.2;white-space:nowrap}
@@ -13,10 +16,11 @@ html[data-theme="dark"] #workQueueView .queue-summary-total{color:#86bdff!import
 #workQueueView .queue-icon-action svg{display:block}
 #workQueueView .queue-info{display:inline-grid;place-items:center;width:16px;height:16px;border:1px solid currentColor;border-radius:50%;color:var(--muted);font-size:11px;line-height:1;vertical-align:2px;cursor:help}
 #workQueueView .qualification-summary-card h3{margin:8px 0 5px;font-size:12px;line-height:1.2}
-#workQueueView .qualification-summary-cards{display:flex;flex-wrap:wrap!important;align-items:stretch;gap:7px;overflow:visible;padding:0}
+#workQueueView .qualification-summary-cards{display:flex;flex-wrap:wrap!important;align-items:stretch;gap:6px;overflow:visible;padding:0}
 #workQueueView #queueProtocolCategoryCards,#workQueueView #queueCategoryCards{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;align-items:stretch;gap:7px;min-width:0;overflow:visible}
 #workQueueView #queueProtocolCategoryCards>.qualification-summary-category,#workQueueView #queueCategoryCards>.qualification-summary-category{box-sizing:border-box;width:100%!important;max-width:none!important;min-width:0;flex:none!important}
-#workQueueView .qualification-summary-officer{box-sizing:border-box;flex:0 1 184px!important;width:184px!important;min-width:0;max-width:184px;min-height:64px;padding:7px 9px;border-radius:8px;white-space:normal}
+#workQueueView #queueProtocolOfficerCards,#workQueueView #queueQualificationCards{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;align-items:stretch;gap:6px;min-width:0;overflow:visible;padding:0}
+#workQueueView .qualification-summary-officer{box-sizing:border-box;flex:none!important;width:100%!important;min-width:0;max-width:none;min-height:64px;padding:6px 7px;border-radius:8px;white-space:normal}
 #workQueueView .qualification-summary-officer:not(.unassigned){border:1px solid #8db67a;border-left-width:1px;background:#edf6e8;color:#172b41}
 #workQueueView .qualification-summary-officer:not(.unassigned):hover{background:#dff0d7;border-color:#8db67a}
 #workQueueView .qualification-summary-officer.qualification-summary-category{background:#eef3ff;border:1px solid #86a8df;border-left-width:1px;color:#172b41}
@@ -25,13 +29,13 @@ html[data-theme="dark"] #workQueueView .queue-summary-total{color:#86bdff!import
 #workQueueView .qualification-summary-officer strong{font-size:20px;line-height:1.1;margin:3px 0}
 #workQueueView .qualification-summary-officer small{white-space:normal;line-height:1.15}
 #workQueueView .qualification-summary-category{min-height:59px}
-#workQueueView .queue-protocol-officers>.protocol-officer-card{display:flex;flex-direction:column;gap:5px;min-height:104px;padding:7px 9px}
+#workQueueView .queue-protocol-officers>.protocol-officer-card{display:flex;flex-direction:column;gap:4px;min-height:96px;padding:6px 7px}
 #workQueueView .protocol-officer-card[data-protocol-officer="Не призначено"]{background:#f4f6f8;border-color:#cbd4dc}
 #workQueueView .protocol-officer-main{display:block;width:100%;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}
-#workQueueView .protocol-officer-main span{display:block;min-height:30px;font-size:12px;font-weight:650;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
-#workQueueView .protocol-officer-main strong{display:block;font-size:19px;margin:3px 0 0}
-#workQueueView #queueQualificationCards>.qualification-summary-officer{min-height:96px}
-#workQueueView #queueQualificationCards>.qualification-summary-officer span{min-height:30px;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
+#workQueueView .protocol-officer-main span{display:block;min-height:2.4em;font-size:11px;font-weight:650;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere;line-height:1.2}
+#workQueueView .protocol-officer-main strong{display:block;font-size:17px;margin:2px 0 0}
+#workQueueView #queueQualificationCards>.qualification-summary-officer{min-height:82px}
+#workQueueView #queueQualificationCards>.qualification-summary-officer span{min-height:2.4em;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere;line-height:1.2}
 #workQueueView .protocol-officer-progress{display:grid;gap:3px;margin-top:auto}
 #workQueueView .protocol-progress-track{height:4px;overflow:hidden;border-radius:4px;background:#e1e8e3;cursor:help}
 #workQueueView .protocol-progress-track>span{display:block;height:100%;background:#43a66d;transition:width .18s ease}
@@ -83,10 +87,11 @@ html[data-theme="dark"] #workQueueView .queue-summary-total{color:#86bdff!import
 #workQueueView .queue-statistics-kpis button strong{font-size:20px;line-height:1.1}
 html:not([data-theme="dark"]) #workQueueView .publication-kpi--rejected,html:not([data-theme="dark"]) #workQueueView .queue-statistics-kpis button.rejected{background:#FDE8E7!important;border-color:#E9A5A0!important;color:#000000!important}
 #workQueueView .queue-statistics-table{margin-top:4px;overflow-x:auto}
-#workQueueView .queue-statistics-table table{width:100%;min-width:590px;table-layout:fixed;border-collapse:collapse;font-variant-numeric:tabular-nums}
+#workQueueView .queue-statistics-table table{width:100%;min-width:0;table-layout:fixed;border-collapse:collapse;font-variant-numeric:tabular-nums}
 #workQueueView .queue-statistics-table th,#workQueueView .queue-statistics-table td{padding:4px 5px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle}
 #workQueueView .queue-statistics-table th{position:sticky;top:0;z-index:2;background:var(--soft);color:var(--muted);font-size:10px;white-space:normal;text-transform:none;letter-spacing:0}
 #workQueueView .queue-statistics-table th:first-child,#workQueueView .queue-statistics-table td:first-child{text-align:left;width:34%}
+#workQueueView .queue-statistics-table tbody th[scope="row"]{white-space:normal;overflow-wrap:anywhere}
 #workQueueView .queue-statistics-table td{height:auto;color:var(--ink);font-size:12px}
 #workQueueView .queue-statistics-table td button.publication-kpi{min-width:35px;padding:3px 6px;background:var(--surface,#fff)!important;color:var(--ink)!important;border-color:var(--line)!important;font-size:12px}
 #workQueueView .queue-statistics-table--scroll{max-height:220px;overflow:auto;overscroll-behavior:contain}
@@ -134,4 +139,11 @@ html[data-theme="dark"] #workQueueView #queueCategoryCards>.qualification-summar
 }
 @media(max-width:650px){
   #workQueueView #queueProtocolCategoryCards,#workQueueView #queueCategoryCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  #workQueueView #queueProtocolOfficerCards,#workQueueView #queueQualificationCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  #workQueueView .queue-statistics-table{overflow-x:auto}
+  #workQueueView .queue-statistics-table table{min-width:560px}
 }
+
+/* Keep controls visually consistent while retaining a visible keyboard focus. */
+#workQueueView :is(.protocol-period input,.queue-statistics-controls input,.queue-statistics-controls select,.queue-statistics-filter-toggle,.queue-icon-action,.queue-statistics-filter-fields select,.queue-statistics-dk-field>input[type="search"],.queue-statistics-filter-actions button){box-sizing:border-box;height:34px;min-height:34px;border-radius:7px}
+#workQueueView :is(.protocol-period input,.queue-statistics-controls input,.queue-statistics-controls select,.queue-statistics-filter-toggle,.queue-icon-action,.queue-statistics-filter-fields select,.queue-statistics-dk-field>input[type="search"],.queue-statistics-filter-actions button):focus-visible{outline:2px solid #1265d6;outline-offset:2px}

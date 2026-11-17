@@ -65,18 +65,26 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     const evidence=[];
     for(const theme of ['light','dark']){
       const page=await makePage(browser,theme);
-      const left=await page.locator('.queue-protocol-summary').boundingBox();
-      const right=await page.locator('.queue-current-summary').boundingBox();
-      assert.ok(Math.abs(left.y-right.y)<2,'top summary blocks align');
+      const layout=await page.evaluate(()=>{
+        const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+        return{protocol:rect('.queue-protocol-summary'),current:rect('.queue-current-summary'),left:rect('.queue-summary-left'),statistics:rect('.queue-statistics-card'),grid:rect('.work-queue-operational-grid'),statsAlign:getComputedStyle(document.querySelector('.queue-statistics-card')).alignSelf,heading:document.querySelector('#workQueueView .module-heading').innerText.trim(),kpisNext:document.querySelector('#workQueueKpis').nextElementSibling.className};
+      });
+      assert.match(layout.heading,/^Робота УО$/,'page heading contains only the approved title');
+      assert.equal(layout.kpisNext,'work-queue-operational-grid','existing KPI section keeps its current position without being added or moved');
+      assert.ok(Math.abs(layout.protocol.x-layout.current.x)<2,'protocol and current summaries share the left column');
+      assert.ok(layout.current.y>=layout.protocol.bottom,'current applications are stacked below the protocol summary');
+      assert.ok(layout.current.y-layout.protocol.bottom<24,'left summaries keep a compact vertical gap');
+      assert.ok(layout.statistics.x>=layout.left.right-2,'statistics occupies the separate right column');
+      assert.ok(Math.abs(layout.statistics.y-layout.grid.y)<2,'statistics aligns to the top of the operational grid');
+      assert.equal(layout.statsAlign,'start','statistics retains its natural compact height instead of stretching');
+      assert.ok(layout.statistics.height<layout.left.height,'statistics stays compact while the left column continues below it');
+      assert.ok(layout.left.width/layout.statistics.width>0.62&&layout.left.width/layout.statistics.width<0.72,`wide layout keeps approximately 40/60 columns: ${JSON.stringify(layout)}`);
       const protocolHeader=await page.evaluate(()=>{
         const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{left:r.left,right:r.right};};
         return{title:rect('.queue-protocol-summary h2'),period:rect('.queue-protocol-summary .protocol-period'),total:rect('#queueProtocolTotal'),card:rect('.queue-protocol-summary')};
       });
       assert.ok(protocolHeader.period.left>=protocolHeader.title.right+8,'protocol dates and search sit slightly to the right of the title');
       assert.ok(protocolHeader.card.right-protocolHeader.total.right<20,'protocol total stays close to the card right edge');
-      const leftCategories=await page.locator('#queueProtocolCategoryCards').boundingBox();
-      const rightCategories=await page.locator('#queueCategoryCards').boundingBox();
-      assert.ok(Math.abs(leftCategories.y-rightCategories.y)<2,'category cards begin on the same line');
       for(const selector of ['#queueProtocolCategoryCards>.qualification-summary-category','#queueCategoryCards>.qualification-summary-category']){
         const positions=await page.locator(selector).evaluateAll(nodes=>nodes.map(node=>({name:node.textContent.trim(),top:node.getBoundingClientRect().top,left:node.getBoundingClientRect().left,width:node.getBoundingClientRect().width,background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,borderWidth:getComputedStyle(node).borderLeftWidth})));
         assert.equal(positions.length,5,`${selector} renders all five categories`);
@@ -89,6 +97,16 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       assert.equal(officerPalette.borderWidth,'1px','officer cards use a thin outline');
       if(theme==='light')assert.deepEqual(officerPalette,{background:'rgb(237, 246, 232)',border:'rgb(141, 182, 122)',borderWidth:'1px'},'light officer cards use the approved green palette');
       else assert.deepEqual(officerPalette,{background:'rgb(23, 62, 56)',border:'rgb(63, 123, 104)',borderWidth:'1px'},'dark officer cards retain green fills with green outlines');
+      const officerRows=await page.evaluate(()=>{
+        const positions=selector=>[...document.querySelectorAll(selector)].map(node=>({top:node.getBoundingClientRect().top,right:node.getBoundingClientRect().right}));
+        const protocol=positions('#queueProtocolOfficerCards>.protocol-officer-card'),current=positions('#queueQualificationCards>.qualification-summary-officer'),container=document.querySelector('#queueQualificationCards').getBoundingClientRect();
+        return{protocol,current,currentContainerRight:container.right};
+      });
+      assert.equal(officerRows.protocol.length,5,'protocol summary renders five officer cards');
+      assert.ok(officerRows.protocol.every(card=>Math.abs(card.top-officerRows.protocol[0].top)<2),'five protocol officer cards fit in one wide-screen row');
+      assert.equal(officerRows.current.length,3,'current summary renders the available officer cards');
+      assert.ok(officerRows.current.every(card=>Math.abs(card.top-officerRows.current[0].top)<2),'current officer cards fit in one wide-screen row');
+      assert.ok(officerRows.current.at(-1).right<officerRows.currentContainerRight-20,'three current officer cards do not stretch to fill all five columns');
       for(const selector of ['#queueProtocolOfficerCards>.protocol-officer-card','#queueQualificationCards>.qualification-summary-officer']){
         const names=page.locator(selector);
         const cards=await names.evaluateAll(nodes=>nodes.map(card=>{const name=card.querySelector('span'),main=card.querySelector('.protocol-officer-main'),progress=card.querySelector('.protocol-officer-progress');return{height:card.getBoundingClientRect().height,name:{clientWidth:name.clientWidth,scrollWidth:name.scrollWidth,clientHeight:name.clientHeight,scrollHeight:name.scrollHeight,text:name.textContent},mainBottom:main?.getBoundingClientRect().bottom,progressTop:progress?.getBoundingClientRect().top};}));
@@ -112,6 +130,8 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       else assert.deepEqual(cardPalette,{background:'rgb(32, 54, 80)',border:'rgb(100, 136, 181)'},'dark statistics card has the approved blue tint');
       const controls=await page.locator('.queue-statistics-controls').evaluate(el=>getComputedStyle(el).display);
       assert.equal(controls,'flex');
+      const controlHeights=await page.locator('#queueProtocolFrom,#queueProtocolTo,#queueProtocolApply,#queueStatisticsFrom,#queueStatisticsTo,#queueStatisticsFilterToggle,#queueStatisticsGroup,#queueStatisticsSearch,#queueStatisticsReset').evaluateAll(nodes=>nodes.map(node=>({id:node.id,height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
+      assert.ok(controlHeights.every(control=>control.height===34&&control.borderRadius==='7px'),`page controls share a 34px height and matching corners: ${JSON.stringify(controlHeights)}`);
       const kpis=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>({bg:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderTopColor})));
       assert.equal(kpis.length,3);
       if(theme==='dark'){
@@ -130,6 +150,8 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:screenshot});evidence.push(screenshot);
       const workspace=page.locator('#queueStatisticsWorkspace'),panel=page.locator('#queueStatisticsFilterPanel');
       await panel.evaluate(node=>node.hidden=false);
+      const filterControlHeights=await page.locator('.queue-statistics-filter-fields select,#queueStatisticsDkSearch,#queueStatisticsFilterApply,#queueStatisticsFilterClear').evaluateAll(nodes=>nodes.map(node=>({id:node.id||node.dataset.statisticsFilter||node.textContent.trim(),height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
+      assert.ok(filterControlHeights.every(control=>control.height===34&&control.borderRadius==='7px'),`filter panel controls use the same size: ${JSON.stringify(filterControlHeights)}`);
       await workspace.evaluate(node=>node.classList.add('is-filter-open'));
       const panelLayout=await page.evaluate(()=>{
         const card=document.querySelector('.queue-statistics-card'),work=document.querySelector('#queueStatisticsWorkspace'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel');
@@ -171,9 +193,10 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     }
     for(const width of [650,480,360]){
       const page=await makePage(browser,'light',width,900);
-      const layout=await page.locator('#queueCategoryCards>.qualification-summary-category').evaluateAll(nodes=>({viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,tops:nodes.map(node=>Math.round(node.getBoundingClientRect().top)),cardRights:nodes.map(node=>Math.round(node.getBoundingClientRect().right)),cardLefts:nodes.map(node=>Math.round(node.getBoundingClientRect().left))}));
+      const layout=await page.locator('#queueCategoryCards>.qualification-summary-category').evaluateAll(nodes=>({viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,tops:nodes.map(node=>Math.round(node.getBoundingClientRect().top)),officerTops:[...document.querySelectorAll('#queueProtocolOfficerCards>.protocol-officer-card')].map(node=>Math.round(node.getBoundingClientRect().top)),currentOfficerTops:[...document.querySelectorAll('#queueQualificationCards>.qualification-summary-officer')].map(node=>Math.round(node.getBoundingClientRect().top)),cardRights:nodes.map(node=>Math.round(node.getBoundingClientRect().right)),cardLefts:nodes.map(node=>Math.round(node.getBoundingClientRect().left))}));
       assert.ok(layout.scroll<=layout.viewport+2,`no horizontal overflow at ${width}px: ${JSON.stringify(layout)}`);
       assert.ok(new Set(layout.tops).size>1,`categories wrap at narrow width ${width}px`);
+      assert.ok(new Set(layout.officerTops).size>1&&new Set(layout.currentOfficerTops).size>1,`officer cards wrap at narrow width ${width}px`);
       await page.close();
     }
     for(const width of [1280,800,480]){

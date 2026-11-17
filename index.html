@@ -46,7 +46,7 @@
   </header>
 
   <main id="workQueueView" class="module-view" hidden>
-    <section class="module-heading"><div><p class="eyebrow">Єдина операційна черга</p><h1>Робота УО</h1><p class="muted">Незавершені дії з чинних предметних модулів</p></div></section>
+    <section class="module-heading"><div><h1>Робота УО</h1></div></section>
     <section id="workQueueKpis" class="work-queue-kpis">
       <button data-queue-filter="" class="active"><span>Усього потребують дії</span><strong id="queueKpiTotal">0</strong></button>
       <button data-queue-filter="nazk"><span>НАЗК</span><strong id="queueKpiNazk">0</strong></button>
@@ -55,6 +55,7 @@
       <button data-queue-overdue="1"><span>Прострочено</span><strong id="queueKpiOverdue">0</strong></button>
     </section>
     <section class="work-queue-operational-grid">
+      <div class="queue-summary-left">
       <article class="card qualification-summary-card queue-protocol-summary">
         <div class="qualification-summary-heading queue-summary-heading">
           <h2>Заявки до поточного протоколу</h2>
@@ -73,7 +74,6 @@
           <h3>Контроль після синхронізації публікації рішень</h3><div id="queuePublicationControl" class="publication-control-cards"></div>
         </section>
       </article>
-      <div class="queue-summary-right">
       <article class="card qualification-summary-card queue-current-summary">
         <div class="qualification-summary-heading queue-summary-heading">
           <h2 title="Надійшли сьогодні та очікують рішення">Поточні заявки <span class="queue-info" title="Надійшли сьогодні та очікують рішення" aria-label="Надійшли сьогодні та очікують рішення">ⓘ</span></h2>
@@ -82,6 +82,7 @@
         <h3>За категоріями</h3><div id="queueCategoryCards" class="qualification-summary-cards category-summary-cards"></div>
         <h3>За УО протоколу</h3><div id="queueQualificationCards" class="qualification-summary-cards"></div>
       </article>
+      </div>
       <article class="card qualification-summary-card queue-statistics-card">
         <header class="queue-statistics-heading">
           <h2>Статистика всіх заявок за період</h2>
@@ -127,7 +128,6 @@
           </div>
         </form>
       </article>
-      </div>
     </section>
     <section class="card work-queue-toolbar">
       <input id="queueSearch" type="search" placeholder="Пошук за постачальником, кодом або об’єктом…">
