@@ -1,6 +1,5 @@
 """Run integrated Writer/UI integrity v10 against its immutable Git snapshot."""
 from io import BytesIO
-import json
 from pathlib import Path
 import re
 import subprocess
@@ -9,7 +8,7 @@ import tempfile
 import zipfile
 
 import integrated_snapshot_archive
-from integrated_snapshot_archive import SnapshotArchiveError, validate_snapshot_archive
+from integrated_git_snapshot import snapshot_archive_for_runner
 
 
 SNAPSHOT_COMMIT = "27f28b501d37ce125e2334af769f2d23f33355b5"
@@ -23,39 +22,16 @@ integrated_snapshot_archive.SELF_MANIFEST_RULES[TEST_MODULE + ".py"] = (
 )
 
 
-def _git_blob(repository: Path, path: str) -> bytes:
-    result = subprocess.run(
-        ["git", "show", f"{SNAPSHOT_COMMIT}:{path}"], cwd=repository,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(f"Could not read v10 snapshot file {path}: {result.stderr.decode(errors='replace')}")
-    return result.stdout
-
-
 def source_snapshot_archive(repository: Path) -> bytes:
-    try:
-        manifest_bytes = _git_blob(repository, MANIFEST_RELATIVE)
-        manifest = json.loads(manifest_bytes.decode("utf-8"))
-        paths = sorted(set(manifest["scope"]) | {MANIFEST_RELATIVE})
-        archive_buffer = BytesIO()
-        with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
-            for path in paths:
-                bundle.writestr(path, _git_blob(repository, path))
-        archive = archive_buffer.getvalue()
-        validate_snapshot_archive(
-            archive,
-            manifest_relative=MANIFEST_RELATIVE,
-            expected_manifest_sha256=MANIFEST_SHA256,
-            git_version_text=subprocess.run(
-                ["git", "--version"], cwd=repository, check=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            ).stdout.strip(),
-            self_normalize_paths=SELF_NORMALIZE,
-        )
-        return archive
-    except (KeyError, UnicodeDecodeError, json.JSONDecodeError, SnapshotArchiveError) as exc:
-        raise RuntimeError(f"Integrated v10 immutable snapshot validation failed: {exc}") from exc
+    archive, _git_version = snapshot_archive_for_runner(
+        repository,
+        version=10,
+        commit=SNAPSHOT_COMMIT,
+        manifest_relative=MANIFEST_RELATIVE,
+        expected_manifest_sha256=MANIFEST_SHA256,
+        self_normalize_paths=SELF_NORMALIZE,
+    )
+    return archive
 
 
 def main():

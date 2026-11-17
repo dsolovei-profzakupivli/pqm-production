@@ -124,6 +124,7 @@ EXACT_TREE_OVERLAY_MODULES={
     'test_google_writer_integrated_candidate_integrity_v9',
     'test_google_writer_integrated_candidate_integrity_v10',
     'test_google_writer_integrated_candidate_integrity_v11',
+    'test_google_writer_integrated_candidate_integrity_v12',
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
     # the candidate carries its own additive prepared-intent retry overlay.
     'test_partial_reconciliation_first_append_only_integrity_v1',
@@ -310,7 +311,9 @@ def main():
                             'run_integrated_writer_ui_v7_history.py',
                             'run_integrated_writer_ui_v8_history.py',
                             'run_integrated_writer_ui_v9_history.py',
+                            'run_integrated_writer_ui_v11_history.py',
                             'integrated_snapshot_archive.py',
+                            'integrated_git_snapshot.py',
                             'run_google_writer_historical_integrity_snapshots_v1.py',
                             'run_google_writer_prewrite_diagnostics_v2.py',
                             'run_google_writer_prewrite_readonly_v1.py',
@@ -593,11 +596,14 @@ def main():
             integrated_v10_history=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v10_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v11_current=subprocess.run(
+            integrated_v11_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v11_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v12_current=subprocess.run(
                 [sys.executable,'-B','-m','unittest','-v',
-                 'test_google_writer_integrated_candidate_integrity_v11'],
+                 'test_google_writer_integrated_candidate_integrity_v12'],
                 cwd=ROOT,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_current.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_current.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn

@@ -104,11 +104,17 @@ jobs:
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v7_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v8_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v9_history.py
-          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v10_history.py
-          # Immutable integrated v1-v10 checks ran on their pinned snapshots above;
+          PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v10-snapshot.zip" \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v10_history.py
+          echo "PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v10-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          PQM_INTEGRATED_V11_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v11-snapshot.zip" \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v11_history.py
+          echo "PQM_INTEGRATED_V11_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v11-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # Immutable integrated v1-v11 checks ran on their pinned snapshots above;
           # only the current integrated overlay runs against this checkout.
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v11 \
+            test_google_writer_integrated_candidate_integrity_v12 \
+            validation.local_release_20260911.test_integrated_snapshot_staging \
             validation.local_release_20260911.test_uo_work_queue_http \
             test_google_writer_update_append_v2_integrity \
             test_google_writer_update_append_v3_integrity \
@@ -192,7 +198,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none --entrypoint python pqm-ci:tested \
+          docker run --rm --network none \
+            --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v10-snapshot.zip,dst=/tmp/pqm-integrated-v10-snapshot.zip,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v11-snapshot.zip,dst=/tmp/pqm-integrated-v11-snapshot.zip,readonly" \
+            -e PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v10-snapshot.zip \
+            -e PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE_SHA256" \
+            -e PQM_INTEGRATED_V11_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v11-snapshot.zip \
+            -e PQM_INTEGRATED_V11_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V11_SNAPSHOT_ARCHIVE_SHA256" \
+            --entrypoint python pqm-ci:tested \
             -B validation/run_local_release.py 2>&1 | tee ci-evidence/regression.log
       - name: Save evidence
         if: always()
