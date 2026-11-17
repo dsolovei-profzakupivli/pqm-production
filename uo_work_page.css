@@ -66,6 +66,7 @@ html[data-theme="dark"] #workQueueView .queue-summary-total{color:#86bdff!import
 #workQueueView .queue-statistics-kpis button{min-height:55px;padding:6px 8px;color:var(--uo-kpi-ink)!important}
 #workQueueView .queue-statistics-kpis button span{font-size:11px}
 #workQueueView .queue-statistics-kpis button strong{font-size:20px;line-height:1.1}
+html:not([data-theme="dark"]) #workQueueView .publication-kpi--rejected,html:not([data-theme="dark"]) #workQueueView .queue-statistics-kpis button.rejected{background:#FDE8E7!important;border-color:#E9A5A0!important;color:#000000!important}
 #workQueueView .queue-statistics-table{margin-top:4px;overflow-x:auto}
 #workQueueView .queue-statistics-table table{width:100%;min-width:590px;table-layout:fixed;border-collapse:collapse;font-variant-numeric:tabular-nums}
 #workQueueView .queue-statistics-table th,#workQueueView .queue-statistics-table td{padding:4px 5px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle}

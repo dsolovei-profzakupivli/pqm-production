@@ -81,14 +81,20 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       assert.ok(actions.x>title.x+title.width,'statistics actions stay on the title row at right');
       const controls=await page.locator('.queue-statistics-controls').evaluate(el=>getComputedStyle(el).display);
       assert.equal(controls,'flex');
-      const kpis=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>({bg:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color})));
+      const kpis=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>({bg:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderTopColor})));
       assert.equal(kpis.length,3);
       if(theme==='dark'){
         assert.deepEqual(kpis.map(item=>item.bg),['rgb(23, 62, 56)','rgb(72, 41, 50)','rgb(68, 59, 38)']);
         assert.deepEqual(kpis.map(item=>item.color),['rgb(237, 243, 252)','rgb(237, 243, 252)','rgb(237, 243, 252)']);
         const tableText=await page.locator('.queue-statistics-table td button').first().evaluate(el=>getComputedStyle(el).color);
         assert.equal(tableText,'rgb(237, 243, 252)','dark table numbers remain readable');
-      }else assert.deepEqual(kpis.map(item=>item.bg),['rgb(229, 246, 236)','rgb(255, 240, 240)','rgb(255, 244, 212)']);
+      }else {
+        assert.deepEqual(kpis.map(item=>item.bg),['rgb(229, 246, 236)','rgb(253, 232, 231)','rgb(255, 244, 212)']);
+        assert.equal(kpis[1].color,'rgb(0, 0, 0)','light rejected KPI text and numbers are black');
+        assert.equal(kpis[1].border,'rgb(233, 165, 160)','light rejected KPI uses the approved red border');
+        const leftRejected=await page.locator('#queuePublicationControl .publication-kpi--rejected').evaluate(el=>({bg:getComputedStyle(el).backgroundColor,color:getComputedStyle(el).color,border:getComputedStyle(el).borderTopColor}));
+        assert.deepEqual(leftRejected,{bg:'rgb(253, 232, 231)',color:'rgb(0, 0, 0)',border:'rgb(233, 165, 160)'},'left rejected KPI matches the approved light red style');
+      }
       const screenshot=path.join(OUT,`work-uo-${theme}-wide.png`);
       await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:screenshot});evidence.push(screenshot);
       await page.close();
