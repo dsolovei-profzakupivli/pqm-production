@@ -17,7 +17,7 @@ from validation.integrated_snapshot_archive import (
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v10.json")
-MANIFEST_SHA256 = "a44d68d2929ba1a295eac5fb8300709d41cd648b875c19c8e05b84efb1d55bab"
+MANIFEST_SHA256 = "f06808711ce9e961dce3b0c31c2bca084d170493d1ae83d4c421ce8c312c4727"
 PREVIOUS_MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v9.json")
 PREVIOUS_MANIFEST_SHA256 = "612c268e3555beecf79d9a32d2041d621e7b599cc7a42b8d89e3feecc52f1254"
 PREVIOUS_TEST = "test_google_writer_integrated_candidate_integrity_v9.py"

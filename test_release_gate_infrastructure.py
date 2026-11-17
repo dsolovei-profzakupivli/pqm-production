@@ -1,5 +1,6 @@
 """Regression tests for local Release Gate staging and isolation adapters."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -349,8 +350,16 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertLess(workflow.index(integrated_v6_runner), workflow.index(integrated_v7_runner))
         self.assertLess(workflow.index(integrated_v7_runner), workflow.index(integrated_v8_runner))
         self.assertLess(workflow.index(integrated_v8_runner), workflow.index(integrated_v9_runner))
-        self.assertLess(workflow.index(integrated_v9_runner), workflow.index(previous_integrated_overlay_v9))
-        self.assertLess(workflow.index(previous_integrated_overlay_v9), workflow.index(current_overlay))
+        self.assertLess(workflow.index(integrated_v9_runner), workflow.index(current_overlay))
+        current_integrity_start = workflow.index("test_google_writer_integrated_candidate_integrity_v10 \\")
+        current_integrity_end = workflow.index("\n      - name: Install Playwright", current_integrity_start)
+        current_integrity_command = workflow[current_integrity_start:current_integrity_end]
+        self.assertIn(current_overlay, current_integrity_command)
+        self.assertNotRegex(
+            current_integrity_command,
+            r"test_google_writer_integrated_candidate_integrity_v[1-9](?![0-9])",
+        )
+        self.assertNotIn(previous_integrated_overlay_v9, current_integrity_command)
         self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
         self.assertLess(workflow.index(current_overlay), workflow.index("Install Playwright and Chromium"))
 
@@ -464,6 +473,23 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("innerWidth", layout_runner)
         self.assertIn("footer stays fixed while scrolling", layout_runner)
         self.assertIn("node validation/google_writer_apply_modal_layout_browser.cjs", workflow)
+
+    def test_integrated_v9_history_archive_mutation_is_rejected(self):
+        manifest_path = ROOT / "validation/local_release_20261116/pqm_sync_ui_integrated_v10.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        fixture_relative = "validation/fixtures/pqm_sync_ui_integrated_v9_8e74484.zip"
+        expected_sha = manifest["files"][fixture_relative]
+        archive = (ROOT / fixture_relative).read_bytes()
+        self.assertTrue(archive)
+        mutated = archive[:-1] + bytes([archive[-1] ^ 1])
+        helper_path = REPOSITORY_ROOT / "validation/integrated_snapshot_archive.py"
+        spec = importlib.util.spec_from_file_location("pqm_integrated_snapshot_archive", helper_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        with self.assertRaisesRegex(helper.SnapshotArchiveError, "fixture ZIP SHA mismatch"):
+            helper.verify_fixture_sha256(mutated, expected_sha, "deliberately mutated v9 history")
 
     def test_c246_route_manifest_is_pinned_and_covers_all_historical_modules_once(self):
         manifest_path = ROOT / "validation/c246_historical_integrity_snapshots_v1.json"

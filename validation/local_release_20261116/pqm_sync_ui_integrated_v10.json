@@ -87,7 +87,7 @@
   ],
   "files": {
     ".dockerignore": "ff6be68920a04a622ce60a5f29402a34738a0c3e7fe18682c462a608169ec547",
-    ".github/workflows/release-checks.yml": "96e022a1ac74f649954cf88590dfaa9dcfff84c8ecb49900b5353c9f6385b825",
+    ".github/workflows/release-checks.yml": "85c2ccb271e223601fe4d52bbf0dfdac619b892bb7d3c536ceedf6e2dda2c0a3",
     "Dockerfile": "5c971789decc6dc7779a4a9d66a73eb8c46ab5c7a2a2dcc334af1b1c314134c3",
     "app.js": "789673e90c65de1aae82ed5ddfc342be932802d951cf87067d7d742a600c4775",
     "edr_sync_v2.py": "93dcb95acd3f77fe5d3dcb2182e510bf48956d44f81b9498e0e028ae9245d52a",
@@ -117,7 +117,7 @@
     "test_google_writer_integrated_candidate_integrity_v9.py": "4096898223c2e49235f94b8d756ee3a4f4f76883079d4bd26548aa6c9c8cdef0",
     "test_google_writer_update_append_v2_integrity.py": "a95903efafadc795b87d71f8d57d00615622cbe896553a9bbd02b6c438d483e3",
     "test_google_writer_update_append_v3_integrity.py": "220111068a51b9645a68eb4f1b326b9dce7fed8dfc6205285f952a8c432fb551",
-    "test_release_gate_infrastructure.py": "989fc9dfe3dfbb4d94cbf2b9aed536e444837d5b89f159a76121d6dacf5efc80",
+    "test_release_gate_infrastructure.py": "184d5e4acf7f9af9223d6ca2d7ade39e9a95ef801453064902e052d2c039d03b",
     "uo_work_page.css": "9a25d72103ca2f3849f9c952eba87fd8959489fe86226a5f061e6087f22fe0d2",
     "uo_work_progress.py": "6aab28b3e2cd64b1d704fc4b9625ca7416e6a23ed6b0cde575ea0e65aa7597e3",
     "validation/appeals_justification_browser.cjs": "7385c428e7075cee8417861dc1c39519b971afcf32d13696d678a8a4a13ec994",
