@@ -8,6 +8,14 @@ import sys
 import tempfile
 import zipfile
 
+from integrated_snapshot_archive import (
+    SnapshotArchiveError,
+    canonical_eol,
+    git_version,
+    validate_snapshot_archive,
+    verify_fixture_sha256,
+)
+
 
 SNAPSHOT_COMMIT = '8e0dc787d0d1db8211fefcf531f722508d3d2d74'
 TEST_MODULE = 'test_google_writer_integrated_candidate_integrity_v6'
@@ -17,15 +25,19 @@ ARCHIVE_RELATIVE = Path('validation/fixtures/pqm_sync_ui_integrated_v6_8e0dc78.z
 ARCHIVE_SHA256 = 'c1cb75c99aa17ecdb9640b2da8a18b9023952982cd50a9ea03fac2f3b1be8001'
 
 
-def canonical(data):
-    return data.replace(b'\r\n', b'\n')
-
-
 def source_snapshot_archive(repo):
-    manifest_bytes = canonical((repo / MANIFEST_RELATIVE).read_bytes())
-    if hashlib.sha256(manifest_bytes).hexdigest() != MANIFEST_SHA256:
-        raise RuntimeError('Integrated v6 manifest SHA mismatch')
-    manifest = json.loads(manifest_bytes.decode('utf-8'))
+    git = git_version(repo)
+    manifest_bytes = canonical_eol((repo / MANIFEST_RELATIVE).read_bytes())
+    actual_manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    if actual_manifest_sha != MANIFEST_SHA256:
+        raise RuntimeError(
+            f'Integrated v6 manifest SHA mismatch: expected={MANIFEST_SHA256}, '
+            f'actual={actual_manifest_sha}; git={git}'
+        )
+    try:
+        manifest = json.loads(manifest_bytes.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f'Integrated v6 manifest is invalid; git={git}: {exc}') from exc
     paths = sorted(set(manifest['scope']) | set(manifest['files']) | {str(MANIFEST_RELATIVE)})
     archive = subprocess.run(
         ['git', 'archive', '--format=zip', SNAPSHOT_COMMIT, '--', *paths],
@@ -34,8 +46,16 @@ def source_snapshot_archive(repo):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ).stdout
-    if hashlib.sha256(archive).hexdigest() != ARCHIVE_SHA256:
-        raise RuntimeError('Integrated v6 Git snapshot archive SHA mismatch')
+    try:
+        validate_snapshot_archive(
+            archive,
+            manifest_relative=MANIFEST_RELATIVE.as_posix(),
+            expected_manifest_sha256=MANIFEST_SHA256,
+            git_version_text=git,
+            self_normalize_paths={TEST_MODULE + '.py'},
+        )
+    except SnapshotArchiveError as exc:
+        raise RuntimeError(f'Integrated v6 Git snapshot integrity mismatch: {exc}') from exc
     return archive
 
 
@@ -48,8 +68,18 @@ def main():
         if not fixture.is_file():
             raise RuntimeError('Exact integrated v6 Git snapshot or staged archive is unavailable')
         archive = fixture.read_bytes()
-        if hashlib.sha256(archive).hexdigest() != ARCHIVE_SHA256:
-            raise RuntimeError('Integrated v6 staged archive SHA mismatch')
+        git = git_version(repo)
+        try:
+            verify_fixture_sha256(archive, ARCHIVE_SHA256, git)
+            validate_snapshot_archive(
+                archive,
+                manifest_relative=MANIFEST_RELATIVE.as_posix(),
+                expected_manifest_sha256=MANIFEST_SHA256,
+                git_version_text=git,
+                self_normalize_paths={TEST_MODULE + '.py'},
+            )
+        except SnapshotArchiveError as exc:
+            raise RuntimeError(f'Integrated v6 staged archive integrity mismatch: {exc}') from exc
     with tempfile.TemporaryDirectory(prefix='pqm-integrated-v6-') as temp:
         snapshot = Path(temp)
         with zipfile.ZipFile(BytesIO(archive)) as bundle:
