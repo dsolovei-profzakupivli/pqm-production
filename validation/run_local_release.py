@@ -18,13 +18,15 @@ import tempfile
 import unittest
 import zipfile
 
+try:
+    from .release_test_package import (PACKAGE_MANIFEST, load_package_manifest, preflight_package,
+                                       stage_declared_files, stage_dynamic_package_files)
+except ImportError:
+    from release_test_package import (PACKAGE_MANIFEST, load_package_manifest, preflight_package,
+                                      stage_declared_files, stage_dynamic_package_files)
+
 ROOT=Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[1]).resolve()
 INFRA_ROOT=Path(os.environ.get('PQM_RELEASE_INFRA_ROOT') or Path(__file__).resolve().parents[1]).resolve()
-C246_RUNNER_SHA256='98817c305569e973b84edb3529f13a3426853fdf42de99cb99d389376206a39f'
-C246_STAGING_FILE_SHA256={
-    'validation/c246_historical_integrity_snapshots_v1.json':'9cc63f46d931ac18e83f1bcce8693c23604e740640031fc312b6e93d4b38eff8',
-    'validation/fixtures/c246_historical/af8202b4e968f09e55ac5c6855ad29a6f2c05bc1.zip':'e0931cc43d5c99a001771fdd12ef5bea6a87003400a458c9a3f197372671c865',
-}
 HISTORICAL_INTEGRITY_MODULES={
     'test_google_sandbox_baseline_compatibility',
     'test_halloween_motion_integration',
@@ -111,7 +113,7 @@ EXACT_TREE_OVERLAY_MODULES={
     'test_google_writer_apply_result_integrity_v8',
     'test_google_writer_apply_result_integrity_v9',
     'test_google_writer_apply_result_integrity_v10',
-    # Integrated UI v1-v10 stay bound to immutable snapshots; v11 pins current.
+    # Integrated UI v1-v12 stay bound to immutable snapshots; v13 pins current.
     # The aggregate runner invokes each route explicitly.
     'test_google_writer_integrated_candidate_integrity_v1',
     'test_google_writer_integrated_candidate_integrity_v2',
@@ -125,6 +127,7 @@ EXACT_TREE_OVERLAY_MODULES={
     'test_google_writer_integrated_candidate_integrity_v10',
     'test_google_writer_integrated_candidate_integrity_v11',
     'test_google_writer_integrated_candidate_integrity_v12',
+    'test_google_writer_integrated_candidate_integrity_v13',
     # Run this original exact-source pin on the immutable 1fd48f4 fixture;
     # the candidate carries its own additive prepared-intent retry overlay.
     'test_partial_reconciliation_first_append_only_integrity_v1',
@@ -169,23 +172,6 @@ def selected_suite(suite,mode):
     visit(suite)
     return unittest.TestSuite(selected)
 
-def copy_candidate_manifests(source_root, validation_target, mode):
-    if mode == 'historical_integrity':
-        return
-    source_validation=Path(source_root)/'validation'
-    target_validation=Path(validation_target)
-    target_validation.mkdir(parents=True, exist_ok=True)
-    manifests=list(source_validation.glob('sandbox_preview_*.json'))
-    for release_dir in source_validation.glob('local_release_*'):
-        if release_dir.is_dir():
-            manifests.extend(release_dir.rglob('*.json'))
-    for source in sorted(manifests):
-        relative=source.relative_to(source_validation)
-        target=target_validation/relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source,target)
-
-
 def copy_pinned_release_file(source_root, target_root, relative_path, expected_sha256):
     """Copy an allowlisted release-test dependency only when its bytes are pinned."""
     relative_path=Path(relative_path)
@@ -217,13 +203,7 @@ def stage_gitattributes(source_root, target_root):
 
 
 def release_fixture_source(source_root, infrastructure_root, fixture_name, mode):
-    """Resolve a named fixture without ever falling back to product source.
-
-    Historical source archives may predate later immutable fixture archives.
-    In that mode only the allowlisted fixture basename may be sourced from the
-    current infrastructure checkout; tests verify each fixture's pinned SHA.
-    Candidate runs retain their strict source-root-only behavior.
-    """
+    """Resolve an allowlisted fixture, with infrastructure fallback only historically."""
     if not isinstance(fixture_name, str) or Path(fixture_name).name != fixture_name:
         raise ValueError("Release fixture must be an allowlisted basename")
     historical = Path(source_root) / "validation/fixtures" / fixture_name
@@ -263,94 +243,21 @@ def install_windows_sqlite_uri_compatibility():
 def main():
     old_cwd=Path.cwd()
     mode=os.environ.get('PQM_RELEASE_MODE','')
+    manifest_root=ROOT
+    if mode=='historical_integrity' and not (ROOT/PACKAGE_MANIFEST).is_file():
+        manifest_root=INFRA_ROOT
+    package_manifest=load_package_manifest(manifest_root)
     full_candidate_run=(not mode and len(sys.argv)==1) or mode=='baseline_full'
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
         root=Path(tmp)
-        stage_gitattributes(ROOT,root)
-        for source in ROOT.iterdir():
-            if source.name.startswith('.') or source.name in {'data','validation','__pycache__','backups','output','logs','evidence'}:continue
-            if source.is_dir():shutil.copytree(source,root/source.name)
-            else:shutil.copy2(source,root/source.name)
-        for source in (ROOT/'validation/local_release_20260911').glob('test_*.py'):
-            shutil.copy2(source,root/source.name)
-        # Preserve namespace imports used by root-level regressions. The flat
-        # copies above remain the discovery layout expected by delivered tests.
-        shutil.copytree(ROOT/'validation/local_release_20260911',
-                        root/'validation/local_release_20260911',
-                        ignore=shutil.ignore_patterns('__pycache__'))
-        # The integrated UI-v2 integrity contract pins this local-only
-        # destination/safety smoke helper; include it in the disposable tree
-        # so exact-tree and adversarial mutation checks see the same fixture.
-        for helper_name in ('sandbox_editable_smoke.py', 'nazk_scheduler_failure_smoke.py',
-                            'nazk_recovery_unit_smoke.py', 'sandbox_smoke.py', 'web_smoke.py',
-                            'run_integrated_messages_v1_integrity.py',
-                            'run_messages_search_header_v2_integrity.py',
-                            'run_messages_header_polish_v3_integrity.py',
-                            'run_sandbox_edr_google_nazk_reconcile_v1_integrity.py',
-                            'run_google_edr_timezone_alias_v1_integrity.py', 'supplier_classification_planner.cjs', 'run_local_release.py', 'run_classification_parent_integrity.py',
-                            'run_integrated_source_integrity_overlays.py',
-                            'run_messages_integrated_v1_history.py',
-                            'run_date_only_previous_contract_overlays.py',
-                            'run_date_only_status_integrated_v2_history.py',
-                            'run_supplier_classification_v3_integrity.py',
-                            'run_supplier_manual_classification_v4_integrity.py',
-                            'run_preview_digest_contract_v1_integrity.py',
-                            'run_checkpointed_apply_v1_integrity.py',
-                            'run_partial_reconciliation_second_v1_history.py',
-                            'run_partial_reconciliation_first_append_only_v1_history.py',
-                            'run_prepared_append_only_retry_v1_history.py',
-                            'run_google_writer_receipt_recovery_v1_history.py',
-                            'run_google_writer_all_scope_receipt_recovery_v1_history.py',
-                            'run_google_writer_legacy_source_snapshots_v1_history.py',
-                            'run_integrated_writer_ui_v1_history.py',
-                            'run_integrated_writer_ui_v2_history.py',
-                            'run_integrated_writer_ui_v3_history.py',
-                            'run_integrated_writer_ui_v4_history.py',
-                            'run_integrated_writer_ui_v5_history.py',
-                            'run_integrated_writer_ui_v6_history.py',
-                            'run_integrated_writer_ui_v7_history.py',
-                            'run_integrated_writer_ui_v8_history.py',
-                            'run_integrated_writer_ui_v9_history.py',
-                            'run_integrated_writer_ui_v11_history.py',
-                            'integrated_snapshot_archive.py',
-                            'integrated_git_snapshot.py',
-                            'run_google_writer_historical_integrity_snapshots_v1.py',
-                            'run_google_writer_prewrite_diagnostics_v2.py',
-                            'run_google_writer_prewrite_readonly_v1.py',
-                            'run_google_writer_execution_envelope_v1.py',
-                            'run_google_writer_prewrite_egress_v1.py',
-                            'run_legacy_append_reconciliation_v1_history.py',
-                            'run_legacy_append_reconciliation_v2_history.py',
-                            'run_immutable_google_writer_source_overlays.py',
-                            'run_sandbox_preview_append_only_v1_history.py',
-                            'run_sandbox_preview_workflow_v1_history.py',
-                            'run_messages_integrated_v1_history_addendum.py'):
-            helper_source=ROOT/'validation'/helper_name
-            if not helper_source.is_file():
-                helper_source=INFRA_ROOT/'validation'/helper_name
-            if helper_source.is_file():
-                shutil.copy2(helper_source,root/'validation'/helper_name)
-        # This byte-pinned fixture is consumed from the working-tree root by
-        # the historical Preview digest runner, rather than from validation/.
-        preview_runtime_fixture='sandbox_runtime_messages_integrated_v1_86ea864.py'
-        root_runtime_fixture=ROOT/preview_runtime_fixture
-        if not root_runtime_fixture.is_file():
-            root_runtime_fixture=INFRA_ROOT/preview_runtime_fixture
-        if root_runtime_fixture.is_file():
-            shutil.copy2(root_runtime_fixture,root/preview_runtime_fixture)
-        snapshot_tree=ROOT/'validation/legacy_snapshots'
-        if snapshot_tree.is_dir():
-            shutil.copytree(snapshot_tree,root/'validation/legacy_snapshots',
-                            dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__'))
         fixture_target=root/'validation/fixtures'
         fixture_target.mkdir(parents=True,exist_ok=True)
         validation_target=root/'validation'
         validation_target.mkdir(parents=True,exist_ok=True)
-        c246_manifest_relative=Path('validation/c246_historical_integrity_snapshots_v1.json')
-        c246_runner_relative=c246_manifest_relative.with_name(f'run_{c246_manifest_relative.stem}.py')
-        copy_pinned_release_file(ROOT,root,c246_runner_relative,C246_RUNNER_SHA256)
-        for relative_path,expected_sha256 in C246_STAGING_FILE_SHA256.items():
-            copy_pinned_release_file(ROOT,root,relative_path,expected_sha256)
+        for relative_path,expected_sha256 in package_manifest['pinned_release_files'].items():
+            source_path=ROOT/relative_path
+            if source_path.is_file():
+                copy_pinned_release_file(ROOT,root,relative_path,expected_sha256)
         v2_archive=ROOT/'validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip'
         if mode!='historical_integrity' and not v2_archive.is_file():
             v2_archive.parent.mkdir(parents=True,exist_ok=True)
@@ -361,97 +268,13 @@ def main():
                 cwd=old_cwd,env=archive_env,check=False)
             if materialized.returncode:
                 raise RuntimeError('Integrated v2 immutable snapshot could not be staged')
-        fixture_names=('supplier_classification_parent_integrity_6b9830b.zip', 'supplier_classification_parent_6b9830b.json', 'messages_v1_test_parent.zip',
-                             'google_writer_supplier_types_integration_v1_97788.zip',
-                             'integrated_classification_v1_overlay_6b9830b.zip', 'integrated_writer_v1_overlay_64f7fda.zip',
-                             'messages_parent_c246edef.zip',
-                             'protocol_integrity_history.zip',
-                             'nazk_authority_parent_c246.zip',
-                             'nazk_authority_request_v1.json',
-                             'nazk_integrity_baseline_de77401.zip',
-                             'column_widths_baseline_4625498.zip',
-                             'nazk_preview_baseline_f394d4c.zip',
-                             'appeals_scenario_v11_tail.zip',
-                             'appeals_scenario_v11_api_tail.zip',
-                             'table_widths_v11_tail.zip',
-                             'dst_parent_94c5e37.zip',
-                             'dst_v5_parent_overrides.zip',
-                             'nazk_recovery_v2_parent_overrides.zip',
-                             'nazk_recovery_testfix_parent_override.zip',
-                             'nazk_recovery_baseline_990483_server.py',
-                             'nazk_recovery_test_v2_compat.zip',
-                             'nazk_recovery_v4_tree_overrides.zip',
-                             'messages_integrated_v1_overrides.zip',
-                             'messages_search_header_v2_overrides.zip',
-                             'messages_search_header_v2_runner_40da.zip',
-                             'messages_header_polish_v3_baseline_40da.zip',
-                             'edr_google_nazk_baseline_40da.zip',
-                             'edr_google_nazk_personal_theme_baseline_40da.zip',
-                             'edr_google_nazk_reconcile_v1_candidate_a40aa70.zip',
-                             'edr_google_nazk_contract_v2_baseline_64f7fda.zip',
-                             'google_edr_timezone_alias_v1_baseline_6c310.zip',
-                             'messages_integrated_v1_appjs_baseline_6c310.zip',
-                             'edr_preview_skipped_v1_6b9830b.zip',
-                             'google_writer_supplier_types_v1_97788.zip',
-                             'google_edr_date_only_midnight_v1_97788.zip',
-                             'supplier_classification_v3_baseline_59177.zip',
-                             'supplier_manual_classification_v4_baseline_e0fed.zip',
-                             'edr_status_evidence_v1_15b8.zip',
-                             'date_only_edr_status_integrated_v1_12329.zip',
-                             'date_only_status_integrated_v2_a1f8.zip',
-                             'preview_digest_contract_v1_baseline_3a63ac.zip',
-                             'checkpointed_apply_v1_exact_c8a97d6.zip',
-                             'release_checks_baseline_0347404.yml',
-                             'sandbox_preview_append_only_v1_exact_067e2e8.zip',
-                             'sandbox_preview_workflow_v1_exact_067e2e8.zip',
-                             'partial_reconciliation_first_append_only_v1_exact_1fd48f4.zip',
-                              'prepared_append_only_retry_v1_exact_d386586.zip',
-                             'google_writer_receipt_recovery_v1_exact_24554fef.zip',
-                             'google_writer_all_scope_receipt_recovery_v1_9037e57.zip',
-                             'google_writer_legacy_source_snapshots_v1_run_local_release.py',
-                             'google_writer_historical_integrity_snapshots_v1_compact.zip',
-                             'pqm_sync_ui_integrated_v1_3eda816.zip',
-                             'pqm_sync_ui_integrated_v2_0d7e059.zip',
-                            'pqm_sync_ui_integrated_v3_8c6ba07.zip',
-                            'pqm_sync_ui_integrated_v4_654bd0de.zip',
-                            'pqm_sync_ui_integrated_v5_cd01e13.zip',
-                            'pqm_sync_ui_integrated_v6_8e0dc78.zip',
-                            'pqm_sync_ui_integrated_v7_9b3dd33.zip',
-                            'pqm_sync_ui_integrated_v8_b7d8279.zip',
-                            'pqm_sync_ui_integrated_v9_8e74484.zip',
-                             'legacy_append_reconciliation_v1_exact_1111eb9.zip',
-                             'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
-                             'google_writer_legacy_reconciliation_v3_immutable.zip',
-                             'google_writer_legacy_sheet_bounds_v1_immutable.zip')
-        for fixture_name in fixture_names:
-            fixture_source=release_fixture_source(ROOT,INFRA_ROOT,fixture_name,mode)
-            if fixture_name=='google_writer_historical_integrity_snapshots_v1_compact.zip':
-                fixture_source=INFRA_ROOT/'validation/fixtures'/fixture_name
-            if not fixture_source.is_file():
-                if mode=='historical_integrity':
-                    continue
-                raise FileNotFoundError(f'Candidate release fixture missing: {fixture_name}')
-            shutil.copy2(fixture_source,fixture_target/fixture_name)
-        history_ledger=INFRA_ROOT/'validation/google_writer_historical_integrity_snapshots_v1.json'
-        if history_ledger.is_file():
-            shutil.copy2(history_ledger,validation_target/'google_writer_historical_integrity_snapshots_v1.json')
-        copy_candidate_manifests(ROOT, validation_target, mode)
-        for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):
-            shutil.copy2(ROOT/'validation'/helper, root/'validation'/helper)
-        # The runner is itself pinned by the column-width integrity variant.
-        shutil.copy2(INFRA_ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
-        shutil.copy2(ROOT/'validation/docker_release_gate.py',root/'validation/docker_release_gate.py')
-        # The integrated UI integrity manifest now guards the required host-runner
-        # browser workflow, so include that exact CI file in the disposable tree.
-        workflow_source=ROOT/'.github/workflows/release-checks.yml'
-        workflow_target=root/'.github/workflows/release-checks.yml'
-        workflow_target.parent.mkdir(parents=True,exist_ok=True)
-        shutil.copy2(workflow_source,workflow_target)
-        # Node regressions run against this same disposable source fixture.
-        for source in (ROOT/'validation').glob('*.cjs'):
-            shutil.copy2(source,root/'validation'/source.name)
+        # Stage all declared test-package dependencies from one manifest after
+        # generated immutable fixtures are available at the source root.
+        stage_declared_files(ROOT,root,INFRA_ROOT,mode,package_manifest)
+        stage_dynamic_package_files(ROOT,root,INFRA_ROOT,package_manifest)
         # Delivered tests assume runtime DOCX copies have already been installed.
         shutil.copytree(root/'templates', root/'data/templates', dirs_exist_ok=True)
+        preflight_package(ROOT,root,INFRA_ROOT,mode,package_manifest)
         os.environ.update(PQM_RELEASE_SOURCE_ROOT=str(ROOT), HOST='127.0.0.1',PORT='8080',PQM_ENV='local',PQM_DATA_DIR=str(root/'data'),PQM_DB_PATH=str(root/'data/pqm.sqlite3'),
                           PQM_RELEASE_SCHEMA_ONLY='0',PQM_AUTH_ENABLED='0',PQM_USERS_JSON='',
                           PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_PROZORRO_SCHEDULER='0',PQM_ENABLE_VIOLATION_SCHEDULER='0',
@@ -599,11 +422,14 @@ def main():
             integrated_v11_history=subprocess.run(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v11_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v12_current=subprocess.run(
+            integrated_v12_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v12_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v13_current=subprocess.run(
                 [sys.executable,'-B','-m','unittest','-v',
-                 'test_google_writer_integrated_candidate_integrity_v12'],
+                 'test_google_writer_integrated_candidate_integrity_v13'],
                 cwd=ROOT,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_current.returncode==0 else 1
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_history.returncode==0 and integrated_v13_current.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
