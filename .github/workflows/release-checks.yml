@@ -102,8 +102,9 @@ jobs:
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v5_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v6_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v7_history.py
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v8_history.py
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v8 \
+            test_google_writer_integrated_candidate_integrity_v9 \
             test_google_writer_update_append_v2_integrity \
             test_google_writer_update_append_v3_integrity \
             validation.local_release_20260911.test_edr_sync_v2 \
@@ -122,16 +123,19 @@ jobs:
         env:
           NODE_PATH: ${{ runner.temp }}/pqm-playwright/node_modules
           PQM_BROWSER_EVIDENCE_DIR: ${{ runner.temp }}/pqm-chat-messages-evidence
+          PQM_UO_EVIDENCE_DIR: ${{ runner.temp }}/pqm-uo-work-layout-evidence
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$(cat ci-evidence/tested-sha.txt)"
           mkdir -p "$PQM_BROWSER_EVIDENCE_DIR"
+          mkdir -p "$PQM_UO_EVIDENCE_DIR"
           node validation/appeals_justification_browser.cjs
           node validation/appeals_declension_card_browser.cjs
           node validation/protocol_names_card_browser.cjs
           node validation/chat_messages_browser.cjs
           node validation/google_writer_preview_modal_browser.cjs
           node validation/google_writer_apply_modal_layout_browser.cjs
+          node validation/uo_work_page_layout_browser.cjs
       - name: Build release image
         shell: bash
         run: |

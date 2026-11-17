@@ -2,7 +2,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
-const {chromium}=require(require.resolve('playwright',{paths:['C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules']}));
+const {chromium}=require('playwright');
 
 const ROOT=path.resolve(__dirname,'..');
 const OUT=process.env.PQM_UO_EVIDENCE_DIR||path.join(os.tmpdir(),'pqm-uo-work-layout-evidence');
@@ -55,7 +55,7 @@ async function makePage(browser,theme='light',width=1920,height=1080){
 
 (async()=>{
   fs.mkdirSync(OUT,{recursive:true});
-  const browser=await chromium.launch({headless:true,executablePath:'C:/Users/User/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe'});
+  const browser=await chromium.launch({headless:true,executablePath:process.env.PQM_CHROMIUM_EXECUTABLE||undefined});
   try{
     const evidence=[];
     for(const theme of ['light','dark']){
