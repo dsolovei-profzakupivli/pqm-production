@@ -11,6 +11,11 @@
   const kpis = $('#queueStatisticsKpis');
   const table = $('#queueStatisticsRows');
   const message = $('#queueStatisticsMessage');
+  const filterSummary = $('#queueStatisticsFilterSummary');
+  const pending = $('#queueStatisticsPending');
+  const fromField = $('#queueStatisticsFromField');
+  const toField = $('#queueStatisticsToField');
+  const groupField = $('#queueStatisticsGroupField');
   const from = $('#queueStatisticsFrom');
   const to = $('#queueStatisticsTo');
   const group = $('#queueStatisticsGroup');
@@ -87,7 +92,7 @@
 
   function countButton(count, filters, status, label='', tone='') {
     const index=actions.push({filters,status})-1;
-    return `<button type="button" class="ghost ${tone}" data-statistics-action="${index}">${label?`<span>${label}</span>`:''}<strong>${number(count)}</strong></button>`;
+    return `<button type="button" class="ghost publication-kpi ${tone}" data-statistics-action="${index}">${label?`<span>${label}</span>`:''}<strong>${number(count)}</strong></button>`;
   }
 
   function emptyCounts() { return {active:0,unsuccessful:0,pending:0,total:0}; }
@@ -115,6 +120,19 @@
     }).join('');
     const other=totals.total-totals.active-totals.unsuccessful-totals.pending;
     message.textContent=!groups.size?'Заявок за цими умовами немає':other?`Заявки без одного з трьох статусів Prozorro · ${number(other)}`:'';
+    renderFilterPresentation();
+  }
+
+  function renderFilterPresentation() {
+    const activeCount=controls.filter(control=>Boolean(control.value)).length;
+    filterSummary.textContent=activeCount?`Фільтри · ${activeCount}`:'Фільтри';
+    controls.forEach(control=>control.closest('label')?.classList.toggle('filter-active',Boolean(control.value)));
+    fromField.classList.toggle('filter-active',Boolean(period?.date_from)&&from.value===period.date_from);
+    toField.classList.toggle('filter-active',Boolean(period?.date_to)&&to.value===period.date_to);
+    groupField.classList.toggle('filter-active',group.value!=='review_officer');
+    const datesPending=Boolean(period)&&(from.value!==period.date_from||to.value!==period.date_to);
+    pending.hidden=!datesPending;
+    pending.textContent=datesPending?'Зміни періоду ще не застосовано. Натисніть «Застосувати», щоб оновити статистику.':'';
   }
 
   async function loadStatistics() {
@@ -153,6 +171,7 @@
   };
   $('#queueProtocolApply').addEventListener('click',()=>{progressPeriod='';},true);
   $('#queueStatisticsFilters').onsubmit=event=>{event.preventDefault();loadStatistics();};
+  [from,to].forEach(control=>control.addEventListener('input',renderFilterPresentation));
   $('#queueStatisticsReset').onclick=()=>{
     if (!initialPeriod) return;
     from.value=initialPeriod.date_from;
@@ -160,6 +179,7 @@
     controls.forEach(control=>control.value='');
     group.value='review_officer';
     loadStatistics();
+    renderFilterPresentation();
   };
   [...controls,group].forEach(control=>control.onchange=renderStatistics);
   for (const root of [kpis,table]) root.onclick=event=>{

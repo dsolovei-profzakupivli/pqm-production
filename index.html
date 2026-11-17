@@ -71,13 +71,21 @@
       <article class="card qualification-summary-card">
         <h2>Статистика всіх заявок за період</h2>
         <form id="queueStatisticsFilters" class="queue-statistics-filters">
-          <div><label>Від <input id="queueStatisticsFrom" type="date" required></label><label>До <input id="queueStatisticsTo" type="date" required></label></div>
-          <div><label>Код ДК <select data-statistics-filter="dk_code"></select></label><label>Категорія <select data-statistics-filter="category"></select></label></div>
-          <div><label>УО розгляду <select data-statistics-filter="review_officer"></select></label><label>УО протоколу <select data-statistics-filter="protocol_officer"></select></label></div>
+          <div class="queue-statistics-period"><label id="queueStatisticsFromField">Від <input id="queueStatisticsFrom" type="date" required></label><label id="queueStatisticsToField">До <input id="queueStatisticsTo" type="date" required></label></div>
+          <details id="queueStatisticsFilterPanel" class="advanced-filters queue-statistics-filter-details">
+            <summary id="queueStatisticsFilterSummary">Фільтри</summary>
+            <div class="queue-statistics-filter-panel">
+              <label>Код ДК <select data-statistics-filter="dk_code"></select></label>
+              <label>Категорія <select data-statistics-filter="category"></select></label>
+              <label>УО розгляду <select data-statistics-filter="review_officer"></select></label>
+              <label>УО протоколу <select data-statistics-filter="protocol_officer"></select></label>
+            </div>
+          </details>
+          <p id="queueStatisticsPending" class="muted queue-statistics-pending" aria-live="polite" hidden></p>
           <div><button type="submit" class="ghost">Застосувати</button><button id="queueStatisticsReset" type="button" class="ghost">Скинути</button></div>
         </form>
         <div id="queueStatisticsKpis" class="queue-statistics-kpis"></div>
-        <label>Розподіл за УО <select id="queueStatisticsGroup"><option value="review_officer">УО розгляду</option><option value="protocol_officer">УО протоколу</option></select></label>
+        <label id="queueStatisticsGroupField" class="queue-statistics-group">Розподіл за УО <select id="queueStatisticsGroup"><option value="review_officer">УО розгляду</option><option value="protocol_officer">УО протоколу</option></select></label>
         <div class="queue-statistics-table"><table><thead><tr><th>УО</th><th>Допущено</th><th>Відхилено</th><th>Очікує</th><th>Усього</th></tr></thead><tbody id="queueStatisticsRows"></tbody></table></div>
         <p id="queueStatisticsMessage" class="muted" aria-live="polite"></p>
       </article>
