@@ -3383,7 +3383,7 @@ def application_history(params: dict) -> dict:
       WHERE """ + ' AND '.join(where)
     with db() as con:
         review_officer_options = [row[0] for row in con.execute(
-            f"SELECT DISTINCT {REVIEW_OFFICER_SQL} review_officer FROM application_fields ORDER BY CASEFOLD(review_officer)"
+            f"SELECT DISTINCT {REVIEW_OFFICER_SQL} review_officer FROM application_fields af ORDER BY CASEFOLD(review_officer)"
         )]
         total = con.execute('SELECT COUNT(*)'+source, args).fetchone()[0]
         items = [dict(row) for row in con.execute(f"""SELECT s.id,s.supplier_name,s.supplier_code,

@@ -157,6 +157,13 @@ class UoWorkQueueHttpTests(unittest.TestCase):
         self.assertEqual(sum(item["submitted"] for item in payload["trend"]), 5)
         self.assertEqual(payload["filter_options"]["dk_code"], ["01000000-0", "02000000-0", "03000000-0", "04000000-0", "05000000-0"])
 
+    def test_application_history_without_filters_returns_success(self):
+        status, payload = self.get_path("/api/application-history")
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["total"], 5)
+        self.assertEqual(len(payload["items"]), 5)
+        self.assertIn("review_officers", payload)
+
     def test_statistics_normalizes_only_null_and_missing_qualification_and_reports_status_anomalies(self):
         cases = [
             ("null-status", "anomaly-qualification-null", None, "anomaly-qualification-null", "admit"),
