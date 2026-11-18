@@ -128,10 +128,13 @@ jobs:
           PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v17-snapshot.zip" \
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v17_history.py
           echo "PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v17-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          # Immutable integrated v1-v17 checks ran on their pinned snapshots above;
-          # only the current integrated overlay v18 runs against this checkout.
+          PQM_INTEGRATED_V18_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v18-snapshot.zip" \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v18_history.py
+          echo "PQM_INTEGRATED_V18_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v18-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # Immutable integrated v1-v18 checks ran on their pinned snapshots above;
+          # only the current integrated overlay v19 runs against this checkout.
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v18 \
+            test_google_writer_integrated_candidate_integrity_v19 \
             validation.local_release_20260911.test_release_test_package \
             validation.local_release_20260911.test_integrated_snapshot_staging \
             validation.local_release_20260911.test_uo_work_queue_http \
@@ -238,10 +241,13 @@ jobs:
             -e PQM_INTEGRATED_V15_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V15_SNAPSHOT_ARCHIVE_SHA256" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v16-snapshot.zip,dst=/tmp/pqm-integrated-v16-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v17-snapshot.zip,dst=/tmp/pqm-integrated-v17-snapshot.zip,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v18-snapshot.zip,dst=/tmp/pqm-integrated-v18-snapshot.zip,readonly" \
             -e PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v16-snapshot.zip \
             -e PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v17-snapshot.zip \
             -e PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE_SHA256" \
+            -e PQM_INTEGRATED_V18_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v18-snapshot.zip \
+            -e PQM_INTEGRATED_V18_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V18_SNAPSHOT_ARCHIVE_SHA256" \
             --entrypoint python pqm-ci:tested \
             -B validation/run_local_release.py 2>&1 | tee ci-evidence/regression.log
       - name: Save evidence
