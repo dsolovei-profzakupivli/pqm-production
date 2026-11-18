@@ -36,6 +36,10 @@ class FinalLocalStabilizationTests(unittest.TestCase):
                         (framework, framework, "active", server.now_iso()))
             con.execute("INSERT INTO framework_officers(framework_id,officer,synced_at) VALUES (?,?,?)",
                         (framework, framework_officer, server.now_iso()))
+            con.execute("""INSERT INTO framework_service_directory
+              (pretty_id,framework_id,responsible_officer,source,synced_at)
+              VALUES (?,?,?,'Google Sheets: Оголошення',?)""",
+                        (framework, framework, framework_officer, server.now_iso()))
             con.execute("""INSERT INTO submissions(id,framework_id,qualification_id,supplier_code,supplier_name,
                          date_published,documents_json,raw_json,synced_at) VALUES (?,?,?,?,?,?,'[]','{}',?)""",
                         (submission_id, framework, qualification, submission_id, "Supplier",
@@ -54,21 +58,52 @@ class FinalLocalStabilizationTests(unittest.TestCase):
               LEFT JOIN application_fields af ON af.submission_id=s.id
               LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id""")}
 
-    def test_effective_officer_pending_tracks_framework_completed_is_frozen(self):
+    def test_effective_officer_pending_tracks_service_directory_completed_is_frozen(self):
         self.seed_application("pending", "pending", "Officer A")
         self.seed_application("completed", "active", "Officer A", "Officer B")
         first = self.effective_officers()
         self.assertEqual(first["pending"], "Officer A")
         self.assertEqual(first["completed"], "Officer B")
         with server.db() as con:
-            con.execute("UPDATE framework_officers SET officer='Officer C'")
+            con.execute("UPDATE framework_service_directory SET responsible_officer='Officer C'")
         second = self.effective_officers()
         self.assertEqual(second["pending"], "Officer C")
         self.assertEqual(second["completed"], "Officer B")
 
-    def test_completed_without_protocol_officer_is_unassigned(self):
+    def test_completed_without_protocol_officer_is_undefined(self):
         self.seed_application("completed", "unsuccessful", "Officer A")
-        self.assertEqual(self.effective_officers()["completed"], "")
+        self.assertEqual(self.effective_officers()["completed"], "Не визначено")
+
+    def test_manual_protocol_officer_survives_service_assignment_change(self):
+        self.seed_application("manual", "pending", "Officer A", "Manual Officer")
+        with server.db() as con:
+            con.execute("UPDATE framework_service_directory SET responsible_officer='Officer B'")
+        self.assertEqual(self.effective_officers()["manual"], "Manual Officer")
+
+    def test_review_officer_never_becomes_protocol_officer_and_blank_is_undefined(self):
+        self.seed_application("independent", "pending", "Officer A")
+        with server.db() as con:
+            con.execute("UPDATE application_fields SET review_officer='Review Officer' WHERE submission_id='independent'")
+        self.assertEqual(self.effective_officers()["independent"], "Officer A")
+        with server.db() as con:
+            row = con.execute("SELECT review_officer FROM application_fields WHERE submission_id='independent'").fetchone()
+        self.assertEqual(row[0], "Review Officer")
+
+    def test_default_assignment_only_fills_blank_storage_and_preserves_manual_value(self):
+        self.seed_application("blank", "pending", "Officer A")
+        self.seed_application("manual", "pending", "Officer A", "Manual Officer")
+        with server.db() as con:
+            self.assertTrue(server.application_officers.assign_default_protocol_officer(
+                con, "blank", "f-blank", server.now_iso()))
+            self.assertFalse(server.application_officers.assign_default_protocol_officer(
+                con, "blank", "f-blank", server.now_iso()))
+            self.assertFalse(server.application_officers.assign_default_protocol_officer(
+                con, "manual", "f-manual", server.now_iso()))
+            con.execute("UPDATE framework_service_directory SET responsible_officer='Officer B'")
+            values = dict(con.execute(
+                "SELECT submission_id,protocol_officer FROM application_fields"))
+        self.assertEqual(values["blank"], "Officer A")
+        self.assertEqual(values["manual"], "Manual Officer")
 
     def test_legal_reference_natural_sort(self):
         items = [{"id": index, "point": point, "category": ""} for index, point in enumerate(

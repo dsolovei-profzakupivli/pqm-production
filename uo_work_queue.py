@@ -5,6 +5,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 import math
 
+from application_officers import (
+    PROTOCOL_OFFICER_SQL,
+    UNDEFINED_OFFICER,
+)
+
 
 def _text(value) -> str:
     return str(value or "").strip()
@@ -58,7 +63,9 @@ def _latest_nazk_dates(con) -> dict[str, str]:
 def _officer_label(value) -> str:
     parts = " ".join(_text(value).split()).split()
     if not parts:
-        return "Не призначено"
+        return UNDEFINED_OFFICER
+    if " ".join(parts).casefold() in {"не визначено", "не призначено"}:
+        return UNDEFINED_OFFICER
     return " ".join([*[part.lower().capitalize() for part in parts[:-1]], parts[-1].upper()])
 
 
@@ -72,9 +79,9 @@ def _add_officer_count(target: dict, value, count: int) -> None:
 
 def _qualification_tasks(con) -> list[dict]:
     rows = con.execute(
-        """SELECT s.id submission_id,s.supplier_name,s.supplier_code,s.date_published,
+        f"""SELECT s.id submission_id,s.supplier_name,s.supplier_code,s.date_published,
           f.pretty_id,f.dk_code,COALESCE(fo.category,'') category,
-          COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'') responsible_user
+          {PROTOCOL_OFFICER_SQL} responsible_user
           FROM submissions s
           JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id
@@ -113,14 +120,14 @@ def get_current_qualification_summary(con, filters: dict | None = None) -> dict:
     selected_category = _text(filters.get("category"))
     extra, filter_args = [], []
     if selected_officer:
-        extra.append("CASEFOLD(COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено'))=CASEFOLD(?)")
-        filter_args.append(selected_officer)
+        extra.append(f"CASEFOLD({PROTOCOL_OFFICER_SQL})=CASEFOLD(?)")
+        filter_args.append(UNDEFINED_OFFICER if selected_officer == "__unassigned__" else selected_officer)
     if selected_category:
         extra.append("COALESCE(fo.category,'')=?")
         filter_args.append(selected_category)
     suffix = (" AND " + " AND ".join(extra)) if extra else ""
     rows = con.execute(
-        f"""SELECT COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено') officer,
+        f"""SELECT {PROTOCOL_OFFICER_SQL} officer,
           COALESCE(NULLIF(fo.category,''),'Без категорії') category,COUNT(*) applications
           FROM submissions s
           JOIN frameworks f ON f.id=s.framework_id
@@ -131,7 +138,7 @@ def get_current_qualification_summary(con, filters: dict | None = None) -> dict:
             AND SUBSTR(s.date_published,1,10)>=?
             AND LOWER(COALESCE(f.status,''))='active'
             AND COALESCE(SUBSTR(JSON_EXTRACT(f.raw_json,'$.qualificationPeriod.endDate'),1,10),'9999-12-31')>=? {suffix}
-          GROUP BY COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено'),COALESCE(NULLIF(fo.category,''),'Без категорії')
+          GROUP BY {PROTOCOL_OFFICER_SQL},COALESCE(NULLIF(fo.category,''),'Без категорії')
           ORDER BY applications DESC, officer""",
         [current_from, today, *filter_args],
     ).fetchall()
@@ -140,14 +147,14 @@ def get_current_qualification_summary(con, filters: dict | None = None) -> dict:
         _add_officer_count(officers, row["officer"], row["applications"])
         categories[row["category"]] = categories.get(row["category"], 0) + int(row["applications"] or 0)
     protocol_rows = con.execute(
-        f"""SELECT COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено') officer,
+        f"""SELECT {PROTOCOL_OFFICER_SQL} officer,
           COALESCE(NULLIF(fo.category,''),'Без категорії') category,COUNT(*) applications
           FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id
           WHERE SUBSTR(s.date_published,1,10) BETWEEN ? AND ? {suffix}
-          GROUP BY COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено'),
+          GROUP BY {PROTOCOL_OFFICER_SQL},
                    COALESCE(NULLIF(fo.category,''),'Без категорії')
           ORDER BY applications DESC,officer""", [protocol_from, protocol_to, *filter_args]).fetchall()
     protocol_officers, protocol_categories = {}, {}
@@ -180,10 +187,10 @@ def get_current_qualification_summary(con, filters: dict | None = None) -> dict:
 
 def _submission_nazk_tasks(con) -> list[dict]:
     rows = con.execute(
-        """SELECT c.id control_id,c.submission_id,c.supplier_code,c.manager_name,c.created_at,
+        f"""SELECT c.id control_id,c.submission_id,c.supplier_code,c.manager_name,c.created_at,
           NORMALIZE_NAME(c.manager_name) manager_key,s.date_published,
           s.supplier_name,f.pretty_id,f.dk_code,COALESCE(fo.category,'') category,sm.manager_tax_id,
-          COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'') responsible_user
+          {PROTOCOL_OFFICER_SQL} responsible_user
           FROM submission_nazk_controls c
           JOIN submissions s ON s.id=c.submission_id
           JOIN frameworks f ON f.id=s.framework_id

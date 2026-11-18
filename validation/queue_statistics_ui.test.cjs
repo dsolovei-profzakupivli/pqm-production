@@ -15,6 +15,28 @@ const formatterContext = vm.createContext({esc:value=>String(value)});
 vm.runInContext(`${formatterDefinition};globalThis.formatOfficerName=formatOfficerName;globalThis.formatQueueOfficer=formatQueueOfficer;`, formatterContext);
 const formatOfficerName = formatterContext.formatOfficerName;
 const formatQueueOfficer = formatterContext.formatQueueOfficer;
+const protocolOfficerEditDefinition = appSource.match(/const protocolOfficerEditOptions=[^\n]+;/)?.[0];
+assert.ok(protocolOfficerEditDefinition, 'registry editor builds options from stored and effective protocol officer values');
+const protocolEditorContext = vm.createContext({
+  protocolOfficers:['Активна УО'],
+  formatOfficerName,
+});
+vm.runInContext(`${protocolOfficerEditDefinition};globalThis.protocolOfficerEditOptions=protocolOfficerEditOptions;`, protocolEditorContext);
+const protocolOfficerEditOptions = protocolEditorContext.protocolOfficerEditOptions;
+
+test('protocol officer editor preserves stored/manual values and does not persist a computed fallback implicitly', () => {
+  const automatic = protocolOfficerEditOptions({protocolOfficer:'Олена ЄРЬОМІНА',protocolOfficerStored:''});
+  assert.equal(automatic[0].value,'');
+  assert.equal(automatic[0].label,'Автоматично: Олена ЄРЬОМІНА');
+  assert.equal(automatic[0].selected,true);
+  assert.equal(automatic.some(option=>option.value==='Олена ЄРЬОМІНА'),false);
+
+  const historicalManual = protocolOfficerEditOptions({protocolOfficer:'Не визначено',protocolOfficerStored:'Колишня УО'});
+  const stored = historicalManual.find(option=>option.value==='Колишня УО');
+  assert.equal(stored.selected,true);
+  assert.equal(historicalManual[0].selected,false);
+  assert.match(appSource,/if\(key===['\"]protocolOfficer['\"]\)editor\.innerHTML=protocolOfficerEditOptions\(row\)/);
+});
 
 function makeNode(value = '') {
   const classes = new Set();
@@ -427,7 +449,7 @@ test('protocol officer cards use the protocol progress API and separate the two 
   assert.match(source,/window\.openQueueProtocolApplications=/);
   assert.match(serverSource,/group_by=params\.get\("group_by", \["review_officer"\]\)\[0\]/);
   assert.match(serverSource,/protocol_card_officer/);
-  assert.match(serverSource,/CASEFOLD\(\{protocol_group\}\)=CASEFOLD\(\?\)/);
+  assert.match(serverSource,/CASEFOLD\(\{PROTOCOL_OFFICER_SQL\}\)=CASEFOLD\(\?\)/);
 });
 
 test('protocol card drilldown uses its matching date cohort and optionally only undecided applications',async()=>{
@@ -490,7 +512,9 @@ test('shared officer formatter uses first-name then uppercase-surname and preser
   assert.equal(formatOfficerName('ОЛЕНА ЄРЬОМІНА'),'Олена ЄРЬОМІНА');
   assert.equal(formatOfficerName('СВІТЛАНА НАМЯСЕНКО'),'Світлана НАМЯСЕНКО');
   assert.equal(formatOfficerName('ТЕТЯНА ФЕДЧЕНКО'),'Тетяна ФЕДЧЕНКО');
-  assert.equal(formatOfficerName('НЕ ПРИЗНАЧЕНО'),'НЕ ПРИЗНАЧЕНО');
+  assert.equal(formatOfficerName('НЕ ПРИЗНАЧЕНО'),'Не визначено');
+  assert.equal(formatOfficerName('Не визначено'),'Не визначено');
+  assert.equal(formatQueueOfficer(''),'Не визначено');
   assert.equal(formatOfficerName('MANAGER'),'MANAGER');
   assert.equal(formatQueueOfficer('ДМИТРО САВВА'),'<span>Дмитро</span><span>САВВА</span>');
 });

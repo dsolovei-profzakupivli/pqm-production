@@ -1163,12 +1163,52 @@ class NazkWorkflowTests(unittest.TestCase):
         self.assertIn('/api/supplier-procurements/', server_source)
 
     def test_review_officer_is_audit_field_not_protocol_assignment(self):
-        source = Path("server.py").read_text(encoding="utf-8")
-        self.assertIn("review_officer TEXT DEFAULT ''", source)
-        self.assertIn('if field == "protocol_decision"', source)
-        self.assertIn("UPDATE application_fields SET review_officer=?", source)
-        self.assertIn("{effective_officer_sql()} protocol_officer", source)
-        self.assertNotIn("review_officer,''),NULLIF(fo.officer", source)
+        now = server.now_iso()
+        cases = (
+            ("pending", "pending", "", "УО ЗА ВІДБОРОМ"),
+            ("manual", "pending", "РУЧНА УО", "УО ЗА ВІДБОРОМ"),
+            ("active", "active", "", "УО ЗА ВІДБОРОМ"),
+            ("rejected", "unsuccessful", "", "УО ЗА ВІДБОРОМ"),
+        )
+        with server.db() as con:
+            con.execute("INSERT INTO frameworks(id,pretty_id,status,raw_json,synced_at) VALUES ('officer-f','UA-F-OFFICER','active','{}',?)", (now,))
+            con.execute("""INSERT INTO framework_service_directory
+              (pretty_id,framework_id,responsible_officer,source,synced_at)
+              VALUES ('UA-F-OFFICER','officer-f','УО ЗА ВІДБОРОМ','PQM',?)""", (now,))
+            for key, status, stored, _assigned in cases:
+                sid, qid = f"officer-{key}", f"officer-q-{key}"
+                con.execute("INSERT INTO qualifications(id,framework_id,submission_id,status,documents_json,raw_json,synced_at) VALUES (?,?,?,?,'[]','{}',?)",
+                            (qid, "officer-f", sid, status, now))
+                con.execute("INSERT INTO submissions(id,framework_id,qualification_id,supplier_code,supplier_name,date_published,documents_json,raw_json,synced_at) VALUES (?,?,?,?,?,'2026-01-15','[]','{}',?)",
+                            (sid, "officer-f", qid, sid, sid, now))
+                con.execute("INSERT INTO application_fields(submission_id,review_officer,protocol_officer) VALUES (?,?,?)",
+                            (sid, "УО РОЗГЛЯДУ", stored))
+
+        rows = server.list_applications({"size": ["20"]})["items"]
+        by_id = {row["id"]: row for row in rows}
+        self.assertEqual(by_id["officer-pending"]["protocol_officer"], "УО ЗА ВІДБОРОМ")
+        self.assertEqual(by_id["officer-manual"]["protocol_officer"], "РУЧНА УО")
+        self.assertEqual(by_id["officer-active"]["protocol_officer"], "Не визначено")
+        self.assertEqual(by_id["officer-rejected"]["protocol_officer"], "Не визначено")
+        self.assertTrue(all(row["review_officer"] == "УО РОЗГЛЯДУ" for row in rows))
+        filtered = server.list_applications({"review_officer": ["УО РОЗГЛЯДУ"],
+                                             "protocol_officer": ["РУЧНА УО"], "size": ["20"]})
+        self.assertEqual([row["id"] for row in filtered["items"]], ["officer-manual"])
+
+        readiness = server.protocol_readiness({
+            "date_from": "2026-01-01", "date_to": "2026-01-31",
+            "submission_ids": ["officer-pending", "officer-active", "officer-rejected"],
+        })
+        readiness_by_id = {item["id"]: item for item in readiness["items"]}
+        self.assertEqual(readiness_by_id["officer-pending"]["protocol_officer"], "УО ЗА ВІДБОРОМ")
+        self.assertEqual(readiness_by_id["officer-active"]["protocol_officer"], "Не визначено")
+        self.assertTrue(any("Не заповнено № протоколу" in error
+                            for error in readiness_by_id["officer-pending"]["errors"]))
+        with server.db() as con:
+            stored = {row["submission_id"]: row["protocol_officer"] for row in con.execute(
+                "SELECT submission_id,protocol_officer FROM application_fields")}
+        self.assertEqual(stored["officer-pending"], "")
+        self.assertEqual(stored["officer-active"], "")
 
     def test_supplier_list_completed_submission_nazk_result_has_presentation_precedence(self):
         source = Path("app.js").read_text(encoding="utf-8")

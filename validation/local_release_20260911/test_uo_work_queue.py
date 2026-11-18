@@ -32,6 +32,7 @@ class UoWorkQueueTests(unittest.TestCase):
         self.con.executescript("""
           CREATE TABLE frameworks(id TEXT PRIMARY KEY,pretty_id TEXT,dk_code TEXT,status TEXT,raw_json TEXT);
           CREATE TABLE framework_officers(framework_id TEXT,officer TEXT,category TEXT);
+          CREATE TABLE framework_service_directory(pretty_id TEXT,framework_id TEXT,responsible_officer TEXT,source TEXT,synced_at TEXT);
           CREATE TABLE submissions(id TEXT PRIMARY KEY,framework_id TEXT,supplier_name TEXT,supplier_code TEXT,date_published TEXT,qualification_id TEXT);
           CREATE TABLE qualifications(id TEXT PRIMARY KEY,status TEXT);
           CREATE TABLE registry_contracts(qualification_id TEXT,status TEXT);
@@ -47,6 +48,7 @@ class UoWorkQueueTests(unittest.TestCase):
         end_year = date.today().year + 1
         self.con.execute("INSERT INTO frameworks VALUES ('f1','UA-F-1','12340000-0','active',?)", (json.dumps({"qualificationPeriod": {"endDate": f"{end_year}-12-31T00:00:00"}}),))
         self.con.execute("INSERT INTO framework_officers VALUES ('f1','Світлана НАМЯСЕНКО','ЇЖА')")
+        self.con.execute("INSERT INTO framework_service_directory VALUES ('UA-F-1','f1','Світлана НАМЯСЕНКО','Google Sheets: Оголошення','2026-01-01')")
         self.con.execute("INSERT INTO qualifications VALUES ('q-pending','pending')")
         self.con.execute("INSERT INTO qualifications VALUES ('q-complete','active')")
         current_year = date.today().year
@@ -146,8 +148,31 @@ class UoWorkQueueTests(unittest.TestCase):
 
     def test_application_statistics_protocol_field_uses_the_protocol_card_fallback(self):
         rows=work_queue_application_statistics(self.con,"1=1",[],review_progress=False)
-        row=next(item for item in rows if item["protocol_officer"])
+        row=next(item for item in rows if item["status"]=="pending")
         self.assertEqual(row["protocol_officer"],"Світлана НАМЯСЕНКО")
+
+    def test_protocol_officer_fallback_depends_on_prozorro_status_and_review_is_independent(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-pending-blank", "f1", "Очікує", "811", "2026-08-25T09:00:00", "q-pending"),
+            ("s-active-blank", "f1", "Допущено", "812", "2026-08-25T10:00:00", "q-complete"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer) VALUES (?,?,?)", [
+            ("s-pending-blank", "Інша УО РОЗГЛЯДУ", ""),
+            ("s-active-blank", "Інша УО РОЗГЛЯДУ", "  "),
+        ])
+        rows = work_queue_application_statistics(self.con,"1=1",[],review_progress=False)
+        pending = next(row for row in rows if row["status"] == "pending")
+        active = next(row for row in rows if row["status"] == "active")
+        self.assertEqual(pending["review_officer"], "Інша УО РОЗГЛЯДУ")
+        self.assertEqual(active["protocol_officer"], "Не визначено")
+
+    def test_manual_protocol_value_wins_and_review_filter_does_not_reassign_protocol(self):
+        self.con.execute("INSERT INTO submissions VALUES ('s-manual','f1','Ручне','813','2026-08-25T11:00:00','q-pending')")
+        self.con.execute("INSERT INTO application_fields(submission_id,review_officer,protocol_officer) VALUES ('s-manual','УО РОЗГЛЯДУ','РУЧНЕ ПРИЗНАЧЕННЯ')")
+        rows = work_queue_application_statistics(self.con,"1=1",[],review_progress=False,
+            filters={"review_officer":"УО РОЗГЛЯДУ"})
+        manual = next(row for row in rows if row["protocol_officer"] == "РУЧНЕ ПРИЗНАЧЕННЯ")
+        self.assertEqual(manual["review_officer"], "УО РОЗГЛЯДУ")
 
     def test_application_statistics_filters_supplier_type_before_server_aggregation(self):
         self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [

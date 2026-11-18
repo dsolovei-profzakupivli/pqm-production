@@ -5,10 +5,14 @@ from __future__ import annotations
 import supplier_classification
 import supplier_manual_classification
 from uo_work_queue import _officer_label
+from application_officers import (
+    UNDEFINED_OFFICER,
+    PROTOCOL_OFFICER_SQL,
+    REVIEW_OFFICER_SQL,
+)
 
 
 STATUS_SQL = "CASE WHEN q.id IS NULL OR q.status IS NULL THEN 'pending' ELSE q.status END"
-PROTOCOL_OFFICER_SQL = "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'')"
 
 
 def work_queue_application_statistics(con, clause: str, args: list, *, review_progress: bool,
@@ -26,11 +30,11 @@ def work_queue_application_statistics(con, clause: str, args: list, *, review_pr
         LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}'''
     if review_progress:
         if group_by == "protocol_officer":
-            group_expr = "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено')"
+            group_expr = PROTOCOL_OFFICER_SQL
             group_key = "protocol_officer"
         else:
             # Preserve the existing response field and default grouping.
-            group_expr = "COALESCE(af.review_officer,'')"
+            group_expr = REVIEW_OFFICER_SQL
             group_key = "review_officer"
         sql = f"""SELECT {group_expr} {group_key},
             COUNT(DISTINCT s.id) total,
@@ -49,21 +53,21 @@ def work_queue_application_statistics(con, clause: str, args: list, *, review_pr
             for field in ("total", "reviewed", "pending"):
                 target[field] += int(row[field] or 0)
         return sorted(merged.values(), key=lambda item: item[group_key].casefold())
-    officers = f"COALESCE(af.review_officer,'') review_officer, {PROTOCOL_OFFICER_SQL} protocol_officer"
+    officers = f"{REVIEW_OFFICER_SQL} review_officer, {PROTOCOL_OFFICER_SQL} protocol_officer"
     status = STATUS_SQL
     where = []
     values = list(args)
     filters = filters or {}
     dimensions = {
         "category": "COALESCE(fo.category,'')",
-        "review_officer": "COALESCE(af.review_officer,'')",
-        "protocol_officer": "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'')",
+        "review_officer": REVIEW_OFFICER_SQL,
+        "protocol_officer": PROTOCOL_OFFICER_SQL,
     }
     for key, expression in dimensions.items():
         value = str(filters.get(key) or "").strip()
         if value:
             where.append(f"{expression}=?")
-            values.append("" if value == "__unassigned__" else value)
+            values.append(UNDEFINED_OFFICER if value == "__unassigned__" else value)
     dk_codes = list(dict.fromkeys(str(value) for value in filters.get("dk_code", []) if str(value)))
     if dk_codes:
         where.append(f"COALESCE(f.dk_code,'') IN ({','.join('?' for _ in dk_codes)})")
@@ -90,7 +94,7 @@ def work_queue_statistics_payload(con, clause: str, args: list, *, entity_type: 
     status = STATUS_SQL
     dimensions = {
         "category": "COALESCE(fo.category,'')",
-        "review_officer": "COALESCE(af.review_officer,'')",
+        "review_officer": REVIEW_OFFICER_SQL,
         "protocol_officer": PROTOCOL_OFFICER_SQL,
     }
 
@@ -109,14 +113,14 @@ def work_queue_statistics_payload(con, clause: str, args: list, *, entity_type: 
         value = str(filters.get(key) or "").strip()
         if value:
             where.append(f"{expression}=?")
-            values.append("" if value == "__unassigned__" else value)
+            values.append(UNDEFINED_OFFICER if value == "__unassigned__" else value)
     dk_codes = list(dict.fromkeys(str(value) for value in filters.get("dk_code", []) if str(value)))
     if dk_codes:
         where.append(f"COALESCE(f.dk_code,'') IN ({','.join('?' for _ in dk_codes)})")
         values.extend(dk_codes)
     filtered_source = source + (" AND " + " AND ".join(where) if where else "")
 
-    officers = f"COALESCE(af.review_officer,'') review_officer, {PROTOCOL_OFFICER_SQL} protocol_officer"
+    officers = f"{REVIEW_OFFICER_SQL} review_officer, {PROTOCOL_OFFICER_SQL} protocol_officer"
     sql = f"SELECT {officers}, COALESCE(f.dk_code,'') dk_code, COALESCE(fo.category,'') category, {status} status, COUNT(DISTINCT s.id) total"
     items = [dict(row) for row in con.execute(sql + filtered_source + ' GROUP BY 1,2,3,4,5 ORDER BY 1,2,3,4', values)]
 

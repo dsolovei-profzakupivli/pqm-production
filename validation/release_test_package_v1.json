@@ -14,7 +14,8 @@
     11,
     12,
     13,
-    14
+    14,
+    15
   ],
   "integrity_test_versions": [
     1,
@@ -31,7 +32,8 @@
     12,
     13,
     14,
-    15
+    15,
+    16
   ],
   "integrity_manifest_dir": "validation/local_release_20261116",
   "snapshot_support_files": [
@@ -80,7 +82,8 @@
     "nazk_preview_browser_fixture.py"
   ],
   "root_level_release_files": [
-    "sandbox_runtime_messages_integrated_v1_86ea864.py"
+    "sandbox_runtime_messages_integrated_v1_86ea864.py",
+    "application_officers.py"
   ],
   "release_fixture_basenames": [
     "supplier_classification_parent_integrity_6b9830b.zip",

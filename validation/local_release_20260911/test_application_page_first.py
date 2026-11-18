@@ -22,6 +22,12 @@ class ApplicationPageFirstTests(unittest.TestCase):
                 (server.now_iso(),),
             )
             con.execute(
+                """INSERT INTO framework_service_directory
+                   (pretty_id,framework_id,responsible_officer,source,synced_at)
+                   VALUES ('UA-F-PAGE','framework-page','УО ВІДБОРУ','PQM',?)""",
+                (server.now_iso(),),
+            )
+            con.execute(
                 """INSERT INTO supplier_edr_profiles
                    (supplier_code,manager_name,edr_checked_at,synced_at)
                    VALUES ('12-34','КЕРІВНИК З ЄДР','2026-08-20',?)""",
@@ -131,6 +137,7 @@ class ApplicationPageFirstTests(unittest.TestCase):
         fallback = server.list_applications({"officer": ["УО ВІДБОРУ"], "size": ["100"]})
         self.assertEqual([item["id"] for item in manual["items"]], ["submission-00"])
         self.assertNotIn("submission-00", {item["id"] for item in fallback["items"]})
+        self.assertIn("submission-01", {item["id"] for item in fallback["items"]})
         self.assertEqual(manual["items"][0]["protocol_officer"], "РУЧНА УО")
 
 

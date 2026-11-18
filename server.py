@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import application_officers
 import background_jobs
 import auth_access
 import chat_annotations
@@ -106,6 +107,7 @@ from reference_directories import (
 from uo_work_queue import get_uo_work_queue
 from uo_work_progress import (
     PROTOCOL_OFFICER_SQL,
+    REVIEW_OFFICER_SQL,
     STATUS_SQL as WORK_QUEUE_STATUS_SQL,
     work_queue_application_statistics as _work_queue_application_statistics,
 )
@@ -673,14 +675,10 @@ def now_iso() -> str:
 
 
 def effective_officer_sql(q_alias: str = "q", af_alias: str = "af", fo_alias: str = "fo",
-                          undefined: str = "") -> str:
-    """Single business definition used by application lists, cards and filters."""
-    fallback = str(undefined).replace("'", "''")
-    return (f"CASE WHEN COALESCE({q_alias}.status,'pending')='pending' "
-            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),NULLIF({fo_alias}.officer,''),'{fallback}') "
-            f"WHEN {q_alias}.status IN ('active','unsuccessful') "
-            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),'{fallback}') "
-            f"ELSE '{fallback}' END")
+                          undefined: str = application_officers.UNDEFINED_OFFICER) -> str:
+    """Compatibility wrapper for the shared protocol-officer projection."""
+    return application_officers.protocol_officer_sql(
+        qualification_alias=q_alias, application_alias=af_alias, undefined=undefined)
 
 
 def legal_reference_sort_key(item: dict) -> tuple:
@@ -1918,13 +1916,8 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                     "INSERT OR IGNORE INTO application_fields(submission_id) VALUES (?)", (item["id"],)
                 )
                 if application_cursor.rowcount:
-                    assignment = con.execute("""SELECT responsible_officer FROM framework_service_directory
-                      WHERE framework_id=? AND COALESCE(responsible_officer,'')<>'' LIMIT 1""",
-                      (framework_id,)).fetchone()
-                    if assignment:
-                        con.execute("""UPDATE application_fields SET protocol_officer=?,updated_at=?,updated_by=?
-                          WHERE submission_id=? AND COALESCE(protocol_officer,'')=''""",
-                          (assignment[0], now_iso(), "PQM default from framework", item["id"]))
+                    application_officers.assign_default_protocol_officer(
+                        con, item["id"], framework_id, now_iso())
                 previous_manager = con.execute("""SELECT af.manager_name,s.id
                   FROM submissions s JOIN application_fields af ON af.submission_id=s.id
                   WHERE s.supplier_code=? AND s.id<>? AND COALESCE(af.manager_name,'')<>''
@@ -3043,21 +3036,21 @@ def application_filter(params: dict, *, include_entity_type: bool = False) -> tu
             raise ValueError("Невідомий тип постачальника")
         where.append("SUPPLIER_ENTITY_TYPE(s.supplier_code)=?")
         args.append(entity_type)
-    for key, column in (('review_officer', "COALESCE(af.review_officer,'')"),
+    for key, column in (('review_officer', REVIEW_OFFICER_SQL),
                         ('protocol_officer', PROTOCOL_OFFICER_SQL)):
         value = params.get(key, [''])[0]
         if value:
             where.append(f"{column}=?")
-            args.append('' if value == '__unassigned__' else value)
+            args.append(application_officers.UNDEFINED_OFFICER if value == '__unassigned__' else value)
     if protocol_card_officer:
-        protocol_group = "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено')"
-        where.append(f"CASEFOLD({protocol_group})=CASEFOLD(?)")
+        where.append(f"CASEFOLD({PROTOCOL_OFFICER_SQL})=CASEFOLD(?)")
         args.append(protocol_card_officer)
     if params.get('actual_status') == ['1']:
         where.append(f"{WORK_QUEUE_STATUS_SQL} IN ('active','unsuccessful','pending')")
-    assigned_officer = effective_officer_sql()
+    assigned_officer = effective_officer_sql(undefined=application_officers.UNDEFINED_OFFICER)
     if officer == "__unassigned__":
-        where.append(f"{assigned_officer}=''")
+        where.append(f"{assigned_officer}=?")
+        args.append(application_officers.UNDEFINED_OFFICER)
     elif officer:
         where.append(f"{assigned_officer}=?")
         args.append(officer)
@@ -3207,8 +3200,9 @@ def list_applications(params: dict) -> dict:
           (SELECT rc.status FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
           (SELECT rc.milestones_json FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones,
            af.protocol_number,af.protocol_date,af.publication_date,
+           COALESCE(af.protocol_officer,'') protocol_officer_stored,
            {PROTOCOL_OFFICER_SQL} protocol_officer,
-           af.review_officer,
+           {REVIEW_OFFICER_SQL} review_officer,
           af.protocol_remarks,af.protocol_decision,af.marketplace_decision,af.compliance_status,af.compliance_comments,
           af.generated_protocol_number,af.generated_protocol_date,af.generated_protocol_decision,af.protocol_generated_at,
           af.manager_name,af.manager_name_source,af.manager_name_source_submission_id,
@@ -3327,7 +3321,7 @@ HISTORY_SORT_FIELDS = {
     'cpv': 'f.dk_code', 'framework': 'f.title',
     'decision': "CASE COALESCE(q.status,'pending') WHEN 'active' THEN 'Допущено' WHEN 'unsuccessful' THEN 'Відхилено' ELSE 'Очікує рішення' END",
     'contract': 'af.contract_details', 'manager': 'af.manager_name',
-    'officer': 'af.protocol_officer', 'review_officer': 'af.review_officer', 'protocol': 'af.protocol_number',
+    'officer': PROTOCOL_OFFICER_SQL, 'review_officer': REVIEW_OFFICER_SQL, 'protocol': 'af.protocol_number',
     'protocol_date': 'af.protocol_date', 'remarks': HISTORY_REMARKS_SQL,
 }
 
@@ -3353,14 +3347,14 @@ def application_history(params: dict) -> dict:
     size = min(100, max(1, int(params.get('size', ['50'])[0])))
     where, args = ['1=1'], []
     fields = {'supplier':'s.supplier_name', 'cpv':'f.dk_code', 'framework':'f.title',
-              'contract':'af.contract_details', 'manager':'af.manager_name', 'officer':'af.protocol_officer'}
+              'contract':'af.contract_details', 'manager':'af.manager_name', 'officer':PROTOCOL_OFFICER_SQL}
     for key, sql in fields.items():
         value = params.get(key, [''])[0].strip()
         if value:
             where.append(f'INSTR(CASEFOLD(COALESCE({sql},\'\')),?)>0'); args.append(value.casefold())
     review_officers = [value.strip() for value in params.get('review_officer', []) if value.strip()]
     if review_officers:
-        where.append(f"af.review_officer IN ({','.join('?' for _ in review_officers)})")
+        where.append(f"{REVIEW_OFFICER_SQL} IN ({','.join('?' for _ in review_officers)})")
         args.extend(review_officers)
     code = re.sub(r'\D', '', params.get('code', [''])[0])
     remarks = params.get('remarks', [''])[0].strip().casefold()
@@ -3389,12 +3383,14 @@ def application_history(params: dict) -> dict:
       WHERE """ + ' AND '.join(where)
     with db() as con:
         review_officer_options = [row[0] for row in con.execute(
-            "SELECT DISTINCT review_officer FROM application_fields WHERE TRIM(review_officer)<>'' ORDER BY CASEFOLD(review_officer)"
+            f"SELECT DISTINCT {REVIEW_OFFICER_SQL} review_officer FROM application_fields ORDER BY CASEFOLD(review_officer)"
         )]
         total = con.execute('SELECT COUNT(*)'+source, args).fetchone()[0]
-        items = [dict(row) for row in con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,
+        items = [dict(row) for row in con.execute(f"""SELECT s.id,s.supplier_name,s.supplier_code,
           s.date_published,s.framework_id,f.pretty_id,f.title framework_title,f.dk_code,
-          COALESCE(q.status,'pending') status,af.protocol_decision,af.protocol_officer,af.review_officer,
+          COALESCE(q.status,'pending') status,af.protocol_decision,
+          {PROTOCOL_OFFICER_SQL} protocol_officer,COALESCE(af.protocol_officer,'') protocol_officer_stored,
+          {REVIEW_OFFICER_SQL} review_officer,
           af.protocol_number,af.protocol_date,af.protocol_remarks,af.compliance_comments,
           af.contract_details,af.manager_name,s.documents_json,q.documents_json decision_documents,
           q.status qualification_status,
@@ -3450,7 +3446,8 @@ def protocol_readiness(payload: dict) -> dict:
           COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.document_package,'') document_package,
           COALESCE(af.protocol_remarks,'') protocol_remarks,
-          COALESCE(af.protocol_officer,'') protocol_officer,
+          {PROTOCOL_OFFICER_SQL} protocol_officer,
+          COALESCE(af.protocol_officer,'') protocol_officer_stored,
           COALESCE(af.manager_name,'') manager_name,
           COALESCE(af.protocol_date,'') protocol_date,
           COALESCE(q.status,'pending') source_status
@@ -6492,14 +6489,14 @@ def supplier_profile(supplier_code: str) -> dict:
             "П. 52: враховано задоволені звернення за датою рішення; межі періодів включні."
         )
         contacts = supplier_contacts(con, code)
-        application_rows = [dict(row) for row in con.execute("""SELECT s.id,s.framework_id,
+        application_rows = [dict(row) for row in con.execute(f"""SELECT s.id,s.framework_id,
           COALESCE(NULLIF(f.pretty_id,''),f.id) framework_pretty_id,f.dk_code,f.title framework_title,
           COALESCE(fo.marketplace_url,'') marketplace_url,
           s.date_published,COALESCE(q.status,'pending') qualification_status,
           COALESCE(af.protocol_decision,'') protocol_decision,COALESCE(af.protocol_remarks,'') protocol_remarks,
           COALESCE(af.compliance_status,'') compliance_status,COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.protocol_number,'') protocol_number,COALESCE(af.protocol_date,'') protocol_date,
-          COALESCE(af.protocol_officer,'') protocol_officer,COALESCE(af.contract_details,'') contract_details
+          {PROTOCOL_OFFICER_SQL} protocol_officer,COALESCE(af.contract_details,'') contract_details
           FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=COALESCE((
             SELECT q2.id FROM qualifications q2 WHERE q2.submission_id=s.id

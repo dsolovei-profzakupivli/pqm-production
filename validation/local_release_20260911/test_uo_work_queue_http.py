@@ -91,6 +91,10 @@ class UoWorkQueueHttpTests(unittest.TestCase):
                     (framework_id, review, "ЇЖА" if index % 2 == 0 else "ВУГІЛЛЯ", "2026-11-17"),
                 )
                 connection.execute(
+                    "INSERT INTO framework_service_directory(pretty_id,framework_id,responsible_officer,source,synced_at) VALUES(?,?,?,'Google Sheets: Оголошення',?)",
+                    (f"UA-F-{key}", framework_id, review, "2026-11-17"),
+                )
+                connection.execute(
                     "INSERT INTO qualifications(id,framework_id,submission_id,status,raw_json,synced_at) "
                     "VALUES(?,?,?,?,?,?)",
                     (qualification_id, framework_id, submission_id,
@@ -277,6 +281,8 @@ class UoWorkQueueHttpTests(unittest.TestCase):
         drill_rows = [
             ("drill-active", "supplier-drill-active", "active", "УО ПРОТОКОЛУ А", "ПРОТОКОЛЬНА А", "01000000-0"),
             ("drill-rejected", "supplier-drill-rejected", "unsuccessful", "УО ПРОТОКОЛУ А", "ПРОТОКОЛЬНА А", "06000000-0"),
+            ("drill-active-blank", "supplier-drill-active-blank", "active", "", "ПРОТОКОЛЬНА А", "01000000-0"),
+            ("drill-rejected-blank", "supplier-drill-rejected-blank", "unsuccessful", "", "ПРОТОКОЛЬНА А", "06000000-0"),
             ("drill-null", "supplier-drill-null", None, "", "ПРОТОКОЛЬНА Б", "01000000-0"),
             ("drill-missing", "supplier-drill-missing", None, "", "ПРОТОКОЛЬНА Б", "06000000-0"),
         ]
@@ -293,6 +299,10 @@ class UoWorkQueueHttpTests(unittest.TestCase):
                 connection.execute(
                     "INSERT INTO framework_officers(framework_id,officer,category,synced_at) VALUES(?,?,?,?)",
                     (framework_id, framework_protocol, "ЇЖА", "2026-11-17"),
+                )
+                connection.execute(
+                    "INSERT INTO framework_service_directory(pretty_id,framework_id,responsible_officer,source,synced_at) VALUES(?,?,?,'Google Sheets: Оголошення',?)",
+                    (f"UA-F-{key}", framework_id, framework_protocol, "2026-11-17"),
                 )
                 if key != "drill-missing":
                     connection.execute(
@@ -343,8 +353,91 @@ class UoWorkQueueHttpTests(unittest.TestCase):
                         metric = status_code or "total"
                         self.assertEqual(
                             registry["total"], expected,
-                            f"{group_by}={name or 'Не призначено'}, metric={metric}",
+                            f"{group_by}={name or 'Не визначено'}, metric={metric}",
                         )
+
+    def test_registry_http_uses_pending_fallback_but_not_for_completed_blank_protocol_fields(self):
+        with server.db() as connection:
+            for key, status_value in (("pending", "pending"), ("active", "active"), ("rejected", "unsuccessful"),
+                                      ("manual", "pending"), ("review-blank", "pending")):
+                framework_id, submission_id, qualification_id = f"assigned-{key}", f"assigned-sub-{key}", f"assigned-q-{key}"
+                connection.execute(
+                    "INSERT INTO frameworks(id,pretty_id,title,dk_code,status,raw_json,synced_at) VALUES(?,?,?,?,?,?,?)",
+                    (framework_id, f"UA-F-assigned-{key}", key, "01000000-0", "active", "{}", "2026-11-17"),
+                )
+                connection.execute(
+                    "INSERT INTO framework_service_directory(pretty_id,framework_id,responsible_officer,source,synced_at) VALUES(?,?,?,'PQM',?)",
+                    (f"UA-F-assigned-{key}", framework_id, "УО ВІДБОРУ", "2026-11-17"),
+                )
+                connection.execute(
+                    "INSERT INTO qualifications(id,framework_id,submission_id,status,raw_json,synced_at) VALUES(?,?,?,?,?,?)",
+                    (qualification_id, framework_id, submission_id, status_value, "{}", "2026-11-17"),
+                )
+                connection.execute(
+                    "INSERT INTO submissions(id,framework_id,supplier_name,supplier_code,date_published,qualification_id,raw_json,synced_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (submission_id, framework_id, key, f"assigned-{key}", "2026-11-12T12:00:00", qualification_id, "{}", "2026-11-17"),
+                )
+                connection.execute(
+                    "INSERT INTO application_fields(submission_id,review_officer,protocol_officer) VALUES(?,?,?)",
+                    (submission_id, "" if key == "review-blank" else "ІНША УО РОЗГЛЯДУ",
+                     "РУЧНА УО" if key == "manual" else ""),
+                )
+            connection.commit()
+
+        status, registry = self.get_path("/api/applications", {"size": 100, "date_from": "2026-11-12"})
+        self.assertEqual(status, 200, registry)
+        records = {item["id"]: item for item in registry["items"]}
+        self.assertEqual(records["assigned-sub-pending"]["protocol_officer"], "УО ВІДБОРУ")
+        self.assertEqual(records["assigned-sub-active"]["protocol_officer"], "Не визначено")
+        self.assertEqual(records["assigned-sub-rejected"]["protocol_officer"], "Не визначено")
+        self.assertEqual(records["assigned-sub-manual"]["protocol_officer"], "РУЧНА УО")
+        self.assertEqual(records["assigned-sub-review-blank"]["review_officer"], "Не визначено")
+        self.assertTrue(all(records[f"assigned-sub-{key}"]["review_officer"] == "ІНША УО РОЗГЛЯДУ"
+                            for key in ("pending", "active", "rejected", "manual")))
+
+        for status_label, submission_id in (("Очікує рішення", "assigned-sub-pending"),
+                                            ("Допущено", "assigned-sub-active"),
+                                            ("Відхилено", "assigned-sub-rejected")):
+            filtered_status, filtered = self.get_path("/api/applications", {
+                "status": status_label, "protocol_officer": "Не визначено" if status_label != "Очікує рішення" else "УО ВІДБОРУ",
+                "review_officer": "ІНША УО РОЗГЛЯДУ", "size": 100,
+            })
+            self.assertEqual(filtered_status, 200, filtered)
+            self.assertEqual([item["id"] for item in filtered["items"]], [submission_id])
+
+        with server.db() as connection:
+            connection.execute(
+                "UPDATE framework_service_directory SET responsible_officer='НОВА УО ВІДБОРУ' WHERE framework_id='assigned-pending'"
+            )
+            connection.commit()
+        changed_status, changed = self.get_path("/api/applications", {
+            "protocol_officer": "НОВА УО ВІДБОРУ", "status": "Очікує рішення", "size": 100,
+        })
+        self.assertEqual(changed_status, 200, changed)
+        self.assertEqual([item["id"] for item in changed["items"]], ["assigned-sub-pending"])
+        stats_status, stats = self.get({
+            "summary": "application-statistics", "date_from": "2026-11-12", "date_to": "2026-11-12",
+        })
+        self.assertEqual(stats_status, 200, stats)
+        assigned_total = sum(int(item["total"] or 0) for item in stats["items"]
+                             if item["protocol_officer"] == "НОВА УО ВІДБОРУ")
+        registry_status, registry = self.get_path("/api/applications", {
+            "protocol_officer": "НОВА УО ВІДБОРУ", "status": "Очікує рішення",
+            "date_from": "2026-11-12", "date_to": "2026-11-12", "size": 100,
+        })
+        self.assertEqual(registry_status, 200, registry)
+        self.assertEqual(assigned_total, registry["total"])
+        self.assertEqual(assigned_total, 1)
+        manual_status, manual = self.get_path("/api/applications", {
+            "protocol_officer": "РУЧНА УО", "size": 100,
+        })
+        self.assertEqual(manual_status, 200, manual)
+        self.assertEqual([item["id"] for item in manual["items"]], ["assigned-sub-manual"])
+        review_blank_status, review_blank = self.get_path("/api/applications", {
+            "review_officer": "Не визначено", "size": 100,
+        })
+        self.assertEqual(review_blank_status, 200, review_blank)
+        self.assertEqual([item["id"] for item in review_blank["items"]], ["assigned-sub-review-blank"])
 
     def test_registry_entity_type_uses_manual_classification_for_rows_counts_and_stats(self):
         self.classifications["supplier-fop-second"] = {"entity_type": "individual_entrepreneur"}
