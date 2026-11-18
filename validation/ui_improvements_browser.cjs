@@ -8,7 +8,7 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
  const errors=[];page.on('pageerror',e=>errors.push(String(e)));await page.route('**/*',route=>route.abort());
  try{
   await page.setContent(read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,''));
-  for(const name of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css','ui_tz2.css'])await page.addStyleTag({content:read(name)});
+  for(const name of ['styles.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','sandbox_theme.css','ui_final.css','ui_tz2.css','theme.css'])await page.addStyleTag({content:read(name)});
   await page.evaluate(()=>{
    document.querySelector('#loginGate').hidden=true;document.querySelector('#applicationShell').hidden=false;
    document.body.dataset.authRole='admin';
@@ -75,16 +75,43 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
    other.value='4453';input.value='Текст';input.dispatchEvent(new Event('input',{bubbles:true}));
    if(w.querySelector('button').hidden)throw Error('Clear absent');w.querySelector('button').click();
    if(input.value||!w.querySelector('button').hidden||other.value!=='4453')throw Error('Clear changed other filter');},i);
-  await page.evaluate(()=>{showFixture('requestsView');PqmUi.responseExpired=false;document.querySelector('#requestsExpiredFilter').click()});
-  assert.equal(await page.evaluate(()=>PqmUi.responseExpired),true);assert.equal(await page.evaluate(()=>requestsPage),1);
-  assert.equal(await page.evaluate(()=>reloads),1);
+  await page.evaluate(()=>showFixture('requestsView'));
+  assert.equal(await page.locator('#requestsExpiredFilter,#requestsExpired').count(),0,'the duplicate expired-response KPI is absent');
+  await page.evaluate(()=>{PqmUi.responseExpired=false;requestsPage=8;selectedRequestAuthority='old';fixtureCounts.appeals=4;window.dispatchEvent(new Event('focus'))});
+  await page.waitForFunction(()=>document.querySelector('#requestsNav .action-count-badge')?.textContent==='4');
+  await page.locator('#requestsNav .action-count-badge').click();
+  assert.equal(await page.evaluate(()=>PqmUi.responseExpired),true);assert.equal(await page.evaluate(()=>requestsPage),1);assert.equal(await page.evaluate(()=>selectedRequestAuthority),'40996564');
+  const appSource=read('app.js'),loaderStart=appSource.indexOf('async function loadViolationReports(){'),loaderEnd=appSource.indexOf('\nconst internalDecisionLabels',loaderStart);
+  assert(loaderStart>=0&&loaderEnd>loaderStart,'real complaints list loader is available for the UI fixture');
+  const quickFilterHandler=appSource.match(/\$\('#requestQuickFilters'\)\.onclick=e=>\{[^}]+\}/)?.[0];assert(quickFilterHandler,'real complaints status-counter handler is available');
+  await page.evaluate(()=>{
+   window.requestsPage=1;window.requestsPages=1;window.violationReports=[];window.requestsPolling=null;window.requestsRefreshState={running:false,starting:false};window.selectedRequestAuthority='';window.requestFilterCalls=[];window.$$=selector=>[...document.querySelectorAll(selector)];
+   window.esc=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\"','&quot;');
+   window.displayDate=value=>String(value||'—');window.requestLabel=value=>String(value||'—');window.requestStatusClass=()=> 'pending';window.requestDeadline=()=>({html:'—'});window.requestTenderLinks=()=>'';window.requestScenarioCell=()=>'';window.requestBlockingBadge=()=>'';window.violationProtocolCell=()=>'';
+   window.requestStatusLabels={pending:'Очікує розгляду',satisfied:'Задоволено',declined:'Відхилено'};window.requestReasonLabels={contractBreach:'Порушення'};document.querySelector('#requestsStatus').innerHTML='<option value="">Усі статуси</option><option value="pending">Очікує розгляду</option><option value="satisfied">Задоволено</option><option value="declined">Відхилено</option>';window.populateRequestSelect=(selector,values,labels,empty)=>{const select=$(selector),current=select.value;select.innerHTML=`<option value="">${empty}</option>`+(values||[]).map(value=>`<option value="${value}">${requestLabel(value,labels)}</option>`).join('');select.value=current};window.renderRequestAuthorityCards=()=>{};window.updateRequestsRefreshAvailability=()=>{};window.reloadOpenViolationReportDetail=async()=>{};
+   window.request=async url=>{if(url.endsWith('/summary'))return{count:url.includes('operational')?fixtureCounts.tasks:fixtureCounts.appeals};if(!url.startsWith('/api/violation-reports?'))return{};requestFilterCalls.push(url);const status=new URL(url,'http://localhost').searchParams.get('status');const items=!status||status==='pending'?[{id:'fixture-1',report_id:'UA-D-FIXTURE',date_published:'2026-11-10',author_name:'Тестовий замовник',author_code:'00000000',defendant_name:'Тестовий постачальник',defendant_code:'11111111',reason:'contractBreach',status:'pending',defendant_statements:[]}]:[];return{items,pages:1,pending:1,satisfied:0,declined:0,statuses:[],reasons:[],authorities:[],sync:{running:false},total:items.length}};
+  });
+  await page.addScriptTag({content:appSource.slice(loaderStart,loaderEnd)});
+  await page.addScriptTag({content:quickFilterHandler+';'});
+  await page.locator('#requestQuickFilters [data-status="pending"]').click();
+  await page.waitForFunction(()=>!document.querySelector('#requestsBody').textContent.includes('Завантаження'));
+  const filteredTable=await page.locator('#requestsBody').innerText();assert.match(filteredTable,/UA-D-FIXTURE/,`filtered response row appears in the table after loading: ${filteredTable}`);
+  assert.equal(await page.evaluate(()=>new URL(requestFilterCalls.at(-1),'http://localhost').searchParams.get('status')),'pending');
+  assert.equal(await page.locator('#requestQuickFilters [data-status="pending"]').getAttribute('aria-pressed'),'true');
+  for(const theme of ['light','dark']){await page.evaluate(theme=>{document.documentElement.dataset.theme=theme;if(theme==='dark')document.documentElement.dataset.pqmEnvironment='sandbox';else delete document.documentElement.dataset.pqmEnvironment},theme);if(theme==='light'){const colors=await page.locator('#requestQuickFilters button').evaluateAll(nodes=>nodes.map(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,color:getComputedStyle(node).color})));assert.deepEqual(colors,[{background:'rgb(255, 231, 168)',border:'rgb(189, 139, 22)',color:'rgb(31, 41, 51)'},{background:'rgb(229, 246, 236)',border:'rgb(119, 173, 141)',color:'rgb(31, 41, 51)'},{background:'rgb(253, 232, 231)',border:'rgb(233, 165, 160)',color:'rgb(0, 0, 0)'}],'light status counters match the Work UO KPI palette with black text on light red');}await page.screenshot({path:path.join(OUT,`requests-${theme}-filtered-table.png`),fullPage:true})}
+  await page.locator('#requestQuickFilters [data-status="pending"]').click();
+  await page.waitForFunction(()=>document.querySelector('#requestsBody tr')?.textContent.includes('UA-D-FIXTURE'));
+  assert.equal(await page.evaluate(()=>new URL(requestFilterCalls.at(-1),'http://localhost').searchParams.get('status')),'');
+  assert.equal(await page.locator('#requestQuickFilters [data-status="pending"]').getAttribute('aria-pressed'),'false');
+  if(process.env.PQM_REQUESTS_UI_ONLY==='1'){assert.deepEqual(errors,[]);console.log('REQUESTS_FILTERED_TABLE=PASS');return}
   await page.evaluate(()=>showFixture('historyView'));
-  const historyFields=await page.locator('#historyFilters input:not([type=date])').count();assert.equal(historyFields,9);
-  for(let i=0;i<9;i++)await page.locator('#historyFilters input:not([type=date])').nth(i).fill('значення '+i);
+  const historyFields=await page.locator('#historyFilters input:not([type=date])').count();assert.equal(historyFields,10);
+  const visibleHistoryFields=page.locator('#historyFilters input:not([type=date]):visible');assert.equal(await visibleHistoryFields.count(),9);
+  for(let i=0;i<9;i++)await visibleHistoryFields.nth(i).fill('значення '+i);
   for(let i=0;i<9;i++){
     const field=page.locator('#historyFilters input:not([type=date])').nth(i);
     await field.locator('..').locator('.pqm-search-clear').click();assert.equal(await field.inputValue(),'');
-    for(let j=i+1;j<9;j++)assert.equal(await page.locator('#historyFilters input:not([type=date])').nth(j).inputValue(),'значення '+j);
+    for(let j=i+1;j<9;j++)assert.equal(await visibleHistoryFields.nth(j).inputValue(),'значення '+j);
   }
   await page.evaluate(()=>{fixtureCounts.appeals=0;window.dispatchEvent(new Event('focus'))});
   await page.waitForFunction(()=>document.querySelector('#requestsNav .action-count-badge').hidden);

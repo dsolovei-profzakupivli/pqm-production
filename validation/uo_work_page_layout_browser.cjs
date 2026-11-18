@@ -82,8 +82,8 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       });
     }
     if(viewId==='requestsView'){
-      document.querySelector('#requestAuthorityCards').innerHTML=['Профзакупівлі','Медичні закупівлі','Українські спеціальні системи'].map((name,index)=>`<button class="request-authority-card"><span>${name}</span><strong>${index+2}</strong></button>`).join('');
-      document.querySelector('#requestsPending').textContent='12';document.querySelector('#requestsSatisfied').textContent='18';document.querySelector('#requestsDeclined').textContent='3';document.querySelector('#requestsExpired').textContent='4';
+      document.querySelector('#requestAuthorityCards').innerHTML=['Профзакупівлі','МЗУ','УСС'].map((name,index)=>`<button class="request-authority-card"><span>${name}</span><strong>${index+2}</strong></button>`).join('');
+      document.querySelector('#requestsPending').textContent='12';document.querySelector('#requestsSatisfied').textContent='18';document.querySelector('#requestsDeclined').textContent='3';
     }
   },{theme,viewId});
   return page;
@@ -241,12 +241,23 @@ async function makeAuxPage(browser,theme,viewId,width,height){
         return{viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,actions:rect(actions),authorities:rect(authorities),statuses:rect(statuses),authorityCards:[...authorities.children].map(rect),statusCards:[...statuses.children].map(rect)};
       });
       assert.equal(layout.authorityCards.length,3,'all three organization cards are rendered');
-      assert.equal(layout.statusCards.length,4,'all four response-status cards are rendered');
+      assert.equal(layout.statusCards.length,3,'only three status counters are rendered');
       assert.ok(layout.scroll<=layout.viewport+2,`requests page has no horizontal overflow at ${width}px`);
       if(width>=1024){
-        assert.ok(layout.authorities.height<=70&&layout.statuses.height<=70&&Math.abs(layout.authorities.top-layout.statuses.top)<2,`all seven request cards stay in one row at ${width}px: ${JSON.stringify(layout)}`);
-        assert.ok(layout.authorityCards.every(card=>Math.abs(card.top-layout.authorityCards[0].top)<2&&Math.abs(card.height-layout.authorityCards[0].height)<2),'organization cards have equal height on one row');
-        assert.ok(layout.statusCards.every(card=>Math.abs(card.top-layout.statusCards[0].top)<2&&Math.abs(card.height-layout.statusCards[0].height)<2),'status cards have equal height on one row');
+        assert.ok(layout.authorities.height<=60&&layout.statuses.height<=40&&Math.abs((layout.authorities.top+layout.authorities.bottom)/2-(layout.statuses.top+layout.statuses.bottom)/2)<2,`three organization cards and three status counters stay in one row at ${width}px: ${JSON.stringify(layout)}`);
+        assert.ok(layout.authorityCards.every(card=>Math.abs(card.top-layout.authorityCards[0].top)<2&&Math.abs(card.height-layout.authorityCards[0].height)<2&&Math.abs(card.width-layout.authorityCards[0].width)<2),'organization cards have equal width and height on one row');
+        if(width>1350)assert.ok(layout.statuses.left-layout.authorities.right>=20&&layout.statuses.left-layout.authorities.right<=24,`organization cards sit slightly farther left with the agreed inter-group gap: ${JSON.stringify(layout)}`);
+        assert.ok(layout.statusCards.every(card=>Math.abs(card.top-layout.statusCards[0].top)<2&&Math.abs(card.height-layout.statusCards[0].height)<2),'status counters align on one row');
+        assert.ok(layout.statusCards.every(card=>card.width<layout.authorityCards[0].width&&card.height<layout.authorityCards[0].height),'status counters are substantially smaller than organization cards');
+      }
+      const controls=await page.locator('#requestQuickFilters button').evaluateAll(nodes=>nodes.map(node=>({title:node.title,label:node.getAttribute('aria-label'),pressed:node.getAttribute('aria-pressed'),visibleText:node.innerText.trim(),tooltip:getComputedStyle(node,'::after').content})));
+      assert.deepEqual(controls.map(item=>item.title),['Очікує розгляду','Задоволено','Відхилено']);
+      assert.ok(controls.every(item=>item.label.startsWith(item.title+':')&&/^\d/.test(item.visibleText)&&!item.visibleText.includes(' ')),'status counters show only their number and expose full accessible labels');
+      assert.equal(await page.locator('#requestsExpiredFilter,#requestsExpired').count(),0,'the expired-response KPI duplicate is absent');
+      if(width===1920){
+        const firstStatus=page.locator('#requestQuickFilters button').first();
+        await firstStatus.focus();await page.waitForTimeout(160);
+        assert.equal(await firstStatus.evaluate(node=>node.matches(':focus')&&getComputedStyle(node,'::after').visibility),'visible','tooltip is available on keyboard focus');
       }
       if(width===1920){const requestShot=path.join(OUT,`requests-${theme}-wide.png`);await page.screenshot({path:requestShot,fullPage:true});evidence.push(requestShot);}
       await page.close();
@@ -300,6 +311,6 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       else assert.equal(layout.panelVisibility,'hidden',`table is hidden while the full-screen drawer is open at ${width}px`);
       await page.close();
     }
-    console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','history filters: two rows with clear wrappers, light/dark','requests: seven cards in one row at 1920/1536/1366/1280/1024, adaptive 900px, light/dark','3 rows','5 rows','8 rows','80%','100%','125%','150%'],screenshots:evidence},null,2));
+    console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','history filters: two rows with clear wrappers, light/dark','requests: three organization cards plus three status counters in one row at 1920/1536/1366/1280/1024, adaptive 900px, light/dark','3 rows','5 rows','8 rows','80%','100%','125%','150%'],screenshots:evidence},null,2));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
