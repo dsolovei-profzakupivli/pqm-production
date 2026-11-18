@@ -129,6 +129,16 @@
   margin-bottom: 5px;
 }
 
+/* Shared compact multiselect rows: retain the existing checkbox behavior and search. */
+.multi-panel{overflow-x:hidden;overscroll-behavior:contain}
+.multi-panel .multi-options{display:grid;gap:1px;min-width:0}
+.multi-panel label{box-sizing:border-box;align-items:flex-start;gap:7px;min-height:31px;padding:5px 6px;white-space:normal;overflow-wrap:anywhere;line-height:1.25}
+.multi-panel label input[type="checkbox"]{flex:0 0 auto;margin:2px 0 0}
+.multi-panel label span{min-width:0;overflow-wrap:anywhere;white-space:normal}
+.history-review-officer-filter{flex:0 1 170px;min-width:145px}
+.history-review-officer-filter>.multi-panel{width:min(260px,calc(100vw - 32px));max-height:min(320px,calc(100vh - 24px))}
+.history-review-officer-filter .multi-options{max-height:250px;overflow:auto}
+
 .wide-filter {
   min-width: 180px;
 }

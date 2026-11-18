@@ -1,7 +1,7 @@
 /* Approved compact layout for the Sandbox Work UO page. */
 #workQueueView>.module-heading{margin-bottom:8px}
 #workQueueView>.module-heading h1{margin:2px 0 0}
-#workQueueView .work-queue-operational-grid{grid-template-columns:minmax(0,2fr) minmax(0,3fr);align-items:start;gap:12px}
+#workQueueView .work-queue-operational-grid{grid-template-columns:minmax(0,9fr) minmax(0,11fr);align-items:stretch;gap:12px}
 #workQueueView .queue-summary-left{display:grid;align-content:start;gap:8px;min-width:0}
 #workQueueView .queue-statistics-card{align-self:start;min-width:0}
 #workQueueView .qualification-summary-card{padding:12px 14px;margin:0;min-width:0}
@@ -175,6 +175,41 @@ html[data-theme="dark"] #workQueueView .queue-statistics-message--warning{backgr
 #workQueueView .queue-statistics-filter-actions{position:relative;z-index:1;display:flex;gap:8px;margin:0;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:inherit}
 #workQueueView .queue-statistics-filter-actions button{flex:1 1 0;min-height:40px;padding:7px 10px;white-space:nowrap}
 #workQueueView .queue-statistics-filter-section.filter-active .queue-statistics-filter-section-content select{border-color:#5d9bd8}
+
+/* Compact, ordered controls and drawer actions for the approved statistics workflow. */
+#workQueueView .queue-protocol-summary{border-left:4px solid #78a8de}
+#workQueueView .queue-current-summary{border-left:4px solid #83b76f}
+#workQueueView .queue-statistics-card{display:flex;align-self:stretch;flex-direction:column;min-height:100%;}
+#workQueueView .queue-statistics-filters{display:flex;flex:1 1 auto;flex-direction:column;min-height:0}
+#workQueueView .queue-statistics-controls{gap:5px}
+#workQueueView .queue-statistics-controls input[type=date]{width:116px;min-width:110px}
+#workQueueView .queue-statistics-control-separator{flex:1 1 12px;min-width:8px;height:1px;margin-inline:3px;background:var(--line)}
+#workQueueView .queue-statistics-apply{border-color:#328e5b!important;background:#e5f5eb!important;color:#17653a!important}
+#workQueueView .queue-statistics-apply:hover{border-color:#247849!important;background:#d4efde!important}
+html[data-theme="dark"] #workQueueView .queue-statistics-apply{border-color:#4b9c6c!important;background:#1c4935!important;color:#d8f3e2!important}
+html[data-theme="dark"] #workQueueView .queue-statistics-apply:hover{background:#24583f!important}
+#workQueueView .queue-statistics-workspace{flex:1 1 auto;align-items:stretch}
+#workQueueView .queue-statistics-results{display:flex;flex-direction:column;min-height:0}
+#workQueueView .queue-statistics-table{flex:1 1 auto;min-height:90px}
+#workQueueView .queue-statistics-filter-panel{inset:0 0 auto auto;height:calc(100dvh - 40px - env(safe-area-inset-bottom));max-height:none;grid-template-rows:auto minmax(0,1fr);width:min(430px,90vw)}
+#workQueueView .queue-statistics-filter-header{position:relative;flex:none;min-height:62px;padding:8px 12px}
+#workQueueView .queue-statistics-filter-header-actions{display:flex;align-items:center;gap:7px}
+#workQueueView .queue-statistics-filter-header-actions button{display:grid;place-items:center;width:36px;height:36px;min-height:36px;padding:0}
+#workQueueView .queue-statistics-filter-header-actions #queueStatisticsFilterApply{border-radius:7px;font-weight:700}
+#workQueueView .queue-statistics-filter-fields{min-height:0;overflow:auto}
+#workQueueView .queue-statistics-filter-section-heading{min-width:0}
+#workQueueView .queue-statistics-table--scroll{flex:1 1 auto}
+@media(max-width:1500px){
+  #workQueueView .queue-statistics-controls{gap:4px}
+  #workQueueView .queue-statistics-controls input[type=date]{width:108px;min-width:104px}
+  #workQueueView .queue-statistics-group select{min-width:122px}
+  #workQueueView .queue-statistics-control-separator{flex-grow:.15}
+}
+@media(max-width:1100px){
+  #workQueueView .queue-statistics-card{min-height:0}
+  #workQueueView .queue-statistics-workspace{flex:0 0 auto}
+  #workQueueView .queue-statistics-table{flex:0 0 auto}
+}
 html[data-theme="dark"] #workQueueView .queue-statistics-filter-panel{background:#172d45;border-color:#6488B5;box-shadow:-10px 0 32px #0006}
 html[data-theme="dark"] #workQueueView .queue-statistics-filter-section{background:#132840;border-color:#38516e}
 html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-active{background:#203650;border-color:#79b8ff}

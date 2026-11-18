@@ -91,15 +91,16 @@
           <div class="queue-statistics-controls">
             <label id="queueStatisticsFromField">Від <input id="queueStatisticsFrom" type="date" required></label>
             <label id="queueStatisticsToField">До <input id="queueStatisticsTo" type="date" required></label>
+            <button id="queueStatisticsSearch" type="submit" class="ghost icon-button queue-icon-action queue-statistics-apply" title="Застосувати період" aria-label="Застосувати період">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7"/></svg>
+            </button>
+            <button id="queueStatisticsReset" type="button" class="ghost icon-button queue-icon-action" title="Скинути все" aria-label="Скинути все">×</button>
+            <span class="queue-statistics-control-separator" aria-hidden="true"></span>
+            <label id="queueStatisticsGroupField" class="queue-statistics-group">Розподіл за УО <select id="queueStatisticsGroup"><option value="protocol_officer">УО протоколу</option><option value="review_officer">УО розгляду</option></select></label>
             <button id="queueStatisticsFilterToggle" class="ghost queue-statistics-filter-toggle" type="button" aria-controls="queueStatisticsFilterPanel" aria-expanded="false" title="Відкрити фільтри">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16l-6.5 7.5v5l-3 1.5v-6.5L4 5z"/></svg>
               <span id="queueStatisticsFilterSummary">Фільтри</span>
             </button>
-            <label id="queueStatisticsGroupField" class="queue-statistics-group">Розподіл за УО <select id="queueStatisticsGroup"><option value="protocol_officer">УО протоколу</option><option value="review_officer">УО розгляду</option></select></label>
-            <button id="queueStatisticsSearch" type="submit" class="ghost icon-button queue-icon-action" title="Застосувати період" aria-label="Застосувати період">
-              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 5 5"/></svg>
-            </button>
-            <button id="queueStatisticsReset" type="button" class="ghost icon-button queue-icon-action" title="Скинути все" aria-label="Скинути все">×</button>
           </div>
           <p id="queueStatisticsPending" class="muted queue-statistics-pending" aria-live="polite" hidden></p>
           <div id="queueStatisticsWorkspace" class="queue-statistics-workspace">
@@ -126,7 +127,7 @@
               <p id="queueStatisticsMessage" class="muted" aria-live="polite"></p>
             </div>
             <aside id="queueStatisticsFilterPanel" class="queue-statistics-filter-panel" aria-label="Фільтри статистики" hidden>
-              <header class="queue-statistics-filter-header"><h3>Фільтри статистики</h3><button id="queueStatisticsFilterClose" type="button" class="ghost" aria-label="Закрити панель фільтрів" title="Закрити">×</button></header>
+              <header class="queue-statistics-filter-header"><h3>Фільтри статистики</h3><div class="queue-statistics-filter-header-actions"><button id="queueStatisticsFilterClear" type="button" class="ghost" title="Очистити всі фільтри, період залишиться без змін" aria-label="Очистити всі фільтри"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16M7 5l1 15h8l1-15M9 5V3h6v2"/></svg></button><button id="queueStatisticsFilterApply" class="primary queue-statistics-apply" type="button" title="Застосувати вибрані фільтри" aria-label="Застосувати вибрані фільтри"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7"/></svg></button><button id="queueStatisticsFilterClose" type="button" class="ghost" aria-label="Закрити панель без застосування" title="Закрити без застосування">×</button></div></header>
               <div class="queue-statistics-filter-fields">
                 <section class="queue-statistics-filter-section" data-statistics-filter-section="supplier_type">
                   <div class="queue-statistics-filter-section-heading"><button type="button" class="queue-statistics-section-toggle" aria-expanded="true"><span>Тип</span><span class="queue-statistics-section-state"></span></button><span class="queue-statistics-section-count"></span><button type="button" class="queue-statistics-section-clear" data-statistics-filter-reset="supplier_type" aria-label="Скинути фільтр Тип" title="Скинути цей фільтр" hidden>×</button></div>
@@ -148,10 +149,6 @@
                   <div class="queue-statistics-filter-section-heading"><button type="button" class="queue-statistics-section-toggle" aria-expanded="true"><span>УО протоколу</span><span class="queue-statistics-section-state"></span></button><span class="queue-statistics-section-count"></span><button type="button" class="queue-statistics-section-clear" data-statistics-filter-reset="protocol_officer" aria-label="Скинути фільтр УО протоколу" title="Скинути цей фільтр" hidden>×</button></div>
                   <div class="queue-statistics-filter-section-content"><select data-statistics-filter="protocol_officer"></select></div>
                 </section>
-              </div>
-              <div class="queue-statistics-filter-actions">
-                <button id="queueStatisticsFilterApply" class="primary" type="button">Застосувати</button>
-                <button id="queueStatisticsFilterClear" class="ghost" type="button">Очистити все</button>
               </div>
             </aside>
           </div>
@@ -234,10 +231,12 @@
       <div class="history-filter-row history-filter-primary">
       <input data-history="search" placeholder="Пошук у всіх полях…"><input data-history="code" placeholder="ЄДРПОУ / РНОКПП">
       <input data-history="supplier" placeholder="Постачальник"><input data-history="cpv" placeholder="Код ДК"><input data-history="framework" placeholder="Назва відбору">
-      <input data-history="contract" placeholder="Реквізити договору"><input data-history="manager" placeholder="ПІБ керівника"><input data-history="officer" placeholder="УО протоколу"><details id="historyReviewOfficerFilter" class="multi-filter"><summary>УО розгляду</summary><div id="historyReviewOfficerOptions"></div></details>
+      <input data-history="contract" placeholder="Реквізити договору"><input data-history="manager" placeholder="ПІБ керівника">
       </div>
       <div class="history-filter-row history-filter-secondary">
       <input data-history="remarks" placeholder="Зауваження — пошук за фрагментом тексту" aria-label="Зауваження">
+      <input data-history="officer" placeholder="УО протоколу">
+      <details id="historyReviewOfficerFilter" class="multi-filter history-review-officer-filter"><summary>Усі</summary><div class="multi-panel"><input id="historyReviewOfficerSearch" class="multi-search" type="search" placeholder="Пошук УО…" aria-label="Пошук УО розгляду"><div id="historyReviewOfficerOptions" class="multi-options"></div></div></details>
       <label>Від <input type="date" data-history="from"></label><label>До <input type="date" data-history="to"></label>
       <select data-history="status"><option value="">Усі рішення</option><option value="pending">Очікує рішення</option><option value="active">Допущено</option><option value="unsuccessful">Відхилено</option></select>
       <button type="button" id="historyReset" class="pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button>
@@ -429,7 +428,7 @@
       <div><p class="eyebrow">Порушення постачальників Prozorro Market</p><h1>Звернення замовників</h1><p id="requestsInfo" class="muted">Офіційний реєстр UA-D з Prozorro</p></div>
       <div class="request-heading-actions">
         <section id="requestAuthorityCards" class="request-authority-cards" aria-label="Фільтр за адміністратором електронного каталогу"></section>
-        <div id="requestQuickFilters" class="request-quick-filters"><button type="button" data-status="pending">Очікує розгляду <strong id="requestsPending">—</strong></button><button type="button" data-status="satisfied">Задоволено <strong id="requestsSatisfied">—</strong></button><button type="button" data-status="declined">Відхилено <strong id="requestsDeclined">—</strong></button></div>
+        <div id="requestQuickFilters" class="request-quick-filters"><button type="button" data-status="pending"><span>Очікує розгляду</span><strong id="requestsPending">—</strong></button><button type="button" data-status="satisfied"><span>Задоволено</span><strong id="requestsSatisfied">—</strong></button><button type="button" data-status="declined"><span>Відхилено</span><strong id="requestsDeclined">—</strong></button><button type="button" id="requestsExpiredFilter" aria-pressed="false"><span>Строк відповіді сплив</span><strong id="requestsExpired">—</strong></button></div>
       </div>
     </section>
     <section class="supplier-toolbar requests-toolbar card">

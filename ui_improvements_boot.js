@@ -53,10 +53,10 @@
     try{await navigator.clipboard.writeText(button.dataset.copyFrameworkNumber);toast('Номер відбору скопійовано')}
     catch{toast('Не вдалося скопіювати номер відбору','error')}
   });
-  const expired=document.createElement('button');expired.type='button';expired.id='requestsExpiredFilter';
-  expired.textContent='Строк відповіді сплив';expired.setAttribute('aria-pressed','false');
+  const expired=document.querySelector('#requestsExpiredFilter')||document.createElement('button');expired.type='button';expired.id='requestsExpiredFilter';
+  if(!expired.querySelector('span'))expired.textContent='Строк відповіді сплив';expired.setAttribute('aria-pressed','false');
   expired.onclick=()=>{PqmUi.responseExpired=!PqmUi.responseExpired;expired.classList.toggle('active',PqmUi.responseExpired);expired.setAttribute('aria-pressed',String(PqmUi.responseExpired));requestsPage=1;loadViolationReports()};
-  document.querySelector('#requestQuickFilters').append(expired);
+  if(!expired.isConnected)document.querySelector('#requestQuickFilters').append(expired);
   const counts=new Map();let refreshing=false;
   function badge(id,count){
     const target=document.getElementById(id);if(!target)return;
@@ -76,8 +76,10 @@
     ].map(async([permission,id,path])=>{
       if(!me.permissions?.[permission]){counts.set(id,0);badge(id,0);return}
       try{const result=await request(`${API}${path}`,{cache:'no-store'});if(currentMe!==me)return;
-        const value=Number.isInteger(result.count)&&result.count>=0?result.count:null;counts.set(id,value);badge(id,value)}
-      catch{counts.set(id,null);badge(id,null)}
+        const value=Number.isInteger(result.count)&&result.count>=0?result.count:null;counts.set(id,value);badge(id,value);
+        if(id==='requestsNav'){const counter=document.getElementById('requestsExpired');if(counter)counter.textContent=value===null?'—':value.toLocaleString('uk-UA')}
+      }
+      catch{counts.set(id,null);badge(id,null);if(id==='requestsNav'){const counter=document.getElementById('requestsExpired');if(counter)counter.textContent='—'}}
     }))}finally{refreshing=false}
   }
   new MutationObserver(paint).observe(document.getElementById('mainNav'),{childList:true,subtree:true});

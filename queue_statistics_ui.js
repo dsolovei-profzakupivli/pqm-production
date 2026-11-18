@@ -135,9 +135,9 @@
     }
   }
 
-  function countButton(count, filters, status, label='', tone='') {
+  function countButton(count, filters, status, label='', tone='', showLabel=true) {
     const index=actions.push({filters,status})-1;
-    return `<button type="button" class="ghost publication-kpi ${tone}" data-statistics-action="${index}">${label?`<span>${label}</span>`:''}<strong>${number(count)}</strong></button>`;
+    return `<button type="button" class="ghost publication-kpi ${tone}${showLabel?'':' queue-statistics-number-only'}" data-statistics-action="${index}"${label?` aria-label="${esc(label)}: ${number(count)}"`:''}>${label&&showLabel?`<span>${esc(label)}</span>`:''}<strong>${number(count)}</strong></button>`;
   }
 
   function emptyCounts() { return {active:0,unsuccessful:0,pending:0,total:0}; }
@@ -336,7 +336,7 @@
     const sorted=[...groups].sort(([a],[b])=>officerName(a).localeCompare(officerName(b),'uk'));
     table.innerHTML=sorted.map(([name,counts])=>{
       const scoped={...filters,[key]:name||unassigned};
-      return `<tr><th scope="row">${esc(officerName(name))}</th>${statuses.map(([code,label])=>`<td>${countButton(counts[code],scoped,code,label)}</td>`).join('')}<td>${countButton(counts.total,scoped,'')}</td></tr>`;
+      return `<tr><th scope="row">${esc(officerName(name))}</th>${statuses.map(([code,label])=>`<td>${countButton(counts[code],scoped,code,`${officerName(name)} · ${label}`,'',false)}</td>`).join('')}<td>${countButton(counts.total,scoped,'',`${officerName(name)} · Усього`,'',false)}</td></tr>`;
     }).join('');
     tableWrap.classList.toggle('queue-statistics-table--scroll',sorted.length>5);
     tableWrap.dataset.rowCount=String(sorted.length);
@@ -359,8 +359,9 @@
   window.refreshQueueApplicationStatistics=()=>{
     loadProgress();
     if (initialized) return;
-    from.value=$('#queueProtocolFrom').value;
-    to.value=$('#queueProtocolTo').value;
+    const now=new Date(),today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    if(!from.value)from.value=`${now.getFullYear()}-01-01`;
+    if(!to.value)to.value=today;
     if (!from.value||!to.value) return;
     initialPeriod=periodParams(from,to);
     initialized=true;
