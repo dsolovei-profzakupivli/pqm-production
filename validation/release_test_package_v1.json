@@ -20,7 +20,8 @@
     17,
     18,
     19,
-    20
+    20,
+    21
   ],
   "integrity_test_versions": [
     1,
@@ -43,7 +44,8 @@
     18,
     19,
     20,
-    21
+    21,
+    22
   ],
   "integrity_manifest_dir": "validation/local_release_20261116",
   "snapshot_support_files": [

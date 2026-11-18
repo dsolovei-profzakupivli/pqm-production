@@ -28,9 +28,9 @@ class ReleaseTestPackageTests(unittest.TestCase):
         dependencies = {path for path, _sources in package_dependency_map(
             ROOT, ROOT, manifest=manifest
         )}
-        for version in range(1, 19):
+        for version in manifest["integrated_history_versions"]:
             self.assertIn(f"validation/run_integrated_writer_ui_v{version}_history.py", dependencies)
-        for version in range(1, 20):
+        for version in manifest["integrity_test_versions"]:
             self.assertIn(f"test_google_writer_integrated_candidate_integrity_v{version}.py", dependencies)
             self.assertIn(
                 f"validation/local_release_20261116/pqm_sync_ui_integrated_v{version}.json",
@@ -156,10 +156,11 @@ class ReleaseTestPackageTests(unittest.TestCase):
             source = Path(source_tmp)
             stage = Path(stage_tmp)
             cwd = Path(cwd_tmp)
+            manifest = load_package_manifest(ROOT)
             (source / "validation").mkdir(parents=True)
             shutil.copy2(ROOT / "validation/release_test_package_v1.json",
                          source / "validation/release_test_package_v1.json")
-            for version in range(1, 19):
+            for version in manifest["integrated_history_versions"]:
                 shutil.copy2(
                     ROOT / f"validation/run_integrated_writer_ui_v{version}_history.py",
                     source / f"validation/run_integrated_writer_ui_v{version}_history.py",

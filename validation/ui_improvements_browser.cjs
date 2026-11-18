@@ -135,14 +135,19 @@ const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
     await page.screenshot({path:path.join(OUT,`frameworks-${dark?'dark':'light'}-${width}.png`)});
     await page.evaluate(()=>{showFixture('referencesView');document.querySelectorAll('.reference-panel').forEach(n=>n.hidden=n.id!=='referenceAmcu')});await page.waitForTimeout(80);
     await page.locator('.amcu-toolbar .system-width-button').waitFor();
-    if(width>=1440)assert(await page.locator('.amcu-toolbar').evaluate(toolbar=>{
-      const info=toolbar.firstElementChild.getBoundingClientRect(),search=toolbar.querySelector('.pqm-clear-wrap').getBoundingClientRect();
-      const readable=[...toolbar.querySelectorAll('select')].every(n=>{const s=getComputedStyle(n),c=document.createElement('canvas').getContext('2d');c.font=s.font;return n.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)>=c.measureText(n.selectedOptions[0].textContent).width&&n.clientHeight-parseFloat(s.paddingTop)-parseFloat(s.paddingBottom)>=parseFloat(s.fontSize)*1.2});
-      return info.width>=220&&search.left-info.right<=9&&readable;
-    }),'AMCU info/search gap or default option readability');
-    assert(await page.locator('.amcu-toolbar').evaluate(n=>[...n.children].filter(c=>!c.hidden&&getComputedStyle(c).display!=='none').every(c=>{const r=c.getBoundingClientRect();return r.x>=0&&r.right<=window.innerWidth})), 'AMCU control clipped');
+    const amcuLayout=await page.locator('.amcu-toolbar').evaluate(toolbar=>{
+      const bounds=toolbar.getBoundingClientRect(),controls=[...toolbar.children].filter(node=>!node.hidden&&getComputedStyle(node).display!=='none'&&node.getBoundingClientRect().width>0).map(node=>({node,rect:node.getBoundingClientRect()}));
+      const overlaps=controls.some((item,index)=>controls.slice(index+1).some(other=>item.rect.left<other.rect.right-1&&item.rect.right>other.rect.left+1&&item.rect.top<other.rect.bottom-1&&item.rect.bottom>other.rect.top+1));
+      const info=toolbar.firstElementChild,textFits=[...info.querySelectorAll('strong,small')].every(node=>node.getBoundingClientRect().width>0&&node.scrollWidth<=node.clientWidth+1&&node.scrollHeight<=node.clientHeight+1);
+      const readable=[...toolbar.querySelectorAll('select')].every(node=>{const style=getComputedStyle(node),canvas=document.createElement('canvas').getContext('2d');canvas.font=style.font;return node.getBoundingClientRect().width>0&&node.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)>=canvas.measureText(node.selectedOptions[0].textContent).width&&node.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom)>=parseFloat(style.fontSize)*1.2});
+      return{overflow:toolbar.scrollWidth>toolbar.clientWidth+2,clipped:controls.some(({rect})=>rect.left<bounds.left-1||rect.right>bounds.right+1||rect.left<0||rect.right>window.innerWidth),overlaps,textFits,readable,rows:[...new Set(controls.map(({rect})=>Math.round(rect.top)))].length};
+    });
+    assert.equal(amcuLayout.overflow,false,`AMCU toolbar has no horizontal overflow at ${dark?'dark':'light'}/${width}px: ${JSON.stringify(amcuLayout)}`);
+    assert.equal(amcuLayout.clipped,false,`AMCU controls remain inside the toolbar and viewport at ${dark?'dark':'light'}/${width}px: ${JSON.stringify(amcuLayout)}`);
+    assert.equal(amcuLayout.overlaps,false,`AMCU controls do not overlap at ${dark?'dark':'light'}/${width}px: ${JSON.stringify(amcuLayout)}`);
+    assert.equal(amcuLayout.textFits,true,`AMCU title and status remain readable without clipping at ${dark?'dark':'light'}/${width}px: ${JSON.stringify(amcuLayout)}`);
+    assert.equal(amcuLayout.readable,true,`AMCU select values remain readable at ${dark?'dark':'light'}/${width}px: ${JSON.stringify(amcuLayout)}`);
     assert(await page.locator('.amcu-toolbar .pqm-clear-wrap').evaluate(n=>{const a=n.getBoundingClientRect(),b=n.querySelector('input').getBoundingClientRect();return b.x>=a.x-1&&b.right<=a.right+1}), 'Search input overlaps adjacent filters');
-    if(width>=1440){const rects=await page.locator('.amcu-toolbar').evaluate(n=>[...n.children].filter(c=>!c.hidden&&getComputedStyle(c).display!=='none').map(c=>({id:c.id||c.className,y:c.getBoundingClientRect().y+c.getBoundingClientRect().height/2,w:c.getBoundingClientRect().width})));const ys=rects.map(r=>r.y);assert(Math.max(...ys)-Math.min(...ys)<3,'AMCU toolbar wraps '+JSON.stringify({width,dark,rects}));}
     if(width===1440||width===390)await page.screenshot({path:path.join(OUT,`amcu-${dark?'dark':'light'}-${width}.png`)});
    }
   }
