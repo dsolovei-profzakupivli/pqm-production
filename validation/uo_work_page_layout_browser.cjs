@@ -41,7 +41,8 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     document.querySelector('#queueProtocolOfficerCards').innerHTML=officers.slice(0,5).map((name,i)=>`<article class="qualification-summary-officer protocol-officer-card" data-protocol-officer="${name}"><button type="button" class="protocol-officer-main"><span>${name}</span><strong>${[9,7,5,4,3][i]}</strong></button><div class="protocol-officer-progress"><div class="protocol-progress-track" title="Розглянуто: ${[4,7,0,1,2][i]} із ${[9,7,5,4,3][i]} (${Math.round([4,7,0,1,2][i]*100/[9,7,5,4,3][i])}%)"><span style="width:${Math.round([4,7,0,1,2][i]*100/[9,7,5,4,3][i])}%"></span></div><div class="protocol-progress-meta"><span>${Math.round([4,7,0,1,2][i]*100/[9,7,5,4,3][i])}%</span><button class="protocol-pending-count" type="button" title="Не розглянуто: ${[5,0,5,3,1][i]}. Відкрити в реєстрі заявок" ${i===1?'disabled':''}>${[5,0,5,3,1][i]}</button></div></div></article>`).join('');
     document.querySelector('#queueQualificationCards').innerHTML=officers.slice(0,3).map((name,i)=>`<button class="qualification-summary-officer"><span>${name}</span><strong>${[8,5,3][i]}</strong><small>очікує рішення</small></button>`).join('');
     document.querySelector('#queuePublicationControl').innerHTML='<button class="publication-kpi publication-kpi--admitted"><span>Допущено</span><strong>18</strong></button><button class="publication-kpi publication-kpi--rejected"><span>Відхилено</span><strong>4</strong></button><button class="publication-kpi publication-kpi--pending"><span>Все ще очікує рішення</span><strong>6</strong></button>';
-    document.querySelector('#queueStatisticsKpis').innerHTML='<button class="ghost publication-kpi admitted"><span>Допущено</span><strong>12</strong></button><button class="ghost publication-kpi rejected"><span>Відхилено</span><strong>4</strong></button><button class="ghost publication-kpi pending"><span>Очікує рішення</span><strong>7</strong></button>';
+    document.querySelector('#queueStatisticsKpis').innerHTML='<button class="ghost publication-kpi submitted"><span>Подано заявок</span><strong>23</strong></button><button class="ghost publication-kpi admitted"><span>Допущено</span><strong>12</strong></button><button class="ghost publication-kpi rejected"><span>Відхилено</span><strong>4</strong></button><button class="ghost publication-kpi pending"><span>Очікує рішення</span><strong>7</strong></button>';
+    document.querySelector('#queueStatisticsTrendSvg').innerHTML='<g class="trend-axis"><g class="trend-grid"><line x1="54" y1="25" x2="874" y2="25"/><text x="46" y="29" text-anchor="end">20</text></g><g class="trend-grid"><line x1="54" y1="110" x2="874" y2="110"/><text x="46" y="114" text-anchor="end">10</text></g><g class="trend-grid"><line x1="54" y1="195" x2="874" y2="195"/><text x="46" y="199" text-anchor="end">0</text></g><text class="trend-axis-label" x="54" y="242">01.10.2026</text><text class="trend-axis-label" x="874" y="242" text-anchor="end">31.10.2026</text></g><path class="trend-line trend-submitted" d="M54,170 L300,115 L600,80 L874,38" fill="none" stroke="var(--statistics-submitted)" stroke-width="2.5"/><path class="trend-line trend-active" d="M54,192 L300,155 L600,145 L874,120" fill="none" stroke="var(--statistics-admitted)" stroke-width="2.5"/><path class="trend-line trend-unsuccessful" d="M54,205 L300,185 L600,180 L874,165" fill="none" stroke="var(--statistics-rejected)" stroke-width="2.5"/>';
     document.querySelector('#queueStatisticsRows').innerHTML=Array.from({length:8},(_,i)=>`<tr><th scope="row">${officers[i%officers.length]}</th><td><button class="ghost publication-kpi">${i}</button></td><td><button class="ghost publication-kpi">${i+1}</button></td><td><button class="ghost publication-kpi">${i+2}</button></td><td><button class="ghost publication-kpi">${i+3}</button></td></tr>`).join('');
     const statisticsTable=document.querySelector('.queue-statistics-table');
     statisticsTable.classList.add('queue-statistics-table--scroll');
@@ -51,9 +52,14 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     document.querySelector('#queueStatisticsTo').value='2026-10-31';
     document.querySelector('#queueStatisticsGroup').value='review_officer';
     document.querySelector('[data-statistics-filter="category"]').innerHTML='<option value="">Усі</option><option>Їжа</option>';
+    document.querySelector('[data-statistics-filter="supplier_type"]').value='individual_entrepreneur';
+    document.querySelector('[data-statistics-filter="category"]').value='Їжа';
     document.querySelector('[data-statistics-filter="review_officer"]').innerHTML='<option value="">Усі</option><option>Дмитро САВВА</option>';
     document.querySelector('[data-statistics-filter="protocol_officer"]').innerHTML='<option value="">Усі</option><option>Олена ЄРЬОМІНА</option>';
-    document.querySelector('#queueStatisticsDkOptions').innerHTML=['02100000-6','03000000-1','45000000-7'].map(value=>`<label><input type="checkbox"> ${value}</label>`).join('');
+    document.querySelector('#queueStatisticsDkOptions').innerHTML=['02100000-6','03000000-1','45000000-7'].map((value,index)=>`<label><input type="checkbox" ${index<2?'checked':''}> ${value}</label>`).join('');
+    const filterSections=Object.fromEntries([...document.querySelectorAll('[data-statistics-filter-section]')].map(section=>[section.dataset.statisticsFilterSection,section]));
+    for(const key of ['supplier_type','dk_code']){const section=filterSections[key];section.classList.add('filter-active');section.querySelector('.queue-statistics-section-state').textContent='Застосовано';section.querySelector('.queue-statistics-section-count').textContent=key==='dk_code'?'2 вибрано':'1 вибрано';section.querySelector('[data-statistics-filter-reset]').hidden=false;}
+    const draftSection=filterSections.category;draftSection.classList.add('filter-pending');draftSection.querySelector('.queue-statistics-section-state').textContent='Зміни не застосовано';draftSection.querySelector('.queue-statistics-section-count').textContent='Чернетка';
   },{theme,officers});
   return page;
 }
@@ -123,8 +129,13 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       assert.ok(toolbar.every((item,index)=>index===0||item.left>=toolbar[index-1].right-1),`toolbar controls keep the requested order: ${JSON.stringify(toolbar)}`);
       const typeOptions=await page.locator('[data-statistics-filter="supplier_type"] option').evaluateAll(nodes=>nodes.map(option=>[option.value,option.textContent.trim()]));
       assert.deepEqual(typeOptions,[['','Усі'],['individual_entrepreneur','ФОП'],['legal_entity','ЮО та інші'],['foreign_legal_entity','Нерезидент'],['unknown','Потребує перевірки']]);
-      const firstFilterLabel=await page.locator('.queue-statistics-filter-fields label').first().textContent();
+      const firstFilterLabel=await page.locator('.queue-statistics-filter-section-heading').first().textContent();
       assert.match(firstFilterLabel,/Тип/,'supplier type is the first filter in the side panel');
+      const filterStates=await page.locator('[data-statistics-filter-section]').evaluateAll(nodes=>nodes.map(node=>({active:node.classList.contains('filter-active'),pending:node.classList.contains('filter-pending'),resetHidden:node.querySelector('[data-statistics-filter-reset]').hidden,background:getComputedStyle(node.querySelector('.queue-statistics-filter-section-heading')).backgroundColor})).slice(0,3));
+      assert.equal(filterStates[0].active,true,'applied filters remain visibly active in their section heading');
+      assert.equal(filterStates[0].resetHidden,false,'each applied filter exposes its own reset control');
+      assert.equal(filterStates[1].pending,true,'unapplied edits are shown separately from applied filters');
+      assert.equal(filterStates[0].background,theme==='dark'?'rgb(36, 62, 90)':'rgb(228, 239, 255)','active filter headings use the approved readable theme highlight');
       const cardPalette=await page.locator('.queue-statistics-card').evaluate(el=>({background:getComputedStyle(el).backgroundColor,border:getComputedStyle(el).borderTopColor}));
       if(theme==='light')assert.deepEqual(cardPalette,{background:'rgb(240, 246, 255)',border:'rgb(141, 180, 229)'},'light statistics card has the approved blue tint');
       else assert.deepEqual(cardPalette,{background:'rgb(32, 54, 80)',border:'rgb(100, 136, 181)'},'dark statistics card has the approved blue tint');
@@ -133,38 +144,49 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       const controlHeights=await page.locator('#queueProtocolFrom,#queueProtocolTo,#queueProtocolApply,#queueStatisticsFrom,#queueStatisticsTo,#queueStatisticsFilterToggle,#queueStatisticsGroup,#queueStatisticsSearch,#queueStatisticsReset').evaluateAll(nodes=>nodes.map(node=>({id:node.id,height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
       assert.ok(controlHeights.every(control=>control.height===34&&control.borderRadius==='7px'),`page controls share a 34px height and matching corners: ${JSON.stringify(controlHeights)}`);
       const kpis=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>({bg:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderTopColor})));
-      assert.equal(kpis.length,3);
+      assert.equal(kpis.length,4);
+      const kpiRows=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
+      assert.equal(new Set(kpiRows).size,1,'all four statistics KPIs stay in one row');
       if(theme==='dark'){
-        assert.deepEqual(kpis.map(item=>item.bg),['rgb(23, 62, 56)','rgb(72, 41, 50)','rgb(68, 59, 38)']);
-        assert.deepEqual(kpis.map(item=>item.color),['rgb(237, 243, 252)','rgb(237, 243, 252)','rgb(237, 243, 252)']);
+        assert.deepEqual(kpis.map(item=>item.bg),['rgb(32, 54, 80)','rgb(23, 62, 56)','rgb(72, 41, 50)','rgb(68, 59, 38)']);
+        assert.deepEqual(kpis.map(item=>item.color),['rgb(237, 243, 252)','rgb(237, 243, 252)','rgb(237, 243, 252)','rgb(237, 243, 252)']);
         const tableText=await page.locator('.queue-statistics-table td button').first().evaluate(el=>getComputedStyle(el).color);
         assert.equal(tableText,'rgb(237, 243, 252)','dark table numbers remain readable');
       }else {
-        assert.deepEqual(kpis.map(item=>item.bg),['rgb(229, 246, 236)','rgb(253, 232, 231)','rgb(255, 244, 212)']);
-        assert.equal(kpis[1].color,'rgb(0, 0, 0)','light rejected KPI text and numbers are black');
-        assert.equal(kpis[1].border,'rgb(233, 165, 160)','light rejected KPI uses the approved red border');
+        assert.deepEqual(kpis.map(item=>item.bg),['rgb(228, 239, 255)','rgb(229, 246, 236)','rgb(253, 232, 231)','rgb(255, 244, 212)']);
+        assert.equal(kpis[2].color,'rgb(0, 0, 0)','light rejected KPI text and numbers are black');
+        assert.equal(kpis[2].border,'rgb(233, 165, 160)','light rejected KPI uses the approved red border');
         const leftRejected=await page.locator('#queuePublicationControl .publication-kpi--rejected').evaluate(el=>({bg:getComputedStyle(el).backgroundColor,color:getComputedStyle(el).color,border:getComputedStyle(el).borderTopColor}));
         assert.deepEqual(leftRejected,{bg:'rgb(253, 232, 231)',color:'rgb(0, 0, 0)',border:'rgb(233, 165, 160)'},'left rejected KPI matches the approved light red style');
       }
-      const screenshot=path.join(OUT,`work-uo-${theme}-wide.png`);
-      await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:screenshot});evidence.push(screenshot);
+      const screenshot=path.join(OUT,`work-uo-${theme}-wide-closed.png`);
+      await page.screenshot({path:screenshot,fullPage:true});evidence.push(screenshot);
       const workspace=page.locator('#queueStatisticsWorkspace'),panel=page.locator('#queueStatisticsFilterPanel');
       await panel.evaluate(node=>node.hidden=false);
       const filterControlHeights=await page.locator('.queue-statistics-filter-fields select,#queueStatisticsDkSearch,#queueStatisticsFilterApply,#queueStatisticsFilterClear').evaluateAll(nodes=>nodes.map(node=>({id:node.id||node.dataset.statisticsFilter||node.textContent.trim(),height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
-      assert.ok(filterControlHeights.every(control=>control.height===34&&control.borderRadius==='7px'),`filter panel controls use the same size: ${JSON.stringify(filterControlHeights)}`);
+      assert.ok(filterControlHeights.every(control=>control.height>=34&&control.height<=40&&control.borderRadius==='7px'),`filter panel controls use the same compact size: ${JSON.stringify(filterControlHeights)}`);
+      const dkSearchLayout=await page.evaluate(()=>{
+        const heading=document.querySelector('.queue-statistics-dk-heading'),input=document.querySelector('#queueStatisticsDkSearch'),clear=document.querySelector('#queueStatisticsDkClear');
+        const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width};};
+        return{heading:rect(heading),input:rect(input),clear:rect(clear),accessibleName:input.getAttribute('aria-label')};
+      });
+      assert.ok(dkSearchLayout.input.width>=dkSearchLayout.heading.width-2,`DK search spans the available field width: ${JSON.stringify(dkSearchLayout)}`);
+      assert.ok(dkSearchLayout.clear.top>=dkSearchLayout.input.bottom,`DK clear button has its own row below the search field: ${JSON.stringify(dkSearchLayout)}`);
+      assert.equal(dkSearchLayout.accessibleName,'Пошук коду ДК');
       await workspace.evaluate(node=>node.classList.add('is-filter-open'));
       const panelLayout=await page.evaluate(()=>{
         const card=document.querySelector('.queue-statistics-card'),work=document.querySelector('#queueStatisticsWorkspace'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel');
         const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
         const workspaceStyle=getComputedStyle(work),panelStyle=getComputedStyle(panel);
-        return{viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,card:rect(card),workspace:rect(work),results:rect(results),panel:rect(panel),columns:workspaceStyle.gridTemplateColumns,areas:workspaceStyle.gridTemplateAreas,panelArea:panelStyle.gridArea,panelPosition:panelStyle.position};
+        return{viewport:document.documentElement.clientWidth,height:document.documentElement.clientHeight,scroll:document.documentElement.scrollWidth,card:rect(card),workspace:rect(work),results:rect(results),panel:rect(panel),columns:workspaceStyle.gridTemplateColumns,areas:workspaceStyle.gridTemplateAreas,panelArea:panelStyle.gridArea,panelPosition:panelStyle.position,panelHeight:panelStyle.height};
       });
-      assert.ok(panelLayout.panel.right<=panelLayout.card.right+1,`filter panel stays within the card's right edge: ${JSON.stringify(panelLayout)}`);
       assert.ok(panelLayout.scroll<=panelLayout.viewport+2,`filter panel does not cause page overflow: ${JSON.stringify(panelLayout)}`);
       assert.ok(panelLayout.panel.left>=panelLayout.results.right-1,`filter panel does not cover the table: ${JSON.stringify(panelLayout)}`);
-      assert.equal(await panel.evaluate(node=>getComputedStyle(node).position),'static','filter panel participates in layout instead of overlaying the table');
+      assert.ok(panelLayout.panel.right<=panelLayout.viewport+1&&panelLayout.panel.left>=0,'drawer remains inside the browser viewport');
+      assert.equal(panelLayout.panelPosition,'fixed','filter drawer is fixed to the viewport');
+      assert.ok(Math.abs(panelLayout.panel.height-panelLayout.height)<=1,'filter drawer fills the viewport height');
       const panelShot=path.join(OUT,`work-uo-${theme}-filter-panel.png`);
-      await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:panelShot});evidence.push(panelShot);
+      await page.screenshot({path:panelShot,fullPage:true});evidence.push(panelShot);
       await page.close();
     }
     for(const count of [3,5,8]){
@@ -206,13 +228,14 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       const layout=await page.evaluate(()=>{
         const card=document.querySelector('.queue-statistics-card'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel'),viewport=document.documentElement.clientWidth;
         const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
-        return{viewport,scroll:document.documentElement.scrollWidth,card:rect(card),results:rect(results),panel:rect(panel)};
+        return{viewport,height:document.documentElement.clientHeight,scroll:document.documentElement.scrollWidth,card:rect(card),results:rect(results),panel:rect(panel),panelPosition:getComputedStyle(panel).position,panelVisibility:getComputedStyle(results).visibility};
       });
-      const sideBySide=layout.panel.left>=layout.results.right-1||layout.panel.right<=layout.results.left+1;
-      const stacked=layout.panel.bottom<=layout.results.top+1||layout.panel.top>=layout.results.bottom-1;
       assert.ok(layout.scroll<=layout.viewport+2,`responsive filter panel has no page overflow at ${width}px: ${JSON.stringify(layout)}`);
-      assert.ok(layout.panel.left>=layout.card.left&&layout.panel.right<=layout.card.right+1,`responsive filter panel stays inside the statistics card at ${width}px: ${JSON.stringify(layout)}`);
-      assert.ok(sideBySide||stacked,`responsive filter panel does not cover results at ${width}px: ${JSON.stringify(layout)}`);
+      assert.equal(layout.panelPosition,'fixed',`filter drawer stays attached to the browser window at ${width}px`);
+      assert.ok(layout.panel.left>=0&&layout.panel.right<=layout.viewport+1,`filter drawer stays inside the viewport at ${width}px: ${JSON.stringify(layout)}`);
+      assert.ok(Math.abs(layout.panel.bottom-layout.height)<=1,`filter drawer fills viewport height at ${width}px: ${JSON.stringify(layout)}`);
+      if(width>=1200)assert.ok(layout.panel.left>=layout.results.right-1,`wide filter drawer does not cover the table at ${width}px: ${JSON.stringify(layout)}`);
+      else assert.equal(layout.panelVisibility,'hidden',`table is hidden while the full-screen drawer is open at ${width}px`);
       await page.close();
     }
     console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','3 rows','5 rows','8 rows','100%','125%','150%'],screenshots:evidence},null,2));

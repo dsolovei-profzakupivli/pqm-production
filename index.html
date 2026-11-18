@@ -105,24 +105,53 @@
           <div id="queueStatisticsWorkspace" class="queue-statistics-workspace">
             <div class="queue-statistics-results">
               <div id="queueStatisticsKpis" class="queue-statistics-kpis"></div>
+              <section class="queue-statistics-trend" aria-labelledby="queueStatisticsTrendTitle">
+                <div class="queue-statistics-trend-heading">
+                  <h3 id="queueStatisticsTrendTitle">Динаміка заявок за датою надходження</h3>
+                  <div class="queue-statistics-granularity" role="group" aria-label="Групування графіка">
+                    <button type="button" class="ghost is-active" data-trend-granularity="day" aria-pressed="true">День</button>
+                    <button type="button" class="ghost" data-trend-granularity="week" aria-pressed="false">Тиждень</button>
+                    <button type="button" class="ghost" data-trend-granularity="month" aria-pressed="false">Місяць</button>
+                  </div>
+                </div>
+                <div id="queueStatisticsTrendChart" class="queue-statistics-trend-chart">
+                  <svg id="queueStatisticsTrendSvg" viewBox="0 0 900 250" role="img" aria-label="Динаміка заявок за датою надходження" tabindex="0"></svg>
+                  <div id="queueStatisticsTrendTooltip" class="queue-statistics-trend-tooltip" role="tooltip" hidden></div>
+                </div>
+                <div class="queue-statistics-trend-legend" aria-label="Показники графіка">
+                  <span class="submitted">Надійшло</span><span class="admitted">Допущено</span><span class="rejected">Відхилено</span>
+                </div>
+              </section>
               <div class="queue-statistics-table"><table><thead><tr><th>УО</th><th>Допущено</th><th>Відхилено</th><th>Очікує</th><th>Усього</th></tr></thead><tbody id="queueStatisticsRows"></tbody></table></div>
               <p id="queueStatisticsMessage" class="muted" aria-live="polite"></p>
             </div>
             <aside id="queueStatisticsFilterPanel" class="queue-statistics-filter-panel" aria-label="Фільтри статистики" hidden>
+              <header class="queue-statistics-filter-header"><h3>Фільтри статистики</h3><button id="queueStatisticsFilterClose" type="button" class="ghost" aria-label="Закрити панель фільтрів" title="Закрити">×</button></header>
               <div class="queue-statistics-filter-fields">
-                <label>Тип <select data-statistics-filter="supplier_type"><option value="">Усі</option><option value="individual_entrepreneur">ФОП</option><option value="legal_entity">ЮО та інші</option><option value="foreign_legal_entity">Нерезидент</option><option value="unknown">Потребує перевірки</option></select></label>
-                <label>Категорія <select data-statistics-filter="category"></select></label>
-                <div class="queue-statistics-dk-field">
-                  <div class="queue-statistics-dk-heading"><label for="queueStatisticsDkSearch">Код ДК</label><span id="queueStatisticsDkSummary">Усі коди</span><button id="queueStatisticsDkClear" type="button" class="ghost">Очистити вибір</button></div>
-                  <input id="queueStatisticsDkSearch" type="search" autocomplete="off" placeholder="Пошук за кодом або частиною">
-                  <div id="queueStatisticsDkOptions" class="queue-statistics-dk-options" role="group" aria-label="Коди ДК"></div>
-                </div>
-                <label>УО розгляду <select data-statistics-filter="review_officer"></select></label>
-                <label>УО протоколу <select data-statistics-filter="protocol_officer"></select></label>
+                <section class="queue-statistics-filter-section" data-statistics-filter-section="supplier_type">
+                  <div class="queue-statistics-filter-section-heading"><button type="button" class="queue-statistics-section-toggle" aria-expanded="true"><span>Тип</span><span class="queue-statistics-section-state"></span></button><span class="queue-statistics-section-count"></span><button type="button" class="queue-statistics-section-clear" data-statistics-filter-reset="supplier_type" aria-label="Скинути фільтр Тип" title="Скинути цей фільтр" hidden>×</button></div>
+                  <div class="queue-statistics-filter-section-content"><select data-statistics-filter="supplier_type"><option value="">Усі</option><option value="individual_entrepreneur">ФОП</option><option value="legal_entity">ЮО та інші</option><option value="foreign_legal_entity">Нерезидент</option><option value="unknown">Потребує перевірки</option></select></div>
+                </section>
+                <section class="queue-statistics-filter-section" data-statistics-filter-section="category">
+                  <div class="queue-statistics-filter-section-heading"><button type="button" class="queue-statistics-section-toggle" aria-expanded="true"><span>Категорія</span><span class="queue-statistics-section-state"></span></button><span class="queue-statistics-section-count"></span><button type="button" class="queue-statistics-section-clear" data-statistics-filter-reset="category" aria-label="Скинути фільтр Категорія" title="Скинути цей фільтр" hidden>×</button></div>
+                  <div class="queue-statistics-filter-section-content"><select data-statistics-filter="category"></select></div>
+                </section>
+                <section class="queue-statistics-filter-section queue-statistics-dk-field" data-statistics-filter-section="dk_code">
+                  <div class="queue-statistics-filter-section-heading"><button type="button" class="queue-statistics-section-toggle" aria-expanded="true"><span>Код ДК</span><span class="queue-statistics-section-state"></span></button><span id="queueStatisticsDkSummary" class="queue-statistics-section-count">Усі коди</span><button type="button" class="queue-statistics-section-clear" data-statistics-filter-reset="dk_code" aria-label="Скинути фільтр Код ДК" title="Скинути цей фільтр" hidden>×</button></div>
+                  <div class="queue-statistics-filter-section-content"><div class="queue-statistics-dk-heading"><input id="queueStatisticsDkSearch" type="search" autocomplete="off" aria-label="Пошук коду ДК" placeholder="Пошук за кодом або частиною"><button id="queueStatisticsDkClear" type="button" class="ghost">Очистити вибір</button></div><div id="queueStatisticsDkOptions" class="queue-statistics-dk-options" role="group" aria-label="Коди ДК"></div></div>
+                </section>
+                <section class="queue-statistics-filter-section" data-statistics-filter-section="review_officer">
+                  <div class="queue-statistics-filter-section-heading"><button type="button" class="queue-statistics-section-toggle" aria-expanded="true"><span>УО розгляду</span><span class="queue-statistics-section-state"></span></button><span class="queue-statistics-section-count"></span><button type="button" class="queue-statistics-section-clear" data-statistics-filter-reset="review_officer" aria-label="Скинути фільтр УО розгляду" title="Скинути цей фільтр" hidden>×</button></div>
+                  <div class="queue-statistics-filter-section-content"><select data-statistics-filter="review_officer"></select></div>
+                </section>
+                <section class="queue-statistics-filter-section" data-statistics-filter-section="protocol_officer">
+                  <div class="queue-statistics-filter-section-heading"><button type="button" class="queue-statistics-section-toggle" aria-expanded="true"><span>УО протоколу</span><span class="queue-statistics-section-state"></span></button><span class="queue-statistics-section-count"></span><button type="button" class="queue-statistics-section-clear" data-statistics-filter-reset="protocol_officer" aria-label="Скинути фільтр УО протоколу" title="Скинути цей фільтр" hidden>×</button></div>
+                  <div class="queue-statistics-filter-section-content"><select data-statistics-filter="protocol_officer"></select></div>
+                </section>
               </div>
               <div class="queue-statistics-filter-actions">
                 <button id="queueStatisticsFilterApply" class="primary" type="button">Застосувати</button>
-                <button id="queueStatisticsFilterClear" class="ghost" type="button">Очистити</button>
+                <button id="queueStatisticsFilterClear" class="ghost" type="button">Очистити все</button>
               </div>
             </aside>
           </div>
@@ -174,6 +203,7 @@
       <details id="marketplaceDecisionFilter" class="multi-filter"><summary>Дія на майданчику</summary><div class="multi-panel"><label><input type="checkbox" value="__empty__"> Не виконано</label><label><input type="checkbox" value="admit"> Допустити</label><label><input type="checkbox" value="reject"> Відхилити</label></div></details>
       <details class="advanced-filters"><summary>Фільтри</summary><div class="advanced-filter-panel">
         <select id="applicationOfficerFilter" aria-label="УО протоколу"><option value="">Усі УО протоколу</option></select>
+        <select id="applicationEntityTypeFilter" aria-label="Тип постачальника"><option value="">Усі типи постачальника</option><option value="individual_entrepreneur">ФОП</option><option value="legal_entity">ЮО та інші</option><option value="foreign_legal_entity">Нерезидент</option><option value="unknown">Потребує перевірки</option></select>
         <details id="supplierCodeFilter" class="multi-filter"><summary>Коди ЄДРПОУ</summary><div class="multi-panel"><input class="multi-search" placeholder="Код або назва…"><div class="multi-options"></div></div></details>
         <details id="registryStatusFilter" class="multi-filter"><summary>Будь-який стан у відборі</summary><div class="multi-panel"><label><input type="checkbox" value="Активний"> Активний</label><label><input type="checkbox" value="Неактивний"> Неактивний</label><label><input type="checkbox" value="Призупинений"> Призупинений</label></div></details>
         <input id="protocolNumberFilter" placeholder="№ протоколу" aria-label="№ протоколу">

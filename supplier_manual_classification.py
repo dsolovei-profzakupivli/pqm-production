@@ -177,6 +177,19 @@ def apply_effective(automatic: dict, manual_row: dict | None) -> dict:
     return out
 
 
+def register_effective_entity_type_sql(con) -> None:
+    """Register the same effective (automatic plus manual) type used by statistics."""
+    automatic = supplier_classification.build_index(con)
+    manual = build_index(con)
+
+    def entity_type(code):
+        literal = str(code or "")
+        resolved = supplier_classification.resolve(automatic, literal)
+        return apply_effective(resolved, manual.get(literal)).get("entity_type", "unknown")
+
+    con.create_function("SUPPLIER_ENTITY_TYPE", 1, entity_type, deterministic=True)
+
+
 def detail(automatic: dict, manual_row: dict | None) -> dict:
     effective = apply_effective(automatic, manual_row)
     manual = effective["manual_classification"]

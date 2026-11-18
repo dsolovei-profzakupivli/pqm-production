@@ -104,7 +104,12 @@ from reference_directories import (
     refresh_amcu, refresh_nazk, start_reference_refresh,
 )
 from uo_work_queue import get_uo_work_queue
-from uo_work_progress import work_queue_application_statistics as _work_queue_application_statistics
+from uo_work_progress import (
+    PROTOCOL_OFFICER_SQL,
+    STATUS_SQL as WORK_QUEUE_STATUS_SQL,
+    work_queue_application_statistics as _work_queue_application_statistics,
+)
+from uo_work_progress import work_queue_statistics_payload as _work_queue_statistics_payload
 
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
@@ -2976,7 +2981,7 @@ APPLICATION_SEARCH_FIELDS = (
 )
 
 
-def application_filter(params: dict) -> tuple[str, list]:
+def application_filter(params: dict, *, include_entity_type: bool = False) -> tuple[str, list]:
     search = params.get("search", [""])[0].strip()
     statuses = multi_param(params, "status")
     registry_statuses = multi_param(params, "registry_status")
@@ -2991,6 +2996,7 @@ def application_filter(params: dict) -> tuple[str, list]:
     submission_id = params.get("submission_id", [""])[0].strip()
     protocol_decision = params.get("protocol_decision", [""])[0].strip()
     compliance_status = params.get("compliance_status", [""])[0].strip()
+    entity_type = params.get("entity_type", [""])[0].strip() if include_entity_type else ""
     marketplace_decisions = multi_param(params, "marketplace_decision")
     where, args = ["1=1"], []
     protocol_number = params.get("protocol_number", [""])[0].strip()
@@ -3032,17 +3038,23 @@ def application_filter(params: dict) -> tuple[str, list]:
     if date_to:
         where.append("SUBSTR(s.date_published,1,10)<=?")
         args.append(date_to)
-    for key, column in (('review_officer', 'af.review_officer'), ('protocol_officer', 'af.protocol_officer')):
+    if entity_type:
+        if entity_type not in supplier_classification.ENTITY_TYPES:
+            raise ValueError("Невідомий тип постачальника")
+        where.append("SUPPLIER_ENTITY_TYPE(s.supplier_code)=?")
+        args.append(entity_type)
+    for key, column in (('review_officer', "COALESCE(af.review_officer,'')"),
+                        ('protocol_officer', PROTOCOL_OFFICER_SQL)):
         value = params.get(key, [''])[0]
         if value:
-            where.append(f"COALESCE({column},'')=?")
+            where.append(f"{column}=?")
             args.append('' if value == '__unassigned__' else value)
     if protocol_card_officer:
         protocol_group = "COALESCE(NULLIF(af.protocol_officer,''),NULLIF(fo.officer,''),'Не призначено')"
         where.append(f"CASEFOLD({protocol_group})=CASEFOLD(?)")
         args.append(protocol_card_officer)
     if params.get('actual_status') == ['1']:
-        where.append("q.status IN ('active','unsuccessful','pending')")
+        where.append(f"{WORK_QUEUE_STATUS_SQL} IN ('active','unsuccessful','pending')")
     assigned_officer = effective_officer_sql()
     if officer == "__unassigned__":
         where.append(f"{assigned_officer}=''")
@@ -3052,9 +3064,11 @@ def application_filter(params: dict) -> tuple[str, list]:
     if category:
         where.append("COALESCE(fo.category,'')=?")
         args.append(category)
-    status_codes = [{"Допущено": "active", "Відхилено": "unsuccessful", "Очікує рішення": "pending"}[value] for value in statuses if value in {"Допущено", "Відхилено", "Очікує рішення"}]
+    status_labels = {"Допущено": "active", "Відхилено": "unsuccessful", "Очікує рішення": "pending"}
+    status_codes = [status_labels.get(value, value) for value in statuses
+                    if status_labels.get(value, value) in {"active", "unsuccessful", "pending"}]
     if status_codes:
-        where.append(f"COALESCE(q.status,'pending') IN ({','.join('?' for _ in status_codes)})")
+        where.append(f"{WORK_QUEUE_STATUS_SQL} IN ({','.join('?' for _ in status_codes)})")
         args.extend(status_codes)
     registry_status_codes = [{"Активний": "active", "Неактивний": "terminated", "Призупинений": "suspended"}[value] for value in registry_statuses if value in {"Активний", "Неактивний", "Призупинений"}]
     if registry_status_codes:
@@ -3064,10 +3078,12 @@ def application_filter(params: dict) -> tuple[str, list]:
 
 
 def application_stats(params: dict) -> dict:
-    clause, args = application_filter(params)
+    clause, args = application_filter(params, include_entity_type=True)
     # Officer cards describe the same complete filtered set as the application count.
     officer_clause, officer_args = clause, args
     with db() as con:
+        if params.get("entity_type", [""])[0].strip():
+            supplier_manual_classification.register_effective_entity_type_sql(con)
         row = con.execute(f"""SELECT COUNT(*) applications,
           COUNT(DISTINCT NULLIF(s.supplier_code,'')) suppliers,
           SUM(CASE WHEN COALESCE(q.status,'pending')='pending' THEN 1 ELSE 0 END) pending,
@@ -3101,14 +3117,29 @@ def work_queue_application_statistics(con, params: dict, *, review_progress: boo
     return _work_queue_application_statistics(con, clause, args, review_progress=review_progress,
                                               group_by=group_by, entity_type=entity_type)
 
+
+def work_queue_statistics_payload(con, params: dict) -> dict:
+    date_params = {key: params[key] for key in ("date_from", "date_to") if key in params}
+    clause, args = application_filter(date_params)
+    filters = {
+        "category": params.get("category", [""])[0],
+        "review_officer": params.get("review_officer", [""])[0],
+        "protocol_officer": params.get("protocol_officer", [""])[0],
+        "dk_code": multi_param(params, "dk_code"),
+    }
+    return _work_queue_statistics_payload(con, clause, args,
+        entity_type=params.get("entity_type", [""])[0], filters=filters)
+
 def application_selection(params: dict) -> dict:
     """One read-only filtered snapshot, without LIMIT/OFFSET or external refresh."""
-    clause, args = application_filter(params)
+    clause, args = application_filter(params, include_entity_type=True)
     fields = sorted(EDITABLE_FIELDS)
     with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro', uri=True, timeout=5)) as con:
         con.row_factory = sqlite3.Row
         con.create_function('CASEFOLD', 1, unicode_casefold, deterministic=True)
         con.create_function('DIGITS', 1, lambda value: re.sub(r'\D', '', str(value or '')), deterministic=True)
+        if params.get("entity_type", [""])[0].strip():
+            supplier_manual_classification.register_effective_entity_type_sql(con)
         con.execute('PRAGMA query_only=ON');con.execute('BEGIN')
         deadline = time.monotonic()+30
         con.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
@@ -3134,7 +3165,7 @@ def list_applications(params: dict) -> dict:
     size = min(200, max(10, int(params.get("size", ["50"])[0] or 50)))
     sort_key = params.get("sort", ["receivedDate"])[0].strip()
     sort_direction = "ASC" if params.get("direction", ["desc"])[0].lower() == "asc" else "DESC"
-    clause, args = application_filter(params)
+    clause, args = application_filter(params, include_entity_type=True)
     sort_expressions = {
         "participant": "CASEFOLD(s.supplier_name)",
         "edrpou": "s.supplier_code",
@@ -3145,7 +3176,7 @@ def list_applications(params: dict) -> dict:
         "protocolNumber": "af.protocol_number",
         "protocolDate": "af.protocol_date",
         "publicationDate": "af.publication_date",
-        "protocolOfficer": f"CASEFOLD({effective_officer_sql()})",
+        "protocolOfficer": f"CASEFOLD({PROTOCOL_OFFICER_SQL})",
         "protocolRemarks": "CASEFOLD(af.protocol_remarks)",
         "protocolDecision": "CASE af.protocol_decision WHEN '' THEN 1 WHEN 'admit' THEN 2 WHEN 'reject' THEN 3 ELSE 4 END",
         "marketplaceDecision": "CASE af.marketplace_decision WHEN '' THEN 1 WHEN 'admit' THEN 2 WHEN 'reject' THEN 3 ELSE 4 END",
@@ -3165,6 +3196,8 @@ def list_applications(params: dict) -> dict:
     order_sql = ','.join(f"{sort_expressions[item['key']]} {item['direction'].upper()}" for item in sorts)
     if not order_sql: order_sql = f'{order_by} {sort_direction}'
     with db() as con:
+        if params.get("entity_type", [""])[0].strip():
+            supplier_manual_classification.register_effective_entity_type_sql(con)
         total = con.execute(f"""SELECT COUNT(*) FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}""", args).fetchone()[0]
@@ -3174,7 +3207,7 @@ def list_applications(params: dict) -> dict:
           (SELECT rc.status FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
           (SELECT rc.milestones_json FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones,
            af.protocol_number,af.protocol_date,af.publication_date,
-           {effective_officer_sql()} protocol_officer,
+           {PROTOCOL_OFFICER_SQL} protocol_officer,
            af.review_officer,
           af.protocol_remarks,af.protocol_decision,af.marketplace_decision,af.compliance_status,af.compliance_comments,
           af.generated_protocol_number,af.generated_protocol_date,af.generated_protocol_decision,af.protocol_generated_at,
@@ -11315,7 +11348,10 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers();self.wfile.write(raw)
             return
         if parsed.path == '/api/applications/selection':
-            result = application_selection(urllib.parse.parse_qs(parsed.query))
+            try:
+                result = application_selection(urllib.parse.parse_qs(parsed.query))
+            except ValueError as exc:
+                return self.send_json({'error': str(exc)}, 400)
             raw = json.dumps(result,ensure_ascii=False).encode('utf-8')
             self.send_response(200);self.send_header('Content-Type','application/json; charset=utf-8')
             self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(raw)))
@@ -11614,7 +11650,10 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=document_check_worker, args=(job_id, submission_id, selection), daemon=True).start()
             return self.send_json({"job_id": job_id, "status": "running"}, 202)
         if parsed.path == "/api/applications":
-            return self.send_json(list_applications(urllib.parse.parse_qs(parsed.query)))
+            try:
+                return self.send_json(list_applications(urllib.parse.parse_qs(parsed.query)))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/suppliers-registry":
             return self.send_json(list_qualified_suppliers(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/suppliers-registry/export.xlsx":
@@ -11736,6 +11775,8 @@ class Handler(BaseHTTPRequestHandler):
             if summary in {"review-progress", "application-statistics"}:
                 try:
                     with db() as con:
+                        if summary == "application-statistics":
+                            return self.send_json(work_queue_statistics_payload(con, params))
                         return self.send_json({"items": work_queue_application_statistics(
                             con, params, review_progress=summary == "review-progress",
                             group_by=params.get("group_by", ["review_officer"])[0],
@@ -11826,7 +11867,10 @@ class Handler(BaseHTTPRequestHandler):
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)
         if parsed.path == "/api/stats":
-            return self.send_json(application_stats(urllib.parse.parse_qs(parsed.query)))
+            try:
+                return self.send_json(application_stats(urllib.parse.parse_qs(parsed.query)))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/archive"):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
             result = build_application_archive(submission_id)

@@ -108,6 +108,90 @@ html[data-theme="dark"] #workQueueView .protocol-officer-card[data-protocol-offi
 html[data-theme="dark"] #workQueueView #queueQualificationCards>.qualification-summary-officer:not(.unassigned),html[data-theme="dark"] #workQueueView #queueProtocolOfficerCards>.qualification-summary-officer:not(.unassigned){border:1px solid #3f7b68;border-left-width:1px}
 html[data-theme="dark"] #workQueueView #queueCategoryCards>.qualification-summary-category,html[data-theme="dark"] #workQueueView #queueProtocolCategoryCards>.qualification-summary-category{border:1px solid #4b79a8;border-left-width:1px}
 
+/* Statistics chart and full-height filter drawer. */
+#workQueueView .queue-statistics-workspace.is-filter-open{grid-template-columns:minmax(0,1fr);grid-template-areas:"results"}
+#workQueueView .queue-statistics-workspace.is-filter-open .queue-statistics-results{width:calc(100% - min(430px,90vw) - 16px);min-width:0;transition:width .18s ease}
+#workQueueView .queue-statistics-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}
+#workQueueView .queue-statistics-kpis button.submitted{background:#e4efff!important;border-color:#8db4e5!important;color:#102a47!important}
+html[data-theme="dark"] #workQueueView .queue-statistics-kpis button.submitted{background:#203650!important;border-color:#6488b5!important;color:#edf3fc!important}
+#workQueueView .queue-statistics-trend{min-width:0;margin:2px 0 9px;padding:8px 9px 6px;border:1px solid var(--line);border-radius:8px;background:var(--surface,#fff)}
+#workQueueView .queue-statistics-trend-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;margin-bottom:3px}
+#workQueueView .queue-statistics-trend-heading h3{margin:0;font-size:12px;line-height:1.25}
+#workQueueView .queue-statistics-granularity{display:flex;gap:3px;flex:none}
+#workQueueView .queue-statistics-granularity button{min-height:27px;padding:3px 7px;font-size:10px}
+#workQueueView .queue-statistics-granularity button.is-active{background:var(--soft);border-color:#6b9bd3;color:var(--ink);font-weight:700}
+#workQueueView .queue-statistics-trend-chart{position:relative;min-width:0;width:100%;height:190px}
+#workQueueView .queue-statistics-trend-chart svg{display:block;width:100%;height:100%;overflow:visible;touch-action:pan-y;outline:none}
+#workQueueView .queue-statistics-trend-chart svg:focus-visible{outline:2px solid #1265d6;outline-offset:2px;border-radius:4px}
+#workQueueView .queue-statistics-trend-chart .trend-grid line{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+#workQueueView .queue-statistics-trend-chart .trend-grid text,#workQueueView .queue-statistics-trend-chart .trend-axis-label{fill:var(--muted);font-size:10px}
+#workQueueView .queue-statistics-trend-chart .trend-submitted{--line-color:var(--statistics-submitted)}
+#workQueueView .queue-statistics-trend-chart .trend-active{--line-color:var(--statistics-admitted)}
+#workQueueView .queue-statistics-trend-chart .trend-unsuccessful{--line-color:var(--statistics-rejected)}
+#workQueueView .queue-statistics-trend-chart .trend-empty{fill:var(--muted);font-size:13px}
+#workQueueView .queue-statistics-trend-legend{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;font-size:10px;color:var(--muted)}
+#workQueueView .queue-statistics-trend-legend span{display:inline-flex;align-items:center;gap:5px}
+#workQueueView .queue-statistics-trend-legend span::before{content:"";display:inline-block;width:15px;height:3px;border-radius:3px;background:var(--legend-color)}
+#workQueueView .queue-statistics-trend-legend .submitted{--legend-color:var(--statistics-submitted)}
+#workQueueView .queue-statistics-trend-legend .admitted{--legend-color:var(--statistics-admitted)}
+#workQueueView .queue-statistics-trend-legend .rejected{--legend-color:var(--statistics-rejected)}
+#workQueueView{--statistics-submitted:#327bc2;--statistics-admitted:#2c8c62;--statistics-rejected:#d14c49}
+html[data-theme="dark"] #workQueueView{--statistics-submitted:#79b8ff;--statistics-admitted:#64c79a;--statistics-rejected:#ff8585}
+#workQueueView .queue-statistics-trend-tooltip{position:absolute;z-index:3;top:4px;max-width:min(240px,70%);display:grid;gap:2px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);box-shadow:0 4px 16px #0002;font-size:10px;pointer-events:none}
+#workQueueView .queue-statistics-trend-tooltip[hidden]{display:none}
+#workQueueView .queue-statistics-trend-tooltip strong{margin-bottom:2px}
+#workQueueView .queue-statistics-message--warning{padding:6px 8px;border:1px solid #d7a43d;border-radius:6px;background:#fff5d9;color:#5d4300}
+html[data-theme="dark"] #workQueueView .queue-statistics-message--warning{background:#41351d;border-color:#9a7736;color:#ffe2a1}
+#workQueueView .queue-statistics-filter-panel{position:fixed;inset:0 0 0 auto;z-index:1200;box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;grid-auto-flow:row;gap:0;width:min(430px,90vw);height:100vh;height:100dvh;max-height:none;overflow:hidden;padding:0;border:1px solid #8DB4E5;border-right:0;border-radius:12px 0 0 12px;background:#F8FBFF;color:var(--ink);box-shadow:-10px 0 32px #12243a2b}
+#workQueueView .queue-statistics-filter-panel[hidden]{display:none!important}
+#workQueueView .queue-statistics-filter-header{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:58px;padding:10px 14px;border-bottom:1px solid var(--line);background:inherit}
+#workQueueView .queue-statistics-filter-header h3{margin:0;font-size:16px}
+#workQueueView .queue-statistics-filter-header button{width:34px;height:34px;min-height:34px;padding:0;font-size:22px;line-height:1}
+#workQueueView .queue-statistics-filter-fields{display:grid;align-content:start;gap:8px;min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}
+#workQueueView .queue-statistics-filter-section{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--surface,#fff)}
+#workQueueView .queue-statistics-filter-section-heading{display:flex;align-items:center;gap:8px;min-height:42px;padding:4px 7px;border-radius:7px}
+#workQueueView .queue-statistics-section-toggle{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;padding:5px 4px;border:0;background:transparent;color:var(--ink);font:inherit;font-weight:650;text-align:left}
+#workQueueView .queue-statistics-section-toggle::after{content:"⌄";margin-left:auto;color:var(--muted)}
+#workQueueView .queue-statistics-section-toggle[aria-expanded="false"]::after{content:"›"}
+#workQueueView .queue-statistics-section-state{font-size:10px;font-weight:500;color:var(--muted)}
+#workQueueView .queue-statistics-section-count{flex:none;font-size:10px;color:var(--muted);white-space:nowrap}
+#workQueueView .queue-statistics-section-clear{flex:none;width:26px;height:26px;min-height:26px;padding:0;border:1px solid #6c9ad1;border-radius:50%;background:var(--surface,#fff);color:#245d99;font-size:17px;line-height:1}
+#workQueueView .queue-statistics-section-clear[hidden]{display:none}
+#workQueueView .queue-statistics-filter-section.filter-active{border-color:#5d9bd8;background:#f0f6ff}
+#workQueueView .queue-statistics-filter-section.filter-active .queue-statistics-filter-section-heading{background:#e4efff}
+#workQueueView .queue-statistics-filter-section.filter-active .queue-statistics-section-state{color:#155c9f;font-weight:650}
+#workQueueView .queue-statistics-filter-section.filter-pending{outline:1px dashed #c58a19;outline-offset:1px}
+#workQueueView .queue-statistics-filter-section.filter-pending .queue-statistics-section-state{color:#8b5b00}
+#workQueueView .queue-statistics-filter-section-content{display:grid;gap:7px;padding:0 10px 10px}
+#workQueueView .queue-statistics-filter-section-content[hidden]{display:none}
+#workQueueView .queue-statistics-filter-section-content>select,#workQueueView .queue-statistics-filter-section-content input[type=search]{box-sizing:border-box;width:100%;min-width:0;height:36px;padding:6px 8px}
+#workQueueView .queue-statistics-dk-heading{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;min-width:0}
+#workQueueView .queue-statistics-dk-heading>input[type=search]{width:100%;min-width:0}
+#workQueueView .queue-statistics-dk-heading>button{justify-self:end;white-space:nowrap}
+#workQueueView .queue-statistics-dk-options{display:grid;gap:3px;max-height:min(26vh,240px);overflow:auto;overscroll-behavior:contain;min-width:0}
+#workQueueView .queue-statistics-dk-options label{display:flex;align-items:center;gap:7px;min-width:0;padding:5px 6px;border-radius:5px;overflow-wrap:anywhere}
+#workQueueView .queue-statistics-dk-options label:hover{background:var(--soft)}
+#workQueueView .queue-statistics-dk-options input{width:15px;min-width:15px;height:15px;margin:0}
+#workQueueView .queue-statistics-filter-actions{position:relative;z-index:1;display:flex;gap:8px;margin:0;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:inherit}
+#workQueueView .queue-statistics-filter-actions button{flex:1 1 0;min-height:40px;padding:7px 10px;white-space:nowrap}
+#workQueueView .queue-statistics-filter-section.filter-active .queue-statistics-filter-section-content select{border-color:#5d9bd8}
+html[data-theme="dark"] #workQueueView .queue-statistics-filter-panel{background:#172d45;border-color:#6488B5;box-shadow:-10px 0 32px #0006}
+html[data-theme="dark"] #workQueueView .queue-statistics-filter-section{background:#132840;border-color:#38516e}
+html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-active{background:#203650;border-color:#79b8ff}
+html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-active .queue-statistics-filter-section-heading{background:#243e5a}
+html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-active .queue-statistics-section-state{color:#9dcbff}
+html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-pending .queue-statistics-section-state{color:#ffd17c}
+html[data-theme="dark"] #workQueueView .queue-statistics-section-clear{background:#203650;color:#b9dcff;border-color:#6488B5}
+@media(max-width:720px){
+  #workQueueView .queue-statistics-workspace.is-filter-open .queue-statistics-results{width:0;visibility:hidden;overflow:hidden}
+  #workQueueView .queue-statistics-filter-panel{width:min(480px,100vw);border-radius:0}
+  #workQueueView .queue-statistics-trend-chart{height:175px}
+  #workQueueView .queue-statistics-trend-heading{align-items:flex-start;flex-direction:column}
+  #workQueueView .queue-statistics-kpis button{min-width:0;padding:5px 3px}
+  #workQueueView .queue-statistics-kpis button span{font-size:9px;line-height:1.15}
+  #workQueueView .queue-statistics-kpis button strong{font-size:16px}
+}
+
 @media(max-width:1300px){
   #workQueueView .queue-summary-heading{flex-wrap:wrap}
   #workQueueView .queue-summary-heading>h2{white-space:normal}
@@ -130,12 +214,14 @@ html[data-theme="dark"] #workQueueView #queueCategoryCards>.qualification-summar
   #workQueueView .queue-statistics-filter-toggle,#workQueueView .queue-statistics-group{grid-column:span 1}
   #workQueueView .queue-statistics-group{flex-wrap:wrap}
   #workQueueView .queue-statistics-group select{width:100%;max-width:none}
-  #workQueueView .queue-statistics-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+  #workQueueView .queue-statistics-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}
+  #workQueueView .queue-statistics-kpis button{min-width:0;padding:4px 2px}
+  #workQueueView .queue-statistics-kpis button span{font-size:8px;overflow-wrap:anywhere}
+  #workQueueView .queue-statistics-kpis button strong{font-size:14px}
   #workQueueView .queue-statistics-filter-panel{grid-template-columns:minmax(0,1fr);width:min(400px,calc(100vw - 32px))}
 }
 @container queue-stats (max-width:760px){
-  #workQueueView .queue-statistics-workspace.is-filter-open{grid-template-columns:minmax(0,1fr);grid-template-areas:"filters" "results"}
-  #workQueueView .queue-statistics-filter-panel{max-height:min(45vh,420px)}
+  #workQueueView .queue-statistics-workspace.is-filter-open .queue-statistics-results{width:0;visibility:hidden;overflow:hidden}
 }
 @media(max-width:650px){
   #workQueueView #queueProtocolCategoryCards,#workQueueView #queueCategoryCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}
