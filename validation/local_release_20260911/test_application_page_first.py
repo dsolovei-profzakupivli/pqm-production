@@ -100,9 +100,35 @@ class ApplicationPageFirstTests(unittest.TestCase):
             "category": ["Їжа"],
         })
         self.assertIn("COALESCE(af.marketplace_decision,'') IN (?)", clause)
-        self.assertIn("COALESCE(q.status,'pending') IN (?)", clause)
         self.assertIn("COALESCE(fo.category,'')=?", clause)
         self.assertEqual(args, ["admit", "Їжа", "active"])
+
+    def test_status_filter_behaves_for_missing_null_pending_active_and_empty_status(self):
+        with server.db() as con:
+            con.execute("UPDATE qualifications SET status='unsuccessful'")
+            con.execute("DELETE FROM qualifications WHERE submission_id='submission-00'")
+            con.execute("UPDATE qualifications SET status=NULL WHERE submission_id='submission-01'")
+            con.execute("UPDATE qualifications SET status='pending' WHERE submission_id='submission-02'")
+            con.execute("UPDATE qualifications SET status='active' WHERE submission_id='submission-03'")
+            con.execute("UPDATE qualifications SET status='' WHERE submission_id='submission-04'")
+
+        def ids_for(status):
+            return {row["id"] for row in server.list_applications({
+                "status": [status], "size": ["100"],
+            })["items"]}
+
+        pending = ids_for("Очікує рішення")
+        active = ids_for("Допущено")
+        unsuccessful = ids_for("Відхилено")
+        self.assertEqual({"submission-00", "submission-01", "submission-02"}, pending)
+        self.assertEqual({"submission-03"}, active)
+        self.assertEqual({f"submission-{index:02d}" for index in range(5, 60)}, unsuccessful)
+        self.assertNotIn("submission-04", pending | active | unsuccessful)
+
+        all_rows = server.list_applications({"size": ["100"]})
+        self.assertEqual(all_rows["total"], 60)
+        empty_status = next(row for row in all_rows["items"] if row["id"] == "submission-04")
+        self.assertEqual(empty_status["decision_status"], "")
 
     def test_search_whitelist_contains_manager_and_contract_details(self):
         clause, args = server.application_filter({"search": ["договір 42"]})

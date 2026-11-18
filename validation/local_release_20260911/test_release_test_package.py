@@ -28,7 +28,7 @@ class ReleaseTestPackageTests(unittest.TestCase):
         dependencies = {path for path, _sources in package_dependency_map(
             ROOT, ROOT, manifest=manifest
         )}
-        for version in range(1, 17):
+        for version in range(1, 18):
             self.assertIn(f"validation/run_integrated_writer_ui_v{version}_history.py", dependencies)
         for version in range(1, 18):
             self.assertIn(f"test_google_writer_integrated_candidate_integrity_v{version}.py", dependencies)
@@ -79,7 +79,7 @@ class ReleaseTestPackageTests(unittest.TestCase):
             self.assertFalse((staged / ".git").exists())
             self.assertEqual(source_missing, [])
             self.assertEqual(staging_missing, [])
-            for version in range(1, 17):
+            for version in range(1, 18):
                 self.assertTrue(
                     (staged / f"validation/run_integrated_writer_ui_v{version}_history.py").is_file()
                 )
@@ -159,7 +159,7 @@ class ReleaseTestPackageTests(unittest.TestCase):
             (source / "validation").mkdir(parents=True)
             shutil.copy2(ROOT / "validation/release_test_package_v1.json",
                          source / "validation/release_test_package_v1.json")
-            for version in range(1, 17):
+            for version in range(1, 18):
                 shutil.copy2(
                     ROOT / f"validation/run_integrated_writer_ui_v{version}_history.py",
                     source / f"validation/run_integrated_writer_ui_v{version}_history.py",

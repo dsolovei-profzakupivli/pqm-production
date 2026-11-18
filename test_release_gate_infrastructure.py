@@ -273,7 +273,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         previous_integrated_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         previous_current_overlay = "test_google_writer_integrated_candidate_integrity_v8"
         previous_integrated_overlay_v9 = "test_google_writer_integrated_candidate_integrity_v9"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v17"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v18"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
@@ -292,6 +292,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         integrated_v14_runner = "validation/run_integrated_writer_ui_v14_history.py"
         integrated_v15_runner = "validation/run_integrated_writer_ui_v15_history.py"
         integrated_v16_runner = "validation/run_integrated_writer_ui_v16_history.py"
+        integrated_v17_runner = "validation/run_integrated_writer_ui_v17_history.py"
         integrated_v4_snapshot = "654bd0de0e5b3de6be61c5293a9fc00cf17217c3"
         integrated_v3_snapshot = "8c6ba07372196b1919a88beb7da3078e6c53d4d0"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
@@ -339,6 +340,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn(integrated_v14_runner, workflow)
         self.assertIn(integrated_v15_runner, workflow)
         self.assertIn(integrated_v16_runner, workflow)
+        self.assertIn(integrated_v17_runner, workflow)
         for version in ("V1", "V2", "V3", "V4"):
             self.assertNotIn(f"PQM_INTEGRATED_{version}_ARCHIVE_OUT=validation/fixtures/", workflow)
         self.assertIn(
@@ -381,6 +383,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("PQM_INTEGRATED_V14_SNAPSHOT_ARCHIVE_OUT", workflow)
         self.assertIn("PQM_INTEGRATED_V15_SNAPSHOT_ARCHIVE_OUT", workflow)
         self.assertIn("PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_OUT", workflow)
+        self.assertIn("PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE_OUT", workflow)
         self.assertIn("PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE_SHA256", workflow)
         self.assertIn("PQM_INTEGRATED_V11_SNAPSHOT_ARCHIVE_SHA256", workflow)
         self.assertIn("PQM_INTEGRATED_V12_SNAPSHOT_ARCHIVE_SHA256", workflow)
@@ -388,6 +391,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("PQM_INTEGRATED_V14_SNAPSHOT_ARCHIVE_SHA256", workflow)
         self.assertIn("PQM_INTEGRATED_V15_SNAPSHOT_ARCHIVE_SHA256", workflow)
         self.assertIn("PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_SHA256", workflow)
+        self.assertIn("PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE_SHA256", workflow)
         self.assertIn("dst=/tmp/pqm-integrated-v10-snapshot.zip,readonly", workflow)
         self.assertIn("dst=/tmp/pqm-integrated-v11-snapshot.zip,readonly", workflow)
         self.assertIn("dst=/tmp/pqm-integrated-v12-snapshot.zip,readonly", workflow)
@@ -395,8 +399,9 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("dst=/tmp/pqm-integrated-v14-snapshot.zip,readonly", workflow)
         self.assertIn("dst=/tmp/pqm-integrated-v15-snapshot.zip,readonly", workflow)
         self.assertIn("dst=/tmp/pqm-integrated-v16-snapshot.zip,readonly", workflow)
+        self.assertIn("dst=/tmp/pqm-integrated-v17-snapshot.zip,readonly", workflow)
         self.assertNotIn("COPY .git", workflow)
-        current_integrity_start = workflow.index("test_google_writer_integrated_candidate_integrity_v17 \\")
+        current_integrity_start = workflow.index(current_overlay + " " + chr(92))
         current_integrity_end = workflow.index("\n      - name: Install Playwright", current_integrity_start)
         current_integrity_command = workflow[current_integrity_start:current_integrity_end]
         self.assertIn(current_overlay, current_integrity_command)
@@ -540,8 +545,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("test_google_writer_integrated_candidate_integrity_v15", runner)
         self.assertIn("run_integrated_writer_ui_v15_history.py", runner)
         self.assertIn("run_integrated_writer_ui_v16_history.py", runner)
+        self.assertIn("run_integrated_writer_ui_v17_history.py", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v16", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v17", runner)
+        self.assertIn("test_google_writer_integrated_candidate_integrity_v18", runner)
         package_manifest = json.loads(
             (ROOT / "validation/release_test_package_v1.json").read_text(encoding="utf-8")
         )

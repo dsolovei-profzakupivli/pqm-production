@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import application_officers
 import edr_sync_v2 as legacy
 import formed_protocols
 import supplier_evidence_shadow_hooks_v3 as hooks
@@ -552,7 +553,7 @@ class HookTests(unittest.TestCase):
         }.items():
             for column, definition in columns.items():
                 self.con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        self.con.executescript("""CREATE TABLE framework_service_directory(framework_id TEXT,responsible_officer TEXT);
+        self.con.executescript("""CREATE TABLE framework_service_directory(pretty_id TEXT PRIMARY KEY,framework_id TEXT,responsible_officer TEXT,source TEXT,synced_at TEXT);
           CREATE TABLE supplier_edr_profiles(supplier_code TEXT,manager_name TEXT,edr_checked_at TEXT);
           CREATE TABLE supplier_managers(supplier_code TEXT,manager_name TEXT,is_current INTEGER,valid_from TEXT);""")
         self.con.create_function("DIGITS",1,lambda value: str(value or ""))
@@ -566,7 +567,7 @@ class HookTests(unittest.TestCase):
         submissions = [dict(id="real-admit",datePublished=CHECK,qualificationID="qa",
             tenderers=[dict(name="Supplier",identifier=dict(id=CODE))])]
         qualifications = [dict(id="qa",submissionID="real-admit",status="active",dateModified=NOW)]
-        namespace = dict(save_framework=lambda _:True,db=db,API_ROOT="fixture://no-network",
+        namespace = dict(application_officers=application_officers,save_framework=lambda _:True,db=db,API_ROOT="fixture://no-network",
             scoped_pages=lambda _,kind,cursor:[submissions if kind=="submissions" else qualifications],
             paginated_pages=lambda *args:[],now_iso=lambda:NOW,json=json,
             ensure_submission_nazk_control=lambda *args:None,

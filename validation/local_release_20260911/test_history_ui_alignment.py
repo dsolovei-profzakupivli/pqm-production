@@ -22,6 +22,8 @@ class HistoryAlignmentApiTests(unittest.TestCase):
           CREATE TABLE qualifications(id TEXT,submission_id TEXT,status TEXT,decision_date TEXT,synced_at TEXT,documents_json TEXT);
           CREATE TABLE registry_contracts(qualification_id TEXT,status TEXT,synced_at TEXT,milestones_json TEXT);
           CREATE TABLE application_fields(submission_id TEXT,protocol_decision TEXT,protocol_officer TEXT,review_officer TEXT,protocol_number TEXT,protocol_date TEXT,protocol_remarks TEXT,compliance_comments TEXT,contract_details TEXT,manager_name TEXT);
+          CREATE TABLE framework_service_directory(pretty_id TEXT PRIMARY KEY,framework_id TEXT,responsible_officer TEXT,source TEXT,synced_at TEXT);
+          INSERT INTO framework_service_directory VALUES('UA-F-HISTORY','f','Officer from framework','PQM','2026-10-06');
           INSERT INTO submissions VALUES('a','f','q','123','Test','2026-10-06','[]');
           INSERT INTO application_fields(submission_id,protocol_officer,review_officer) VALUES('a','Protocol officer','Actual reviewer');
         ''')
@@ -44,7 +46,9 @@ class HistoryAlignmentApiTests(unittest.TestCase):
 
     def test_blank_review_never_falls_back_to_protocol(self):
         self.c.execute("UPDATE application_fields SET review_officer='' ")
-        self.assertEqual(server.application_history({})['items'][0]['review_officer'], '')
+        item = server.application_history({})['items'][0]
+        self.assertEqual(item['review_officer'], server.application_officers.UNDEFINED_OFFICER)
+        self.assertNotEqual(item['review_officer'], item['protocol_officer'])
 
     def test_review_sort_targets_review_field(self):
         self.assertIn('af.review_officer', server.history_order_sql('[{"key":"review_officer","direction":"asc"}]'))
