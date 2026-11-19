@@ -48,7 +48,8 @@ test('shared topbar keeps the existing Back action separate from PQM and preserv
   const css=fs.readFileSync('styles.css','utf8');
   assert.match(html,/<header class="topbar">[\s\S]*?<div class="brand prod-brand">[\s\S]*?id="environmentBanner"[^>]*>PQM<\/em>/);
   assert.match(navigation,/button\.textContent='← Назад';button\.id='pqmBack'/);
-  assert.match(navigation,/document\.querySelector\('header\.topbar'\);header\?\.insertBefore\(button,header\.querySelector\('#mainNav'\)\)/);
+  assert.match(html,/<div id="pqmBackSlot" class="back-slot"><\/div>\s*<nav id="mainNav"/);
+  assert.match(navigation,/const header=document\.querySelector\('header\.topbar'\);const backSlot=document\.getElementById\('pqmBackSlot'\);\(backSlot\|\|header\)\?\.append\(button\)/);
   assert.match(navigation,/dialogButton=button\.cloneNode\(true\);dialogButton\.id='pqmDialogBack'/);
   assert.match(navigation,/button\.hidden=!canShowBack\(current\);button\.disabled=restoring/);
   assert.match(navigation,/dialogButton\.hidden=!current\?\.previous\|\|dialog\.dataset\.detailWindow==='floating'/);
@@ -101,7 +102,14 @@ test('navbar and supplier-card presentation stay scoped to shared UI',()=>{
   assert.match(rule('\\.supplier-code-action-cell \\.supplier-card-action'),/justify-self:end;align-self:center/);
   assert.match(app,/installSupplierCodeAction\(cell,\(\)=>openSupplierProfile\(row\.dataset\.supplierCode\)\)/);
   assert.match(app,/installSupplierCodeAction\(cell,\(\)=>openSupplierProfile\(String\(item\.supplier_code\)\)\)/);
-  assert.match(app,/<td><strong>\$\{esc\(supplierDisplayName\(edr,item\.name\)\)\}<\/strong>/);
+  assert.match(app,/<td><strong>\$\{esc\(supplierDisplayName\(edr,validSupplierName\(item\.application_name\)\|\|item\.name\)\)\}<\/strong>/);
+  const nameHelpers=vm.createContext({});
+  const helperStart=app.indexOf('const validSupplierName='),helperEnd=app.indexOf('\nconst titleCaseWord',helperStart);
+  assert.ok(helperStart>=0&&helperEnd>helperStart,'supplier display-name helpers exist');
+  vm.runInContext(app.slice(helperStart,helperEnd),nameHelpers);
+  assert.equal(vm.runInContext("supplierDisplayName({full_name:'Назва з ЄДР'},validSupplierName('Назва заявки')||'Назва реєстру')",nameHelpers),'Назва з ЄДР','EDR full name has priority');
+  assert.equal(vm.runInContext("supplierDisplayName({},validSupplierName('Назва заявки')||'Назва реєстру')",nameHelpers),'Назва заявки','application name is the first fallback');
+  assert.equal(vm.runInContext("supplierDisplayName({},validSupplierName('—')||'Назва реєстру')",nameHelpers),'Назва реєстру','invalid application name falls back to registry name');
   assert.doesNotMatch(app,/supplier-card-link/);
   assert.match(app,/section\.querySelector\('h3'\)\.after\(actions\)/);
   assert.match(app,/link\.textContent='↗ Google ЄДР'/);
@@ -178,7 +186,11 @@ test('five EDR metadata cards retain readable typography and follow selected the
   assert.ok(Number(labels.match(/font-size:(\d+)px/)?.[1])>=12);
   assert.ok(Number(values.match(/font-size:(\d+)px/)?.[1])>=14);
   assert.ok(Number(values.match(/font-weight:(\d+)/)?.[1])>=700);
-  assert.doesNotMatch(css,/html\[data-pqm-environment="sandbox"\] \.supplier-edr-metadata/);
+  const sandboxMetadataRules=[...css.matchAll(/([^{}]*html\[data-pqm-environment="sandbox"\][^{}]*supplier-edr-metadata[^{}]*)\{([^{}]*)\}/g)];
+  assert.equal(sandboxMetadataRules.length,2,'sandbox overrides are limited to metadata cards and labels');
+  for(const [,selector] of sandboxMetadataRules)
+    assert.match(selector.trim(),/^html\[data-pqm-environment="sandbox"\] \.supplier-edr-metadata(?:>div| dt)$/,'sandbox styling stays scoped to the EDR metadata component');
+  assert.match(theme,/html\[data-theme="light"\] #supplierProfileBody \.supplier-edr-metadata>div\{[^}]*background-color:#f6f9fd/);
   assert.match(theme,/html\[data-theme="dark"\] #supplierProfileBody \.supplier-edr-metadata>div\{[^}]*background-color:#132840/);
   assert.match(sandbox,/id="sandboxWarning"[^\n]*position:fixed;bottom:0/);
   assert.doesNotMatch(root,/id="sandboxWarning"|id="pqmSandboxTheme"/);
