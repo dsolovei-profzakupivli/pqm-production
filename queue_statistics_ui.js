@@ -137,8 +137,19 @@
 
   function countButton(count, filters, status, label='', tone='', showLabel=true) {
     const index=actions.push({filters,status})-1;
-    return `<button type="button" class="ghost publication-kpi ${tone}${showLabel?'':' queue-statistics-number-only'}" data-statistics-action="${index}"${label?` aria-label="${esc(label)}: ${number(count)}"`:''}>${label&&showLabel?`<span>${esc(label)}</span>`:''}<strong>${number(count)}</strong></button>`;
+    return `<button type="button" class="ghost publication-kpi ${tone}${showLabel?'':' queue-statistics-number-only'}" data-statistics-action="${index}" aria-pressed="false"${label?` aria-label="${esc(label)}: ${number(count)}"`:''}>${label&&showLabel?`<span>${esc(label)}</span>`:''}<strong>${number(count)}</strong></button>`;
   }
+
+  function syncActionSelection() {
+    const matches=window.pqmStatisticsActionMatchesCurrentFilters;
+    for(const root of [kpis,table])root.querySelectorAll('[data-statistics-action]').forEach(button=>{
+      const action=actions[Number(button.dataset.statisticsAction)];
+      const selected=Boolean(action&&typeof matches==='function'&&matches(action));
+      button.setAttribute('aria-pressed',String(selected));
+      button.classList.toggle('is-selected',selected);
+    });
+  }
+  window.refreshQueueStatisticsActionSelection=syncActionSelection;
 
   function emptyCounts() { return {active:0,unsuccessful:0,pending:0,total:0}; }
   function addCounts(counts,row) {
@@ -180,8 +191,8 @@
     const clipped=matches.length>100?`<span class="muted queue-statistics-dk-limit">Показано 100 із ${number(matches.length)}. Уточніть пошук.</span>`:'';
     dkOptions.innerHTML=(visible.map(value=>`<label><input type="checkbox" data-statistics-dk-option value="${esc(value)}" ${dkSelection.has(value)?'checked':''}> ${esc(value)}</label>`).join('')||'<span class="muted">Кодів ДК за цим пошуком немає</span>')+clipped;
     const draftChanged=[...dkSelection].sort().join('\0')!==[...appliedDkSelection].sort().join('\0');
-    dkSummary.textContent=draftChanged?(dkSelection.size?`Чернетка: ${dkSelection.size}`:'Усі коди'):appliedDkSelection.size?String(appliedDkSelection.size):'Усі коди';
-    dkSummary.title=dkSelection.size?`Чернетка: ${dkSelection.size} кодів ДК`:'Усі коди ДК';
+    dkSummary.textContent=draftChanged?(dkSelection.size?`Не застосовано: ${dkSelection.size}`:'Усі коди'):appliedDkSelection.size?`Застосовано: ${appliedDkSelection.size}`:'Усі коди';
+    dkSummary.title=dkSelection.size?`Не застосовано: ${dkSelection.size} кодів ДК`:'Усі коди ДК';
   }
 
   function renderFilterPresentation() {
@@ -201,11 +212,13 @@
       section.classList.toggle('filter-active',active);
       section.classList.toggle('filter-pending',draftChanged);
       const state=section.querySelector('.queue-statistics-section-state');
-      if(state)state.textContent=draftChanged?(key==='dk_code'&&active?`Чернетка: ${dkSelection.size}`:'Зміни не застосовано'):active?'Застосовано':'';
+      if(state)state.textContent='';
       const count=section.querySelector('.queue-statistics-section-count');
-      if(count)count.textContent=active?String(key==='dk_code'?appliedDkSelection.size:1):key==='dk_code'&&dkSelection.size?`Чернетка: ${dkSelection.size}`:'';
+      if(count)count.textContent=active?String(key==='dk_code'?appliedDkSelection.size:1):'';
       const clear=section.querySelector('[data-statistics-filter-reset]');
-      if(clear)clear.hidden=!active;
+      if(clear)clear.hidden=!(active||draftChanged);
+      const apply=section.querySelector('[data-statistics-filter-apply]');
+      if(apply)apply.hidden=!draftChanged;
       filtersPending=filtersPending||draftChanged;
     });
     fromField.classList.toggle('filter-active',Boolean(period?.date_from)&&from.value===period.date_from);
@@ -286,11 +299,27 @@
   }
 
   function applyDraftFilters(closePanel=true) {
-    appliedSelection=Object.fromEntries(controls.filter(control=>control.value).map(control=>[control.dataset.statisticsFilter,control.value]));
+    const nextSelection=Object.fromEntries(controls.filter(control=>control.value).map(control=>[control.dataset.statisticsFilter,control.value]));
+    const changed=JSON.stringify(Object.entries(appliedSelection).sort())!==JSON.stringify(Object.entries(nextSelection).sort())||[...appliedDkSelection].sort().join('\0')!==[...dkSelection].sort().join('\0');
+    appliedSelection=nextSelection;
     appliedDkSelection=new Set(dkSelection);
     renderFilterPresentation();
-    loadStatistics();
+    if(changed)loadStatistics();
     if(closePanel)setFilterPanelOpen(false);
+  }
+
+  function applyDraftDimension(key) {
+    if(key==='dk_code')appliedDkSelection=new Set(dkSelection);
+    else{
+      const control=controls.find(item=>item.dataset.statisticsFilter===key);
+      if(!control)return;
+      if(control.value)appliedSelection[key]=control.value;else delete appliedSelection[key];
+    }
+    renderFilterPresentation();
+    loadStatistics();
+    const section=filterPanel.querySelector(`[data-statistics-filter-section="${key}"]`);
+    const toggle=section?.querySelector('.queue-statistics-section-toggle'),content=section?.querySelector('.queue-statistics-filter-section-content');
+    toggle?.setAttribute('aria-expanded','false');if(content)content.hidden=true;
   }
 
   async function loadStatistics() {
@@ -339,6 +368,7 @@
       const scoped={...filters,[key]:name||unassigned};
       return `<tr><th scope="row">${esc(officerName(name))}</th>${statuses.map(([code,label])=>`<td>${countButton(counts[code],scoped,code,`${officerName(name)} · ${label}`,'',false)}</td>`).join('')}<td>${countButton(counts.total,scoped,'',`${officerName(name)} · Усього`,'',false)}</td></tr>`;
     }).join('');
+    syncActionSelection();
     tableWrap.classList.toggle('queue-statistics-table--scroll',sorted.length>5);
     tableWrap.dataset.rowCount=String(sorted.length);
     fitTableViewport();
@@ -389,7 +419,14 @@
     loadStatistics();
     renderFilterPresentation();
   };
-  controls.forEach(control=>control.onchange=renderFilterPresentation);
+  controls.forEach(control=>control.onchange=()=>{
+    const key=control.dataset.statisticsFilter,value=control.value;
+    const changed=(appliedSelection[key]||'')!==value;
+    if(value)appliedSelection[key]=value;else delete appliedSelection[key];
+    renderFilterPresentation();
+    if(changed)loadStatistics();
+    window.PqmFilterAccordion?.collapseControl(control);
+  });
   group.onchange=renderStatistics;
   filterToggle.onclick=()=>setFilterPanelOpen(filterPanel.hidden);
   $('#queueStatisticsFilterApply').onclick=()=>applyDraftFilters(true);
@@ -405,7 +442,10 @@
   };
   $('#queueStatisticsDkClear').onclick=()=>{dkSelection.clear();renderDkOptions();renderFilterPresentation();};
   $('#queueStatisticsFilterClose').onclick=()=>setFilterPanelOpen(false);
+  document.addEventListener('click',event=>{if(!filterPanel.hidden&&!filterPanel.contains(event.target)&&!filterToggle.contains(event.target))setFilterPanelOpen(false)});
   filterPanel.onclick=event=>{
+    const apply=event.target.closest('[data-statistics-filter-apply]');
+    if(apply){applyDraftDimension(apply.dataset.statisticsFilterApply);return}
     const reset=event.target.closest('[data-statistics-filter-reset]');
     if(reset){
       const key=reset.dataset.statisticsFilterReset;
@@ -446,7 +486,7 @@
   for (const root of [kpis,table]) root.onclick=event=>{
     const button=event.target.closest('[data-statistics-action]');
     const action=button&&actions[Number(button.dataset.statisticsAction)];
-    if (action) openRegister(action.filters,action.status,false);
+    if (action) {openRegister(action.filters,action.status,false);syncActionSelection();}
   };
   $('#clearFiltersBtn').addEventListener('click',()=>{$('#queueRegistryScope').hidden=true;},true);
 })();

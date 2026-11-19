@@ -20,6 +20,7 @@ const ctx = {
   URLSearchParams, Set, API: '/api', edrMonitoringLoadSequence: 0,
   edrMonitoringPage: 1, edrMonitoringSort: 'freshness', edrMonitoringDirection: 'asc',
   edrMonitoringStatusSelections: {prozorro_status: new Set(), edr_status: new Set()},
+  edrMonitoringStatusDrafts: {prozorro_status: new Set(), edr_status: new Set()},
   saveEdrMonitoringFilters() { saveFilterCalls += 1; },
   $: control, updateEdrMonitoringFilters() { this.chipCount = this.edrMonitoringStatusSelections.edr_status.size + this.edrMonitoringStatusSelections.prozorro_status.size; },
   loadEdrMonitoring() {},
@@ -31,6 +32,7 @@ vm.runInContext([
   source('function updateEdrMonitoringMultiSummary'),
   source('function bindEdrMonitoringStatusMulti'),
   source('function clearEdrMonitoringFilter'),
+  source('function applyEdrMonitoringFilter'),
   source('async function edrMonitoringLatestResponse'),
 ].join('\n'), ctx);
 
@@ -42,28 +44,40 @@ async function main() {
   ctx.$ = selector => selector === '#edrMonitoringEdr' ? details : selector === '#edrMonitoringProzorro' ? {querySelectorAll: () => []} : selector === '#edrMonitoringEdr summary' ? summary : control(selector);
   ctx.updateEdrMonitoringFilters = () => { ctx.chipCount = ctx.edrMonitoringStatusSelections.edr_status.size + ctx.edrMonitoringStatusSelections.prozorro_status.size; };
   ctx.bindEdrMonitoringStatusMulti('edrMonitoringEdr', 'edr_status');
-  const selected = ctx.edrMonitoringStatusSelections.edr_status;
+  let selected = ctx.edrMonitoringStatusSelections.edr_status;
+  const draft = ctx.edrMonitoringStatusDrafts.edr_status;
   function choose(index, checked) {
     inputs[index].checked = checked;
     inputs[index].onchange();
-    assert.ok(saveFilterCalls > 0, 'each status change persists the current EDR filter state');
+    assert.equal(ctx.chipCount, selected.size, 'unapplied status changes do not affect the active-filter count');
+    assert.equal(ctx.edrMonitoringParams().edr_status, [...selected].join(','), 'unapplied status changes do not reach requests');
+    assert.equal(draft.has(statuses[index]), checked);
+  }
+  function applyDraft() {
+    ctx.applyEdrMonitoringFilter('edr_status');
+    selected=ctx.edrMonitoringStatusSelections.edr_status;
+    assert.ok(saveFilterCalls > 0, 'applying a status draft persists the EDR filter state');
     assert.equal(ctx.chipCount, selected.size);
     assert.deepEqual(new Set(ctx.edrMonitoringParams().edr_status.split(',').filter(Boolean)), new Set(selected));
   }
+  const baseDollar=ctx.$,prozorroDetails={querySelectorAll:()=>[],open:true};
+  details.open=true;
+  ctx.$ = selector => selector==='#edrMonitoringProzorro'?prozorroDetails:selector==='#edrMonitoringEdr'?details:baseDollar(selector);
+  ctx.document={querySelector:()=>({querySelector:()=>({setAttribute(){}}),querySelectorAll:()=>[]})};
   choose(0, true); assert.equal(summary.textContent, statuses[0]);
-  choose(1, true); choose(2, true); assert.equal(ctx.chipCount, 3);
+  choose(1, true); choose(2, true); assert.equal(ctx.chipCount, 0);applyDraft();assert.equal(ctx.chipCount,3);
   const older = ctx.edrMonitoringLatestResponse();
-  choose(3, true); choose(3, false); assert.equal(ctx.chipCount, 3);
+  choose(3, true); choose(3, false); applyDraft();assert.equal(ctx.chipCount, 3);
   const latest = ctx.edrMonitoringLatestResponse();
   requests[1].resolve({items: [{edr_status: statuses[0]}], total: 1});
   assert.equal((await latest).total, 1);
   requests[0].resolve({items: [{edr_status: 'Зареєстровано'}], total: 11287});
   assert.equal(await older, null, 'old response cannot overwrite newer filtered rows');
-  choose(1, false); assert.equal(ctx.chipCount, 2);
+  choose(1, false);assert.equal(ctx.chipCount,3);applyDraft();assert.equal(ctx.chipCount,2);
   ctx.clearEdrMonitoringFilter('edr_status', statuses[0]); assert.equal(ctx.chipCount, 1);
-  choose(1, true); choose(1, false); assert.equal(ctx.chipCount, 1);
-  choose(2, false); assert.equal(ctx.chipCount, 0);
-  choose(0, true); ctx.edrMonitoringStatusSelections.prozorro_status.add('Активний');
+  choose(1, true);applyDraft();choose(1, false);applyDraft();assert.equal(ctx.chipCount,1);
+  choose(2, false);applyDraft();assert.equal(ctx.chipCount,0);
+  choose(0, true);applyDraft();ctx.edrMonitoringStatusSelections.prozorro_status.add('Активний');
   assert.equal(ctx.edrMonitoringParams().prozorro_status, 'Активний');
   assert.equal(ctx.edrMonitoringParams().edr_status, statuses[0]);
   ctx.edrMonitoringSelected = new Set(['supplier']);
