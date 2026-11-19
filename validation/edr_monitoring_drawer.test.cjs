@@ -6,6 +6,7 @@ const vm=require('node:vm');
 const html=fs.readFileSync('index.html','utf8');
 const app=fs.readFileSync('app.js','utf8');
 const css=fs.readFileSync('ui_final.css','utf8');
+const accordions=fs.readFileSync('filter_panels_ui.js','utf8');
 
 test('EDR drawer contains every current filter, per-filter reset, and top actions without a chips row',()=>{
   const keys=['dk_code','entity_type','prozorro_status','edr_status','edr_names','edr_full_name','edr_short_name','freshness','verification_from','verification_to','application_from','application_to'];
@@ -20,6 +21,10 @@ test('EDR drawer contains every current filter, per-filter reset, and top action
     assert.match(section,new RegExp(`data-edr-filter-clear="${key}"`));
   }
   assert.match(panel,/id="edrMonitoringDk"[^>]*placeholder="Код або частина коду"/);
+  assert.match(accordions,/prepareEdrFilters\(\)/,'EDR sections use the common collapsed accordion');
+  assert.match(accordions,/buildToggle\(title,'data-edr-filter-count'\)/,'each EDR section has a numeric active-value badge');
+  assert.match(css,/\.edr-monitoring-filter-heading \.filter-accordion-toggle/,'EDR filter labels use the same row toggle layout');
+  assert.match(css,/\.filter-panel-header-actions button\{[^}]*width:36px;height:36px/,'top drawer actions share identical icon button dimensions');
   assert.match(html,/<div id="edrMonitoringChips"[^>]*hidden><\/div>/,'legacy element remains hidden for compatibility');
   assert.match(css,/#edrMonitoringChips\.edr-monitoring-chips\{display:none!important\}/,'no separate active-filter chip row is displayed');
   assert.match(css,/html:has\(#edrMonitoringAdvanced\[open\]\)\{overflow:hidden\}/,'opening the panel locks page scrolling underneath it');

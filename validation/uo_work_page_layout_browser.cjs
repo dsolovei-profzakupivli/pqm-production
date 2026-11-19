@@ -58,9 +58,10 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     document.querySelector('[data-statistics-filter="protocol_officer"]').innerHTML='<option value="">Усі</option><option>Олена ЄРЬОМІНА</option>';
     document.querySelector('#queueStatisticsDkOptions').innerHTML=['02100000-6','03000000-1','45000000-7'].map((value,index)=>`<label><input type="checkbox" ${index<2?'checked':''}> ${value}</label>`).join('');
     const filterSections=Object.fromEntries([...document.querySelectorAll('[data-statistics-filter-section]')].map(section=>[section.dataset.statisticsFilterSection,section]));
-    for(const key of ['supplier_type','dk_code']){const section=filterSections[key];section.classList.add('filter-active');section.querySelector('.queue-statistics-section-state').textContent='Застосовано';section.querySelector('.queue-statistics-section-count').textContent=key==='dk_code'?'2 вибрано':'1 вибрано';section.querySelector('[data-statistics-filter-reset]').hidden=false;}
-    const draftSection=filterSections.category;draftSection.classList.add('filter-pending');draftSection.querySelector('.queue-statistics-section-state').textContent='Зміни не застосовано';draftSection.querySelector('.queue-statistics-section-count').textContent='Чернетка';
+    for(const key of ['supplier_type','dk_code']){const section=filterSections[key];section.classList.add('filter-active');section.querySelector('.queue-statistics-section-state').textContent='';section.querySelector('.queue-statistics-section-count').textContent=key==='dk_code'?'2':'1';section.querySelector('[data-statistics-filter-reset]').hidden=false;}
+    const draftSection=filterSections.category;draftSection.classList.add('filter-pending');draftSection.querySelector('.queue-statistics-section-state').textContent='Не застосовано';draftSection.querySelector('.queue-statistics-section-count').textContent='';
   },{theme,officers});
+  await page.addScriptTag({path:path.join(ROOT,'filter_panels_ui.js')});
   return page;
 }
 
@@ -87,6 +88,7 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       document.querySelectorAll('#requestQuickFilters [data-status]').forEach(button=>button.setAttribute('aria-label',`${button.title}: ${button.querySelector('strong').textContent}`));
     }
   },{theme,viewId});
+  await page.addScriptTag({path:path.join(ROOT,'filter_panels_ui.js')});
   return page;
 }
 
@@ -195,8 +197,20 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       await page.screenshot({path:screenshot,fullPage:true});evidence.push(screenshot);
       const workspace=page.locator('#queueStatisticsWorkspace'),panel=page.locator('#queueStatisticsFilterPanel');
       await panel.evaluate(node=>node.hidden=false);
-      const filterControlHeights=await page.locator('.queue-statistics-filter-fields select,#queueStatisticsDkSearch,#queueStatisticsFilterApply,#queueStatisticsFilterClear').evaluateAll(nodes=>nodes.map(node=>({id:node.id||node.dataset.statisticsFilter||node.textContent.trim(),height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
-      assert.ok(filterControlHeights.every(control=>control.height>=34&&control.height<=40&&control.borderRadius==='7px'),`filter panel controls use the same compact size: ${JSON.stringify(filterControlHeights)}`);
+      assert.equal(await page.locator('.queue-statistics-section-toggle[aria-expanded="false"]').count(),5,'all statistics filter rows start collapsed');
+      assert.equal(await page.locator('.queue-statistics-filter-section-content[hidden]').count(),5,'all statistics filter controls start hidden');
+      const filterControlHeights=await page.locator('.queue-statistics-filter-header-actions button').evaluateAll(nodes=>nodes.map(node=>({id:node.id,height:node.getBoundingClientRect().height,width:node.getBoundingClientRect().width,borderRadius:getComputedStyle(node).borderRadius})));
+      assert.ok(filterControlHeights.every(control=>control.height===36&&control.width===36&&control.borderRadius==='7px'),`filter panel icon actions use the same compact size: ${JSON.stringify(filterControlHeights)}`);
+      const expandedHeights=[];
+      for(const key of ['supplier_type','category','dk_code','review_officer','protocol_officer']){
+        await page.locator(`[data-statistics-filter-section="${key}"] .queue-statistics-section-toggle`).click();
+        const heights=await page.locator(`[data-statistics-filter-section="${key}"] .queue-statistics-filter-section-content select,[data-statistics-filter-section="${key}"] .queue-statistics-filter-section-content input:not([type="checkbox"])`).evaluateAll(nodes=>nodes.map(node=>({id:node.id||node.dataset.statisticsFilter,height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
+        expandedHeights.push(...heights);
+      }
+      assert.ok(expandedHeights.length>=5&&expandedHeights.every(control=>control.height>=32&&control.height<=40&&control.borderRadius==='7px'),`expanded filters keep compact controls: ${JSON.stringify(expandedHeights)}`);
+      assert.equal(await page.locator('.queue-statistics-section-toggle[aria-expanded="true"]').count(),1,'opening a row collapses the previously open filter');
+      await page.locator('[data-statistics-filter-section="dk_code"] .queue-statistics-section-toggle').click();
+      assert.deepEqual(await page.locator('[data-statistics-filter-section="dk_code"] .queue-statistics-section-toggle').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'10px'},'expanded statistics filter points upward at the shared right inset');
       const dkSearchLayout=await page.evaluate(()=>{
         const heading=document.querySelector('.queue-statistics-dk-heading'),input=document.querySelector('#queueStatisticsDkSearch'),clear=document.querySelector('#queueStatisticsDkClear');
         const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width};};
@@ -205,6 +219,12 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       assert.ok(dkSearchLayout.input.width>=dkSearchLayout.heading.width-2,`DK search spans the available field width: ${JSON.stringify(dkSearchLayout)}`);
       assert.ok(dkSearchLayout.clear.top>=dkSearchLayout.input.bottom,`DK clear button has its own row below the search field: ${JSON.stringify(dkSearchLayout)}`);
       assert.equal(dkSearchLayout.accessibleName,'Пошук коду ДК');
+      const dkCheckbox=await page.locator('#queueStatisticsDkOptions label').first().evaluate(label=>{const input=label.querySelector('input[type="checkbox"]'),textNode=[...label.childNodes].find(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim()),range=document.createRange();range.selectNode(textNode);const text=range.getClientRects()[0],box=input.getBoundingClientRect();return{display:getComputedStyle(label).display,input:{left:box.left,right:box.right,top:box.top,width:box.width,height:box.height},text:{left:text.left,top:text.top,height:text.height},gap:text.left-box.right,centerDelta:Math.abs((box.top+box.height/2)-(text.top+text.height/2))}});
+      assert.ok(dkCheckbox.display==='flex'&&dkCheckbox.input.width===15&&dkCheckbox.input.height===15&&dkCheckbox.gap>=4&&dkCheckbox.gap<=10&&dkCheckbox.centerDelta<=3,`statistics DK checkbox remains immediately left of its first-line label: ${JSON.stringify(dkCheckbox)}`);
+      const dkToggle=page.locator('#queueStatisticsDkOptions label').first(),wasChecked=await dkToggle.locator('input').isChecked(),labelBox=await dkToggle.evaluate(label=>{const textNode=[...label.childNodes].find(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim()),range=document.createRange();range.selectNode(textNode);const r=range.getClientRects()[0],outer=label.getBoundingClientRect();return{x:r.left-outer.left+r.width/2,y:r.top-outer.top+r.height/2}});
+      await dkToggle.click({position:labelBox});
+      assert.equal(await dkToggle.locator('input').isChecked(),!wasChecked,'clicking the DK option text toggles its checkbox');
+      await dkToggle.click({position:labelBox});
       await workspace.evaluate(node=>node.classList.add('is-filter-open'));
       const panelLayout=await page.evaluate(()=>{
         const card=document.querySelector('.queue-statistics-card'),work=document.querySelector('#queueStatisticsWorkspace'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel');
@@ -268,13 +288,25 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       if(width===1920){
         await page.locator('#edrMonitoringFilterSummary').click();
         assert.equal(await page.locator('#edrMonitoringAdvanced').evaluate(node=>node.open),true,'the toolbar control opens the native drawer');
+        assert.equal(await page.locator('#edrMonitoringFilterPanel .filter-accordion-toggle[aria-expanded="false"]').count(),12,'all EDR filter sections start collapsed');
+        const compactRows=await page.locator('#edrMonitoringFilterPanel').evaluate(panel=>({gap:getComputedStyle(panel.querySelector('.edr-monitoring-filter-fields')).rowGap,rows:[...panel.querySelectorAll('.edr-monitoring-filter-section')].map(section=>{const toggle=section.querySelector('.filter-accordion-toggle'),icon=getComputedStyle(toggle,'::after');return{section:section.getBoundingClientRect().height,toggle:toggle.getBoundingClientRect().height,icon:{content:icon.content,right:icon.right}}})}));
+        assert.equal(compactRows.gap,'7px','EDR uses the same compact section gap as the application registry drawer');
+        assert.ok(compactRows.rows.every(row=>Math.abs(row.toggle-42)<1&&Math.abs(row.section-44)<1&&row.icon.content==='"›"'&&row.icon.right==='10px'),`EDR collapsed rows match registry height and arrow placement: ${JSON.stringify(compactRows.rows)}`);
+        assert.deepEqual(await page.locator('#edrMonitoringType').evaluate(node=>({labels:node.labels.length,labelText:node.labels[0]?.querySelector('span')?.textContent.trim(),captionClass:node.labels[0]?.querySelector('span')?.classList.contains('filter-field-caption')})),{labels:1,labelText:'Виберіть тип',captionClass:true},'the redundant EDR prompt remains the control label for assistive technology');
+        await page.locator('[data-edr-filter-section="dk_code"] .filter-accordion-toggle').click();
+        assert.deepEqual(await page.locator('[data-edr-filter-section="dk_code"] .filter-accordion-toggle').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'10px'},'expanded EDR filter points upward at the shared right inset');
+        const dkWidth=await page.locator('#edrMonitoringDk').evaluate(node=>node.getBoundingClientRect().width);
+        assert.ok(dkWidth>=250,'expanded DK search uses the full panel width');
+        await page.locator('[data-edr-filter-section="entity_type"] .filter-accordion-toggle').click();
         await page.locator('#edrMonitoringType').selectOption('individual_entrepreneur');
-        await page.locator('[data-edr-filter-section="entity_type"] .edr-monitoring-filter-heading>[data-edr-filter-current]').evaluate(node=>{node.textContent='ФОП';node.closest('[data-edr-filter-section]').classList.add('filter-active')});
+        await page.locator('[data-edr-filter-section="entity_type"][data-edr-filter-section] [data-edr-filter-count]').evaluate(node=>{node.textContent='1';node.hidden=false;node.closest('[data-edr-filter-section]').classList.add('filter-active')});
         await page.locator('[data-edr-filter-section="entity_type"] [data-edr-filter-clear]').evaluate(node=>node.hidden=false);
         await page.locator('#edrMonitoringFilterSummary').evaluate(node=>node.textContent='Фільтри · 1');
-        const drawer=await page.locator('#edrMonitoringFilterPanel').evaluate(node=>{const r=node.getBoundingClientRect();return{x:r.x,right:r.right,width:r.width,height:r.height,position:getComputedStyle(node).position,header:node.querySelector('.edr-monitoring-filter-header').getBoundingClientRect().height,scroll:node.querySelector('.edr-monitoring-filter-fields').scrollHeight,client:node.querySelector('.edr-monitoring-filter-fields').clientHeight,code:node.querySelector('#edrMonitoringDk').getBoundingClientRect().width,apply:!!node.querySelector('#edrMonitoringApply'),clear:!!node.querySelector('#edrMonitoringReset'),close:!!node.querySelector('#edrMonitoringClose')}});
+        const edrToggleStyles=await page.locator('#edrMonitoringFilterPanel .filter-accordion-toggle').evaluateAll(nodes=>nodes.map(node=>({width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height,radius:getComputedStyle(node).borderRadius,border:getComputedStyle(node).borderWidth})));
+        assert.ok(edrToggleStyles.every(item=>item.width>=300&&Math.abs(item.height-42)<1&&item.radius==='7px'&&item.border==='0px'),`EDR accordion headings use full-width compact rows rather than inherited circular button styles: ${JSON.stringify(edrToggleStyles)}`);
+        const drawer=await page.locator('#edrMonitoringFilterPanel').evaluate(node=>{const r=node.getBoundingClientRect();return{x:r.x,right:r.right,width:r.width,height:r.height,position:getComputedStyle(node).position,header:node.querySelector('.edr-monitoring-filter-header').getBoundingClientRect().height,scroll:node.querySelector('.edr-monitoring-filter-fields').scrollHeight,client:node.querySelector('.edr-monitoring-filter-fields').clientHeight,apply:!!node.querySelector('#edrMonitoringApply'),clear:!!node.querySelector('#edrMonitoringReset'),close:!!node.querySelector('#edrMonitoringClose')}});
         assert.ok(drawer.position==='fixed'&&drawer.x>=0&&drawer.right<=edr.viewport+1&&drawer.height>=999&&drawer.width<=430,`drawer stays at the browser edge and fills the viewport: ${JSON.stringify(drawer)}`);
-        assert.ok(drawer.code>=250&&drawer.header>=50&&drawer.apply&&drawer.clear&&drawer.close,'drawer retains a readable DK control and top-level actions');
+        assert.ok(dkWidth>=250&&drawer.header>=50&&drawer.apply&&drawer.clear&&drawer.close,'drawer retains a readable DK control and top-level actions');
         const shot=path.join(OUT,`edr-monitoring-${theme}-filters-open.png`);await page.screenshot({path:shot,fullPage:true});evidence.push(shot);
       }
       await page.close();

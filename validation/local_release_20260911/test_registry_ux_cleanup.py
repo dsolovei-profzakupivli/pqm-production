@@ -292,8 +292,8 @@ class RegistryUxCleanupTests(unittest.TestCase):
         self.assertIn("overflow-x:auto", styles)
 
     def test_nested_framework_and_dk_popovers_keep_advanced_filter_open(self):
-        advanced_start = self.html.index('<details class="advanced-filters">')
-        advanced_end = self.html.index('id="profileSelect"', advanced_start)
+        advanced_start = self.html.index('<details id="applicationFilters" class="advanced-filters application-filter-drawer"')
+        advanced_end = self.html.index('</aside>', advanced_start)
         self.assertLess(
             advanced_start,
             self.html.index('id="frameworkFilter" class="multi-filter', advanced_start, advanced_end),
@@ -309,6 +309,9 @@ class RegistryUxCleanupTests(unittest.TestCase):
             "item!==opened&&item instanceof HTMLDetailsElement)item.open=false",
             coordinator,
         )
+        popover_manager = (ROOT / "registry_popovers.js").read_text(encoding="utf-8")
+        self.assertIn(":scope > .application-filter-panel", popover_manager)
+        self.assertIn(".application-filter-panel,.toolbar-settings-panel", popover_manager)
 
     def test_application_nazk_marker_uses_submission_presentation_only(self):
         row_renderer = self.app.split("function render(){", 1)[1].split(

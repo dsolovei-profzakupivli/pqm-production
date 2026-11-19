@@ -1,6 +1,6 @@
 (() => {
   const selector = '.multi-filter,.advanced-filters,.toolbar-settings';
-  const panelSelector = ':scope > .multi-panel,:scope > .advanced-filter-panel,:scope > .edr-monitoring-filter-grid';
+  const panelSelector = ':scope > .multi-panel,:scope > .advanced-filter-panel,:scope > .edr-monitoring-filter-grid,:scope > .application-filter-panel';
 
   function panelFor(details) {
     if (details.matches('.toolbar-settings')) return details.querySelector(':scope > .toolbar-settings-panel');
@@ -69,7 +69,7 @@
     const details = event.target;
     if (!(details instanceof HTMLDetailsElement) || !details.matches(selector)) {
       const panel = event.target;
-      const owner = panel instanceof HTMLElement && panel.matches('.multi-panel,.advanced-filter-panel,.edr-monitoring-filter-grid,.toolbar-settings-panel')
+      const owner = panel instanceof HTMLElement && panel.matches('.multi-panel,.advanced-filter-panel,.edr-monitoring-filter-grid,.application-filter-panel,.toolbar-settings-panel')
         ? panel.parentElement?.closest(selector) : null;
       if (owner?.open && !panel.matches(':popover-open')) {
         owner.open = false;
