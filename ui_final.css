@@ -100,3 +100,79 @@ html[data-theme="dark"] #requestsView .request-quick-filters button[data-status=
 html[data-theme="dark"] #requestsView .request-quick-filters button[data-status="satisfied"]{border-left-color:#63b083}
 html[data-theme="dark"] #requestsView .request-quick-filters button[data-status="declined"]{border-left-color:#d07980}
 @media(max-width:1100px) and (min-width:951px){#requestsView .request-quick-filters button{flex-basis:44px;width:44px;min-width:44px}}
+
+/* Compact history filter controls: short officer searches leave room for remarks. */
+#historyView .history-filter-secondary{grid-template-columns:minmax(180px,1fr) minmax(90px,100px) minmax(90px,100px) minmax(150px,170px) minmax(136px,142px) minmax(136px,142px) 38px}
+#historyView .history-filter-secondary>.pqm-clear-wrap:has(>input[data-history="remarks"]){grid-column:1}
+#historyView .history-filter-secondary>input[data-history="officer"]{grid-column:2;padding:5px 6px;font-size:11px}
+#historyView .history-filter-secondary>#historyReviewOfficerFilter{grid-column:3}
+#historyView .history-filter-secondary>select[data-history="status"]{grid-column:4;width:100%;min-width:0;padding:5px 24px 5px 7px;font-size:11px}
+#historyView .history-filter-secondary>label:has(>[data-history="from"]){grid-column:5}
+#historyView .history-filter-secondary>label:has(>[data-history="to"]){grid-column:6}
+#historyView .history-filter-secondary>#historyReset{grid-column:7}
+#historyView .history-filter-secondary>.pqm-clear-wrap:has(>input[data-history="remarks"]),#historyView .history-filter-secondary>input[data-history="officer"],#historyView .history-filter-secondary>#historyReviewOfficerFilter,#historyView .history-filter-secondary>select[data-history="status"],#historyView .history-filter-secondary>label:has(>[data-history="from"]),#historyView .history-filter-secondary>label:has(>[data-history="to"]),#historyView .history-filter-secondary>#historyReset{grid-row:1}
+#historyView .history-review-officer-filter>input{padding:5px 42px 5px 6px;font-size:11px}
+#historyView .history-review-officer-summary{max-width:34px;font-size:9px}
+#historyView .history-filter-secondary>label{gap:3px;font-size:10px}
+#historyView .history-filter-secondary>label input[type="date"]{width:calc(100% - 20px);padding-inline:2px;font-size:11px}
+@media(max-width:1120px) and (min-width:761px){
+  #historyView .history-filter-secondary{grid-template-columns:repeat(4,minmax(0,1fr))}
+  #historyView .history-filter-secondary>.pqm-clear-wrap:has(>input[data-history="remarks"]){grid-column:1/-1}
+  #historyView .history-filter-secondary>input[data-history="officer"],#historyView .history-filter-secondary>#historyReviewOfficerFilter,#historyView .history-filter-secondary>select[data-history="status"],#historyView .history-filter-secondary>label:has(>[data-history="from"]),#historyView .history-filter-secondary>label:has(>[data-history="to"]),#historyView .history-filter-secondary>#historyReset{grid-column:auto;grid-row:auto}
+}
+@media(max-width:760px){
+  #historyView .history-filter-secondary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #historyView .history-filter-secondary>.pqm-clear-wrap:has(>input[data-history="remarks"]),#historyView .history-filter-secondary>input[data-history="officer"],#historyView .history-filter-secondary>#historyReviewOfficerFilter,#historyView .history-filter-secondary>select[data-history="status"],#historyView .history-filter-secondary>label:has(>[data-history="from"]),#historyView .history-filter-secondary>label:has(>[data-history="to"]),#historyView .history-filter-secondary>#historyReset{grid-row:auto}
+  #historyView .history-filter-secondary>input[data-history="officer"],#historyView .history-filter-secondary>#historyReviewOfficerFilter{grid-column:span 1}
+  #historyView .history-filter-secondary>select[data-history="status"]{grid-column:1/-1}
+  #historyView .history-filter-secondary>label:has(>[data-history="from"]),#historyView .history-filter-secondary>label:has(>[data-history="to"]){grid-column:span 1}
+  #historyView .history-filter-secondary>#historyReset{grid-column:2;justify-self:end}
+}
+
+/* EDR filters reuse the Work UO drawer pattern and its section state affordances. */
+#edrMonitoringChips.edr-monitoring-chips{display:none!important}
+#edrMonitoringAdvanced.edr-monitoring-filters{position:static;flex:none}
+#edrMonitoringAdvanced.edr-monitoring-filters>summary{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface,#fff);color:var(--ink);font:inherit;white-space:nowrap;cursor:pointer}
+#edrMonitoringAdvanced.edr-monitoring-filters[open]>summary{border-color:#5d9bd8;background:#f0f6ff}
+#edrMonitoringAdvanced.edr-monitoring-filters[open]::before{content:"";position:fixed;inset:0;z-index:1198;background:#0d1b2a66}
+html:has(#edrMonitoringAdvanced[open]){overflow:hidden}
+#edrMonitoringFilterPanel.edr-monitoring-filter-panel{position:fixed;inset:0 0 0 auto;z-index:1199;box-sizing:border-box;display:grid;grid-template-rows:auto minmax(0,1fr);width:min(430px,92vw);height:100vh;height:100dvh;max-height:none;overflow:hidden;padding:0;border:1px solid #8DB4E5;border-right:0;border-radius:12px 0 0 12px;background:#F8FBFF;color:var(--ink);box-shadow:-10px 0 32px #12243a2b}
+#edrMonitoringFilterPanel[hidden]{display:none!important}
+#edrMonitoringFilterPanel .edr-monitoring-filter-header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:58px;padding:10px 12px;border-bottom:1px solid var(--line);background:inherit}
+#edrMonitoringFilterPanel .edr-monitoring-filter-header h3{flex:0 0 auto;margin:0;font-size:16px}
+#edrMonitoringFilterPanel .edr-monitoring-filter-header>div{display:flex;align-items:center;gap:6px;min-width:0}
+#edrMonitoringFilterPanel .edr-monitoring-filter-header button{min-height:34px;padding:5px 8px;white-space:nowrap}
+#edrMonitoringFilterPanel #edrMonitoringClose{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
+#edrMonitoringFilterPanel .edr-monitoring-filter-fields{display:grid;align-content:start;gap:8px;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#5d9bd8 #e5effb;padding:12px}
+#edrMonitoringFilterPanel .edr-monitoring-filter-fields::-webkit-scrollbar{width:7px}
+#edrMonitoringFilterPanel .edr-monitoring-filter-fields::-webkit-scrollbar-track{border-radius:6px;background:#e5effb}
+#edrMonitoringFilterPanel .edr-monitoring-filter-fields::-webkit-scrollbar-thumb{border:1px solid #e5effb;border-radius:6px;background:#5d9bd8}
+#edrMonitoringFilterPanel .edr-monitoring-filter-section{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--surface,#fff)}
+#edrMonitoringFilterPanel .edr-monitoring-filter-section.filter-active{border-color:#5d9bd8;background:#f0f6ff}
+#edrMonitoringFilterPanel .edr-monitoring-filter-heading{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,auto) 26px;align-items:center;gap:7px;min-height:40px;padding:5px 7px;border-radius:7px}
+#edrMonitoringFilterPanel .filter-active .edr-monitoring-filter-heading{background:#e4efff}
+#edrMonitoringFilterPanel .edr-monitoring-filter-heading strong{min-width:0;font-size:12px}
+#edrMonitoringFilterPanel .edr-monitoring-filter-heading>[data-edr-filter-current]{max-width:160px;overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+#edrMonitoringFilterPanel .filter-active .edr-monitoring-filter-heading>[data-edr-filter-current]{color:#155c9f;font-weight:650}
+#edrMonitoringFilterPanel .edr-monitoring-filter-heading button{width:25px;height:25px;min-height:25px;padding:0;border:1px solid #6c9ad1;border-radius:50%;background:var(--surface,#fff);color:#245d99;font-size:17px;line-height:1}
+#edrMonitoringFilterPanel .edr-monitoring-filter-heading button[hidden]{display:none}
+#edrMonitoringFilterPanel .edr-monitoring-filter-control{display:grid;gap:5px;padding:0 9px 9px;color:var(--muted);font-size:10px}
+#edrMonitoringFilterPanel .edr-monitoring-filter-control>input,#edrMonitoringFilterPanel .edr-monitoring-filter-control>select{box-sizing:border-box;width:100%;min-width:0;height:35px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--surface,#fff);color:var(--ink);font:inherit;font-size:12px}
+#edrMonitoringFilterPanel .edr-monitoring-filter-control .multi-filter{min-width:0}
+#edrMonitoringFilterPanel .edr-monitoring-filter-control .multi-filter>summary{min-height:34px;padding:7px 30px 7px 8px;border:1px solid var(--line);border-radius:7px;background:var(--surface,#fff);font-size:12px}
+#edrMonitoringFilterPanel .edr-monitoring-filter-control .multi-filter[open]>.multi-panel{position:static;display:grid;width:auto;max-height:160px;overflow:auto;margin-top:5px;padding:6px;border:1px solid var(--line);border-radius:7px;background:var(--surface,#fff);box-shadow:none}
+#edrMonitoringFilterPanel .edr-monitoring-filter-control .multi-panel label{display:flex;align-items:center;gap:7px;min-width:0;padding:5px;overflow-wrap:anywhere}
+#edrMonitoringFilterPanel .edr-monitoring-filter-control .multi-panel input{flex:none;width:15px;height:15px;margin:0}
+html[data-theme="dark"] #edrMonitoringAdvanced.edr-monitoring-filters>summary{background:#132840;color:#edf3fc;border-color:#38516e}
+html[data-theme="dark"] #edrMonitoringAdvanced.edr-monitoring-filters[open]>summary{background:#203650;border-color:#6488B5}
+html[data-theme="dark"] #edrMonitoringFilterPanel.edr-monitoring-filter-panel{background:#172d45;border-color:#6488B5;color:#edf3fc;box-shadow:-10px 0 32px #0008}
+html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-fields{scrollbar-color:#6488B5 #132840}
+html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-fields::-webkit-scrollbar-track{background:#132840}
+html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-fields::-webkit-scrollbar-thumb{border-color:#132840;background:#6488B5}
+html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-section{background:#132840;border-color:#38516e}
+html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-section.filter-active{background:#203650;border-color:#6488B5}
+html[data-theme="dark"] #edrMonitoringFilterPanel .filter-active .edr-monitoring-filter-heading{background:#294765}
+html[data-theme="dark"] #edrMonitoringFilterPanel .filter-active .edr-monitoring-filter-heading>[data-edr-filter-current]{color:#b9d9ff}
+html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-heading button{background:#132840;color:#b9d9ff;border-color:#6488B5}
+html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-control>input,html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-control>select,html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-control .multi-filter>summary,html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-control .multi-filter[open]>.multi-panel{background:#132840;color:#edf3fc;border-color:#38516e}
+@media(max-width:520px){#edrMonitoringFilterPanel.edr-monitoring-filter-panel{width:100vw;border-radius:0}#edrMonitoringFilterPanel .edr-monitoring-filter-header{padding-inline:8px}#edrMonitoringFilterPanel .edr-monitoring-filter-header h3{font-size:14px}#edrMonitoringFilterPanel .edr-monitoring-filter-header button{padding-inline:6px}}
