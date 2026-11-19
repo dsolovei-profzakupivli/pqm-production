@@ -236,7 +236,11 @@
       <div class="history-filter-row history-filter-secondary">
       <input data-history="remarks" placeholder="Зауваження — пошук за фрагментом тексту" aria-label="Зауваження">
       <input data-history="officer" placeholder="УО протоколу">
-      <details id="historyReviewOfficerFilter" class="multi-filter history-review-officer-filter"><summary>Усі</summary><div class="multi-panel"><input id="historyReviewOfficerSearch" class="multi-search" type="search" placeholder="Пошук УО…" aria-label="Пошук УО розгляду"><div id="historyReviewOfficerOptions" class="multi-options"></div></div></details>
+      <div id="historyReviewOfficerFilter" class="history-review-officer-filter">
+        <input id="historyReviewOfficerSearch" type="search" autocomplete="off" placeholder="УО (розгляд)" aria-label="Пошук УО розгляду за частиною ПІБ" aria-expanded="false" aria-controls="historyReviewOfficerOptions">
+        <span id="historyReviewOfficerSummary" class="history-review-officer-summary" aria-live="polite" hidden></span>
+        <div id="historyReviewOfficerOptions" class="history-review-officer-options" role="group" aria-label="Вибір УО розгляду" hidden></div>
+      </div>
       <label>Від <input type="date" data-history="from"></label><label>До <input type="date" data-history="to"></label>
       <select data-history="status"><option value="">Усі рішення</option><option value="pending">Очікує рішення</option><option value="active">Допущено</option><option value="unsuccessful">Відхилено</option></select>
       <button type="button" id="historyReset" class="pqm-filter-reset" title="Скинути всі фільтри" aria-label="Скинути всі фільтри">×</button>
@@ -293,8 +297,8 @@
     </section>
     <section class="card edr-monitoring-toolbar">
       <div class="search-wrap"><span>⌕</span><input id="edrMonitoringSearch" placeholder="Пошук за кодом, назвою, ПІБ, текстом з примітки"></div>
-      <input id="edrMonitoringDk" list="supplierRegistryDkOptions" placeholder="Код ДК…" aria-label="Код ДК">
       <details id="edrMonitoringAdvanced" class="advanced-filters"><summary id="edrMonitoringFilterSummary">Фільтри</summary><div class="edr-monitoring-filter-grid">
+        <label>Код ДК<input id="edrMonitoringDk" list="supplierRegistryDkOptions" placeholder="Код або частина коду" aria-label="Код ДК"></label>
         <label>Тип<select id="edrMonitoringType"><option value="">Усі</option><option value="individual_entrepreneur">ФОП</option><option value="legal_entity">ЮО та інші</option><option value="foreign_legal_entity">Нерезидент</option><option value="unknown">Потребує перевірки</option></select></label>
         <div class="edr-monitoring-filter-field"><span>Статус Prozorro</span><details id="edrMonitoringProzorro" class="multi-filter"><summary>Усі</summary><div class="multi-panel"><label><input type="checkbox" value="Активний"> Активний</label><label><input type="checkbox" value="Призупинений"> Призупинений</label><label><input type="checkbox" value="Неактивний"> Неактивний</label><label><input type="checkbox" value="Ще не в реєстрі"> Ще не в реєстрі</label></div></details></div>
         <div class="edr-monitoring-filter-field"><span>Статус ЄДР</span><details id="edrMonitoringEdr" class="multi-filter"><summary>Усі</summary><div class="multi-panel"></div></details></div>

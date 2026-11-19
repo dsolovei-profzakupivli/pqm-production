@@ -7,13 +7,17 @@ function historyDateCell(value){
 let historyPage=1,historyPages=1,historyRequest=0,historyTimer,historyItems=[];
 let historySorts=[{key:'date',direction:'desc'}];
 let historyReviewOfficerNames=[],historyReviewOfficerSelection=new Set();
+let historyReviewOfficerMenuOpen=false;
 function historySupplierCode(){return document.querySelector('[data-history="code"]').value.trim()}
 function renderHistoryReviewOfficers(){
   const term=$('#historyReviewOfficerSearch').value.trim().toLocaleLowerCase('uk'),selected=historyReviewOfficerSelection;
   $('#historyReviewOfficerOptions').innerHTML=historyReviewOfficerNames.filter(name=>!term||name.toLocaleLowerCase('uk').includes(term)).map(name=>
     `<label><input type="checkbox" value="${esc(name)}" ${selected.has(name)?'checked':''}> <span>${esc(formatOfficerName(name))}</span></label>`).join('')||'<p class="muted">УО не знайдено</p>';
-  const summary=$('#historyReviewOfficerFilter summary'),values=[...selected];
-  summary.textContent=!values.length?'Усі':values.length===1?formatOfficerName(values[0]):`Вибрано: ${values.length}`;
+  const summary=$('#historyReviewOfficerSummary'),values=[...selected];
+  summary.textContent=values.length===1?formatOfficerName(values[0]):`Вибрано: ${values.length}`;
+  summary.hidden=!values.length;
+  $('#historyReviewOfficerOptions').hidden=!historyReviewOfficerMenuOpen;
+  $('#historyReviewOfficerSearch').setAttribute('aria-expanded',String(historyReviewOfficerMenuOpen));
 }
 function syncHistorySupplierCardButton(){const button=document.querySelector('#historySupplierCard'),code=historySupplierCode();button.disabled=!code;button.dataset.supplierCode=code;button.title=code?`Відкрити картку постачальника ${code}`:'Встановіть точний фільтр ЄДРПОУ / РНОКПП'}
 function drawHistorySort(){
@@ -48,8 +52,8 @@ async function loadApplicationHistory(){
 function resetHistoryReviewOfficers(){
   historyReviewOfficerSelection.clear();
   $('#historyReviewOfficerSearch').value='';
+  historyReviewOfficerMenuOpen=false;
   renderHistoryReviewOfficers();
-  $('#historyReviewOfficerFilter').open=false;
 }
 function openSupplierHistory(code){
   resetHistoryReviewOfficers();
@@ -60,12 +64,15 @@ document.querySelector('#historyHeadingActions').insertAdjacentHTML('afterbegin'
 document.querySelector('#historySupplierCard').onclick=()=>{const code=historySupplierCode();if(code)openSupplierProfile(code)};
 $('#historyNav').onclick=()=>{showModule('history');loadApplicationHistory()};
 $('#historyFilters').oninput=event=>{if(event.target.id==='historyReviewOfficerSearch')return;syncHistorySupplierCardButton();clearTimeout(historyTimer);historyTimer=setTimeout(()=>{historyPage=1;loadApplicationHistory()},300)};
-$('#historyReviewOfficerSearch').oninput=renderHistoryReviewOfficers;
-$('#historyReviewOfficerFilter').onchange=event=>{
+$('#historyReviewOfficerSearch').onfocus=()=>{historyReviewOfficerMenuOpen=true;renderHistoryReviewOfficers()};
+$('#historyReviewOfficerSearch').oninput=()=>{historyReviewOfficerMenuOpen=true;renderHistoryReviewOfficers()};
+$('#historyReviewOfficerOptions').onchange=event=>{
   const input=event.target.closest('#historyReviewOfficerOptions input[type="checkbox"]');if(!input)return;
   input.checked?historyReviewOfficerSelection.add(input.value):historyReviewOfficerSelection.delete(input.value);
   renderHistoryReviewOfficers();historyPage=1;loadApplicationHistory();
 };
+document.addEventListener('click',event=>{if(event.target.closest('#historyReviewOfficerFilter'))return;if(historyReviewOfficerMenuOpen){historyReviewOfficerMenuOpen=false;renderHistoryReviewOfficers()}});
+$('#historyReviewOfficerSearch').onkeydown=event=>{if(event.key==='Escape'){historyReviewOfficerMenuOpen=false;renderHistoryReviewOfficers()}};
 $('#historyReset').onclick=()=>{resetHistoryReviewOfficers();document.querySelectorAll('[data-history]').forEach(el=>el.value='');historyPage=1;syncHistorySupplierCardButton();loadApplicationHistory()};
 $('#historyPrev').onclick=()=>{if(historyPage>1){historyPage--;loadApplicationHistory()}};
 $('#historyNext').onclick=()=>{if(historyPage<historyPages){historyPage++;loadApplicationHistory()}};

@@ -525,21 +525,25 @@ test('shared officer formatter uses first-name then uppercase-surname and preser
 });
 
 test('history review-officer search preserves multiple selections and summarizes them',()=>{
-  const search={value:''},options={innerHTML:''},summary={textContent:''};
+  assert.match(indexSource,/<input id="historyReviewOfficerSearch"[^>]*placeholder="УО \(розгляд\)"[^>]*aria-label="Пошук УО розгляду за частиною ПІБ"/,'the visible label is compact while the accessible name explains the search');
+  const search={value:'',setAttribute(){}},options={innerHTML:'',hidden:true},summary={textContent:'',hidden:true};
   const nodes={
     '#historyReviewOfficerSearch':search,
     '#historyReviewOfficerOptions':options,
-    '#historyReviewOfficerFilter summary':summary,
+    '#historyReviewOfficerSummary':summary,
   };
   const context=vm.createContext({
     $:selector=>nodes[selector],esc:value=>String(value),formatOfficerName,
     historyReviewOfficerNames:['ДМИТРО САВВА','ОЛЕНА ЄРЬОМІНА','ТЕТЯНА ФЕДЧЕНКО'],
     historyReviewOfficerSelection:new Set(['ДМИТРО САВВА','ТЕТЯНА ФЕДЧЕНКО']),
+    historyReviewOfficerMenuOpen:true,
   });
   const render=historySource.match(/function renderHistoryReviewOfficers\(\)\{[\s\S]*?\n\}/)?.[0];
   assert.ok(render,'the test exercises the actual officer-option renderer');
   vm.runInContext(`${render};renderHistoryReviewOfficers()`,context);
   assert.equal(summary.textContent,'Вибрано: 2');
+  assert.equal(summary.hidden,false,'selected officers are summarized without cluttering the empty search field');
+  assert.equal(options.hidden,false,'the searchable options are open while focused');
   assert.match(options.innerHTML,/value="ДМИТРО САВВА" checked/);
   assert.match(options.innerHTML,/value="ТЕТЯНА ФЕДЧЕНКО" checked/);
   assert.doesNotMatch(options.innerHTML,/value="ОЛЕНА ЄРЬОМІНА" checked/);

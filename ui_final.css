@@ -43,3 +43,60 @@ html[data-pqm-environment="sandbox"] #schedulerJobs>.scheduler-job{background:#1
 dialog header[data-viewport-drag]{cursor:move;touch-action:none}
 @media(max-width:1300px){#suppliersView .supplier-toolbar-compact{flex-wrap:wrap}#schedulerJobs{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:750px){#schedulerJobs{grid-template-columns:minmax(0,1fr)}#historyFilters .history-filter-primary,#historyFilters .history-filter-secondary{grid-template-columns:repeat(2,minmax(0,1fr))}#historyFilters .history-filter-primary>.pqm-clear-wrap:has(>input[data-history="search"]),#historyFilters .history-filter-secondary>.pqm-clear-wrap:has(>input[data-history="remarks"]){grid-column:1/-1}#workQueueView .work-queue-operational-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* Compact history filters: prioritize search text while keeping both rows responsive. */
+#historyView .history-filter-primary{grid-template-columns:minmax(300px,2.7fr) minmax(148px,1.05fr) minmax(145px,1.2fr) minmax(105px,.8fr) minmax(130px,1fr) minmax(135px,1fr) minmax(135px,1fr)}
+#historyView .history-filter-secondary{grid-template-columns:minmax(245px,2.2fr) minmax(150px,1fr) minmax(165px,1.05fr) minmax(130px,.8fr) minmax(130px,.8fr) minmax(165px,1.05fr) 38px}
+#historyView .history-filter-row>label{min-width:0}
+#historyView .history-filter-row>label input[type="date"]{width:calc(100% - 22px);min-width:0;padding:5px 3px}
+#historyView .history-filter-row>.pqm-clear-wrap>input{min-width:0}
+#historyView .history-review-officer-filter{position:relative;z-index:4;display:flex;align-items:center;width:100%;min-width:0;height:34px}
+#historyView .history-review-officer-filter>input{box-sizing:border-box;width:100%;min-width:0;height:34px;padding:5px 86px 5px 8px}
+#historyView .history-review-officer-summary{position:absolute;right:6px;max-width:78px;overflow:hidden;color:var(--muted);font-size:10px;line-height:1.2;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
+#historyView .history-review-officer-options{position:absolute;top:calc(100% + 4px);left:0;z-index:10020;width:max(100%,240px);max-height:260px;overflow:auto;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--surface,#fff);box-shadow:0 8px 22px #10243a24}
+#historyView .history-review-officer-options[hidden]{display:none!important}
+#historyView .history-review-officer-options label{display:flex;align-items:center;gap:7px;min-width:0;padding:5px 6px;border-radius:5px;overflow-wrap:anywhere}
+#historyView .history-review-officer-options label:hover{background:var(--soft)}
+#historyView .history-review-officer-options input{flex:0 0 14px;width:14px;height:14px;margin:0;padding:0}
+html[data-theme="dark"] #historyView .history-review-officer-summary{color:#bdcadd}
+html[data-theme="dark"] #historyView .history-review-officer-options{background:#132840;border-color:#38516e;box-shadow:0 8px 22px #0008}
+@media(max-width:1120px){
+  #historyView .history-filter-primary,#historyView .history-filter-secondary{grid-template-columns:repeat(4,minmax(0,1fr))}
+  #historyView .history-filter-primary>:first-child,#historyView .history-filter-secondary>:first-child{grid-column:span 2}
+  #historyView .history-filter-secondary>#historyReset{grid-column:auto}
+}
+@media(max-width:760px){
+  #historyView .history-filter-primary,#historyView .history-filter-secondary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #historyView .history-filter-primary>:first-child,#historyView .history-filter-secondary>:first-child{grid-column:1/-1}
+  #historyView .history-review-officer-options{width:min(300px,calc(100vw - 48px))}
+}
+
+/* EDR monitoring keeps the DK filter in its existing advanced filter panel. */
+.edr-monitoring-kpis button{position:relative;border-left-width:4px}
+.edr-monitoring-kpis button[data-freshness="not_current"]{border-left-color:#8756b3}
+.edr-monitoring-kpis button[data-freshness="lt30"]{border-left-color:#27835a}
+.edr-monitoring-kpis button[data-freshness="gt30"]{border-left-color:#ad8300}
+.edr-monitoring-kpis button[data-freshness="gt60"]{border-left-color:#c47016}
+.edr-monitoring-kpis button[data-freshness="gt90"]{border-left-color:#b83d44}
+.edr-monitoring-kpis button[data-freshness="not_checked"]{border-left-color:#677586}
+.edr-monitoring-toolbar>#edrMonitoringAdvanced{flex:0 0 auto}
+.edr-monitoring-filter-grid>label:has(>#edrMonitoringDk){grid-column:span 1}
+.edr-monitoring-filter-grid>#edrMonitoringDk{box-sizing:border-box;width:100%;height:38px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:var(--surface,#fff)}
+html[data-theme="dark"] .edr-monitoring-filter-grid>#edrMonitoringDk{background:#132840;color:#edf3fc;border-color:#38516e}
+
+/* Colored left markers match the established organizations and status colors. */
+#requestsView .request-authority-card{border-left-width:4px;padding-left:6px}
+#requestsView .request-authority-card:nth-child(1){border-left-color:#2873ba}
+#requestsView .request-authority-card:nth-child(2){border-left-color:#2b8a61}
+#requestsView .request-authority-card:nth-child(3){border-left-color:#7860a9}
+#requestsView .request-quick-filters button{flex-basis:44px;width:44px;min-width:44px;border-left-width:4px;padding-left:2px}
+#requestsView .request-quick-filters button[data-status="pending"]{border-left-color:#c8a75b}
+#requestsView .request-quick-filters button[data-status="satisfied"]{border-left-color:#77ad8d}
+#requestsView .request-quick-filters button[data-status="declined"]{border-left-color:#E9A5A0}
+html[data-theme="dark"] #requestsView .request-authority-card:nth-child(1){border-left-color:#5795d3}
+html[data-theme="dark"] #requestsView .request-authority-card:nth-child(2){border-left-color:#5aaa82}
+html[data-theme="dark"] #requestsView .request-authority-card:nth-child(3){border-left-color:#a28bd0}
+html[data-theme="dark"] #requestsView .request-quick-filters button[data-status="pending"]{border-left-color:#c7a747}
+html[data-theme="dark"] #requestsView .request-quick-filters button[data-status="satisfied"]{border-left-color:#63b083}
+html[data-theme="dark"] #requestsView .request-quick-filters button[data-status="declined"]{border-left-color:#d07980}
+@media(max-width:1100px) and (min-width:951px){#requestsView .request-quick-filters button{flex-basis:44px;width:44px;min-width:44px}}

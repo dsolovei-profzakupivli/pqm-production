@@ -140,10 +140,13 @@ jobs:
           PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v21-snapshot.zip" \
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v21_history.py
           echo "PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v21-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          # Immutable integrated v1-v21 checks ran on their pinned snapshots above;
-          # only the current integrated overlay v22 runs against this checkout.
+          PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v22-snapshot.zip" \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v22_history.py
+          echo "PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v22-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # Immutable integrated v1-v22 checks ran on their pinned snapshots above;
+          # only the current integrated overlay v23 runs against this checkout.
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v22 \
+            test_google_writer_integrated_candidate_integrity_v23 \
             validation.local_release_20260911.test_release_test_package \
             validation.local_release_20260911.test_integrated_snapshot_staging \
             validation.local_release_20260911.test_uo_work_queue_http \
@@ -254,8 +257,11 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v19-snapshot.zip,dst=/tmp/pqm-integrated-v19-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v20-snapshot.zip,dst=/tmp/pqm-integrated-v20-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v21-snapshot.zip,dst=/tmp/pqm-integrated-v21-snapshot.zip,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v22-snapshot.zip,dst=/tmp/pqm-integrated-v22-snapshot.zip,readonly" \
             -e PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v21-snapshot.zip \
             -e PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256" \
+            -e PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v22-snapshot.zip \
+            -e PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v16-snapshot.zip \
             -e PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v17-snapshot.zip \
