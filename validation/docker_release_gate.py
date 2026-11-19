@@ -12,17 +12,30 @@ import sys
 import tempfile
 
 
-def main():
-    root = Path(__file__).resolve().parents[1]
+def isolated_test_environment(source=None):
+    """Keep the synthetic gate isolated while forwarding only pinned history archives."""
+    source = os.environ if source is None else source
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(root / "validation/test_runtime"),
+        "PYTHONPATH": str(Path(__file__).resolve().parent / "test_runtime"),
         "PQM_TEST_NETWORK_ISOLATION": "1",
         "PQM_RELEASE_SCHEMA_ONLY": "1",
         "PQM_ENABLE_NAZK_WORKFLOW": "0",
     }
+    for version in range(10, 25):
+        for suffix in ("SNAPSHOT_ARCHIVE", "SNAPSHOT_ARCHIVE_SHA256"):
+            key = f"PQM_INTEGRATED_V{version}_{suffix}"
+            value = str(source.get(key, "")).strip()
+            if value:
+                env[key] = value
+    return env
+
+
+def main():
+    root = Path(__file__).resolve().parents[1]
+    env = isolated_test_environment()
     commands = [
         [sys.executable, str(root / "validation/test_sandbox_theme.py")],
         [sys.executable, str(root / "validation/sandbox_smoke.py")],
