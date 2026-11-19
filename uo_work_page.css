@@ -150,9 +150,9 @@ html[data-theme="dark"] #workQueueView .queue-statistics-message--warning{backgr
 #workQueueView .queue-statistics-filter-fields{display:grid;align-content:start;gap:8px;min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}
 #workQueueView .queue-statistics-filter-section{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--surface,#fff)}
 #workQueueView .queue-statistics-filter-section-heading{display:flex;align-items:center;gap:8px;min-height:42px;padding:4px 7px;border-radius:7px}
-#workQueueView .queue-statistics-section-toggle{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;padding:5px 4px;border:0;background:transparent;color:var(--ink);font:inherit;font-weight:650;text-align:left}
-#workQueueView .queue-statistics-section-toggle::after{content:"⌄";margin-left:auto;color:var(--muted)}
-#workQueueView .queue-statistics-section-toggle[aria-expanded="false"]::after{content:"›"}
+#workQueueView .queue-statistics-section-toggle{position:relative;display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;padding:8px 64px 8px 10px;border:0;background:transparent;color:var(--ink);font:inherit;font-weight:650;text-align:left}
+#workQueueView .queue-statistics-section-toggle::after{content:"›";position:absolute;top:50%;right:10px;display:grid;place-items:center;width:13px;height:13px;color:var(--muted);font:20px/13px Arial,sans-serif;text-align:center;transform:translateY(-50%)}
+#workQueueView .queue-statistics-section-toggle[aria-expanded="true"]::after{content:"⌃"}
 #workQueueView .queue-statistics-section-state{font-size:10px;font-weight:500;color:var(--muted)}
 #workQueueView .queue-statistics-section-count{flex:none;font-size:10px;color:var(--muted);white-space:nowrap}
 #workQueueView .queue-statistics-section-clear{flex:none;width:26px;height:26px;min-height:26px;padding:0;border:1px solid #6c9ad1;border-radius:50%;background:var(--surface,#fff);color:#245d99;font-size:17px;line-height:1}
@@ -217,6 +217,12 @@ html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-a
 html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-active .queue-statistics-section-state{color:#9dcbff}
 html[data-theme="dark"] #workQueueView .queue-statistics-filter-section.filter-pending .queue-statistics-section-state{color:#ffd17c}
 html[data-theme="dark"] #workQueueView .queue-statistics-section-clear{background:#203650;color:#b9dcff;border-color:#6488B5}
+/* Keep the right statistics panel content-sized instead of stretching beside both left cards. */
+#workQueueView .work-queue-operational-grid{align-items:start}
+#workQueueView .queue-statistics-card{display:block;align-self:start;min-height:0;height:auto}
+#workQueueView .queue-statistics-filters{display:block;flex:none}
+#workQueueView .queue-statistics-workspace,#workQueueView .queue-statistics-results{display:block;flex:none;min-height:0}
+#workQueueView .queue-statistics-table,#workQueueView .queue-statistics-table--scroll{flex:none}
 @media(max-width:720px){
   #workQueueView .queue-statistics-workspace.is-filter-open .queue-statistics-results{width:0;visibility:hidden;overflow:hidden}
   #workQueueView .queue-statistics-filter-panel{width:min(480px,100vw);border-radius:0}
@@ -268,3 +274,27 @@ html[data-theme="dark"] #workQueueView .queue-statistics-section-clear{backgroun
 /* Keep controls visually consistent while retaining a visible keyboard focus. */
 #workQueueView :is(.protocol-period input,.queue-statistics-controls input,.queue-statistics-controls select,.queue-statistics-filter-toggle,.queue-icon-action,.queue-statistics-filter-fields select,.queue-statistics-dk-field>input[type="search"],.queue-statistics-filter-actions button){box-sizing:border-box;height:34px;min-height:34px;border-radius:7px}
 #workQueueView :is(.protocol-period input,.queue-statistics-controls input,.queue-statistics-controls select,.queue-statistics-filter-toggle,.queue-icon-action,.queue-statistics-filter-fields select,.queue-statistics-dk-field>input[type="search"],.queue-statistics-filter-actions button):focus-visible{outline:2px solid #1265d6;outline-offset:2px}
+
+/* Final compactness and approved colored edge markers. */
+#workQueueView{padding-top:14px}
+#workQueueView .queue-summary-heading{gap:6px;margin-bottom:6px}
+#workQueueView .queue-summary-heading>h2{font-size:15px}
+#workQueueView .protocol-period{gap:4px;margin-left:6px}
+#workQueueView .protocol-period input{width:108px;min-width:100px;padding-inline:4px}
+#workQueueView .qualification-summary-card h3{border:0;padding:0;background:transparent}
+#workQueueView #queueQualificationCards>.qualification-summary-officer:not(.unassigned),#workQueueView #queueProtocolOfficerCards>.qualification-summary-officer:not(.unassigned){border-left:4px solid #43a66d}
+#workQueueView #queueCategoryCards>.qualification-summary-category,#workQueueView #queueProtocolCategoryCards>.qualification-summary-category{border-left:4px solid #537fca}
+#workQueueView .queue-statistics-controls{gap:6px;align-items:center}
+#workQueueView .queue-statistics-controls>#queueStatisticsFromField,#workQueueView .queue-statistics-controls>#queueStatisticsToField{padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+#workQueueView .queue-statistics-controls input[type=date]{width:112px;min-width:104px}
+#workQueueView .queue-statistics-control-separator{display:none}
+#workQueueView .queue-statistics-kpis{margin-top:12px}
+#workQueueView .queue-statistics-kpis button,#workQueueView .publication-control-cards>button{border-left-width:4px!important}
+#workQueueView .queue-statistics-kpis button.submitted{border-left-color:#5b8bc4!important}
+#workQueueView .queue-statistics-kpis button.admitted,#workQueueView .publication-kpi--admitted{border-left-color:#4b9a70!important}
+#workQueueView .queue-statistics-kpis button.rejected,#workQueueView .publication-kpi--rejected{border-left-color:#d87972!important}
+#workQueueView .queue-statistics-kpis button.pending,#workQueueView .publication-kpi--pending{border-left-color:#c5a13b!important}
+html[data-theme="dark"] #workQueueView #queueQualificationCards>.qualification-summary-officer:not(.unassigned),html[data-theme="dark"] #workQueueView #queueProtocolOfficerCards>.qualification-summary-officer:not(.unassigned){border-left:4px solid #4c9a7d}
+html[data-theme="dark"] #workQueueView #queueCategoryCards>.qualification-summary-category,html[data-theme="dark"] #workQueueView #queueProtocolCategoryCards>.qualification-summary-category{border-left:4px solid #5a8dc1}
+@media(max-width:1300px){#workQueueView .protocol-period{margin-left:0}#workQueueView .protocol-period input{width:104px;min-width:96px}}
+@media(max-width:720px){#workQueueView .protocol-period input{width:calc(100% - 28px);min-width:0}}

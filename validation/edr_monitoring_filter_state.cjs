@@ -10,6 +10,7 @@ function source(name) {
   return line;
 }
 const controls = new Map();
+let saveFilterCalls = 0;
 function control(selector) {
   if (!controls.has(selector)) controls.set(selector, {value: '', textContent: ''});
   return controls.get(selector);
@@ -19,6 +20,7 @@ const ctx = {
   URLSearchParams, Set, API: '/api', edrMonitoringLoadSequence: 0,
   edrMonitoringPage: 1, edrMonitoringSort: 'freshness', edrMonitoringDirection: 'asc',
   edrMonitoringStatusSelections: {prozorro_status: new Set(), edr_status: new Set()},
+  saveEdrMonitoringFilters() { saveFilterCalls += 1; },
   $: control, updateEdrMonitoringFilters() { this.chipCount = this.edrMonitoringStatusSelections.edr_status.size + this.edrMonitoringStatusSelections.prozorro_status.size; },
   loadEdrMonitoring() {},
   request(url) { return new Promise((resolve, reject) => requests.push({url, resolve, reject})); },
@@ -44,6 +46,7 @@ async function main() {
   function choose(index, checked) {
     inputs[index].checked = checked;
     inputs[index].onchange();
+    assert.ok(saveFilterCalls > 0, 'each status change persists the current EDR filter state');
     assert.equal(ctx.chipCount, selected.size);
     assert.deepEqual(new Set(ctx.edrMonitoringParams().edr_status.split(',').filter(Boolean)), new Set(selected));
   }
@@ -87,6 +90,7 @@ async function main() {
   ctx.edrMonitoringSelected = new Set();
   ctx.edrFreshnessLabels = {not_checked: 'not checked'};
   ctx.esc = value => String(value ?? '');
+  ctx.displayDate = value => value || '';
   ctx.displayDateOnly = value => value || '';
   ctx.renderEdrMonitoringEdrStatuses = () => {};
   ctx.applyEdrMonitoringColumns = () => {};
@@ -103,6 +107,11 @@ async function main() {
   assert.equal(ctx.edrMonitoringTotal, 1);
   assert.match(body.innerHTML, /data-edr-code="1"/);
   assert.doesNotMatch(body.innerHTML, /data-edr-code="2"/);
+  control('#edrMonitoringNames').value = 'missing_any';
+  const namesResponse = ctx.edrMonitoringLatestResponse();
+  assert.equal(new URL(requests[5].url, 'http://localhost').searchParams.get('edr_names'), 'missing_any');
+  requests[5].resolve({items: [], total: 0});
+  await namesResponse;
   console.log('EDR multiselect state and stale-response regressions: OK');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

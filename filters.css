@@ -40,15 +40,25 @@
 }
 
 .multi-filter > summary::after {
-  content: "⌄";
+  content: "›";
   position: absolute;
-  right: 11px;
-  top: 8px;
+  right: 10px;
+  top: 50%;
+  display: grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
   color: var(--muted);
+  font: 20px/13px Arial, sans-serif;
+  transform: translateY(-50%);
 }
 
 .multi-filter[open] > summary {
   border-color: var(--blue);
+}
+
+.multi-filter[open] > summary::after {
+  content: "⌃";
 }
 
 .multi-panel {
@@ -132,8 +142,9 @@
 /* Shared compact multiselect rows: retain the existing checkbox behavior and search. */
 .multi-panel{overflow-x:hidden;overscroll-behavior:contain}
 .multi-panel .multi-options{display:grid;gap:1px;min-width:0}
-.multi-panel label{box-sizing:border-box;align-items:flex-start;gap:7px;min-height:31px;padding:5px 6px;white-space:normal;overflow-wrap:anywhere;line-height:1.25}
-.multi-panel label input[type="checkbox"]{flex:0 0 auto;margin:2px 0 0}
+.multi-panel label{box-sizing:border-box;display:grid;grid-template-columns:16px minmax(0,1fr);align-items:start;gap:7px;min-height:31px;padding:5px 6px;white-space:normal;overflow-wrap:anywhere;line-height:1.25}
+.multi-panel label:focus-within{outline:2px solid var(--blue);outline-offset:-2px;border-radius:5px}
+.multi-panel label input[type="checkbox"]{box-sizing:border-box;width:15px;height:15px;min-width:15px;max-width:15px;justify-self:center;align-self:start;margin:1px 0 0;flex:none}
 .multi-panel label span{min-width:0;overflow-wrap:anywhere;white-space:normal}
 .history-review-officer-filter{flex:0 1 170px;min-width:145px}
 .history-review-officer-filter>.multi-panel{width:min(260px,calc(100vw - 32px));max-height:min(320px,calc(100vh - 24px))}

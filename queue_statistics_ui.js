@@ -179,7 +179,9 @@
     const visible=[...new Set([...matches.slice(0,100),...values.filter(value=>dkSelection.has(value))])];
     const clipped=matches.length>100?`<span class="muted queue-statistics-dk-limit">Показано 100 із ${number(matches.length)}. Уточніть пошук.</span>`:'';
     dkOptions.innerHTML=(visible.map(value=>`<label><input type="checkbox" data-statistics-dk-option value="${esc(value)}" ${dkSelection.has(value)?'checked':''}> ${esc(value)}</label>`).join('')||'<span class="muted">Кодів ДК за цим пошуком немає</span>')+clipped;
-    dkSummary.textContent=dkSelection.size?`Чернетка: ${dkSelection.size}`:'Усі коди';
+    const draftChanged=[...dkSelection].sort().join('\0')!==[...appliedDkSelection].sort().join('\0');
+    dkSummary.textContent=draftChanged?(dkSelection.size?`Чернетка: ${dkSelection.size}`:'Усі коди'):appliedDkSelection.size?String(appliedDkSelection.size):'Усі коди';
+    dkSummary.title=dkSelection.size?`Чернетка: ${dkSelection.size} кодів ДК`:'Усі коди ДК';
   }
 
   function renderFilterPresentation() {
@@ -199,11 +201,9 @@
       section.classList.toggle('filter-active',active);
       section.classList.toggle('filter-pending',draftChanged);
       const state=section.querySelector('.queue-statistics-section-state');
-      if(state)state.textContent=draftChanged?'Зміни не застосовано':active?'Застосовано':'';
+      if(state)state.textContent=draftChanged?(key==='dk_code'&&active?`Чернетка: ${dkSelection.size}`:'Зміни не застосовано'):active?'Застосовано':'';
       const count=section.querySelector('.queue-statistics-section-count');
-      if(count)count.textContent=active?(key==='dk_code'?`${appliedDkSelection.size} вибрано`:'1 вибрано')
-        :key==='dk_code'?(dkSelection.size?`Чернетка: ${dkSelection.size}`:'Усі коди')
-        :drafts[key]?`Чернетка`:'Усі';
+      if(count)count.textContent=active?String(key==='dk_code'?appliedDkSelection.size:1):key==='dk_code'&&dkSelection.size?`Чернетка: ${dkSelection.size}`:'';
       const clear=section.querySelector('[data-statistics-filter-reset]');
       if(clear)clear.hidden=!active;
       filtersPending=filtersPending||draftChanged;
@@ -277,6 +277,7 @@
   }
 
   function setFilterPanelOpen(open) {
+    if(open)window.PqmFilterAccordion?.collapseAll(filterPanel);
     filterPanel.hidden=!open;
     filterToggle.setAttribute('aria-expanded',String(open));
     filterToggle.title=open?'Закрити фільтри':'Відкрити фільтри';
@@ -411,14 +412,6 @@
       if(key==='dk_code'){appliedDkSelection.clear();dkSelection.clear();dkSearch.value='';}
       else{delete appliedSelection[key];const control=controls.find(item=>item.dataset.statisticsFilter===key);if(control)control.value='';}
       loadStatistics();renderFilterPresentation();return;
-    }
-    const toggle=event.target.closest('.queue-statistics-section-toggle');
-    if(toggle){
-      const section=toggle.closest('.queue-statistics-filter-section');
-      const content=section?.querySelector('.queue-statistics-filter-section-content');
-      const open=toggle.getAttribute('aria-expanded')!=='true';
-      toggle.setAttribute('aria-expanded',String(open));
-      if(content)content.hidden=!open;
     }
   };
   dkSearch.addEventListener('input',()=>renderDkOptions());

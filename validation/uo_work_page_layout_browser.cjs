@@ -58,9 +58,10 @@ async function makePage(browser,theme='light',width=1920,height=1080){
     document.querySelector('[data-statistics-filter="protocol_officer"]').innerHTML='<option value="">Усі</option><option>Олена ЄРЬОМІНА</option>';
     document.querySelector('#queueStatisticsDkOptions').innerHTML=['02100000-6','03000000-1','45000000-7'].map((value,index)=>`<label><input type="checkbox" ${index<2?'checked':''}> ${value}</label>`).join('');
     const filterSections=Object.fromEntries([...document.querySelectorAll('[data-statistics-filter-section]')].map(section=>[section.dataset.statisticsFilterSection,section]));
-    for(const key of ['supplier_type','dk_code']){const section=filterSections[key];section.classList.add('filter-active');section.querySelector('.queue-statistics-section-state').textContent='Застосовано';section.querySelector('.queue-statistics-section-count').textContent=key==='dk_code'?'2 вибрано':'1 вибрано';section.querySelector('[data-statistics-filter-reset]').hidden=false;}
-    const draftSection=filterSections.category;draftSection.classList.add('filter-pending');draftSection.querySelector('.queue-statistics-section-state').textContent='Зміни не застосовано';draftSection.querySelector('.queue-statistics-section-count').textContent='Чернетка';
+    for(const key of ['supplier_type','dk_code']){const section=filterSections[key];section.classList.add('filter-active');section.querySelector('.queue-statistics-section-state').textContent='';section.querySelector('.queue-statistics-section-count').textContent=key==='dk_code'?'2':'1';section.querySelector('[data-statistics-filter-reset]').hidden=false;}
+    const draftSection=filterSections.category;draftSection.classList.add('filter-pending');draftSection.querySelector('.queue-statistics-section-state').textContent='Не застосовано';draftSection.querySelector('.queue-statistics-section-count').textContent='';
   },{theme,officers});
+  await page.addScriptTag({path:path.join(ROOT,'filter_panels_ui.js')});
   return page;
 }
 
@@ -84,14 +85,16 @@ async function makeAuxPage(browser,theme,viewId,width,height){
     if(viewId==='requestsView'){
       document.querySelector('#requestAuthorityCards').innerHTML=['Профзакупівлі','МЗУ','УСС'].map((name,index)=>`<button class="request-authority-card"><span>${name}</span><strong>${index+2}</strong></button>`).join('');
       document.querySelector('#requestsPending').textContent='12';document.querySelector('#requestsSatisfied').textContent='18';document.querySelector('#requestsDeclined').textContent='3';
+      document.querySelectorAll('#requestQuickFilters [data-status]').forEach(button=>button.setAttribute('aria-label',`${button.title}: ${button.querySelector('strong').textContent}`));
     }
   },{theme,viewId});
+  await page.addScriptTag({path:path.join(ROOT,'filter_panels_ui.js')});
   return page;
 }
 
 (async()=>{
   fs.mkdirSync(OUT,{recursive:true});
-  const browser=await chromium.launch({headless:true,executablePath:process.env.PQM_CHROMIUM_EXECUTABLE||undefined});
+  const browser=await chromium.launch({headless:true,ignoreDefaultArgs:['--hide-scrollbars'],executablePath:process.env.PQM_CHROMIUM_EXECUTABLE||undefined});
   try{
     const evidence=[];
     for(const theme of ['light','dark']){
@@ -107,9 +110,11 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       assert.ok(layout.current.y-layout.protocol.bottom<24,'left summaries keep a compact vertical gap');
       assert.ok(layout.statistics.x>=layout.left.right-2,'statistics occupies the separate right column');
       assert.ok(Math.abs(layout.statistics.y-layout.grid.y)<2,'statistics aligns to the top of the operational grid');
-      assert.equal(layout.statsAlign,'stretch','statistics shares the two-block left column height');
-      assert.ok(Math.abs(layout.statistics.bottom-layout.left.bottom)<3,`statistics bottom aligns with the stacked left blocks: ${JSON.stringify(layout)}`);
+      assert.equal(layout.statsAlign,'start','statistics remains sized to its own content');
+      assert.ok(layout.statistics.height<layout.left.height&&layout.statistics.bottom<layout.left.bottom,`statistics stays content-sized instead of being stretched to match both left blocks: ${JSON.stringify(layout)}`);
       assert.ok(layout.left.width/layout.statistics.width>0.74&&layout.left.width/layout.statistics.width<0.9,`wide layout keeps approximately 45/55 columns: ${JSON.stringify(layout)}`);
+      const leftMarkers=await page.evaluate(()=>['#queueProtocolCategoryCards>.qualification-summary-category','#queueCategoryCards>.qualification-summary-category','#queueProtocolOfficerCards>.protocol-officer-card:not([data-protocol-officer="Не призначено"])','#queueQualificationCards>.qualification-summary-officer','#queueStatisticsKpis button','#queuePublicationControl button'].map(selector=>{const node=document.querySelector(selector);return{selector,color:getComputedStyle(node).borderLeftColor,width:getComputedStyle(node).borderLeftWidth}}));
+      assert.ok(leftMarkers.every(item=>item.width==='4px'&&item.color!=='rgba(0, 0, 0, 0)'),`work dashboard keeps its approved colored left markers: ${JSON.stringify(leftMarkers)}`);
       const protocolHeader=await page.evaluate(()=>{
         const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{left:r.left,right:r.right};};
         return{title:rect('.queue-protocol-summary h2'),period:rect('.queue-protocol-summary .protocol-period'),total:rect('#queueProtocolTotal'),card:rect('.queue-protocol-summary')};
@@ -117,17 +122,18 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       assert.ok(protocolHeader.period.left>=protocolHeader.title.right+8,'protocol dates and search sit slightly to the right of the title');
       assert.ok(protocolHeader.card.right-protocolHeader.total.right<20,'protocol total stays close to the card right edge');
       for(const selector of ['#queueProtocolCategoryCards>.qualification-summary-category','#queueCategoryCards>.qualification-summary-category']){
-        const positions=await page.locator(selector).evaluateAll(nodes=>nodes.map(node=>({name:node.textContent.trim(),top:node.getBoundingClientRect().top,left:node.getBoundingClientRect().left,width:node.getBoundingClientRect().width,background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,borderWidth:getComputedStyle(node).borderLeftWidth})));
+        const positions=await page.locator(selector).evaluateAll(nodes=>nodes.map(node=>({name:node.textContent.trim(),top:node.getBoundingClientRect().top,left:node.getBoundingClientRect().left,width:node.getBoundingClientRect().width,background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,borderWidth:getComputedStyle(node).borderLeftWidth,topBorderWidth:getComputedStyle(node).borderTopWidth})));
         assert.equal(positions.length,5,`${selector} renders all five categories`);
         assert.ok(positions.every(item=>Math.abs(item.top-positions[0].top)<2),`${selector} keeps all five categories on one row: ${JSON.stringify(positions)}`);
-        assert.ok(positions.every(item=>item.width>0&&item.borderWidth==='1px'),`${selector} cards have compact widths and thin outlines`);
+        assert.ok(positions.every(item=>item.width>0&&item.borderWidth==='4px'&&item.topBorderWidth==='1px'),`${selector} cards have compact widths, a thin colored marker and a thin outline`);
         if(theme==='light')assert.ok(positions.every(item=>item.background==='rgb(238, 243, 255)'&&item.border==='rgb(134, 168, 223)'),`${selector} uses the approved light-blue category palette: ${JSON.stringify(positions)}`);
         else assert.ok(positions.every(item=>item.background==='rgb(28, 53, 81)'&&item.border==='rgb(75, 121, 168)'),`${selector} keeps dark-blue fills with blue outlines: ${JSON.stringify(positions)}`);
       }
-      const officerPalette=await page.locator('#queueProtocolOfficerCards>.protocol-officer-card:not([data-protocol-officer="Не призначено"])').first().evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,borderWidth:getComputedStyle(node).borderLeftWidth}));
-      assert.equal(officerPalette.borderWidth,'1px','officer cards use a thin outline');
-      if(theme==='light')assert.deepEqual(officerPalette,{background:'rgb(237, 246, 232)',border:'rgb(141, 182, 122)',borderWidth:'1px'},'light officer cards use the approved green palette');
-      else assert.deepEqual(officerPalette,{background:'rgb(23, 62, 56)',border:'rgb(63, 123, 104)',borderWidth:'1px'},'dark officer cards retain green fills with green outlines');
+      const officerPalette=await page.locator('#queueProtocolOfficerCards>.protocol-officer-card:not([data-protocol-officer="Не призначено"])').first().evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor,borderWidth:getComputedStyle(node).borderLeftWidth,topBorderWidth:getComputedStyle(node).borderTopWidth}));
+      assert.equal(officerPalette.borderWidth,'4px','officer cards have a slim colored marker');
+      assert.equal(officerPalette.topBorderWidth,'1px','officer cards keep a thin outline');
+      if(theme==='light')assert.deepEqual(officerPalette,{background:'rgb(237, 246, 232)',border:'rgb(141, 182, 122)',borderWidth:'4px',topBorderWidth:'1px'},'light officer cards use the approved green palette');
+      else assert.deepEqual(officerPalette,{background:'rgb(23, 62, 56)',border:'rgb(63, 123, 104)',borderWidth:'4px',topBorderWidth:'1px'},'dark officer cards retain green fills with green outlines');
       const officerRows=await page.evaluate(()=>{
         const positions=selector=>[...document.querySelectorAll(selector)].map(node=>({top:node.getBoundingClientRect().top,right:node.getBoundingClientRect().right}));
         const protocol=positions('#queueProtocolOfficerCards>.protocol-officer-card'),current=positions('#queueQualificationCards>.qualification-summary-officer'),container=document.querySelector('#queueQualificationCards').getBoundingClientRect();
@@ -151,7 +157,8 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       const toolbar=await page.locator('.queue-statistics-controls').evaluate(el=>[...el.children].map(node=>({id:node.id||node.querySelector('input,select')?.id||node.getAttribute('data-statistics-filter')||node.textContent.trim().slice(0,16),left:node.getBoundingClientRect().left,top:node.getBoundingClientRect().top,right:node.getBoundingClientRect().right})));
       assert.equal(toolbar.length,7,'statistics toolbar contains dates, apply, reset, separator, grouping and filters');
       assert.ok(toolbar.filter(item=>item.id).every(item=>Math.abs(item.top-toolbar[0].top)<2),`all toolbar controls share one row at wide width: ${JSON.stringify(toolbar)}`);
-      assert.ok(toolbar.every((item,index)=>index===0||item.left>=toolbar[index-1].right-1),`toolbar controls keep the requested order: ${JSON.stringify(toolbar)}`);
+      const visibleToolbar=toolbar.filter(item=>item.right>item.left);
+      assert.ok(visibleToolbar.every((item,index)=>index===0||item.left>=visibleToolbar[index-1].right-1),`visible toolbar controls keep the requested order while the separator occupies no space: ${JSON.stringify(toolbar)}`);
       const typeOptions=await page.locator('[data-statistics-filter="supplier_type"] option').evaluateAll(nodes=>nodes.map(option=>[option.value,option.textContent.trim()]));
       assert.deepEqual(typeOptions,[['','Усі'],['individual_entrepreneur','ФОП'],['legal_entity','ЮО та інші'],['foreign_legal_entity','Нерезидент'],['unknown','Потребує перевірки']]);
       const firstFilterLabel=await page.locator('.queue-statistics-filter-section-heading').first().textContent();
@@ -190,8 +197,20 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       await page.screenshot({path:screenshot,fullPage:true});evidence.push(screenshot);
       const workspace=page.locator('#queueStatisticsWorkspace'),panel=page.locator('#queueStatisticsFilterPanel');
       await panel.evaluate(node=>node.hidden=false);
-      const filterControlHeights=await page.locator('.queue-statistics-filter-fields select,#queueStatisticsDkSearch,#queueStatisticsFilterApply,#queueStatisticsFilterClear').evaluateAll(nodes=>nodes.map(node=>({id:node.id||node.dataset.statisticsFilter||node.textContent.trim(),height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
-      assert.ok(filterControlHeights.every(control=>control.height>=34&&control.height<=40&&control.borderRadius==='7px'),`filter panel controls use the same compact size: ${JSON.stringify(filterControlHeights)}`);
+      assert.equal(await page.locator('.queue-statistics-section-toggle[aria-expanded="false"]').count(),5,'all statistics filter rows start collapsed');
+      assert.equal(await page.locator('.queue-statistics-filter-section-content[hidden]').count(),5,'all statistics filter controls start hidden');
+      const filterControlHeights=await page.locator('.queue-statistics-filter-header-actions button').evaluateAll(nodes=>nodes.map(node=>({id:node.id,height:node.getBoundingClientRect().height,width:node.getBoundingClientRect().width,borderRadius:getComputedStyle(node).borderRadius})));
+      assert.ok(filterControlHeights.every(control=>control.height===36&&control.width===36&&control.borderRadius==='7px'),`filter panel icon actions use the same compact size: ${JSON.stringify(filterControlHeights)}`);
+      const expandedHeights=[];
+      for(const key of ['supplier_type','category','dk_code','review_officer','protocol_officer']){
+        await page.locator(`[data-statistics-filter-section="${key}"] .queue-statistics-section-toggle`).click();
+        const heights=await page.locator(`[data-statistics-filter-section="${key}"] .queue-statistics-filter-section-content select,[data-statistics-filter-section="${key}"] .queue-statistics-filter-section-content input:not([type="checkbox"])`).evaluateAll(nodes=>nodes.map(node=>({id:node.id||node.dataset.statisticsFilter,height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
+        expandedHeights.push(...heights);
+      }
+      assert.ok(expandedHeights.length>=5&&expandedHeights.every(control=>control.height>=32&&control.height<=40&&control.borderRadius==='7px'),`expanded filters keep compact controls: ${JSON.stringify(expandedHeights)}`);
+      assert.equal(await page.locator('.queue-statistics-section-toggle[aria-expanded="true"]').count(),1,'opening a row collapses the previously open filter');
+      await page.locator('[data-statistics-filter-section="dk_code"] .queue-statistics-section-toggle').click();
+      assert.deepEqual(await page.locator('[data-statistics-filter-section="dk_code"] .queue-statistics-section-toggle').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'10px'},'expanded statistics filter points upward at the shared right inset');
       const dkSearchLayout=await page.evaluate(()=>{
         const heading=document.querySelector('.queue-statistics-dk-heading'),input=document.querySelector('#queueStatisticsDkSearch'),clear=document.querySelector('#queueStatisticsDkClear');
         const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width};};
@@ -200,6 +219,12 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       assert.ok(dkSearchLayout.input.width>=dkSearchLayout.heading.width-2,`DK search spans the available field width: ${JSON.stringify(dkSearchLayout)}`);
       assert.ok(dkSearchLayout.clear.top>=dkSearchLayout.input.bottom,`DK clear button has its own row below the search field: ${JSON.stringify(dkSearchLayout)}`);
       assert.equal(dkSearchLayout.accessibleName,'Пошук коду ДК');
+      const dkCheckbox=await page.locator('#queueStatisticsDkOptions label').first().evaluate(label=>{const input=label.querySelector('input[type="checkbox"]'),textNode=[...label.childNodes].find(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim()),range=document.createRange();range.selectNode(textNode);const text=range.getClientRects()[0],box=input.getBoundingClientRect();return{display:getComputedStyle(label).display,input:{left:box.left,right:box.right,top:box.top,width:box.width,height:box.height},text:{left:text.left,top:text.top,height:text.height},gap:text.left-box.right,centerDelta:Math.abs((box.top+box.height/2)-(text.top+text.height/2))}});
+      assert.ok(dkCheckbox.display==='flex'&&dkCheckbox.input.width===15&&dkCheckbox.input.height===15&&dkCheckbox.gap>=4&&dkCheckbox.gap<=10&&dkCheckbox.centerDelta<=3,`statistics DK checkbox remains immediately left of its first-line label: ${JSON.stringify(dkCheckbox)}`);
+      const dkToggle=page.locator('#queueStatisticsDkOptions label').first(),wasChecked=await dkToggle.locator('input').isChecked(),labelBox=await dkToggle.evaluate(label=>{const textNode=[...label.childNodes].find(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim()),range=document.createRange();range.selectNode(textNode);const r=range.getClientRects()[0],outer=label.getBoundingClientRect();return{x:r.left-outer.left+r.width/2,y:r.top-outer.top+r.height/2}});
+      await dkToggle.click({position:labelBox});
+      assert.equal(await dkToggle.locator('input').isChecked(),!wasChecked,'clicking the DK option text toggles its checkbox');
+      await dkToggle.click({position:labelBox});
       await workspace.evaluate(node=>node.classList.add('is-filter-open'));
       const panelLayout=await page.evaluate(()=>{
         const card=document.querySelector('.queue-statistics-card'),work=document.querySelector('#queueStatisticsWorkspace'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel');
@@ -219,18 +244,87 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       await page.screenshot({path:panelShot,fullPage:true});evidence.push(panelShot);
       await page.close();
     }
-    for(const theme of ['light','dark']){
-      const page=await makeAuxPage(browser,theme,'historyView',1920,1080);
+    for(const theme of ['light','dark'])for(const width of [1920,1280,1120,800,520,360]){
+      const page=await makeAuxPage(browser,theme,'historyView',width,1080);
       const historyRows=await page.evaluate(()=>['.history-filter-primary','.history-filter-secondary'].map(selector=>{
         const row=document.querySelector(selector),children=[...row.children],tops=children.map(node=>Math.round(node.getBoundingClientRect().top));
         return{selector,count:children.length,tops:[...new Set(tops)],width:row.clientWidth,scroll:row.scrollWidth,fields:children.map(node=>({field:node.querySelector('[data-history]')?.dataset.history||node.dataset.history||node.id||node.className,rect:(r=>({x:r.x,y:r.y,width:r.width,right:r.right}))(node.getBoundingClientRect())}))};
       }));
       assert.equal(historyRows[0].count,7,'history search row retains all seven agreed fields');
       assert.equal(historyRows[1].count,7,'history status row retains all seven agreed fields');
-      assert.ok(historyRows.every(row=>Math.max(...row.tops)-Math.min(...row.tops)<=2&&row.scroll<=row.width+1),`history filters remain on two rows after search-clear wrappers are installed: ${JSON.stringify(historyRows)}`);
-      const review=await page.locator('#historyReviewOfficerFilter').evaluate(node=>({width:node.getBoundingClientRect().width,summary:node.querySelector('summary').getBoundingClientRect().height,search:node.querySelector('input').getBoundingClientRect().height}));
-      assert.ok(review.width>=140&&review.summary===34&&review.search>=30,'searchable review-officer filter remains usable and compact');
-      const historyShot=path.join(OUT,`application-history-${theme}-wide.png`);await page.screenshot({path:historyShot,fullPage:true});evidence.push(historyShot);
+      const allowedResponsiveRows=width>1120?1:width>760?3:4;
+      assert.ok(historyRows.every(row=>row.tops.length<=allowedResponsiveRows+1&&row.scroll<=row.width+1),`history filters wrap without overlap or horizontal overflow after search-clear wrappers are installed: ${JSON.stringify(historyRows)}`);
+      const controls=await page.evaluate(()=>{
+        const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{x:r.x,right:r.right,width:r.width,height:r.height}};
+        return{protocol:rect('[data-history="officer"]'),review:rect('#historyReviewOfficerSearch'),remarks:rect('[data-history="remarks"]'),status:rect('[data-history="status"]'),from:rect('[data-history="from"]'),to:rect('[data-history="to"]'),reset:rect('#historyReset'),viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,optionsHidden:document.querySelector('#historyReviewOfficerOptions').hidden};
+      });
+      if(width>1120){
+        assert.ok(controls.protocol.width>=88&&controls.protocol.width<=112&&controls.review.width>=88&&controls.review.width<=112,`officer search fields stay 90–110px wide at ${width}px: ${JSON.stringify(controls)}`);
+        assert.ok(controls.status.width<=180&&controls.status.width>=145,`status selector remains compact but fits its longest option: ${JSON.stringify(controls)}`);
+        assert.ok(controls.from.x>controls.status.x&&controls.to.x>controls.from.x,`date filters sit to the right of the decision selector: ${JSON.stringify(controls)}`);
+      }
+      assert.ok(controls.remarks.width>=Math.min(180,controls.viewport*.3),`remarks gets the released width: ${JSON.stringify(controls)}`);
+      assert.ok(controls.reset.right<=controls.viewport+1&&controls.reset.width>=34,`clear button remains visible at the right edge: ${JSON.stringify(controls)}`);
+      if(width>1120)assert.ok(controls.reset.x>=controls.to.x,`clear button remains after the date fields on wide screens: ${JSON.stringify(controls)}`);
+      assert.ok(controls.scroll<=controls.viewport+1&&controls.optionsHidden,'history filters avoid horizontal page overflow and keep the officer list initially closed');
+      if(width===1920){const historyShot=path.join(OUT,`application-history-${theme}-wide.png`);await page.screenshot({path:historyShot,fullPage:true});evidence.push(historyShot);}
+      await page.close();
+    }
+    for(const theme of ['light','dark'])for(const width of [1920,1024,700,480,360]){
+      const page=await makeAuxPage(browser,theme,'edrMonitoringView',width,1000);
+      const edr=await page.evaluate(()=>{
+        const code=document.querySelector('#edrMonitoringDk'),panel=document.querySelector('#edrMonitoringAdvanced');
+        const kpis=[...document.querySelectorAll('#edrMonitoringKpis button')];
+        const colors=kpis.map(node=>({key:node.dataset.freshness,color:getComputedStyle(node).borderLeftColor,width:getComputedStyle(node).borderLeftWidth}));
+        return{viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,insidePanel:code.closest('#edrMonitoringFilterPanel')===document.querySelector('#edrMonitoringFilterPanel'),mainRowHasCode:!!document.querySelector('.edr-monitoring-toolbar>#edrMonitoringDk'),chipsVisible:getComputedStyle(document.querySelector('#edrMonitoringChips')).display!=='none',sectionCount:document.querySelectorAll('#edrMonitoringFilterPanel [data-edr-filter-section]').length,colors};
+      });
+      assert.equal(edr.insidePanel,true,'DK filter stays inside the existing filters panel');
+      assert.equal(edr.mainRowHasCode,false,'the DK filter no longer takes space in the main toolbar');
+      assert.equal(edr.chipsVisible,false,'no separate active-filter chips row is shown');
+      assert.equal(edr.sectionCount,12,'all existing EDR filter dimensions have individual sections');
+      assert.equal(edr.colors.length,6,'all six freshness KPIs remain available');
+      assert.ok(edr.colors.every(item=>item.width==='4px'&&item.color!=='rgba(0, 0, 0, 0)'),`freshness KPIs have colored left markers in ${theme} theme: ${JSON.stringify(edr.colors)}`);
+      assert.ok(edr.scroll<=edr.viewport+2,`EDR screen has no page-level horizontal overflow at ${width}px`);
+      if(width===1920){
+        await page.locator('#edrMonitoringFilterSummary').click();
+        assert.equal(await page.locator('#edrMonitoringAdvanced').evaluate(node=>node.open),true,'the toolbar control opens the native drawer');
+        assert.equal(await page.locator('#edrMonitoringFilterPanel .filter-accordion-toggle[aria-expanded="false"]').count(),12,'all EDR filter sections start collapsed');
+        const compactRows=await page.locator('#edrMonitoringFilterPanel').evaluate(panel=>({gap:getComputedStyle(panel.querySelector('.edr-monitoring-filter-fields')).rowGap,rows:[...panel.querySelectorAll('.edr-monitoring-filter-section')].map(section=>{const toggle=section.querySelector('.filter-accordion-toggle'),icon=getComputedStyle(toggle,'::after');return{section:section.getBoundingClientRect().height,toggle:toggle.getBoundingClientRect().height,icon:{content:icon.content,right:icon.right}}})}));
+        assert.equal(compactRows.gap,'7px','EDR uses the same compact section gap as the application registry drawer');
+        assert.ok(compactRows.rows.every(row=>Math.abs(row.toggle-42)<1&&Math.abs(row.section-44)<1&&row.icon.content==='"›"'&&row.icon.right==='10px'),`EDR collapsed rows match registry height and arrow placement: ${JSON.stringify(compactRows.rows)}`);
+        assert.deepEqual(await page.locator('#edrMonitoringType').evaluate(node=>({labels:node.labels.length,labelText:node.labels[0]?.querySelector('span')?.textContent.trim(),captionClass:node.labels[0]?.querySelector('span')?.classList.contains('filter-field-caption')})),{labels:1,labelText:'Виберіть тип',captionClass:true},'the redundant EDR prompt remains the control label for assistive technology');
+        await page.locator('[data-edr-filter-section="dk_code"] .filter-accordion-toggle').click();
+        assert.deepEqual(await page.locator('[data-edr-filter-section="dk_code"] .filter-accordion-toggle').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'10px'},'expanded EDR filter points upward at the shared right inset');
+        const dkWidth=await page.locator('#edrMonitoringDk').evaluate(node=>node.getBoundingClientRect().width);
+        assert.ok(dkWidth>=250,'expanded DK search uses the full panel width');
+        await page.locator('[data-edr-filter-section="entity_type"] .filter-accordion-toggle').click();
+        await page.locator('#edrMonitoringType').selectOption('individual_entrepreneur');
+        await page.locator('[data-edr-filter-section="entity_type"][data-edr-filter-section] [data-edr-filter-count]').evaluate(node=>{node.textContent='1';node.hidden=false;node.closest('[data-edr-filter-section]').classList.add('filter-active')});
+        await page.locator('[data-edr-filter-section="entity_type"] [data-edr-filter-clear]').evaluate(node=>node.hidden=false);
+        await page.locator('#edrMonitoringFilterSummary').evaluate(node=>node.textContent='Фільтри · 1');
+        const edrToggleStyles=await page.locator('#edrMonitoringFilterPanel .filter-accordion-toggle').evaluateAll(nodes=>nodes.map(node=>({width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height,radius:getComputedStyle(node).borderRadius,border:getComputedStyle(node).borderWidth})));
+        assert.ok(edrToggleStyles.every(item=>item.width>=300&&Math.abs(item.height-42)<1&&item.radius==='7px'&&item.border==='0px'),`EDR accordion headings use full-width compact rows rather than inherited circular button styles: ${JSON.stringify(edrToggleStyles)}`);
+        const drawer=await page.locator('#edrMonitoringFilterPanel').evaluate(node=>{const r=node.getBoundingClientRect();return{x:r.x,right:r.right,width:r.width,height:r.height,position:getComputedStyle(node).position,header:node.querySelector('.edr-monitoring-filter-header').getBoundingClientRect().height,scroll:node.querySelector('.edr-monitoring-filter-fields').scrollHeight,client:node.querySelector('.edr-monitoring-filter-fields').clientHeight,apply:!!node.querySelector('#edrMonitoringApply'),clear:!!node.querySelector('#edrMonitoringReset'),close:!!node.querySelector('#edrMonitoringClose')}});
+        assert.ok(drawer.position==='fixed'&&drawer.x>=0&&drawer.right<=edr.viewport+1&&drawer.height>=999&&drawer.width<=430,`drawer stays at the browser edge and fills the viewport: ${JSON.stringify(drawer)}`);
+        assert.ok(dkWidth>=250&&drawer.header>=50&&drawer.apply&&drawer.clear&&drawer.close,'drawer retains a readable DK control and top-level actions');
+        const shot=path.join(OUT,`edr-monitoring-${theme}-filters-open.png`);await page.screenshot({path:shot,fullPage:true});evidence.push(shot);
+      }
+      await page.close();
+    }
+    for(const theme of ['light','dark']){
+      const page=await makeAuxPage(browser,theme,'edrMonitoringView',390,420);
+      await page.locator('#edrMonitoringFilterSummary').click();
+      const before=await page.evaluate(()=>{const panel=document.querySelector('#edrMonitoringFilterPanel'),fields=panel.querySelector('.edr-monitoring-filter-fields'),header=panel.querySelector('.edr-monitoring-filter-header'),rect=node=>{const r=node.getBoundingClientRect();return{top:r.top,bottom:r.bottom,height:r.height}};return{panel:rect(panel),header:rect(header),fields:{scrollHeight:fields.scrollHeight,clientHeight:fields.clientHeight,overflow:getComputedStyle(fields).overflowY,scrollbarWidth:getComputedStyle(fields).scrollbarWidth,scrollbarColor:getComputedStyle(fields).scrollbarColor},rootOverflow:getComputedStyle(document.documentElement).overflow,lastSection:panel.querySelector('[data-edr-filter-section="application_to"]').getBoundingClientRect().bottom,viewport:innerHeight,scrollY}});
+      assert.ok(before.fields.scrollHeight>before.fields.clientHeight&&before.fields.overflow==='auto',`short viewport scrolls the filter content internally in ${theme}: ${JSON.stringify(before)}`);
+      assert.equal(before.rootOverflow,'hidden','opening the drawer prevents page scrolling underneath it');
+      assert.ok(before.fields.scrollbarWidth==='thin'&&before.fields.scrollbarColor!=='auto',`filter scrollbar has a visible theme-aware track and thumb in ${theme}: ${JSON.stringify(before.fields)}`);
+      assert.ok(before.lastSection>before.viewport,'last filters extend below the short viewport before scrolling');
+      await page.locator('.edr-monitoring-filter-fields').evaluate(node=>node.scrollTop=node.scrollHeight);
+      const after=await page.evaluate(()=>{const panel=document.querySelector('#edrMonitoringFilterPanel'),fields=panel.querySelector('.edr-monitoring-filter-fields'),header=panel.querySelector('.edr-monitoring-filter-header');return{scrollTop:fields.scrollTop,headerTop:header.getBoundingClientRect().top,headerBottom:header.getBoundingClientRect().bottom,lastSectionBottom:panel.querySelector('[data-edr-filter-section="application_to"]').getBoundingClientRect().bottom,scrollY};});
+      assert.ok(after.scrollTop>0&&after.lastSectionBottom<=before.viewport,`last filter becomes reachable by scrolling inside the drawer in ${theme}: ${JSON.stringify(after)}`);
+      assert.ok(Math.abs(after.headerTop-before.header.top)<1&&Math.abs(after.headerBottom-before.header.bottom)<1,`drawer title and actions stay pinned while filters scroll in ${theme}: ${JSON.stringify({before:before.header,after})}`);
+      assert.equal(after.scrollY,before.scrollY,'scrolling the filter drawer does not scroll the page underneath');
+      const shot=path.join(OUT,`edr-monitoring-${theme}-filters-short-viewport.png`);await page.screenshot({path:shot,fullPage:false});evidence.push(shot);
       await page.close();
     }
     for(const theme of ['light','dark'])for(const width of [1920,1536,1366,1280,1024,900]){
@@ -311,6 +405,6 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       else assert.equal(layout.panelVisibility,'hidden',`table is hidden while the full-screen drawer is open at ${width}px`);
       await page.close();
     }
-    console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','history filters: two rows with clear wrappers, light/dark','requests: three organization cards plus three status counters in one row at 1920/1536/1366/1280/1024, adaptive 900px, light/dark','3 rows','5 rows','8 rows','80%','100%','125%','150%'],screenshots:evidence},null,2));
+    console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','history officer fields 90–110px, compact decisions, dates right of status, flexible remarks: 1920/1280/1120/800/520/360px light/dark','EDR full-height right drawer, 12 sections, top actions, no chip row, DK filter and six freshness KPI markers: 1920/1024/700/480/360px light/dark','requests: three organization cards plus three status counters in one row at 1920/1536/1366/1280/1024, adaptive 900px, light/dark','3 rows','5 rows','8 rows','80%','100%','125%','150%'],screenshots:evidence},null,2));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

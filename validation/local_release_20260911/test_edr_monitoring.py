@@ -268,6 +268,7 @@ class EdrMonitoringTests(unittest.TestCase):
         html = Path("index.html").read_text(encoding="utf-8")
         app = Path("app.js").read_text(encoding="utf-8")
         styles = Path("styles.css").read_text(encoding="utf-8")
+        final_styles = Path("ui_final.css").read_text(encoding="utf-8")
         self.assertIn('id="edrMonitoringView"', html)
         self.assertIn('id="edrMonitoringView" class="module-view data-module-shell"', html)
         self.assertIn('edr-monitoring-table-card data-module-table', html)
@@ -284,7 +285,42 @@ class EdrMonitoringTests(unittest.TestCase):
         self.assertIn('id="edrMonitoringShortName"', html)
         self.assertNotIn('id="edrMonitoringMissingNames"', html)
         self.assertIn('<option value="missing_any">Потребують заповнення</option>', html)
-        self.assertLess(html.index('id="edrMonitoringNames"'), html.index('id="edrMonitoringReset"'))
+        panel = html.split('<aside id="edrMonitoringFilterPanel"', 1)[1].split('</aside>', 1)[0]
+        header = panel.split('<header class="edr-monitoring-filter-header', 1)[1].split('</header>', 1)[0]
+        names_section = panel.split('data-edr-filter-section="edr_names"', 1)[1].split('</section>', 1)[0]
+        self.assertIn('id="edrMonitoringReset"', header,
+                      'reset stays in the fixed drawer header, independent of the scrolling filters')
+        self.assertIn('id="edrMonitoringNames"', names_section,
+                      'the EDR names control remains in its matching filter section')
+        self.assertIn('grid-template-rows:auto minmax(0,1fr)', final_styles)
+        self.assertIn('.edr-monitoring-filter-fields{', final_styles)
+        self.assertIn('overflow:auto', final_styles.split('.edr-monitoring-filter-fields{', 1)[1].split('}', 1)[0],
+                      'only the drawer fields scroll; the header remains outside the scroll region')
+        reset_handler = next(line for line in app.splitlines()
+                             if line.startswith("$('#edrMonitoringReset').onclick="))
+        for control_id in ('edrMonitoringSearch', 'edrMonitoringDk', 'edrMonitoringType',
+                           'edrMonitoringNames', 'edrMonitoringFreshness',
+                           'edrMonitoringVerifiedFrom', 'edrMonitoringVerifiedTo',
+                           'edrMonitoringApplicationFrom', 'edrMonitoringApplicationTo'):
+            self.assertIn(f"$('#{control_id}').value", reset_handler,
+                          f'reset clears {control_id}')
+        self.assertIn('Object.values(edrMonitoringStatusSelections).forEach(selection=>selection.clear())',
+                      reset_handler, 'reset also clears both status multi-selects')
+        self.assertIn('updateEdrMonitoringFilters();loadEdrMonitoring()', reset_handler,
+                      'reset clears filters and refreshes the register')
+        self.assertIn("$('#edrMonitoringReset').onclick=()=>{", app)
+        self.assertIn('resetEdrMonitoringBase()', app)
+        names_params = next(line for line in app.splitlines()
+                            if line.startswith('function edrMonitoringParams()'))
+        self.assertIn("edr_names:$('#edrMonitoringNames').value", names_params)
+        names_change = next(line for line in app.splitlines()
+                            if "$('#edrMonitoringNames').onchange" in line)
+        self.assertIn('saveEdrMonitoringFilters();updateEdrMonitoringFilters();loadEdrMonitoring()', names_change)
+        query_loader = next(line for line in app.splitlines()
+                            if line.startswith('async function edrMonitoringLatestResponse()'))
+        self.assertIn('new URLSearchParams(edrMonitoringParams()).toString()', query_loader)
+        self.assertIn('`${API}/edr-monitoring?${query}`', query_loader,
+                      'the selected names filter is included in the registry request')
         self.assertLess(html.index('data-edr-column="supplier_name" data-edr-sort="supplier_name"'),
                         html.index('data-edr-column="edr_full_name" data-edr-sort="edr_full_name"'))
         self.assertLess(html.index('data-edr-column="edr_short_name" data-edr-sort="edr_short_name"'),
