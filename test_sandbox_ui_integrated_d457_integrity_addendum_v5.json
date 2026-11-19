@@ -1,0 +1,21 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v5",
+  "baseline_sha": "d457aae211bc0b88cdc66414b9e5765ac7ba350d",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v4.json",
+  "base_manifest_sha256": "e3097ff818c1b17dafdd7b29c92e3b335c28533de3a423d1b320221e90bf505b",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "avoid_reordering_cells_when_actual_order_already_matches",
+    "mutation_observer_settles_after_sort_filter_page_and_resize",
+    "run_shared_and_personal_layout_browser_matrix_against_both_exact_sources",
+    "supplier_and_appeal_cards_open_on_one_ordinary_click"
+  ],
+  "product_overrides": {
+    "table_widths_ui.js": {"sha256": "a7f13dcc3d63cf338d7e3db6f20c5942e752c3bdfb9daf9c1df01b069019332e"},
+    "validation/card_click_stability.cjs": {"sha256": "9dbed6ceb649c5baa92cae0829982f1df83d67715d63498bc55b7f3ee2cd3d89"},
+    "validation/table_widths_unified_browser.cjs": {"sha256": "8c5ee143b512b2b85ef1c6c169373f214b4e05c6a2dd61b2e5999e87a93ce910"},
+    "test_sandbox_ui_integrated_d457_integrity.py": {"sha256": "9fc90bee08b57cb477763030ae841986f137b76c2c2af0aa1ea75aa6a8bb9c51"},
+    "test_sandbox_admin_officer_link_integrity.py": {"sha256": "2bf343e650e69cc41d5b7e00142af0dbb525d160066f77f9d8ca5992ca3a3d66"},
+    "test_sandbox_nazk_columns_integrity.py": {"sha256": "07dbd1310e91bd17cec219a831b2f3af8d400a0d99c07b5ff749df22a1ce6371"}
+  }
+}

@@ -120,6 +120,12 @@ class AutomaticHTTP(unittest.TestCase):
         first=self.wait_job('startup_catchup')
         self.assertTrue(first['next_run']);self.assertTrue(first['heartbeat_at'])
         self.assertEqual('Europe/Kyiv',first['timezone'])
+        # Both initial scheduling and the waiting-loop re-read must accept the
+        # fixture's accelerated resolver, not fall back to the real hourly slot.
+        remaining=(datetime.datetime.fromisoformat(first['next_run']).astimezone(UTC)
+                   -datetime.datetime.now(UTC)).total_seconds()
+        self.assertGreater(remaining,0)
+        self.assertLessEqual(remaining,26)
         self.stop();self.start()
         time.sleep(12)
         self.assertEqual(first['last_started_at'],self.job()['last_started_at'],'restart must not duplicate fresh successful run')

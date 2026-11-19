@@ -1,0 +1,143 @@
+{
+  "contract": "pqm-c246-historical-integrity-snapshots",
+  "version": 1,
+  "source": "verified-local-git-objects",
+  "routes": [
+    {
+      "commit": "b2027e6d687bc4018a2720f10fae228ccff7b201",
+      "tree": "a1e006605dab72ac5de2839a9526ab5c7b56b3c0",
+      "tests": [
+        {
+          "module": "test_google_sandbox_baseline_compatibility",
+          "path": "test_google_sandbox_baseline_compatibility.py",
+          "sha256": "08db81148b6763a6ec049ae0a7c8ef2d41fc8dd264a503aa998bea7bceee73dc"
+        },
+        {
+          "module": "test_halloween_motion_integration",
+          "path": "test_halloween_motion_integration.py",
+          "sha256": "8229b0df28676855f37171ceb653a037164cf6ae89f91436665c82716f27366c"
+        }
+      ]
+    },
+    {
+      "commit": "fbcce44cecf0923e4818ddeab269e478fe73939d",
+      "tree": "97333e61a7f172f1e9196268c4443ceb54eec8b4",
+      "tests": [
+        {
+          "module": "test_sandbox_personal_theme",
+          "path": "test_sandbox_personal_theme.py",
+          "sha256": "67512febf19b316957e561fd14913110d5f0a8a5f822fda98240448e70496349"
+        }
+      ]
+    },
+    {
+      "commit": "b529ae3648f30708df23c87c9603d2bf45df6ac9",
+      "tree": "6f0e842d1e7d69e304789313e432265ef90f63c8",
+      "tests": [
+        {
+          "module": "test_sandbox_appeals_scenario_api_integrity",
+          "path": "test_sandbox_appeals_scenario_api_integrity.py",
+          "sha256": "72ca73fc213b05a03ce5fcde7595dcbad5df6ff25c759fe5b8d29f45aa45bbc3"
+        },
+        {
+          "module": "test_sandbox_appeals_scenario_readonly_integrity",
+          "path": "test_sandbox_appeals_scenario_readonly_integrity.py",
+          "sha256": "d8d9696dff3ff4a78ea3d4257ce64d71b74333b25381d1d65650d17977b82bf7"
+        },
+        {
+          "module": "test_sandbox_nazk_scroll_integrity",
+          "path": "test_sandbox_nazk_scroll_integrity.py",
+          "sha256": "d212a9e99b399af108c36edf2c0fdde6f70c115a01a36a01870f219cc613deee"
+        }
+      ]
+    },
+    {
+      "commit": "990483222f7e65517befc285516a9d80aee2580d",
+      "tree": "574a330e142af39c0c84aa6ae3dd01556874ef31",
+      "tests": [
+        {
+          "module": "test_sandbox_dst_hotfix_integrity",
+          "path": "test_sandbox_dst_hotfix_integrity.py",
+          "sha256": "036f267043beb2fe8172c2913c60f435d2f765921f21f30d296625d0ac1aa37e"
+        }
+      ]
+    },
+    {
+      "commit": "f6070a003c2442558303cfd9692d68cc6dfc268e",
+      "tree": "739bf0124570f687a77b5fb62ddfce3d4802c0a6",
+      "tests": [
+        {
+          "module": "test_sandbox_nazk_appeals_stabilization_integrity",
+          "path": "test_sandbox_nazk_appeals_stabilization_integrity.py",
+          "sha256": "2b32a6861f56576f92fa492a5461ed8fa425aa6ff58b1f9526a445c76253ca73"
+        }
+      ]
+    },
+    {
+      "commit": "c246edefaa676d137d3f38d40f18d039f7b5bac2",
+      "tree": "8b52f005c6ec31e6b9b89ef1a824c4637f61fbc1",
+      "tests": [
+        {
+          "module": "test_sandbox_nazk_appeals_stabilization_v3_integrity",
+          "path": "test_sandbox_nazk_appeals_stabilization_v3_integrity.py",
+          "sha256": "3e8973bfcd6f519de40d757648ccda27584c4dc08e819016860b0c581f3afd1d"
+        },
+        {
+          "module": "test_sandbox_nazk_appeals_stabilization_v4_integrity",
+          "path": "test_sandbox_nazk_appeals_stabilization_v4_integrity.py",
+          "sha256": "4537304c11b17e7e28d590abd6f56caaba8afda564bc62ad02f012ef48b7ae62"
+        },
+        {
+          "module": "test_sandbox_nazk_appeals_stabilization_v5_integrity",
+          "path": "test_sandbox_nazk_appeals_stabilization_v5_integrity.py",
+          "sha256": "4f5a1f8c6b2565abbf4e7964a4992889b16cd6fab29cd6a10c233a587ed76714"
+        },
+        {
+          "module": "test_sandbox_nazk_recovery_integrity",
+          "path": "test_sandbox_nazk_recovery_integrity.py",
+          "sha256": "fe0db27387857d968d60b3524ef985621453a7ce11c56dba277218a3c28583fe"
+        },
+        {
+          "module": "test_sandbox_nazk_recovery_qualification_integrity",
+          "path": "test_sandbox_nazk_recovery_qualification_integrity.py",
+          "sha256": "c725e8924e778c88d86c1279531c99330ef95193fa1307e57fc5d87c7e82a226"
+        }
+      ]
+    },
+    {
+      "commit": "a168b61506fbde4f7a8d8bb80bbb40a98d6073f0",
+      "tree": "616f53555673699760a50c5ea469d4527eec8172",
+      "tests": [
+        {
+          "module": "test_sandbox_nazk_columns_integrity",
+          "path": "test_sandbox_nazk_columns_integrity.py",
+          "sha256": "52ec7c94ea0da6b69efd1381f8ab703e6dc9aeb7842299fa295fcce7795c6923"
+        }
+      ]
+    },
+    {
+      "commit": "af8202b4e968f09e55ac5c6855ad29a6f2c05bc1",
+      "tree": "f9f72332e3f7c37fadab65ac666cdfaf990b7792",
+      "tests": [
+        {
+          "module": "test_sandbox_nazk_preview_integrity",
+          "path": "test_sandbox_nazk_preview_integrity.py",
+          "sha256": "539e12358fc1056f9cf120a3f3f5937f17216ad0ce1799f1f42b72cbd3373b7c"
+        }
+      ],
+      "archive": "validation/fixtures/c246_historical/af8202b4e968f09e55ac5c6855ad29a6f2c05bc1.zip",
+      "archive_sha256": "e0931cc43d5c99a001771fdd12ef5bea6a87003400a458c9a3f197372671c865"
+    },
+    {
+      "commit": "bddd5f6515f594304162e99e203fa82ece065cbf",
+      "tree": "3bca34127ef71de2abdecfe9c11751c8ed295fdd",
+      "tests": [
+        {
+          "module": "test_sandbox_ui_integrated_d457_integrity",
+          "path": "test_sandbox_ui_integrated_d457_integrity.py",
+          "sha256": "79bdfc5658e28d9ffced0c1a432101a039b44991cc45f0191623c99943097cd9"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "contract": "pqm-sandbox-google-writer-append-continuation",
+  "version": 3,
+  "baseline": "7417591bbd8cb945a85e759d28036b72f97f8e9e",
+  "normalization": "CRLF-to-LF only; overlay test self-pinned with canonical placeholder",
+  "scope": [
+    "google_writer_execution.py",
+    "google_writer_ui.js",
+    "server.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendDiagnostic20261112.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs",
+    "scripts/pqm-google-writer/append-diagnostic.test.cjs",
+    "test_google_writer_append_continuation.py",
+    "test_google_writer_append_continuation_integrity_v1.py",
+    "test_google_writer_append_continuation_integrity_v2.py",
+    "test_google_writer_execution.py",
+    "test_sandbox_execution_prewrite_egress_integrity_v1.py",
+    "test_sandbox_execution_transport.py",
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json",
+    "validation/local_release_20261113/google_writer_append_continuation_v2.json",
+    "test_google_writer_append_continuation_integrity_v3.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "a434949afc5953c1c0719ec35b9cf8bf8b229cb616cc34ee122ae2c3b79b6c40",
+    "google_writer_ui.js": "3fff68f494240fc4773f4fdb993a87479680dd0124bc084fd1a2f29e92cb0702",
+    "server.py": "3f4cad1fae4c0d2c1219f7aa70bf9fa071d7db4f7836880ef375f4781d56cd49",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendDiagnostic20261112.gs": "ac1d80f23fa93e21a54d77f314fdbe98d9aa93c9734f4e23ecba0d2c418b017e",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "b4d8b0419a84df445f6063adc85eb402282e74b30dc721a7a1e185daaa7f6904",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxFullApply.gs": "9f32695e89af7058e5c42d78c58b309bf94c9a2b96de69e80e2e81bed583a818",
+    "scripts/pqm-google-writer/mirror-alignment/shared/PqmExecutionCheckpoint.gs": "e05edb659d86575b9d861d688f8f8b17c549b80a776233e7a4593b6119a8ef5c",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "635a430144c1810749ebbb6d15f5d1d4c6d99838f3ba2edbfaff7b48b37f9645",
+    "scripts/pqm-google-writer/append-diagnostic.test.cjs": "970f5915679bcc0dc5a643d282003a1e7e98ff51b496a7281e5cc74e8bfab727",
+    "test_google_writer_append_continuation.py": "e8f217087c06727f6e74a298a41b47bbcf5b58b5f47d91366d54b0ca874d565e",
+    "test_google_writer_append_continuation_integrity_v1.py": "8d4946d8a9c21ebbd927f16707d798fa14dc27ed5c1deda1b28016aa7035e5b9",
+    "test_google_writer_append_continuation_integrity_v2.py": "d8ba4aae52215f1b662563c7df6acad8a1ce49bb9985ff19896875811d104b9c",
+    "test_google_writer_execution.py": "09e4ef6dcefd7eea1a70e474bce7b1c4b7b020c665dbde62a17316ad9e75543c",
+    "test_sandbox_execution_prewrite_egress_integrity_v1.py": "8398ecd225d1724c8c54277584c867e36379268f51cab6eaf673cd7060206c5d",
+    "test_sandbox_execution_transport.py": "d89866f6f1af4bb703fd74d1eb0512b1b55ea875fc8aa5259a9914974ba89ba3",
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2",
+    "validation/local_release_20261113/google_writer_append_continuation_v2.json": "2fb4d7124cdd7039ff07c87b275551e678afafb4aa807b7b0f0c5536e9bf2089",
+    "test_google_writer_append_continuation_integrity_v3.py": "4a59cf778051a52593c4e089c9135e733dce3f62fd170f24d1c3a7bc2f2190cf"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2",
+    "validation/local_release_20261113/google_writer_append_continuation_v2.json": "2fb4d7124cdd7039ff07c87b275551e678afafb4aa807b7b0f0c5536e9bf2089"
+  }
+}

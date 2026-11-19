@@ -1,0 +1,31 @@
+{
+  "contract": "pqm-sandbox-partial-apply-reconciliation",
+  "version": 2,
+  "baseline": "3a63ac035e1b788b0ffb6729171d81758d2af80e",
+  "files": {
+    "google_writer_execution.py": "2452b59e9f2fae447740566e318b172390d0c80a226073fc443ed9399dfd0ffb",
+    "server.py": "7414b2ad82cf99b8617756639a347b0c66296245123617c1ea28ad39b727da1f",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "f8840303daefe237a67dcc2e03e583fa7d03b1e17663d70bb938903e2758ea80",
+    "scripts/pqm-google-writer/mirror-alignment/execution-api.test.cjs": "96821119b695acdc9e068d7b3d32137ef9629f0aff79df64383985417fb82f85",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs": "fba95f01d0b8503dde6f9b4d671222d5e2cfe5dfcfadaf5cae8086d3a9138f64",
+    "test_google_writer_partial_reconciliation.py": "aac888e5caacfb6c8668e8d6c686e34a13ce2cec485d4d66b8bef66f71deca5b",
+    "test_partial_apply_reconciliation_integrity_v2.py": "d8b07d7d41d5fe57a650a8dae69af010a64c5ae105b73f149f5836a18ecee097",
+    "validation/run_local_release.py": "1208910415360d2a74d17c81f5b53f84ea2f50adec19cb4bb3afe0537e5bd015",
+    "validation/run_preview_digest_contract_v1_integrity.py": "c7be18ff2b886033a1ead24dff961dc6f458431474c1342937d47c0c5eac30cf",
+    "validation/fixtures/preview_digest_contract_v1_baseline_3a63ac.zip": "ac725c784a9684003a44a4bc074b66a940f054b188acd39a18967865057e9ac1"
+  },
+  "preserved_sources": {
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxPreviewDependencies.gs": "0042055249265106eecaf116e32d2b47faa57379da680154334b41acddd3cccf",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAppendApply.gs": "ca8fee9801b3fe49c398348df7ceda1eb3eb148781fc2166a00b1b2013283477",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxControlledApply.gs": "256361eb08715f9e94bb478703b7fc824e523eab03aa1a97c774bbe5f076f39f",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmVerificationDatetime.gs": "36cfa03b9654edf305c75a1f735916969653aaff4a697ea9c31d122a3db59d08",
+    "test_preview_digest_contract_integrity_v1.py": "c651adc879291ccd650177c0080479602063d7f17510d6b1ac48d6d8fe27dd6b"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20260911/preview_digest_contract_v1.json": "5f55d204acd1f22d2550dd23160c00877f3a7f28292658147179e464e0e07a32",
+    "validation/local_release_20260911/google_writer_update_append_v1.json": "ad8df0ead516fbdc6fd1f51e9f2abca0acf2b4244c395aaad730594a868ee2d7",
+    "google_writer_supplier_types_integration_v1.json": "a7d25d3114015d0c6aa31afd429f2f9ba39721cdb1f6b60e09e9723c444b8f53",
+    "supplier_classification_contract_v1.json": "dd8e2d375b0ea0c6d7fb46715d33170f55eaa842c74535d12d2f00fe39da46d2"
+  },
+  "integrity_test_sha256_lf": "d8b07d7d41d5fe57a650a8dae69af010a64c5ae105b73f149f5836a18ecee097"
+}

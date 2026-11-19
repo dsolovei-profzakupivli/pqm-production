@@ -272,6 +272,25 @@ def reconcile_stale_nazk_tasks(con, actor="PQM task builder", supplier_codes=Non
     return {"cancelled":len(cancelled),"task_ids":cancelled}
 
 
+def reconcile_stale_nazk_tasks_after_prozorro_sync(con, sync_result, actor="PQM successful Prozorro sync"):
+    """Cancel stale NAZK work only when the qualification refresh was complete.
+
+    This path intentionally does not reconcile NAZK checks or materialize tasks;
+    it uses only persisted qualification facts and cannot fetch either registry.
+    """
+    if not isinstance(sync_result, dict):
+        return {"skipped": "invalid_sync_result", "cancelled": 0, "task_ids": []}
+    frameworks = sync_result.get("frameworks")
+    completed = sync_result.get("completed")
+    if (sync_result.get("status") in {"failed", "partial"} or
+            sync_result.get("errors") or sync_result.get("officer_assignments_error") or
+            type(frameworks) is not int or frameworks <= 0 or type(completed) is not int or
+            completed != frameworks):
+        return {"skipped": "sync_not_complete", "cancelled": 0, "task_ids": []}
+    result = reconcile_stale_nazk_tasks(con, actor)
+    return {"skipped": None, **result}
+
+
 def reconcile_irrelevant_nazk_managers(con, actor="PQM task builder", supplier_codes=None):
     """Cancel active NAZK work when its historical person is no longer current."""
     allowed={_digits(code) for code in supplier_codes or [] if _digits(code)} if supplier_codes is not None else None
@@ -596,7 +615,7 @@ def create_termination_exclusions(con, supplier_codes, actor):
 
 
 def amcu_decision_cycle_covered(con, supplier_code, decision_ids, active_application_ids=()):
-    """True when both current AMKU facts and active applications belong to prior exclusion work."""
+    """Require both current AMKU facts and active applications in a prior executed cycle."""
     expected={str(value) for value in decision_ids if str(value)}
     if not expected: return False
     covered={str(row[0]) for row in con.execute("""SELECT DISTINCT d.amcu_decision_id
@@ -840,6 +859,194 @@ def build(con, actor="PQM task builder", *, include_nazk=False):
     return counts
 
 
+def _basis_date(value):
+    """Sort only proven calendar dates; absent/invalid dates stay absent."""
+    try:
+        return date.fromisoformat(str(value or '')[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def task_ui_summary(con, item, tables=None):
+    """Additive, task-scoped read model. No materialization or readiness writes."""
+    if tables is None:
+        tables={r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    task_id=item['id']; kind=item['task_type']; source=item.get('source_context') or {}
+    basis=[]
+    if kind=='amcu_exclusion' and {'operational_task_amcu_decisions','amcu_registry'} <= tables:
+        for r in con.execute('''SELECT a.*,l.extract_url FROM operational_task_amcu_decisions l
+          JOIN amcu_registry a ON a.row_key=l.amcu_decision_id WHERE l.task_id=?''',(task_id,)):
+            basis.append({'source_id':r['row_key'],'kind':'amcu_decision','number':r['decision_no'],
+                          'date':r['decision_date'],'reference':r['extract_url'],
+                          'date_provenance':'amcu_registry.decision_date'})
+    elif kind=='nazk_check' and {'supplier_nazk_check_matches','nazk_registry'} <= tables and source.get('nazk_check_id'):
+        import nazk_registry_evidence
+        for r in nazk_registry_evidence.registry_records(con,source['nazk_check_id']):
+            basis.append({'source_id':r['source_id'],'kind':'nazk_sentence','number':r.get('sentence_number'),
+                          'date':r.get('sentence_date'),'reference':r.get('decision_url'),
+                          'date_provenance':r.get('registry_source'), 'match_status':r.get('match_status')})
+    elif kind=='warning_block' and {'operational_task_warnings','violation_reports'} <= tables:
+        for r in con.execute('''SELECT v.report_id,v.decision_date FROM operational_task_warnings w
+          JOIN violation_reports v ON v.id=w.violation_report_id WHERE w.task_id=?''',(task_id,)):
+            basis.append({'source_id':r['report_id'],'kind':'warning','number':r['report_id'],
+                          'date':r['decision_date'],'reference':None,'date_provenance':'violation_reports.decision_date'})
+    elif kind=='termination_exclusion':
+        proof=source.get('termination') or {}
+        basis.append({'source_id':source.get('termination_event_key'),'kind':'edr_record',
+                      'number':proof.get('record_number'),'date':proof.get('record_date'),
+                      'reference':None,'date_provenance':'source_context.termination.record_date'})
+    for entry in basis:
+        entry['sort_date']=_basis_date(entry.get('date'))
+    basis.sort(key=lambda entry:(entry['sort_date'] or '',str(entry.get('source_id') or '')),reverse=True)
+    state=item.get('nazk_current_state') or {}
+    code=(('not_current' if item.get('resolution_code')=='nazk_not_current' else state.get('result'))
+          if kind=='nazk_check' else item.get('resolution_code'))
+    labels={'confirmed':'НАЗК · Збіг підтверджено','refuted':'НАЗК · Збіг спростовано',
+            'insufficient':'НАЗК · Недостатньо інформації','not_current':'НАЗК · Не актуально',
+            'nazk_refuted':'НАЗК · Збіг спростовано','nazk_not_current':'НАЗК · Не актуально',
+            'amcu_excluded':'Виключення підтверджено Prozorro',
+            'termination_excluded':'Виключення підтверджено Prozorro',
+            'no_active_qualifications':'Немає активних кваліфікацій','not_applicable':'Не застосовується',
+            'legacy_blocking_confirmed':'Блокування підтверджено'}
+    result={'code':code or None,'label':labels.get(code) or item.get('resolution_text') or None,
+            'at':state.get('result_at') if kind=='nazk_check' else item.get('resolved_at')}
+    decision={'number':item.get('protocol_number'),'date':item.get('protocol_date'),
+              'reference':item.get('protocol_reference') or item.get('published_reference'), 'documents':[]}
+    if kind=='warning_block' and 'operational_task_blocking_decisions' in tables:
+        row=con.execute('SELECT * FROM operational_task_blocking_decisions WHERE task_id=?',(task_id,)).fetchone()
+        if row:
+            decision.update(number=row['protocol_number'],date=row['decision_date'],reference=row['document_url'] or row['prozorro_url'])
+    requests=[];authority_requests=[]
+    if 'generated_documents' in tables:
+        # Local import avoids the document module's dependency on operational_tasks.
+        import task_documents
+        current_protocol_types=set()
+        for doc in task_documents.documents(con,task_id):
+            if doc.get('status')!='generated':
+                continue
+            if doc.get('document_type')=='nazk_supplier_request':
+                requests.append(doc)
+            elif doc.get('document_type')=='nazk_authority_request':
+                authority_requests.append(doc)
+            elif doc.get('document_type') in {'amcu_exclusion_protocol','termination_exclusion_protocol'}:
+                # Same newest-first order used by the task card's documents[0].
+                # Keep distinct protocol types; older versions remain in detail history.
+                if doc['document_type'] not in current_protocol_types:
+                    decision['documents'].append(doc)
+                    current_protocol_types.add(doc['document_type'])
+    return {'basis_items':basis,'latest_basis_date':next((x['sort_date'] for x in basis if x['sort_date']),None),
+            'result_summary':result,'officer_decision':decision,'supplier_requests':requests,
+            'nazk_authority_requests':authority_requests}
+
+
+def qualification_ui_summary(con,item):
+    """Distinct current qualifications and separately labelled captured coverage."""
+    code=_digits(item['supplier_code'])
+    current={r['id']:bool(r['active']) for r in con.execute(f'''SELECT q.id,
+      MAX(CASE WHEN {supplier_activity.effective_active_sql('rc','f')} THEN 1 ELSE 0 END) active
+      FROM qualifications q JOIN submissions s ON s.id=q.submission_id
+      LEFT JOIN registry_contracts rc ON rc.qualification_id=q.id AND DIGITS(rc.supplier_code)=?
+      LEFT JOIN frameworks f ON f.id=rc.framework_id
+      WHERE DIGITS(s.supplier_code)=? GROUP BY q.id''',(code,code))}
+    linked={r[0] for r in con.execute('SELECT DISTINCT qualification_id FROM operational_task_qualifications WHERE task_id=?',(item['id'],))}
+    source=item.get('source_context') or {}
+    snapshot=source.get('affected_qualifications')
+    proven=item['task_type']=='termination_exclusion' and isinstance(snapshot,list) and bool(source.get('snapshot_created_at'))
+    captured={x.get('qualification_id') for x in snapshot or [] if isinstance(x,dict) and x.get('qualification_id')} if proven else set()
+    active={key for key,value in current.items() if value}
+    confirmations=[event for event in item.get('events',[]) if event.get('event_type') in {
+      'amcu_exclusion_confirmed_by_sync','termination_exclusion_confirmed_by_sync'}
+      and _basis_date(event.get('created_at')) and isinstance((event.get('metadata') or {}).get('qualification_ids'),list)]
+    excluded={key for event in confirmations for key in event['metadata']['qualification_ids'] if isinstance(key,str) and key}
+    return {'current':{'total':len(current),'active':len(active),'inactive':len(current)-len(active),
+                       'provenance':'current qualifications + effective registry/framework predicate'},
+            'coverage':{'linked':len(linked),'captured_active':len(captured) if proven else None,
+                        'captured_at':source.get('snapshot_created_at') if proven else None,
+                        'historically_excluded':len(excluded) if excluded else None,'historically_remaining':None,
+                        'exclusion_provenance':[{'event_type':event['event_type'],'at':event['created_at']} for event in confirmations],
+                        'current_linked_active':len(linked & active),
+                        'current_linked_inactive':len(linked & current.keys())-len(linked & active),
+                        'missing_current':len(linked-current.keys()),
+                        'provenance':'creation snapshot' if proven else 'linkage only; historical counts not proven'},
+            'residual':{'linked_active':len(linked & active),'outside_linked_active':len(active-linked),
+                        'coverage_complete':False,
+                        'limitation':'Поточна активність не доводить історичне виключення або поширення конкретного рішення на всі кваліфікації.'}}
+
+
+def amcu_target_ui_rows(con, item):
+    """Exact linked resources; neither current inactivity nor a document proves exclusion."""
+    rows=[]
+    columns={column[0] for column in con.execute('SELECT * FROM registry_contracts WHERE 0').description}
+    milestones_column='rc.milestones_json' if 'milestones_json' in columns else 'NULL'
+    submission_columns={column[0] for column in con.execute('SELECT * FROM submissions WHERE 0').description}
+    submission_status='s.status' if 'status' in submission_columns else 'NULL'
+    for link in con.execute(f'''SELECT l.qualification_id,l.registry_contract_id,l.relation_type,
+      q.submission_id,q.status qualification_status,{submission_status} submission_status,
+      s.supplier_code,s.framework_id submission_framework_id,f.id framework_id,
+      f.dk_code,f.title framework_title,rc.status registry_status,rc.qualification_id contract_qualification_id,
+      rc.supplier_code contract_supplier_code,rc.framework_id contract_framework_id,{milestones_column} milestones_json
+      FROM operational_task_qualifications l
+      LEFT JOIN qualifications q ON q.id=l.qualification_id
+      LEFT JOIN submissions s ON s.id=q.submission_id
+      LEFT JOIN registry_contracts rc ON rc.id=l.registry_contract_id
+      LEFT JOIN frameworks f ON f.id=rc.framework_id
+      WHERE l.task_id=? AND l.relation_type='targeted_exclusion'
+      ORDER BY l.qualification_id,l.registry_contract_id''',(item['id'],)):
+        target=dict(link); limitations=[]; receipts=[]; documents=[]
+        if 'milestones_json' not in columns:
+            limitations.append('REGISTRY_DOCUMENT_METADATA_NOT_AVAILABLE')
+        identity_ok=(bool(target['submission_id'])
+          and _digits(target['supplier_code'])==_digits(item['supplier_code'])
+          and target['contract_qualification_id']==target['qualification_id']
+          and _digits(target['contract_supplier_code'])==_digits(item['supplier_code'])
+          and bool(target['contract_framework_id'])
+          and target['submission_framework_id']==target['contract_framework_id'])
+        if not identity_ok: limitations.append('SOURCE_IDENTITY_NOT_PROVEN')
+        if not target['framework_id'] or target['submission_framework_id']!=target['framework_id']:
+            limitations.append('FRAMEWORK_IDENTITY_NOT_PROVEN')
+        for event in item.get('events',[]):
+            proof=event.get('metadata') or {}
+            if (identity_ok and event.get('event_type')=='amcu_exclusion_confirmed_by_sync'
+                and _basis_date(event.get('created_at'))
+                and isinstance(proof.get('qualification_ids'),list)
+                and isinstance(proof.get('registry_contract_ids'),list)
+                and target['qualification_id'] in proof['qualification_ids']
+                and target['registry_contract_id'] in proof['registry_contract_ids']):
+                receipts.append({'event_id':event.get('id'),'at':event['created_at'],
+                                 'provenance':'task-scoped qualification + contract sync receipt'})
+        try:
+            milestones=json.loads(target.pop('milestones_json') or '[]')
+            if not isinstance(milestones,list): raise ValueError('milestones')
+            seen=set()
+            for milestone in milestones if identity_ok else []:
+                raw=milestone.get('documents') or []
+                if isinstance(raw,dict): raw=[d for versions in raw.values() for d in versions]
+                for doc in raw:
+                    if not isinstance(doc,dict): raise ValueError('document')
+                    identity=doc.get('id')
+                    if not identity or not doc.get('url'):
+                        limitations.append('DOCUMENT_IDENTITY_NOT_PROVEN'); continue
+                    key=(identity,doc['url'])
+                    if key in seen: continue
+                    seen.add(key)
+                    documents.append({'document_id':identity,'url':doc['url'],'title':doc.get('title'),
+                      'date':doc.get('dateModified') or doc.get('datePublished'),
+                      'qualification_id':target['qualification_id'],'registry_contract_id':target['registry_contract_id'],
+                      'milestone_id':milestone.get('id'),'milestone_type':milestone.get('type'),
+                      'provenance':'exact linked registry_contract.milestones_json',
+                      'protocol_identity':'NOT_PROVEN', 'exclusion_proof':False})
+        except (ValueError,TypeError,AttributeError):
+            limitations.append('DOCUMENT_METADATA_MALFORMED'); documents=[]
+        if not receipts: limitations.append('DECISION_SPECIFIC_EXCLUSION_NOT_PROVEN')
+        target.update(sync_evidence=receipts,registry_documents=documents,
+                      source_identity_proven=identity_ok,limitations=sorted(set(limitations)))
+        rows.append(target)
+    for target in rows:
+        if sum(row['qualification_id']==target['qualification_id'] for row in rows)>1:
+            target['limitations'].append('MULTIPLE_LINKED_CONTRACTS_DISPLAYED_SEPARATELY')
+    return rows
+
+
 def _task(con,row,detail=False):
     item=dict(row); item["source_context"]=_loads(item["source_context"]); item["document_context"]=_loads(item["document_context"]); item["metadata"]=_loads(item["metadata"])
     item["overdue"]=bool(item.get("due_at") and item["due_at"]<now_iso() and item["status"] not in TERMINAL)
@@ -940,6 +1147,11 @@ def _task(con,row,detail=False):
             end=(item.get("source_context") or {}).get("blocking_end_date") or ""
             item["highlighting_active"]=bool(item.get("blocking_decision",{}).get("used_for_blocking") and end>=date.today().isoformat())
         item["document_context"]=build_document_context(item)
+        item['qualification_summary']=qualification_ui_summary(con,item)
+        if item['task_type']=='amcu_exclusion':
+            item['amcu_target_rows']=amcu_target_ui_rows(con,item)
+    ui_tables=item.pop('_ui_tables',None)
+    item.update(task_ui_summary(con,item,set(ui_tables.split(',')) if ui_tables is not None else None))
     return item
 
 
@@ -979,7 +1191,7 @@ def list_tasks(con,params):
     where=[]; args=[]
     def value(key):
         raw=params.get(key,[""]); return (raw[0] if isinstance(raw,list) else raw).strip()
-    if value("officer"): where.append("CAST(assigned_officer_id AS TEXT)=?"); args.append(value("officer"))
+    officer_filter=value("officer")
     group=value("status_group") or "active"
     if group not in STATUS_GROUPS: raise ValueError("Невідома група статусів")
     grouped=sorted(STATUS_GROUPS[group]); where.append("status IN (%s)" % ",".join("?" for _ in grouped)); args.extend(grouped)
@@ -995,7 +1207,8 @@ def list_tasks(con,params):
         args.extend(search_args)
     if value("date_from"): where.append("SUBSTR(created_at,1,10)>=?"); args.append(value("date_from"))
     clause=" WHERE "+" AND ".join(where) if where else ""
-    projection="""SELECT t.*,COALESCE(nuo.full_name,c.responsible_officer_name,o.full_name) _assigned_officer_name,
+    projection="""SELECT t.*,(SELECT group_concat(name) FROM sqlite_master WHERE type='table') _ui_tables,
+      COALESCE(nuo.full_name,c.responsible_officer_name,o.full_name) _assigned_officer_name,
       c.responsible_officer_id _nazk_responsible_officer_id,
       c.id _nazk_id,c.workflow_status _nazk_workflow_status,c.result _nazk_result,
       c.manager_name _nazk_manager_name,c.completed_at _nazk_completed_at,c.updated_at _nazk_updated_at
@@ -1003,17 +1216,51 @@ def list_tasks(con,params):
       LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
       LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id"""
     qualified_clause=clause.replace("status", "t.status").replace("task_type", "t.task_type").replace("assigned_officer_id", "COALESCE(c.responsible_officer_id,t.assigned_officer_id)").replace("supplier_name_snapshot", "t.supplier_name_snapshot").replace("supplier_code", "t.supplier_code").replace("created_at", "t.created_at")
+    officer_args=[]
+    if officer_filter=="__unassigned__":
+        qualified_clause+=" AND COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NULL AND NULLIF(TRIM(COALESCE(c.responsible_officer_name,'')),'') IS NULL"
+    elif officer_filter.startswith("__legacy_snapshot__:"):
+        qualified_clause+=" AND COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NULL AND TRIM(c.responsible_officer_name)=?"
+        officer_args.append(officer_filter.removeprefix("__legacy_snapshot__:"))
+    elif officer_filter:
+        qualified_clause+=" AND CAST(COALESCE(c.responsible_officer_id,t.assigned_officer_id) AS TEXT)=?"
+        officer_args.append(officer_filter)
+    facet_args=args+officer_args
     # Keep the LOCAL type facet: all other filters apply, the selected type does not.
     type_counts={row[0]:row[1] for row in con.execute(
         "SELECT t.task_type,COUNT(*)"+projection[projection.index("\n      FROM") :]+
-        qualified_clause+" GROUP BY t.task_type",args)}
+        qualified_clause+" GROUP BY t.task_type",facet_args)}
     if value("type"):
-        qualified_clause+=" AND t.task_type=?"; args.append(value("type"))
-    rows=con.execute(projection+qualified_clause+" ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,t.created_at DESC",args).fetchall()
+        qualified_clause+=" AND t.task_type=?"; facet_args.append(value("type"))
+    rows=con.execute(projection+qualified_clause+" ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,t.created_at DESC",facet_args).fetchall()
     items=[_task(con,row) for row in rows]
-    all_rows=con.execute("SELECT status FROM operational_tasks").fetchall()
-    kpis={key:sum(r[0] in statuses for r in all_rows) for key,statuses in STATUS_GROUPS.items()}
-    return {"items":items,"total":len(items),"kpis":kpis,"type_counts":type_counts,"status_group":group}
+    if value('sort')=='latest_basis_date':
+        direction=value('direction') or 'desc'
+        if direction not in {'asc','desc'}: raise ValueError('Невідомий напрям сортування')
+        dated=sorted((x for x in items if x['latest_basis_date']),key=lambda x:(x['latest_basis_date'],x['id']),reverse=direction=='desc')
+        items=dated+sorted((x for x in items if not x['latest_basis_date']),key=lambda x:x['id'])
+    summary_rows=con.execute("""WITH officer_options AS (
+      SELECT CAST(COALESCE(c.responsible_officer_id,t.assigned_officer_id) AS TEXT) value,
+        COALESCE(NULLIF(TRIM(nuo.full_name),''),NULLIF(TRIM(c.responsible_officer_name),''),NULLIF(TRIM(o.full_name),''),'') officer_name,
+        0 historical_snapshot
+      FROM operational_tasks t LEFT JOIN authorized_officers o ON o.id=t.assigned_officer_id
+      LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+      LEFT JOIN authorized_officers nuo ON nuo.id=c.responsible_officer_id
+      WHERE COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NOT NULL
+      UNION
+      SELECT '__legacy_snapshot__:'||TRIM(c.responsible_officer_name),TRIM(c.responsible_officer_name),1
+      FROM operational_tasks t LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+      WHERE COALESCE(c.responsible_officer_id,t.assigned_officer_id) IS NULL
+        AND NULLIF(TRIM(COALESCE(c.responsible_officer_name,'')),'') IS NOT NULL
+    )
+    SELECT 'status' kind,status value,NULL officer_name,0 historical_snapshot FROM operational_tasks
+    UNION ALL
+    SELECT 'officer',value,officer_name,historical_snapshot FROM officer_options""").fetchall()
+    all_rows=[row for row in summary_rows if row["kind"]=="status"]
+    officer_rows=sorted((row for row in summary_rows if row["kind"]=="officer"),key=lambda row:(str(row["officer_name"] or "").casefold(),str(row["value"])))
+    kpis={key:sum(r["value"] in statuses for r in all_rows) for key,statuses in STATUS_GROUPS.items()}
+    officers=[{"value":str(row["value"]),"full_name":row["officer_name"] or f"УО · ID {row['value']}",**({"historical_snapshot":True} if row["historical_snapshot"] else {})} for row in officer_rows]
+    return {"items":items,"total":len(items),"kpis":kpis,"type_counts":type_counts,"status_group":group,"officers":officers}
 
 
 def detail(con,task_id):

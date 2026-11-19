@@ -1,0 +1,60 @@
+{
+  "baseline": "15b8e663d343f462eb60a99694b346f265babb37",
+  "contract": "pqm-sandbox-date-only-midnight-with-edr-status-integrated",
+  "version": 1,
+  "files": {
+    "edr_sync_v2.py": "b0988d1198703635a5a59689134e2a2838adef4648ed6a6ec256c96cfea21c47",
+    "google_verification_contract.py": "cded357168c112dc1117bfd6b5a5c2e144820bd6cfea80b56468d7f3cee4a0dd",
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs": "a52e4252f55d1d26e8fc168fdfb2176d13901600c25d7836f7b7ad2401cecedb",
+    "scripts/pqm-google-writer/sandbox-preview-audit.test.cjs": "4d098478ee1833daef19c1bb07e010a011d2295210bb376ca20d46d413c12197",
+    "scripts/pqm-google-writer/update-append-business-matrix.test.cjs": "a9f4df9dfa6ad73c337fec694582c28df95b7d0ee3ddf9f8a5f010f784e55e40",
+    "test_google_verification_contract.py": "673d4bb738f89a395b0950be773a207eb9a1bc034bed8fb2ed05455eec0c7592",
+    "validation/local_release_20260911/test_edr_sync_v2.py": "daef5c300d397991cc4ac360752509acae137a2fbe6e5818273ded4a7c830a0c",
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py": "35eb1329186671bcb7ab2d8d43b42abadd707574689aac2d37c953d3ad569d25",
+    "validation/run_local_release.py": "d27df8713598b429626ce228afda2e1e214b1e1e63cf654a83cfe1b968616dd0",
+    "validation/run_date_only_previous_contract_overlays.py": "5c579e0b469a03fc697aa8869890f9862dacc5aa53d08c23a52f0e25202d651e",
+    "validation/fixtures/edr_preview_skipped_v1_6b9830b.zip": "6188d492d9f95fb9d23f11a7660c8188fef4c210b610dbc20f0356e603540726",
+    "validation/fixtures/google_writer_supplier_types_v1_97788.zip": "95919f57f4df9e141fb1e4cb7461d2a26d506e64034b5e608fc6620f13b3c061",
+    "validation/fixtures/google_edr_date_only_midnight_v1_97788.zip": "fb6ac2224de07ac0a2a71feb727c3d03e1900a6eed7aaad82d7577cc77d9b8b7",
+    "validation/fixtures/edr_status_evidence_v1_15b8.zip": "772a73e079027a2c45024bc61bac20f5a178ffd962f953372dbbfb80f4b0aec0"
+  },
+  "mutation_targets": [
+    "edr_sync_v2.py",
+    "google_verification_contract.py",
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs",
+    "scripts/pqm-google-writer/sandbox-preview-audit.test.cjs",
+    "scripts/pqm-google-writer/update-append-business-matrix.test.cjs",
+    "test_google_verification_contract.py",
+    "validation/local_release_20260911/test_edr_sync_v2.py",
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py",
+    "validation/run_local_release.py",
+    "validation/run_date_only_previous_contract_overlays.py",
+    "validation/fixtures/edr_preview_skipped_v1_6b9830b.zip",
+    "validation/fixtures/google_writer_supplier_types_v1_97788.zip",
+    "validation/fixtures/google_edr_date_only_midnight_v1_97788.zip",
+    "validation/fixtures/edr_status_evidence_v1_15b8.zip"
+  ],
+  "baseline_files": {
+    "server.py": "5063e2fa4728e431e42305ee14059a13ad421fb6c8bc31f4d8fc540945ef0a03",
+    "supplier_registry_integration.py": "957bb1296db34c96d36290c8babbb76e4354bec6904418d8cd40938f9120810b",
+    "supplier_classification.py": "fe46a1593279095ed0f03feaa69bd85956945fdae7d3e42f49976aacd30ffc63",
+    "index.html": "189fb77381b452ce936167066960df23728b9d7e9d7ca633f4893496d5b8556b",
+    "app.js": "57ffe79ab0033d4a325ebef57635e38546c6b0490e2f34417151daad4c013f46",
+    "validation/local_release_20260911/test_edr_monitoring.py": "bee638d3000ea9e7e50a270cffb1b0441c99a6b24170abea8cddfc44fa68ade1",
+    "validation/local_release_20260911/test_single_supplier_edr_workflow.py": "123971e827ce58c34eaac29f6db8e9a1edb8d05d946f65595185c122705e17f3"
+  },
+  "historical_manifests": {
+    "google_edr_date_only_midnight_v1.json": "b487feaf21182b2a445dd1967d2a2ce70ae7f0cf90c14ea90050679acb560a91",
+    "validation/local_release_20260911/edr_status_evidence_v1.json": "c9c3d2484eccbaf982c47625f43c4c7dd3dbde8df9228a1cf7d71088af5f55e8"
+  },
+  "behavior": {
+    "date_only_is_kyiv_midnight_for_ordering": true,
+    "date_only_storage_remains_date_only": true,
+    "exact_timestamp_precision_is_seconds": true,
+    "equal_timestamp_manager_or_status_change_is_conflict": true,
+    "active_qualifications_do_not_set_edr_registered": true,
+    "status_projection_and_ui_date_formatting_unchanged": true,
+    "google_writer_update_append_and_supplier_classification_preserved": true,
+    "old_contracts_execute_on_exact_97788_and_15b8_trees": true
+  }
+}

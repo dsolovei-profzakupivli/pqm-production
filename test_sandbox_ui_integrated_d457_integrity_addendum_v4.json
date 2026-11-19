@@ -1,0 +1,19 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v4",
+  "baseline_sha": "d457aae211bc0b88cdc66414b9e5765ac7ba350d",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v3.json",
+  "base_manifest_sha256": "46b3e905c401fd8e45fd8e8bf07d2d9350b5da68dc25c1ad68abb45d3b857d95",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "supplier_hidden_table_widths_are_deferred_until_visible",
+    "supplier_shared_widths_persist_across_hide_show_and_reload",
+    "update_table_width_regressions_for_current_generic_visibility_installation"
+  ],
+  "product_overrides": {
+    "validation/sandbox_supplier_ux.cjs": {"sha256": "629099cc938f331e5a0f07fdeb50e377ea83d2e5a0fb81d006297e2319d89a7c"},
+    "validation/table_widths_unified_browser.cjs": {"sha256": "a4544d894ccc206e7e59ffd7b244f4e58f2ce2498a5127929670107427d86d67"},
+    "test_sandbox_ui_integrated_d457_integrity.py": {"sha256": "79bdfc5658e28d9ffced0c1a432101a039b44991cc45f0191623c99943097cd9"},
+    "test_sandbox_admin_officer_link_integrity.py": {"sha256": "21c885ec14f821a19261569a8ff5685ae7fc141064ea232b971a3a608fdcc4f7"},
+    "test_sandbox_nazk_columns_integrity.py": {"sha256": "3cad375301c7b17da778e0e166638c1fb532fe87c94d0665d81b3270d96c063b"}
+  }
+}

@@ -2,6 +2,8 @@
 (() => {
   'use strict';
   if (document.documentElement.dataset.pqmEnvironment !== 'sandbox') return;
+  // Explicit personal palettes must be tested as painted, without legacy repairs.
+  if (globalThis.PqmThemeUI) return;
   const mark = 'data-pqm-light-ink';
   const darkMark = 'data-pqm-dark-ink';
   const excluded = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'IMG', 'SVG', 'CANVAS', 'VIDEO', 'IFRAME']);

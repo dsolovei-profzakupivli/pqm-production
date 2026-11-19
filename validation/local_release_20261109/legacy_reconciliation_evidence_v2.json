@@ -1,0 +1,25 @@
+{
+  "contract": "pqm-sandbox-legacy-reconciliation-apps-script-evidence-v2",
+  "version": 1,
+  "baseline": "021ec7a5d3f64bcfd4afe2a19bc911f878fddaff",
+  "normalization": "CRLF-to-LF for text files; integrity test self-hash normalized to placeholder",
+  "request_id": "592128d9837d4b71bbeb330ef8aabf4b",
+  "fingerprint": "816c6424279bff220878b0c4",
+  "scope": [
+    ".github/workflows/release-checks.yml",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/legacy-reconciliation-evidence-v2.test.cjs",
+    "test_legacy_reconciliation_evidence_v2_integrity.py"
+  ],
+  "files": {
+    ".github/workflows/release-checks.yml": "4a64fdabfd40e324cfe5f82c046429c54377bcfa793d602613b627cebeac1721",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "8b0af8580913db3f867be76b8cfc5a58e11934e43e919f6bd968986d6bf4f7fa",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/legacy-reconciliation-evidence-v2.test.cjs": "abf0f1cd6d083c78d63f7f59be918624bd90e86e9264edbde5d863f5b98bd9c9",
+    "test_legacy_reconciliation_evidence_v2_integrity.py": "83d0d67c92b9d9e417f59a52a82de53f3cf56a513b326144a04fe73cd7931e3c"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+    "validation/local_release_20261108/legacy_append_reconciliation_v2.json": "7aecd4a1eee8c35cbe8210336203030a2c1f1d77709e6bce5e9d01a588eb43dc",
+    "validation/local_release_20261108/legacy_append_reconciliation_v3.json": "d5c1b6d44d24e18076a2f95e2ab803476731719982f27d92e81de0a584235890"
+  }
+}

@@ -18,20 +18,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 BOOTSTRAP_OVERRIDES_PATH = ROOT / "config" / "declension_overrides.csv"
 SANDBOX_OVERRIDES = os.environ.get("PQM_SANDBOX") == "1"
+PROD_OVERRIDES = os.environ.get("PQM_ENV") == "web" and not SANDBOX_OVERRIDES
 DEFAULT_OVERRIDES_PATH = (Path(os.environ.get("PQM_DATA_DIR", "/var/data")) /
-                          "declension_overrides.csv" if SANDBOX_OVERRIDES
+                          "declension_overrides.csv" if SANDBOX_OVERRIDES or PROD_OVERRIDES
                           else BOOTSTRAP_OVERRIDES_PATH)
 
 
 def ensure_default_overrides() -> None:
-    """Seed once; never use the deployable CSV as mutable SANDBOX storage."""
-    if not SANDBOX_OVERRIDES:
+    """Seed once; never use the deployable CSV as mutable server storage."""
+    if not (SANDBOX_OVERRIDES or PROD_OVERRIDES):
         return
-    import sandbox_runtime
-    data, _, _ = sandbox_runtime.validate_environment()
+    if SANDBOX_OVERRIDES:
+        import sandbox_runtime
+        data, _, _ = sandbox_runtime.validate_environment()
+    else:
+        configured_data = Path(os.environ.get("PQM_DATA_DIR", "/var/data"))
+        if configured_data.is_symlink():
+            raise RuntimeError("STOP: PROD declension data directory is a symlink")
+        data = configured_data.resolve()
     target = DEFAULT_OVERRIDES_PATH
     if target.parent.resolve() != data or target.is_symlink():
-        raise RuntimeError("STOP: invalid SANDBOX declension storage")
+        raise RuntimeError("STOP: invalid persistent declension storage")
     if target.exists():
         return
     data.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,111 @@
+name: PQM release checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pqm-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container-gate:
+    name: Container release gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Record tested revision
+        run: |
+          mkdir -p ci-evidence
+          git rev-parse HEAD > ci-evidence/tested-sha.txt
+          printf 'PR checks test the merge revision; promotion requires the final deployed SHA.\n' > ci-evidence/scope.txt
+      - name: Setup Node.js for browser regressions
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+      - name: Install Playwright and Chromium for browser regressions
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pqm-playwright" --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
+          "$RUNNER_TEMP/pqm-playwright/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Run Appeals browser regressions on the checked-out revision
+        shell: bash
+        env:
+          NODE_PATH: ${{ runner.temp }}/pqm-playwright/node_modules
+          PQM_BROWSER_EVIDENCE_DIR: ${{ runner.temp }}/pqm-chat-messages-evidence
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(cat ci-evidence/tested-sha.txt)"
+          mkdir -p "$PQM_BROWSER_EVIDENCE_DIR"
+          node validation/appeals_justification_browser.cjs
+          node validation/appeals_declension_card_browser.cjs
+          node validation/protocol_names_card_browser.cjs
+          node validation/chat_messages_browser.cjs
+      - name: Build release image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag pqm-ci:tested . 2>&1 | tee ci-evidence/build.log
+          docker image inspect pqm-ci:tested --format '{{.Id}}' > ci-evidence/image-id.txt
+      - name: Run isolated container gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python pqm-ci:tested \
+            -B validation/docker_release_gate.py 2>&1 | tee ci-evidence/container-gate.log
+      - name: Run AMCU polling regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node pqm-ci:tested \
+            validation/amcu_poll_smoke.cjs 2>&1 | tee ci-evidence/amcu-ui.log
+      - name: Run sandbox contrast regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node pqm-ci:tested \
+            validation/sandbox_contrast_smoke.cjs 2>&1 | tee ci-evidence/sandbox-contrast.log
+      - name: Run OAuth callback regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python \
+            -e PYTHONPATH=/app/validation/test_runtime:/app \
+            -e PQM_TEST_NETWORK_ISOLATION=1 \
+            -e PQM_ENV=local -e HOST=127.0.0.1 -e PORT=8080 \
+            -e PQM_AUTH_ENABLED=0 -e PQM_ENABLE_SCHEDULER=0 pqm-ci:tested \
+            -B -m unittest test_google_oauth_hotfix -v 2>&1 | tee ci-evidence/oauth.log
+      - name: Run permanent daily-sync regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node \
+            -e PQM_PYTHON=python3 pqm-ci:tested \
+            --test scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs \
+            scripts/pqm-google-writer/sandbox-controlled-apply.test.cjs \
+            scripts/pqm-google-writer/sandbox-guard-profiler.test.cjs \
+            scripts/pqm-google-writer/sandbox-preview-audit.test.cjs \
+            scripts/pqm-google-writer/sandbox-full-apply.test.cjs \
+            scripts/pqm-google-writer/sandbox-expanded-change-audit.test.cjs \
+            2>&1 | tee ci-evidence/daily-sync.log
+      - name: Run delivered regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python pqm-ci:tested \
+            -B validation/run_local_release.py 2>&1 | tee ci-evidence/regression.log
+      - name: Save evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pqm-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/
+          retention-days: 14
+          if-no-files-found: error

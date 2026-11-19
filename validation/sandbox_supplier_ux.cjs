@@ -39,21 +39,27 @@ assert.match(navigation,/function update\(\)\{button\.hidden=!canShowBack\(curre
 assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
 assert.match(widths,/colgroup\[data-system-widths\]/);
 assert.match(widths,/table\.style\.tableLayout='fixed'/);
-assert.match(widths,/table\.closest\('#suppliersView'\)&&!isVisible\(table\)\)return;apply\(table,saved\[key\]\|\|\{\}\)/);
-assert.match(widths,/saved\[key\]=\{\.\.\.next/);
+const widthInstall=section(widths,'function install(){','function toolbarForFallback(');
+assert.match(widthInstall,/if\(!isVisible\(table\)\)return;[\s\S]*?apply\(table,saved\[key\]\|\|\{\}\)/,
+  'Hidden tables must be skipped before any saved width is applied');
+assert.match(widths,/new MutationObserver\(schedule\)\.observe\(document\.body/,
+  'Visibility changes must schedule a fresh installation pass');
+assert.match(widths,/saved\[key\]=result\.widths\|\|settings/,
+  'Saved settings must use the server-confirmed complete layout');
 const widthContext=vm.createContext({WeakMap,Number,Math,Set,Array,document:{createElement(tag){return {style:{},dataset:{},children:[],replaceChildren(...children){this.children=children}}}}});
-vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}",widthContext);
-vm.runInContext(section(widths,'function apply(table,widths){','const dialog='),widthContext);
-function widthTable(){const heads=['name','code','status'].map(col=>({dataset:{col},style:{},hidden:false,getBoundingClientRect(){return {width:col==='name'?240:80}}}));const row={cells:heads.map(()=>({style:{},hidden:false}))};return {tHead:{rows:[{cells:heads}]},tBodies:[{rows:[row]}],dataset:{},style:{},group:null,closest:()=>({}),querySelector(){return this.group},prepend(group){this.group=group}}}
+vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}function isPersonalTable(){return false}function reorderTable(){}function heads(table){return table.tHead.rows[0].cells}function sizesFor(table,widths){return heads(table).map(th=>Number(widths[th.dataset.col])||th.defaultWidth)}function effectiveVisibility(table){return new Set(heads(table).map(th=>th.dataset.col))}function currentOrder(table){return heads(table).map(th=>th.dataset.col)}",widthContext);
+vm.runInContext(section(widths,'function applyLogical(table,widths){','let suppressClickUntil='),widthContext);
+vm.runInContext(section(widths,'function apply(table,widths){','async function saveShared('),widthContext);
+function widthTable(){const heads=['name','code','status'].map((col,i)=>({dataset:{col},style:{},hidden:false,colSpan:1,rowSpan:1,defaultWidth:col==='name'?240:80,getBoundingClientRect(){return {width:this.defaultWidth}}}));const row={cells:heads.map(()=>({style:{},hidden:false,colSpan:1,rowSpan:1})),dataset:{}};const style={setProperty(name,value){this[name]=value}};return {tHead:{rows:[{cells:heads,dataset:{}}]},tBodies:[{rows:[row]}],dataset:{},style,group:null,closest:()=>null,querySelector(){return this.group},prepend(group){this.group=group}}}
 const widthFixture=widthTable();widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tHead.rows[0].cells[1].style.width,'150px');
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
-assert.equal(widthFixture.group.children[1].style.width,'150px');
 assert.equal(widthFixture.style.width,'470px');
-widthFixture.tBodies[0].rows=[{cells:[{style:{}},{style:{}},{style:{}}]}];widthContext.apply(widthFixture,{code:150});
+widthFixture.tBodies[0].rows=[{cells:[{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1}],dataset:{}}];widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
 const afterReload=widthTable();widthContext.apply(afterReload,{code:150});
-assert.equal(afterReload.group.children[1].style.width,'150px');
+assert.equal(afterReload.tHead.rows[0].cells[1].style.width,'150px');
+assert.equal(afterReload.tBodies[0].rows[0].cells[1].style.width,'150px');
 assert.match(css,/@media\(max-width:1280px\)\{[\s\S]*?\.topbar #mainNav\{order:5/);
 assert.equal(context.displayDateOnly('2026-09-09'),'09.09.2026');
 assert.equal(context.displayDate('2026-09-09'),'09.09.2026');
@@ -89,14 +95,29 @@ assert.match(app,/actions\.append\(link\)/);
 assert.match(css,/\.supplier-edr-actions a\{display:inline-flex;align-items:center;justify-content:center;min-height:32px/);
 const caseLabels=['genitive','dative','accusative'].map(value=>({dataset:{declensionCase:value},classList:{active:false,toggle(name,state){this.active=state}}}));
 const editorNodes=new Map();
-for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
+for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog','declensionSave'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
 for(const value of ['genitive','dative','accusative'])editorNodes.set(`#declensionDialog [data-declension-case="${value}"] input`,{focus(){}});
-const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:()=>caseLabels,editingDeclensionId:null,Set,Array});
+assert.match(app, /\bcurrentMe=null\b/, 'the real application initializes currentMe to null before authentication');
+const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:()=>caseLabels,editingDeclensionId:null,currentMe:null,Set,Array});
 vm.runInContext(section(app,'function openDeclensionEditor(','function declensionLookup('),caseContext);
 for(const [required,expected] of [[['dative'],[false,true,false]],[['genitive'],[true,false,false]],[['genitive','dative'],[true,true,false]],[[],[false,false,false]]]){
   caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},required);
   assert.deepEqual(caseLabels.map(label=>label.classList.active),expected);
 }
+assert.equal(editorNodes.get('#declensionSave').hidden,true,'unknown pre-authentication user is read-only');
+assert.equal(editorNodes.get('#declensionType').disabled,true,'unknown pre-authentication user cannot change the entity type');
+for(const [role,canManage] of [['admin',true],['officer',true],['viewer',false]]){
+  caseContext.currentMe={role,permissions:{'declension.manage':canManage}};
+  caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'});
+  assert.equal(editorNodes.get('#declensionSave').hidden,!canManage,`${role}: save visibility follows declension.manage`);
+  assert.equal(editorNodes.get('#declensionSave').disabled,!canManage,`${role}: save state follows declension.manage`);
+  assert.equal(editorNodes.get('#declensionOriginal').readOnly,!canManage,`${role}: fields follow declension.manage`);
+  assert.equal(editorNodes.get('#declensionType').disabled,!canManage,`${role}: entity type follows declension.manage`);
+  assert.equal(editorNodes.get('#declensionDialogTitle').textContent,canManage?'Додати відмінювання':'Перегляд відмінювання',`${role}: editor mode follows declension.manage`);
+}
+caseContext.currentMe={role:'admin',permissions:{'declension.manage':true}};
+caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},'',{readOnly:true});
+assert.equal(editorNodes.get('#declensionSave').hidden,true,'explicit read-only context overrides manager permission');
 caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},['genitive','accusative'],{subject_label:'Постачальник'});
 assert.deepEqual(caseLabels.map(label=>label.hidden),[false,true,false]);
 assert.match(modulesCss,/\.declension-form label\[hidden\]\{display:none\}/);
@@ -136,12 +157,17 @@ for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_ex
 assert.match(renderedTypes.innerHTML,/data-task-type="warning_block" aria-pressed="true"/);
 assert.match(renderedTypes.innerHTML,/data-task-type="nazk_check" aria-pressed="false"/);
 let typeReloads=0;
-const typeSelect={value:''},typeKpiNode={},typeActions=vm.createContext({$:selector=>selector==='#operationalTaskTypes'?typeKpiNode:typeSelect,loadOperationalTasks(){typeReloads++}});
+const typeNodes=new Map(),typeKpiNode={};
+const typeActions=vm.createContext({$:selector=>{if(selector==='#operationalTaskTypes')return typeKpiNode;if(!typeNodes.has(selector))typeNodes.set(selector,{value:'stale'});return typeNodes.get(selector)},operationalTaskTimer:null,clearTimeout(){},loadOperationalTasks(){typeReloads++}});
+vm.runInContext(app.split(/\r?\n/).find(line=>line.startsWith('function resetOperationalKpiFilters(){')),typeActions);
+const typeSelect=typeActions.$('#operationalTaskType');
 vm.runInContext(section(app,"$('#operationalTaskTypes').onclick=","function operationalTaskEmptyMessage"),typeActions);
 for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
   const typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
   typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
   typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,'');
+  for(const id of ['operationalTaskSearch','operationalTaskOfficer','operationalTaskDateFrom'])assert.equal(typeActions.$('#'+id).value,'stale');
+  assert.equal(typeActions.$('#operationalTaskStatus').value,'stale');
 }
 assert.equal(typeReloads,8);
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);

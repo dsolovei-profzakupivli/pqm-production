@@ -1,6 +1,9 @@
 import re
+import json
 import sqlite3
 import unittest
+from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 import server
 import edr_sync_v2
@@ -12,20 +15,37 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.con.create_function('DIGITS',1,lambda v:re.sub(r'\D','',v or ''))
         self.con.create_function('CASEFOLD',1,lambda v:(v or '').casefold())
         self.con.create_function('NORMALIZE_NAME',1,lambda v:(v or '').casefold())
-        source=sqlite3.connect('file:data/pqm.sqlite3?mode=ro',uri=True)
+        # Use only the isolated database initialized by run_local_release.py;
+        # never read an operator or Live database to obtain a schema fixture.
+        schema_fixture = Path(server.DB_PATH).resolve()
+        source=sqlite3.connect(f'file:{schema_fixture.as_posix()}?mode=ro',uri=True)
         try:
             for sql, in source.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL"):
                 self.con.execute(sql)
         finally:source.close()
+        self.con.execute("""CREATE TABLE IF NOT EXISTS supplier_google_receipts
+          (supplier_code TEXT PRIMARY KEY, received_at TEXT NOT NULL DEFAULT '',
+           actor TEXT NOT NULL DEFAULT '', source_sheet TEXT NOT NULL DEFAULT '',
+           source_row INTEGER NOT NULL DEFAULT 0, source_fingerprint TEXT NOT NULL DEFAULT '')""")
+        profile_columns = {row[1] for row in self.con.execute(
+            "PRAGMA table_info(supplier_edr_profiles)"
+        )}
+        if 'last_google_received_at' not in profile_columns:
+            self.con.execute("ALTER TABLE supplier_edr_profiles ADD COLUMN last_google_received_at TEXT NOT NULL DEFAULT ''")
         for code in ('3038301896','30067771'):
             self.add_current_contract(code)
             self.con.execute("INSERT INTO supplier_registry_summary(supplier_code,supplier_name,active_count,qualifications_count,refreshed_at) VALUES(?,?,1,1,'fixture')",(code,'Fixture '+code))
             self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,synced_at) VALUES(?,'✅ Зареєстровано','03.09.2026','2026-09-09T19:58:00Z')",(code,))
         self.con.commit()
         self.mock=patch.object(server,'db',return_value=self.con);self.mock.start();self.addCleanup(self.mock.stop)
+    def primary_subject(self,code):
+        # Explicit synthetic nature and country; format alone is not evidence.
+        kind='individual_entrepreneur' if code in ('3038301896','303-830-1896') else 'legal_entity'
+        return json.dumps({'tenderers':[{'identifier':{'id':code},'address':{'countryName':'Україна'},'legalForm':kind}]})
     def add_current_contract(self,code):
         self.con.execute("INSERT OR IGNORE INTO frameworks(id,pretty_id,status,raw_json,synced_at) VALUES('current-filter-fixture','current-filter-fixture','active','{}','fixture')")
         self.con.execute("INSERT INTO registry_contracts(id,framework_id,supplier_code,status,raw_json,synced_at) VALUES(?,'current-filter-fixture',?,'active','{}','fixture')",('rc-'+code,code))
+        self.con.execute("INSERT INTO submissions(id,framework_id,supplier_code,raw_json,synced_at) VALUES(?,'current-filter-fixture',?,?,'fixture')",('primary-'+code,code,self.primary_subject(code)))
     def listing(self,**params):return server.list_qualified_suppliers({k:[str(v)] for k,v in params.items()})
     def test_all_known_legacy_statuses_match_canonical_filter_without_changing_storage(self):
         pairs=(
@@ -44,7 +64,10 @@ class SupplierEdrFilterTests(unittest.TestCase):
                     for selected in (legacy,canonical):
                         result=self.listing(search='30067771',edr_status=selected)
                         self.assertEqual(result['total'],1)
-                        self.assertEqual(result['items'][0]['edr_profile']['edr_status'],raw)
+                        self.assertEqual(result['items'][0]['edr_profile']['edr_status'],canonical)
+                    self.assertEqual(self.con.execute(
+                        "SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code='30067771'"
+                    ).fetchone()[0], raw, "API projection must not migrate stored history")
                     self.assertEqual(self.listing(search='30067771')['total'],1)
     def test_distinct_and_current_transition_fop_and_legal(self):
         self.assertEqual(self.listing()['edr_statuses'],['Зареєстровано'])
@@ -54,20 +77,27 @@ class SupplierEdrFilterTests(unittest.TestCase):
             # Actual importer, isolated DB and mocked read-only Sheets; no real sync.
             headers=list(edr_sync_v2.HEADERS);values=['']*len(headers)
             for key,value in {'Код ЄДРПОУ':code,'Статус в реєстрі (ЄДР)':'🔴 Припинено',
-                              'Дата перевірки':'07.09.2026','УО':'Тестова УО'}.items():values[headers.index(key)]=value
+                              'Дата перевірки':'07.09.2026 17:03:19','УО':'Тестова УО'}.items():values[headers.index(key)]=value
             sheet=[headers,values]
             sheet_read=lambda name: sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
-            with patch.object(server,'_google_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
+            with patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read) as reader,patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')
+                self.assertEqual({call.args[0] for call in reader.call_args_list},{'ФОП','ЮО'})
             self.assertEqual(self.listing(search=code,edr_status='✅ Зареєстровано')['total'],0)
             self.assertEqual(self.listing(search=code,edr_status='Припинено')['total'],1)
             data=self.listing(search=code,edr_status='🔴 Припинено')
             self.assertEqual(data['total'],1)
             self.assertEqual(data['items'][0]['edr_profile']['edr_status'],'Припинено')
-            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],'2026-09-07')
+            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],'2026-09-07T17:03:19+03:00')
         self.assertEqual(self.listing()['edr_statuses'],['Припинено'])
+    def test_disabled_google_reader_still_blocks_before_token_or_network(self):
+        with patch.object(server,'google_edr_effective_enabled',return_value=False),patch.object(server,'_google_access_token') as token:
+            with self.assertRaises(PermissionError):
+                server._google_edr_sheet_values('ЮО')
+            token.assert_not_called()
+
     def test_and_filters_empty_and_injection(self):
         self.assertEqual(self.listing(edr_status='Зареєстровано')['total'],2)
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано',status='active')['total'],2)
@@ -98,17 +128,40 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано')['total'],1)
 
     def test_canonical_freshness_and_verification_date_filters(self):
-        self.con.execute("""INSERT INTO supplier_edr_verification_events
-          (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
-           source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
-          VALUES('30067771','google_clarity','2026-09-03','Тестова УО','Google Sheets','',
-                 'ЮО',2,'[]','freshness-fixture','{}','2026-09-03T10:00:00Z')""")
-        self.con.commit()
-        recent=self.listing(freshness='lt30',verification_from='2026-09-01',verification_to='2026-09-04')
+        class ControlledDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 9, 15)
+        with patch.object(edr_sync_v2, 'date', ControlledDate):
+            checked = ControlledDate.today().isoformat()
+            self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at=?", (checked,))
+            self.con.execute("""INSERT INTO supplier_edr_verification_events
+              (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
+               source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
+              VALUES('30067771','google_clarity',?,'Тестова УО','Google Sheets','',
+                     'ЮО',2,'[]','freshness-fixture','{}',?)""",
+              (checked, checked + 'T10:00:00Z'))
+            self.con.commit()
+            recent=self.listing(freshness='lt30',verification_from=checked,verification_to=checked)
+            not_checked=self.listing(freshness='not_checked')
         self.assertEqual([row['code'] for row in recent['items']],['30067771','3038301896'])
         self.assertEqual(recent['items'][0]['edr_freshness_marker'],'🟢 <30 днів')
         self.assertEqual(recent['items'][0]['edr_verification_officer'],'Тестова УО')
-        self.assertEqual(self.listing(freshness='not_checked')['total'],0)
+        self.assertEqual(not_checked['total'],0)
+
+    def test_calendar_verification_range_includes_seconds_without_truncating_data(self):
+        stamps={'30067771':'2026-10-13T23:59:59.123+03:00',
+                '3038301896':'2026-10-14T00:00:01.000+03:00'}
+        for code,stamp in stamps.items():
+            self.con.execute('UPDATE supplier_edr_profiles SET edr_checked_at=? WHERE supplier_code=?',(stamp,code))
+        self.con.commit()
+        current=self.listing(verification_from='2026-10-13',verification_to='2026-10-13')
+        self.assertEqual([row['code'] for row in current['items']],['30067771'])
+        self.assertEqual(current['items'][0]['edr_profile']['edr_checked_at'],stamps['30067771'])
+        following=self.listing(verification_from='2026-10-14',verification_to='2026-10-14')
+        self.assertEqual([row['code'] for row in following['items']],['3038301896'])
+        self.assertEqual(following['items'][0]['edr_profile']['edr_checked_at'],stamps['3038301896'])
+        self.assertEqual(dict(self.con.execute('SELECT supplier_code,edr_checked_at FROM supplier_edr_profiles')),stamps)
 
     def test_entity_type_shared_semantics_and_intersection(self):
         self.assertEqual(self.listing(entity_type='')['total'],2)
@@ -161,6 +214,7 @@ class SupplierEdrFilterTests(unittest.TestCase):
 
     def test_export_uses_application_manager_fallback(self):
         self.con.execute("INSERT INTO submissions(id,framework_id,qualification_id,supplier_code,supplier_name,date_published,documents_json,raw_json,synced_at) VALUES('manager-fallback','current-filter-fixture','qm','30067771','APPLICATION NAME','2026-09-05','[]','{}','fixture')")
+        self.con.execute("UPDATE submissions SET raw_json=? WHERE id='manager-fallback'",(self.primary_subject('30067771'),))
         self.con.execute("INSERT INTO application_fields(submission_id,manager_name,protocol_decision) VALUES('manager-fallback','КЕРІВНИК ІЗ ЗАЯВКИ','admit')")
         self.con.commit()
         rows=server.build_supplier_edr_export_rows('ЮО',today=__import__('datetime').date(2026,9,15),

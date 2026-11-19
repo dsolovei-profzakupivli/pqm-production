@@ -85,15 +85,17 @@ class TestWebRuntimeTests(unittest.TestCase):
         html = (root / "index.html").read_text(encoding="utf-8")
         javascript = (root / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="environmentBanner"', html)
-        # Preserve the user's separately approved WEB magnifier/favicon assets.
-        self.assertIn('rel="icon" href="/assets/pqm-tab-icon.png"', html)
-        self.assertIn('rel="icon" href="/assets/pqm-search-icon.png"', html)
-        self.assertTrue((root / "assets" / "pqm-tab-icon.png").is_file())
-        self.assertTrue((root / "assets" / "pqm-search-icon.png").is_file())
+        self.assertIn('rel="icon" href="/assets/pqm-q-favicon-prod-192.png?v=6" type="image/png" sizes="192x192"', html)
+        self.assertIn('rel="icon" href="/assets/pqm-q-favicon-prod.svg?v=6" type="image/svg+xml" sizes="any"', html)
+        self.assertIn('rel="icon" href="/assets/pqm-q-favicon-prod-16.png?v=6" type="image/png" sizes="16x16"', html)
+        self.assertIn('rel="icon" href="/assets/pqm-q-favicon-prod-32.png?v=6" type="image/png" sizes="32x32"', html)
+        self.assertIn('rel="apple-touch-icon" href="/assets/pqm-q-favicon-prod-180.png?v=6"', html)
+        for name in ('pqm-q-favicon-prod-192.png', 'pqm-q-favicon-prod.svg', 'pqm-q-favicon-prod-16.png', 'pqm-q-favicon-prod-32.png', 'pqm-q-favicon-prod-180.png'):
+            self.assertTrue((root / 'assets' / name).is_file())
         self.assertNotIn("'PQM · WEB TEST'", javascript)
         self.assertIn("function environmentBannerText(features){\n  return 'PQM';\n}", javascript)
         self.assertIn('id="environmentBanner"', html)
-        self.assertIn('>PQM</em>', html)
+        self.assertIn('class="prod-brand-accessible">PQM</em>', html)
         self.assertNotIn('id="sandboxWarning"', html)
         self.assertNotIn('data-pqm-environment="sandbox"', html)
         self.assertNotIn('id="pqmSandboxTheme"', html)
@@ -103,7 +105,8 @@ class TestWebRuntimeTests(unittest.TestCase):
         self.assertIn('data-pqm-environment="sandbox"', sandbox_html)
         self.assertIn('id="pqmSandboxTheme"', sandbox_html)
         self.assertIn('/sandbox_contrast.js?v=1', sandbox_html)
-        self.assertIn('pqm-q-favicon.svg', sandbox_html)
+        self.assertIn('/assets/pqm-q-favicon.svg?v=4', sandbox_html)
+        self.assertNotIn('pqm-q-favicon-prod.svg', sandbox_html)
         self.assertIn('id="sandboxWarning"', sandbox_html)
         self.assertIn('position:fixed;bottom:0', sandbox_html)
         self.assertIn('SANDBOX · ТЕСТОВІ ДАНІ', sandbox_html)
@@ -151,7 +154,10 @@ class TestWebRuntimeTests(unittest.TestCase):
         javascript = (Path(__file__).resolve().parent / "app.js").read_text(encoding="utf-8")
         self.assertIn("threading.Thread(target=bids_update_worker, daemon=True)", source)
         self.assertIn("worker.start()", source)
-        self.assertIn("start_nazk_registry_refresh(trigger=\"manual\")", source)
+        self.assertIn(
+            'start_nazk_registry_refresh(trigger="manual", manual_authorized=True,',
+            source,
+        )
         self.assertIn("if(state?.status==='running')", javascript)
         self.assertIn("transient poll failure", javascript)
 

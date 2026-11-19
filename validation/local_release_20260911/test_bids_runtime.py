@@ -13,22 +13,6 @@ import auth_access
 
 
 class BidsRuntimeTests(unittest.TestCase):
-    def post(self, payload):
-        http = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
-        thread = threading.Thread(target=http.serve_forever, daemon=True)
-        thread.start()
-        try:
-            req = urllib.request.Request(f'http://127.0.0.1:{http.server_port}/api/bids-sync',
-                data=json.dumps(payload).encode(), headers={'Content-Type':'application/json', 'X-PQM-Local-Role':'admin'})
-            try:
-                response = urllib.request.urlopen(req, timeout=5)
-            except urllib.error.HTTPError as exc:
-                response = exc
-            with response:
-                return response.status, json.load(response)
-        finally:
-            http.shutdown(); http.server_close(); thread.join()
-
     def setUp(self):
         self.patches = [patch.object(server, 'AUTH_ENABLED', False),
                        patch.object(server, 'LOCAL_ROLE_IMPERSONATION', True),
@@ -39,6 +23,27 @@ class BidsRuntimeTests(unittest.TestCase):
                        patch.object(server, 'BIDS_UPDATE_STATE', {'running':False})]
         for p in self.patches: p.start()
         self.addCleanup(lambda: [p.stop() for p in reversed(self.patches)])
+        self.http = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+        self.http.daemon_threads = False
+        self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._stop_http)
+
+    def _stop_http(self):
+        self.http.shutdown()
+        self.thread.join()
+        self.http.server_close()
+
+    def post(self, payload):
+        req = urllib.request.Request(f'http://127.0.0.1:{self.http.server_port}/api/bids-sync',
+            data=json.dumps(payload).encode(), headers={'Content-Type':'application/json',
+                'Connection':'close', 'X-PQM-Local-Role':'admin'})
+        try:
+            response = urllib.request.urlopen(req, timeout=5)
+        except urllib.error.HTTPError as exc:
+            response = exc
+        with response:
+            return response.status, json.load(response)
 
     def test_lightweight_check_never_launches_update(self):
         diagnostics = {'preflight_pid': 123}
@@ -63,7 +68,16 @@ class BidsRuntimeTests(unittest.TestCase):
         self.assertEqual(self.post({})[0], 409)
         with patch.object(server, 'IS_WEB_ENV', True):
             # WEB must fail closed before RBAC when authentication is disabled.
-            self.assertEqual(self.post({})[0], 503)
+            handler = object.__new__(server.Handler)
+            handler.headers = {}
+            handler.path = '/api/bids-sync'
+            handler.client_address = ('127.0.0.1', 12345)
+            response = {}
+            with patch.object(server.Handler, 'send_json',
+                              side_effect=lambda body, status=200: response.update(body=body, status=status)):
+                self.assertFalse(server.Handler._authorize(handler))
+            self.assertEqual(response['status'], 503)
+            self.assertEqual(response['body']['error'], 'WEB authentication must be enabled')
         with patch.object(server, 'manual_bids_update_state', return_value={'enabled':False}):
             self.assertEqual(self.post({})[0], 403)
 

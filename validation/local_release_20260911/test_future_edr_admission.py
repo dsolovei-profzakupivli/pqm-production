@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import unittest
 from unittest.mock import patch
 
@@ -88,6 +89,30 @@ class FutureAdmissionTests(unittest.TestCase):
           VALUES ('12345678','manual_edr','2026-09-02','EDR','manual','hash',
           '{"edr_status":"Припинено"}','2026-09-02')''')
         self.assertFalse(self.materialize(con))
+
+    def test_legacy_emoji_and_plain_statuses_have_the_same_admission_predicate(self):
+        for raw in ('✅ Зареєстровано', 'Зареєстровано',
+                    '🔴 Припинено', 'Припинено'):
+            with self.subTest(raw=raw):
+                con = database()
+                con.execute("""INSERT INTO supplier_edr_profiles
+                  (supplier_code,edr_status,edr_checked_at,synced_at)
+                  VALUES('12345678',?,'2026-09-02','old')""", (raw,))
+                # Any newer factual observation blocks a duplicate/superseded
+                # admission regardless of presentation in the stored profile.
+                self.assertFalse(self.materialize(con))
+                self.assertEqual(con.execute(
+                    "SELECT edr_status FROM supplier_edr_profiles").fetchone()[0], raw)
+        for raw in ('✅ Зареєстровано', 'Зареєстровано',
+                    '🔴 Припинено', 'Припинено'):
+            with self.subTest(event=raw):
+                con = database()
+                con.execute("""INSERT INTO supplier_edr_verification_events
+                  (supplier_code,event_type,occurred_at,officer,source,snapshot_hash,snapshot_json,created_at)
+                  VALUES('12345678','manual_edr','2026-09-02','EDR','manual','legacy',
+                    ?,'2026-09-02')""", (json.dumps({'edr_status': raw}),))
+                self.assertEqual(self.materialize(con), raw in {
+                    '✅ Зареєстровано', 'Зареєстровано'})
 
     def test_older_profile_status_is_superseded_by_effective_admission(self):
         for status, checked in (('Неактуально', '2026-08-01'),

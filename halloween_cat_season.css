@@ -1,0 +1,4 @@
+/* Narrow Sandbox override for the existing cat visibility rule. */
+html[data-pqm-environment="sandbox"][data-pqm-cat="off"] .halloween-cat{display:none}
+html[data-pqm-environment="sandbox"][data-halloween="off"][data-pqm-cat="on"] .halloween-cat{display:block}
+@media(prefers-reduced-motion:reduce){html[data-pqm-environment="sandbox"][data-halloween="off"][data-pqm-cat="on"] .halloween-cat-eyes{display:none}}

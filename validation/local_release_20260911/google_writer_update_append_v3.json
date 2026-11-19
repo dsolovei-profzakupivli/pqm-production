@@ -1,0 +1,34 @@
+{
+  "baseline": "b988f140af37c45bd5461735cf40d18cd00d741a",
+  "contract": "pqm-google-writer-update-append",
+  "version": 3,
+  "normalization": "CRLF-to-LF only for text files before Git blob hashing",
+  "extends": {
+    "manifest": "validation/local_release_20260911/google_writer_update_append_v2.json",
+    "manifest_sha256_lf": "26af0547da5fe3170f5d76b96a88da07de6c26c111a3a12ab2bdb1411700cd84",
+    "version": 2,
+    "immutable": true
+  },
+  "files": {
+    "sandbox_edr_review.py": {
+      "git_blob_sha1_lf": "60fe703e526e792e6406eb4d93a2872c91225b41"
+    },
+    "validation/local_release_20260911/test_sandbox_edr_review.py": {
+      "git_blob_sha1_lf": "d69a6da8fce771618d38b5d3c8249fc25d172dd3"
+    }
+  },
+  "behavior": {
+    "google_owned_fields": ["termination_decision_details", "termination_record_date", "termination_record_number", "edr_notes"],
+    "independent_mirrors_when_verification_is_blocked": "show and apply only when explicitly marked independent_mirror_only",
+    "confirmed_blank_values": "clear the corresponding PQM mirror field only for a present, successfully read source cell",
+    "unapproved_conflicts": "block mirror updates",
+    "verification_timestamps": "retain existing timestamp and conflict rules",
+    "writer_protection": "retain v2 direction, protected-cell, source-shape, and duplicate checks"
+  },
+  "behavior_tests": [
+    "validation.local_release_20260911.test_sandbox_edr_review.SandboxEdrReviewTests.test_independent_mirrors_remain_reviewable_when_verification_fields_are_date_blocked",
+    "validation.local_release_20260911.test_sandbox_edr_review.SandboxEdrReviewTests.test_confirmed_blank_google_owned_values_clear_pqm",
+    "validation.local_release_20260911.test_edr_sync_v2.EdrSyncV2Tests.test_approved_same_timestamp_conflict_applies_only_google_owned_mirrors",
+    "validation.local_release_20260911.test_edr_sync_v2.EdrSyncV2Tests.test_unapproved_row_conflict_blocks_mirror_updates"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v11",
+  "baseline_sha": "3fc2b2977073f56c570941fbcdff49b1a187fb7e",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v10.json",
+  "base_manifest_sha256": "b86d31c108801bf4d076afdc3a49a7ae0749d2508ba44473b52c4fff2571c615",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "model_declension_editor_read_only_lexical_state_in_vm_fixture_and_assert_permission_gated_saving"
+  ],
+  "product_overrides": {
+    "validation/appeals_declension_ui.cjs": {
+      "sha256": "176dc10ecdca0dc505de0d87b9392c0cbc26374061263515ae39b97a24a16cd6"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "7ab198a08eba8c661cc4cedf38cf10b73075daf82b6b154e4f38e2a7ea9ac35e"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "2e89183ff4c144b029908447a85575df41dc1ab1cf33916d453e7696b69c4dc1"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "2188ebd86ec4261dad42da00909a80290db817f614c7c5736284c8c4732ccbf1"
+    }
+  },
+  "guarded_overrides": {
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "2e89183ff4c144b029908447a85575df41dc1ab1cf33916d453e7696b69c4dc1"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "2188ebd86ec4261dad42da00909a80290db817f614c7c5736284c8c4732ccbf1"
+    },
+    "validation/appeals_declension_card_browser.cjs": {
+      "sha256": "beb4139b7171d0a183e20c364a07d37be8492e7ffe364c6711cf5e493a1a5462"
+    }
+  }
+}

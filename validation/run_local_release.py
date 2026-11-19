@@ -4,26 +4,284 @@ The delivered tests expect source and tests side-by-side, unlike ZIP layout.
 No production/local database or credential is read. Outbound network is denied.
 """
 import os
+import gc
+import hashlib
+import logging
+from contextlib import closing
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
-ROOT=Path(__file__).resolve().parents[1]
+try:
+    from .release_test_package import (PACKAGE_MANIFEST, load_package_manifest, preflight_package,
+                                       stage_declared_files, stage_dynamic_package_files)
+except ImportError:
+    from release_test_package import (PACKAGE_MANIFEST, load_package_manifest, preflight_package,
+                                      stage_declared_files, stage_dynamic_package_files)
+
+ROOT=Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[1]).resolve()
+INFRA_ROOT=Path(os.environ.get('PQM_RELEASE_INFRA_ROOT') or Path(__file__).resolve().parents[1]).resolve()
+HISTORICAL_INTEGRITY_MODULES={
+    'test_google_sandbox_baseline_compatibility',
+    'test_halloween_motion_integration',
+    'test_sandbox_admin_officer_link_integrity',
+    'test_sandbox_appeals_scenario_api_integrity',
+    'test_sandbox_appeals_scenario_readonly_integrity',
+    'test_sandbox_dst_hotfix_integrity',
+    'test_sandbox_nazk_appeals_stabilization_integrity',
+    'test_sandbox_nazk_appeals_stabilization_v3_integrity',
+    'test_sandbox_nazk_appeals_stabilization_v4_integrity',
+    'test_sandbox_nazk_appeals_stabilization_v5_integrity',
+    'test_sandbox_nazk_columns_integrity',
+    'test_sandbox_nazk_preview_integrity',
+    'test_sandbox_nazk_recovery_integrity',
+    'test_sandbox_nazk_recovery_qualification_integrity',
+    'test_sandbox_nazk_scroll_integrity',
+    'test_sandbox_messages_integrity',
+    'test_sandbox_messages_header_polish_integrity_v3',
+    'test_sandbox_messages_search_header_integrity_v2',
+    'test_sandbox_nazk_messages_integrated_integrity',
+    'test_nazk_authority_request_integrity',
+    'test_sandbox_edr_google_nazk_reconcile_integrity',
+    'test_google_edr_timezone_alias_integrity_v1',
+    'test_edr_preview_skipped_integrity',
+    'test_edr_preview_skipped_rows',
+    'test_google_writer_supplier_types_integrity',
+    # Checkpoint v1 pins its exact 95bc pre-reconciliation source tree; run it
+    # only against the immutable c8a97d6 fixture via the additive overlay.
+    'test_checkpointed_apply_integrity_v1',
+    # v3's exact-tree contract is executed only against its original pinned
+    # commit by the overlay runner below; the current candidate has additive
+    # manual-classification changes to files pinned by that historical tree.
+    'test_supplier_classification_v3_integrity',
+    'test_supplier_manual_classification_v4_integrity',
+    # v1 remains byte-pinned to the original digest candidate and runs only
+    # through its exact-tree overlay; v2 protects later additive changes.
+    'test_preview_digest_contract_integrity_v1',
+    'test_google_edr_date_only_midnight_integrity_v1',
+    'test_date_only_edr_status_integrated_integrity_v1',
+    'test_date_only_edr_status_integrated_integrity_v2',
+    'validation.local_release_20260911.test_date_only_edr_status_integrated_integrity_v2',
+    'test_edr_status_evidence_integrity_v1',
+    'test_messages_historical_line_endings',
+    'test_sandbox_personal_theme',
+    'test_sandbox_ui_integrated_d457_integrity',
+    'test_supplier_classification_integrity',
+    'test_google_writer_update_append_integrity',
+    'test_google_writer_supplier_types_integrity',
+    # These candidate-specific overlays run against their declared source
+    # pins outside the disposable product-test copy.
+    'test_partial_reconciliation_second_integrity_v1',
+    # These v1 overlays keep their original exact-source pins and run against
+    # the immutable 067e2e8 fixture; the additive candidate overlay pins the
+    # current source and the historical-routing runners.
+    'test_sandbox_preview_append_only_integrity_v1',
+    'test_sandbox_preview_workflow_integrity_v1',
+    # These writer overlays describe immutable releases. They are executed
+    # against byte-verified source snapshots by the historical snapshot runner,
+    # never against the current candidate tree.
+    'test_google_writer_admin_close_integrity_v1',
+    'test_google_writer_manifest_compatibility_integrity_v2',
+    'test_google_writer_preview_formula_integrity_v1',
+    'test_google_writer_prewrite_stage_integrity_v1',
+    'test_legacy_reconciliation_evidence_v2_integrity',
+    'test_google_writer_prewrite_diagnostics_integrity_v2',
+    'test_google_writer_prewrite_readonly_integrity_v1',
+    'test_sandbox_execution_envelope_limit_v1',
+    'test_sandbox_execution_prewrite_egress_integrity_v1',
+    'test_google_writer_append_continuation_integrity_v1',
+    # v2 pins its historical source runner; the new runner is checked by the
+    # current infrastructure overlay and this old assertion runs on its exact snapshot.
+    'test_google_writer_legacy_source_snapshots_history_v2',
+}
+EXACT_TREE_OVERLAY_MODULES={
+    # Continuation v2-v5, Apply Result v5-v10, and integrated candidate v1-v6
+    # run from exact Git snapshots. Integrated candidate v7 pins current files.
+    'test_google_writer_append_continuation_integrity_v2',
+    'test_google_writer_append_continuation_integrity_v3',
+    'test_google_writer_append_continuation_integrity_v4',
+    'test_google_writer_append_continuation_integrity_v5',
+    'test_google_writer_apply_result_integrity_v5',
+    'test_google_writer_apply_result_integrity_v6',
+    'test_google_writer_apply_result_integrity_v7',
+    'test_google_writer_apply_result_integrity_v8',
+    'test_google_writer_apply_result_integrity_v9',
+    'test_google_writer_apply_result_integrity_v10',
+    # Integrated UI v1-v18 stay bound to immutable snapshots; v19 pins current.
+    # The aggregate runner invokes each route explicitly.
+    'test_google_writer_integrated_candidate_integrity_v1',
+    'test_google_writer_integrated_candidate_integrity_v2',
+    'test_google_writer_integrated_candidate_integrity_v3',
+    'test_google_writer_integrated_candidate_integrity_v4',
+    'test_google_writer_integrated_candidate_integrity_v5',
+    'test_google_writer_integrated_candidate_integrity_v6',
+    'test_google_writer_integrated_candidate_integrity_v7',
+    'test_google_writer_integrated_candidate_integrity_v8',
+    'test_google_writer_integrated_candidate_integrity_v9',
+    'test_google_writer_integrated_candidate_integrity_v10',
+    'test_google_writer_integrated_candidate_integrity_v11',
+    'test_google_writer_integrated_candidate_integrity_v12',
+    'test_google_writer_integrated_candidate_integrity_v13',
+    'test_google_writer_integrated_candidate_integrity_v14',
+    'test_google_writer_integrated_candidate_integrity_v15',
+    'test_google_writer_integrated_candidate_integrity_v16',
+    'test_google_writer_integrated_candidate_integrity_v17',
+    'test_google_writer_integrated_candidate_integrity_v18',
+    'test_google_writer_integrated_candidate_integrity_v19',
+    # Run this original exact-source pin on the immutable 1fd48f4 fixture;
+    # the candidate carries its own additive prepared-intent retry overlay.
+    'test_partial_reconciliation_first_append_only_integrity_v1',
+    # Keep the prepared-retry v1 pin on its immutable d386586 snapshot;
+    # newer receipt-recovery changes are pinned by the additive v2 overlay.
+    'test_partial_reconciliation_prepared_append_only_retry_integrity_v1',
+    # Receipt-recovery v1 remains pinned to its original 24554fef tree; its
+    # additive successor is tested against the current candidate separately.
+    'test_google_writer_receipt_recovery_integrity_v1',
+    # ALL-scope recovery v1 is immutable at 9037e57; v2 pins the manifest
+    # compatibility correction against the evolving candidate.
+    'test_google_writer_all_scope_receipt_recovery_integrity_v1',
+    # The source-snapshot v1 assertions run against their materialized pinned
+    # tree through the additive history runner, never against candidate files.
+    'test_google_writer_legacy_source_snapshots_integrity_v1',
+    # Legacy append reconciliation v1 remains pinned to the original 1111eb9
+    # profile source; its source-digest-absence successor is an additive v2.
+    'test_legacy_append_reconciliation_integrity_v1',
+    # Legacy append reconciliation v2 remains pinned to the exact 98eb5d5
+    # source snapshot; the corrected 25+0 profile is pinned by additive v3.
+    'test_legacy_append_reconciliation_integrity_v2',
+    # The v3 and bounded-read exact-source contracts run only against their
+    # immutable source snapshots, never against the evolving candidate tree.
+    'test_legacy_append_reconciliation_integrity_v3',
+    # The flattened discovery copy is also present beside the namespace import.
+    'test_legacy_sheet_read_bounds_integrity_v1',
+    'validation.local_release_20260911.test_legacy_sheet_read_bounds_integrity_v1',
+}
+
+def selected_suite(suite,mode):
+    selected=[]
+    def visit(node):
+        for test in node:
+            if isinstance(test,unittest.TestSuite):visit(test)
+            else:
+                modules=set(test.id().split('.')[:-1])
+                if modules & EXACT_TREE_OVERLAY_MODULES:
+                    continue
+                historic=bool(modules & HISTORICAL_INTEGRITY_MODULES)
+                if (mode=='historical_integrity' and historic) or (mode!='historical_integrity' and not historic):
+                    selected.append(test)
+    visit(suite)
+    return unittest.TestSuite(selected)
+
+def copy_pinned_release_file(source_root, target_root, relative_path, expected_sha256):
+    """Copy an allowlisted release-test dependency only when its bytes are pinned."""
+    relative_path=Path(relative_path)
+    source=Path(source_root)/relative_path
+    if not source.is_file():
+        raise FileNotFoundError(f'Required pinned Release Gate file missing: {relative_path.as_posix()}')
+    source_sha256=hashlib.sha256(source.read_bytes()).hexdigest()
+    if source_sha256!=expected_sha256:
+        raise RuntimeError(f'Required pinned Release Gate file SHA-256 mismatch: {relative_path.as_posix()}')
+    target=Path(target_root)/relative_path
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copyfile(source,target)
+    if hashlib.sha256(target.read_bytes()).hexdigest()!=expected_sha256:
+        raise RuntimeError(f'Staged Release Gate file SHA-256 mismatch: {relative_path.as_posix()}')
+    return target
+
+
+def stage_gitattributes(source_root, target_root):
+    """Stage checkout EOL rules in the disposable tree when the candidate has them."""
+    source=Path(source_root)/'.gitattributes'
+    if not source.is_file():
+        return None
+    target=Path(target_root)/'.gitattributes'
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(source,target)
+    if target.read_bytes()!=source.read_bytes():
+        raise RuntimeError('Staged .gitattributes differs from candidate source')
+    return target
+
+
+def release_fixture_source(source_root, infrastructure_root, fixture_name, mode):
+    """Resolve an allowlisted fixture, with infrastructure fallback only historically."""
+    if not isinstance(fixture_name, str) or Path(fixture_name).name != fixture_name:
+        raise ValueError("Release fixture must be an allowlisted basename")
+    historical = Path(source_root) / "validation/fixtures" / fixture_name
+    if historical.is_file():
+        return historical
+    if mode == "historical_integrity":
+        infrastructure = Path(infrastructure_root) / "validation/fixtures" / fixture_name
+        if infrastructure.is_file():
+            return infrastructure
+    return historical
+
+
+def normalize_windows_sqlite_uri(database):
+    if not isinstance(database,str) or not database.startswith('file:'):
+        return database
+    raw,separator,query=database[5:].partition('?')
+    if len(raw)>=3 and raw[1]==':' and raw[2] in {'\\','/'}:
+        return Path(raw).resolve().as_uri()+(('?'+query) if separator else '')
+    return database
+
+
+def install_windows_sqlite_uri_compatibility():
+    """Normalize only absolute Windows file: URIs in the disposable test process.
+
+    SQLite URI syntax requires a file URL (file:///C:/...) on Windows. Some
+    application read-only paths intentionally build POSIX-style file URIs for
+    Linux; this test-process adapter keeps those local tests portable without
+    changing application code or database permissions.
+    """
+    original_connect=sqlite3.connect
+    def connect(database,*args,**kwargs):
+        if kwargs.get('uri'):
+            database=normalize_windows_sqlite_uri(database)
+        return original_connect(database,*args,**kwargs)
+    sqlite3.connect=connect
+
 def main():
+    old_cwd=Path.cwd()
+    mode=os.environ.get('PQM_RELEASE_MODE','')
+    manifest_root=ROOT
+    if mode=='historical_integrity' and not (ROOT/PACKAGE_MANIFEST).is_file():
+        manifest_root=INFRA_ROOT
+    package_manifest=load_package_manifest(manifest_root)
+    full_candidate_run=(not mode and len(sys.argv)==1) or mode=='baseline_full'
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
         root=Path(tmp)
-        for source in ROOT.iterdir():
-            if source.name.startswith('.') or source.name in {'data','validation','__pycache__','backups','output','logs'}:continue
-            if source.is_dir():shutil.copytree(source,root/source.name)
-            else:shutil.copy2(source,root/source.name)
-        for source in (ROOT/'validation/local_release_20260911').glob('test_*.py'):
-            shutil.copy2(source,root/source.name)
+        fixture_target=root/'validation/fixtures'
+        fixture_target.mkdir(parents=True,exist_ok=True)
+        validation_target=root/'validation'
+        validation_target.mkdir(parents=True,exist_ok=True)
+        for relative_path,expected_sha256 in package_manifest['pinned_release_files'].items():
+            source_path=ROOT/relative_path
+            if source_path.is_file():
+                copy_pinned_release_file(ROOT,root,relative_path,expected_sha256)
+        v2_archive=ROOT/'validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip'
+        if mode!='historical_integrity' and not v2_archive.is_file():
+            v2_archive.parent.mkdir(parents=True,exist_ok=True)
+            archive_env=os.environ.copy()
+            archive_env['PQM_INTEGRATED_V2_ARCHIVE_OUT']=str(v2_archive)
+            materialized=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v2_history.py')],
+                cwd=old_cwd,env=archive_env,check=False)
+            if materialized.returncode:
+                raise RuntimeError('Integrated v2 immutable snapshot could not be staged')
+        # Stage all declared test-package dependencies from one manifest after
+        # generated immutable fixtures are available at the source root.
+        stage_declared_files(ROOT,root,INFRA_ROOT,mode,package_manifest)
+        stage_dynamic_package_files(ROOT,root,INFRA_ROOT,package_manifest)
         # Delivered tests assume runtime DOCX copies have already been installed.
         shutil.copytree(root/'templates', root/'data/templates', dirs_exist_ok=True)
-        os.environ.update(HOST='127.0.0.1',PORT='8080',PQM_ENV='local',PQM_DATA_DIR=str(root/'data'),PQM_DB_PATH=str(root/'data/pqm.sqlite3'),
+        preflight_package(ROOT,root,INFRA_ROOT,mode,package_manifest)
+        os.environ.update(PQM_RELEASE_SOURCE_ROOT=str(ROOT), HOST='127.0.0.1',PORT='8080',PQM_ENV='local',PQM_DATA_DIR=str(root/'data'),PQM_DB_PATH=str(root/'data/pqm.sqlite3'),
                           PQM_RELEASE_SCHEMA_ONLY='0',PQM_AUTH_ENABLED='0',PQM_USERS_JSON='',
                           PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_PROZORRO_SCHEDULER='0',PQM_ENABLE_VIOLATION_SCHEDULER='0',
                           PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_BROWSER='0',
@@ -36,21 +294,171 @@ def main():
                 raise RuntimeError('Outbound network forbidden in release tests')
             return original_connect(sock,address)
         socket.socket.connect=isolated_connect
-        old_cwd=Path.cwd()
         os.chdir(root)
         sys.path.insert(0,str(root))
         try:
+            install_windows_sqlite_uri_compatibility()
             import server
             server.init_db()
             server.init_reference_tables(server.DB_PATH)
             import scheduler_runtime
-            with server.db() as con:scheduler_runtime.migrate(con)
+            with closing(server.db()) as con:
+                with con:scheduler_runtime.migrate(con)
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
+            if mode=='historical_integrity' or full_candidate_run or mode=='baseline_candidate':
+                suite=selected_suite(suite,'historical_integrity' if mode=='historical_integrity' else 'candidate')
             result=unittest.TextTestRunner(verbosity=2).run(suite)
-            return 0 if result.wasSuccessful() else 1
+            if mode=='historical_integrity':
+                integrated_v1_history=subprocess.run(
+                    [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v1_history.py')],
+                    cwd=old_cwd,check=False)
+                integrated_v2_history=subprocess.run(
+                    [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v2_history.py')],
+                    cwd=old_cwd,check=False)
+                return 0 if result.wasSuccessful() and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 else 1
+            if not full_candidate_run:
+                return 0 if result.wasSuccessful() else 1
+            candidate_ok=result.wasSuccessful()
+            v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_messages_integrated_v1_history_addendum.py')],
+                cwd=old_cwd, check=False)
+            v2_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_classification_parent_integrity.py'),'--messages-v2'],
+                cwd=old_cwd, check=False)
+            v3_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_messages_header_polish_v3_integrity.py')],
+                cwd=old_cwd, check=False)
+            edr_v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_sandbox_edr_google_nazk_reconcile_v1_integrity.py')],
+                cwd=old_cwd, check=False)
+            google_timezone_v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_google_edr_timezone_alias_v1_integrity.py')],
+                cwd=old_cwd, check=False)
+            classification_parent_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_classification_parent_integrity.py')],
+                cwd=old_cwd,check=False)
+            classification_v3_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_supplier_classification_v3_integrity.py')],
+                cwd=old_cwd,check=False)
+            manual_classification_v4_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_supplier_manual_classification_v4_integrity.py')],
+                cwd=old_cwd,check=False)
+            source_integrity_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_source_integrity_overlays.py')],
+                cwd=old_cwd,check=False)
+            date_only_previous_contract_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_date_only_previous_contract_overlays.py')],
+                cwd=old_cwd,check=False)
+            date_only_status_v2_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_date_only_status_integrated_v2_history.py')],
+                cwd=old_cwd,check=False)
+            preview_digest_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_preview_digest_contract_v1_integrity.py')],
+                cwd=old_cwd,check=False)
+            checkpointed_apply_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_checkpointed_apply_v1_integrity.py')],
+                cwd=old_cwd,check=False)
+            partial_reconciliation_second_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_partial_reconciliation_second_v1_history.py')],
+                cwd=old_cwd,check=False)
+            sandbox_preview_append_only_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_sandbox_preview_append_only_v1_history.py')],
+                cwd=old_cwd,check=False)
+            sandbox_preview_workflow_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_sandbox_preview_workflow_v1_history.py')],
+                cwd=old_cwd,check=False)
+            first_append_only_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_partial_reconciliation_first_append_only_v1_history.py')],
+                cwd=old_cwd,check=False)
+            prepared_retry_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_prepared_append_only_retry_v1_history.py')],
+                cwd=old_cwd,check=False)
+            receipt_recovery_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_google_writer_receipt_recovery_v1_history.py')],
+                cwd=old_cwd,check=False)
+            all_scope_recovery_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_google_writer_all_scope_receipt_recovery_v1_history.py')],
+                cwd=old_cwd,check=False)
+            legacy_append_reconciliation_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v1_history.py')],
+                cwd=old_cwd,check=False)
+            legacy_append_reconciliation_v2_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v2_history.py')],
+                cwd=old_cwd,check=False)
+            immutable_google_writer_source_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_immutable_google_writer_source_overlays.py')],
+                cwd=old_cwd,check=False)
+            # c246 contracts are run by the mandatory workflow snapshot step
+            # before the container is built. The release image intentionally
+            # has no .git directory, so do not attempt a second Git-backed run
+            # from inside that image.
+            writer_history_snapshots=subprocess.run(
+                [sys.executable,str(root/'validation/run_google_writer_historical_integrity_snapshots_v1.py')],
+                cwd=old_cwd,check=False)
+            integrated_v1_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v1_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v2_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v2_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v3_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v3_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v4_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v4_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v5_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v5_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v6_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v6_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v7_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v7_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v8_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v8_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v9_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v9_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v10_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v10_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v11_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v11_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v12_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v12_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v13_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v13_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v14_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v14_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v15_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v15_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v16_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v16_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v17_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v17_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v18_history=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v18_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v19_current=subprocess.run(
+                [sys.executable,'-B','-m','unittest','-v',
+                 'test_google_writer_integrated_candidate_integrity_v19'],
+                cwd=ROOT,check=False)
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_history.returncode==0 and integrated_v13_history.returncode==0 and integrated_v14_history.returncode==0 and integrated_v15_history.returncode==0 and integrated_v16_history.returncode==0 and integrated_v17_history.returncode==0 and integrated_v18_history.returncode==0 and integrated_v19_current.returncode==0 else 1
         finally:
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
             os.chdir(old_cwd)
+            gc.collect()  # Release cyclic SQLite handles before Windows cleanup.
+            logging.shutdown()
 
 if __name__=='__main__':raise SystemExit(main())

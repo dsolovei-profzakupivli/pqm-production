@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import json
+import application_officers
+import background_jobs
 import auth_access
+import chat_annotations
 import table_widths
+import protocol_supplier_names
+import document_quotes
 import navigation_settings
 import supplier_activity
+import nazk_preview
 import supplier_registry_integration
+import supplier_classification
+import supplier_manual_classification
 import legacy_google_verification_preview
 import legacy_google_verification_overlap_audit
 import legacy_google_factual_edr_audit
@@ -14,12 +22,17 @@ import legacy_google_factual_edr_preview
 import legacy_google_termination_audit
 import legacy_google_termination_import
 import edr_sync_v2
+import supplier_evidence_shadow_hooks_v3 as evidence_shadow
+import google_writer_execution
 import sandbox_edr_review
+import prod_google_baseline
+import edr_sync_review
 import base64
 import csv
 import hashlib
 import html
 import io
+from contextlib import nullcontext, closing, contextmanager
 import itertools
 import hmac
 import logging
@@ -47,6 +60,8 @@ import zipfile
 from xml.etree import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import ui_action_summary
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -90,6 +105,13 @@ from reference_directories import (
     refresh_amcu, refresh_nazk, start_reference_refresh,
 )
 from uo_work_queue import get_uo_work_queue
+from uo_work_progress import (
+    PROTOCOL_OFFICER_SQL,
+    REVIEW_OFFICER_SQL,
+    STATUS_SQL as WORK_QUEUE_STATUS_SQL,
+    work_queue_application_statistics as _work_queue_application_statistics,
+)
+from uo_work_progress import work_queue_statistics_payload as _work_queue_statistics_payload
 
 ROOT = Path(__file__).resolve().parent
 SUPPLIER_REGISTRY_INTEGRATION_PATH = "/api/integrations/suppliers/full-registry"
@@ -104,6 +126,17 @@ GOOGLE_TERMINATION_IMPORT_APPLY_PATH = legacy_google_termination_import.APPLY_PA
 GOOGLE_VERIFICATION_APPLY_PATH = legacy_google_verification_preview.APPLY_PATH
 SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SUPPLIER_REGISTRY_TOKEN"
 SANDBOX_SUPPLIER_REGISTRY_INTEGRATION_TOKEN_ENV = "PQM_SANDBOX_SUPPLIER_REGISTRY_TOKEN"
+GOOGLE_MIGRATION_DISABLED_PATHS = frozenset({
+    "/api/integrations/google/verification-events/preview",
+    "/api/integrations/google/verification-events/apply",
+    "/api/integrations/google/verification-events/overlap-audit",
+    "/api/integrations/google/factual-edr/audit",
+    "/api/integrations/google/factual-edr/preview",
+    "/api/integrations/google/factual-edr/apply",
+    "/api/integrations/google/termination-notes/audit",
+    "/api/integrations/google/termination-notes/preview",
+    "/api/integrations/google/termination-notes/apply",
+})
 
 
 def configure_file_logging() -> logging.Logger:
@@ -403,10 +436,14 @@ def auth_accounts() -> dict[str, dict]:
 
 
 def mutation_allowed(role: str, method: str, path: str) -> bool:
-    if path in {"/api/account", "/api/account/avatar"} or path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read)", path):
+    if path in {"/api/account", "/api/account/avatar"} or path == "/api/chats" or re.fullmatch(r"/api/chats/\d+/(?:messages|read|messages/\d+/marks)", path):
         return role in AUTH_ROLES
     # Account-owned presentation preferences only; never a business-data mutation.
     if method == 'POST' and path == '/api/history-columns' and role in AUTH_ROLES:
+        return True
+    if method in {'POST','PATCH'} and re.fullmatch(r'/api/application-profiles(?:/[^/]+)?',path) and role in AUTH_ROLES:
+        # A profile is owner-scoped presentation state. The handlers below still
+        # prohibit non-admins from writing system profiles.
         return True
     # Read-only preview still requires tasks.read in the central permission gate.
     if method == 'POST' and path == '/api/edr-monitoring/termination-exclusions/preview':
@@ -425,6 +462,8 @@ def mutation_allowed(role: str, method: str, path: str) -> bool:
         r"^/api/violation-reports/[^/]+/documents/(?:customer|supplier)/[^/]+$",
         r"^/api/suppliers/[^/]+/nazk-check$",
         r"^/api/suppliers/[^/]+/note$",
+        r"^/api/suppliers/[^/]+/classification$",
+        r"^/api/supplier-classifications/bulk/(?:preview|apply)$",
         r"^/api/application-profiles(?:/[^/]+)?$",
         r"^/api/applications/[^/]+/remark-selections$",
     )
@@ -636,14 +675,10 @@ def now_iso() -> str:
 
 
 def effective_officer_sql(q_alias: str = "q", af_alias: str = "af", fo_alias: str = "fo",
-                          undefined: str = "") -> str:
-    """Single business definition used by application lists, cards and filters."""
-    fallback = str(undefined).replace("'", "''")
-    return (f"CASE WHEN COALESCE({q_alias}.status,'pending')='pending' "
-            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),NULLIF({fo_alias}.officer,''),'{fallback}') "
-            f"WHEN {q_alias}.status IN ('active','unsuccessful') "
-            f"THEN COALESCE(NULLIF({af_alias}.protocol_officer,''),'{fallback}') "
-            f"ELSE '{fallback}' END")
+                          undefined: str = application_officers.UNDEFINED_OFFICER) -> str:
+    """Compatibility wrapper for the shared protocol-officer projection."""
+    return application_officers.protocol_officer_sql(
+        qualification_alias=q_alias, application_alias=af_alias, undefined=undefined)
 
 
 def legal_reference_sort_key(item: dict) -> tuple:
@@ -812,14 +847,15 @@ def list_application_view_profiles(user: str) -> dict:
     return {"items": items}
 
 
-HISTORY_COLUMN_KEYS = ('supplier','code','manager','date','cpv','framework','decision','officer','contract','remarks','documents')
+HISTORY_COLUMN_KEYS = ('supplier','code','manager','date','cpv','framework','decision','review_officer','officer','contract','remarks','documents')
 
 def history_column_settings(user, columns=None):
     owner = _profile_owner(user)
     identity = 'history-columns:' + hashlib.sha256(owner.encode()).hexdigest()
     with db() as con:
         if columns is not None:
-            if not isinstance(columns,list) or len(columns)!=len(HISTORY_COLUMN_KEYS):
+            legacy_keys = set(HISTORY_COLUMN_KEYS) - {'review_officer'}
+            if not isinstance(columns,list) or len(columns) not in (len(legacy_keys),len(HISTORY_COLUMN_KEYS)):
                 raise ValueError('Передайте налаштування всіх колонок історії')
             result=[]
             for index,c in enumerate(columns):
@@ -827,8 +863,13 @@ def history_column_settings(user, columns=None):
                     raise ValueError('Некоректні налаштування колонок')
                 width=c.get('width')
                 if not isinstance(width,int) or not 60<=width<=1200:raise ValueError('Ширина має бути від 60 до 1200 px')
-                result.append({'key':c['key'],'visible':c['visible'],'width':width,'order':index})
-            if len({c['key'] for c in result})!=len(HISTORY_COLUMN_KEYS):raise ValueError('Повтор колонки')
+                pin=c.get('pin','')
+                if pin not in ('','left'):raise ValueError('Некоректне закріплення колонки')
+                item={'key':c['key'],'visible':c['visible'],'width':width,'order':index}
+                if 'pin' in c:item['pin']=pin
+                result.append(item)
+            keys={c['key'] for c in result}
+            if len(keys)!=len(result) or keys not in (legacy_keys,set(HISTORY_COLUMN_KEYS)):raise ValueError('Повтор або відсутність колонки')
             con.execute('''INSERT INTO application_view_profiles
               (id,owner_key,name,is_system,columns_json,created_at,updated_at,created_by,updated_by)
               VALUES (?,?,?,0,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET columns_json=excluded.columns_json,
@@ -847,7 +888,7 @@ def _validated_profile_columns(value) -> list[dict]:
         seen.add(key)
         result.append({"key": key, "visible": bool(raw.get("visible", True)),
                        "order": int(raw.get("order", index)),
-                       "width": max(40, min(500, int(raw.get("width", 120)))),
+                       "width": max(40, min(1200, int(raw.get("width", 120)))),
                        "pin": "left" if raw.get("pin") == "left" else ""})
     return result
 
@@ -984,16 +1025,29 @@ def unicode_casefold(value: str | None) -> str:
     return (value or "").casefold()
 
 
+def _timestamp_us(value) -> int | None:
+    """Exact UTC ordering key; unknown wall timestamps are not guessed as instants."""
+    raw = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+                return None
+            # Calendar-only fallback values retain midnight ordering, without
+            # changing their stored/displayed calendar date.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        elapsed = parsed.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return (elapsed.days * 86400 + elapsed.seconds) * 1000000 + elapsed.microseconds
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=60)
     con.row_factory = sqlite3.Row
     con.create_function("CASEFOLD", 1, unicode_casefold, deterministic=True)
     con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
-    con.create_function(
-        "NORMALIZE_NAME", 1,
-        lambda value: " ".join(re.sub(r"[’'`\-]+", " ", str(value or "").casefold()).split()),
-        deterministic=True,
-    )
+    edr_sync_v2.register_verification_sql_functions(con)
     con.create_function("NORMALIZED_DATE", 1, lambda value: edr_sync_v2.normalized_date(value), deterministic=True)
     con.create_function("EDR_FRESHNESS", 2, lambda status, checked: edr_sync_v2.freshness_state(
         str(status or ""), str(checked or ""))["bucket"], deterministic=True)
@@ -1435,6 +1489,20 @@ def init_db() -> None:
           internal_decision TEXT DEFAULT '', decision_justification TEXT DEFAULT '', review_notes TEXT DEFAULT '', protocol_number TEXT DEFAULT '',
           protocol_date TEXT DEFAULT '', reviewed_at TEXT DEFAULT '', updated_at TEXT NOT NULL, updated_by TEXT DEFAULT 'УО'
         );
+        CREATE TABLE IF NOT EXISTS violation_scenario_context_snapshots (
+          report_id TEXT PRIMARY KEY REFERENCES violation_reports(id) ON DELETE CASCADE,
+          snapshot_version INTEGER NOT NULL,
+          report_external_id TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          tender_id TEXT NOT NULL,
+          input_fingerprint TEXT NOT NULL,
+          source_updated_at TEXT NOT NULL,
+          source_updated_at_ns INTEGER NOT NULL,
+          observed_at_ns INTEGER NOT NULL,
+          captured_at TEXT NOT NULL,
+          context_hash TEXT NOT NULL,
+          context_json TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS violation_report_document_reviews (
           report_id TEXT NOT NULL REFERENCES violation_reports(id) ON DELETE CASCADE,
           document_source TEXT NOT NULL CHECK(document_source IN ('customer','supplier')),
@@ -1487,6 +1555,7 @@ def init_db() -> None:
             if column not in edr_columns:
                 con.execute(f"ALTER TABLE supplier_edr_profiles ADD COLUMN {column} TEXT DEFAULT ''")
         edr_sync_v2.migrate(con)
+        supplier_manual_classification.ensure_schema(con)
         if con.execute("SELECT COUNT(*) FROM remarks_catalog").fetchone()[0] == 0:
             con.executemany("INSERT INTO remarks_catalog(point,text,tag,category,active,updated_at) VALUES (?,?,?,?,1,?)",
                             [(point, text, tag, "", now_iso()) for point, text, tag in DEFAULT_REMARKS])
@@ -1569,6 +1638,10 @@ def init_db() -> None:
             "customer_protocol_decision_date": "TEXT DEFAULT ''",
             "customer_protocol_decision_number": "TEXT DEFAULT ''",
             "customer_protocol_decision_url": "TEXT DEFAULT ''",
+            "manual_winner_date": "TEXT NOT NULL DEFAULT ''",
+            "manual_winner_basis": "TEXT NOT NULL DEFAULT ''",
+            "manual_winner_entered_by": "TEXT NOT NULL DEFAULT ''",
+            "manual_winner_entered_at": "TEXT NOT NULL DEFAULT ''",
             "generated_protocol_filename": "TEXT DEFAULT ''",
             "generated_protocol_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
             "protocol_generated_at": "TEXT DEFAULT ''",
@@ -1599,12 +1672,14 @@ def init_db() -> None:
             con.execute("ALTER TABLE supplier_nazk_check_documents ADD COLUMN prozorro_document_id TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS ix_supplier_nazk_documents_submission ON supplier_nazk_check_documents(submission_id)")
         auth_access.migrate(con)
+        chat_annotations.migrate(con)
         table_widths.migrate(con)
         formed_protocols.migrate(con)
         operational_tasks.migrate(con)
         task_documents.migrate(con)
         navigation_settings.migrate(con)
         scheduler_runtime.migrate(con)
+        google_writer_execution.migrate(con)
         ensure_runtime_feature_settings(con)
         ensure_google_oauth_transactions(con)
 
@@ -1625,6 +1700,8 @@ def start_amcu_registry_refresh(raw=None, filename="") -> bool:
     A failed task rebuild raises into the AMCU refresh worker, which records an
     error instead of presenting the source refresh as fully successful.
     """
+    if background_jobs.disabled():
+        return False
     return start_reference_refresh(
         DB_PATH, "amcu", raw, filename,
         on_complete=lambda: rebuild_operational_tasks("PQM AMCU refresh"))
@@ -1640,7 +1717,7 @@ def amcu_blocks_submission(con: sqlite3.Connection, submission_id: str) -> bool:
         "SELECT 1 FROM amcu_registry WHERE DIGITS(offender_code)=? LIMIT 1", (code,)).fetchone())
 
 
-def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
+def rebuild_nazk_tasks(actor: str, *, workflow: str, lease_owner: str | None = None) -> dict:
     """Explicit NAZK-only workflow; no external fetch and no unrelated tasks."""
     if SAFE_MODE and not (SANDBOX_MODE and sandbox_runtime.nazk_read_enabled()):
         return {"skipped": "safe_mode", "created": 0}
@@ -1652,10 +1729,15 @@ def rebuild_nazk_tasks(actor: str, *, workflow: str) -> dict:
         SERVER_LOG.info("NAZK materialization skipped: workflow not explicitly enabled")
         return {"skipped": "nazk_workflow_disabled", "created": 0}
     with db() as con:
+        if lease_owner is not None:
+            con.execute("BEGIN IMMEDIATE")
+            scheduler_runtime.require_current_lease(con, "nazk_registry", lease_owner)
         supplier_nazk = reconcile_active_supplier_nazk(con, apply=True)
         counts = operational_tasks.materialize_nazk_tasks(con, actor)
         counts["supplier_nazk_checks_created"] = sum(bool(item.get("created"))
                                                    for item in supplier_nazk.get("items", []))
+        if lease_owner is not None:
+            scheduler_runtime.require_current_lease(con, "nazk_registry", lease_owner)
         return counts
 
 
@@ -1666,6 +1748,16 @@ def reconcile_prozorro_task_lifecycles(actor: str = "PQM Prozorro qualification 
     with db() as con:
         return {"amcu": operational_tasks.reconcile_amcu_after_qualification_sync(con, actor),
                 "termination": operational_tasks.reconcile_termination_after_qualification_sync(con, actor)}
+
+
+def reconcile_nazk_tasks_after_complete_prozorro_sync(sync_result: dict) -> dict:
+    """Apply NAZK task relevance only after a complete qualification refresh."""
+    if SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        return operational_tasks.reconcile_stale_nazk_tasks_after_prozorro_sync(
+            con, sync_result, "PQM successful Prozorro qualification sync")
 
 
 def api_get(url: str) -> dict:
@@ -1729,6 +1821,8 @@ def save_framework(item: dict) -> bool:
     if organizer != ORGANIZER_EDRPOU:
         return False
     with db() as con:
+        shadow_previous = evidence_shadow.capture_framework(con, item["id"])
+        previous_framework = con.execute('SELECT id,status,raw_json FROM frameworks WHERE id=?', (item['id'],)).fetchone()
         con.execute("""INSERT INTO frameworks
           (id,pretty_id,title,dk_code,status,organizer_edrpou,agreement_id,date_modified,raw_json,synced_at)
           VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -1739,12 +1833,18 @@ def save_framework(item: dict) -> bool:
            item.get("classification", {}).get("id", ""), item.get("status", ""), organizer,
            item.get("agreementID", ""), item.get("dateModified", ""),
            json.dumps(item, ensure_ascii=False), now_iso()))
+        status_event = edr_sync_v2.record_prozorro_framework_status_event(
+            con, dict(previous_framework) if previous_framework else None, item, now_iso())
+        if status_event['reason'] == 'missing_or_invalid_status_timestamp':
+            print('PQM verification status event skipped: framework status timestamp not verified')
         # A manually registered directory row is the canonical source of the
         # tracked selection before Prozorro exposes its factual payload. Link
         # it additively as soon as the matching framework becomes available.
         con.execute("""UPDATE framework_service_directory SET framework_id=?
           WHERE pretty_id=? AND framework_id IS NULL""",
           (item["id"], item.get("prettyID", "")))
+        evidence_shadow.framework_written(con, item=item, previous=shadow_previous,
+            recorded_at=now_iso())
     return True
 
 
@@ -1795,6 +1895,7 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
     submission_count = qualification_count = contract_count = 0
     experience_submission_ids = []
     newly_active_qualification_ids = set()
+    shadow_application_decisions = []
     with db() as con:
         submissions_cursor = resource_cursor(framework_id, "submissions") if incremental else None
         for batch in scoped_pages(framework_id, "submissions", submissions_cursor):
@@ -1815,13 +1916,8 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                     "INSERT OR IGNORE INTO application_fields(submission_id) VALUES (?)", (item["id"],)
                 )
                 if application_cursor.rowcount:
-                    assignment = con.execute("""SELECT responsible_officer FROM framework_service_directory
-                      WHERE framework_id=? AND COALESCE(responsible_officer,'')<>'' LIMIT 1""",
-                      (framework_id,)).fetchone()
-                    if assignment:
-                        con.execute("""UPDATE application_fields SET protocol_officer=?,updated_at=?,updated_by=?
-                          WHERE submission_id=? AND COALESCE(protocol_officer,'')=''""",
-                          (assignment[0], now_iso(), "PQM default from framework", item["id"]))
+                    application_officers.assign_default_protocol_officer(
+                        con, item["id"], framework_id, now_iso())
                 previous_manager = con.execute("""SELECT af.manager_name,s.id
                   FROM submissions s JOIN application_fields af ON af.submission_id=s.id
                   WHERE s.supplier_code=? AND s.id<>? AND COALESCE(af.manager_name,'')<>''
@@ -1891,6 +1987,11 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                 if (item.get("status") == "active" and
                         (previous_qualification is None or previous_qualification[0] != "active")):
                     newly_active_qualification_ids.add(item["id"])
+                if (item.get("status") in {"active", "unsuccessful"}
+                        and (previous_qualification is None or previous_qualification[0] != item.get("status"))):
+                    if evidence_shadow.enabled():
+                        shadow_application_decisions.append((item.get("submissionID", ""),
+                            "admit" if item["status"] == "active" else "reject"))
                 qualification_count += 1
         agreement_id = framework.get("agreementID", "")
         if agreement_id:
@@ -1898,8 +1999,9 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
             for batch in paginated_pages(f"{API_ROOT}/agreements/{agreement_id}/contracts", contracts_cursor):
                 for item in batch:
                     supplier = (item.get("suppliers") or [{}])[0]
+                    shadow_previous = evidence_shadow.capture_contract(con, item, now_iso())
                     previous_contract = con.execute(
-                        "SELECT status,qualification_id FROM registry_contracts WHERE id=?",
+                        "SELECT status,qualification_id,id,framework_id,supplier_code,raw_json FROM registry_contracts WHERE id=?",
                         (item["id"],)).fetchone()
                     con.execute("""INSERT INTO registry_contracts
                       (id,framework_id,qualification_id,supplier_code,status,milestones_json,raw_json,synced_at)
@@ -1912,16 +2014,26 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
                        supplier.get("identifier", {}).get("id", ""), item.get("status", ""),
                        json.dumps(item.get("milestones", []), ensure_ascii=False),
                        json.dumps(item, ensure_ascii=False), now_iso()))
+                    status_event = edr_sync_v2.record_prozorro_contract_status_event(
+                        con, framework_id, agreement_id, dict(previous_contract) if previous_contract else None, item, now_iso())
+                    if status_event['reason'] in {'missing_or_invalid_status_timestamp', 'status_timestamp_not_proven_by_milestone'}:
+                        print('PQM verification status event skipped: contract status timestamp not verified')
                     if (item.get("status") == "active" and
                             (previous_contract is None or previous_contract[0] != "active" or
                              previous_contract[1] != item.get("qualificationID", ""))):
                         edr_sync_v2.materialize_effective_admission(con, item["id"], now_iso())
+                    evidence_shadow.contract_written(con, item=item,
+                        previous=shadow_previous, recorded_at=now_iso())
                     contract_count += 1
         for qualification_id in newly_active_qualification_ids:
             for contract in con.execute(
                     "SELECT id FROM registry_contracts WHERE qualification_id=? AND status='active'",
                     (qualification_id,)).fetchall():
                 edr_sync_v2.materialize_effective_admission(con, contract[0], now_iso())
+        # Project admissions only after all source contracts have been persisted;
+        # an intermediate qualification-only snapshot is not a lifecycle gap.
+        for submission_id, outcome in shadow_application_decisions:
+            evidence_shadow.application_decision(con, submission_id, outcome, now_iso())
     enqueue_contract_experience_search(experience_submission_ids)
     return {"framework": framework.get("prettyID"), "submissions": submission_count, "qualifications": qualification_count, "contracts": contract_count}
 
@@ -2108,6 +2220,7 @@ def sync_all_worker() -> None:
             sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_all_tracked_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
+        result["nazk_task_reconciliation"] = reconcile_nazk_tasks_after_complete_prozorro_sync(result)
         rebuild_operational_tasks()
         SYNC_STATE["message"] = (
             f"Оновлено {result['completed']}/{result['frameworks']} відборів "
@@ -2136,6 +2249,7 @@ def sync_incremental_worker() -> None:
             sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
         result = sync_incremental_active_frameworks()
         result["task_reconciliation"] = reconcile_prozorro_task_lifecycles()
+        result["nazk_task_reconciliation"] = reconcile_nazk_tasks_after_complete_prozorro_sync(result)
         rebuild_operational_tasks()
         SYNC_STATE["message"] = (
             f"Щогодинне оновлення: {result['completed']}/{result['frameworks']} відборів; "
@@ -2160,22 +2274,30 @@ def sync_incremental_worker() -> None:
         SYNC_STATE['running'] = False
 
 
-def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error: str = "") -> None:
+def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error: str = "", *,
+                            require_current: bool = False) -> None:
     try:
-        scheduler_runtime.finish(DB_PATH, job_key, owner, status=status, error=error)
+        scheduler_runtime.finish(DB_PATH, job_key, owner, status=status, error=error,
+                                 require_current=require_current)
     except Exception:
         SERVER_LOG.exception("Cannot finish scheduler lease job=%s owner=%s", job_key, owner)
 
 
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
-                        trigger: str = "manual") -> bool:
+                        trigger: str = "manual", expected_revision=None,
+                        manual_authorized: bool = False, actor: str = "") -> bool:
     """Claim process and SQLite job locks before starting any Prozorro refresh."""
+    manual_override = (manual_authorized is True and trigger == "manual" and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
+        return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     with SYNC_STATE_LOCK:
         if SYNC_STATE.get("running"):
             return False
-        owner = scheduler_runtime.claim(DB_PATH, "prozorro", trigger=trigger)
+        owner = scheduler_runtime.claim(DB_PATH, "prozorro", trigger=trigger, expected_revision=expected_revision,
+                                        manual_authorized=manual_override, actor=actor)
         if not owner:
             return False
         SYNC_STATE.update(running=True, mode=mode, started_at=now_iso(), message=message)
@@ -2201,7 +2323,7 @@ def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
     except Exception:
         with SYNC_STATE_LOCK:
             SYNC_STATE.update(running=False, message="Не вдалося запустити синхронізацію", updated_at=now_iso())
-        scheduler_runtime.release(DB_PATH, "prozorro", owner)
+        _finish_scheduler_lease("prozorro", owner, "error", "worker_start_failed")
         raise
     return True
 
@@ -2227,10 +2349,39 @@ def sync_status_payload() -> dict:
     thread = SCHEDULER_THREADS.get('prozorro')
     enabled = bool(configured.get('prozorro'))
     alive = bool(enabled and thread and thread.is_alive())
+    run = scheduler_execution_snapshot("prozorro")
     payload.update(scheduler_enabled=enabled, scheduler_running=alive,
                    scheduler_heartbeat_at=SCHEDULER_HEARTBEATS.get('prozorro'),
-                   next_run_at=payload.get('next_run_at') if alive else None)
+                   next_run_at=payload.get('next_run_at') if alive else None,
+                   last_started_at=run.get("last_started_at"),
+                   last_finished_at=run.get("last_finished_at"),
+                   last_status=run.get("last_status"), last_trigger=run.get("last_trigger"),
+                   last_actor=run.get("last_actor"), last_error=run.get("last_error"))
     return payload
+
+
+def scheduler_execution_snapshot(job_key: str) -> dict:
+    """Read the persisted last-run state and actor without opening a write connection."""
+    defaults = {key: False for key in SCHEDULER_TARGETS}
+    item = next((row for row in scheduler_runtime.state(DB_PATH, defaults)
+                 if row.get("job") == job_key), {})
+    result = {key: item.get(key) for key in
+              ("last_started_at", "last_finished_at", "last_status", "last_trigger", "last_error")}
+    result["last_actor"] = ""
+    owner = str(item.get("last_owner") or "")
+    if owner:
+        audit_id = f"manual-operation:{job_key}:{owner}"
+        uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
+        try:
+            with closing(sqlite3.connect(uri, uri=True, timeout=5)) as con:
+                con.execute("PRAGMA query_only=ON")
+                row = con.execute("""SELECT changed_by FROM audit_log
+                  WHERE submission_id=? AND field_name='background_job.started' ORDER BY id DESC LIMIT 1""",
+                  (audit_id,)).fetchone()
+            result["last_actor"] = row[0] if row else ""
+        except sqlite3.Error:
+            result["last_actor"] = ""
+    return result
 
 
 
@@ -2242,6 +2393,8 @@ def _scheduler_is_configured(job_key: str) -> bool:
 def _wait_until(target: datetime, stop_event: threading.Event | None = None,
                 job_key: str | None = None) -> bool:
     while True:
+        if background_jobs.disabled():
+            return True
         SCHEDULER_HEARTBEATS[job_key] = now_iso()
         remaining = (target.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
         if remaining <= 0:
@@ -2255,14 +2408,138 @@ def _wait_until(target: datetime, stop_event: threading.Event | None = None,
             return True
 
 
+SCHEDULE_WAKEUPS: dict[str, threading.Event] = {}
+
+
+def scheduler_schedule_model(job_key: str) -> dict:
+    # Schedule reads must not invoke db()/migration helpers.
+    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as con:
+        con.execute("PRAGMA query_only=ON")
+        defaults = {key: False for key in SCHEDULER_TARGETS} if SANDBOX_MODE else scheduler_environment_defaults()
+        return scheduler_runtime.schedule_model(con, job_key, defaults.get(job_key, False))
+
+
+def scheduler_admin_model(job_key):
+    model = scheduler_schedule_model(job_key)
+    blocked = bool(SAFE_MODE and not SANDBOX_MODE)
+    if SANDBOX_MODE:
+        blocked = not sandbox_runtime.scheduler_job_allowed(job_key)
+    blocked = blocked or background_jobs.disabled()
+    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        row = con.execute("SELECT * FROM scheduler_job_state WHERE job_key=?", (job_key,)).fetchone()
+        has_audit = con.execute("SELECT 1 FROM sqlite_master WHERE name='scheduler_schedule_audit'").fetchone()
+        history = [dict(r) for r in con.execute("SELECT revision,actor,changed_at FROM scheduler_schedule_audit WHERE job_key=? ORDER BY revision DESC LIMIT 10", (job_key,))] if has_audit else []
+    duration = None
+    if row and row['last_status'] != 'running':
+        try:
+            seconds = (datetime.fromisoformat(row['last_finished_at']) - datetime.fromisoformat(row['last_started_at'])).total_seconds()
+            if seconds >= 0:
+                duration = round(seconds, 3)
+        except (TypeError, ValueError):
+            pass
+    return {**model, "effective_enabled": model['enabled'] and not blocked,
+            "safety_block_reason": "Environment safety guard" if blocked else None,
+            "schedule": scheduler_runtime.schedule_label(model['spec']),
+            "next_run": scheduler_runtime.next_run(model['spec']).isoformat() if model['enabled'] and not blocked else None,
+            "registered": job_key in REGISTERED_SCHEDULER_JOBS,
+            "heartbeat_at": SCHEDULER_HEARTBEATS.get(job_key),
+            "last_started_at": row['last_started_at'] if row else None,
+            "last_finished_at": row['last_finished_at'] if row else None,
+            "last_status": row['last_status'] if row else 'never',
+            "last_trigger": row['last_trigger'] if row else '',
+            "last_error": row['last_error'] if row else '',
+            "duration_seconds": duration, "history": history}
+
+
+def scheduler_admin_change(job_key, payload, *, apply=False, actor=''):
+    if SAFE_MODE and not SANDBOX_MODE:
+        raise ValueError('Environment safety guard blocks scheduler changes')
+    if SANDBOX_MODE and not sandbox_runtime.scheduler_job_allowed(job_key):
+        raise ValueError('SANDBOX scheduler guard blocks this job')
+    if not isinstance(payload, dict) or set(payload) not in ({'settings', 'expected_revision'}, {'rollback', 'expected_revision'}):
+        raise ValueError('Invalid schedule request')
+    if type(payload['expected_revision']) is not int:
+        raise ValueError('Expected revision required')
+    defaults = {key: False for key in SCHEDULER_TARGETS} if SANDBOX_MODE else scheduler_environment_defaults()
+    if apply and SANDBOX_MODE:
+        sandbox_runtime.attest_internal_target(DB_PATH)
+    uri = str(DB_PATH) if apply else f'file:{DB_PATH}?mode=ro'
+    with SCHEDULE_APPLY_LOCK, sqlite3.connect(uri, uri=not apply, timeout=30) as con:
+        if apply:
+            con.execute('BEGIN IMMEDIATE')
+        else:
+            con.execute('PRAGMA query_only=ON')
+            con.execute('BEGIN')
+        model = scheduler_runtime.schedule_model(con, job_key, defaults.get(job_key, False))
+        if model['revision'] != payload['expected_revision']:
+            raise scheduler_runtime.RevisionConflict('Schedule changed; preview again')
+        settings = (scheduler_runtime.rollback_payload(con, job_key, payload['rollback'])
+                    if 'rollback' in payload else payload['settings'])
+        if apply and background_jobs.disabled() and settings.get('enabled') is True:
+            raise ValueError('Global background-job interlock keeps automatic schedules disabled')
+        if 'rollback' in payload and payload['rollback'] != model['revision']:
+            raise ValueError('Rollback must use the current revision')
+        if apply:
+            result = scheduler_runtime.apply_schedule(con, job_key, settings, payload['expected_revision'], actor, defaults=defaults)
+        else:
+            result = scheduler_runtime.preview_schedule(con, job_key, settings, defaults)
+    if apply:
+        SCHEDULE_WAKEUPS.setdefault(job_key, threading.Event()).set()
+        apply_scheduler_settings(catch_up=False)
+    return result
+
+
+def schedule_next(job_key: str) -> datetime:
+    model = scheduler_schedule_model(job_key)
+    return scheduler_runtime.next_run(model["spec"])
+
+
+def wait_schedule(target, stop_event, job_key):
+    model = scheduler_schedule_model(job_key)
+    # Recalculate if Apply happened between target calculation and this read.
+    target = scheduler_runtime.next_run(model["spec"])
+    wake = SCHEDULE_WAKEUPS.setdefault(job_key, threading.Event())
+    while not stop_event.is_set():
+        SCHEDULER_HEARTBEATS[job_key] = now_iso()
+        latest = scheduler_schedule_model(job_key)
+        if not _scheduler_is_configured(job_key):
+            return True
+        if latest["revision"] != model["revision"]:
+            model = latest
+            target = scheduler_runtime.next_run(model["spec"])
+        if job_key == 'prozorro':
+            SYNC_STATE['next_run_at'] = target.isoformat()
+        elif job_key == 'violation_reports':
+            VIOLATION_SYNC_STATE['next_run_at'] = target.isoformat()
+        remaining = (target.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            # Recheck revision inside the SQLite lease-claim transaction.
+            SCHEDULE_EXPECTED_REVISIONS[job_key] = model["revision"]
+            return False
+        wake.wait(min(1, remaining))
+        wake.clear()
+    return True
+
+
+SCHEDULE_EXPECTED_REVISIONS: dict[str, int] = {}
+SCHEDULE_APPLY_LOCK = threading.RLock()
+
+
 def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
     """A failed/busy launch must not terminate either independent hourly loop."""
+    if background_jobs.disabled():
+        return False
     try:
+        revision = SCHEDULE_EXPECTED_REVISIONS.get(job_key) if trigger == 'scheduled' else None
+        revision_args = {'expected_revision': revision} if revision is not None else {}
         if job_key == 'prozorro':
             started = start_prozorro_sync(sync_incremental_worker, mode='incremental',
-                                         message='Підготовка щогодинного оновлення…', trigger=trigger)
+                                         message='Підготовка щогодинного оновлення…', trigger=trigger,
+                                         **revision_args)
         elif job_key == 'violation_reports':
-            started = start_violation_reports_sync(trigger=trigger)
+            started = start_violation_reports_sync(trigger=trigger, **revision_args)
         else:
             raise ValueError('Unknown hourly job')
         SERVER_LOG.info('Scheduled sync trigger job=%s reason=%s started=%s', job_key, trigger, started)
@@ -2274,7 +2551,9 @@ def _trigger_scheduler_job(job_key: str, trigger: str) -> bool:
 
 def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Independent Europe/Kyiv hourly scheduler with safe startup catch-up."""
-    SYNC_STATE["next_run_at"] = next_hourly_run().isoformat()
+    if background_jobs.disabled():
+        return
+    SYNC_STATE["next_run_at"] = schedule_next('prozorro').isoformat()
     if stop_event.wait(10):
         SYNC_STATE["next_run_at"] = None
         return
@@ -2288,7 +2567,11 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
     except ValueError:
         last_sync = None
     SYNC_STATE['last_data_sync_at'] = last_value
-    if catch_up and SANDBOX_MODE:
+    schedule = scheduler_schedule_model('prozorro')
+    if catch_up and schedule['spec'] != scheduler_runtime.default_spec('prozorro'):
+        if scheduler_runtime.catchup_due(schedule['spec'], datetime.now(timezone.utc), last_value):
+            _trigger_scheduler_job('prozorro', 'startup_catchup')
+    elif catch_up and SANDBOX_MODE:
         while not stop_event.is_set() and _scheduler_is_configured('prozorro'):
             SCHEDULER_HEARTBEATS['prozorro'] = now_iso()
             delay = sandbox_runtime.prozorro_catchup_delay(DB_PATH, datetime.now(timezone.utc))
@@ -2302,9 +2585,9 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
             datetime.now(timezone.utc), last_sync.isoformat() if last_sync else None):
         _trigger_scheduler_job('prozorro', 'startup_catchup')
     while not stop_event.is_set():
-        target = next_hourly_run()
+        target = schedule_next('prozorro')
         SYNC_STATE["next_run_at"] = target.isoformat()
-        if _wait_until(target, stop_event, "prozorro"):
+        if wait_schedule(target, stop_event, "prozorro"):
             break
         if not _scheduler_is_configured("prozorro"):
             break
@@ -2314,6 +2597,8 @@ def prozorro_scheduler(stop_event: threading.Event, *, catch_up: bool = True) ->
 
 def violation_reports_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Independent Europe/Kyiv hourly scheduler and persistent startup catch-up."""
+    if background_jobs.disabled():
+        return
     if stop_event.wait(10):
         VIOLATION_SYNC_STATE["next_run_at"] = None
         return
@@ -2326,13 +2611,15 @@ def violation_reports_scheduler(stop_event: threading.Event, *, catch_up: bool =
         last = datetime.fromisoformat(str(state.get("last_finished_at") or "").replace("Z", "+00:00"))
     except ValueError:
         last = None
-    if catch_up and scheduler_runtime.hourly_catchup_due(
-            datetime.now(timezone.utc), last.isoformat() if last else None):
+    schedule = scheduler_schedule_model('violation_reports')
+    if catch_up and (scheduler_runtime.catchup_due(schedule['spec'], datetime.now(timezone.utc), last.isoformat() if last else None)
+                    if schedule['spec'] != scheduler_runtime.default_spec('violation_reports') else
+                    scheduler_runtime.hourly_catchup_due(datetime.now(timezone.utc), last.isoformat() if last else None)):
         _trigger_scheduler_job('violation_reports', 'startup_catchup')
     while not stop_event.is_set():
-        target = next_hourly_run()
+        target = schedule_next('violation_reports')
         VIOLATION_SYNC_STATE["next_run_at"] = target.isoformat()
-        if _wait_until(target, stop_event, "violation_reports"):
+        if wait_schedule(target, stop_event, "violation_reports"):
             break
         if not _scheduler_is_configured("violation_reports"):
             break
@@ -2342,6 +2629,8 @@ def violation_reports_scheduler(stop_event: threading.Event, *, catch_up: bool =
 
 def nazk_registry_scheduler(stop_event: threading.Event, *, catch_up: bool = True) -> None:
     """Run once per Kyiv working day, with restart-safe persisted protection."""
+    if background_jobs.disabled():
+        return
     if not _scheduler_is_configured("nazk_registry"):
         return
     if catch_up and not stop_event.is_set():
@@ -2350,28 +2639,30 @@ def nazk_registry_scheduler(stop_event: threading.Event, *, catch_up: bool = Tru
         persisted = next(row for row in jobs if row["job"] == "nazk_registry")
         source_day = str(reference_status(DB_PATH).get("nazk", {}).get("source_updated_at") or "")[:10]
         kyiv_day = scheduler_runtime.as_kyiv(current).date().isoformat()
-        if (scheduler_runtime.nazk_due_today(current, persisted.get("last_finished_at"))
+        if (scheduler_runtime.catchup_due(scheduler_schedule_model('nazk_registry')['spec'], current, persisted.get("last_finished_at"))
                 and source_day != kyiv_day):
             start_nazk_registry_refresh(trigger="scheduled_catchup")
     while not stop_event.is_set():
         current = datetime.now(timezone.utc)
-        target = scheduler_runtime.next_nazk_run(current)
-        if _wait_until(target, stop_event, "nazk_registry"):
+        target = schedule_next('nazk_registry')
+        if wait_schedule(target, stop_event, "nazk_registry"):
             break
         if not _scheduler_is_configured("nazk_registry"):
             break
-        start_nazk_registry_refresh(trigger="scheduled")
+        start_nazk_registry_refresh(trigger="scheduled", expected_revision=SCHEDULE_EXPECTED_REVISIONS.get('nazk_registry'))
 
 
 def register_scheduler_job(job_key: str, target, *, catch_up: bool = True) -> bool:
     """Register one scheduler thread per process; SQLite lease protects instances."""
+    if background_jobs.disabled():
+        return False
     with SCHEDULER_REGISTRATION_LOCK:
         if job_key in REGISTERED_SCHEDULER_JOBS:
             return False
         stop_event = threading.Event()
         def run():
             try:
-                while not stop_event.is_set():
+                while not stop_event.is_set() and not background_jobs.disabled():
                     try:
                         target(stop_event, catch_up=catch_up)
                         return
@@ -2431,6 +2722,9 @@ def scheduler_environment_defaults() -> dict[str, bool]:
 
 
 def effective_scheduler_settings() -> tuple[dict[str, bool], dict[str, str]]:
+    if background_jobs.disabled():
+        return ({key: False for key in SCHEDULER_TARGETS},
+                {key: 'background_jobs_disabled' for key in SCHEDULER_TARGETS})
     if SANDBOX_MODE:
         with db() as con:
             overrides = scheduler_runtime.effective_enabled(
@@ -2465,15 +2759,20 @@ def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
         sandbox_runtime.attest_internal_target(DB_PATH)
         if not sandbox_runtime.scheduler_job_allowed(job_key):
             raise ValueError("SANDBOX scheduler target is not attested")
+    if background_jobs.disabled() and enabled:
+        raise ValueError("Global background-job interlock keeps automatic schedules disabled")
     before, _ = effective_scheduler_settings()
     old_enabled = bool(before[job_key])
     if SANDBOX_MODE:
-        if old_enabled != bool(enabled):
+        with db() as con:
+            old_configured = bool(scheduler_runtime.schedule_model(
+                con, job_key, default_enabled=False)["enabled"])
+        if old_configured != bool(enabled):
             with db() as con:
-                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor)
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor, default_enabled=old_configured)
                 con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
                   VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
-                  "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
+                  "scheduler_job.enabled", "enabled" if old_configured else "disabled",
                   "enabled" if enabled else "disabled"))
         # Persist first: a newly registered thread must see its own effective
         # setting, and a disabled job must never get another scheduled run.
@@ -2489,7 +2788,7 @@ def set_scheduler_job_enabled(job_key: str, enabled: bool, actor: str) -> dict:
     try:
         if old_enabled != bool(enabled):
             with db() as con:
-                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor)
+                scheduler_runtime.save_enabled(con, job_key, bool(enabled), actor, default_enabled=old_enabled)
                 con.execute("""INSERT INTO audit_log(submission_id,changed_at,changed_by,field_name,old_value,new_value)
                   VALUES (?,?,?,?,?,?)""", (f"scheduler_job:{job_key}", now_iso(), actor,
                   "scheduler_job.enabled", "enabled" if old_enabled else "disabled",
@@ -2517,14 +2816,90 @@ def scheduler_status_payload(moment: datetime | None = None) -> list[dict]:
         thread = SCHEDULER_THREADS.get(key)
         row['running'] = bool(configured[key] and key in registered and thread and thread.is_alive())
         row['heartbeat_at'] = SCHEDULER_HEARTBEATS.get(key)
+        row['configured_enabled'] = bool(row.get('schedule_model', {}).get('enabled', False))
         if not row['running']:
             row['enabled'] = False
             row['next_run'] = None
-        row["configured_enabled"] = configured[key]
         row["registered"] = key in registered
         row["configuration_source"] = sources[key]
         row["manageable"] = (not SANDBOX_MODE or sandbox_runtime.scheduler_job_allowed(key))
+    actors = {key: scheduler_execution_snapshot(key).get("last_actor", "")
+              for key in scheduler_runtime.SCHEDULES}
+    for row in rows:
+        row["last_actor"] = actors.get(row["job"], "")
     return rows
+
+
+GOOGLE_WRITER_SCHEDULER = None
+GOOGLE_WRITER_CONTINUATION = None
+GOOGLE_WRITER_REGISTRATION_LOCK = threading.Lock()
+
+
+def google_writer_environment():
+    return 'SANDBOX' if SANDBOX_MODE else 'PROD'
+
+
+def google_writer_client():
+    environment = google_writer_environment()
+    prefix = 'PQM_' + environment + '_EXECUTION_'
+    credentials = os.getenv(prefix + 'CREDENTIALS_FILE', '')
+    other = os.getenv('PQM_' + ('PROD' if SANDBOX_MODE else 'SANDBOX') + '_EXECUTION_CREDENTIALS_FILE', '')
+    if credentials and other and Path(credentials).resolve() == Path(other).resolve():
+        raise google_writer_execution.ExecutionConfigurationError('Execution credentials must be independent')
+    provider = google_writer_execution.DedicatedTokenProvider(environment,credentials,os.getenv(prefix+'GCP_PROJECT_ID',''))
+    client = google_writer_execution.ExecutionClient(environment,os.getenv(prefix+'DEPLOYMENT_ID',''),
+        os.getenv(prefix+'SHARED_SECRET',''),provider,configured=env_flag(prefix+'READY',False))
+    client.validate()
+    if not credentials or not Path(credentials).is_file() or not os.getenv(prefix+'GCP_PROJECT_ID'):
+        raise google_writer_execution.ExecutionConfigurationError('Dedicated execution credential configuration absent')
+    return client
+
+
+def google_writer_manual_available():
+    if not google_edr_effective_enabled() or (SAFE_MODE and not SANDBOX_MODE): return False
+    expected_service = 'srv-dalfd77f3r2c7392uub0' if SANDBOX_MODE else 'srv-da7vmitg1s2s73fim0p0'
+    if os.getenv('RENDER_SERVICE_ID') != expected_service: return False
+    try:
+        if SANDBOX_MODE: sandbox_runtime.attest_internal_target(DB_PATH)
+        elif DB_PATH.resolve() != Path('/var/data/pqm_test_20260831.sqlite3'): return False
+        google_writer_client()
+        return True
+    except (ValueError,OSError): return False
+
+
+def google_writer_available():
+    """Availability for automatic scheduler execution only."""
+    return not background_jobs.disabled() and google_writer_manual_available()
+
+
+def google_writer_service():
+    global GOOGLE_WRITER_SCHEDULER
+    with GOOGLE_WRITER_REGISTRATION_LOCK:
+        if GOOGLE_WRITER_SCHEDULER is None:
+            GOOGLE_WRITER_SCHEDULER = google_writer_execution.Scheduler(DB_PATH,google_writer_environment(),
+                google_writer_client,google_writer_available)
+        elif GOOGLE_WRITER_SCHEDULER.path != DB_PATH:
+            raise RuntimeError('Writer scheduler database identity changed')
+        return GOOGLE_WRITER_SCHEDULER
+
+
+def google_writer_status(actor=None):
+    service = GOOGLE_WRITER_SCHEDULER
+    manual_available = google_writer_manual_available()
+    return {**google_writer_execution.status(DB_PATH,google_writer_environment(),available=manual_available,
+        running=bool(service and service.thread and service.thread.is_alive()),
+        heartbeat=service.heartbeat if service else None,actor=actor),
+        "manual_available": manual_available,
+        "automation_blocked": background_jobs.disabled()}
+
+
+def google_writer_continuation_service():
+    global GOOGLE_WRITER_CONTINUATION
+    if not SANDBOX_MODE or google_writer_environment()!='SANDBOX': return None
+    if GOOGLE_WRITER_CONTINUATION is None:
+        GOOGLE_WRITER_CONTINUATION=google_writer_execution.AppendOnlyContinuationWorker(
+            DB_PATH,google_writer_client,google_writer_manual_available,environment='SANDBOX')
+    return GOOGLE_WRITER_CONTINUATION
 
 
 def decision_label(status: str | None) -> str:
@@ -2599,7 +2974,7 @@ APPLICATION_SEARCH_FIELDS = (
 )
 
 
-def application_filter(params: dict) -> tuple[str, list]:
+def application_filter(params: dict, *, include_entity_type: bool = False) -> tuple[str, list]:
     search = params.get("search", [""])[0].strip()
     statuses = multi_param(params, "status")
     registry_statuses = multi_param(params, "registry_status")
@@ -2609,10 +2984,12 @@ def application_filter(params: dict) -> tuple[str, list]:
     date_from = params.get("date_from", [""])[0].strip()
     date_to = params.get("date_to", [""])[0].strip()
     officer = params.get("officer", [""])[0].strip()
+    protocol_card_officer = params.get("protocol_card_officer", [""])[0].strip()
     category = params.get("category", [""])[0].strip()
     submission_id = params.get("submission_id", [""])[0].strip()
     protocol_decision = params.get("protocol_decision", [""])[0].strip()
     compliance_status = params.get("compliance_status", [""])[0].strip()
+    entity_type = params.get("entity_type", [""])[0].strip() if include_entity_type else ""
     marketplace_decisions = multi_param(params, "marketplace_decision")
     where, args = ["1=1"], []
     protocol_number = params.get("protocol_number", [""])[0].strip()
@@ -2654,18 +3031,37 @@ def application_filter(params: dict) -> tuple[str, list]:
     if date_to:
         where.append("SUBSTR(s.date_published,1,10)<=?")
         args.append(date_to)
-    assigned_officer = effective_officer_sql()
+    if entity_type:
+        if entity_type not in supplier_classification.ENTITY_TYPES:
+            raise ValueError("Невідомий тип постачальника")
+        where.append("SUPPLIER_ENTITY_TYPE(s.supplier_code)=?")
+        args.append(entity_type)
+    for key, column in (('review_officer', REVIEW_OFFICER_SQL),
+                        ('protocol_officer', PROTOCOL_OFFICER_SQL)):
+        value = params.get(key, [''])[0]
+        if value:
+            where.append(f"{column}=?")
+            args.append(application_officers.UNDEFINED_OFFICER if value == '__unassigned__' else value)
+    if protocol_card_officer:
+        where.append(f"CASEFOLD({PROTOCOL_OFFICER_SQL})=CASEFOLD(?)")
+        args.append(protocol_card_officer)
+    if params.get('actual_status') == ['1']:
+        where.append(f"{WORK_QUEUE_STATUS_SQL} IN ('active','unsuccessful','pending')")
+    assigned_officer = effective_officer_sql(undefined=application_officers.UNDEFINED_OFFICER)
     if officer == "__unassigned__":
-        where.append(f"{assigned_officer}=''")
+        where.append(f"{assigned_officer}=?")
+        args.append(application_officers.UNDEFINED_OFFICER)
     elif officer:
         where.append(f"{assigned_officer}=?")
         args.append(officer)
     if category:
         where.append("COALESCE(fo.category,'')=?")
         args.append(category)
-    status_codes = [{"Допущено": "active", "Відхилено": "unsuccessful", "Очікує рішення": "pending"}[value] for value in statuses if value in {"Допущено", "Відхилено", "Очікує рішення"}]
+    status_labels = {"Допущено": "active", "Відхилено": "unsuccessful", "Очікує рішення": "pending"}
+    status_codes = [status_labels.get(value, value) for value in statuses
+                    if status_labels.get(value, value) in {"active", "unsuccessful", "pending"}]
     if status_codes:
-        where.append(f"COALESCE(q.status,'pending') IN ({','.join('?' for _ in status_codes)})")
+        where.append(f"{WORK_QUEUE_STATUS_SQL} IN ({','.join('?' for _ in status_codes)})")
         args.extend(status_codes)
     registry_status_codes = [{"Активний": "active", "Неактивний": "terminated", "Призупинений": "suspended"}[value] for value in registry_statuses if value in {"Активний", "Неактивний", "Призупинений"}]
     if registry_status_codes:
@@ -2675,10 +3071,12 @@ def application_filter(params: dict) -> tuple[str, list]:
 
 
 def application_stats(params: dict) -> dict:
-    clause, args = application_filter(params)
-    officer_params = {key: value for key, value in params.items() if key != "officer"}
-    officer_clause, officer_args = application_filter(officer_params)
+    clause, args = application_filter(params, include_entity_type=True)
+    # Officer cards describe the same complete filtered set as the application count.
+    officer_clause, officer_args = clause, args
     with db() as con:
+        if params.get("entity_type", [""])[0].strip():
+            supplier_manual_classification.register_effective_entity_type_sql(con)
         row = con.execute(f"""SELECT COUNT(*) applications,
           COUNT(DISTINCT NULLIF(s.supplier_code,'')) suppliers,
           SUM(CASE WHEN COALESCE(q.status,'pending')='pending' THEN 1 ELSE 0 END) pending,
@@ -2705,12 +3103,62 @@ def application_stats(params: dict) -> dict:
     return result
 
 
+def work_queue_application_statistics(con, params: dict, *, review_progress: bool,
+                                     group_by: str = "review_officer",
+                                     entity_type: str = "") -> list[dict]:
+    clause, args = application_filter({key: params[key] for key in ("date_from", "date_to") if key in params})
+    return _work_queue_application_statistics(con, clause, args, review_progress=review_progress,
+                                              group_by=group_by, entity_type=entity_type)
+
+
+def work_queue_statistics_payload(con, params: dict) -> dict:
+    date_params = {key: params[key] for key in ("date_from", "date_to") if key in params}
+    clause, args = application_filter(date_params)
+    filters = {
+        "category": params.get("category", [""])[0],
+        "review_officer": params.get("review_officer", [""])[0],
+        "protocol_officer": params.get("protocol_officer", [""])[0],
+        "dk_code": multi_param(params, "dk_code"),
+    }
+    return _work_queue_statistics_payload(con, clause, args,
+        entity_type=params.get("entity_type", [""])[0], filters=filters)
+
+def application_selection(params: dict) -> dict:
+    """One read-only filtered snapshot, without LIMIT/OFFSET or external refresh."""
+    clause, args = application_filter(params, include_entity_type=True)
+    fields = sorted(EDITABLE_FIELDS)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro', uri=True, timeout=5)) as con:
+        con.row_factory = sqlite3.Row
+        con.create_function('CASEFOLD', 1, unicode_casefold, deterministic=True)
+        con.create_function('DIGITS', 1, lambda value: re.sub(r'\D', '', str(value or '')), deterministic=True)
+        if params.get("entity_type", [""])[0].strip():
+            supplier_manual_classification.register_effective_entity_type_sql(con)
+        con.execute('PRAGMA query_only=ON');con.execute('BEGIN')
+        deadline = time.monotonic()+30
+        con.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
+        records = [dict(row) for row in con.execute(
+            'SELECT s.id,s.supplier_name,'+','.join(f"COALESCE(af.{field},'') AS {field}" for field in fields)+
+            ' FROM submissions s JOIN frameworks f ON f.id=s.framework_id'
+            ' LEFT JOIN qualifications q ON q.id=s.qualification_id'
+            ' LEFT JOIN application_fields af ON af.submission_id=s.id'
+            ' LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE '+clause+' ORDER BY s.id', args)]
+        names = {' '.join(re.sub(r"[’'`\-]+", ' ', (row[0] or '').casefold()).split())
+                 for row in con.execute("SELECT DISTINCT full_name FROM nazk_registry WHERE full_name<>''")}
+        states = {}
+        for start in range(0,len(records),400):
+            states.update(get_submission_nazk_states(con,[row['id'] for row in records[start:start+400]],names))
+        items = [{'id':row['id'], 'supplier_name':row['supplier_name'] or '', 'values':{field:str(row[field]) for field in fields},
+                  'historical_read_only':historical_applications.is_read_only(row['id']),
+                  'nazk_can_approve':bool(states.get(row['id'],{}).get('can_approve',True))} for row in records]
+    return {'items':items,'total':len(items)}
+
+
 def list_applications(params: dict) -> dict:
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["50"])[0] or 50)))
     sort_key = params.get("sort", ["receivedDate"])[0].strip()
     sort_direction = "ASC" if params.get("direction", ["desc"])[0].lower() == "asc" else "DESC"
-    clause, args = application_filter(params)
+    clause, args = application_filter(params, include_entity_type=True)
     sort_expressions = {
         "participant": "CASEFOLD(s.supplier_name)",
         "edrpou": "s.supplier_code",
@@ -2721,7 +3169,7 @@ def list_applications(params: dict) -> dict:
         "protocolNumber": "af.protocol_number",
         "protocolDate": "af.protocol_date",
         "publicationDate": "af.publication_date",
-        "protocolOfficer": f"CASEFOLD({effective_officer_sql()})",
+        "protocolOfficer": f"CASEFOLD({PROTOCOL_OFFICER_SQL})",
         "protocolRemarks": "CASEFOLD(af.protocol_remarks)",
         "protocolDecision": "CASE af.protocol_decision WHEN '' THEN 1 WHEN 'admit' THEN 2 WHEN 'reject' THEN 3 ELSE 4 END",
         "marketplaceDecision": "CASE af.marketplace_decision WHEN '' THEN 1 WHEN 'admit' THEN 2 WHEN 'reject' THEN 3 ELSE 4 END",
@@ -2741,6 +3189,8 @@ def list_applications(params: dict) -> dict:
     order_sql = ','.join(f"{sort_expressions[item['key']]} {item['direction'].upper()}" for item in sorts)
     if not order_sql: order_sql = f'{order_by} {sort_direction}'
     with db() as con:
+        if params.get("entity_type", [""])[0].strip():
+            supplier_manual_classification.register_effective_entity_type_sql(con)
         total = con.execute(f"""SELECT COUNT(*) FROM submissions s JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=s.qualification_id LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}""", args).fetchone()[0]
@@ -2750,8 +3200,9 @@ def list_applications(params: dict) -> dict:
           (SELECT rc.status FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
           (SELECT rc.milestones_json FROM registry_contracts rc WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones,
            af.protocol_number,af.protocol_date,af.publication_date,
-           {effective_officer_sql()} protocol_officer,
-           af.review_officer,
+           COALESCE(af.protocol_officer,'') protocol_officer_stored,
+           {PROTOCOL_OFFICER_SQL} protocol_officer,
+           {REVIEW_OFFICER_SQL} review_officer,
           af.protocol_remarks,af.protocol_decision,af.marketplace_decision,af.compliance_status,af.compliance_comments,
           af.generated_protocol_number,af.generated_protocol_date,af.generated_protocol_decision,af.protocol_generated_at,
           af.manager_name,af.manager_name_source,af.manager_name_source_submission_id,
@@ -2870,7 +3321,7 @@ HISTORY_SORT_FIELDS = {
     'cpv': 'f.dk_code', 'framework': 'f.title',
     'decision': "CASE COALESCE(q.status,'pending') WHEN 'active' THEN 'Допущено' WHEN 'unsuccessful' THEN 'Відхилено' ELSE 'Очікує рішення' END",
     'contract': 'af.contract_details', 'manager': 'af.manager_name',
-    'officer': 'af.protocol_officer', 'protocol': 'af.protocol_number',
+    'officer': PROTOCOL_OFFICER_SQL, 'review_officer': REVIEW_OFFICER_SQL, 'protocol': 'af.protocol_number',
     'protocol_date': 'af.protocol_date', 'remarks': HISTORY_REMARKS_SQL,
 }
 
@@ -2896,11 +3347,15 @@ def application_history(params: dict) -> dict:
     size = min(100, max(1, int(params.get('size', ['50'])[0])))
     where, args = ['1=1'], []
     fields = {'supplier':'s.supplier_name', 'cpv':'f.dk_code', 'framework':'f.title',
-              'contract':'af.contract_details', 'manager':'af.manager_name', 'officer':'af.protocol_officer'}
+              'contract':'af.contract_details', 'manager':'af.manager_name', 'officer':PROTOCOL_OFFICER_SQL}
     for key, sql in fields.items():
         value = params.get(key, [''])[0].strip()
         if value:
             where.append(f'INSTR(CASEFOLD(COALESCE({sql},\'\')),?)>0'); args.append(value.casefold())
+    review_officers = [value.strip() for value in params.get('review_officer', []) if value.strip()]
+    if review_officers:
+        where.append(f"{REVIEW_OFFICER_SQL} IN ({','.join('?' for _ in review_officers)})")
+        args.extend(review_officers)
     code = re.sub(r'\D', '', params.get('code', [''])[0])
     remarks = params.get('remarks', [''])[0].strip().casefold()
     if remarks:
@@ -2927,10 +3382,15 @@ def application_history(params: dict) -> dict:
       LEFT JOIN qualifications q ON q.id=COALESCE(final_q.id,s.qualification_id)
       WHERE """ + ' AND '.join(where)
     with db() as con:
+        review_officer_options = [row[0] for row in con.execute(
+            f"SELECT DISTINCT {REVIEW_OFFICER_SQL} review_officer FROM application_fields af ORDER BY CASEFOLD(review_officer)"
+        )]
         total = con.execute('SELECT COUNT(*)'+source, args).fetchone()[0]
-        items = [dict(row) for row in con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,
+        items = [dict(row) for row in con.execute(f"""SELECT s.id,s.supplier_name,s.supplier_code,
           s.date_published,s.framework_id,f.pretty_id,f.title framework_title,f.dk_code,
-          COALESCE(q.status,'pending') status,af.protocol_decision,af.protocol_officer,
+          COALESCE(q.status,'pending') status,af.protocol_decision,
+          {PROTOCOL_OFFICER_SQL} protocol_officer,COALESCE(af.protocol_officer,'') protocol_officer_stored,
+          {REVIEW_OFFICER_SQL} review_officer,
           af.protocol_number,af.protocol_date,af.protocol_remarks,af.compliance_comments,
           af.contract_details,af.manager_name,s.documents_json,q.documents_json decision_documents,
           q.status qualification_status,
@@ -2949,7 +3409,8 @@ def application_history(params: dict) -> dict:
         item['documents'], item['decision_documents'], item['registry_documents'] = groups['supplier'], groups['decision'], groups['registry']
         item['document_groups'] = groups
         item['decision'] = decision_label(item['status'])
-    return {'items':items,'total':total,'page':page,'pages':max(1,(total+size-1)//size),'size':size}
+    return {'items':items,'total':total,'page':page,'pages':max(1,(total+size-1)//size),
+            'size':size,'review_officers':review_officer_options}
 
 
 def pqm_schema_metadata() -> dict:
@@ -2985,7 +3446,8 @@ def protocol_readiness(payload: dict) -> dict:
           COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.document_package,'') document_package,
           COALESCE(af.protocol_remarks,'') protocol_remarks,
-          COALESCE(af.protocol_officer,'') protocol_officer,
+          {PROTOCOL_OFFICER_SQL} protocol_officer,
+          COALESCE(af.protocol_officer,'') protocol_officer_stored,
           COALESCE(af.manager_name,'') manager_name,
           COALESCE(af.protocol_date,'') protocol_date,
           COALESCE(q.status,'pending') source_status
@@ -3120,6 +3582,39 @@ def pending_directory_framework_rows(con: sqlite3.Connection) -> list[dict]:
     } for row in con.execute("""SELECT pretty_id,dk_code,source_title
       FROM framework_service_directory
       WHERE framework_id IS NULL AND source='PQM' ORDER BY pretty_id""")]
+
+
+def framework_registry(params, con):
+    """Operational agreement cache only: no Bids connection, sync or writes."""
+    import supplier_selection
+    counts=supplier_selection.registry_counts(con)
+    get=lambda k:params.get(k,[''])[0].strip()
+    items=[]
+    framework_rows=[dict(r) for r in con.execute('SELECT * FROM frameworks')]
+    framework_rows.extend(pending_directory_framework_rows(con))
+    categories={}
+    for fid,pretty_id,category in con.execute('SELECT framework_id,pretty_id,category FROM framework_service_directory'):
+        if category:categories.setdefault(fid or pretty_id,[]).append(str(category))
+    for raw in framework_rows:
+        f=dict(raw);body=json.loads(f.pop('raw_json') or '{}')
+        state=effective_framework_status(f['status'] or '',body)
+        haystack=' '.join([*(str(f.get(k) or '') for k in ('id','pretty_id','title','dk_code','agreement_id')), *categories.get(f['id'] or f['pretty_id'],[])])
+        if get('search').casefold() not in haystack.casefold():continue
+        if get('dk_code').casefold() not in (f.get('dk_code') or '').casefold():continue
+        if get('status') and get('status') not in {state,'active' if state=='active' else 'inactive'}:continue
+        published=str(body.get('date') or body.get('dateCreated') or '')[:10]
+        if get('date_from') and (not published or published<get('date_from')):continue
+        if get('date_to') and (not published or published>get('date_to')):continue
+        c=counts.get(f['id'],dict(total=0,active=0,suspended=0,terminated=0,other=0,issues=[]))
+        items.append({'framework':f,'framework_id':f['id'],'agreement_id':f.get('agreement_id') or '',
+          'cpv_code':f.get('dk_code') or '', 'source_status':state,'counts':c})
+    sort=get('sort');direction=get('direction')=='desc'
+    key=(lambda x:x['counts']['total']) if sort=='supplier_count' else ((lambda x:x['source_status']) if sort=='status' else (lambda x:x['cpv_code']))
+    items.sort(key=lambda x:x['framework_id']);items.sort(key=key,reverse=direction)
+    total=len(items);page=max(1,int(get('page') or 1));size=min(100,max(1,int(get('size') or 10)))
+    issues=[{'framework_id':x['framework_id'],**issue} for x in items for issue in x['counts']['issues']]
+    return {'items':items[(page-1)*size:page*size],'total':total,'pages':max(1,(total+size-1)//size),
+      'bids_available':BIDS_MODE!='disabled','status_issues':issues,'source':'registry_contracts.raw_json; frameworks.raw_json'}
 
 
 def base_framework_analytics(params: dict) -> dict:
@@ -3586,7 +4081,7 @@ def bids_sync_status(force: bool = False) -> dict:
     """Return cached status immediately; refresh heavy counts once in background."""
     cached = BIDS_STATUS_CACHE.get("value")
     fresh = cached is not None and time.time() - float(BIDS_STATUS_CACHE.get("at") or 0) < 600
-    if (force or not fresh) and BIDS_STATUS_LOCK.acquire(blocking=False):
+    if not background_jobs.disabled() and (force or not fresh) and BIDS_STATUS_LOCK.acquire(blocking=False):
         threading.Thread(target=_refresh_bids_status_cache, daemon=True).start()
     if cached is not None:
         return {**cached, "refreshing": BIDS_STATUS_LOCK.locked(), "update": bids_run_snapshot()}
@@ -3778,6 +4273,8 @@ def powerbi_export_worker() -> None:
 
 
 def start_powerbi_export():
+    if background_jobs.disabled():
+        return {'error': 'Background jobs disabled', 'error_code': 'background_jobs_disabled'}, 503
     with POWERBI_START_LOCK:
         if POWERBI_EXPORT_STATE.get('running'):
             return {'error': 'Експорт Power BI вже триває', 'error_code': 'already_running', 'state': dict(POWERBI_EXPORT_STATE)}, 409
@@ -4129,6 +4626,99 @@ def _google_sheet_values(sheet_name: str, spreadsheet_id: str = SUPPLIER_EDR_SHE
         _raise_google_phase_error("sheets_values_read", exc)
 
 
+def _google_writer_legacy_cached_sheets_token() -> str:
+    """Return an unexpired cached Sandbox Sheets token without refreshing credentials."""
+    if (not SANDBOX_MODE or SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID or
+            not google_edr_effective_enabled()):
+        raise PermissionError("Legacy reconciliation Sandbox Sheets guard rejected the request")
+    token = _google_oauth_token()
+    if not isinstance(token, dict):
+        raise PermissionError("Legacy reconciliation cached Sheets token is unavailable")
+    access_token = token.get("access_token")
+    scopes = set(str(token.get("scope", "")).split())
+    try:
+        remaining = (float(token.get("obtained_at", 0)) + int(token.get("expires_in", 0)) - time.time())
+    except (TypeError, ValueError, OverflowError):
+        remaining = -1
+    if (not isinstance(access_token, str) or not access_token or remaining <= 120 or
+            not scopes.intersection({GOOGLE_SHEETS_SCOPE, GOOGLE_SHEETS_READONLY_SCOPE})):
+        raise PermissionError("Legacy reconciliation cached Sheets token is expired or read scope is unavailable")
+    return access_token
+
+
+def _google_writer_legacy_read_sheet_values(tab: str, access_token: str,
+                                            a1_range: str) -> list[list]:
+    """Read only fixed audit ranges in Sandbox; never refresh OAuth or write cells."""
+    if (tab not in {"ФОП", "ЮО"} or
+            (a1_range != "B:B" and not re.fullmatch(r"A[1-9][0-9]*:O[1-9][0-9]*", a1_range))):
+        raise PermissionError("Legacy reconciliation tab guard rejected the request")
+    cell_range = urllib.parse.quote(f"'{tab}'!{a1_range}", safe="")
+    query = urllib.parse.urlencode({"majorDimension": "ROWS", "valueRenderOption": "FORMULA"})
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/"
+           f"{sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID}/values/{cell_range}?{query}")
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {access_token}", "Accept": "application/json"}, method="GET")
+    try:
+        with sandbox_runtime.google_open(request, timeout=45) as response:
+            raw = response.read(4_000_001)
+        if len(raw) > 4_000_000:
+            raise ValueError("Legacy reconciliation sheet read exceeded its fixed response bound")
+        body = json.loads(raw.decode("utf-8"))
+        values = body.get("values", [])
+        if not isinstance(values, list) or any(not isinstance(row, list) for row in values):
+            raise ValueError("Legacy reconciliation sheet response shape rejected")
+        return values
+    except urllib.error.HTTPError as exc:
+        _raise_google_phase_error("legacy_reconciliation_sheets_read", exc)
+
+
+def _google_writer_legacy_live_sheet_preflight(request_fingerprint: str) -> dict:
+    """Rebind the fixed Preview and current target rows immediately before remote reconciliation."""
+    plan = google_writer_execution.load_legacy_reconciliation_live_audit_plan(
+        DB_PATH, request_fingerprint)
+    cached_token = _google_writer_legacy_cached_sheets_token()
+    # The full A:O matrix for every used row can exceed the fixed response cap.
+    # Read only the key column across each complete tab to retain global duplicate
+    # detection, then fetch complete A:O values only for uniquely located targets.
+    sheet_values = {}
+    for tab in ("ФОП", "ЮО"):
+        code_rows = _google_writer_legacy_read_sheet_values(tab, cached_token, "B:B")
+        sheet_values[tab] = [["", row[0]] if row and row[0] not in (None, "") else []
+                             for row in code_rows]
+
+    code_locations = {}
+    for tab, matrix in sheet_values.items():
+        for row_number, row in enumerate(matrix, 1):
+            code = row[1] if len(row) > 1 else ""
+            if isinstance(code, str) and code:
+                code_locations.setdefault(code, []).append((tab, row_number))
+
+    target_rows = {"ФОП": set(), "ЮО": set()}
+    for item in plan["expected_rows"]:
+        locations = code_locations.get(item["code"], [])
+        if len(locations) == 1 and locations[0][0] == item["tab"]:
+            target_rows[item["tab"]].add(locations[0][1])
+
+    for tab, rows in target_rows.items():
+        ordered = sorted(rows)
+        groups = []
+        for row_number in ordered:
+            if groups and row_number == groups[-1][1] + 1:
+                groups[-1] = (groups[-1][0], row_number)
+            else:
+                groups.append((row_number, row_number))
+        for first, last in groups:
+            full_rows = _google_writer_legacy_read_sheet_values(
+                tab, cached_token, f"A{first}:O{last}")
+            for offset, row in enumerate(full_rows):
+                row_number = first + offset
+                if row_number in rows and row_number <= len(sheet_values[tab]):
+                    sheet_values[tab][row_number - 1] = row
+
+    return google_writer_execution.audit_legacy_reconciliation_first_chunk(
+        request_fingerprint, plan['expected_rows'], sheet_values)
+
+
 def sandbox_google_row_navigation_enabled() -> bool:
     """Keep the read-only card route's explicit availability contract separate
     from destination-based authorization of SANDBOX Google writes.
@@ -4357,6 +4947,41 @@ def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_c
     return len(rows)
 
 
+def reconcile_supplier_nazk_after_edr_manager_change(
+        con: sqlite3.Connection, supplier_code: str,
+        actor: str = "PQM confirmed EDR manager change") -> dict:
+    """Reconcile one supplier from persisted NAZK data after a verified manager change.
+
+    This path never fetches the NAZK registry. It closes tasks tied to a former
+    manager, closes stale tasks when effective qualifications are absent, then
+    reconciles and materializes the current manager's persisted registry matches
+    only when the supplier still has effective active qualifications.
+    """
+    code = re.sub(r"\D", "", str(supplier_code or ""))
+    if not code:
+        return {"skipped": "missing_supplier_code", "cancelled_old_manager": 0,
+                "cancelled_inactive_supplier": 0, "checks_created": 0,
+                "tasks_created": 0, "tasks_existing": 0}
+    cancelled_manager = operational_tasks.reconcile_irrelevant_nazk_managers(
+        con, actor=actor, supplier_codes=[code])
+    active = operational_tasks._active_application_map(con).get(code, [])
+    cancelled_inactive = operational_tasks.reconcile_stale_nazk_tasks(
+        con, actor=actor, supplier_codes=[code], active_applications={code: active})
+    if not active:
+        return {"skipped": "no_effective_active_qualifications",
+                "cancelled_old_manager": cancelled_manager["cancelled"],
+                "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+                "checks_created": 0, "tasks_created": 0, "tasks_existing": 0}
+    checks = reconcile_active_supplier_nazk(con, apply=True, supplier_codes=[code])
+    tasks = operational_tasks.materialize_nazk_tasks(
+        con, actor=actor, supplier_codes=[code], active_applications={code: active})
+    return {"skipped": None,
+            "cancelled_old_manager": cancelled_manager["cancelled"],
+            "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+            "checks_created": sum(bool(item.get("created")) for item in checks.get("items", [])),
+            "tasks_created": tasks["created"], "tasks_existing": tasks["existing"]}
+
+
 def sync_supplier_managers_from_edr() -> dict:
     """Idempotently seed/update manager history from the current EDR directory."""
     created = changed = unchanged = removed = missing = skipped_blank = 0
@@ -4382,7 +5007,7 @@ def sync_supplier_managers_from_edr() -> dict:
 def supplier_edr_sync_status() -> dict:
     with db() as con:
         total = int(con.execute("SELECT COUNT(*) FROM supplier_edr_profiles").fetchone()[0])
-        last = con.execute("""SELECT started_at,finished_at,status,processed,inserted,updated,error
+        last = con.execute("""SELECT started_at,finished_at,status,processed,inserted,updated,error,actor,trigger
           FROM supplier_edr_sync_log ORDER BY id DESC LIMIT 1""").fetchone()
     return {"total": total, "last": dict(last) if last else None, "oauth": google_oauth_status(),
             "source_url": f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit",
@@ -4418,13 +5043,15 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
     canonical_states = {}
     registry_member_codes = set()
     with db() as con:
+        supplier_types = supplier_classification.build_index(con)
+        manual_types = supplier_manual_classification.build_index(con)
         for raw in con.execute("SELECT * FROM supplier_edr_profiles"):
-            item = dict(raw); code = _digits(item.get("supplier_code")); supplier_codes.add(code); profiles[code] = item
+            item = dict(raw); code = str(item.get("supplier_code") or ""); supplier_codes.add(code); profiles[code] = item
         for raw in con.execute("""SELECT s.supplier_code,s.supplier_name,s.date_published,s.synced_at,s.id,
           COALESCE(af.manager_name,'') manager_name FROM submissions s
           LEFT JOIN application_fields af ON af.submission_id=s.id
           ORDER BY COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC"""):
-            item = dict(raw); code = _digits(item.get("supplier_code"))
+            item = dict(raw); code = str(item.get("supplier_code") or "")
             if code:
                 supplier_codes.add(code); latest.setdefault(code, item)
         managers = {code: item.get("manager_name", "")
@@ -4432,7 +5059,7 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
         for raw in con.execute("""SELECT s.supplier_code,q.status,
           COALESCE(NULLIF(q.decision_date,''),s.date_published) event_date
           FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id"""):
-            code = _digits(raw["supplier_code"])
+            code = str(raw["supplier_code"] or "")
             if not code:
                 continue
             active[code] = active.get(code, 0) + (1 if raw["status"] == "active" else 0)
@@ -4443,16 +5070,22 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
                    NULLIF(json_extract(rc.raw_json,'$.date'),''),rc.synced_at) event_date
           FROM registry_contracts rc LEFT JOIN qualifications q ON q.id=rc.qualification_id
           WHERE COALESCE(rc.supplier_code,'')<>''"""):
-            code = _digits(raw["supplier_code"])
+            code = str(raw["supplier_code"] or "")
             if not code:
                 continue
             registry_member_codes.add(code)
             if raw["status"] == "active" and str(raw["event_date"] or "") > admitted_dates.get(code, ""):
                 admitted_dates[code] = str(raw["event_date"] or "")
         has_code_filter = "supplier_codes" in (filters or {})
-        requested_codes = {_digits(code) for code in (filters or {}).get("supplier_codes", set()) if _digits(code)}
+        requested_codes = {str(code) for code in (filters or {}).get("supplier_codes", set()) if str(code or "").strip()}
         export_codes = requested_codes if has_code_filter else registry_member_codes
-        canonical_states = edr_sync_v2.canonical_supplier_edr_states(con, export_codes, today=today)
+        statuses = edr_sync_v2.canonical_prozorro_statuses(con, export_codes)
+        verifications = edr_sync_v2.current_verification_projections(con, export_codes)
+        canonical_states = {code: {
+          "prozorro_status": statuses[code],
+          "verification_event": verifications[code]["selected_event"],
+          "bucket": edr_sync_v2.freshness_state(statuses[code], verifications[code]["verification_date"], today=today)["bucket"]
+        } for code in export_codes}
     rows = []
     # The export contract is authoritative historical register membership, not
     # the current active count and not the potentially stale
@@ -4462,7 +5095,8 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
         profile, last = profiles.get(code, {}), latest.get(code, {})
         rows.append({"code": code, "full_name": profile.get("full_name", ""),
           "short_name": profile.get("short_name", ""), "edr_manager": profile.get("manager_name", ""),
-          "edr_status": profile.get("edr_status", ""), "edr_checked_at": profile.get("edr_checked_at", ""),
+          "edr_status": edr_sync_v2.compatible_edr_status(profile.get("edr_status", "")),
+          "edr_checked_at": profile.get("edr_checked_at", ""),
           "source_sheet": profile.get("source_sheet", ""),
           "termination_decision_details": profile.get("termination_decision_details", ""),
           "edr_officer": profile.get("edr_officer", ""), "edr_notes": profile.get("edr_notes", ""),
@@ -4471,12 +5105,12 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
           "active_count": active.get(code, 0)})
     result = []
     for row in rows:
-        source_type = str(row["source_sheet"] or "").strip().upper()
         name = str(row["full_name"] or row["latest_name"] or "")
-        inferred_fop = bool(re.search(r"\bФОП\b|ФІЗИЧНА\s+ОСОБА[\s-]*ПІДПРИЄМЕЦЬ", name, re.I))
-        canonical_type = supplier_entity_type(row["code"])
-        actual_type = source_type if source_type in {"ФОП", "ЮО"} else (
-            "ФОП" if canonical_type == "individual_entrepreneur" or inferred_fop else "ЮО")
+        classification = supplier_manual_classification.apply_effective(
+            supplier_classification.resolve(supplier_types, row["code"]), manual_types.get(row["code"]))
+        actual_type = classification["target_sheet"]
+        if not classification["append_allowed"]:
+            continue
         if sheet_type != "ALL" and actual_type != sheet_type:
             continue
         state = canonical_states.get(row["code"], {})
@@ -4559,19 +5193,98 @@ def _supplier_edr_rows(sheet_name: str, gid: str) -> list[dict]:
     return rows
 
 
+def _google_edr_sheet_values(sheet_name: str) -> list[list]:
+    """One grid read preserving row width and the displayed Kyiv verification timestamp."""
+    if sheet_name not in {"ФОП", "ЮО"}:
+        raise PermissionError("Unknown EDR source tab")
+    if SANDBOX_MODE and SUPPLIER_EDR_SHEET_ID != sandbox_runtime.SANDBOX_EDR_SPREADSHEET_ID:
+        raise PermissionError("SANDBOX EDR source identity mismatch")
+    if not google_edr_effective_enabled():
+        raise PermissionError("Google integration вимкнено адміністратором")
+    params = urllib.parse.urlencode({
+        "ranges": f"'{sheet_name}'!A:O", "includeGridData": "true",
+        "fields": "properties(timeZone),sheets(properties(title),data(startRow,startColumn,rowData(values(effectiveValue,formattedValue))))",
+    })
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{params}"
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
+    try:
+        opener = sandbox_runtime.google_open if SANDBOX_MODE else urllib.request.urlopen
+        with opener(request, timeout=120) as response:
+            body = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        _raise_google_phase_error("edr_grid_read", exc)
+    sheets = body.get("sheets", [])
+    if len(sheets) != 1 or sheets[0].get("properties", {}).get("title") != sheet_name:
+        raise ValueError("Google EDR source tab identity mismatch")
+    if body.get("properties", {}).get("timeZone") not in {"Europe/Kyiv", "Europe/Kiev"}:
+        raise ValueError("Google EDR spreadsheet timezone must be Europe/Kyiv")
+    rows = {}
+    for data in sheets[0].get("data", []):
+        if data.get("startColumn", 0) != 0:
+            raise ValueError("Google EDR source column mismatch")
+        for offset, raw in enumerate(data.get("rowData", [])):
+            number = data.get("startRow", 0) + offset
+            if number in rows:
+                raise ValueError("Google EDR overlapping grid rows")
+            cells = raw.get("values", [])
+            values = []
+            for column, cell in enumerate(cells[:15]):
+                effective = cell.get("effectiveValue", {})
+                if "errorValue" in effective:
+                    raise ValueError("Google EDR source contains a cell error")
+                if column == 8 and number > 0:
+                    # The displayed value proves whether this is the new full
+                    # dd.MM.yyyy HH:mm:ss observation or a legacy date-only cell.
+                    values.append(cell.get("formattedValue", ""))
+                else:
+                    values.append(cell.get("formattedValue", effective.get("stringValue", "")))
+            rows[number] = values
+    return [rows.get(index, []) for index in range(max(rows, default=-1) + 1)]
+
+
 def supplier_edr_source_snapshot() -> dict:
     """Read both canonical tabs and fingerprint their exact values as one revision."""
     return edr_sync_v2.source_snapshot({
-        sheet_name: _google_sheet_values(sheet_name)
+        sheet_name: _google_edr_sheet_values(sheet_name)
         for sheet_name in SUPPLIER_EDR_SHEETS
     }, spreadsheet_id=SUPPLIER_EDR_SHEET_ID)
 
 
+def supplier_google_row(code: str) -> dict:
+    """Resolve the current literal identity in the authorized PROD sheet, read-only."""
+    literal = str(code or "").strip()
+    if not literal or len(literal) > 64 or any(char in literal for char in "/?#"):
+        raise ValueError("Invalid literal supplier identity")
+    matches = []
+    for tab in ("ФОП", "ЮО"):
+        for row_number, row in enumerate(_google_sheet_values(tab), 1):
+            if len(row) > 1 and str(row[1]).strip() == literal:
+                matches.append((tab, row_number))
+                if len(matches) > 1:
+                    raise ValueError("Google supplier identity is ambiguous")
+    if not matches:
+        raise KeyError("Google supplier row not found")
+    tab, row_number = matches[0]
+    query = urllib.parse.urlencode({"fields": "sheets(properties(sheetId,title))"})
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SUPPLIER_EDR_SHEET_ID}?{query}"
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {_google_access_token()}", "Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        metadata = json.loads(response.read().decode())
+    gids = [sheet.get("properties", {}).get("sheetId") for sheet in metadata.get("sheets", [])
+            if sheet.get("properties", {}).get("title") == tab]
+    if len(gids) != 1 or not isinstance(gids[0], int) or gids[0] < 0:
+        raise ValueError("Google tab metadata is ambiguous")
+    return {"source_tab": tab, "url":
+            f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit#gid={gids[0]}&range=B{row_number}"}
+
+
 def supplier_edr_sync_preview() -> dict:
-    """Return a compact, mutation-free preview for explicit user confirmation."""
+    """Return every planned change for explicit, mutation-free operator review."""
     snapshot = supplier_edr_source_snapshot()
     with db() as con:
-        preview = edr_sync_v2.build_preview(con, snapshot)
+        preview = edr_sync_v2.build_preview(con, snapshot, sandbox_mode=SANDBOX_MODE)
+        changes = con.total_changes
     if SANDBOX_MODE:
         details = sandbox_edr_review.details(preview)
         return {"source_fingerprint": preview["source_fingerprint"],
@@ -4579,14 +5292,23 @@ def supplier_edr_sync_preview() -> dict:
                 "previewed_at": preview["previewed_at"],
                 "summary": {**preview["summary"], **sandbox_edr_review.summary_additions(preview, details)},
                 "conflicts": preview["conflicts"], "conflicts_total": len(preview["conflicts"]),
+                "sandbox_partial_apply": True,
                 "details": details, "details_total": len(details),
                 "details_complete": True, "db_writes": 0, "google_writes": 0}
+    details = edr_sync_review.details(preview)
     return {
         "source_fingerprint": preview["source_fingerprint"],
+        "state_digest": edr_sync_v2.preview_state_digest(preview),
         "previewed_at": preview["previewed_at"],
-        "summary": preview["summary"],
-        "conflicts": preview["conflicts"][:200],
+        "summary": {**preview["summary"], **edr_sync_review.summary_additions(preview, details)},
+        "conflicts": preview["conflicts"],
         "conflicts_total": len(preview["conflicts"]),
+        "sandbox_partial_apply": False,
+        "details": details,
+        "details_total": len(details),
+        "details_complete": True,
+        "db_writes": changes,
+        "google_writes": 0,
         "changes": [
             {key: item[key] for key in ("supplier_code", "source_sheet", "source_row",
               "population", "apply_allowed", "changed_fields", "verification_event_change",
@@ -4608,8 +5330,9 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                                        started_at=started_at, updated_at=None, processed=0,
                                        inserted=0, updated=0, error=None)
         with db() as con:
-            log_id = con.execute("INSERT INTO supplier_edr_sync_log(started_at,status) VALUES (?,?)",
-                                 (started_at, "running")).lastrowid
+            edr_sync_v2.migrate(con)
+            log_id = con.execute("INSERT INTO supplier_edr_sync_log(started_at,status,actor,trigger) VALUES (?,?,?,?)",
+                                 (started_at, "running", actor, "manual")).lastrowid
         snapshot = supplier_edr_source_snapshot()
         if snapshot["source_fingerprint"] != expected_fingerprint:
             raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
@@ -4625,7 +5348,9 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                 establish_manager=establish_current_supplier_manager,
                 reestablish_manager=reestablish_current_supplier_manager,
                 refresh_manager_controls=refresh_current_submission_nazk_controls,
+                reconcile_manager_nazk=reconcile_supplier_nazk_after_edr_manager_change,
                 expected_state_digest=expected_state_digest,
+                sandbox_mode=SANDBOX_MODE,
             )
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,
               inserted=?,updated=?,source_fingerprint=?,unchanged=?,details_json=? WHERE id=?""",
@@ -4811,12 +5536,10 @@ def _edr_monitoring_source_sql() -> str:
       ), latest_admission AS MATERIALIZED (
         SELECT supplier_code,occurred_at,officer,submission_id FROM (
           SELECT s.supplier_code,
-            NORMALIZED_DATE(COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),
-              NULLIF(s.date_published,''))) occurred_at,
+            NORMALIZED_DATE(NULLIF(af.protocol_date,'')) occurred_at,
             COALESCE(af.protocol_officer,'') officer,s.id submission_id,
             ROW_NUMBER() OVER (PARTITION BY s.supplier_code ORDER BY
-              NORMALIZED_DATE(COALESCE(NULLIF(af.protocol_date,''),NULLIF(q.decision_date,''),
-                NULLIF(s.date_published,''))) DESC,s.id DESC) rank
+              NORMALIZED_DATE(NULLIF(af.protocol_date,'')) DESC,s.id DESC) rank
           FROM submissions s JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN qualifications q ON q.id=s.qualification_id
           JOIN population p ON p.supplier_code=s.supplier_code
@@ -4899,11 +5622,7 @@ def _edr_monitoring_name(value) -> str:
 
 
 def _edr_monitoring_status(value) -> str:
-    status = str(value or "").strip()
-    try:
-        return edr_sync_v2.canonical_edr_status(status)
-    except ValueError:
-        return status  # Unknown legacy value stays visible for operator review.
+    return edr_sync_v2.compatible_edr_status(value)
 
 
 def _edr_monitoring_rows() -> list[dict]:
@@ -4919,11 +5638,12 @@ def _edr_monitoring_rows() -> list[dict]:
                 "SELECT * FROM supplier_registry_summary WHERE supplier_code<>''")}
             latest_app = {row["supplier_code"]: dict(row) for row in con.execute("""SELECT * FROM (
               SELECT s.supplier_code,s.supplier_name,COALESCE(af.manager_name,'') manager_name,
-                COALESCE(NULLIF(s.date_published,''),s.synced_at) latest_application_date,
+                COALESCE(s.date_published,'') latest_application_date,
                 ROW_NUMBER() OVER(PARTITION BY s.supplier_code ORDER BY
-                  COALESCE(NULLIF(s.date_published,''),s.synced_at) DESC,s.id DESC) rank
+                  COALESCE(s.date_published,'') DESC,s.id DESC) rank
               FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
-              WHERE s.supplier_code<>'') WHERE rank=1""")}
+              JOIN qualifications q ON q.id=s.qualification_id
+              WHERE s.supplier_code<>'' AND q.status IN ('active','unsuccessful')) WHERE rank=1""")}
             active_qualification_dates = edr_sync_v2.active_qualification_dates(con)
             managers = {row["supplier_code"]: row["manager_name"] for row in con.execute("""SELECT supplier_code,manager_name FROM (
               SELECT supplier_code,manager_name,ROW_NUMBER() OVER(PARTITION BY supplier_code ORDER BY
@@ -4934,10 +5654,9 @@ def _edr_monitoring_rows() -> list[dict]:
                 item = dict(raw); code = item["supplier_code"]
                 if edr_sync_v2.normalized_date(item.get("occurred_at")):
                     ledger.setdefault(code, []).append(item)
-            eligible = {row[0] for row in con.execute("""SELECT DISTINCT s.supplier_code FROM submissions s
-              JOIN application_fields af ON af.submission_id=s.id
-              WHERE s.supplier_code<>'' AND af.protocol_decision IN ('admit','reject')""")}
             population = edr_sync_v2.monitoring_population_codes(con)
+            supplier_types = supplier_classification.build_index(con)
+            manual_types = supplier_manual_classification.build_index(con)
             card_identities = set(profiles) | set(registry) | set(latest_app)
             card_variants = {}
             for literal in card_identities:
@@ -4955,8 +5674,12 @@ def _edr_monitoring_rows() -> list[dict]:
                 officer_raw = verification["verification_officer_raw"]
                 displayed_edr_status = edr_sync_v2.operational_edr_status(
                     status, active_qualification_dates.get(code, ""), ledger.get(code, []),
-                    profile.get("edr_status", ""))
+                    profile.get("edr_status", ""), profile.get("edr_checked_at", ""),
+                    verification.get("edr_admission_date", ""),
+                    verification.get("edr_admission_officer", ""))
                 rows.append({"supplier_code": code,
+                  **supplier_classification.public_fields(supplier_manual_classification.apply_effective(
+                      supplier_classification.resolve(supplier_types, code), manual_types.get(code))),
                   "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
                       and card_variants.get(code) == {code}),
                   "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
@@ -5014,14 +5737,14 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     full_completeness, short_completeness = value("edr_full_name"), value("edr_short_name")
     if full_completeness not in {"", "filled", "missing"} or short_completeness not in {"", "filled", "missing"}:
         raise ValueError("Невідомий фільтр заповненості назви ЄДР")
-    if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
+    if entity_type and entity_type not in supplier_classification.ENTITY_TYPES:
         raise ValueError("Невідомий тип постачальника")
     result = []
     dk_map = _edr_monitoring_dk_map() if dk_code else {}
     for row in rows:
         if search and search not in " ".join((row["supplier_code"], row["supplier_name"], row["manager_name"], str(row.get("google_note") or ""))).casefold(): continue
         if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
-        if entity_type and supplier_entity_type(row["supplier_code"]) != entity_type: continue
+        if entity_type and row.get("entity_type", "unknown") != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
         if edr_statuses and _edr_monitoring_status(row["edr_status"]) not in edr_statuses: continue
         full_name = bool(_edr_monitoring_name(row.get("edr_full_name")))
@@ -5062,7 +5785,7 @@ def _edr_monitoring_filters(params: dict, *, include_freshness: bool = True) -> 
         where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR INSTR(CASEFOLD(manager_name),?)>0 OR INSTR(CASEFOLD(COALESCE(google_note,'')),?)>0)")
         args.extend([search] * 4)
     if entity_type:
-        if entity_type not in {"individual_entrepreneur", "legal_entity"}:
+        if entity_type not in supplier_classification.ENTITY_TYPES:
             raise ValueError("Невідомий тип постачальника")
         where.append("SUPPLIER_ENTITY_TYPE(supplier_code)=?"); args.append(entity_type)
     if prozorro_statuses:
@@ -5128,12 +5851,22 @@ def list_edr_monitoring(params: dict) -> dict:
             "edr_statuses": statuses, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1)}
 
 
-def list_qualified_suppliers(params: dict) -> dict:
+def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
     """Return registered suppliers and applicants that have not entered a register yet."""
     search = params.get("search", [""])[0].strip().casefold()
     status = params.get("status", [""])[0].strip()
     risk = params.get("risk", [""])[0].strip()
-    dk_code = params.get("dk_code", [""])[0].strip()
+    import supplier_registry_filters
+    selection_sql, selection_args = supplier_registry_filters.selection(params)
+    dk_predicate, dk_args = supplier_registry_filters.dk_scope(params)
+    scoped_selection = bool(dk_args or any(params.get('framework_id', [])) or status)
+    applicant_scope = ("EXISTS (SELECT 1 FROM selected_scope x WHERE x.framework_id=s.framework_id "
+                       "AND x.supplier_code=s.supplier_code)" if scoped_selection else "1=1")
+    # Registry membership does not require a complete application backlink.
+    # Scope memberships before aggregation; apply supplier status to the counts.
+    framework_ids = sorted({str(v).strip() for v in params.get("framework_id", []) if str(v).strip()})
+    registry_scope = ("rc.framework_id IN (" + ",".join("?" for _ in framework_ids) + ")"
+                      if framework_ids else "1=1")
     edr_status = params.get("edr_status", [""])[0].strip()
     # Accept known presentation-only legacy rows until their DB normalization.
     canonical_edr_status = _edr_monitoring_status(edr_status) if edr_status else ""
@@ -5148,12 +5881,12 @@ def list_qualified_suppliers(params: dict) -> dict:
     admission_from = params.get("admission_from", [""])[0].strip()
     admission_to = params.get("admission_to", [""])[0].strip()
     include_codes = params.get("_include_codes", [""])[0] == "1"
-    if entity_type and entity_type not in {"individual_entrepreneur", "legal_entity"}:
+    if entity_type and entity_type not in supplier_classification.ENTITY_TYPES:
         raise ValueError("Невідомий тип постачальника")
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
     if risk in {"amcu", "nazk"}:
-        with db() as risk_con:
+        with (nullcontext(connection) if connection is not None else db()) as risk_con:
             risk_projection = supplier_risk_projection(risk_con)
     else:
         risk_projection = {"amcu_codes": set(), "nazk_codes": set()}
@@ -5163,8 +5896,21 @@ def list_qualified_suppliers(params: dict) -> dict:
     if search:
         where.append("(INSTR(CASEFOLD(supplier_code),?)>0 OR INSTR(CASEFOLD(supplier_name),?)>0 OR EXISTS "
           "(SELECT 1 FROM supplier_edr_profiles ep WHERE ep.supplier_code=combined.supplier_code "
-          "AND INSTR(CASEFOLD(ep.full_name),?)>0))")
-        args.extend([search, search, search])
+          "AND (INSTR(CASEFOLD(ep.full_name),?)>0 OR INSTR(CASEFOLD(ep.short_name),?)>0)) OR EXISTS "
+          "(SELECT 1 FROM submissions named WHERE named.supplier_code=combined.supplier_code "
+          "AND INSTR(CASEFOLD(named.supplier_name),?)>0) OR EXISTS "
+          "(SELECT 1 FROM submissions ss JOIN qualifications qq ON qq.submission_id=ss.id "
+          "JOIN frameworks ff ON ff.id=ss.framework_id WHERE ss.supplier_code=combined.supplier_code "
+          "AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
+          "(SELECT 1 FROM registry_contracts rr JOIN frameworks ff ON ff.id=rr.framework_id "
+          "WHERE rr.supplier_code=combined.supplier_code AND INSTR(CASEFOLD(ff.dk_code),?)>0) OR EXISTS "
+          "(SELECT 1 FROM submissions sf JOIN frameworks ff ON ff.id=sf.framework_id "
+          "WHERE sf.supplier_code=combined.supplier_code AND (INSTR(CASEFOLD(ff.pretty_id),?)>0 "
+          "OR INSTR(CASEFOLD(ff.title),?)>0)) OR EXISTS "
+          "(SELECT 1 FROM registry_contracts rf JOIN frameworks ff ON ff.id=rf.framework_id "
+          "WHERE rf.supplier_code=combined.supplier_code AND (INSTR(CASEFOLD(ff.pretty_id),?)>0 "
+          "OR INSTR(CASEFOLD(ff.title),?)>0)))")
+        args.extend([search] * 11)
     if status == "active":
         where.append("active_count>0")
     elif status == "suspended":
@@ -5209,13 +5955,13 @@ def list_qualified_suppliers(params: dict) -> dict:
     # materialized supplier summary would mix a CPV from one qualification
     # with a status from another qualification of the same supplier.
     source = f"""
-      WITH applicants AS (
+      WITH selected_scope AS ({selection_sql}), applicants AS (
         SELECT s.supplier_code,
           MAX(COALESCE(NULLIF(s.supplier_name,''),'Назву не отримано')) supplier_name,
           COUNT(*) applications_count, MAX(s.date_published) last_application,
           GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
         FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
-        WHERE COALESCE(s.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) GROUP BY s.supplier_code
+        WHERE COALESCE(s.supplier_code,'')<>'' AND {dk_predicate} AND {applicant_scope} GROUP BY s.supplier_code
       ), scoped_registry AS (
         SELECT rc.supplier_code,
           MAX(COALESCE(NULLIF(r.supplier_name,''),'Назву не отримано')) supplier_name,
@@ -5230,7 +5976,7 @@ def list_qualified_suppliers(params: dict) -> dict:
         FROM registry_contracts rc
         LEFT JOIN frameworks f ON f.id=rc.framework_id
         LEFT JOIN supplier_registry_summary r ON r.supplier_code=rc.supplier_code
-        WHERE COALESCE(rc.supplier_code,'')<>'' AND (?='' OR f.dk_code=?) GROUP BY rc.supplier_code
+        WHERE COALESCE(rc.supplier_code,'')<>'' AND {dk_predicate} AND {registry_scope} GROUP BY rc.supplier_code
       ), combined AS (
         SELECT r.supplier_code,r.supplier_name,r.qualifications_count,r.active_count,
           r.inactive_count,r.suspended_count,r.frameworks_count,r.dk_codes,r.last_qualification,
@@ -5244,16 +5990,23 @@ def list_qualified_suppliers(params: dict) -> dict:
         WHERE r.supplier_code IS NULL
       )
     """
-    source_args = [dk_code, dk_code, dk_code, dk_code]
+    source_args = [*selection_args, *dk_args, *dk_args, *framework_ids]
     query_args = source_args + args
-    with db() as con:
-        con.create_function("SUPPLIER_ENTITY_TYPE", 1, lambda code: supplier_entity_type(str(code or "")), deterministic=True)
+    with (nullcontext(connection) if connection is not None else db()) as con:
+        supplier_types = supplier_classification.build_index(con)
+        manual_types = supplier_manual_classification.build_index(con)
+        con.create_function("SUPPLIER_ENTITY_TYPE", 1,
+          lambda code: supplier_manual_classification.apply_effective(
+              supplier_classification.resolve(supplier_types, code),
+              manual_types.get(str(code or "")))["entity_type"], deterministic=True)
         canonical_states = (edr_sync_v2.canonical_supplier_edr_states(con)
                             if freshness or verification_from or verification_to
                             or admission_from or admission_to else {})
         if canonical_states:
             con.create_function("CANONICAL_FRESHNESS", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("bucket", "not_checked"), deterministic=True)
-            con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("verification_date", ""), deterministic=True)
+            # Calendar-range filters include the entire Kyiv day. Preserve the
+            # full verification instant in storage, API output and sync gates.
+            con.create_function("CANONICAL_VERIFICATION_DATE", 1, lambda code: edr_sync_v2.normalized_date((canonical_states.get(_digits(code)) or {}).get("verification_date", "")), deterministic=True)
             con.create_function("CANONICAL_LAST_ADMISSION", 1, lambda code: (canonical_states.get(_digits(code)) or {}).get("last_admission_date", ""), deterministic=True)
         edr_statuses = sorted({_edr_monitoring_status(r[0]) for r in con.execute(
             "SELECT DISTINCT edr_status FROM supplier_edr_profiles WHERE TRIM(COALESCE(edr_status,''))<>''")})
@@ -5290,16 +6043,27 @@ def list_qualified_suppliers(params: dict) -> dict:
         )}
         supplier_codes = [row["code"] for row in rows]
         page_application_stats = {}
+        submitted_names = {}
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
-            dk_clause = " AND f.dk_code=?" if dk_code else ""
-            stats_args = [*supplier_codes, *([dk_code] if dk_code else [])]
+            dk_clause = " AND " + dk_predicate if dk_args else ""
+            stats_args = [*selection_args, *supplier_codes, *dk_args]
             page_application_stats = {row["supplier_code"]: dict(row) for row in con.execute(f"""
+              WITH selected_scope AS ({selection_sql})
               SELECT s.supplier_code,COUNT(*) applications_count,MAX(s.date_published) last_application,
                 GROUP_CONCAT(DISTINCT NULLIF(f.dk_code,'')) application_dk_codes
               FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
-              WHERE s.supplier_code IN ({placeholders}){dk_clause}
+              WHERE s.supplier_code IN ({placeholders}){dk_clause} AND {applicant_scope}
               GROUP BY s.supplier_code""", stats_args)}
+            submitted_names = dict(con.execute(f"""
+                SELECT supplier_code,supplier_name FROM (
+                    SELECT supplier_code,supplier_name,ROW_NUMBER() OVER (
+                        PARTITION BY supplier_code ORDER BY julianday(date_published) DESC,id DESC
+                    ) position
+                    FROM submissions WHERE supplier_code IN ({placeholders})
+                        AND TRIM(COALESCE(supplier_name,''))<>''
+                ) WHERE position=1
+            """, supplier_codes).fetchall())
         if not canonical_states:
             canonical_states = edr_sync_v2.canonical_supplier_edr_states(con, supplier_codes)
         manager_matches = {}
@@ -5308,16 +6072,19 @@ def list_qualified_suppliers(params: dict) -> dict:
         latest_registry_events = {}
         if supplier_codes:
             placeholders = ",".join("?" for _ in supplier_codes)
-            for event in con.execute(f"""SELECT supplier_code,status,
+            event_scope = " AND id IN (SELECT contract_id FROM selected_scope)" if scoped_selection else ""
+            for event in con.execute(f"""WITH selected_scope AS ({selection_sql}) SELECT supplier_code,status,
               COALESCE(NULLIF(json_extract(raw_json,'$.dateModified'),''),
                        NULLIF(json_extract(raw_json,'$.date'),''),synced_at) event_date
-              FROM registry_contracts WHERE supplier_code IN ({placeholders})
-              ORDER BY event_date DESC""", supplier_codes):
+              FROM registry_contracts WHERE supplier_code IN ({placeholders}) {event_scope}
+              ORDER BY event_date DESC""", [*selection_args,*supplier_codes]):
                 if event["supplier_code"] not in latest_registry_events:
                     latest_registry_events[event["supplier_code"]] = {"status": event["status"], "date": event["event_date"]}
-            for profile in con.execute(f"""SELECT supplier_code,full_name,short_name,manager_name,
-              edr_status,edr_checked_at,source_sheet,source_row,synced_at
-              FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", supplier_codes):
+            for profile in con.execute(f"""SELECT ep.supplier_code,full_name,short_name,manager_name,
+              edr_status,edr_checked_at,ep.source_sheet,ep.source_row,synced_at,
+              COALESCE(gr.received_at,ep.last_google_received_at,'') last_google_received_at
+              FROM supplier_edr_profiles ep LEFT JOIN supplier_google_receipts gr ON gr.supplier_code=ep.supplier_code
+              WHERE ep.supplier_code IN ({placeholders})""", supplier_codes):
                 edr_profiles[profile["supplier_code"]] = dict(profile)
                 normalized = " ".join(re.sub(r"[’'`\-]+", " ", (profile["manager_name"] or "").casefold()).split())
                 if normalized and normalized in nazk_names:
@@ -5417,6 +6184,7 @@ def list_qualified_suppliers(params: dict) -> dict:
                 }
     items = [dict(row) for row in rows]
     for item in items:
+        item.update(supplier_classification.public_fields(supplier_classification.resolve(supplier_types, item["code"])))
         for key in ("__total", "__active_total", "__registered_total", "__not_registered"):
             item.pop(key, None)
         application_stats = page_application_stats.get(item.get("code"), {})
@@ -5433,11 +6201,19 @@ def list_qualified_suppliers(params: dict) -> dict:
             profile = {**profile, "edr_checked_at": verification.get("occurred_at") or "",
                        "edr_officer": verification.get("officer") or "",
                        "verification_event_type": verification.get("event_type") or ""}
+        item["application_name"] = submitted_names.get(item.get("code"), "")
         item["name"] = edr_sync_v2.current_supplier_name(profile.get("full_name"), item.get("name"))
-        item["edr_profile"] = profile
+        item["edr_profile"] = ({**profile,
+            "edr_status": canonical_state.get("edr_status_current",
+                edr_sync_v2.compatible_edr_status(profile.get("edr_status")))}
+            if profile else profile)
         item["current_manager"] = (known_managers.get(code) or {}).get("manager_name", "")
         item["current_manager_source"] = (known_managers.get(code) or {}).get("resolution_source", "")
         item["prozorro_status"] = canonical_state.get("prozorro_status", "Ще не в реєстрі")
+        if dk_args or framework_ids:
+            item["prozorro_status"] = ("Активний" if item["active_count"] else
+              "Призупинений" if item["suspended_count"] else
+              "Неактивний" if item["qualifications_count"] else "Ще не в реєстрі")
         item["edr_freshness_marker"] = canonical_state.get("marker", "⚪ Не перевірено")
         item["edr_freshness_bucket"] = canonical_state.get("bucket", "not_checked")
         item["edr_verification_date"] = canonical_state.get("verification_date", "")
@@ -5484,10 +6260,80 @@ def list_qualified_suppliers(params: dict) -> dict:
             "page": page, "size": size, "pages": (total + size - 1) // size}
 
 
+def supplier_registry_excel_filename(params, *, connection=None):
+    """Single-framework download identity comes only from its cached record."""
+    ids=list(dict.fromkeys(v for v in params.get('framework_id',[]) if v))
+    if params.get('registry_only')!=['1'] or len(ids)!=1:
+        return 'pqm-suppliers.xlsx'
+    def name(con):
+        row=con.execute('SELECT dk_code FROM frameworks WHERE id=?',(ids[0],)).fetchone()
+        code=str(row[0] or '') if row else ''
+        return code+'_pqm-suppliers.xlsx' if re.fullmatch(r'[0-9]{8}-[0-9]',code) else 'pqm-suppliers.xlsx'
+    if connection is not None:return name(connection)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+        return name(con)
+
+
+def supplier_registry_excel(params, *, connection=None):
+    """Complete filtered export in one read-only snapshot, independent of page."""
+    import supplier_selection
+    import supplier_xlsx
+    def build(con):
+        scope={**params,'_include_codes':['1'],'page':['1'],'size':['10']}
+        if params.get('registry_only')==['1']:
+            ids=[v for v in params.get('framework_id',[]) if v]
+            if not ids:raise ValueError('Оберіть конкретний відбір для експорту реєстру')
+            known={r[0] for r in con.execute('SELECT id FROM frameworks WHERE id IN ('+','.join('?' for _ in ids)+')',ids)}
+            if known!=set(ids):raise ValueError('Вибраний відбір відсутній у локальному кеші')
+            members=supplier_selection.registry_members(con,ids)
+            rows=supplier_selection.export_rows(con,scope,{r['supplier_code'] for r in members})
+            expected={r['supplier_code'] for r in members}
+            if {r['values'][0] for r in rows}!=expected:raise ValueError('Неповний експорт реєстру')
+            return supplier_xlsx.workbook(rows)
+        listing=list_qualified_suppliers({**scope,'status':['']},connection=con)
+        if listing.get('building'):
+            raise ValueError('База постачальників ще не підготовлена; експорт зупинено')
+        codes=set(listing['filtered_codes'])
+        if len(codes)!=listing['total']:
+            raise ValueError('Не підтверджено повноту вибірки експорту')
+        rows=supplier_selection.export_rows(con,scope,codes)
+        exported_codes=[row['values'][0] for row in rows]
+        if len(set(exported_codes))!=len(exported_codes) or not set(exported_codes)<=codes:
+            raise ValueError('Порушено унікальність або scope вибірки експорту')
+        return supplier_xlsx.workbook(rows)
+    if connection is not None:
+        return build(connection)
+    with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+        con.row_factory=sqlite3.Row
+        con.create_function('CASEFOLD',1,unicode_casefold,deterministic=True)
+        con.create_function('DIGITS',1,lambda value:re.sub(r'\D','',str(value or '')),deterministic=True)
+        con.create_function('NORMALIZE_NAME',1,edr_sync_v2.normalize_person,deterministic=True)
+        edr_sync_v2.register_verification_sql_functions(con)
+        con.execute('PRAGMA query_only=ON')
+        con.execute('BEGIN')
+        deadline=time.monotonic()+120
+        con.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
+        return build(con)
+
+
 def latest_supplier_submission_name(con, code):
+    # Historical/card identity is the literal latest submitted name. Google
+    # eligibility and latest decided names are separate registry projections.
     row=con.execute('''SELECT supplier_name FROM submissions WHERE DIGITS(supplier_code)=?
       ORDER BY julianday(date_published) DESC,id DESC LIMIT 1''',(code,)).fetchone()
     return row[0] if row else ''
+
+
+def supplier_classification_details(supplier_code: str) -> dict:
+    code = supplier_manual_classification._clean_code(supplier_code)
+    with db() as con:
+        if code not in supplier_manual_classification.known_codes(con):
+            raise KeyError(code)
+        automatic = supplier_classification.resolve(supplier_classification.build_index(con), code)
+        manual_row = supplier_manual_classification.current_record(con, code)
+        result = supplier_manual_classification.detail(automatic, dict(manual_row) if manual_row else None)
+        result["history"] = supplier_manual_classification.history(con, code)
+        return result
 
 def supplier_profile(supplier_code: str) -> dict:
     """Full local PQM/Bids/registry card for one supplier."""
@@ -5495,9 +6341,11 @@ def supplier_profile(supplier_code: str) -> dict:
     if not code:
         raise KeyError(supplier_code)
     with db() as con:
+        con.create_function("PQM_TIMESTAMP_US", 1, _timestamp_us, deterministic=True)
         latest_submission_name = latest_supplier_submission_name(con,code)
         summary = con.execute("SELECT * FROM supplier_registry_summary WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         profile = con.execute("SELECT * FROM supplier_edr_profiles WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
+        google_receipt = con.execute('SELECT received_at FROM supplier_google_receipts WHERE supplier_code=?',(code,)).fetchone()
         supplier_note = con.execute("SELECT * FROM supplier_notes WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
         current_manager_row = edr_sync_v2.resolve_known_manager(con, code)
         nazk_review = con.execute("SELECT * FROM supplier_nazk_reviews WHERE DIGITS(supplier_code)=?", (code,)).fetchone()
@@ -5563,12 +6411,14 @@ def supplier_profile(supplier_code: str) -> dict:
                  JOIN json_each(milestone.value,'$.documents') doc
                 WHERE COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
                                NULLIF(json_extract(doc.value,'$.dateModified'),'')) IS NOT NULL
-                ORDER BY COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
-                                  NULLIF(json_extract(doc.value,'$.dateModified'),'')) DESC LIMIT 1),
+                ORDER BY PQM_TIMESTAMP_US(COALESCE(NULLIF(json_extract(doc.value,'$.datePublished'),''),
+                                  NULLIF(json_extract(doc.value,'$.dateModified'),''))) DESC,
+                         milestone.key DESC,doc.key DESC LIMIT 1),
               (SELECT NULLIF(json_extract(milestone.value,'$.dateModified'),'')
                  FROM json_each(COALESCE(rc.raw_json,'{}'),'$.milestones') milestone
                 WHERE NULLIF(json_extract(milestone.value,'$.dateModified'),'') IS NOT NULL
-                ORDER BY json_extract(milestone.value,'$.dateModified') DESC LIMIT 1),
+                ORDER BY PQM_TIMESTAMP_US(json_extract(milestone.value,'$.dateModified')) DESC,
+                         milestone.key DESC LIMIT 1),
               NULLIF(json_extract(rc.raw_json,'$.date'),''),NULLIF(q.decision_date,'')
             ) event_date,
             CASE WHEN rc.status='terminated' THEN 'Рішення про виключення'
@@ -5579,7 +6429,7 @@ def supplier_profile(supplier_code: str) -> dict:
           LEFT JOIN qualifications q ON q.id=rc.qualification_id
           WHERE DIGITS(rc.supplier_code)=?), ranked AS (
           SELECT contract_events.*,ROW_NUMBER() OVER (PARTITION BY framework_id
-            ORDER BY COALESCE(event_date,'') DESC,id DESC) rn FROM contract_events)
+            ORDER BY PQM_TIMESTAMP_US(event_date) DESC,id DESC) rn FROM contract_events)
           SELECT id,status,framework_id,framework_title,dk_code,marketplace_url,event_date,event_label FROM ranked
           WHERE rn=1 ORDER BY COALESCE(dk_code,''),COALESCE(framework_title,''),framework_id""".replace(
               "__EFFECTIVE_ACTIVE__", supplier_activity.effective_active_sql('rc','f')), (code,))]
@@ -5639,14 +6489,14 @@ def supplier_profile(supplier_code: str) -> dict:
             "П. 52: враховано задоволені звернення за датою рішення; межі періодів включні."
         )
         contacts = supplier_contacts(con, code)
-        application_rows = [dict(row) for row in con.execute("""SELECT s.id,s.framework_id,
+        application_rows = [dict(row) for row in con.execute(f"""SELECT s.id,s.framework_id,
           COALESCE(NULLIF(f.pretty_id,''),f.id) framework_pretty_id,f.dk_code,f.title framework_title,
           COALESCE(fo.marketplace_url,'') marketplace_url,
           s.date_published,COALESCE(q.status,'pending') qualification_status,
           COALESCE(af.protocol_decision,'') protocol_decision,COALESCE(af.protocol_remarks,'') protocol_remarks,
           COALESCE(af.compliance_status,'') compliance_status,COALESCE(af.compliance_comments,'') compliance_comments,
           COALESCE(af.protocol_number,'') protocol_number,COALESCE(af.protocol_date,'') protocol_date,
-          COALESCE(af.protocol_officer,'') protocol_officer,COALESCE(af.contract_details,'') contract_details
+          {PROTOCOL_OFFICER_SQL} protocol_officer,COALESCE(af.contract_details,'') contract_details
           FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id
           LEFT JOIN qualifications q ON q.id=COALESCE((
             SELECT q2.id FROM qualifications q2 WHERE q2.submission_id=s.id
@@ -5717,14 +6567,23 @@ def supplier_profile(supplier_code: str) -> dict:
         registry_record_no_longer_present=record_no_longer_present,
     )
     profile_data = dict(profile) if profile else {}
+    if google_receipt: profile_data['last_google_received_at'] = google_receipt[0]
+    if profile_data:
+        profile_data["edr_status"] = edr_sync_v2.compatible_edr_status(
+            profile_data.get("edr_status"))
     with db() as event_con:
         canonical_edr = edr_sync_v2.canonical_supplier_edr_states(event_con, [code]).get(code, {})
         verification = canonical_edr.get("verification_event")
+        if profile_data:
+            profile_data["edr_status"] = canonical_edr.get(
+                "edr_status_current", profile_data.get("edr_status", ""))
     if verification:
         profile_data.update(edr_checked_at=verification.get("occurred_at") or "",
                             edr_officer=verification.get("officer") or "",
                             verification_event_type=verification.get("event_type") or "")
+    classification_details = supplier_classification_details(code)
     return {"code": code, "latest_submission_name": latest_submission_name, "summary": dict(summary) if summary else {}, "edr_profile": profile_data,
+            "supplier_classification": classification_details,
             "edr_canonical": canonical_edr,
             "supplier_note": dict(supplier_note) if supplier_note else {"supplier_code": code, "note": "", "updated_at": None, "updated_by": ""},
             "current_manager": dict(current_manager_row) if current_manager_row else {},
@@ -6107,14 +6966,21 @@ def sync_violation_reports_worker(claimed: bool = False) -> None:
                         VIOLATION_SYNC_STATE['errors'], VIOLATION_SYNC_STATE['message'].startswith('Помилка'))
 
 
-def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
+def start_violation_reports_sync(*, trigger: str = "manual", expected_revision=None,
+                                 manual_authorized: bool = False, actor: str = "") -> bool:
     """Share process and SQLite locks between manual and scheduled refreshes."""
+    manual_override = (manual_authorized is True and trigger == "manual" and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
+        return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
     with VIOLATION_SYNC_LOCK:
         if VIOLATION_SYNC_STATE["running"]:
             return False
-        owner = scheduler_runtime.claim(DB_PATH, "violation_reports", trigger=trigger)
+        owner = scheduler_runtime.claim(DB_PATH, "violation_reports", trigger=trigger,
+                                        expected_revision=expected_revision,
+                                        manual_authorized=manual_override, actor=actor)
         if not owner:
             return False
         VIOLATION_SYNC_STATE.update(running=True, message="Отримання переліку звернень…",
@@ -6135,24 +7001,36 @@ def start_violation_reports_sync(*, trigger: str = "manual") -> bool:
         try:
             threading.Thread(target=guarded_worker, daemon=True).start()
         except Exception:
-            scheduler_runtime.release(DB_PATH, "violation_reports", owner)
             VIOLATION_SYNC_STATE["running"] = False
+            _finish_scheduler_lease("violation_reports", owner, "error", "worker_start_failed")
             raise
         return True
 
 
-def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
+def start_nazk_registry_refresh(*, trigger: str = "manual", expected_revision=None,
+                                manual_authorized: bool = False, actor: str = "") -> bool:
+    manual_override = (manual_authorized is True and trigger == "manual" and
+                       isinstance(actor, str) and bool(actor.strip()))
+    if background_jobs.disabled() and not manual_override:
+        return False
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH)
-    owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger)
+    # The upstream fetch can take 900s. Keep the durable claim beyond that
+    # bound so a missed heartbeat cannot start a second fetch beside the first.
+    nazk_lease_seconds = 1200
+    owner = scheduler_runtime.claim(DB_PATH, "nazk_registry", trigger=trigger,
+                                    expected_revision=expected_revision,
+                                    lease_seconds=nazk_lease_seconds,
+                                    manual_authorized=manual_override, actor=actor)
     if not owner:
         return False
-    heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner)
+    heartbeat = scheduler_runtime.keepalive(DB_PATH, 'nazk_registry', owner,
+                                            fence_expired=True, lease_seconds=nazk_lease_seconds)
     def failed(error):
         # A failed fetch must release the lease/heartbeat without reconciling
         # checks or tasks. Success-only workflow callbacks keep their contract.
         try:
-            _finish_scheduler_lease("nazk_registry", owner, "error", str(error))
+            _finish_scheduler_lease("nazk_registry", owner, "error", str(error), require_current=True)
         finally:
             heartbeat.__exit__(None, None, None)
     def completed():
@@ -6160,22 +7038,24 @@ def start_nazk_registry_refresh(*, trigger: str = "manual") -> bool:
             state = reference_status(DB_PATH).get("nazk", {})
             error = str(state.get("message") or "") if state.get("status") == "error" else ""
             if not error:
-                rebuild_nazk_tasks("PQM NAZK job", workflow="nazk_job")
-            _finish_scheduler_lease("nazk_registry", owner, "error" if error else "ok", error)
+                rebuild_nazk_tasks("PQM NAZK job", workflow="nazk_job", lease_owner=owner)
+            _finish_scheduler_lease("nazk_registry", owner, "error" if error else "ok", error,
+                                    require_current=True)
         except Exception as exc:
-            _finish_scheduler_lease("nazk_registry", owner, "error", str(exc))
+            _finish_scheduler_lease("nazk_registry", owner, "error", str(exc), require_current=True)
             SERVER_LOG.exception("Explicit NAZK workflow failed")
         finally:
             heartbeat.__exit__(None, None, None)
     try:
         heartbeat.__enter__()
-        if start_reference_refresh(DB_PATH, "nazk", on_complete=completed, on_error=failed):
+        if start_reference_refresh(DB_PATH, "nazk", on_complete=completed, on_error=failed,
+                                   lease_owner=owner, manual_authorized=manual_override):
             return True
     except Exception:
-        scheduler_runtime.release(DB_PATH, "nazk_registry", owner)
+        _finish_scheduler_lease("nazk_registry", owner, "error", "manual_refresh_start_failed")
         heartbeat.__exit__(None, None, None)
         raise
-    scheduler_runtime.release(DB_PATH, "nazk_registry", owner)
+    _finish_scheduler_lease("nazk_registry", owner, "error", "manual_refresh_unavailable")
     heartbeat.__exit__(None, None, None)
     return False
 
@@ -6191,28 +7071,50 @@ def list_violation_reports(params: dict) -> dict:
     page = max(1, int(params.get("page", ["1"])[0] or 1))
     size = min(200, max(10, int(params.get("size", ["100"])[0] or 100)))
     where, args = ["1=1"], []
+    response_expired = params.get('response_expired', [''])[0] == '1'
+    if response_expired:
+        where.append(ui_action_summary.EXPIRED_REPORT_SQL)
     if search:
         where.append("(INSTR(CASEFOLD(report_id),?)>0 OR INSTR(CASEFOLD(author_name),?)>0 OR INSTR(CASEFOLD(author_code),?)>0 OR INSTR(CASEFOLD(defendant_name),?)>0 OR INSTR(CASEFOLD(defendant_code),?)>0 OR INSTR(CASEFOLD(tender_pretty_id),?)>0 OR INSTR(CASEFOLD(description),?)>0)")
         args.extend([search] * 7)
-    if status:
-        where.append("status=?"); args.append(status)
     if reason:
         where.append("reason=?"); args.append(reason)
     if date_from:
-        where.append("SUBSTR(date_published,1,10)>=?"); args.append(date_from)
+        start_day = datetime.strptime(date_from, "%Y-%m-%d").date()
+        where.append("PQM_TIMESTAMP_US(date_published)>=?")
+        args.append(_timestamp_us(datetime.combine(start_day, datetime.min.time(), ZoneInfo("Europe/Kyiv")).isoformat()))
     if date_to:
-        where.append("SUBSTR(date_published,1,10)<=?"); args.append(date_to)
+        end_day = datetime.strptime(date_to, "%Y-%m-%d").date() + timedelta(days=1)
+        where.append("PQM_TIMESTAMP_US(date_published)<?")
+        args.append(_timestamp_us(datetime.combine(end_day, datetime.min.time(), ZoneInfo("Europe/Kyiv")).isoformat()))
     if supplier_code:
         where.append("defendant_code=?"); args.append(supplier_code)
-    authority_clause = " AND ".join(where)
-    authority_args = list(args)
+    # Keep shared filters separate from the two mutually-exclusive KPI facets.
+    # Authority cards include the selected status but omit the selected
+    # authority; status cards include the selected authority but omit status.
+    shared_where, shared_args = list(where), list(args)
+    authority_where, authority_args = list(shared_where), list(shared_args)
+    if status:
+        authority_where.append("status=?"); authority_args.append(status)
+    authority_clause = " AND ".join(authority_where)
+    status_where, status_args = list(shared_where), list(shared_args)
+    if authority_code:
+        status_where.append("authority_code=?"); status_args.append(authority_code)
+    status_clause = " AND ".join(status_where)
+    where, args = list(authority_where), list(authority_args)
     if authority_code:
         where.append("authority_code=?"); args.append(authority_code)
     clause = " AND ".join(where)
     with db() as con:
+        con.create_function("PQM_TIMESTAMP_US", 1, _timestamp_us, deterministic=True)
+        if response_expired:
+            ui_action_summary.install_deadline_function(con, violation_deadline_control,
+                                                       datetime.now(ZoneInfo('Europe/Kyiv')))
         total = con.execute(f"SELECT COUNT(*) FROM violation_reports WHERE {clause}", args).fetchone()[0]
-        order_sql = "date_published ASC,report_id ASC" if status == "pending" else "date_published DESC,report_id DESC"
-        rows = con.execute(f"""SELECT id,report_id,status,date_published,date_modified,tender_pretty_id,contract_pretty_id,
+        direction = "ASC" if status == "pending" else "DESC"
+        order_sql = ("(PQM_TIMESTAMP_US(date_published) IS NULL) ASC,"
+                     f"PQM_TIMESTAMP_US(date_published) {direction},report_id {direction}")
+        rows = con.execute(f"""SELECT id,report_id,status,date_created,date_published,date_modified,tender_id,tender_pretty_id,contract_pretty_id,
           author_name,author_code,defendant_name,defendant_code,authority_name,authority_code,reason,description,
           defendant_period_start,defendant_period_end,decision_resolution,decision_description,decision_date,
           evidence_documents_json,decision_documents_json,raw_json
@@ -6221,13 +7123,32 @@ def list_violation_reports(params: dict) -> dict:
         statuses = [row[0] for row in con.execute("SELECT DISTINCT status FROM violation_reports WHERE status<>'' ORDER BY status")]
         reasons = [row[0] for row in con.execute("SELECT DISTINCT reason FROM violation_reports WHERE reason<>'' ORDER BY reason")]
         status_counts = {row[0]: row[1] for row in con.execute(
-            "SELECT status,COUNT(*) FROM violation_reports GROUP BY status")}
+            f"SELECT status,COUNT(*) FROM violation_reports WHERE {status_clause} GROUP BY status",
+            status_args)}
         pending, satisfied, declined = (status_counts.get("pending", 0), status_counts.get("satisfied", 0),
                                         status_counts.get("declined", 0))
         authorities = [dict(row) for row in con.execute(f"""SELECT authority_code,authority_name,COUNT(*) count
           FROM violation_reports WHERE {authority_clause} AND authority_code<>''
           GROUP BY authority_code,authority_name ORDER BY count DESC,authority_name""", authority_args).fetchall()]
         warning_markers = operational_tasks.warning_marker_map(con)
+        # Batch existing review records, no detail refresh/network and no mutations.
+        review_ids=[row['id'] for row in rows]
+        protocol_reviews={row['report_id']:dict(row) for row in con.execute(
+            'SELECT * FROM violation_report_reviews WHERE report_id IN ('+
+            ','.join('?' for _ in review_ids)+')',review_ids)} if review_ids else {}
+        scenario_context_snapshots={row['report_id']:dict(row) for row in con.execute(
+            'SELECT * FROM violation_scenario_context_snapshots WHERE report_id IN ('+
+            ','.join('?' for _ in review_ids)+')',review_ids)} if review_ids else {}
+        decision_snapshots={}
+        if review_ids:
+            for snapshot_row in con.execute(
+                    """SELECT report_id,new_value FROM violation_report_review_events
+                       WHERE report_id IN ("""+','.join('?' for _ in review_ids)+
+                    ") AND event_type='decision_context_snapshotted' "
+                    "AND field_name='decision_context_snapshot' ORDER BY changed_at DESC,id DESC",
+                    review_ids):
+                decision_snapshots.setdefault(snapshot_row['report_id'],snapshot_row['new_value'])
+
     items = []
     for row in rows:
         item = dict(row)
@@ -6236,11 +7157,35 @@ def list_violation_reports(params: dict) -> dict:
         raw = json.loads(item.pop("raw_json") or "{}")
         item["defendant_statements"] = raw.get("defendantStatements") or []
         item["blocking_marker"] = warning_markers.get(item["report_id"])
+        import violation_protocol_summary
+        saved_review=protocol_reviews.get(item['id'],{})
+        scenario_review=_review_dict(saved_review) or {}
+        scenario_report={**item,"review":scenario_review}
+        scenario_report["official_decisions"]=raw.get("decisions") or []
+        try:
+            decision_snapshot=json.loads(decision_snapshots.get(item['id']) or "null")
+        except (TypeError,ValueError):
+            decision_snapshot=None
+        scenario_report["decision_context_snapshot"]=decision_snapshot
+        scenario_context_row = scenario_context_snapshots.get(item["id"])
+        scenario_context = _validated_scenario_context_snapshot(
+            scenario_context_row, scenario_report, scenario_review)
+        # List projection reads only the independent local scenario cache.
+        # It never resolves a tender or mutates historical review state.
+        item["scenario_summary"]=(violation_scenario_summary(scenario_report,scenario_context)
+                                  if scenario_context is not None else "")
+        item["decision_justification"] = normalize_justification_text(
+            saved_review.get("decision_justification"))
+        projected_review=dict(saved_review)
+        if raw.get('decisions'):projected_review['review_status']='completed'
+        item['protocol_summary']=violation_protocol_summary.present(
+            saved_review,PROTOCOLS_DIR,_violation_sheets_json_eligible(projected_review))
         items.append(item)
     return {"items": items, "total": total, "pending": pending, "satisfied": satisfied, "declined": declined, "page": page, "size": size,
             "pages": (total + size - 1) // size, "statuses": statuses, "reasons": reasons,
             "authorities": authorities,
-            "sync": dict(VIOLATION_SYNC_STATE)}
+            "sync": {**dict(VIOLATION_SYNC_STATE),
+                     **scheduler_execution_snapshot("violation_reports")}}
 
 
 VIOLATION_REVIEW_FIELDS = {
@@ -6253,6 +7198,7 @@ VIOLATION_REVIEW_FIELDS = {
     "supplier_explanation_assessment", "established_discrepancy", "decision_template_key",
     "customer_protocol_decision_date", "customer_protocol_decision_number",
     "customer_protocol_decision_url",
+    "manual_winner_date", "manual_winner_basis",
 }
 VIOLATION_INTERNAL_DECISIONS = {"", "warning", "decline", "individual_review"}
 
@@ -6266,14 +7212,74 @@ def _parse_prozorro_date(value: str | None) -> datetime | None:
         return None
 
 
+def _manual_winner_fact(review: dict | None) -> dict | None:
+    review = review or {}
+    raw = str(review.get("manual_winner_date") or "").strip()
+    basis = str(review.get("manual_winner_basis") or "").strip()
+    try:
+        valid = bool(raw and datetime.strptime(raw, "%Y-%m-%d").date().isoformat() == raw)
+    except ValueError:
+        valid = False
+    if (not valid or not basis or not str(review.get("manual_winner_entered_by") or "").strip()
+            or not str(review.get("manual_winner_entered_at") or "").strip()):
+        return None
+    return {"date": raw, "basis": basis,
+            "entered_by": review.get("manual_winner_entered_by"),
+            "entered_at": review.get("manual_winner_entered_at")}
+
+
+def _validate_manual_winner_edit(values: dict, existing: dict, actor: str, now: str) -> None:
+    if not {"manual_winner_date", "manual_winner_basis"}.intersection(values):
+        return
+    date = str(values.get("manual_winner_date", existing.get("manual_winner_date")) or "").strip()
+    basis = str(values.get("manual_winner_basis", existing.get("manual_winner_basis")) or "").strip()
+    if ("manual_winner_date" in values and date != str(existing.get("manual_winner_date") or "").strip()
+            and date and "manual_winner_basis" not in values):
+        raise ValueError("Укажіть джерело для нової ручної дати переможця")
+    if date:
+        try:
+            if datetime.strptime(date, "%Y-%m-%d").date().isoformat() != date:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("Дата переможця УО має формат YYYY-MM-DD") from exc
+        if not basis:
+            raise ValueError("Укажіть коротке джерело ручного підтвердження дати переможця")
+    elif basis:
+        raise ValueError("Для примітки потрібна ручна дата переможця")
+    values["manual_winner_date"] = date
+    values["manual_winner_basis"] = basis
+    if (date, basis) != (str(existing.get("manual_winner_date") or "").strip(),
+                         str(existing.get("manual_winner_basis") or "").strip()):
+        values["manual_winner_entered_by"] = actor if date else ""
+        values["manual_winner_entered_at"] = now if date else ""
+
+
 def _iso_date(value: datetime | None) -> str | None:
     return value.date().isoformat() if value else None
+
+
+def _kyiv_calendar_day(value: datetime):
+    """Aware events use Kyiv days; legacy naive calendar inputs keep their date."""
+    return (value.astimezone(ZoneInfo("Europe/Kyiv")) if value.tzinfo is not None else value).date()
+
+
+def _deadline_instant(value: datetime) -> datetime | None:
+    """Resolve a legacy Kyiv wall deadline only when its instant is unambiguous."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc)
+    kyiv = ZoneInfo("Europe/Kyiv")
+    candidates = set()
+    for fold in (0, 1):
+        instant = value.replace(tzinfo=kyiv, fold=fold).astimezone(timezone.utc)
+        if instant.astimezone(kyiv).replace(tzinfo=None) == value:
+            candidates.add(instant)
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def _calendar_deadline(start: datetime | None, days: int) -> dict:
     if not start:
         return {"calendar_day": None, "weekday": None, "shifted": False, "deadline": None}
-    calendar_day = start + timedelta(days=days)
+    calendar_day = datetime.combine(_kyiv_calendar_day(start), datetime.min.time()) + timedelta(days=days)
     deadline = calendar_day
     while deadline.weekday() >= 5:
         deadline += timedelta(days=1)
@@ -6294,14 +7300,14 @@ def _within_calendar_deadline(moment: datetime | None, deadline_date: str | None
         boundary = datetime.strptime(deadline_date, "%Y-%m-%d").date()
     except ValueError:
         return None
-    return moment.date() <= boundary
+    return _kyiv_calendar_day(moment) <= boundary
 
 
 def _add_working_days(start: datetime | None, days: int) -> str | None:
     """Return the date after `days` Mon-Fri days; weekends are not counted."""
     if not start:
         return None
-    current = start.date()
+    current = _kyiv_calendar_day(start)
     added = 0
     while added < days:
         current += timedelta(days=1)
@@ -6316,17 +7322,14 @@ def _deadline_passed(deadline: str | None, moment: datetime | None = None) -> bo
     raw = str(deadline).strip()
     boundary = _parse_prozorro_date(raw)
     if boundary and ("T" in raw or " " in raw):
-        current = moment or datetime.now().astimezone()
-        if boundary.tzinfo is None:
-            boundary = boundary.replace(tzinfo=current.tzinfo)
-        elif current.tzinfo is None:
-            current = current.replace(tzinfo=boundary.tzinfo)
-        return current >= boundary
+        current = _deadline_instant(moment or datetime.now(timezone.utc))
+        boundary = _deadline_instant(boundary)
+        return bool(current is not None and boundary is not None and current >= boundary)
     try:
         boundary_date = datetime.strptime(raw[:10], "%Y-%m-%d").date()
     except (TypeError, ValueError):
         return False
-    return (moment or datetime.now()).date() > boundary_date
+    return _kyiv_calendar_day(moment or datetime.now(timezone.utc)) > boundary_date
 
 
 def violation_deadline_control(report: dict, moment: datetime | None = None) -> dict:
@@ -6371,19 +7374,35 @@ def require_local_violation_report_owned(report_id: str) -> None:
 
 
 def _justification_basis(report: dict, context: dict, review: dict) -> dict:
+    presentation_keys = {"manual_reviewed", "file_unavailable", "checked_at", "checked_by"}
+    def source_fact(value):
+        if isinstance(value, dict):
+            return {key: source_fact(item) for key, item in value.items()
+                    if key not in presentation_keys}
+        if isinstance(value, list):
+            return [source_fact(item) for item in value]
+        return value
+    review_inputs = {key: review.get(key) for key in (
+        "internal_decision", "additional_check_required", "guarantee_documents_visible",
+        "supplier_explanation_assessment", "established_discrepancy", "written_refusal_date",
+        "written_refusal_number", "written_refusal_url", "court_decision_final_present")}
+    review_inputs["additional_check_required"] = bool(review_inputs["additional_check_required"])
+    for key in ("guarantee_documents_visible", "court_decision_final_present"):
+        if review_inputs[key] is not None:
+            review_inputs[key] = bool(review_inputs[key])
+    for key in ("internal_decision", "supplier_explanation_assessment", "established_discrepancy",
+                "written_refusal_date", "written_refusal_number", "written_refusal_url"):
+        review_inputs[key] = review_inputs[key] or ""
     return {
         "reason": report.get("reason"), "description": report.get("description"),
-        "statements": report.get("defendant_statements") or [],
-        "evidence": report.get("evidence_documents") or [],
+        "statements": source_fact(report.get("defendant_statements") or []),
+        "evidence": source_fact(report.get("evidence_documents") or []),
         "winner": context.get("winner_selected_at"), "rejection": context.get("rejection_date"),
         "rejection_reason": context.get("rejection_reason_classification"),
         "contract": [context.get("contract_status"), context.get("contract_date"), context.get("contract_pretty_id")],
         "performance_security_required": context.get(
             "performance_security_required", context.get("contract_guarantee_required")),
-        "review": {key: review.get(key) for key in (
-            "internal_decision", "additional_check_required", "guarantee_documents_visible",
-            "supplier_explanation_assessment", "established_discrepancy", "written_refusal_date",
-            "written_refusal_number", "written_refusal_url", "court_decision_final_present")},
+        "review": review_inputs,
     }
 
 
@@ -6409,17 +7428,29 @@ def _documents_without_signature(documents: list[dict]) -> list[dict]:
     return sorted(documents or [], key=lambda item: str(item.get("datePublished") or ""), reverse=True)
 
 
-def _attested_winner_snapshot_connection() -> sqlite3.Connection:
+@contextmanager
+def _attested_winner_snapshot_connection():
     # A read-path may persist the first evidenced decision. Attest its actual
     # destination before opening each connection, not only at HTTP dispatch.
     if SANDBOX_MODE:
         import sandbox_runtime
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
-    return db()
+    resource = db()
+    if not isinstance(resource, sqlite3.Connection):
+        # Keep lightweight tests/embedders that provide a connection context
+        # manager compatible; those wrappers own their own cleanup.
+        with resource as connection:
+            yield connection
+        return
+    try:
+        with resource:
+            yield resource
+    finally:
+        resource.close()
 
 
 def _report_winner_decision(report: dict, tender: dict) -> dict | None:
-    """Keep a new report's first evidenced decision; never backfill old rows."""
+    """Keep the first evidenced review-time winner; never replace a frozen event."""
     report_id = str(report.get("id") or "")
     record = None
     if report_id:
@@ -6442,7 +7473,8 @@ def _report_winner_decision(report: dict, tender: dict) -> dict | None:
                 con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
                   WHERE report_id=?""", (json.dumps(frozen, ensure_ascii=False), report_id))
         return frozen
-    decision = winner_decisions.historical_decision(tender, report, snapshot_at=now_iso())
+    decision = winner_decisions.review_time_winner_selection(
+        tender, report, snapshot_at=now_iso())["decision"]
     if decision and record is not None:
         with _attested_winner_snapshot_connection() as con:
             con.execute("""UPDATE violation_winner_decision_snapshots SET decision_json=?
@@ -6482,10 +7514,21 @@ def _display_legal_date(value) -> str:
 
 def violation_decision_template_key(report: dict, context: dict, review: dict | None = None) -> str:
     """Return only a legally approved template key; unsupported combinations have no draft."""
+    if context.get("rejection_ambiguous"):
+        return ""
     review = review or {}
     reason = report.get("reason") or ""
     decision = review.get("internal_decision") or ""
     statements = report.get("defendant_statements") or []
+    court_absent = review.get("court_decision_final_present") in (False, 0, "0", "false")
+    if (reason == "goodsNonCompliance" and decision == "decline"
+            and court_absent
+            and not statements):
+        return "p49_3_decline_no_final_court_decision_no_explanation"
+    if (reason in {"contractBreach", "signingRefusal"} and decision == "decline"
+            and context.get("available") is True
+            and context.get("winner_state") == "absent_confirmed"):
+        return "winner_absent_decline"
     if (reason == "contractBreach" and decision == "decline"
             and context.get("rejection_present")
             and context.get("rejected_before_deadline") is True):
@@ -6506,11 +7549,36 @@ def violation_decision_template_key(report: dict, context: dict, review: dict | 
     return ""
 
 
+def violation_civil_code_required(report: dict, context: dict, review: dict) -> bool:
+    """Approved late-rejection warnings do not require an extra Civil Code block."""
+    scenario = violation_decision_template_key(report, context, review)
+    if scenario in {"p49_1_warning", "p49_1_warning_guarantee_no_documents_no_explanation"}:
+        return False
+    # Preserve every other scenario, including all refusal protocols.
+    return bool(context.get("day_5_shifted") if report.get("reason") == "contractBreach"
+                else context.get("day_3_shifted") if report.get("reason") == "signingRefusal"
+                else False)
+
+
 def build_violation_decision_justification(report: dict, context: dict, review: dict | None = None) -> str:
     """Render an approved template only; never invent or persist additional legal reasoning."""
     review = review or {}
     template_key = violation_decision_template_key(report, context, review)
     winner_date = _display_legal_date(context.get("winner_selected_at"))
+    if template_key == "p49_3_decline_no_final_court_decision_no_explanation":
+        return normalize_justification_text("\n".join((
+            "Замовником подано звернення про порушення з посиланням на пп. 3 п. 49 Порядку № 822. Зазначена норма передбачає вжиття заходів реагування у разі, якщо постачальник не виконав зобов’язання за раніше укладеним договором із цим самим замовником, що призвело до його дострокового розірвання та застосування санкцій.",
+            "Відповідно до положень Порядку № 822, факт невиконання зобов'язань та застосування санкцій (штрафів/збитків) має обов'язково підтверджуватися рішенням суду, що набрало законної сили.",
+            "Однак Замовником до звернення не додано відповідного судового рішення, яке б підтверджувало факт порушення та застосування санкцій до Постачальника. Оскільки наявність такого рішення є імперативною (обов'язковою) умовою для кваліфікації порушення за пп. 3 п. 49 Порядку № 822, відсутність документального підтвердження унеможливлює задоволення звернення.",
+            "Отже, Адміністратор приймає рішення про відмову в задоволенні звернення Замовника.",
+        )))
+    if template_key == "winner_absent_decline":
+        return normalize_justification_text(
+            "За результатами перевірки актуальних даних ЕСЗ не підтверджено визначення "
+            "Постачальника переможцем цієї закупівлі. Відсутня дата визначення переможцем, "
+            "з якої починається перебіг відповідного строку. Тому заявлений факт порушення "
+            "Постачальником не може бути встановлений. Адміністратор відмовляє в задоволенні звернення."
+        )
     if template_key in {"p49_1_decline_before_deadline", "p49_1_decline_before_deadline_civil_shift"}:
         security_required = bool(context.get(
             "performance_security_required", context.get("contract_guarantee_required")))
@@ -6590,6 +7658,8 @@ def build_violation_decision_justification(report: dict, context: dict, review: 
 
 def violation_scenario_summary(report: dict, context: dict) -> str:
     """Derived officer-only acceptance hint; never persisted or sent to DOCX."""
+    if context.get("rejection_ambiguous"):
+        return "Відхилення: кілька відповідних рішень або не доведено identity; потрібна перевірка provenance."
     reason = report.get("reason")
     statements = report.get("defendant_statements") or []
     supplier_response_present = any(str(
@@ -6641,6 +7711,212 @@ def violation_scenario_summary(report: dict, context: dict) -> str:
         return (f"Сценарій: пп. 3 п. 49; рішення суду, що набрало законної сили — {court}; "
                 f"пояснення постачальника — {supplier_response}.")
     return ""
+
+
+_SCENARIO_CONTEXT_VERSION = 1
+_SCENARIO_CONTEXT_TTL_SECONDS = 24 * 60 * 60
+_SCENARIO_CONTEXT_REQUIRED = {
+    "contractBreach": {
+        "rejection_ambiguous", "rejected_before_deadline", "rejection_present",
+        "contract_deadline_expired", "day_5_shifted", "performance_security_required",
+    },
+    "signingRefusal": {"rejection_ambiguous", "written_refusal_within_deadline", "day_3_shifted"},
+    "goodsNonCompliance": {"rejection_ambiguous"},
+}
+_SCENARIO_FINGERPRINT_REPORT_FIELDS = (
+    "id", "report_id", "reason", "tender_id", "defendant_code",
+    "date_created", "date_published", "date_modified",
+)
+_SCENARIO_FINGERPRINT_REVIEW_FIELDS = (
+    "contract_deadline_extended", "written_refusal_date", "written_refusal_number",
+    "written_refusal_url", "court_decision_final_present", "manual_winner_date",
+    "manual_winner_basis",
+)
+
+
+def _scenario_timestamp_ns(value) -> int | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return int(parsed.timestamp() * 1_000_000_000)
+
+
+def _scenario_external_report_id(report: dict) -> str:
+    external_id = str(report.get("report_id") or "").strip()
+    return external_id if re.fullmatch(r"UA-D-\d{4}-\d{2}-\d{2}-\d{6}", external_id) else ""
+
+
+def _scenario_report_fingerprint(report: dict, review: dict | None) -> str:
+    statements = report.get("defendant_statements")
+    if statements is None:
+        raw = report.get("raw_json")
+        try:
+            statements = (json.loads(raw or "{}").get("defendantStatements") or []) if raw else []
+        except (TypeError, ValueError):
+            statements = []
+    normalized = {
+        "report": {key: report.get(key) for key in _SCENARIO_FINGERPRINT_REPORT_FIELDS},
+        "statements": [{"description": str(entry.get("description") or ""),
+                        "title": str(entry.get("title") or "")}
+                       for entry in (statements or []) if isinstance(entry, dict)],
+        "review": {key: (bool((review or {}).get(key)) if key in {
+            "contract_deadline_extended", "court_decision_final_present"} and
+            (review or {}).get(key) is not None else (review or {}).get(key))
+                   for key in _SCENARIO_FINGERPRINT_REVIEW_FIELDS},
+    }
+    payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _minimal_scenario_context(reason: str, context: dict | None) -> dict | None:
+    if not isinstance(context, dict) or reason not in _SCENARIO_CONTEXT_REQUIRED:
+        return None
+    if context.get("rejection_ambiguous") is True:
+        return {"rejection_ambiguous": True}
+    required = _SCENARIO_CONTEXT_REQUIRED[reason]
+    projected = {key: context.get(key) for key in required if key in context}
+    if not required.issubset(projected):
+        return None
+    bool_fields = required - {"contract_deadline_expired", "written_refusal_within_deadline"}
+    for key in bool_fields:
+        if type(projected.get(key)) is not bool:
+            return None
+    for key in ("contract_deadline_expired", "written_refusal_within_deadline"):
+        if key in projected and projected[key] is not None and type(projected[key]) is not bool:
+            return None
+    return projected
+
+
+def _validated_scenario_context_snapshot(snapshot, report: dict, review: dict | None) -> dict | None:
+    if snapshot is None:
+        return None
+    try:
+        data = dict(snapshot)
+        context = json.loads(data.get("context_json") or "null")
+        now_ns = time.time_ns()
+        observed_ns = int(data.get("observed_at_ns") or 0)
+        source_ns = int(data.get("source_updated_at_ns") or 0)
+        source_text = str(data.get("source_updated_at") or "")
+        parsed_source_ns = _scenario_timestamp_ns(source_text)
+        expected_context = _minimal_scenario_context(str(report.get("reason") or ""), context)
+        if (data.get("snapshot_version") != _SCENARIO_CONTEXT_VERSION or
+                not _scenario_external_report_id(report) or
+                data.get("report_id") != str(report.get("id") or "") or
+                data.get("report_external_id") != _scenario_external_report_id(report) or
+                data.get("reason") != str(report.get("reason") or "") or
+                not str(report.get("tender_id") or "").strip() or
+                data.get("tender_id") != str(report.get("tender_id") or "") or
+                data.get("input_fingerprint") != _scenario_report_fingerprint(report, review) or
+                expected_context is None or expected_context != context or
+                data.get("context_hash") != hashlib.sha256(json.dumps(
+                    context, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")).hexdigest() or
+                parsed_source_ns is None or parsed_source_ns != source_ns or
+                source_ns > observed_ns or observed_ns > now_ns or
+                now_ns - observed_ns > _SCENARIO_CONTEXT_TTL_SECONDS * 1_000_000_000):
+            return None
+        return context
+    except (TypeError, ValueError, json.JSONDecodeError, OverflowError):
+        return None
+
+
+def _scenario_context_from_card(report: dict, review: dict | None, context: dict | None) -> dict | None:
+    metadata = (context or {}).get("_scenario_context_metadata") if isinstance(context, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    source_updated_at = str(metadata.get("source_updated_at") or "")
+    source_updated_at_ns = _scenario_timestamp_ns(source_updated_at)
+    try:
+        observed_at_ns = int(metadata.get("observed_at_ns") or 0)
+    except (TypeError, ValueError):
+        return None
+    minimal = _minimal_scenario_context(str(report.get("reason") or ""), context)
+    external_id = _scenario_external_report_id(report)
+    report_id = str(report.get("id") or "")
+    tender_id = str(report.get("tender_id") or "")
+    if (not external_id or not report_id or not tender_id or source_updated_at_ns is None or
+            observed_at_ns <= 0 or minimal is None):
+        return None
+    now_ns = time.time_ns()
+    if observed_at_ns > now_ns or source_updated_at_ns > observed_at_ns:
+        return None
+    serialized = json.dumps(minimal, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "snapshot_version": _SCENARIO_CONTEXT_VERSION,
+        "report_id": report_id,
+        "report_external_id": external_id,
+        "reason": str(report.get("reason") or ""),
+        "tender_id": tender_id,
+        "input_fingerprint": _scenario_report_fingerprint(report, review),
+        "source_updated_at": source_updated_at,
+        "source_updated_at_ns": source_updated_at_ns,
+        "observed_at_ns": observed_at_ns,
+        "captured_at": datetime.fromtimestamp(observed_at_ns / 1_000_000_000, timezone.utc).isoformat(),
+        "context_hash": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        "context_json": serialized,
+    }
+
+
+def _save_violation_scenario_context_snapshot(report: dict, review: dict | None,
+                                               context: dict | None) -> dict | None:
+    candidate = _scenario_context_from_card(report, review, context)
+    if candidate is None:
+        return None
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        current_report = con.execute("SELECT * FROM violation_reports WHERE id=?",
+                                     (candidate["report_id"],)).fetchone()
+        if current_report is None:
+            return None
+        current_review = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                     (candidate["report_id"],)).fetchone()
+        raw_report = dict(current_report)
+        try:
+            raw_report["defendant_statements"] = json.loads(raw_report.get("raw_json") or "{}").get(
+                "defendantStatements") or []
+        except (TypeError, ValueError):
+            raw_report["defendant_statements"] = []
+        if candidate["input_fingerprint"] != _scenario_report_fingerprint(
+                raw_report, _review_dict(current_review)):
+            row = con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                              (candidate["report_id"],)).fetchone()
+            return _validated_scenario_context_snapshot(
+                row, raw_report, _review_dict(current_review))
+        existing = con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                               (candidate["report_id"],)).fetchone()
+        if existing:
+            old = dict(existing)
+            old_order = (int(old.get("source_updated_at_ns") or 0), int(old.get("observed_at_ns") or 0))
+            new_order = (candidate["source_updated_at_ns"], candidate["observed_at_ns"])
+            if new_order < old_order:
+                return _validated_scenario_context_snapshot(old, report, review)
+            existing_context = _validated_scenario_context_snapshot(old, report, review)
+            if (old.get("context_hash") == candidate["context_hash"] and existing_context is not None and
+                    old_order[0] == candidate["source_updated_at_ns"]):
+                return existing_context
+        con.execute("""INSERT INTO violation_scenario_context_snapshots
+            (report_id,snapshot_version,report_external_id,reason,tender_id,input_fingerprint,
+             source_updated_at,source_updated_at_ns,observed_at_ns,captured_at,context_hash,context_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(report_id) DO UPDATE SET
+             snapshot_version=excluded.snapshot_version,report_external_id=excluded.report_external_id,
+             reason=excluded.reason,tender_id=excluded.tender_id,input_fingerprint=excluded.input_fingerprint,
+             source_updated_at=excluded.source_updated_at,source_updated_at_ns=excluded.source_updated_at_ns,
+             observed_at_ns=excluded.observed_at_ns,captured_at=excluded.captured_at,
+             context_hash=excluded.context_hash,context_json=excluded.context_json""",
+             tuple(candidate[key] for key in (
+                 "report_id", "snapshot_version", "report_external_id", "reason", "tender_id",
+                 "input_fingerprint", "source_updated_at", "source_updated_at_ns", "observed_at_ns",
+                 "captured_at", "context_hash", "context_json")))
+        return _validated_scenario_context_snapshot(
+            con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                        (candidate["report_id"],)).fetchone(), report, review)
 
 
 def _guarantee_requirements(tender: dict, awards: list[dict]) -> list[dict]:
@@ -6792,6 +8068,19 @@ def _violation_review_officer_presentation(review: dict | None) -> tuple[dict | 
 
 def violation_rules_engine(reason: str, context: dict, review: dict | None) -> dict:
     review = review or {}
+    if reason in {"contractBreach", "signingRefusal"} and context.get("available") is False:
+        return {"recommended_decision": None, "recommended_scenario": "winner_unavailable",
+                "recommendation_reason": "Доказові відомості про визначення переможця недоступні; потрібна перевірка."}
+    if reason in {"contractBreach", "signingRefusal"} and context.get("available") is True:
+        if context.get("winner_state") in {"unknown", "ambiguous", "unavailable"}:
+            return {"recommended_decision": None, "recommended_scenario": "winner_unresolved",
+                    "recommendation_reason": "Подію визначення переможцем не підтверджено однозначно; потрібна перевірка provenance."}
+        if context.get("winner_state") == "absent_confirmed":
+            return {"recommended_decision": "decline", "recommended_scenario": "winner_absent",
+                    "recommendation_reason": "Неможливо встановити факт заявленого порушення у зв'язку з відсутністю дати визначення постачальника переможцем, з якої починається перебіг відповідного строку."}
+    if context.get("rejection_ambiguous") and reason != "signingRefusal":
+        return {"recommended_decision": None, "recommended_scenario": "rejection_ambiguous",
+                "recommendation_reason": "Кілька відповідних рішень про відхилення; потрібна перевірка конкретного рішення."}
     if reason == "contractBreach":
         if not context.get("rejection_present"):
             return {"recommended_decision": None, "recommended_scenario": "review_without_rejection",
@@ -6833,14 +8122,77 @@ def violation_rules_engine(reason: str, context: dict, review: dict | None) -> d
             "recommendation_reason": "Для цієї підстави автоматичну рекомендацію не налаштовано."}
 
 
+def violation_review_ready(item: dict) -> bool:
+    if not (item.get("deadline_control") or {}).get("supplier_ready"):
+        return False
+    reason = item.get("reason") or ""
+    context, review = item.get("procurement_context") or {}, item.get("review") or {}
+    if reason in {"contractBreach", "signingRefusal"}:
+        if context.get("winner_state") in {"unknown", "ambiguous", "unavailable"}:
+            if not (context.get("winner_date_source") == "officer_manual"
+                    and context.get("winner_selected_at") and context.get("winner_manual_provenance")):
+                return False
+        elif context.get("winner_state") != "absent_confirmed" and not context.get("winner_selected_at"):
+            return False
+    if reason == "contractBreach" and context.get("rejection_ambiguous"):
+        return False
+    if (reason == "signingRefusal" and context.get("winner_state") != "absent_confirmed"
+            and not str(review.get("written_refusal_date") or "").strip()):
+        return False
+    if reason == "goodsNonCompliance" and review.get("court_decision_final_present") is None:
+        return False
+    return True
+
+
+def _procurement_publication_date(value) -> str:
+    """Announcement calendar date in Kyiv; never infer it from another event."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    raw = value.strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return ""
+        return parsed.astimezone(ZoneInfo("Europe/Kyiv")).date().isoformat()
+    except (ValueError, OverflowError):
+        return ""
+
+
+def _procurement_publication_fields(tender: dict, report: dict) -> dict:
+    api_date = _procurement_publication_date(tender.get("noticePublicationDate"))
+    pretty_id = tender.get("tenderID")
+    match = re.fullmatch(r"UA-(\d{4}-\d{2}-\d{2})-\d{6}-[a-z]", pretty_id) if isinstance(pretty_id, str) else None
+    id_date = _procurement_publication_date(match.group(1)) if match else ""
+    linked = (bool(report.get("tender_id"))
+              and str(tender.get("id") or "") == str(report["tender_id"])
+              and (not report.get("tender_pretty_id") or report["tender_pretty_id"] == pretty_id))
+    date = api_date or (id_date if linked else "")
+    return {"tender_date_published": date,
+            "tender_date_published_source": ("tender.noticePublicationDate" if api_date
+                else "tender_id_date" if date else ""),
+            "tender_date_published_issue": ("" if date else "Не вказано дату оголошення закупівлі"),
+            "tender_date_published_id_mismatch": bool(api_date and id_date and api_date != id_date)}
+
+
 def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     tender_id = str(report.get("tender_id") or "")
     if not tender_id:
-        return {"available": False, "error": "У зверненні відсутній tender_id"}
+        return _unavailable_winner_context(report, review, "У зверненні відсутній tender_id")
+    observed_at_ns = time.time_ns()
     tender = api_get(f"{API_ROOT}/tenders/{tender_id}").get("data") or {}
+    if not tender:
+        return _unavailable_winner_context(report, review, "Не отримано актуальний tender context")
     defendant_code = str(report.get("defendant_code") or "")
     supplier_awards = winner_decisions.relevant_awards(tender, report)
     historical = _report_winner_decision(report, tender)
+    winner_selection = winner_decisions.review_time_winner_selection(
+        tender, report, snapshot_at=now_iso()) if historical is None else None
+    winner_state = "present" if historical else winner_selection["state"]
+    manual_winner = (_manual_winner_fact(review) if winner_state in
+                     {"unknown", "ambiguous", "unavailable"} else None)
+    winner_ambiguous = bool(winner_selection and winner_selection["ambiguous"])
     winner = next((award for award in supplier_awards
                    if str(award.get("id") or "") == str((historical or {}).get("award_id") or "")), None)
     historical_notice = (historical or {}).get("evidence_document") or {}
@@ -6860,14 +8212,36 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
                             notice_published_at[:10] == (historical or {}).get("decision_date")
                             else None) or (historical or {}).get("decision_datetime")
                            or (historical or {}).get("decision_date"))
+    if manual_winner:
+        winner_display_date = manual_winner["date"]
     current_winner = winner_decisions.current_winner_state(tender, report)
-    rejected = winner_decisions.relevant_rejection(tender, report)
+    rejection_selection = winner_decisions.rejection_selection(tender, report)
+    rejected = rejection_selection["award"]
+    rejection_provenance = ({
+        "source_type": "current_tender_award",
+        "tender_id": tender_id,
+        "award_id": rejected.get("id"),
+        "status": rejected.get("status"),
+        "qualified": rejected.get("qualified"),
+        "rejection_datetime": rejected.get("date"),
+        "title": rejected.get("title"),
+        "description": rejected.get("description"),
+        "documents": (rejected.get("documents") or []),
+        "supplier_codes": sorted(str((supplier.get("identifier") or {}).get("id") or "")
+                                 for supplier in rejected.get("suppliers") or []),
+        "lot_id": rejected.get("lotID"),
+        "contract_ids": sorted(str(contract.get("id") or "")
+                               for contract in tender.get("contracts") or []
+                               if str(contract.get("awardID") or "") == str(rejected.get("id") or "")),
+    } if rejected else None)
     rejection_protocol_document = winner_decisions.protocol_document(rejected or {})
     rejection_electronic_url = winner_decisions.electronic_protocol_url(
         tender_id, (rejected or {}).get("id"),
         winner_decisions.notice_document(rejected or {}), decision="rejection")
-    winner_selected = _parse_prozorro_date((historical or {}).get("decision_datetime")
+    winner_selected = _parse_prozorro_date(manual_winner["date"] if manual_winner else
+                                           (historical or {}).get("decision_datetime")
                                            or (historical or {}).get("decision_date"))
+    report_created_at = report.get("date_created") or report.get("date_published")
     extended = bool((review or {}).get("contract_deadline_extended"))
     deadline = _calendar_deadline(winner_selected, 10 if extended else 5)
     rejection_date = _parse_prozorro_date((rejected or {}).get("date"))
@@ -6898,9 +8272,20 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     guarantee_unit = next((((item.get("unit") or {}).get("name")) for item in guarantee if item.get("unit")), None)
     context = {
         "available": True, "tender_id": tender_id, "tender_pretty_id": tender.get("tenderID") or report.get("tender_pretty_id"),
+        **_procurement_publication_fields(tender, report),
         "defendant_code": defendant_code, "supplier_awards_count": len(supplier_awards),
         "winner_award_id": (historical or {}).get("award_id"),
         "winner_selected_at": winner_display_date,
+        "winner_present": bool(historical),
+        "winner_state": winner_state,
+        "winner_date_source": ("prozorro" if historical else "officer_manual" if manual_winner
+                               else "absent_confirmed" if winner_state == "absent_confirmed" else None),
+        "winner_manual_provenance": manual_winner,
+        "winner_ambiguous": winner_ambiguous,
+        "winner_ambiguity_reason": (winner_selection or {}).get("reason") or "",
+        "winner_candidate_ids": (winner_selection or {}).get("candidate_ids") or [],
+        "winner_provenance": historical,
+        "report_created_at": report_created_at,
         "historical_winner_decision": historical,
         "winner_protocol_document": (historical or {}).get("protocol_document"),
         "winner_notice_url": winner_electronic_url,
@@ -6910,6 +8295,15 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
         "active_winner": current_winner["active_winner"],
         "winner_award_status": (winner or {}).get("status"),
         "rejection_present": bool(rejected), "rejection_award_id": (rejected or {}).get("id"),
+        "rejection_ambiguous": rejection_selection["ambiguous"],
+        "rejection_ambiguity_reason": rejection_selection["reason"],
+        "rejection_candidate_ids": rejection_selection["candidate_ids"],
+        "rejection_status": (rejected or {}).get("status"),
+        "rejection_qualified": (rejected or {}).get("qualified"),
+        "rejection_datetime": (rejected or {}).get("date"),
+        "rejection_date_display": (_display_legal_date(rejected.get("date")) if rejected
+                                   else None if rejection_selection["ambiguous"] else "—"),
+        "rejection_provenance": rejection_provenance,
         "rejection_date": (rejected or {}).get("date"), "rejection_title": (rejected or {}).get("title"),
         "rejection_description": (rejected or {}).get("description"),
         "rejection_documents": _documents_without_signature((rejected or {}).get("documents") or []),
@@ -6961,6 +8355,10 @@ def build_procurement_context(report: dict, review: dict | None = None) -> dict:
     context["contract_deadline_weekday_uk"] = weekday_uk.get(deadline_weekday, deadline_weekday)
     refusal_date = _parse_prozorro_date((review or {}).get("written_refusal_date"))
     context["written_refusal_within_deadline"] = _within_calendar_deadline(refusal_date, day3["deadline"])
+    context["_scenario_context_metadata"] = {
+        "source_updated_at": str(tender.get("dateModified") or ""),
+        "observed_at_ns": observed_at_ns,
+    }
     return context
 
 
@@ -6974,6 +8372,38 @@ def _normalized_violation_procurement_context(context: dict | None) -> dict:
         or resolved.get("rejection_description") or ""
     ).strip()
     return resolved
+
+
+def _unavailable_winner_context(item: dict, review: dict | None, error: str) -> dict:
+    frozen = None
+    if item.get("id"):
+        try:
+            with db() as con:
+                row = con.execute("SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id=?",
+                                  (str(item["id"]),)).fetchone()
+            frozen = json.loads(row[0]) if row and row[0] else None
+        except (sqlite3.OperationalError, ValueError, TypeError):
+            pass
+    manual = _manual_winner_fact(review) if not frozen else None
+    winner_date = ((frozen or {}).get("decision_datetime") or (frozen or {}).get("decision_date")
+                   or (manual or {}).get("date"))
+    selected = _parse_prozorro_date(winner_date)
+    extended = bool((review or {}).get("contract_deadline_extended"))
+    day3, day5 = _calendar_deadline(selected, 3), _calendar_deadline(selected, 5)
+    day10 = _calendar_deadline(selected, 10)
+    report_created = item.get("date_created") or item.get("date_published")
+    return {"available": False, "error": error,
+            "winner_state": "present" if frozen else "unavailable",
+            "winner_present": bool(frozen) if frozen else None, "winner_selected_at": winner_date,
+            "winner_date_source": "prozorro" if frozen else "officer_manual" if manual else None,
+            "winner_manual_provenance": manual, "winner_provenance": frozen,
+            "report_created_at": report_created,
+            "day_3": day3["calendar_day"], "day_5": day5["calendar_day"],
+            "day_10": day10["calendar_day"] if extended else None,
+            "written_refusal_deadline": day3["deadline"],
+            "contract_deadline": day10["deadline"] if extended else day5["deadline"],
+            "rejection_present": None, "rejection_ambiguous": False,
+            "cpv": "", "rejection_at": None, "rejection_reason": ""}
 
 
 def resolve_violation_procurement_context(
@@ -6993,8 +8423,7 @@ def resolve_violation_procurement_context(
             "violation_context_unavailable report=%s error=%s",
             item.get("report_id") or item.get("id"), type(exc).__name__,
         )
-        return {"available": False, "error": str(exc), "cpv": "",
-                "rejection_at": None, "rejection_reason": ""}, "unavailable"
+        return _unavailable_winner_context(item, review, str(exc)), "unavailable"
 
 
 def _violation_sheets_json_eligible(review: dict | None) -> bool:
@@ -7074,6 +8503,7 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
     elif item["review"].get("review_status") == "completed":
         item["review"]["review_status"] = "reviewed"
     item["supplier_verified"] = dict(supplier) if supplier else None
+    item["protocol_supplier_names"] = protocol_supplier_names.resolve(item,normalize_document_name)
     item["warning_summary"] = violation_threshold_summary(warning_dates)
     item["warning_summary"]["month"] = item["warning_summary"]["current_month"]
     item["warning_summary"]["three_months"] = item["warning_summary"]["three_calendar_months"]
@@ -7140,12 +8570,20 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
         recommendation_context["defendant_statements_present"] = bool(item["defendant_statements"])
         item["recommendation"] = violation_rules_engine(
             item["reason"], recommendation_context, item["review"])
+        item["review_ready"] = violation_review_ready(item)
+        recommended_decision = (item["recommendation"] or {}).get("recommended_decision")
+        recommendation_review = {**item["review"], "internal_decision": recommended_decision}
+        item["recommended_justification_key"] = (violation_decision_template_key(
+            item, item["procurement_context"] or {}, recommendation_review
+        ) if item["review_ready"] else "")
+        selected_matches = bool(item["review"].get("internal_decision") == recommended_decision
+                                and recommended_decision in {"warning", "decline"})
         item["justification_draft"] = (build_violation_decision_justification(
             item, item["procurement_context"] or {}, item["review"]
-        ) if supplier_ready else "")
+        ) if supplier_ready and selected_matches else "")
         item["justification_template_key"] = (violation_decision_template_key(
             item, item["procurement_context"] or {}, item["review"]
-        ) if supplier_ready else "")
+        ) if supplier_ready and selected_matches else "")
         saved_review = item["review"] or {}
         automatic_saved_draft = bool(
             saved_review.get("decision_justification")
@@ -7162,6 +8600,9 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
             and item["review"] and item["review"].get("justification_source_hash")
             and item["review"].get("justification_source_hash") != current_hash)
         item["protocol_readiness"] = violation_protocol_readiness(item)
+        if item.get("review", {}).get("internal_decision") == "decline" and item.get("reason") in SUPPORTED_P49_REASONS:
+            item["protocol_readiness_individual"] = violation_protocol_readiness(
+                item, requested_protocol_type=INDIVIDUAL_DECLINE_PROTOCOL)
     else:
         item["recommendation"] = None
         item["justification_draft"] = ""
@@ -7179,8 +8620,20 @@ def violation_report_detail(report_id: str, refresh: bool = True) -> dict:
          item["factual_procurement_context_source"]) = resolve_violation_procurement_context(
             item, item["review"], prefer_snapshot=False)
     item["current_winner_state"] = (item.get("factual_procurement_context") or {}).get("current_winner_state")
-    item["scenario_summary"] = violation_scenario_summary(
-        item, item.get("procurement_context") or {})
+    scenario_context = _save_violation_scenario_context_snapshot(
+        item, item.get("review"), item.get("factual_procurement_context"))
+    if scenario_context is None:
+        with db() as con:
+            cached_scenario = con.execute(
+                "SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?", (item["id"],)
+            ).fetchone()
+        scenario_context = _validated_scenario_context_snapshot(cached_scenario, item, item.get("review"))
+    item["scenario_summary"] = (violation_scenario_summary(item, scenario_context)
+                                if scenario_context is not None else "")
+    for context_key in ("procurement_context", "factual_procurement_context"):
+        public_context = item.get(context_key)
+        if isinstance(public_context, dict):
+            public_context.pop("_scenario_context_metadata", None)
     # JSON export follows the canonical status presented by the case card, not
     # only the historical LOCAL completion marker.  An official Prozorro
     # decision projects the review as ``completed`` even when the older local
@@ -7379,6 +8832,7 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
         if final_status == "reviewed":
             raise ValueError("Статус «Розглянуто» встановлюється лише окремою дією «Завершити розгляд»")
         now = now_iso()
+        _validate_manual_winner_edit(values, existing, updated_by, now)
         con.execute("INSERT OR IGNORE INTO violation_report_reviews(report_id,updated_at,updated_by) VALUES (?,?,?)",
                     (report["id"], now, updated_by))
         if action == "regenerate_justification":
@@ -7389,6 +8843,9 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
                 context = build_procurement_context(report_dict, merged)
             except Exception:
                 context = {}
+            recommendation = violation_rules_engine(report_dict.get("reason") or "", context, merged)
+            if merged.get("internal_decision") != recommendation.get("recommended_decision"):
+                raise ValueError("Рішення УО відрізняється від рекомендації системи; внесіть обґрунтування вручну")
             draft = build_violation_decision_justification(report_dict, context, merged)
             template_key = violation_decision_template_key(report_dict, context, merged)
             if not draft or not template_key:
@@ -7417,8 +8874,18 @@ def save_violation_review(report_id: str, payload: dict, updated_by: str = "УО
     return violation_report_detail(report["id"], refresh=False)
 
 
-def violation_protocol_type(report: dict, review: dict) -> str:
+INDIVIDUAL_DECLINE_PROTOCOL = "decline_individual_review"
+SUPPORTED_P49_REASONS = {"contractBreach", "signingRefusal", "goodsNonCompliance"}
+
+
+def violation_protocol_type(report: dict, review: dict, requested_type: str = "") -> str:
     decision, reason = str(review.get("internal_decision") or ""), str(report.get("reason") or "")
+    requested_type = str(requested_type or "").strip()
+    if requested_type:
+        if (requested_type == INDIVIDUAL_DECLINE_PROTOCOL and decision == "decline"
+                and reason in SUPPORTED_P49_REASONS):
+            return INDIVIDUAL_DECLINE_PROTOCOL
+        return ""
     if decision == "warning":
         return "warning"
     if decision == "decline" and reason in {"contractBreach", "signingRefusal"}:
@@ -7467,7 +8934,8 @@ def violation_has_complete_rejection(context: dict | None) -> bool:
     return bool(context.get("rejection_date") and reason)
 
 
-def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol_date: str = "") -> dict:
+def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol_date: str = "",
+                                 requested_protocol_type: str = "") -> dict:
     review, deadline = item.get("review") or {}, item.get("deadline_control") or {}
     number = str(protocol_number or review.get("protocol_number") or "").strip()
     date = str(protocol_date or review.get("protocol_date") or "").strip()
@@ -7480,21 +8948,55 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
         reasons.append("Не завершився офіційний строк постачальника")
     if not (review.get("assigned_officer_id") or review.get("assigned_officer")):
         reasons.append("Не призначена відповідальна УО")
-    if not violation_protocol_type(item, review):
-        reasons.append("Не визначено підтримуваний тип протоколу для рішення і підстави")
+    protocol_type = violation_protocol_type(item, review, requested_protocol_type)
+    individual_decline = protocol_type == INDIVIDUAL_DECLINE_PROTOCOL
+    if not protocol_type:
+        if requested_protocol_type:
+            reasons.append("Тип «Відмова — індивідуальний розгляд» дозволений лише для рішення «Відмова» та визначеної підстави п. 49")
+        else:
+            reasons.append("Не визначено підтримуваний тип протоколу для рішення і підстави")
     if not str(review.get("decision_justification") or "").strip():
         reasons.append("Не заповнене обґрунтування рішення")
+    officer_decision = review.get("internal_decision") or ""
+    recommendation = (item.get("recommendation") or {}).get("recommended_decision")
+    if (officer_decision in {"warning", "decline"}
+            and recommendation in {"warning", "decline"}
+            and officer_decision != recommendation):
+        recommended_review = {**review, "internal_decision": recommendation}
+        recommended_draft = build_violation_decision_justification(
+            item, item.get("procurement_context") or {}, recommended_review)
+        saved_text = normalize_justification_text(review.get("decision_justification"))
+        selected_key = violation_decision_template_key(
+            item, item.get("procurement_context") or {}, review)
+        unedited_automatic = bool(review.get("decision_template_key")
+                                  and review.get("decision_template_key") != selected_key
+                                  and not review.get("justification_manually_edited"))
+        if unedited_automatic or (recommended_draft and saved_text == normalize_justification_text(recommended_draft)):
+            reasons.append("Обґрунтування для рекомендації не відповідає рішенню УО; перевірте та відредагуйте текст вручну")
     if not number:
         reasons.append("Не введено номер протоколу")
     if not date:
         reasons.append("Не введено дату протоколу")
     context = item.get("procurement_context") or {}
+    if context.get("rejection_ambiguous") and not individual_decline:
+        reasons.append("Неоднозначне рішення про відхилення: потрібна перевірка provenance")
     rejected = violation_has_complete_rejection(context)
-    if not context.get("available"):
+    manual_winner_confirmed = (context.get("winner_date_source") == "officer_manual"
+                               and bool(context.get("winner_selected_at"))
+                               and bool(context.get("winner_manual_provenance")))
+    if not context.get("available") and not manual_winner_confirmed:
         reasons.append("Не отримано актуальні відомості закупівлі")
-    if item.get("reason") in {"contractBreach", "signingRefusal"} and not context.get("winner_selected_at"):
+    winner_absent_decline = (context.get("available") is True
+                             and context.get("winner_state") == "absent_confirmed"
+                             and review.get("internal_decision") == "decline")
+    if (not individual_decline and item.get("reason") in {"contractBreach", "signingRefusal"}
+            and context.get("winner_state") in {"unknown", "ambiguous", "unavailable"}
+            and not manual_winner_confirmed):
+        reasons.append("Подію визначення переможцем не підтверджено: потрібна перевірка provenance")
+    if (not individual_decline and item.get("reason") in {"contractBreach", "signingRefusal"}
+            and not context.get("winner_selected_at") and not winner_absent_decline):
         reasons.append("Не визначено дату визначення переможцем")
-    if item.get("reason") == "signingRefusal":
+    if not individual_decline and item.get("reason") == "signingRefusal":
         missing_refusal = []
         if not str(review.get("written_refusal_date") or "").strip():
             missing_refusal.append("Дата письмової відмови")
@@ -7504,10 +9006,10 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
             missing_refusal.append("Документ письмової відмови")
         if missing_refusal:
             reasons.append("Не заповнено обов’язкові поля: " + ", ".join(missing_refusal))
-    contract_required = violation_protocol_type(item, review) == "decline_p49_3" and not rejected
+    contract_required = protocol_type == "decline_p49_3" and not rejected
     if contract_required and not review.get("actual_contract_signed"):
         reasons.append("Не підтверджено ручне поле «Договір укладено»")
-    if review.get("actual_contract_signed") and not rejected:
+    if review.get("actual_contract_signed") and not rejected and not individual_decline:
         missing_contract = []
         if not str(review.get("actual_contract_number") or "").strip():
             missing_contract.append("Номер договору")
@@ -7515,17 +9017,20 @@ def violation_protocol_readiness(item: dict, protocol_number: str = "", protocol
             missing_contract.append("Дата договору")
         if missing_contract:
             reasons.append("Не заповнено обов’язкові поля: " + ", ".join(missing_contract))
-    declensions=violation_protocol_declensions(item)
+    if individual_decline and not str(review.get("review_notes") or "").strip():
+        reasons.append("Для індивідуального протоколу потрібно заповнити коментар УО")
+    declensions=(violation_protocol_declensions(item, protocol_type)
+                 if individual_decline else violation_protocol_declensions(item))
     unresolved=[entry for entry in declensions if entry['status']!='resolved']
     if unresolved:reasons.append('Потрібні перевірені відмінкові форми')
-    return {"ready": not reasons, "reasons": reasons, "protocol_type": violation_protocol_type(item, review),
+    return {"ready": not reasons, "reasons": reasons, "protocol_type": protocol_type,
             "protocol_number": number, "protocol_date": date,
             "declensions":declensions,"unresolved":unresolved}
 
 
-def violation_protocol_declensions(item: dict) -> list[dict]:
+def violation_protocol_declensions(item: dict, requested_protocol_type: str = "") -> list[dict]:
     """Expose the same template-dependent forms for review before generation."""
-    protocol_type=violation_protocol_type(item,item.get('review') or {})
+    protocol_type=violation_protocol_type(item,item.get('review') or {},requested_protocol_type)
     path=TEMPLATES.get(protocol_type)
     if not path or not Path(path).is_file():return []
     tokens=set()
@@ -7538,7 +9043,7 @@ def violation_protocol_declensions(item: dict) -> list[dict]:
                     text=''.join(node.text or '' for node in paragraph.iter(word+'t'))
                     tokens.update(re.findall(r'\{\{\s*([a-z_]+)\s*\}\}',text))
     customer=normalize_document_name((item.get('review') or {}).get('customer_verified_full_name') or item.get('author_name') or '')
-    supplier=normalize_document_name((item.get('supplier_verified') or {}).get('full_name') or item.get('defendant_name') or '')
+    supplier=protocol_supplier_names.resolve(item,normalize_document_name)['full_name']['value']
     specs={'customer_name_genitive':(customer,infer_entity_type(customer,item.get('author_code')),'genitive','Замовник'),
            'customer_name_accusative':(customer,infer_entity_type(customer,item.get('author_code')),'accusative','Замовник'),
            'supplier_name_genitive':(supplier,infer_entity_type(supplier,item.get('defendant_code')),'genitive','Постачальник'),
@@ -7645,6 +9150,7 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
                 raise ValueError("Оберіть активну уповноважену особу")
             values["assigned_officer_id"] = officer["id"] if officer else None
             values["assigned_officer"] = officer["full_name"] if officer else baseline.get("assigned_officer", "")
+        _validate_manual_winner_edit(values, baseline, completed_by, now)
         if ("decision_justification" in values and
                 values["decision_justification"] != normalize_justification_text(
                     baseline.get("decision_justification", ""))):
@@ -7701,15 +9207,83 @@ def complete_violation_review(report_id: str, completed_by: str, payload: dict |
     return {"review_status": "reviewed", "completed_at": now, "completed_by": completed_by}
 
 
-def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER) -> dict:
+def _violation_publication_document_metadata(context: dict) -> dict:
+    publication_date = _procurement_publication_date(context.get("tender_date_published"))
+    if publication_date:
+        return {"date": publication_date,
+                "source": context.get("tender_date_published_source") or "tender.noticePublicationDate"}
+    raise ValueError("Не вказано дату оголошення закупівлі: дата Prozorro та ідентифікатор закупівлі відсутні або некоректні.")
+
+
+def _violation_protocol_filename(item: dict, gate: dict) -> str:
+    review = item.get("review") or {}
+    supplier = item.get("supplier_verified") or {}
+    def first_name(*values):
+        return next((str(value).strip() for value in values if value is not None and str(value).strip()), "")
+    fields = {
+        "ідентифікатор звернення": item.get("report_id"),
+        "номер протоколу": gate.get("protocol_number"),
+        "назва замовника": first_name(review.get("customer_verified_short_name"), item.get("author_name")),
+        "назва постачальника": protocol_supplier_names.resolve(item,normalize_document_name)['filename_name']['value'],
+        "код постачальника": item.get("defendant_code"),
+    }
+    cleaned = {}
+    for label, raw in fields.items():
+        value = document_quotes.normalize_output_quotes(re.sub(r'\s+', ' ', str(raw or '')).strip())
+        value = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', '-', value).strip(' .')
+        if not value or not value.strip('- '):
+            raise ValueError("Не вказано обов’язковий реквізит назви DOCX: " + label)
+        cleaned[label] = value
+    kind = gate.get("protocol_type")
+    if kind not in {"warning", "decline_p49_1_2", "decline_p49_3", INDIVIDUAL_DECLINE_PROTOCOL}:
+        raise ValueError("Не визначено вид протокольного рішення для назви DOCX")
+    marker = "П" if kind == "warning" else "В"
+    filename = (f"{cleaned['ідентифікатор звернення']}_{cleaned['номер протоколу']}_{marker}_"
+                f"{cleaned['назва замовника']} (на {cleaned['назва постачальника']}; "
+                f"{cleaned['код постачальника']}).docx")
+    # Download name follows Windows limits; physical storage uses an ASCII UUID.
+    if len(filename.encode('utf-16-le')) // 2 > 240:
+        raise ValueError("Назва DOCX перевищує безпечну довжину 240 символів; перевірте доказові скорочені назви")
+    return filename
+
+
+def _violation_protocol_download_filename(stored_filename: str) -> str:
+    with db() as con:
+        row = con.execute("SELECT generated_protocol_metadata_json FROM violation_report_reviews "
+                          "WHERE generated_protocol_filename=?", (stored_filename,)).fetchone()
+    if row:
+        try:
+            name = json.loads(row[0] or '{}').get('protocol_download', {}).get('filename')
+            if (isinstance(name, str) and name.endswith('.docx') and
+                    len(name.encode('utf-16-le')) // 2 <= 240 and
+                    not re.search(r'[<>:"/\\|?*\x00-\x1f\x7f]', name)):
+                return name
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return stored_filename  # Historical documents and other generators are unchanged.
+
+
+def generate_violation_protocol(report_id: str, payload: dict, generated_by: str = CURRENT_USER,
+                                *, prepare_only: bool = False) -> dict:
     # violation_report_detail performs the mandatory fail-closed fresh Prozorro read.
     require_local_violation_report_owned(report_id)
     item = violation_report_detail(report_id, refresh=True)
     require_owned_violation_report(item)
-    gate = violation_protocol_readiness(item, payload.get("protocol_number", ""), payload.get("protocol_date", ""))
+    requested_protocol_type = str(payload.get("protocol_type") or "").strip()
+    gate = violation_protocol_readiness(item, payload.get("protocol_number", ""),
+                                        payload.get("protocol_date", ""), requested_protocol_type)
     if not gate["ready"]:
         raise ValueError("; ".join(gate["reasons"]))
     review, context = item.get("review") or {}, item.get("procurement_context") or {}
+    if gate.get("protocol_type") == INDIVIDUAL_DECLINE_PROTOCOL:
+        confirmed_notes = payload.get("confirmed_review_notes")
+        if (payload.get("confirm_review_notes") is not True
+                or not isinstance(confirmed_notes, str)
+                or confirmed_notes != str(review.get("review_notes") or "")):
+            raise ValueError("Коментар УО змінився або не підтверджений. Перевірте актуальний текст і підтвердьте його повторно.")
+    publication_metadata = _violation_publication_document_metadata(context)
+    publication_date = publication_metadata["date"]
+    download_filename = _violation_protocol_filename(item, gate)
     statements = item.get("defendant_statements") or []
     supplier_documents = [doc for statement in statements for doc in statement.get("documents") or []]
     supplier_text = "\n\n".join(str(statement.get("description") or statement.get("title") or "").strip()
@@ -7719,10 +9293,9 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
     reason_number = reason_metadata.get("number", "")
     customer_name = normalize_document_name(
         review.get("customer_verified_full_name") or item.get("author_name") or "")
-    supplier_name = normalize_document_name(
-        (item.get("supplier_verified") or {}).get("full_name") or item.get("defendant_name") or "")
-    supplier_short_name = normalize_document_name(
-        (item.get("supplier_verified") or {}).get("short_name") or supplier_name)
+    names = protocol_supplier_names.resolve(item,normalize_document_name)
+    supplier_name = names['full_name']['value']
+    supplier_short_name = names['short_name']['value']
     supplier_code = str(item.get("defendant_code") or "").strip()
     customer_code = str(item.get("author_code") or "").strip()
     customer_entity_type = infer_entity_type(customer_name, customer_code)
@@ -7739,6 +9312,12 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         log("violation_protocol_declension token=%s entity_type=%s source=%s status=%s original=%r",
             token, result.entity_type, result.source, result.status, result.original)
     rejected = violation_has_complete_rejection(context)
+    winner_absent_decline = (context.get("available") is True
+                             and context.get("winner_state") == "absent_confirmed"
+                             and review.get("internal_decision") == "decline")
+    rejection_absent = (context.get("available") is True
+                        and context.get("rejection_present") is False
+                        and not context.get("rejection_ambiguous"))
     values = {
         "protocol_number": gate["protocol_number"], "protocol_date": _protocol_date(gate["protocol_date"]),
         "report_id": str(item.get("report_id") or item.get("id") or ""),
@@ -7751,7 +9330,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
             str(item.get("report_id") or "")),
         "winner_notice_url": str(context.get("winner_notice_url") or ""),
         "rejection_decision_url": str(context.get("rejection_decision_url") or ""),
-        "procurement_date": _protocol_date(context.get("tender_date_published") or item.get("date_created")),
+        "procurement_date": _protocol_date(publication_date),
         "cpv_category": str(context.get("dk_code") or ""),
         "customer_name": customer_name, "customer_name_genitive": normalize_document_name(declined_names["customer_name_genitive"].value),
         "customer_name_accusative": normalize_document_name(declined_names["customer_name_accusative"].value), "customer_code": customer_code,
@@ -7765,40 +9344,43 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
         "reason_label": reason_metadata.get("label", ""),
         "reason_text": reason_metadata.get("text", ""),
         "violation_description": str(item.get("description") or ""),
-        "winner_date": _protocol_date(context.get("winner_selected_at")),
+        "winner_date": "—" if winner_absent_decline else _protocol_date(context.get("winner_selected_at")),
         "supplier_deadline": _protocol_date((item.get("deadline_control") or {}).get("supplier_deadline")),
         "contract_deadline": _protocol_date(context.get("contract_deadline")),
-        "rejection_date": _protocol_date(context.get("rejection_date")),
-        "rejection_reason": str(context.get("rejection_title") or context.get("rejection_description") or ""),
+        "rejection_date": "—" if rejection_absent else _protocol_date(context.get("rejection_date")),
+        "rejection_reason": ("—" if rejection_absent else
+                             str(context.get("rejection_title") or context.get("rejection_description") or "")),
         "refusal_date": _protocol_date(review.get("written_refusal_date")),
         "refusal_outgoing_number": str(review.get("written_refusal_number") or ""),
         "refusal_document": str(review.get("written_refusal_url") or ""),
         "supplier_response": supplier_text,
         "contract_date": "" if rejected else _protocol_date(review.get("actual_contract_date")),
         "contract_number": "" if rejected else str(review.get("actual_contract_number") or ""),
+        "contract_url": "" if rejected else str(review.get("actual_contract_url") or ""),
         "decision_justification": normalize_justification_text(
             review.get("decision_justification")),
+        "review_notes": str(review.get("review_notes") or ""),
     }
-    protocol_metadata = _resolve_violation_protocol_metadata(item, values)
+    values = document_quotes.normalize_output_tree(values)
+    protocol_metadata = document_quotes.normalize_output_tree(_resolve_violation_protocol_metadata(item, values))
+    protocol_metadata["protocol_type"] = gate["protocol_type"]
+    protocol_metadata["procurement_publication"] = publication_metadata
+    protocol_metadata["protocol_download"] = {"filename": download_filename}
     flags = {
         "has_written_refusal": bool(review.get("written_refusal_date") or review.get("written_refusal_number") or review.get("written_refusal_url")),
         "has_contract": bool(review.get("actual_contract_signed")) and not rejected,
         "has_contract_security": bool(context.get("contract_guarantee_required")),
-        "has_civil_code_basis": bool(
-            context.get("day_5_shifted") if item.get("reason") == "contractBreach"
-            else context.get("day_3_shifted") if item.get("reason") == "signingRefusal"
-            else False),
+        "has_civil_code_basis": violation_civil_code_required(item, context, review),
         "has_court_decision": item.get("reason") == "goodsNonCompliance",
         "has_customer_documents": bool(item.get("evidence_documents")),
         "has_supplier_response": bool(supplier_text),
         "has_supplier_documents": bool(supplier_documents),
     }
+    if prepare_only:
+        return {"item": item, "gate": gate, "values": values, "flags": flags,
+                "metadata": protocol_metadata}
     safe_report = safe_archive_name(str(item.get("report_id") or item.get("id")), "report")
-    decision_name = "Попередження" if gate["protocol_type"] == "warning" else "Відмова"
-    safe_customer = safe_archive_name(customer_name, "Замовник")[:48]
-    safe_supplier = safe_archive_name(supplier_name, "Постачальник")[:48]
-    safe_date = str(gate["protocol_date"] or "").replace(".", "-")
-    filename = f"{safe_report}_{decision_name}_{safe_customer}_{safe_supplier}_{safe_date}.docx"
+    filename = f"violation-{uuid.uuid4().hex}.docx"
     PROTOCOLS_DIR.mkdir(parents=True, exist_ok=True)
     output = PROTOCOLS_DIR / filename
     # Regeneration can happen while the current file is open in desktop Word.
@@ -7878,6 +9460,7 @@ def generate_violation_protocol(report_id: str, payload: dict, generated_by: str
             SERVER_LOG.warning("Previous generated protocol remains locked report=%s file=%s",
                                safe_report, previous_path.name)
     return {**gate, "filename": filename,
+            "download_filename": download_filename,
             "download_url": "/api/protocol/files/" + urllib.parse.quote(filename),
             "pdf_download_url": f"/api/violation-reports/{urllib.parse.quote(str(item['id']))}/protocol/pdf",
             "metadata": protocol_metadata,
@@ -9360,6 +10943,8 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
 
 
 def _schedule_contract_experience_retry(submission_id: str) -> bool:
+    if background_jobs.disabled():
+        return False
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         attempts = CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(submission_id, 0)
         if attempts >= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES or submission_id in CONTRACT_EXPERIENCE_RETRY_PENDING:
@@ -9426,6 +11011,8 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
 
 
 def enqueue_contract_experience_search(submission_ids) -> int:
+    if background_jobs.disabled():
+        return 0
     if SANDBOX_MODE:
         # Separate document/tender integration is not part of the approved
         # framework API scope; do not queue failing retries or overwrite checks.
@@ -9552,7 +11139,12 @@ class Handler(BaseHTTPRequestHandler):
             session = AUTH_SESSIONS.get(token)
             if session and session["expires_at"] > time.time() and accounts.get(session["username"], {}).get("active", False):
                 seen_now = time.time(); session["last_seen"] = seen_now
-                if seen_now - float(session.get("last_seen_persisted") or 0) >= 60:
+                if (seen_now - float(session.get("last_seen_persisted") or 0) >= 60
+                        and not (self.command == "GET" and (path == "/api/operational-tasks/nazk-preview"
+                             or re.fullmatch(r"/api/chats/\d+/messages",path)))
+                        # This POST is semantically read-only and must not persist
+                        # auth last-seen metadata as a side effect of the evidence check.
+                        and not (self.command == "POST" and path == "/api/admin/google-writer/prewrite-close-preflight")):
                     session["last_seen_persisted"] = seen_now
                     try:
                         with db() as con:
@@ -9605,6 +11197,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method) -> None:
         path = urllib.parse.urlparse(self.path).path
+        if not SANDBOX_MODE and path in GOOGLE_MIGRATION_DISABLED_PATHS:
+            return self.send_json({"error": "Migration API disabled", "status": 404}, 404)
+        if path == prod_google_baseline.PATH:
+            if not prod_google_baseline.enabled() or not IS_WEB_ENV:
+                return self.send_json({"error": "Baseline API disabled", "status": 404}, 404)
+            if self.command != "POST":
+                return self.send_json({"error": "Endpoint supports POST only", "status": 405}, 405)
+            if not self._authorize_supplier_registry_integration():
+                return
+            self.auth_user = "integration:prod-google-baseline"
+            self.auth_role = "integration"
+            return method()
         if path in {GOOGLE_VERIFICATION_PREVIEW_PATH, GOOGLE_VERIFICATION_OVERLAP_AUDIT_PATH,
                     GOOGLE_VERIFICATION_APPLY_PATH,
                     GOOGLE_FACTUAL_EDR_AUDIT_PATH, GOOGLE_FACTUAL_EDR_PREVIEW_PATH,
@@ -9661,7 +11265,10 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             self.auth_access = auth_access.effective(con, self.auth_user, self.auth_role)
         permission = auth_access.permission_key(self.command, path)
-        if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False)):
+        personal_layout_write = (self.auth_role == 'viewer' and self.command in {'POST', 'PATCH'}
+                                 and re.fullmatch(r'/api/application-profiles(?:/[^/]+)?', path))
+        if not self.auth_access['active'] or (permission and not self.auth_access['permissions'].get(permission, False)
+                                              and not personal_layout_write):
             length = int(self.headers.get('Content-Length', '0'))
             if 0 < length <= 1024 * 1024:
                 self.rfile.read(length)
@@ -9725,13 +11332,63 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in {'/api/operational-tasks/summary', '/api/violation-reports/summary'}:
+            result = ui_action_summary.summary(DB_PATH,
+                'tasks' if parsed.path.startswith('/api/operational-tasks/') else 'appeals',
+                operational_tasks.STATUS_GROUPS['needs_action'], violation_deadline_control,
+                datetime.now(ZoneInfo('Europe/Kyiv')))
+            self.send_response(200)
+            raw=json.dumps(result).encode('utf-8')
+            self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Length',str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
+        if parsed.path == '/api/applications/selection':
+            try:
+                result = application_selection(urllib.parse.parse_qs(parsed.query))
+            except ValueError as exc:
+                return self.send_json({'error': str(exc)}, 400)
+            raw = json.dumps(result,ensure_ascii=False).encode('utf-8')
+            self.send_response(200);self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
+        bulk_state = re.fullmatch(r"/api/applications/([^/]+)/bulk-state", parsed.path)
+        if bulk_state:
+            fields = urllib.parse.parse_qs(parsed.query).get('fields', [''])[0].split(',')
+            if not fields or any(field not in EDITABLE_FIELDS for field in fields):
+                return self.send_json({'error': 'Некоректні поля звірки'}, 400)
+            # Authorization/permissions are enforced by _dispatch. No cache,
+            # init_db, sync or business writes are performed by this read path.
+            with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro', uri=True, timeout=5)) as con:
+                con.row_factory = sqlite3.Row
+                con.execute('PRAGMA query_only=ON')
+                row = con.execute('SELECT '+','.join(f"COALESCE({field},'') AS {field}" for field in fields)+
+                                  ' FROM application_fields WHERE submission_id=?',
+                                  (urllib.parse.unquote(bulk_state[1]),)).fetchone()
+            if row is None:return self.send_json({'error': 'Заявку не знайдено'}, 404)
+            raw = json.dumps({'values': dict(row)}, ensure_ascii=False).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(raw)))
+            self.end_headers();self.wfile.write(raw)
+            return
+        if parsed.path == '/api/admin/background-jobs':
+            if not SANDBOX_MODE:return self.send_json({'error':'SANDBOX only'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('admin.manage'):
+                return self.send_json({'error':'Недостатньо прав'},403)
+            return self.send_json(background_jobs.status())
         if parsed.path == "/api/account":
             with db() as con:
-                row = con.execute("SELECT display_name,start_view,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
+                row = con.execute("SELECT display_name,start_view,color_scheme,density,presence_status,updated_at FROM user_preferences WHERE username=?", (self.auth_user,)).fetchone()
                 managed = bool(con.execute("SELECT 1 FROM auth_users WHERE username=?", (self.auth_user,)).fetchone())
                 has_avatar = bool(con.execute("SELECT 1 FROM user_avatars WHERE username=?", (self.auth_user,)).fetchone())
+            preferences = dict(row) if row else {"display_name":"","start_view":"applications","density":"comfortable","presence_status":"working","updated_at":None}
+            preferences["color_scheme"] = "dark" if preferences.get("color_scheme") == "dark" else "light"
             return self.send_json({"username": self.auth_user, "role": self.auth_role, "managed": managed,
-              "has_avatar": has_avatar, "color_scheme": "light", **(dict(row) if row else {"display_name":"","start_view":"applications","density":"comfortable","presence_status":"working","updated_at":None})})
+              "has_avatar": has_avatar, **preferences})
         avatar_match = re.fullmatch(r"/api/users/([^/]+)/avatar", parsed.path)
         if avatar_match:
             username = urllib.parse.unquote(avatar_match.group(1))
@@ -9783,7 +11440,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"items": items})
         if parsed.path == SUPPLIER_REGISTRY_INTEGRATION_PATH:
             with db() as con:
-                result=supplier_registry_integration.full_registry(con)
+                result=supplier_registry_integration.eligible_full_registry(con)
             return self.send_json(result)
         if parsed.path == '/api/navigation-settings':
             with db() as con: return self.send_json(navigation_settings.get(con))
@@ -9815,22 +11472,26 @@ class Handler(BaseHTTPRequestHandler):
             chat_id=int(message_match.group(1))
             with db() as con:
                 if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
-                rows=con.execute("SELECT * FROM chat_messages WHERE chat_id=? ORDER BY id LIMIT 300",(chat_id,)).fetchall()
+                try:
+                    rows,pagination,known_updates=chat_annotations.select_messages(con,chat_id,self.auth_user,urllib.parse.parse_qs(parsed.query))
+                except chat_annotations.ChatError as exc:
+                    return self.send_json({'error':str(exc)},exc.status)
                 positions={r["username"]:int(r["last_read_message_id"] or 0) for r in con.execute(
                     "SELECT username,last_read_message_id FROM chat_members WHERE chat_id=?",(chat_id,))}
                 items=[]
-                for row in rows:
+                for row in [*rows,*known_updates]:
                     item=dict(row); reads=[v for k,v in positions.items() if k!=row["sender_username"]]
                     item["read_by_all"]=bool(reads) and all(v>=row["id"] for v in reads)
                     item["attachments"]=[dict(x) for x in con.execute(
                         "SELECT id,filename,content_type,size FROM chat_attachments WHERE message_id=?",(row["id"],))]
+                    item["marks"]=chat_annotations.marks(con,row["id"])
                     item["submission"]=None
                     if row["submission_id"]:
-                        submission=con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,f.pretty_id framework_pretty_id
+                        submission=con.execute("""SELECT s.id,s.supplier_name,s.supplier_code,f.dk_code,f.pretty_id framework_pretty_id
                           FROM submissions s LEFT JOIN frameworks f ON f.id=s.framework_id WHERE s.id=?""",(row["submission_id"],)).fetchone()
                         item["submission"]=dict(submission) if submission else {"id":row["submission_id"]}
                     items.append(item)
-                return self.send_json({"items":items})
+                return self.send_json({"items":items[:len(rows)],"updates":items[len(rows):],**pagination})
         attachment_match=re.fullmatch(r"/api/chats/attachments/(\d+)",parsed.path)
         if attachment_match:
             with db() as con:
@@ -9850,6 +11511,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "counts": counts, "sync": sync_status_payload()})
         if parsed.path == "/api/auth/me":
             return self.send_json({"username": self.auth_user, "role": self.auth_role,
+                                   "ui_features": {"nazk_preview": bool(SANDBOX_MODE or not IS_WEB_ENV),
+                                       "supplier_bids_ready": BIDS_MODE != 'disabled' and
+                                       os.getenv('PQM_SUPPLIER_BIDS_READY', '0').lower() in {'1','true'}},
                                    "managed_role": self.auth_access['code'],
                                    "permissions": self.auth_access['permissions'],
                                    "officer_id": self.auth_officer_id,
@@ -9867,6 +11531,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'error':str(exc)}, 400)
         if parsed.path == '/api/admin/schema':
             return self.send_json(pqm_schema_metadata())
+        if parsed.path == '/api/admin/scheduler-schedules':
+            return self.send_json({'items': [scheduler_admin_model(key) for key in SCHEDULER_TARGETS]})
         if parsed.path == "/api/applications/search-fields":
             return self.send_json({"items": [{"key": field["key"], "label": field["label"]}
                                              for field in APPLICATION_SEARCH_FIELDS]})
@@ -9886,6 +11552,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({
                 "environment": PQM_ENV,
                 "sandbox_mode": SANDBOX_MODE,
+                "background_jobs": background_jobs.status(),
                 "sandbox_local_edits": SANDBOX_MODE and sandbox_runtime.local_edits_enabled(),
                 "sandbox_documents": SANDBOX_MODE and sandbox_runtime.sandbox_documents.enabled(),
                 "sandbox_amcu_read": SANDBOX_MODE and sandbox_runtime.sandbox_amcu.enabled(),
@@ -9980,9 +11647,24 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=document_check_worker, args=(job_id, submission_id, selection), daemon=True).start()
             return self.send_json({"job_id": job_id, "status": "running"}, 202)
         if parsed.path == "/api/applications":
-            return self.send_json(list_applications(urllib.parse.parse_qs(parsed.query)))
+            try:
+                return self.send_json(list_applications(urllib.parse.parse_qs(parsed.query)))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/suppliers-registry":
             return self.send_json(list_qualified_suppliers(urllib.parse.parse_qs(parsed.query)))
+        if parsed.path == "/api/suppliers-registry/export.xlsx":
+            params=urllib.parse.parse_qs(parsed.query)
+            raw=supplier_registry_excel(params)
+            filename=supplier_registry_excel_filename(params)
+            self.send_response(200)
+            self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            self.send_header('Content-Disposition','attachment; filename="'+filename+'"')
+            self.send_header('Content-Length',str(len(raw)))
+            self.send_header('Cache-Control','no-store')
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if parsed.path == "/api/suppliers-registry-risk-counts":
             return self.send_json(supplier_risk_counts())
         if parsed.path == "/api/edr-monitoring":
@@ -10013,12 +11695,37 @@ class Handler(BaseHTTPRequestHandler):
                                    failure["code"], failure["phase"])
                 return self.send_json({"error": "SANDBOX Google EDR navigation is unavailable",
                                        **failure}, 503)
+        if parsed.path.startswith("/api/supplier-google-row/"):
+            code = urllib.parse.unquote(parsed.path.removeprefix("/api/supplier-google-row/"))
+            try:
+                result = supplier_google_row(code)
+            except KeyError:
+                return self.send_json({"error": "Google supplier row not found"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except (PermissionError, GooglePhaseError, urllib.error.URLError, TimeoutError, OSError):
+                return self.send_json({"error": "Google row navigation is unavailable"}, 503)
+            if parsed.query == "open=1":
+                self.send_response(302)
+                self.send_header("Location", result["url"])
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            return self.send_json({"source_tab": result["source_tab"]})
         if parsed.path.startswith("/api/supplier-profile/"):
             code = parsed.path.removeprefix("/api/supplier-profile/")
             try:
                 return self.send_json(supplier_profile(code))
             except KeyError:
                 return self.send_json({"error": "Постачальника не знайдено"}, 404)
+        if parsed.path.startswith("/api/supplier-classifications/"):
+            code = urllib.parse.unquote(parsed.path.removeprefix("/api/supplier-classifications/"))
+            try:
+                return self.send_json(supplier_classification_details(code))
+            except KeyError:
+                return self.send_json({"error": "Постачальника не знайдено"}, 404)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path.startswith("/api/supplier-procurements/"):
             code = parsed.path.removeprefix("/api/supplier-procurements/")
             try:
@@ -10060,10 +11767,41 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/violation-reports":
             return self.send_json(list_violation_reports(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/uo-work-queue":
-            query = {key: values[0] if values else "" for key, values in urllib.parse.parse_qs(parsed.query).items()}
+            params = urllib.parse.parse_qs(parsed.query)
+            summary = params.get("summary", [""])[0]
+            if summary in {"review-progress", "application-statistics"}:
+                try:
+                    with db() as con:
+                        if summary == "application-statistics":
+                            return self.send_json(work_queue_statistics_payload(con, params))
+                        return self.send_json({"items": work_queue_application_statistics(
+                            con, params, review_progress=summary == "review-progress",
+                            group_by=params.get("group_by", ["review_officer"])[0],
+                            entity_type=params.get("entity_type", [""])[0])})
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            query = {key: values[0] if values else "" for key, values in params.items()}
             with db() as con:
                 return self.send_json(get_uo_work_queue(
                     con, query, self.auth_user, violation_report_owned_by_pqm))
+        if parsed.path == "/api/operational-tasks/nazk-preview":
+            if IS_WEB_ENV and not SANDBOX_MODE:
+                return self.send_json({"error": "Not found"}, 404)
+            permissions = getattr(self, "auth_access", {}).get("permissions", {})
+            if not all(permissions.get(key, False) for key in ("tasks.read", "suppliers.read")):
+                return self.send_json({"error": "Недостатньо прав для перегляду НАЗК"}, 403)
+            try:
+                return self.send_json(nazk_preview.snapshot(
+                    DB_PATH, urllib.parse.parse_qs(parsed.query, keep_blank_values=True),
+                    role=self.auth_role, permissions={key for key, value in permissions.items() if value},
+                    risk_projector=supplier_risk_projection))
+            except PermissionError:
+                return self.send_json({"error": "Недостатньо прав для перегляду НАЗК"}, 403)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except (sqlite3.Error, OSError):
+                SERVER_LOG.warning("Read-only NAZK preview unavailable")
+                return self.send_json({"error": "Попередній перегляд тимчасово недоступний", "code": "preview_unavailable"}, 503)
         if parsed.path == "/api/operational-tasks":
             with db() as con:
                 return self.send_json(operational_tasks.list_tasks(con, urllib.parse.parse_qs(parsed.query)))
@@ -10126,7 +11864,10 @@ class Handler(BaseHTTPRequestHandler):
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)
         if parsed.path == "/api/stats":
-            return self.send_json(application_stats(urllib.parse.parse_qs(parsed.query)))
+            try:
+                return self.send_json(application_stats(urllib.parse.parse_qs(parsed.query)))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/archive"):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
             result = build_application_archive(submission_id)
@@ -10200,7 +11941,8 @@ class Handler(BaseHTTPRequestHandler):
             raw = target.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            self.send_header("Content-Disposition", "attachment; filename=protocol.docx; filename*=UTF-8''" + urllib.parse.quote(target.name))
+            download_name = _violation_protocol_download_filename(target.name)
+            self.send_header("Content-Disposition", "attachment; filename=protocol.docx; filename*=UTF-8''" + urllib.parse.quote(download_name, safe=''))
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -10209,6 +11951,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(list_frameworks())
         if parsed.path == "/api/framework-analytics":
             return self.send_json(framework_analytics(urllib.parse.parse_qs(parsed.query)))
+        if parsed.path == "/api/framework-registry":
+            with closing(sqlite3.connect(Path(DB_PATH).resolve(strict=True).as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
+                con.row_factory=sqlite3.Row
+                con.execute('PRAGMA query_only=ON');con.execute('BEGIN')
+                return self.send_json(framework_registry(urllib.parse.parse_qs(parsed.query),con))
         if parsed.path == "/api/bids-sync-status":
             query = urllib.parse.parse_qs(parsed.query)
             return self.send_json(bids_sync_status(force=query.get("refresh") == ["1"]))
@@ -10226,7 +11973,168 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(remarks_catalog(force=query.get("refresh") == ["1"],
                 include_inactive=self.auth_role == 'admin' and query.get('all') == ['1']))
         if parsed.path == "/api/reference-status":
-            return self.send_json(reference_status(DB_PATH))
+            refs = reference_status(DB_PATH)
+            refs["nazk"]["manual_operation"] = scheduler_execution_snapshot("nazk_registry")
+            return self.send_json(refs)
+        continuation_status_match=re.fullmatch(r'/api/google-writer/continuation-status/([0-9a-f]{32})',parsed.path)
+        if continuation_status_match:
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['SANDBOX_ONLY'],'read_only':True},404)
+            if not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['PERMISSION_REQUIRED'],'read_only':True},403)
+            try:
+                return self.send_json(google_writer_execution.append_continuation_status(
+                    DB_PATH,continuation_status_match.group(1),self.auth_user))
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['CONTINUATION_STATUS_UNAVAILABLE'],
+                    'read_only':True},200)
+        saved_continuation_audit_match=re.fullmatch(
+            r'/api/admin/google-writer/saved-continuation-audit/([0-9a-f]{32})',parsed.path)
+        if saved_continuation_audit_match:
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['SANDBOX_ONLY'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                    'preview_created':False,'ticket_created':False,'writer_started':False},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['PERMISSION_REQUIRED'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                    'preview_created':False,'ticket_created':False,'writer_started':False},403)
+            try:
+                result=google_writer_execution.audit_saved_append_continuation(
+                    DB_PATH,google_writer_client(),saved_continuation_audit_match.group(1),self.auth_user)
+                if (result.get('read_only') is not True or result.get('sqlite_writes')!=0 or
+                        result.get('sheets_writes')!=0 or result.get('properties_writes')!=0 or
+                        result.get('preview_created') is not False or result.get('ticket_created') is not False or
+                        result.get('writer_started') is not False):
+                    return self.send_json({'status':'UNAVAILABLE','reason_codes':['READ_ONLY_CONTRACT_UNCONFIRMED'],
+                        'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                        'preview_created':False,'ticket_created':False,'writer_started':False},200)
+                return self.send_json(result)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'UNAVAILABLE','reason_codes':['AUDIT_EVIDENCE_UNAVAILABLE'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0,
+                    'preview_created':False,'ticket_created':False,'writer_started':False},200)
+        if parsed.path == '/api/google-writer/status':
+            data=google_writer_status(self.auth_user)
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            data.update(can_execute=bool(permissions.get('google.writer.execute')),
+                        can_manage=bool(permissions.get('admin.manage')),
+                        can_close=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')),
+                        can_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')),
+                        can_preflight_close_prewrite=bool(permissions.get('admin.manage') and permissions.get('google.writer.execute')))
+            data['can_diagnose_append']=bool(SANDBOX_MODE and google_writer_environment()=='SANDBOX' and
+                permissions.get('admin.manage') and permissions.get('google.writer.execute'))
+            if not permissions.get('admin.manage'):
+                for run in data.get('runs',[]):
+                    run.pop('close_reason',None);run.pop('closed_by',None)
+                    run.pop('prewrite_close_reason',None);run.pop('prewrite_closed_by',None)
+            return self.send_json(data)
+        if parsed.path == '/api/google-writer/resume-preview':
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only APPEND_ONLY continuation'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'request_id'}:
+                    raise ValueError('Only the saved run identity is accepted')
+                candidate=google_writer_execution.load_append_only_resume_candidate(
+                    DB_PATH,payload['request_id'],self.auth_user)
+                client=google_writer_client()
+                continuation_binding=google_writer_execution._append_continuation_guard_for_run(
+                    DB_PATH,candidate['request_id'],self.auth_user,candidate['next_chunk'])
+                checked=client.invoke('resume_check',candidate['request_id'],self.auth_user,
+                    trigger='manual',digest=candidate['plan_digest'],plan_scope='APPEND_ONLY',
+                    manual_authorized=True,chunk_index=candidate['next_chunk'],
+                    expected_checkpoint_digest=candidate['checkpoint_digest'],**continuation_binding)
+                details=checked['planDetails']
+                details_digest=google_writer_execution._preview_details_digest(details)
+                if (checked.get('checkpointDigest')!=candidate['checkpoint_digest'] or
+                        checked.get('nextChunk')!=candidate['next_chunk'] or
+                        checked.get('counts',{}).get('append')!=len(details.get('appends',[])) or
+                        checked.get('counts',{}).get('update')!=0 or not details.get('appends')):
+                    raise ValueError('Saved checkpoint or remaining plan changed; continuation stopped')
+                ticket=google_writer_execution.append_only_resume_ticket(client,candidate['request_id'],
+                    self.auth_user,candidate['plan_digest'],candidate['next_chunk'],
+                    candidate['checkpoint_digest'],details_digest)
+                return self.send_json({'status':'RESUME_READY','scope':'APPEND_ONLY',
+                    'request_id':candidate['request_id'],'plan_digest':candidate['plan_digest'],
+                    'details_digest':details_digest,'checkpoint_digest':candidate['checkpoint_digest'],
+                    'next_chunk':candidate['next_chunk'],'counts':checked['counts'],
+                    'details':details,'ticket':ticket,'expires_in_seconds':300})
+            except (ValueError,google_writer_execution.ExecutionConfigurationError,
+                    google_writer_execution.ExecutionPreflightError) as exc:
+                return self.send_json({'error':str(exc),'write_attempted':False},409)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Read-only checkpoint status unavailable; no Apply was attempted',
+                    'write_attempted':False,'automatic_retry':False},503)
+        if parsed.path == '/api/google-writer/resume-append-only':
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only APPEND_ONLY continuation'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'ticket','confirmed'} or payload['confirmed'] is not True:
+                    raise ValueError('Explicit confirmation of the fresh continuation plan is required')
+                client=google_writer_client()
+                ticket=google_writer_execution.verify_append_only_resume_ticket(client,payload['ticket'],self.auth_user)
+                candidate=google_writer_execution.load_append_only_resume_candidate(
+                    DB_PATH,ticket['request_id'],self.auth_user)
+                if (candidate['plan_digest']!=ticket['digest'] or candidate['next_chunk']!=ticket['next_chunk'] or
+                        candidate['checkpoint_digest']!=ticket['checkpoint_digest']):
+                    raise ValueError('Saved checkpoint changed; obtain a new read-only continuation review')
+                continuation_binding=google_writer_execution._append_continuation_guard_for_run(
+                    DB_PATH,candidate['request_id'],self.auth_user,candidate['next_chunk'])
+                checked=client.invoke('resume_check',candidate['request_id'],self.auth_user,
+                    trigger='manual',digest=candidate['plan_digest'],plan_scope='APPEND_ONLY',
+                    manual_authorized=True,chunk_index=candidate['next_chunk'],
+                    expected_checkpoint_digest=candidate['checkpoint_digest'],**continuation_binding)
+                details_digest=google_writer_execution._preview_details_digest(checked['planDetails'])
+                if (details_digest!=ticket['details_digest'] or checked.get('checkpointDigest')!=ticket['checkpoint_digest'] or
+                        checked.get('counts',{}).get('update')!=0 or checked.get('counts',{}).get('append')<=0):
+                    raise ValueError('Remaining plan changed; obtain a new read-only continuation review')
+                claimed=google_writer_execution.claim_append_only_resume(DB_PATH,candidate)
+                if not claimed['claimed']:
+                    return self.send_json({'error':'Continuation state changed or was already claimed',
+                        'status':claimed['status'],'automatic_retry':False},409)
+                worker=threading.Thread(target=google_writer_execution.execute_claimed,
+                    args=(DB_PATH,client,candidate['request_id'],self.auth_user),
+                    kwargs={'digest':candidate['plan_digest'],'guard':google_writer_manual_available,
+                        'manual_authorized':True,'plan_scope':'APPEND_ONLY','start_chunk':candidate['next_chunk'],
+                        'checkpoint_digest':candidate['checkpoint_digest']},
+                    name='pqm-google-writer-resume-worker',daemon=True)
+                try:
+                    worker.start()
+                except Exception:
+                    google_writer_execution.finish_partial_after_checkpoints(DB_PATH,candidate['request_id'],
+                        verified_chunks=candidate['next_chunk'],next_chunk=candidate['next_chunk'],
+                        digest=candidate['plan_digest'])
+                    raise ValueError('Resume worker did not start; saved verified checkpoint remains resumable') from None
+                return self.send_json({'started':True,'status':'APPEND_ONLY_RESUME_ACCEPTED',
+                    'request_id':candidate['request_id'],'next_chunk':candidate['next_chunk']},202)
+            except (ValueError,google_writer_execution.ExecutionConfigurationError,
+                    google_writer_execution.ExecutionPreflightError) as exc:
+                return self.send_json({'error':str(exc),'write_attempted':False},409)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Continuation preflight outcome unknown; no Apply was attempted',
+                    'write_attempted':False,'automatic_retry':False},503)
+        preview_details_match=re.fullmatch(r'/api/google-writer/preview-details/([0-9a-f]{32})',parsed.path)
+        if preview_details_match:
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only Preview details'},404)
+            query=urllib.parse.parse_qs(parsed.query)
+            plan_digest=(query.get('plan_digest') or [''])[0]
+            try:
+                snapshot=google_writer_execution.load_preview_plan(
+                    DB_PATH,preview_details_match.group(1),self.auth_user,plan_digest)
+                return self.send_json({'details':snapshot['details'],
+                    'details_digest':snapshot['details_digest'],'expires_at':snapshot['expires_at']})
+            except ValueError:
+                return self.send_json({'error':'Preview details are unavailable, stale or unauthorized'},404)
         if parsed.path == "/api/supplier-edr-sync-status":
             return self.send_json(supplier_edr_sync_status())
         if parsed.path == "/api/supplier-edr-export":
@@ -10325,17 +12233,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/supplier-options":
             return self.send_json(supplier_options(urllib.parse.parse_qs(parsed.query)))
         if parsed.path == "/api/audit":
-            query = urllib.parse.parse_qs(parsed.query)
-            page = max(1, int(query.get("page", [1])[0]))
-            size = min(200, max(1, int(query.get("size", [100])[0])))
-            with db() as con:
-                total = int(con.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0])
-                rows = [dict(r) for r in con.execute(
-                    "SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?",
-                    (size, (page - 1) * size),
-                )]
-            pages = max(1, (total + size - 1) // size)
-            return self.send_json({"items": rows, "total": total, "page": page, "pages": pages, "size": size})
+            import audit_reader
+            try:
+                result=audit_reader.read(DB_PATH,urllib.parse.parse_qs(parsed.query),actor=self.auth_user)
+            except audit_reader.AuditResourceError as exc:
+                return self.send_json({'error':str(exc),'code':exc.code},status=exc.status)
+            except ValueError as exc:
+                return self.send_json({'error':str(exc)},status=400)
+            return self.send_json(result)
         path = parsed.path.lstrip("/") or "index.html"
         target = (ROOT / path).resolve()
         if (ROOT not in target.parents or not target.is_file()
@@ -10352,6 +12257,36 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/admin/background-jobs':
+            if not SANDBOX_MODE:return self.send_json({'error':'SANDBOX only'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('admin.manage'):
+                return self.send_json({'error':'Недостатньо прав'},403)
+            try:
+                if not 0 < int(self.headers.get('Content-Length','0')) <= 128:
+                    return self.send_json({'error':'Invalid body length'},400)
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'confirm'} or payload['confirm'] is not True:
+                    return self.send_json({'error':'Потрібне підтвердження'},400)
+                return self.send_json(background_jobs.disable_sandbox())
+            except (OSError,RuntimeError,ValueError,KeyError):
+                return self.send_json({'error':'Не вдалося підтвердити й зберегти SANDBOX блокування'},503)
+        if parsed.path == prod_google_baseline.PATH:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length < 1 or length > prod_google_baseline.MAX_BODY_BYTES:
+                return self.send_json({"error": "BASELINE_BODY_LIMIT"}, 413)
+            try:
+                payload = json.loads(self.rfile.read(length))
+                con = prod_google_baseline.open_read_only(DB_PATH)
+                try:
+                    result = prod_google_baseline.audit(con, payload)
+                finally:
+                    con.close()
+                return self.send_json(result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path in {GOOGLE_TERMINATION_IMPORT_PREVIEW_PATH,
                            GOOGLE_TERMINATION_IMPORT_APPLY_PATH}:
             if not SANDBOX_MODE:
@@ -10538,7 +12473,7 @@ class Handler(BaseHTTPRequestHandler):
                                            else "Конфлікт облікового запису або УО"}, 400)
             username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or ""); role = str(payload.get("role") or "officer").casefold()
-            officer_id = payload.get("officer_id") or None
+            officer_id = payload.get("officer_id")
             if not re.fullmatch(r"[A-Za-z0-9._-]{3,50}", username):
                 return self.send_json({"error": "Логін: 3–50 латинських літер, цифр або . _ -"}, 400)
             if username in configured_auth_accounts():
@@ -10549,8 +12484,12 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc: return self.send_json({"error": str(exc)}, 400)
             try:
                 with db() as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    officer_id = auth_access.validated_officer_link(con, username, role, officer_id)
                     con.execute("""INSERT INTO auth_users(username,password_hash,role,officer_id,active,created_at,updated_at,created_by)
                       VALUES (?,?,?,?,1,?,?,?)""", (username,password_hash,role,officer_id,now_iso(),now_iso(),self.auth_user))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
             except sqlite3.IntegrityError:
                 return self.send_json({"error": "Логін або акаунт цієї УО вже існує"}, 409)
             return self.send_json({"saved": True, "username": username}, 201)
@@ -10611,6 +12550,363 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"saved": True, "feature": feature})
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        schedule_change = re.fullmatch(r"/api/admin/scheduler-schedules/([a-z_]+)/(preview|apply)", parsed.path)
+        if schedule_change:
+            try:
+                result = scheduler_admin_change(schedule_change.group(1), self.read_json(),
+                    apply=schedule_change.group(2) == 'apply', actor=self.auth_user)
+                return self.send_json(result)
+            except scheduler_runtime.RevisionConflict as exc:
+                return self.send_json({'error': str(exc)}, 409)
+            except ValueError as exc:
+                return self.send_json({'error': str(exc)}, 400)
+        if parsed.path in {'/api/admin/google-writer/schedule/preview','/api/admin/google-writer/schedule/apply'}:
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('admin.manage'):
+                return self.send_json({'error':'Лише адміністратор може змінювати розклад'},403)
+            payload = self.read_json()
+            try:
+                if set(payload) - {'specification','expected_revision'}: raise ValueError('Unexpected schedule fields')
+                with db() as con:
+                    if parsed.path.endswith('/preview'):
+                        result = google_writer_execution.preview_settings(con,payload.get('specification',{}))
+                    else:
+                        if payload.get('specification',{}).get('enabled') and not google_writer_available():
+                            raise ValueError('Execution channel is not ready; enable is blocked')
+                        con.execute('BEGIN IMMEDIATE')
+                        result = google_writer_execution.save_settings(con,payload.get('specification',{}),payload.get('expected_revision'),self.auth_user)
+                if parsed.path.endswith('/apply'): google_writer_service().reschedule()
+                return self.send_json(result)
+            except (ValueError,RuntimeError) as exc: return self.send_json({'error':str(exc)},409)
+        if parsed.path == '/api/admin/google-writer/reconcile-partial':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only reconciliation'},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'error':'Потрібні права адміністратора та Google writer'},403)
+            payload=self.read_json()
+            if (set(payload)!={'reconciliation_id','request_fingerprint','confirmed'} or
+                    payload.get('confirmed') is not True):
+                return self.send_json({'error':'Потрібне явне підтвердження reconciliation'},400)
+            profile=google_writer_execution.partial_reconciliation_profile(payload.get('request_fingerprint'))
+            if profile and profile.get('require_live_sheet_preflight'):
+                try:
+                    _google_writer_legacy_live_sheet_preflight(payload.get('request_fingerprint'))
+                except (ValueError,PermissionError,RuntimeError,OSError,TypeError,sqlite3.Error,
+                        urllib.error.URLError,json.JSONDecodeError):
+                    return self.send_json({'error':'Read-only legacy evidence preflight failed; no reconciliation intent created',
+                        'reconciliation_id':payload.get('reconciliation_id'),
+                        'sqlite_hold_retained':True,'do_not_retry_apply':True},409)
+            try:
+                prepared=google_writer_execution.prepare_partial_reconciliation(
+                    DB_PATH,'SANDBOX',payload.get('reconciliation_id'),
+                    payload.get('request_fingerprint'),self.auth_user)
+            except (ValueError,PermissionError,RuntimeError) as exc:
+                return self.send_json({'error':str(exc),'reconciliation_id':payload.get('reconciliation_id'),
+                    'sqlite_hold_retained':True},409)
+            if profile and profile.get('require_live_sheet_preflight'):
+                try:
+                    _google_writer_legacy_live_sheet_preflight(payload.get('request_fingerprint'))
+                except (ValueError,PermissionError,RuntimeError,OSError,TypeError,sqlite3.Error,
+                        urllib.error.URLError,json.JSONDecodeError):
+                    return self.send_json({'error':'Final read-only legacy evidence check failed; prepared intent and run hold retained',
+                        'reconciliation_id':payload.get('reconciliation_id'),
+                        'reconciliation_state':'prepared','sqlite_hold_retained':True,
+                        'do_not_retry_apply':True},409)
+            try:
+                client=google_writer_client()
+                receipt=client.invoke('reconcile_partial',prepared['request_id'],self.auth_user,
+                    trigger='manual',manual_authorized=True,
+                    reconciliation_id=prepared['reconciliation_id'],
+                    request_fingerprint=prepared['request_fingerprint'],
+                    evidence=prepared['evidence'])
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Apps Script reconciliation outcome unknown; retry same reconciliation_id only',
+                    'reconciliation_id':payload.get('reconciliation_id'),'sqlite_hold_retained':True,
+                    'do_not_retry_apply':True},503)
+            except google_writer_execution.ExecutionConfigurationError:
+                return self.send_json({'error':'Execution API unavailable; SQLite hold retained',
+                    'reconciliation_id':payload.get('reconciliation_id'),'sqlite_hold_retained':True,
+                    'do_not_retry_apply':True},503)
+            try:
+                result=google_writer_execution.finalize_partial_reconciliation(
+                    DB_PATH,prepared['reconciliation_id'],self.auth_user,receipt)
+                return self.send_json({**result,'evidence_digest':prepared['evidence_digest'],
+                    'apps_script_reconciled':True,'sqlite_reconciled':True})
+            except (ValueError,PermissionError,RuntimeError) as exc:
+                return self.send_json({'error':str(exc),'reconciliation_id':payload.get('reconciliation_id'),
+                    'apps_script_reconciled':True,'sqlite_finalization_confirmed':False,
+                    'retry_same_reconciliation_id_only':True,'do_not_retry_apply':True},503)
+        if parsed.path == '/api/admin/google-writer/close-unknown':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only administrative close'},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'error':'Потрібні права адміністратора та Google writer'},403)
+            payload={}
+            try:
+                payload=self.read_json()
+                if (not isinstance(payload,dict) or set(payload)!={'close_id','request_id','reason','confirmed'} or
+                        payload.get('confirmed') is not True):
+                    return self.send_json({'error':'Потрібні точний запуск, причина та явне підтвердження'},400)
+                result=google_writer_execution.close_unknown_run(DB_PATH,google_writer_client(),
+                    payload.get('request_id'),self.auth_user,payload.get('close_id'),payload.get('reason'))
+                return self.send_json({**result,'resume_authorized':False,
+                    'sheets_write_performed':False,'disposition':'OUTCOME_UNKNOWN_NOT_CONFIRMED'})
+            except google_writer_execution.AdminCloseFinalizationUnknown:
+                return self.send_json({'error':'Apps Script tombstone is confirmed; SQLite hold remains until the same close_id is finalized',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'apps_script_closed':True,'sqlite_hold_retained':True,
+                    'retry_same_close_id_only':True,'sheets_write_performed':False},503)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Apps Script close outcome unknown; retry the same close_id only',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'sqlite_hold_retained':True,'retry_same_close_id_only':True,
+                    'sheets_write_performed':False},503)
+            except google_writer_execution.ExecutionConfigurationError:
+                return self.send_json({'error':'Apps Script close was not confirmed; SQLite hold retained',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'sqlite_hold_retained':True,'retry_same_close_id_only':True,
+                    'sheets_write_performed':False},503)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error) as exc:
+                return self.send_json({'error':str(exc),'sqlite_hold_retained':True,
+                    'sheets_write_performed':False},409)
+        if parsed.path == '/api/admin/google-writer/prewrite-close-preflight':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'BLOCKED','reason_codes':['SANDBOX_ONLY'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'BLOCKED','reason_codes':['PERMISSION_REQUIRED'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'request_id'}:
+                    raise ValueError('Only the saved run identity is accepted')
+                result=google_writer_execution.prewrite_close_preflight(
+                    DB_PATH,google_writer_client(),payload['request_id'],self.auth_user)
+                return self.send_json(result)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'BLOCKED','reason_codes':['LOCAL_OR_REMOTE_EVIDENCE_UNAVAILABLE'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0})
+        if parsed.path == '/api/admin/google-writer/append-diagnostic':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'BLOCKED','reason_codes':['SANDBOX_ONLY'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'BLOCKED','reason_codes':['PERMISSION_REQUIRED'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'request_id'}:
+                    raise ValueError('Only the saved run identity is accepted')
+                result=google_writer_execution.diagnose_append_only_plan(
+                    DB_PATH,google_writer_client(),payload['request_id'],self.auth_user)
+                if result.get('read_only') is not True:
+                    raise ValueError('Read-only diagnostic contract was not returned')
+                return self.send_json(result)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'BLOCKED','reason_codes':['DIAGNOSTIC_EVIDENCE_UNAVAILABLE'],
+                    'read_only':True,'sqlite_writes':0,'sheets_writes':0,'properties_writes':0})
+        if parsed.path == '/api/admin/google-writer/append-continuation-preview':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'status':'BLOCKED','reason_codes':['SANDBOX_ONLY'],
+                    'writer_started':False,'google_writes':0,'script_properties_writes':0},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'status':'BLOCKED','reason_codes':['PERMISSION_REQUIRED'],
+                    'writer_started':False,'google_writes':0,'script_properties_writes':0},403)
+            try:
+                payload=self.read_json()
+                if not isinstance(payload,dict) or set(payload)!={'source_request_id'}:
+                    raise ValueError('Only the fixed saved source request identity is accepted')
+                result=google_writer_execution.prepare_append_continuation_preview(
+                    DB_PATH,google_writer_client(),payload['source_request_id'],self.auth_user)
+                return self.send_json(result,200 if result.get('status')=='PREVIEW_READY' else 409)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error,
+                    google_writer_execution.ExecutionConfigurationError):
+                return self.send_json({'status':'BLOCKED','reason_codes':['CONTINUATION_EVIDENCE_UNAVAILABLE'],
+                    'writer_started':False,'google_writes':0,'script_properties_writes':0},409)
+        if parsed.path == '/api/admin/google-writer/close-prewrite':
+            permissions=getattr(self,'auth_access',{}).get('permissions',{})
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only prewrite closure'},404)
+            if not permissions.get('admin.manage') or not permissions.get('google.writer.execute'):
+                return self.send_json({'error':'Потрібні права адміністратора та Google writer'},403)
+            payload={}
+            try:
+                payload=self.read_json()
+                if (not isinstance(payload,dict) or set(payload)!={'close_id','request_id','reason','confirmed'} or
+                        payload.get('confirmed') is not True):
+                    return self.send_json({'error':'Потрібні точний запуск, причина та явне підтвердження'},400)
+                result=google_writer_execution.close_confirmed_prewrite_failure(DB_PATH,google_writer_client(),
+                    payload.get('request_id'),self.auth_user,payload.get('close_id'),payload.get('reason'))
+                return self.send_json({**result,'resume_authorized':False,
+                    'sheets_write_performed':False,
+                    'disposition':'PREWRITE_FAILURE_CONFIRMED_NO_SHEET_WRITE'})
+            except google_writer_execution.AdminCloseFinalizationUnknown:
+                return self.send_json({'error':'Apps Script prewrite tombstone is confirmed; SQLite close remains pending for the same close_id',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'apps_script_closed':True,'sqlite_hold_retained':True,
+                    'retry_same_close_id_only':True,'sheets_write_performed':False},503)
+            except google_writer_execution.ExecutionOutcomeUnknown:
+                return self.send_json({'error':'Prewrite close outcome unknown; retry the same close_id only after read-only review',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'sqlite_hold_retained':True,'retry_same_close_id_only':True,
+                    'sheets_write_performed':False},503)
+            except google_writer_execution.ExecutionConfigurationError:
+                return self.send_json({'error':'Apps Script prewrite closure was not confirmed; SQLite hold retained',
+                    'close_id':payload.get('close_id') if isinstance(payload,dict) else None,
+                    'request_id':payload.get('request_id') if isinstance(payload,dict) else None,
+                    'sqlite_hold_retained':True,'retry_same_close_id_only':True,
+                    'sheets_write_performed':False},503)
+            except (ValueError,PermissionError,RuntimeError,sqlite3.Error) as exc:
+                return self.send_json({'error':str(exc),'sqlite_hold_retained':True,
+                    'sheets_write_performed':False},409)
+        if parsed.path in {'/api/google-writer/preview','/api/google-writer/apply'}:
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            payload = self.read_json()
+            try:
+                if not google_writer_manual_available(): raise ValueError('Захищений Execution API канал ще не підготовлено')
+                client = google_writer_client()
+                if parsed.path.endswith('/preview'):
+                    if set(payload) != {'request_id'}: raise ValueError('Unexpected Preview fields')
+                    result = client.invoke('preview',payload['request_id'],self.auth_user,
+                                           manual_authorized=True)
+                    if google_writer_environment()=='SANDBOX':
+                        snapshot=google_writer_execution.store_preview_plan(
+                            DB_PATH,payload['request_id'],self.auth_user,result.get('planDetails'))
+                        ticket=google_writer_execution.preview_ticket(client,payload['request_id'],
+                            self.auth_user,result['digest'],plan_scope='ALL',
+                            parent_digest=result['digest'],details_digest=snapshot['details_digest'])
+                        return self.send_json({'status':result['status'],'counts':result['counts'],
+                            'plan_digest':result['digest'],'details_digest':snapshot['details_digest'],
+                            'expires_at':None,'review_only_expiry':True,
+                            'apply_revalidates_live_plan':True,'ticket':ticket})
+                    return self.send_json({'status':result['status'],'counts':result['counts'],
+                        'ticket':google_writer_execution.preview_ticket(client,payload['request_id'],self.auth_user,result['digest'])})
+                if set(payload) != {'ticket','confirmed'} or payload['confirmed'] is not True:
+                    raise ValueError('Потрібне явне підтвердження переглянутого Preview')
+                ticket = google_writer_execution.verify_ticket(client,payload['ticket'],self.auth_user)
+                if google_writer_environment()=='SANDBOX':
+                    if not all(key in ticket for key in ('scope','parent_digest','details_digest')):
+                        raise ValueError('Sandbox Preview ticket lacks the immutable plan binding')
+                    snapshot=google_writer_execution.load_preview_plan(DB_PATH,ticket['request_id'],
+                        self.auth_user,ticket['parent_digest'],details_digest=ticket['details_digest'])
+                    google_writer_execution.validate_preview_plan_scope(snapshot,ticket)
+                    continuation=snapshot['details'].get('append_continuation')
+                    if continuation is not None:
+                        if ticket.get('scope')!='APPEND_ONLY':
+                            raise ValueError('Continuation may only be applied as APPEND_ONLY')
+                        google_writer_execution.validate_append_continuation_closed(DB_PATH,snapshot,self.auth_user)
+                    # Preview age is not an Apply authorization test. Recompute
+                    # the plan now and require a fresh user confirmation if any
+                    # source, destination, formula or operation detail changed.
+                    live=client.invoke('preview',ticket['request_id'],self.auth_user,
+                                       manual_authorized=True)
+                    if continuation is not None and continuation.get('version')==2:
+                        try:
+                            google_writer_execution.validate_append_continuation_v2_live_preview(
+                                DB_PATH,self.auth_user,snapshot,live)
+                            continuation_preview_stale=False
+                        except (ValueError,TypeError,KeyError,sqlite3.Error):
+                            continuation_preview_stale=True
+                    else:
+                        live_details_digest=google_writer_execution._preview_details_digest(live.get('planDetails'))
+                        expected_details_digest=(google_writer_execution._preview_details_digest(
+                            google_writer_execution._append_continuation_core_details(snapshot['details']))
+                            if continuation is not None else snapshot['details_digest'])
+                        continuation_preview_stale=(live.get('digest')!=snapshot['plan_digest'] or
+                            live_details_digest!=expected_details_digest)
+                    if continuation_preview_stale:
+                        if continuation is not None:
+                            return self.send_json({'status':'CONTINUATION_PREVIEW_STALE',
+                                'code':'CONTINUATION_PREVIEW_STALE',
+                                'error':'Стан таблиці або план продовження змінився. Запис не розпочато; сформуйте новий read-only Preview залишку.',
+                                'safe_description':'Стан таблиці або плану змінився після Preview. Новий запуск не розпочато.',
+                                'request_id':ticket['request_id'],'started':False},409)
+                        replacement_id=uuid.uuid4().hex
+                        replacement=client.invoke('preview',replacement_id,self.auth_user,
+                                                  manual_authorized=True)
+                        replacement_snapshot=google_writer_execution.store_preview_plan(
+                            DB_PATH,replacement_id,self.auth_user,replacement.get('planDetails'))
+                        replacement_ticket=google_writer_execution.preview_ticket(
+                            client,replacement_id,self.auth_user,replacement['digest'],plan_scope='ALL',
+                            parent_digest=replacement['digest'],details_digest=replacement_snapshot['details_digest'])
+                        return self.send_json({'status':'PREVIEW_STALE_RECONFIRM',
+                            'error':'План або Google Sheets змінилися. Перегляньте й підтвердьте новий Preview.',
+                            'request_id':replacement_id,
+                            'counts':replacement.get('counts',{}),'plan_digest':replacement['digest'],
+                            'details_digest':replacement_snapshot['details_digest'],
+                            'ticket':replacement_ticket,'started':False},409)
+                claimed = google_writer_execution.claim_run(DB_PATH,google_writer_environment(),
+                    ticket['request_id'],self.auth_user,'manual',manual_authorized=True,
+                    plan_scope=ticket.get('scope','ALL'),plan_digest=ticket['digest'],
+                    details_digest=ticket.get('details_digest'))
+                if not claimed['claimed']:
+                    claimed['started']=False
+                    claimed['code']=re.sub(r'[^A-Za-z0-9_]+','_',str(claimed.get('status') or 'APPLY_NOT_CLAIMED')).upper()[:64]
+                    claimed['safe_description']='Новий worker не запущено. Перевірте збережений стан запуску перед будь-якою наступною дією.'
+                    return self.send_json(claimed,200 if claimed['status'] in {'complete','partial','failed_safe'} else 409)
+                try:
+                    threading.Thread(target=google_writer_execution.execute_claimed,
+                        args=(DB_PATH,client,ticket['request_id'],self.auth_user),
+                        kwargs={'digest':ticket['digest'],'guard':google_writer_manual_available,
+                                'manual_authorized':True,'plan_scope':ticket.get('scope','ALL')},
+                        name='pqm-google-writer-worker',daemon=True).start()
+                except Exception:
+                    google_writer_execution.finish_run(DB_PATH,ticket['request_id'],'failed_safe',{'status':'WORKER_START_FAILED'})
+                    raise ValueError('Не вдалося створити worker; Google не викликався') from None
+                return self.send_json({'started':True,'request_id':ticket['request_id']},202)
+            except (ValueError,google_writer_execution.ExecutionOutcomeUnknown) as exc:
+                text=str(exc).lower()
+                code=('APPLY_PRECHECK_UNAVAILABLE' if isinstance(exc,google_writer_execution.ExecutionOutcomeUnknown) else
+                    'APPLY_CHANNEL_UNAVAILABLE' if 'канал' in text or 'channel' in text else
+                    'CONTINUATION_BINDING_INVALID' if 'continuation' in text else
+                    'PREVIEW_BINDING_INVALID' if 'preview' in text or 'digest' in text or 'plan' in text else
+                    'APPLY_REQUEST_REJECTED')
+                safe_description={
+                    'APPLY_PRECHECK_UNAVAILABLE':'Не вдалося підтвердити стан перед записом. Новий worker не запущено.',
+                    'APPLY_CHANNEL_UNAVAILABLE':'Захищений канал запису недоступний. Новий worker не запущено.',
+                    'CONTINUATION_BINDING_INVALID':'Прив’язки continuation не пройшли перевірку. Новий worker не запущено.',
+                    'PREVIEW_BINDING_INVALID':'Збережений Preview не пройшов перевірку. Новий worker не запущено.',
+                    'APPLY_REQUEST_REJECTED':'Запит відхилено до запуску worker.'}[code]
+                return self.send_json({'code':code,'safe_description':safe_description,'error':str(exc),
+                    'started':False,'read_only_precheck':True},409)
+        if parsed.path == '/api/google-writer/preview-scope':
+            if not SANDBOX_MODE or google_writer_environment()!='SANDBOX':
+                return self.send_json({'error':'Sandbox-only Preview scope'},404)
+            if not getattr(self,'auth_access',{}).get('permissions',{}).get('google.writer.execute'):
+                return self.send_json({'error':'Немає права на ручний PQM → Google Sheets'},403)
+            try:
+                payload=self.read_json()
+                if (not isinstance(payload,dict) or set(payload)!={'ticket','scope','confirmed'} or
+                        payload.get('confirmed') is not True or payload.get('scope')!='APPEND_ONLY'):
+                    return self.send_json({'error':'Explicit APPEND_ONLY selection is required'},400)
+                client=google_writer_client()
+                parent=google_writer_execution.verify_ticket(client,payload.get('ticket'),self.auth_user)
+                if (parent.get('scope')!='ALL' or parent.get('parent_digest')!=parent.get('digest') or
+                        not parent.get('details_digest')):
+                    return self.send_json({'error':'Only the original full Preview ticket can be scoped'},409)
+                snapshot=google_writer_execution.load_preview_plan(DB_PATH,parent['request_id'],
+                    self.auth_user,parent['parent_digest'],details_digest=parent['details_digest'])
+                scoped_counts=google_writer_execution.validate_preview_plan_scope(snapshot,parent)
+                ticket=google_writer_execution.preview_ticket(client,parent['request_id'],self.auth_user,
+                    snapshot['append_only_digest'],plan_scope='APPEND_ONLY',
+                    parent_digest=parent['parent_digest'],details_digest=parent['details_digest'])
+                scoped_counts=google_writer_execution.validate_preview_plan_scope(snapshot,
+                    google_writer_execution.verify_ticket(client,ticket,self.auth_user))
+                return self.send_json({'scope':'APPEND_ONLY','counts':scoped_counts,'ticket':ticket})
+            except (ValueError,google_writer_execution.ExecutionConfigurationError) as exc:
+                return self.send_json({'error':str(exc)},409)
         scheduler_toggle = re.fullmatch(r"/api/admin/scheduler-jobs/([a-z_]+)", parsed.path)
         if scheduler_toggle:
             payload = self.read_json()
@@ -10631,6 +12927,22 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute('BEGIN IMMEDIATE')
                     item=operational_tasks.detail(con,generate_request.group(1))
                     document=task_documents.generate(con,item,schema,GENERATED_DOCUMENTS_DIR,self.auth_user)
+                    docs=task_documents.documents(con,item['id'])
+                    event=dict(con.execute('SELECT * FROM operational_task_events WHERE task_id=? ORDER BY id DESC LIMIT 1',(item['id'],)).fetchone())
+                    event['metadata']=json.loads(event['metadata'])
+                return self.send_json({'document':document,'documents':docs,'event':event},201)
+            except KeyError:return self.send_json({'error':'Задачу не знайдено'},404)
+            except (ValueError,OSError) as exc:return self.send_json({'error':str(exc)},422)
+        generate_authority=re.fullmatch(r"/api/operational-tasks/([a-f0-9]{32})/documents/nazk-authority-request",parsed.path)
+        if generate_authority:
+            try:
+                payload=self.read_json()
+                if payload:raise ValueError('Дія не приймає template key, path або document context від клієнта')
+                schema=pqm_schema_metadata()
+                with db() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    item=operational_tasks.detail(con,generate_authority.group(1))
+                    document=task_documents.generate_authority(con,item,schema,GENERATED_DOCUMENTS_DIR,self.auth_user)
                     docs=task_documents.documents(con,item['id'])
                     event=dict(con.execute('SELECT * FROM operational_task_events WHERE task_id=? ORDER BY id DESC LIMIT 1',(item['id'],)).fetchone())
                     event['metadata']=json.loads(event['metadata'])
@@ -10745,7 +13057,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == '/api/admin/table-widths':
             payload=self.read_json()
             try:
-                with db() as con: widths=table_widths.save(con,payload.get('table_key'),payload.get('widths'),self.auth_user,payload.get('visible'))
+                with db() as con: widths=table_widths.save(con,payload.get('table_key'),payload.get('widths'),self.auth_user,payload.get('visible'),payload.get('order'),payload.get('columns'))
             except (TypeError,ValueError) as exc: return self.send_json({'error':str(exc)},400)
             return self.send_json({'saved':True,'widths':widths})
         if parsed.path == "/api/chats":
@@ -10766,6 +13078,16 @@ class Handler(BaseHTTPRequestHandler):
                 con.executemany("INSERT INTO chat_members(chat_id,username,joined_at) VALUES (?,?,?)",
                     [(chat_id,name,stamp) for name in all_members])
             return self.send_json({"id":chat_id},201)
+        mark_match=re.fullmatch(r"/api/chats/(\d+)/messages/(\d+)/marks",parsed.path)
+        if mark_match:
+            payload=self.read_json()
+            if not isinstance(payload,dict): return self.send_json({'error':'Некоректна позначка'},400)
+            try:
+                with db() as con:
+                    result=chat_annotations.change(con,int(mark_match[1]),int(mark_match[2]),self.auth_user,payload)
+                return self.send_json({'marks':result})
+            except chat_annotations.ChatError as exc:
+                return self.send_json({'error':str(exc)},exc.status)
         send_match=re.fullmatch(r"/api/chats/(\d+)/messages",parsed.path)
         if send_match:
             chat_id=int(send_match.group(1)); payload=self.read_json(); body=str(payload.get("body") or "").strip()[:10000]
@@ -10789,11 +13111,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"id":message_id},201)
         read_match=re.fullmatch(r"/api/chats/(\d+)/read",parsed.path)
         if read_match:
-            chat_id=int(read_match.group(1))
+            chat_id=int(read_match.group(1)); payload=self.read_json()
+            if not isinstance(payload,dict) or ('message_id' in payload and (type(payload['message_id']) is not int or payload['message_id']<0)):
+                return self.send_json({'error':'Некоректне повідомлення'},400)
             with db() as con:
                 if not self.chat_member(con,chat_id): return self.send_json({"error":"Чат не знайдено"},404)
                 latest=con.execute("SELECT COALESCE(MAX(id),0) FROM chat_messages WHERE chat_id=?",(chat_id,)).fetchone()[0]
-                con.execute("UPDATE chat_members SET last_read_message_id=? WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
+                latest=min(latest,payload.get('message_id',latest))
+                con.execute("UPDATE chat_members SET last_read_message_id=MAX(last_read_message_id,?) WHERE chat_id=? AND username=?",(latest,chat_id,self.auth_user))
             return self.send_json({"read":True,"message_id":latest})
         if parsed.path == '/api/history-columns':
             try:
@@ -10820,7 +13145,23 @@ class Handler(BaseHTTPRequestHandler):
             is_system = bool(payload.get("is_system"))
             if is_system and self.auth_role != "admin":
                 return self.send_json({"error": "Системні профілі може створювати лише адміністратор"}, 403)
-            layout_json = _profile_layout_json(payload.get("columns"), payload.get("kpis"), payload.get("sorts"))
+            if self.auth_role == 'viewer':
+                if is_system or not set(payload).issubset({'name', 'columns', 'source_system_profile_id'}):
+                    return self.send_json({"error": "Перегляд може зберігати лише власні налаштування колонок"}, 403)
+                source_id = str(payload.get("source_system_profile_id") or "").strip()
+                with db() as con:
+                    source = con.execute("SELECT is_system,columns_json FROM application_view_profiles WHERE id=?",
+                                         (source_id,)).fetchone()
+                if not source or not source['is_system']:
+                    return self.send_json({"error": "Потрібен чинний системний профіль як джерело"}, 400)
+                try: source_layout = json.loads(source['columns_json'] or '[]')
+                except json.JSONDecodeError: source_layout = []
+                source_layout = source_layout if isinstance(source_layout, dict) else {}
+                layout_json = _profile_layout_json(payload.get("columns"),
+                                                   source_layout.get('kpis', []),
+                                                   source_layout.get('sorts', []))
+            else:
+                layout_json = _profile_layout_json(payload.get("columns"), payload.get("kpis"), payload.get("sorts"))
             profile_id = str(uuid.uuid4())
             owner = "__system__" if is_system else _profile_owner(self.auth_user)
             source = str(payload.get("source_system_profile_id") or "").strip() or None
@@ -10841,6 +13182,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(generate_violation_protocol(report_id, payload, self.auth_user))
             except DeclensionValidationError as exc:
                 return self.send_json(exc.payload(), 422)
+            except ProtocolContextValidationError as exc:
+                return self.send_json({"error": str(exc), "missing": sorted(exc.missing),
+                                       "unknown": sorted(exc.unknown)}, 422)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 422)
             except KeyError:
                 return self.send_json({"error": "Звернення не знайдено"}, 404)
             except ConnectionError as exc:
@@ -10918,25 +13264,38 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, ConnectionError) as exc:
                 return self.send_json({"error": str(exc)}, 503)
         if parsed.path == "/api/sync":
-            framework_id = self.read_json().get("framework_id")
+            payload = self.read_json()
+            if (not isinstance(payload, dict) or payload.get("confirmed") is not True or
+                    set(payload) - {"confirmed", "framework_id"}):
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення Prozorro"}, 400)
+            framework_id = payload.get("framework_id")
             if framework_id:
                 if not start_prozorro_sync(sync_worker, mode="single",
                                            message="Підготовка синхронізації відбору…",
-                                           args=(framework_id,)):
+                                           args=(framework_id,), manual_authorized=True,
+                                           actor=self.auth_user):
                     return self.send_json(SYNC_STATE, 409)
                 return self.send_json({"started": True, "framework_id": framework_id}, 202)
             if not start_prozorro_sync(sync_all_worker, mode="full",
-                                       message="Пошук активних і закритих відборів…"):
+                                       message="Пошук активних і закритих відборів…",
+                                       manual_authorized=True, actor=self.auth_user):
                 return self.send_json(SYNC_STATE, 409)
             return self.send_json({"started": True, "scope": "active_and_closed"}, 202)
         if parsed.path == "/api/frameworks/refresh":
+            payload = self.read_json()
+            if payload != {"confirmed": True}:
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення відборів"}, 400)
             if not start_prozorro_sync(refresh_framework_metadata_worker,
                                        mode="framework_metadata",
-                                       message="Отримання актуальних відборів із Prozorro…"):
+                                       message="Отримання актуальних відборів із Prozorro…",
+                                       manual_authorized=True, actor=self.auth_user):
                 return self.send_json(SYNC_STATE, 409)
             return self.send_json({"started": True, "scope": "framework_metadata"}, 202)
         if parsed.path == "/api/violation-reports/sync":
-            if not start_violation_reports_sync():
+            payload = self.read_json()
+            if payload != {"confirmed": True}:
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення звернень"}, 400)
+            if not start_violation_reports_sync(manual_authorized=True, actor=self.auth_user):
                 return self.send_json(VIOLATION_SYNC_STATE, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/bids-sync":
@@ -10980,24 +13339,23 @@ class Handler(BaseHTTPRequestHandler):
             if payload.get("confirmed") is not True or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
                 return self.send_json({"error": "Спочатку виконайте preview і явно підтвердьте той самий source fingerprint"}, 409)
             state_digest = str(payload.get("state_digest") or "").strip().lower()
-            if SANDBOX_MODE and not re.fullmatch(r"[0-9a-f]{64}", state_digest):
-                return self.send_json({"error": "SANDBOX reviewed PQM state digest is required"}, 409)
-            if SANDBOX_MODE:
-                try:
-                    current_source = supplier_edr_source_snapshot()
-                    if current_source["source_fingerprint"] != fingerprint:
-                        return self.send_json({"error": "Google source changed; run a NEW Preview"}, 409)
-                    with db() as con:
-                        current_plan = edr_sync_v2.build_preview(con, current_source)
-                    if (edr_sync_v2.preview_state_digest(current_plan) != state_digest
-                            or current_plan["conflicts"]):
-                        return self.send_json({"error": "PQM state changed or conflicts exist; run a NEW Preview"}, 409)
-                except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
-                    return self.send_json({"error": str(exc)}, 409)
+            if not re.fullmatch(r"[0-9a-f]{64}", state_digest):
+                return self.send_json({"error": "Потрібен digest переглянутого стану PQM"}, 409)
+            try:
+                current_source = supplier_edr_source_snapshot()
+                if current_source["source_fingerprint"] != fingerprint:
+                    return self.send_json({"error": "Google source змінився; виконайте новий Preview"}, 409)
+                with db() as con:
+                    current_plan = edr_sync_v2.build_preview(con, current_source, sandbox_mode=SANDBOX_MODE)
+                if (edr_sync_v2.preview_state_digest(current_plan) != state_digest
+                        or current_plan["conflicts"]):
+                    return self.send_json({"error": "Стан PQM змінився або є конфлікти; виконайте новий Preview"}, 409)
+            except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
+                return self.send_json({"error": str(exc)}, 409)
             SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
                                            started_at=now_iso(), updated_at=None, error=None)
             threading.Thread(target=supplier_edr_sync_worker,
-                             args=(fingerprint, self.auth_user, state_digest if SANDBOX_MODE else None), daemon=True).start()
+                             args=(fingerprint, self.auth_user, state_digest), daemon=True).start()
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-export":
             payload = self.read_json()
@@ -11163,7 +13521,11 @@ class Handler(BaseHTTPRequestHandler):
                 temporary.unlink(missing_ok=True)
             return self.send_json({"saved": True, "item": response_item})
         if parsed.path == "/api/nazk-registry/refresh":
-            if not start_nazk_registry_refresh(trigger="manual"):
+            payload = self.read_json()
+            if payload != {"confirmed": True}:
+                return self.send_json({"error": "Потрібне явне підтвердження ручного оновлення НАЗК"}, 400)
+            if not start_nazk_registry_refresh(trigger="manual", manual_authorized=True,
+                                              actor=self.auth_user):
                 return self.send_json({"error": "Оновлення довідника НАЗК уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/amcu-registry/refresh":
@@ -11187,18 +13549,89 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Не вдалося прочитати Excel-файл"}, 400)
             if SANDBOX_MODE and (not raw or len(raw) > _amcu_ref.AMCU_MAX_BYTES):
                 return self.send_json({'error': 'Excel-файл АМКУ перевищує 25 МБ'}, 413)
-            if not start_amcu_registry_refresh(raw, filename or 'АМКУ.xlsx'):
+            if not start_amcu_registry_refresh(raw, str(payload.get("filename") or filename or "АМКУ.xlsx")):
                 return self.send_json({"error": "Оновлення довідника АМКУ уже виконується"}, 409)
             return self.send_json({"started": True}, 202)
+        classification_single = re.fullmatch(r"/api/suppliers/([^/]+)/classification", parsed.path)
+        classification_bulk_preview = parsed.path == "/api/supplier-classifications/bulk/preview"
+        classification_bulk_apply = parsed.path == "/api/supplier-classifications/bulk/apply"
+        if classification_single or classification_bulk_preview or classification_bulk_apply:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 1_000_000:
+                    return self.send_json({"error": "Розмір запиту класифікації некоректний"}, 413)
+                payload = self.read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Некоректний запит класифікації")
+                if classification_bulk_preview:
+                    if set(payload) != {"supplier_codes", "subject_type", "residency"}:
+                        raise ValueError("Набір полів попереднього перегляду некоректний")
+                    with db() as con:
+                        rows = supplier_manual_classification.preview_many(
+                            con, payload["supplier_codes"], payload["subject_type"], payload["residency"])
+                    return self.send_json({"items": rows, "selected_count": len(rows),
+                        "manual_replacements": sum(bool(row["manual_decision_exists"]) for row in rows)})
+                if self.auth_officer_id is None:
+                    return self.send_json({"error": "Для рішення потрібно визначити УО в обліковому записі"}, 403)
+                with db() as con:
+                    officer = con.execute("SELECT full_name,active FROM authorized_officers WHERE id=?",
+                                          (self.auth_officer_id,)).fetchone()
+                    if not officer or not officer["active"]:
+                        return self.send_json({"error": "УО не знайдено або її обліковий запис неактивний"}, 403)
+                    if classification_single:
+                        if set(payload) - {"operation", "expected_revision", "subject_type", "residency", "confirm_replace"}:
+                            raise ValueError("Набір полів рішення некоректний")
+                        code = urllib.parse.unquote(classification_single.group(1))
+                        operation = payload.get("operation")
+                        cancel = operation == "cancel"
+                        if operation not in {"set", "cancel"}:
+                            raise ValueError("Невідома дія з ручною класифікацією")
+                        decisions = [{"supplier_code": code,
+                                      "expected_revision": payload.get("expected_revision"),
+                                      **({} if cancel else {"subject_type": payload.get("subject_type"),
+                                                           "residency": payload.get("residency")})}]
+                        confirm_replace = payload.get("confirm_replace") is True
+                    else:
+                        if set(payload) - {"decisions", "confirm_replace"} or not isinstance(payload.get("decisions"), list):
+                            raise ValueError("Набір полів масового рішення некоректний")
+                        decisions = payload["decisions"]
+                        cancel = False
+                        confirm_replace = payload.get("confirm_replace") is True
+                    result = supplier_manual_classification.save_many(
+                        con, decisions, actor=self.auth_user, officer_id=self.auth_officer_id,
+                        officer_name=officer["full_name"], confirm_replace=confirm_replace, cancel=cancel)
+                if classification_single:
+                    code = urllib.parse.unquote(classification_single.group(1))
+                    return self.send_json({"saved": True, "item": result[0],
+                                           "classification": supplier_classification_details(code)})
+                return self.send_json({"saved": True, "items": result, "changed_count": sum(x["changed"] for x in result)})
+            except supplier_manual_classification.RevisionConflict as exc:
+                return self.send_json({"error": str(exc), "code": "classification_revision_conflict",
+                                       "current_revision": exc.current_revision}, 409)
+            except supplier_manual_classification.ExistingManualDecision as exc:
+                return self.send_json({"error": str(exc), "code": "manual_classification_exists"}, 409)
+            except KeyError as exc:
+                return self.send_json({"error": "Постачальника не знайдено", "supplier_code": str(exc.args[0])}, 404)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
         return self.send_error(404)
 
     def _do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/account":
             payload = self.read_json()
+            color_scheme = payload.get("color_scheme")
+            if "color_scheme" in payload and (not isinstance(color_scheme, str) or color_scheme not in {"light", "dark"}):
+                return self.send_json({"error": "Некоректна тема оформлення"}, 400)
+            # Theme-only clients must not reset any other account preference.
+            if "color_scheme" in payload and set(payload) <= {"color_scheme", "username"}:
+                with db() as con:
+                    con.execute("""INSERT INTO user_preferences(username,color_scheme,updated_at) VALUES (?,?,?)
+                      ON CONFLICT(username) DO UPDATE SET color_scheme=excluded.color_scheme,updated_at=excluded.updated_at""",
+                      (self.auth_user,color_scheme,now_iso()))
+                return self.send_json({"saved": True, "reauthenticate": False})
             display_name = str(payload.get("display_name") or "").strip()[:100]
             start_view = str(payload.get("start_view") or "applications")
-            color_scheme = "light"
             density = str(payload.get("density") or "comfortable")
             presence_status = str(payload.get("presence_status") or "working")
             if start_view not in {"workQueue","applications","suppliers","frameworks","procurements","references","requests"}:
@@ -11221,9 +13654,9 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute("UPDATE auth_users SET password_hash=?,updated_at=? WHERE username=?", (password_hash,now_iso(),self.auth_user))
                 con.execute("""INSERT INTO user_preferences(username,display_name,start_view,color_scheme,density,presence_status,updated_at)
                   VALUES (?,?,?,?,?,?,?) ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name,
-                  start_view=excluded.start_view,color_scheme='light',density=excluded.density,
+                  start_view=excluded.start_view,color_scheme=CASE WHEN ? THEN excluded.color_scheme ELSE user_preferences.color_scheme END,density=excluded.density,
                   presence_status=excluded.presence_status,updated_at=excluded.updated_at""",
-                  (self.auth_user,display_name,start_view,color_scheme,density,presence_status,now_iso()))
+                  (self.auth_user,display_name,start_view,color_scheme or "light",density,presence_status,now_iso(),"color_scheme" in payload))
             if new_password:
                 with AUTH_SESSIONS_LOCK:
                     for token, session in list(AUTH_SESSIONS.items()):
@@ -11233,10 +13666,11 @@ class Handler(BaseHTTPRequestHandler):
         if user_match:
             username = urllib.parse.unquote(user_match.group(1)); payload = self.read_json()
             with db() as con:
+                con.execute("BEGIN IMMEDIATE")
                 current = con.execute("SELECT * FROM auth_users WHERE username=?", (username,)).fetchone()
                 if not current: return self.send_json({"error": "Користувача не знайдено"}, 404)
                 role = str(payload.get("role", current["role"])).casefold()
-                officer_id = payload.get("officer_id", current["officer_id"]) or None
+                officer_id = payload.get("officer_id", current["officer_id"])
                 active = 1 if payload.get("active", bool(current["active"])) else 0
                 if username == self.auth_user and not active:
                     return self.send_json({"error": "Не можна призупинити власний акаунт"}, 409)
@@ -11252,8 +13686,11 @@ class Handler(BaseHTTPRequestHandler):
                     if managed_admins + configured_admins == 0:
                         return self.send_json({"error": "Не можна вимкнути останнього активного адміністратора"}, 409)
                 try:
+                    officer_id = auth_access.validated_officer_link(con, username, role, officer_id, active)
                     con.execute("UPDATE auth_users SET password_hash=?,role=?,officer_id=?,active=?,updated_at=? WHERE username=?",
                                 (password_hash,role,officer_id,active,now_iso(),username))
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
                 except sqlite3.IntegrityError:
                     return self.send_json({"error": "Ця УО вже має активний акаунт"}, 409)
             with AUTH_SESSIONS_LOCK:
@@ -11301,6 +13738,8 @@ class Handler(BaseHTTPRequestHandler):
             with db() as con:
                 current = con.execute("SELECT * FROM application_view_profiles WHERE id=?", (profile_id,)).fetchone()
                 if not current: return self.send_json({"error": "Профіль не знайдено"}, 404)
+                if self.auth_role == 'viewer' and not set(payload).issubset({'columns'}):
+                    return self.send_json({"error": "Перегляд може змінювати лише власні колонки"}, 403)
                 if current["is_system"] and self.auth_role != "admin":
                     return self.send_json({"error": "Системний профіль може змінювати лише адміністратор"}, 403)
                 if not current["is_system"] and current["owner_key"] != _profile_owner(self.auth_user):
@@ -11521,6 +13960,14 @@ class Handler(BaseHTTPRequestHandler):
         # impersonation header; in authenticated mode it comes from the account.
         payload.pop("role", None)
         payload.pop("user", None)
+        guarded_bulk = '_expected_values' in payload
+        expected_values = payload.pop('_expected_values', None)
+        if guarded_bulk and (
+                not isinstance(expected_values, dict) or not expected_values
+                or set(expected_values) != set(payload)
+                or any(key not in EDITABLE_FIELDS or not isinstance(value, str)
+                       or not isinstance(payload[key], str) for key, value in expected_values.items())):
+            return self.send_json({'error': 'Некоректні очікувані значення'}, 400)
         role = self.auth_role
         user = self.auth_user
         if "protocol_officer" in payload and not valid_active_officer(payload["protocol_officer"]):
@@ -11538,9 +13985,25 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             decision = con.execute("SELECT COALESCE(q.status,'pending') FROM submissions s LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE s.id=?", (submission_id,)).fetchone()
             if not decision: return self.send_json({"error": "Заявку не знайдено"}, 404)
-            con.execute('BEGIN IMMEDIATE')
+            try:
+                con.execute('BEGIN IMMEDIATE')
+            except sqlite3.OperationalError as exc:
+                if guarded_bulk and 'locked' in str(exc).lower():
+                    return self.send_json({'error': 'БД зайнята; потрібна звірка збереження',
+                                           'code': 'bulk_database_busy'}, 503)
+                raise
             try: formed_protocols.guard_edit(con,submission_id,payload)
             except ValueError as exc: return self.send_json({'error':str(exc)},409)
+            if expected_values is not None:
+                previous = con.execute('SELECT '+','.join(expected_values)+
+                                       ' FROM application_fields WHERE submission_id=?', (submission_id,)).fetchone()
+                if previous is None:return self.send_json({'error': 'Заявку не знайдено'}, 404)
+                current = {key: str(previous[key] or '') for key in expected_values}
+                if all(current[key] == payload[key] for key in current):
+                    return self.send_json({'saved': True, 'unchanged': True})
+                if any(current[key] != expected_values[key] and current[key] != payload[key] for key in current):
+                    return self.send_json({'error': 'Дані змінилися. Перезапис заблоковано.',
+                                           'code': 'bulk_value_conflict'}, 409)
             current_controls = con.execute("""SELECT protocol_decision,compliance_status,marketplace_decision,
               protocol_number,protocol_date,manager_name,compliance_comments,
               generated_protocol_number,generated_protocol_date,generated_protocol_decision,protocol_generated_at,protocol_remarks
@@ -11744,12 +14207,20 @@ def main():
     with db() as con:
         scheduler_runtime.migrate(con)
     try:
-        counts = {} if env_flag("PQM_RELEASE_SCHEMA_ONLY", IS_WEB_ENV) else rebuild_operational_tasks()
+        counts = {} if background_jobs.disabled() or env_flag("PQM_RELEASE_SCHEMA_ONLY", IS_WEB_ENV) else rebuild_operational_tasks()
         SERVER_LOG.info("Operational task builder completed counts=%s", counts)
     except Exception:
         SERVER_LOG.exception("Operational task builder failed during startup")
 
     scheduler_enabled = apply_scheduler_settings(catch_up=True)
+    if not background_jobs.disabled():
+        google_writer_service().start()  # Fourth job only: disabled by default, no startup catch-up.
+    if (SANDBOX_MODE and google_writer_environment()=='SANDBOX' and
+            env_flag('PQM_SANDBOX_AUTO_CONTINUE_CHUNKS',True)):
+        # This continues only an already-manual Sandbox run from verified chunk
+        # receipts or a read-only recovery proof; it never creates a Preview or a new run.
+        worker=google_writer_continuation_service()
+        if worker: worker.start()
     print(f"PQM 0.1 ({PQM_ENV}): http://{HOST}:{PORT}")
     print(f"Data: {DATA_DIR} · DB: {DB_PATH}")
     print(f"Features: prozorro_scheduler={scheduler_enabled['prozorro']}, "

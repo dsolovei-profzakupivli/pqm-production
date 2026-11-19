@@ -1,0 +1,99 @@
+{
+  "contract": "sandbox-edr-google-nazk-reconcile",
+  "version": 1,
+  "baseline": "40da14517de6988f98dd5d49b1d9e1c21f928290",
+  "normalization": "CRLF-to-LF only for text files",
+  "files": {
+    "edr_sync_v2.py": {
+      "sha256_lf": "cc6ec62ba0a96b887a9f82a7908016e09f0354a86afb291d992199fd49b22796"
+    },
+    "server.py": {
+      "sha256_lf": "159c35c3498fa87eaf5988b8d8ee76440beb65ab3066910a40dee2632d494f1c"
+    },
+    "operational_tasks.py": {
+      "sha256_lf": "6eb8ab9009ef9b6ece839a42e6ab2afe0772877a3880fef5c7e22fe81d1c9188"
+    },
+    "nazk_workflow.py": {
+      "sha256_lf": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3"
+    },
+    "supplier_activity.py": {
+      "sha256_lf": "064e7d6fc70cbbddf8f9e78f60fd6e509191997197fbb7949122a279a984589b"
+    },
+    "google_verification_contract.py": {
+      "sha256_lf": "ac125df154c359366b6f0c2d2a7ec4cba9cd262cc27911206df3cd4777bdc175"
+    },
+    "validation/run_local_release.py": {
+      "sha256_lf": "b1ed59bf14201ac45a8737c0e0ae7e667b9b66c7db23cd7a237d4dfc6e79ca52"
+    },
+    "validation/local_release_20260911/test_edr_sync_v2.py": {
+      "sha256_lf": "681e2b42a67a848d3acccc645a58476ae60c9c5fe4ca0cd115f9e444b8a9c0c7"
+    },
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py": {
+      "sha256_lf": "2b99b9a20f9a012c3edb7ec59a5bbe798fa78c1c34fca7fadf2d1fb898acf0be"
+    },
+    "validation/local_release_20260911/test_edr_google_nazk_manager_reconcile.py": {
+      "sha256_lf": "c3397d4823300029824e37bd1c79f6ab3bd2dce846c6d89866fc8a6911db0e01"
+    },
+    "test_google_verification_contract.py": {
+      "sha256_lf": "02e2eb5570e7cf5a5ecdd95486ea56302f5a05a8604df997f9ec59d2642f4972"
+    },
+    "test_google_read_model_acceptance.py": {
+      "sha256_lf": "b1a1434e6637a8a08546cbcb2e0e844df95a09d5d6a67f00fd4c3df6a175cb5f"
+    },
+    "test_sandbox_messages_integrity.py": {
+      "sha256_lf": "de33fc9c07dae5baf911a1f06acb84a4dda604ea21681e8ee96e5cd5630cebb4"
+    },
+    "validation/fixtures/edr_google_nazk_baseline_40da.zip": {
+      "sha256": "3e4675426df956b2b7641352ea4d6b900108f5ba418deed7f389cc8deb75e790"
+    },
+    "validation/local_release_20260911/test_prod_edr_review_promotion.py": {
+      "sha256_lf": "90da40500a737dedaeb6de4394c37e4d3ed4960b3cd810d7fdb636344560ac4f"
+    },
+    "validation/local_release_20260911/test_sandbox_edr_review.py": {
+      "sha256_lf": "af125b045d7d3cddf398006dba2293996924bdbd1c0bd64608bc692293b13739"
+    },
+    "validation/run_integrated_messages_v1_integrity.py": {
+      "sha256_lf": "629b63dd6d1b778d928ba28863b62805869c5dac137c3415293cf7c6132da375"
+    },
+    "test_sandbox_personal_theme.py": {
+      "sha256_lf": "3a491e6d0b49a38f8326561d7035af8f84518a8a30d2ce3e4eb3befc294c3948"
+    },
+    "validation/fixtures/edr_google_nazk_personal_theme_baseline_40da.zip": {
+      "sha256": "7685e8ee5d4b65d7ffc518850a9dacc24019d13bedbb0b3dfcbab2810fdaa69f"
+    },
+    "test_google_alignment_backend.py": {
+      "sha256_lf": "1b366342129334e6d95d0962bf8dd4e1d7dd25c968a15c66fcf4efc33db31fe8"
+    },
+    "validation/run_messages_search_header_v2_integrity.py": {
+      "sha256_lf": "94ea404525d0ee01ff6a0474cc0c8cdf85ae0b2e2ca52fbacc7671710ab0ea7a"
+    },
+    "validation/fixtures/messages_search_header_v2_runner_40da.zip": {
+      "sha256": "699512fcb46edef1eef183580dfefaf3dfb7f8ed82e5ffcfa5579c29699d3105"
+    },
+    "validation/run_messages_header_polish_v3_integrity.py": {
+      "sha256_lf": "57648cfa9d9cfde6b0303002f8ff2860f56e7001a87195044011e63f1ca321a2"
+    },
+    "validation/fixtures/messages_header_polish_v3_baseline_40da.zip": {
+      "sha256": "3a34bfb1933a55ab0df408872f61137fc53426bcbdbeaa9f95caa6fe5f6f7429"
+    }
+  },
+  "personal_theme_baseline": {
+    "server_projection_sha256": "2cc40e4230798ea933146e361e942360df9bd14de6f3fd2cd0a668f2df4e32b3",
+    "ui_files": {
+      "app.js": {
+        "sha256_lf": "de93439c293a399c792c709112bb19af5849d505e710c95a039fa20f5f29f042",
+        "projection_sha256": "fa634185a11b1fa857a49a6f68ab028923336669853885b518cfea015d93f2c5"
+      },
+      "auth_access.py": {
+        "sha256_lf": "52c176e6f470d2ed7c55249d89bfa06fe5ba4ccca47a51e1313e73aa6ed0d25f"
+      },
+      "scheduler_runtime.py": {
+        "sha256_lf": "0cdac02b7c94b3417d140703fadcc9c722812e0684bc226f8ae7e14cedf3aece"
+      },
+      "styles.css": {
+        "sha256_lf": "e9aa774b1d4919de236ecead54802fb4c888e2a97c24595eee3857035efe96f4"
+      }
+    },
+    "ui_fixture_sha256": "7685e8ee5d4b65d7ffc518850a9dacc24019d13bedbb0b3dfcbab2810fdaa69f"
+  }
+}

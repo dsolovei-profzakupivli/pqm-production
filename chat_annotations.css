@@ -1,0 +1,38 @@
+/* Scoped to Messages; other module tables and dialogs retain their styles. */
+#messagesView .chat-conversation{grid-template-rows:auto auto minmax(0,1fr) auto}
+#messagesView .chat-conversation>header{padding:6px 12px}
+#messagesView .chat-conversation>header>div{display:flex;align-items:baseline;gap:14px;min-width:0;flex-wrap:wrap}
+#messagesView #chatTitle{margin:0;line-height:1.25}
+#messagesView #chatMembers{margin:0;line-height:1.35;min-width:0;overflow-wrap:anywhere}
+#messagesView .chat-message-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:end;padding:8px 12px;border-bottom:1px solid var(--line,#dbe4ee)}
+#messagesView .chat-message-tools[hidden]{display:none}
+#messagesView .chat-message-tools label{display:grid;gap:3px;font-size:12px}
+#messagesView .chat-message-tools input{max-width:240px}
+#messagesView .chat-message-tools>div{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+#messagesView .chat-marks{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;align-items:center}
+#messagesView .chat-mark{font-size:14px;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;gap:4px;background:#f3f6fa;color:#26394d;border:1px solid #a9b8c9;border-radius:6px;min-height:26px;min-width:28px}
+#messagesView .chat-mark[aria-pressed="true"]{background:#dcecff;color:#063e78;border-color:#176cc2;font-weight:650}
+#messagesView .chat-mark:hover{border-color:#176cc2}
+#messagesView .chat-mark:focus-visible{outline:3px solid #2679cc;outline-offset:2px}
+#messagesView .chat-application-card{overflow-wrap:anywhere;color:#0755a3;text-decoration:underline}
+#messagesView .chat-message{min-width:0;overflow-wrap:anywhere}
+#messagesView>.module-heading{align-items:center;gap:12px;margin-bottom:4px}
+#messagesView>.module-heading>div{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}
+#messagesView>.module-heading .eyebrow{margin:0;white-space:nowrap}
+#messagesView>.module-heading h1{margin:0}
+html[data-theme="dark"] #messagesView{background:#0b172a;color:#edf3fc}
+html[data-theme="dark"] #messagesView .chat-mark{background:#1d3550;color:#e4effb;border-color:#7393b6}
+html[data-theme="dark"] #messagesView .chat-mark[aria-pressed="true"]{background:#254d79;color:#fff;border-color:#87bfff}
+html[data-theme="dark"] #messagesView .chat-application-card{color:#a6ceff}
+@media(max-width:900px){#messagesView>.module-heading{flex-direction:row;align-items:center}}
+@media(max-width:520px){#messagesView>.module-heading{flex-wrap:wrap;row-gap:4px}#messagesView>.module-heading>div{flex:1 1 100%;min-width:0}#messagesView #newChatBtn{margin-left:auto}}
+@media(max-width:800px){#messagesView .chat-conversation>header>div{align-items:flex-start;gap:2px 10px;flex-direction:column}#messagesView .chat-message-tools{align-items:stretch}#messagesView .chat-message-tools label{flex:1;min-width:140px}#messagesView .chat-message-tools input{max-width:100%;width:100%}#messagesView .chat-marks{gap:6px}}
+
+#messagesView .chat-mark-count{font-size:11px;line-height:1.2}
+#messagesView .chat-reaction-picker{display:inline-flex;align-items:center;max-width:100%}
+#messagesView .chat-reaction-picker>summary{display:inline-flex;list-style:none;align-items:center;justify-content:center;cursor:pointer;min-width:26px;min-height:26px;border:1px solid var(--line,#a9b8c9);border-radius:6px;font-size:17px;line-height:1;color:inherit}
+#messagesView .chat-reaction-picker>summary::-webkit-details-marker{display:none}
+#messagesView .chat-reaction-picker>summary:focus-visible{outline:3px solid #2679cc;outline-offset:2px}
+#messagesView .chat-reaction-options{display:inline-flex;gap:4px;flex-wrap:wrap;margin-left:4px}
+#messagesView .chat-reaction-picker:not([open])>.chat-reaction-options{display:none}
+#messagesView .chat-mark-option{min-width:28px}

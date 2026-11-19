@@ -1,0 +1,94 @@
+{
+  "variant_id": "sandbox-nazk-appeals-stabilization-v5",
+  "baseline_sha": "fc719b07f7ce6bd43fcdf9815795f0f2906901e8",
+  "base_manifest": "test_sandbox_nazk_appeals_stabilization_v4.json",
+  "base_manifest_sha256": "edd13c837362a456a6e026366d003b86d81df96cb6d26e91a6d184245fb46828",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "filter_zakupivli_complaints_by_supplier_code_without_status_filter"
+  ],
+  "product_overrides": {
+    "app.js": {
+      "sha256": "2a494b408ec00860a7aeea0ecbd3d0f70865ab1c7e1c4b3953cdbd3fe518607f"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "e7808ec7caa962ceea8b3e6763e6827899bc1dc0a728219ad12e808899802d87"
+    },
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "d8292ce488d704381c1621c285d678b0d88129dc08c998abb8da885d44db4e28"
+    },
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "059bb3debccb0f2c6d75d8e10f2388b5fb42e532d7291edbc4c9897d866ed115"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "fb4d3dcaa3b7441acd027863ca0b13dac8654c473c29af59ed37fbbe89a07d40"
+    },
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py": {
+      "sha256": "9747da677c00814d7ce6e9a51777c4436ddb683ccaed954e21c3565197cf54f4"
+    },
+    "test_sandbox_nazk_appeals_stabilization_v4_integrity.py": {
+      "sha256": "9e106b3d20807d1a92c68967766f32f38898c325f09e88677cca4d48b6c6ac38"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "afe425351bfe4da925101ba583fbda73f7c5ec5cf08b42bc58e981c7cb5e6947"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "3b847281947cb4b2de47e16d1761b4c57f7fee73b1e75781ee635ec74ac9cce4"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "3f5baad08993ff98b8f939d01ba3a99b82b4ce8e949630fabbaacddcb15a2360"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "73af34376e675522248b014c0930e4f65bf52c6e6b9761914413662107e159bf"
+    }
+  },
+  "product_files_additional": {
+    "test_sandbox_nazk_appeals_stabilization_v5_integrity.py": {
+      "sha256": "bf29ad1d9791f91c216ee09569e6d30b2a3ca88080ded924d661dbadefff454b"
+    }
+  },
+  "protected_overrides": {
+    "app.js": {
+      "sha256": "2a494b408ec00860a7aeea0ecbd3d0f70865ab1c7e1c4b3953cdbd3fe518607f",
+      "halloween_normalized_sha256": "2a494b408ec00860a7aeea0ecbd3d0f70865ab1c7e1c4b3953cdbd3fe518607f",
+      "personal_theme_normalized_sha256": "7104cd20230c4625ab8b5c51fe7c7e9a1f1de06cbb57b9f863673b5caab87fc1"
+    }
+  },
+  "guarded_overrides": {
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "e7808ec7caa962ceea8b3e6763e6827899bc1dc0a728219ad12e808899802d87"
+    },
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "d8292ce488d704381c1621c285d678b0d88129dc08c998abb8da885d44db4e28"
+    },
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "059bb3debccb0f2c6d75d8e10f2388b5fb42e532d7291edbc4c9897d866ed115"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "fb4d3dcaa3b7441acd027863ca0b13dac8654c473c29af59ed37fbbe89a07d40"
+    },
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py": {
+      "sha256": "9747da677c00814d7ce6e9a51777c4436ddb683ccaed954e21c3565197cf54f4"
+    },
+    "test_sandbox_nazk_appeals_stabilization_v4_integrity.py": {
+      "sha256": "9e106b3d20807d1a92c68967766f32f38898c325f09e88677cca4d48b6c6ac38"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "afe425351bfe4da925101ba583fbda73f7c5ec5cf08b42bc58e981c7cb5e6947"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "3b847281947cb4b2de47e16d1761b4c57f7fee73b1e75781ee635ec74ac9cce4"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "3f5baad08993ff98b8f939d01ba3a99b82b4ce8e949630fabbaacddcb15a2360"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "73af34376e675522248b014c0930e4f65bf52c6e6b9761914413662107e159bf"
+    }
+  },
+  "guarded_additions": {
+    "test_sandbox_nazk_appeals_stabilization_v5_integrity.py": {
+      "sha256": "bf29ad1d9791f91c216ee09569e6d30b2a3ca88080ded924d661dbadefff454b"
+    }
+  }
+}

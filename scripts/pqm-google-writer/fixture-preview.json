@@ -7,10 +7,16 @@
     "appended": 1,
     "updated": 2,
     "unchanged": 0,
-    "skipped": 3,
-    "conflicts": 0,
+    "skipped": 2,
+    "conflicts": 1,
     "duplicate_keys": 0,
-    "errors": 0
+    "errors": 0,
+    "google_newer_preserved": 0,
+    "same_date_google_officer_preserved": 0,
+    "same_date_equivalent": 0,
+    "pqm_newer_written": 0,
+    "google_blank_filled": 0,
+    "pqm_blank_google_preserved": 0
   },
   "per_tab": {
     "ФОП": {
@@ -22,7 +28,13 @@
       "skipped": 0,
       "conflicts": 0,
       "duplicate_keys": 0,
-      "errors": 0
+      "errors": 0,
+      "google_newer_preserved": 0,
+      "same_date_google_officer_preserved": 0,
+      "same_date_equivalent": 0,
+      "pqm_newer_written": 0,
+      "google_blank_filled": 0,
+      "pqm_blank_google_preserved": 0
     },
     "ЮО": {
       "api_records": 3,
@@ -33,9 +45,27 @@
       "skipped": 1,
       "conflicts": 0,
       "duplicate_keys": 0,
-      "errors": 0
+      "errors": 0,
+      "google_newer_preserved": 0,
+      "same_date_google_officer_preserved": 0,
+      "same_date_equivalent": 0,
+      "pqm_newer_written": 0,
+      "google_blank_filled": 0,
+      "pqm_blank_google_preserved": 0
     }
   },
-  "issues": [],
+  "issues": [
+    {
+      "reason": "nonresident_append_blocked",
+      "supplier_code": "foreign",
+      "tab": null
+    },
+    {
+      "reason": "established_subject_nature",
+      "supplier_code": "unknown",
+      "tab": null,
+      "message": "Тип підтверджено у fixture"
+    }
+  ],
   "gaps": []
 }

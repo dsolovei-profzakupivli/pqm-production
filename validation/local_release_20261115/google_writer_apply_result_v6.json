@@ -1,0 +1,33 @@
+{
+  "contract": "pqm-sandbox-google-writer-apply-result-panel",
+  "version": 6,
+  "baseline": "2a4e4bff0bbbe84670d3bb10a5ba4b90347a7d78",
+  "normalization": "CRLF-to-LF only; overlay test self-pinned with canonical placeholder",
+  "scope": [
+    "google_writer_apply_result.js",
+    "index.html",
+    "modules.css",
+    "validation/google_writer_apply_result_ui.test.cjs",
+    "validation/run_local_release.py",
+    ".github/workflows/release-checks.yml",
+    "test_release_gate_infrastructure.py",
+    "test_google_writer_apply_result_integrity_v6.py"
+  ],
+  "files": {
+    "google_writer_apply_result.js": "acda96dbe84c9101bbfeba0b26772968c73bd8160c0465835b1baef2387b063a",
+    "index.html": "83f6e2c5a4ceafbba4b91ca123b733b74d8b29a3e0050291f0c355975b1a3c32",
+    "modules.css": "328aa25f51e00f01b292256304b84d3c56124c0d9b76e4e173fa585f0b685ae5",
+    "validation/google_writer_apply_result_ui.test.cjs": "4b948f3938faf435abda8c082c0d90128314ca306fd4063e39543ac416e7f988",
+    "validation/run_local_release.py": "34953c5cdcd7d760c8b7b2b9b1386e018062c82818813af302291b6783c530e9",
+    ".github/workflows/release-checks.yml": "a18c391654bca4edd4f7df299095726573cb233666f686f6a03a8f85c8f7a39e",
+    "test_release_gate_infrastructure.py": "0f125b8d7a725ab6f244d8f98c8c8e492dc5a1ba258cff73f05c18608a8291dc",
+    "test_google_writer_apply_result_integrity_v6.py": "414f086d2c1373a11b02d6fb3193d2a858fdde77f04a28150a9631f4e2a0766d"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261115/google_writer_apply_result_v5.json": "d029a33dec13613634f2704ecaa0bf76038a01435ecf6d67f3d17585ee16f45d",
+    "validation/local_release_20261113/google_writer_append_continuation_v1.json": "e2569da64bcc83e18b5223d9cbfeccab46ea7524cfa2f41ed1a452f929922aa2",
+    "validation/local_release_20261113/google_writer_append_continuation_v2.json": "2fb4d7124cdd7039ff07c87b275551e678afafb4aa807b7b0f0c5536e9bf2089",
+    "validation/local_release_20261113/google_writer_append_continuation_v3.json": "ad378d8717b936a01671eb9837b842946f5636d74663f2382e23c24f4dbb7e63",
+    "validation/local_release_20261113/google_writer_append_continuation_v4.json": "644737f2c2772e21b7c81f571678bec494641a336703375aa40b3988e1944b92"
+  }
+}

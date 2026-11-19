@@ -1,0 +1,66 @@
+{
+  "baseline": "b988f140af37c45bd5461735cf40d18cd00d741a",
+  "contract": "pqm-google-writer-update-append",
+  "version": 2,
+  "normalization": "CRLF-to-LF only for text files",
+  "history": {
+    "v1_manifest": "validation/local_release_20260911/google_writer_update_append_v1.json",
+    "v1_manifest_sha256_lf": "ad8df0ead516fbdc6fd1f51e9f2abca0acf2b4244c395aaad730594a868ee2d7",
+    "v1_test_sha256_lf": "fd87cd808a6ba87097b812933202cef5917cd6977777b7015966ad0fc09b312b",
+    "v1_baseline": "64f7fda1660c228cbe49c502c6a053fb10c19db1",
+    "v1_is_immutable": true
+  },
+  "files": {
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs": {
+      "sha256_lf": "28e237da8c67cca86a33d4c8904aa423f45a6c69d6a30149b3ca8c8fd409f7e3"
+    },
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxPreviewDependencies.gs": {
+      "sha256_lf": "f2116de42f2cafc855ea3bdb4e5ab75f2b351fa06980d023928adfcbb2d4df9a"
+    },
+    "scripts/pqm-google-writer/update-append-business-matrix.test.cjs": {
+      "sha256_lf": "0922f2390dad28d76f3adaf79243074d9bc29f13529b111723c6fe231632d125"
+    },
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": {
+      "sha256_lf": "e7f53e7f6944a748a0f0079d34cce6ad11c47c24af05ffdce2740119c81fa9e2"
+    },
+    "edr_sync_v2.py": {
+      "sha256_lf": "93dcb95acd3f77fe5d3dcb2182e510bf48956d44f81b9498e0e028ae9245d52a"
+    },
+    "supplier_registry_integration.py": {
+      "sha256_lf": "60769991daf190d5971c2a6c01486a4d8d2df6b5210b01071e04fedf4135cdc0"
+    },
+    "validation/local_release_20260911/test_edr_sync_v2.py": {
+      "sha256_lf": "0b63b3e2f604b193b460132cfddee3234572cc66be178e57521dc9b86e735255"
+    },
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py": {
+      "sha256_lf": "a056c1fc4d03ba64b4836aa9788f77aefca6d21e9f36548461aef1534e24fb04"
+    }
+  },
+  "behavior": {
+    "google_writer_F_authority": "PQM-to-Google Sheets only",
+    "google_writer_F_date_independence": true,
+    "google_writer_F_unknown_status": "no write",
+    "google_owned_columns": [
+      "G",
+      "J",
+      "K",
+      "M"
+    ],
+    "google_owned_direction": "Google Sheets-to-PQM only",
+    "google_owned_blanks": "clear only when the row and source column are confirmed present",
+    "google_owned_equal_values": "no-op",
+    "incomplete_source": "never clear",
+    "other_columns": "retain existing verification-date priorities",
+    "conflicts_and_write_protection": "retain existing blocking and protected-cell checks",
+    "eligibility_semantics": "eligible exactly when a decided application event is present"
+  },
+  "behavior_tests": {
+    "google_writer": "scripts/pqm-google-writer/update-append-business-matrix.test.cjs",
+    "edr_sync": [
+      "validation.local_release_20260911.test_edr_sync_v2",
+      "validation.local_release_20260911.test_permanent_edr_sync_safety"
+    ],
+    "eligibility": "validation.test_google_writer_update_append_v2_integrity.GoogleWriterUpdateAppendV2Integrity.test_writer_eligibility_is_decided_event_based",
+    "source_shape": "validation.test_google_writer_update_append_v2_integrity.GoogleWriterUpdateAppendV2Integrity.test_unavailable_tabs_and_invalid_headers_fail_before_a_source_snapshot_exists"
+  }
+}

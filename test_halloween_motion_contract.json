@@ -1,0 +1,24 @@
+{
+  "baseline": "8fa52a62641f80bb322de177a76a98bf92ce3ecb",
+  "normalization": "CRLF to LF for text only",
+  "files": {
+    "index.html": "6df729786800846aa483a8f1681caf503e9167bd6ef68204253624a62d719457",
+    "server.py": "127f7c78ecc2a03155776655e58767cc1505df1cfc1011b397f0b630fe36ef53",
+    "app.js": "4349bf3be80cba0e4224e64e910f80cd6277811ee914320f1c18f203b685981f",
+    "theme_ui.js": "bffe598802f3f3b52cae0ac3781b0bae1e195b6883825c1aa2a076cc8e921b94",
+    "theme.css": "1e127957ae92b53c0dcbf66e2fccce2cc6c876c34eb026d3e786a0a59bf9283d",
+    "sandbox_theme.css": "976bd8b3e675674b9da1559ccc1cce089a775c63bc3be4a57111078546b86c37",
+    "sandbox_contrast.js": "de344949e5f2cef4967a562399698608c01c872be74e09a8c2bb372072aed9b5",
+    "halloween.js": "738409340f50a306c2397b5fc90f97709238cc4e6b9c01a335bf955eaeed58d9",
+    "halloween.css": "e3ed1c1af7a6e939ce6b4c4f8ae052c0d9c51662bfa38e4444cff1522aaa7041",
+    "halloween_season.js": "ad799ef80123f8df49b8c5b7f0240a47344a1a4298cadde18e99723320fa53ff",
+    "auth_access.py": "9b6fc68f4141af76112326bf241697b1a4d008d8ae68fad12be12b004a5a4558",
+    "background_jobs.py": "a7a646735771f2d384f1394751f148602fbf970020b568e2cbbd6b3503d6629a",
+    "scheduler_runtime.py": "7196fee231fa7b89edf287d1d81c26b350c67c807a0ba75e600091753a562be0",
+    "google_writer_execution.py": "6a739ce800a83354ac5a036fe9ca4d61b800a53ea416862ca4dab53f038be518",
+    "assets/halloween-witch-cat.webp": "62991ef629660918e07247008cbae56a1ebe7ef4a6beb87199d745f86acdb528",
+    "assets/halloween-workqueue-light.webp": "f11bb9e7b4f042fde5f24f2e55ea9b0895275823d0196e1780cef734f3747302",
+    "assets/halloween-workqueue-dark.webp": "54201419649b53a1d41f3dc33abe38b25fe3a7d26707c7446831df233d364377"
+  },
+  "sandbox_runtime_outside_decorator_ast": "faf5e9f20762a93053e217656c09a215706e4d0e219d7b4662fab249528c566a"
+}

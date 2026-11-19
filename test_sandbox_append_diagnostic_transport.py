@@ -1,0 +1,279 @@
+"""The APPEND diagnostic is routed only to the additive read-only entrypoint."""
+import base64
+import hashlib
+import io
+import json
+import os
+import unittest
+from unittest.mock import patch
+import urllib.request
+
+import google_writer_execution as execution
+import sandbox_runtime as runtime
+from test_google_writer_execution import NOW
+
+
+class AppendDiagnosticTransportTests(unittest.TestCase):
+    def setUp(self):
+        self.deployment='TEST_SANDBOX_DEPLOYMENT_0123456789'
+        patch.dict(os.environ,{'PQM_SANDBOX':'1','RENDER_SERVICE_ID':'srv-dalfd77f3r2c7392uub0',
+            'PQM_SANDBOX_EXECUTION_READY':'1','PQM_SANDBOX_EXECUTION_DEPLOYMENT_ID':self.deployment,
+            'PQM_SANDBOX_EDR_GOOGLE':'1'},clear=True).start()
+        self.addCleanup(patch.stopall)
+        self.secret='OFFLINE_SECRET_'+'x'*32
+        self.token=lambda env:{'environment':env,'access_token':'OFFLINE_TOKEN',
+            'scopes':sorted(execution.PROJECT_SCOPES),'expires_at':NOW.timestamp()+3600}
+        self.calls=[]
+        self.network=patch.object(runtime.urllib.request,'build_opener').start().return_value
+        self.client=execution.ExecutionClient('SANDBOX',self.deployment,self.secret,self.token,
+            configured=True,clock=lambda:NOW)
+        self.client.opener=self.fake_open
+        self.response_mutator=None
+
+    def fake_open(self,request,timeout):
+        self.calls.append(request)
+        payload=json.loads(json.loads(request.data)['parameters'][0]['payload'])
+        self.assertEqual(request.full_url,
+            'https://script.googleapis.com/v1/scripts/'+self.deployment+':run')
+        self.assertEqual(json.loads(request.data)['function'],'pqmSandboxAppendDiagnostic20261112')
+        result={key:payload[key] for key in ('environment','scriptId','spreadsheetId','contract','requestId')}
+        if payload.get('diagnosticMode')=='audit_recovery':
+            rows=payload['auditTargets']
+            result.update(status='AUDITED',diagnosticMode='audit_recovery',planScope='APPEND_ONLY',
+                digest=payload['expectedDigest'],detailsDigest=payload['detailsDigest'],
+                fullPlanDigest=payload['fullPlanDigest'],sourceDigest=payload['sourceDigest'],
+                planId=payload['planId'],chunkId=payload['chunkId'],chunkDigest=payload['chunkDigest'],
+                chunkIndex=0,auditTargetsDigest=payload['auditTargetsDigest'],
+                counts={'planned':len(rows),'confirmed':25,'missing':len(rows)-25,
+                    'conflict':0,'unverified':0,'remaining':len(rows)-25},reasonCodes=[],conflicts=[],
+                recoveryStatus='DIAGNOSED',recoveryReasonCodes=[],manifestBinding='PASS',
+                manifestMismatchFields=[],firstChunkRecoveryEvidence=True,
+                reconstructionChecks={'fullPreviewDigest':'MATCH','appendOnlyDigest':'MATCH',
+                    'plannedAppendCount':'MATCH','appendOperationCount':'MATCH'},
+                downstreamChecks={'sourceBinding':'MATCH','planSafety':'MATCH','targetRows':'MATCH',
+                    'rowValuesAndFormulas':'MATCH','serviceMetadata':'MATCH','manifestRows':'MATCH',
+                    'appendRowMetadata':'MATCH'},stageDurationsMs={'dataAcquisitionMs':1000,
+                    'previewReconstructionMs':50,'manifestVerificationMs':20,'responseBuildMs':1,
+                    'totalMs':1071},digestDiagnostics={
+                    'googleStateDigest':'MATCH','planCounts':{key:{'expected':payload['expectedPlanCounts'][key],
+                    'actual':payload['expectedPlanCounts'][key],'status':'MATCH'}
+                    for key in ('append','update','conflict','error')},
+                    'appendIdentityStatus':'MATCH','appendIdentityMismatchCount':0,
+                    'appendProjectionStatus':'MATCH','appendProjectionMismatchCount':0,
+                    'updateIdentityStatus':'MATCH','updateIdentityMismatchCount':0,'updateIdentity':'MATCH',
+                    'valueComparisonStatus':'MATCH','valueMismatchColumns':[],'valueMismatchColumnCount':0,
+                    'formulaComparisonStatus':'MATCH','formulaMismatchColumns':[],'formulaMismatchColumnCount':0,
+                    'appendOnlyWithOriginalParent':'MATCH','fullCountsDigest':'UNAVAILABLE',
+                    'exactCellMismatchCounts':'UNAVAILABLE'},readOnly=True)
+            if self.response_mutator: self.response_mutator(result)
+            return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
+        if payload.get('diagnosticMode')=='audit':
+            rows=payload['auditTargets']
+            result.update(status='AUDITED',diagnosticMode='audit',planScope='APPEND_ONLY',
+                digest=payload['expectedDigest'],detailsDigest=payload['detailsDigest'],
+                fullPlanDigest=payload['fullPlanDigest'],sourceDigest=payload['sourceDigest'],
+                planId=payload['planId'],auditTargetsDigest=payload['auditTargetsDigest'],
+                counts={'planned':len(rows),'confirmed':25,'missing':len(rows)-25,
+                    'conflict':0,'unverified':0,'remaining':len(rows)-25},reasonCodes=[],readOnly=True)
+            if self.response_mutator: self.response_mutator(result)
+            return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
+        result.update(status='DIAGNOSED',planScope='APPEND_ONLY',digest=payload['expectedDigest'],
+            detailsDigest=payload['detailsDigest'],fullPlanDigest=payload['fullPlanDigest'],
+            sourceDigest=payload['sourceDigest'],chunkId=payload['chunkId'],
+            chunkDigest=payload['chunkDigest'],planId=payload['planId'],chunkIndex=0,
+            counts={'planned':payload['totalAppendCount'],'confirmed':25,'missing':251,
+                'conflict':0,'unverified':0,'remaining':251},reasonCodes=[],manifestBinding='PASS',
+            firstChunkRecoveryEvidence=True,readOnly=True,
+            reconstructionChecks={'fullPreviewDigest':'MATCH','appendOnlyDigest':'MATCH',
+                'plannedAppendCount':'MATCH','appendOperationCount':'MATCH'},
+            downstreamChecks={'sourceBinding':'MATCH','planSafety':'MATCH','targetRows':'MATCH',
+                'rowValuesAndFormulas':'MATCH','serviceMetadata':'MATCH','manifestRows':'MATCH',
+                'appendRowMetadata':'MATCH'})
+        if self.response_mutator:
+            self.response_mutator(result)
+        return io.BytesIO(json.dumps({'done':True,'response':{'result':result}}).encode())
+
+    def invoke(self):
+        targets=[]
+        for i in range(276):
+            targets.append({'tab':'ФОП' if i%2==0 else 'ЮО','code':f'{10000000+i:08d}',
+                'row':2+(i//2)})
+        return self.client.invoke('diagnose_append_plan','d'*32,'sandbox-admin',trigger='manual',
+            digest=self.digest('append'),plan_scope='APPEND_ONLY',manual_authorized=True,
+            chunk_index=0,chunk_id='c'*32,chunk_digest=self.digest('chunk'),plan_id='d'*32,
+            details_digest=self.digest('details'),full_plan_digest=self.digest('full'),
+            source_digest=self.digest('source'),total_append_count=276,target_identities=targets)
+
+    def invoke_audit(self):
+        rows=[['ФОП' if i%2==0 else 'ЮО',f'{10000000+i:08d}',2+i//2,self.digest(f'row-{i}')]
+            for i in range(276)]
+        targets_digest=self.digest(execution._canonical_json(rows))
+        return self.client.invoke('diagnose_append_plan','d'*32,'sandbox-admin',trigger='manual',
+            digest=self.digest('append'),plan_scope='APPEND_ONLY',manual_authorized=True,
+            plan_id='d'*32,details_digest=self.digest('details'),full_plan_digest=self.digest('full'),
+            source_digest=self.digest('source'),total_append_count=276,diagnostic_mode='audit',
+            audit_targets=rows,audit_targets_digest=targets_digest)
+
+    def invoke_combined(self):
+        audit_targets=[]
+        for i in range(276):
+            tab='ФОП' if i%2==0 else 'ЮО';code=f'{10000000+i:08d}';row=2+(i//2)
+            audit_targets.append([tab,code,row,self.digest(f'row-{i}')])
+        targets_digest=self.digest(execution._canonical_json(audit_targets))
+        return self.client.invoke('diagnose_append_plan','d'*32,'sandbox-admin',trigger='manual',
+            digest=self.digest('append'),plan_scope='APPEND_ONLY',manual_authorized=True,
+            chunk_index=0,chunk_id='c'*32,chunk_digest=self.digest('chunk'),plan_id='d'*32,
+            details_digest=self.digest('details'),full_plan_digest=self.digest('full'),
+            source_digest=self.digest('source'),total_append_count=len(audit_targets),
+            diagnostic_mode='audit_recovery',audit_targets=audit_targets,
+            audit_targets_digest=targets_digest,expected_plan_counts={'append':276,'update':0,'conflict':0,'error':0},
+            expected_update_identity_digest=self.digest(execution._canonical_json([])),
+            expected_update_identities=[],expected_cell_digests={'value:B':self.digest('expected-cell')})
+
+    @staticmethod
+    def digest(value):
+        return base64.urlsafe_b64encode(hashlib.sha256(value.encode()).digest()).decode().rstrip('=')
+
+    def test_signed_diagnostic_uses_only_additive_endpoint_and_returns_aggregates(self):
+        result=self.invoke()
+        self.assertEqual(result['counts'],{'planned':276,'confirmed':25,'missing':251,
+            'conflict':0,'unverified':0,'remaining':251})
+        self.assertTrue(result['first_chunk_recovery_evidence'])
+        self.assertEqual(set(result['reconstruction_checks'].values()),{'MATCH'})
+        self.assertEqual(set(result['downstream_checks'].values()),{'MATCH'})
+        request=self.calls[0]
+        self.assertEqual(runtime.validate_execution_request(request,'SANDBOX',
+            execution.IDENTITIES['SANDBOX'][0],execution.IDENTITIES['SANDBOX'][1],self.deployment),
+            'script.googleapis.com')
+
+    def test_egress_rejects_diagnostic_payload_mutation_and_wrong_function(self):
+        self.invoke();original=self.calls[0]
+        body=json.loads(original.data);envelope=body['parameters'][0];payload=json.loads(envelope['payload'])
+        payload['targetIdentities'][0]['row']=1
+        envelope['payload']=json.dumps(payload,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(__import__('hmac').new(
+            self.secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        mutated=urllib.request.Request(original.full_url,data=json.dumps(body).encode(),
+            headers=original.headers,method='POST')
+        with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+            runtime.validate_execution_request(mutated,'SANDBOX',execution.IDENTITIES['SANDBOX'][0],
+                execution.IDENTITIES['SANDBOX'][1],self.deployment)
+        body=json.loads(original.data);body['function']='pqmSandboxAllScopeExecution20261109'
+        wrong=urllib.request.Request(original.full_url,data=json.dumps(body).encode(),
+            headers=original.headers,method='POST')
+        with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+            runtime.validate_execution_request(wrong,'SANDBOX',execution.IDENTITIES['SANDBOX'][0],
+                execution.IDENTITIES['SANDBOX'][1],self.deployment)
+
+    def test_response_cannot_claim_first_chunk_recovery_with_inconsistent_counts(self):
+        self.response_mutator=lambda result: result['counts'].update(confirmed=24,missing=252,remaining=252)
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'status was inconsistent'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_response_requires_exact_safe_reconstruction_check_statuses(self):
+        self.response_mutator=lambda result: result['reconstructionChecks'].update(fullPreviewDigest='MAYBE')
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'checks were incomplete'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_older_apps_script_response_fails_closed_when_detailed_checks_are_absent(self):
+        def mutate(result):
+            result.pop('reconstructionChecks')
+            result.pop('downstreamChecks')
+        self.response_mutator=mutate
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'checks were incomplete'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_response_cannot_claim_nonblocked_reconstruction_mismatch(self):
+        def mutate(result):
+            result['reconstructionChecks']['fullPreviewDigest']='MISMATCH'
+            result['reasonCodes']=['PREVIEW_RECONSTRUCTION_MISMATCH']
+        self.response_mutator=mutate
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'reconstruction status was inconsistent'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_response_cannot_claim_recovery_when_any_followup_check_was_not_checked(self):
+        self.response_mutator=lambda result: result['downstreamChecks'].update(targetRows='NOT_CHECKED')
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'reconstruction status was inconsistent'):
+            self.invoke()
+        self.assertEqual(len(self.calls),1)
+
+    def test_audit_page_is_signed_and_egress_bound_without_recovery_manifest(self):
+        result=self.invoke_audit()
+        self.assertEqual(result['counts']['confirmed'],25)
+        raw=json.loads(self.calls[-1].data)['parameters'][0]['payload']
+        self.assertLessEqual(len(raw.encode('utf-16-le'))//2,32768)
+        payload=json.loads(raw)
+        self.assertEqual(len(payload['auditTargets']),276)
+        self.assertEqual(payload['diagnosticMode'],'audit')
+        self.assertNotIn('chunkDigest',payload)
+        self.assertEqual(runtime.validate_execution_request(self.calls[-1],'SANDBOX',
+            execution.IDENTITIES['SANDBOX'][0],execution.IDENTITIES['SANDBOX'][1],self.deployment),
+            'script.googleapis.com')
+        body=json.loads(self.calls[-1].data);envelope=body['parameters'][0];payload['auditTargets'][0][2]=1
+        envelope['payload']=json.dumps(payload,ensure_ascii=False,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(__import__('hmac').new(
+            self.secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        mutated=urllib.request.Request(self.calls[-1].full_url,data=json.dumps(body).encode(),
+            headers=self.calls[-1].headers,method='POST')
+        with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+            runtime.validate_execution_request(mutated,'SANDBOX',execution.IDENTITIES['SANDBOX'][0],
+                execution.IDENTITIES['SANDBOX'][1],self.deployment)
+
+    def test_combined_call_binds_audit_and_recovery_and_returns_stage_timings(self):
+        result=self.invoke_combined()
+        self.assertEqual(len(self.calls),1)
+        self.assertEqual(result['counts']['confirmed'],25)
+        self.assertEqual(result['counts']['missing'],251)
+        self.assertTrue(result['first_chunk_recovery_evidence'])
+        self.assertEqual(result['stage_durations_ms']['totalMs'],1071)
+        self.assertEqual(result['digest_diagnostics']['google_state_digest'],'MATCH')
+        self.assertEqual(result['digest_diagnostics']['append_only_with_original_parent'],'MATCH')
+        raw=json.loads(self.calls[0].data)['parameters'][0]['payload']
+        payload=json.loads(raw)
+        self.assertEqual(payload['diagnosticMode'],'audit_recovery')
+        self.assertNotIn('targetIdentities',payload)
+        self.assertLessEqual(len(raw.encode('utf-16-le'))//2,32768)
+        self.assertEqual(runtime.validate_execution_request(self.calls[0],'SANDBOX',
+            execution.IDENTITIES['SANDBOX'][0],execution.IDENTITIES['SANDBOX'][1],self.deployment),
+            'script.googleapis.com')
+
+    def test_combined_response_fails_closed_when_recovery_check_is_unchecked(self):
+        self.response_mutator=lambda result: result['downstreamChecks'].update(manifestRows='NOT_CHECKED')
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'Combined APPEND recovery status was inconsistent'):
+            self.invoke_combined()
+        self.assertEqual(len(self.calls),1)
+
+    def test_combined_response_requires_safe_digest_component_report(self):
+        def mismatch_response(result):
+            result['digestDiagnostics'].update(googleStateDigest='MISMATCH',valueComparisonStatus='MISMATCH',
+                valueMismatchColumns=['I'],valueMismatchColumnCount=1)
+            result['recoveryStatus']='BLOCKED';result['recoveryReasonCodes']=['PREVIEW_COMPONENT_MISMATCH']
+            result['firstChunkRecoveryEvidence']=False
+        self.response_mutator=mismatch_response
+        result=self.invoke_combined()
+        self.assertEqual(result['digest_diagnostics']['google_state_digest'],'MISMATCH')
+        self.response_mutator=lambda result: result['digestDiagnostics'].update(
+            valueComparisonStatus='MISMATCH',valueMismatchColumns=['secret-value'],valueMismatchColumnCount=1)
+        with self.assertRaisesRegex(execution.ExecutionPreflightError,'component categories were invalid'):
+            self.invoke_combined()
+
+    def test_combined_egress_rejects_missing_chunk_binding(self):
+        self.invoke_combined();original=self.calls[0]
+        body=json.loads(original.data);envelope=body['parameters'][0];payload=json.loads(envelope['payload'])
+        payload.pop('chunkDigest')
+        envelope['payload']=json.dumps(payload,ensure_ascii=False,separators=(',',':'))
+        envelope['signature']=base64.urlsafe_b64encode(__import__('hmac').new(
+            self.secret.encode(),envelope['payload'].encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        mutated=urllib.request.Request(original.full_url,data=json.dumps(body).encode(),
+            headers=original.headers,method='POST')
+        with self.assertRaises(runtime.SandboxExecutionPreflightRejected):
+            runtime.validate_execution_request(mutated,'SANDBOX',execution.IDENTITIES['SANDBOX'][0],
+                execution.IDENTITIES['SANDBOX'][1],self.deployment)
+
+
+if __name__=='__main__':
+    unittest.main()

@@ -1,0 +1,22 @@
+{
+  "contract": "pqm-google-writer-legacy-sheet-read-bounds",
+  "version": 1,
+  "baseline": "98eb5d5808bad3493fe877e344ba77dc75317f96",
+  "normalization": "CRLF-to-LF for text; overlay self-pin replaces its manifest hash constant",
+  "scope": [
+    "server.py",
+    "test_legacy_sheet_read_bounds.py",
+    "validation/local_release_20260911/test_legacy_sheet_read_bounds_integrity_v1.py"
+  ],
+  "files": {
+    "server.py": "13080b597427cb6e72b824414387a96a322112e8f9ed957084304ff8a861d6b2",
+    "test_legacy_sheet_read_bounds.py": "50fdba5e8bacb1c09d570abc9a3ad3b9fa964cf671557618a2c64d19b12b1929",
+    "validation/local_release_20260911/test_legacy_sheet_read_bounds_integrity_v1.py": "196d5515bf9f52124ecf4e27e8a7155d75d24262da07ceae7832826bc9f0cb45"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261108/legacy_append_reconciliation_v1.json": "38f379c6df6798a41918708ef82a59f946c151120062a83d56fd4b372105740c",
+    "validation/local_release_20261108/legacy_append_reconciliation_v2.json": "7aecd4a1eee8c35cbe8210336203030a2c1f1d77709e6bce5e9d01a588eb43dc",
+    "validation/local_release_20261108/google_writer_receipt_recovery_v1.json": "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b",
+    "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905"
+  }
+}

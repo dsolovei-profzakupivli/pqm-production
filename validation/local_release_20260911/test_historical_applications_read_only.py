@@ -63,8 +63,8 @@ class HistoricalApplicationGuardContractTests(unittest.TestCase):
 
     def test_frontend_disables_historical_edits_and_bulk_selection(self):
         self.assertIn("Boolean(row.historicalReadOnly)||role()==='viewer'", self.app)
-        self.assertIn("else selected.add(r.id)", self.app)
-        self.assertIn("row=>selected.has(row.id)&&row.historicalReadOnly", self.app)
+        self.assertIn("applicationSelection.page(rows,on)", self.app)
+        self.assertIn("applicationSelection.entries().some(row=>row.historicalReadOnly)", self.app)
         self.assertIn("можна передавати в Chat, але не змінювати масово", self.app)
         self.assertIn("r.historicalReadOnly?'historical-read-only'", self.app)
         self.assertIn("historicalReadOnly||Boolean(c.nazk_certificate_checked)", self.app)

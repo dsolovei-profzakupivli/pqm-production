@@ -1,0 +1,61 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v7",
+  "baseline_sha": "3fc2b2977073f56c570941fbcdff49b1a187fb7e",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v6.json",
+  "base_manifest_sha256": "48d59f1e4ae91a7b56c5610b6832be94549414cf470202a7941b3d2b9913c68d",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "normalize_balanced_quotes_in_new_protocol_documents_and_metadata",
+    "use_full_current_edr_name_when_short_name_is_missing_or_placeholder",
+    "collapse_protocol_name_provenance_block_by_default"
+  ],
+  "product_overrides": {
+    "app.js": {
+      "sha256": "071bc11d6e193335bd4695df5f92302774e73adf31291ac26863a40db1cd0fc4"
+    },
+    "styles.css": {
+      "sha256": "5921f18ceaab13678fa042395738c87352db9f05fd4d5cd0fa30bb1be8917859"
+    },
+    "server.py": {
+      "sha256": "7f798921864fb7dfafa628edc9546b422073c81bed0c7d4361e68740c32fbeec"
+    },
+    "protocol_supplier_names.py": {
+      "sha256": "931bf9bb126367944c3e55dfa8513fb3748a60182458434b032d379bd87b6e26"
+    },
+    "document_quotes.py": {
+      "sha256": "b1bfbbb0b3ea6c50be42f047200ae453e0c56269beeb8bc09e6d083e2ac5ad5a"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "78d26d7a26b169640cca06337ede32d28e31e956436e5bb40cf5c7086baa49a5"
+    }
+  },
+  "protected_overrides": {
+    "app.js": {
+      "sha256": "071bc11d6e193335bd4695df5f92302774e73adf31291ac26863a40db1cd0fc4",
+      "halloween_normalized_sha256": "071bc11d6e193335bd4695df5f92302774e73adf31291ac26863a40db1cd0fc4",
+      "personal_theme_normalized_sha256": "07c84bf8e0af46b3ea4af9d6f0ef3919025a78f347fd0a8408d721659fc4e03b"
+    },
+    "server.py": {
+      "sha256": "7f798921864fb7dfafa628edc9546b422073c81bed0c7d4361e68740c32fbeec",
+      "halloween_normalized_sha256": "7f798921864fb7dfafa628edc9546b422073c81bed0c7d4361e68740c32fbeec",
+      "personal_theme_normalized_sha256": "8fd577573f506552ed58fc9efddad3d0f51fb451b75e266b81718ed3631e8ea5"
+    }
+  },
+  "remove_from_guarded_files": [
+    "protocol_supplier_names.py"
+  ],
+  "guarded_overrides": {
+    "test_protocol_supplier_names.py": {
+      "sha256": "8a3e23f38dd95cb089b2959cd0fc212fe24b2e1b627dcd1fc3a79d7595db46d3"
+    },
+    "test_document_quotes.py": {
+      "sha256": "ca48815fc348930af3cd426d5f9e27f68cc52b5146a410db2e5ad149379a110e"
+    },
+    "validation/docker_release_gate.py": {
+      "sha256": "ffdadd23fa28c3df792804e908702056536f9df6ffb0a5220b5e798c43445222"
+    },
+    "validation/protocol_names_card_browser.cjs": {
+      "sha256": "6820ac66d6907139d44937cc61c0f3cdfc19eb211aff88abd87804a76dfc5b2c"
+    }
+  }
+}

@@ -90,8 +90,11 @@ class SchedulerTests(unittest.TestCase):
                     raise EndClock()
             stop=Mock(wait=sleep, is_set=lambda:False)
             with patch.object(s, 'datetime', Clock), patch.object(s, '_scheduler_is_configured', return_value=True), patch.object(s.scheduler_runtime, 'utc_now', lambda: Clock.now(datetime.timezone.utc)), patch.object(s, '_trigger_scheduler_job', return_value=True) as trigger, patch.dict(s.SYNC_STATE, {'last_data_sync_at': last.isoformat()}):
-                with self.assertRaises(EndClock):
-                    s.prozorro_scheduler(stop)
+                # Sandbox schedule revisions wake through their own event,
+                # rather than stop.wait; advance the same synthetic clock.
+                with patch.dict(s.SCHEDULE_WAKEUPS, {'prozorro': Mock(wait=sleep, clear=lambda: None)}):
+                    with self.assertRaises(EndClock):
+                        s.prozorro_scheduler(stop)
                 self.assertEqual(['startup_catchup', 'scheduled'] if stale else ['scheduled'], [c.args[1] for c in trigger.call_args_list])
 
     def test_automatic_outcome_distinguishes_success_partial_failure(self):

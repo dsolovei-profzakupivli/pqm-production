@@ -1,10 +1,16 @@
 import json
+import io
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import server
+import violation_protocol_summary
 from declension import DeclensionResult
 from violation_text import normalize_justification_text
 
@@ -36,11 +42,609 @@ class ViolationReportTests(unittest.TestCase):
         self.old_db = server.DB_PATH
         server.DB_PATH = Path(self.temp.name) / "test.sqlite3"
         server.init_db()
-        server.save_violation_report(report_payload())
+        with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+            server.save_violation_report(report_payload())
 
     def tearDown(self):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
+
+    def _scenario_cache_fixture(self, internal_id="scenario-cache-report", status="pending",
+                                reason="contractBreach"):
+        payload = report_payload()
+        payload.update({"id": internal_id, "violationReportID": "UA-D-2026-10-26-000001",
+                        "status": status})
+        payload["details"]["reason"] = reason
+        with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+            server.save_violation_report(payload)
+        with server.db() as con:
+            row = dict(con.execute("SELECT * FROM violation_reports WHERE id=?", (internal_id,)).fetchone())
+        row["defendant_statements"] = json.loads(row["raw_json"]).get("defendantStatements") or []
+        return row
+
+    def _scenario_cache_context(self, *, modified=None, observed=None,
+                                rejection_present=True, expired=True, security=True):
+        observed = observed or time.time_ns()
+        modified = modified or (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        return {
+            "rejection_ambiguous": False,
+            "rejected_before_deadline": False,
+            "rejection_present": rejection_present,
+            "contract_deadline_expired": expired,
+            "performance_security_required": security,
+            "day_5_shifted": False,
+            "_scenario_context_metadata": {
+                "source_updated_at": modified,
+                "observed_at_ns": observed,
+            },
+        }
+
+    def test_scenario_context_snapshot_first_card_capture_then_local_list_reuses_same_summary(self):
+        report = self._scenario_cache_fixture()
+        context = self._scenario_cache_context()
+        resolver_calls = []
+
+        def resolved(_report, _review=None, *, prefer_snapshot=True):
+            resolver_calls.append(prefer_snapshot)
+            return context, "case_scoped_resolver"
+
+        with patch.object(server, "resolve_violation_procurement_context", side_effect=resolved), \
+             patch.object(server, "api_get", side_effect=AssertionError("test must not add a second request")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            card = server.violation_report_detail(report["id"], refresh=False)
+        self.assertEqual(resolver_calls, [True], "card's already-resolved context is reused for the scenario cache")
+        self.assertTrue(card["scenario_summary"])
+        self.assertNotIn("_scenario_context_metadata", card["factual_procurement_context"])
+        with server.db() as con:
+            stored = dict(con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                      (report["id"],)).fetchone())
+            decision_snapshot_count = con.execute(
+                "SELECT COUNT(*) FROM violation_report_review_events WHERE report_id=? "
+                "AND event_type='decision_context_snapshotted'", (report["id"],)).fetchone()[0]
+        self.assertEqual(json.loads(stored["context_json"]), {
+            "contract_deadline_expired": True, "day_5_shifted": False,
+            "performance_security_required": True, "rejected_before_deadline": False,
+            "rejection_ambiguous": False, "rejection_present": True})
+        self.assertEqual(decision_snapshot_count, 0, "scenario cache is separate from decision snapshots")
+        before = tuple(stored[key] for key in ("context_hash", "captured_at", "observed_at_ns"))
+        with patch.object(server, "resolve_violation_procurement_context", side_effect=resolved), \
+             patch.object(server, "api_get", side_effect=AssertionError("reopening reuses the same resolved context")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            reopened = server.violation_report_detail(report["id"], refresh=False)
+        self.assertEqual(reopened["scenario_summary"], card["scenario_summary"])
+        with server.db() as con:
+            reopened_row = con.execute("SELECT context_hash,captured_at,observed_at_ns "
+                                       "FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                       (report["id"],)).fetchone()
+        self.assertEqual(tuple(reopened_row), before, "reopening unchanged context does not write")
+        with patch.object(server, "api_get", side_effect=AssertionError("list may not contact Prozorro")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list must not write reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        listed = next(item for item in result["items"] if item["id"] == report["id"])
+        self.assertEqual(listed["scenario_summary"], card["scenario_summary"])
+        with server.db() as con:
+            after = con.execute("SELECT context_hash,captured_at,observed_at_ns "
+                                 "FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                 (report["id"],)).fetchone()
+        self.assertEqual(tuple(after), before, "list projection is read-only")
+
+    def test_scenario_context_snapshot_updates_changed_facts_and_rejects_older_source(self):
+        report = self._scenario_cache_fixture()
+        review = {}
+        newer_time = time.time_ns()
+        newer = self._scenario_cache_context(
+            modified=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), observed=newer_time,
+                                             rejection_present=False, expired=False, security=False)
+        saved_new = server._save_violation_scenario_context_snapshot(report, review, newer)
+        self.assertFalse(saved_new["rejection_present"])
+        old = self._scenario_cache_context(
+                                           modified=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+                                           observed=newer_time - 5_000_000_000,
+                                           rejection_present=True, expired=True, security=True)
+        retained = server._save_violation_scenario_context_snapshot(report, review, old)
+        self.assertEqual(retained, saved_new, "older source version cannot replace newer context")
+        with server.db() as con:
+            current = dict(con.execute("SELECT * FROM violation_scenario_context_snapshots WHERE report_id=?",
+                                       (report["id"],)).fetchone())
+        self.assertEqual(json.loads(current["context_json"])["rejection_present"], False)
+
+    def test_scenario_context_snapshot_refuses_invalid_identity_partial_and_stale_context(self):
+        report = self._scenario_cache_fixture()
+        review = {}
+        valid = self._scenario_cache_context()
+        self.assertIsNotNone(server._scenario_context_from_card(report, review, valid))
+        invalid_contexts = [
+            {**valid, "_scenario_context_metadata": {**valid["_scenario_context_metadata"],
+                                                       "source_updated_at": "not-a-date"}},
+            {**valid, "_scenario_context_metadata": {**valid["_scenario_context_metadata"],
+                                                       "observed_at_ns": time.time_ns() + 5_000_000_000}},
+            {key: value for key, value in valid.items() if key != "day_5_shifted"},
+        ]
+        for candidate in invalid_contexts:
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(server._scenario_context_from_card(report, review, candidate))
+        wrong_id = dict(report, report_id="UA-D-not-valid")
+        self.assertIsNone(server._scenario_context_from_card(wrong_id, review, valid))
+        self.assertIsNone(server._scenario_context_from_card(dict(report, reason="unknown"), review, valid))
+        candidate = server._scenario_context_from_card(report, review, valid)
+        stale_row = {**candidate, "observed_at_ns": time.time_ns() - 25 * 60 * 60 * 1_000_000_000}
+        stale_row["captured_at"] = "2026-10-25T00:00:00+00:00"
+        self.assertIsNone(server._validated_scenario_context_snapshot(stale_row, report, review))
+
+    def test_scenario_context_snapshot_isolated_across_statuses_and_preserves_decision_history(self):
+        fixtures = [("pending", "contractBreach"), ("satisfied", "signingRefusal"),
+                    ("declined", "goodsNonCompliance")]
+        reports = []
+        for index, (status, reason) in enumerate(fixtures, 1):
+            report = self._scenario_cache_fixture(f"scenario-status-{index}", status, reason)
+            reports.append(report)
+            with server.db() as con:
+                if index == 1:
+                    con.execute("""INSERT INTO violation_report_reviews
+                        (report_id,review_status,decision_justification,updated_at)
+                        VALUES (?,?,?,?)""", (report["id"], "in_review", "Historical justification",
+                                                "2026-10-25T10:00:00+03:00"))
+                    con.execute("""INSERT INTO violation_report_review_events
+                        (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                        VALUES (?,?,?,?,?,?)""", (report["id"], "decision_context_snapshotted",
+                            "decision_context_snapshot", '{"version":1}', "2026-10-25T10:00:00+03:00", "УО"))
+                else:
+                    con.execute("INSERT INTO violation_report_reviews(report_id,review_status,updated_at) "
+                                "VALUES (?,?,?)", (report["id"], "in_review", "2026-10-25T10:00:00+03:00"))
+            context = self._scenario_cache_context()
+            if reason == "signingRefusal":
+                context = {"rejection_ambiguous": False, "written_refusal_within_deadline": True,
+                           "day_3_shifted": False, **context}
+            elif reason == "goodsNonCompliance":
+                context = {"rejection_ambiguous": False, **context}
+            with server.db() as con:
+                current_review = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                              (report["id"],)).fetchone()
+            server._save_violation_scenario_context_snapshot(
+                report, server._review_dict(current_review), context)
+        with server.db() as con:
+            original_review = tuple(con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                                (reports[0]["id"],)).fetchone())
+            original_events = [tuple(row) for row in con.execute(
+                "SELECT * FROM violation_report_review_events WHERE report_id=?", (reports[0]["id"],))]
+        with patch.object(server, "api_get", side_effect=AssertionError("list must use local snapshots")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list is read-only")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        listed = {item["id"]: item for item in result["items"]}
+        for report in reports:
+            self.assertTrue(listed[report["id"]]["scenario_summary"], report["id"])
+        with server.db() as con:
+            self.assertEqual(tuple(con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                               (reports[0]["id"],)).fetchone()), original_review)
+            self.assertEqual([tuple(row) for row in con.execute(
+                "SELECT * FROM violation_report_review_events WHERE report_id=?", (reports[0]["id"],))],
+                original_events)
+
+    def test_concurrent_scenario_context_saves_keep_newest_source_version(self):
+        report = self._scenario_cache_fixture()
+        barrier = threading.Barrier(2)
+        base_ns = time.time_ns()
+        candidates = [
+            self._scenario_cache_context(modified=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+                                         observed=base_ns - 1_000_000_000,
+                                         rejection_present=True),
+            self._scenario_cache_context(modified=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                                         observed=base_ns,
+                                         rejection_present=False),
+        ]
+        errors = []
+
+        def save(candidate):
+            try:
+                barrier.wait(timeout=5)
+                return server._save_violation_scenario_context_snapshot(report, {}, candidate)
+            except Exception as exc:
+                errors.append(exc)
+                return None
+
+        threads = [threading.Thread(target=save, args=(candidate,)) for candidate in candidates]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertFalse(errors, errors)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        with server.db() as con:
+            stored = json.loads(con.execute("SELECT context_json FROM violation_scenario_context_snapshots "
+                                            "WHERE report_id=?", (report["id"],)).fetchone()[0])
+        self.assertFalse(stored["rejection_present"])
+
+    def test_list_api_projects_only_saved_justification_without_generation_or_writes(self):
+        fixtures = [
+            ("pending", "contractBreach", "За результатами розгляду звернення Замовника встановлено наступне.\n\nСтаном на 12.10.2026 строк укладення договору сплив, але договір не укладено."),
+            ("satisfied", "signingRefusal", "У цій закупівлі письмову відмову надано 18.10.2026 після граничної дати 15.10.2026."),
+            ("declined", "goodsNonCompliance", "До звернення не додано рішення суду, що набрало законної сили.")]
+        for index, (status, reason, saved) in enumerate(fixtures, 1):
+            payload = report_payload()
+            payload.update({"id": f"saved-list-{index}", "violationReportID": f"UA-D-SAVED-{index}", "status": status})
+            payload["details"]["reason"] = reason
+            with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                server.save_violation_report(payload)
+            with server.db() as con:
+                con.execute("""INSERT INTO violation_report_reviews
+                    (report_id,review_status,decision_justification,updated_at)
+                    VALUES (?,?,?,?)""",
+                    (f"saved-list-{index}", "in_review", saved, "2026-10-25T10:00:00+03:00"))
+        with server.db() as con:
+            before = [tuple(row) for row in con.execute(
+                "SELECT report_id,review_status,decision_justification,updated_at "
+                "FROM violation_report_reviews ORDER BY report_id")]
+        with patch.object(server, "build_violation_decision_justification",
+                          side_effect=AssertionError("list must not generate justification")), \
+             patch.object(server, "resolve_violation_procurement_context", return_value=({}, "test_fixture")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        projected = {row["id"]: row["decision_justification"] for row in result["items"]}
+        for index, (_, _, saved) in enumerate(fixtures, 1):
+            self.assertEqual(projected[f"saved-list-{index}"], normalize_justification_text(saved))
+        self.assertEqual(projected.get("report-internal", ""), "")
+        with server.db() as con:
+            after = [tuple(row) for row in con.execute(
+                "SELECT report_id,review_status,decision_justification,updated_at "
+                "FROM violation_report_reviews ORDER BY report_id")]
+        self.assertEqual(after, before)
+
+    def test_list_api_projects_card_scenario_read_only_for_statuses_and_history(self):
+        fixtures = [
+            ("scenario-pending", "pending", "contractBreach", "in_review", "", {}, {
+                "rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": True, "contract_deadline_expired": True,
+                "performance_security_required": True, "day_5_shifted": False}),
+            ("scenario-pending-editable", "pending", "contractBreach", "in_review", "", {}, {
+                "rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": True, "contract_deadline_expired": True,
+                "performance_security_required": True, "day_5_shifted": False}),
+            ("scenario-satisfied", "satisfied", "signingRefusal", "reviewed", "warning", {
+                "written_refusal_date": "2026-08-20", "written_refusal_number": "SYN-2"}, {
+                "rejection_ambiguous": False, "written_refusal_within_deadline": False,
+                "day_3_shifted": True}),
+            ("scenario-declined", "declined", "goodsNonCompliance", "reviewed", "decline", {
+                "court_decision_final_present": 1}, {"rejection_ambiguous": False}),
+            ("scenario-historical-partial", "satisfied", "contractBreach", "reviewed", "decline", {}, {
+                "rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": False, "contract_deadline_expired": True,
+                "day_5_shifted": False}),
+            ("scenario-historical-empty", "satisfied", "unsupportedHistoricalReason", "reviewed", "decline", {}, None),
+            ("scenario-historical-no-snapshot", "declined", "signingRefusal", "reviewed", "decline", {}, None),
+        ]
+        for fixture_index, (report_id, status, reason, review_status, decision, values, context) in enumerate(fixtures, 1):
+            payload = report_payload(decisions=([{"id": "synthetic-official-decision"}]
+                                               if report_id == "scenario-pending" else None))
+            payload.update({"id": report_id,
+                            "violationReportID": f"UA-D-2026-10-25-{fixture_index:06d}",
+                            "status": status})
+            payload["details"]["reason"] = reason
+            with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                server.save_violation_report(payload)
+            with server.db() as con:
+                columns = {row[1] for row in con.execute("PRAGMA table_info(violation_report_reviews)")}
+                review_values = {"report_id": report_id, "review_status": review_status,
+                                 "internal_decision": decision, "updated_at": "2026-10-25T10:00:00+03:00"}
+                if review_status == "reviewed":
+                    review_values["completed_at"] = "2026-10-25T10:00:00+03:00"
+                review_values.update({key: value for key, value in values.items() if key in columns})
+                con.execute("INSERT INTO violation_report_reviews (" + ",".join(review_values) + ") VALUES (" +
+                            ",".join("?" for _ in review_values) + ")", tuple(review_values.values()))
+            if context is not None:
+                snapshot = {"version": 1, "report_id": f"UA-D-{report_id}", "reason": reason,
+                            "procurement_context": context}
+                with server.db() as con:
+                    con.execute("""INSERT INTO violation_report_review_events
+                        (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                        VALUES (?,?,?,?,?,?)""",
+                        (report_id, "decision_context_snapshotted", "decision_context_snapshot",
+                         json.dumps(snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+            if context is not None and server._minimal_scenario_context(reason, context) is not None:
+                with server.db() as con:
+                    report_row = dict(con.execute("SELECT * FROM violation_reports WHERE id=?",
+                                                  (report_id,)).fetchone())
+                    review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                             (report_id,)).fetchone()
+                cache_context = dict(context)
+                cache_context["_scenario_context_metadata"] = {
+                    "source_updated_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                    "observed_at_ns": time.time_ns(),
+                }
+                server._save_violation_scenario_context_snapshot(
+                    report_row, server._review_dict(review_row), cache_context)
+
+        def database_state():
+            with server.db() as con:
+                return {
+                    "reports": [tuple(row) for row in con.execute(
+                        "SELECT id,status,raw_json,synced_at FROM violation_reports ORDER BY id")],
+                    "reviews": [tuple(row) for row in con.execute(
+                        "SELECT * FROM violation_report_reviews ORDER BY report_id")],
+                    "events": [tuple(row) for row in con.execute(
+                        "SELECT * FROM violation_report_review_events ORDER BY id")],
+                    "scenario_contexts": [tuple(row) for row in con.execute(
+                        "SELECT * FROM violation_scenario_context_snapshots ORDER BY report_id")],
+                }
+
+        before = database_state()
+        with patch.object(server, "api_get",
+                          side_effect=AssertionError("list API must not make external Prozorro requests")), \
+             patch.object(server, "resolve_violation_procurement_context",
+                          side_effect=AssertionError("list API must use saved context only")), \
+             patch.object(server, "build_procurement_context",
+                          side_effect=AssertionError("list API must not build context from external data")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list must not refresh/save Prozorro reports")), \
+             patch.object(server, "build_violation_decision_justification",
+                          side_effect=AssertionError("list must not generate justification")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+
+        projected = {item["id"]: item for item in result["items"]}
+        for report_id, status, reason, _, _, values, snapshot_context in fixtures:
+            item = projected[report_id]
+            review = dict(values)
+            if review.get("court_decision_final_present") is not None:
+                review["court_decision_final_present"] = bool(review["court_decision_final_present"])
+            if snapshot_context is not None and ("performance_security_required" in snapshot_context or
+                    "contract_guarantee_required" in snapshot_context or reason != "contractBreach"):
+                self.assertEqual(item["scenario_summary"], server.violation_scenario_summary(
+                    {"reason": reason, "review": review, "defendant_statements": [
+                        {"description": "Пояснення постачальника"}]}, snapshot_context), report_id)
+            else:
+                self.assertEqual(item["scenario_summary"], "", report_id)
+            self.assertEqual(item["status"], status)
+        self.assertEqual(projected["scenario-declined"]["scenario_summary"],
+                         "Сценарій: пп. 3 п. 49; рішення суду, що набрало законної сили — наявне; "
+                         "пояснення постачальника — надані.")
+        self.assertEqual(projected["scenario-historical-empty"]["scenario_summary"], "")
+        self.assertEqual(projected["scenario-historical-no-snapshot"]["scenario_summary"], "")
+        self.assertTrue(projected["scenario-pending-editable"]["scenario_summary"])
+        with patch.object(server, "api_get",
+                          side_effect=AssertionError("card comparison must use the saved snapshot")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("card comparison must not refresh/save reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            for report_id in ("scenario-pending", "scenario-pending-editable", "scenario-satisfied",
+                              "scenario-declined"):
+                card = server.violation_report_detail(report_id, refresh=False)
+                self.assertEqual(projected[report_id]["scenario_summary"], card["scenario_summary"], report_id)
+        self.assertEqual(database_state(), before, "GET list projection must not write reports, reviews, or events")
+
+    def test_list_api_rejects_mismatched_snapshot_identity_version_reason_and_partial_facts(self):
+        full = {"rejection_ambiguous": False, "rejected_before_deadline": False,
+                "rejection_present": True, "contract_deadline_expired": True,
+                "performance_security_required": True, "day_5_shifted": False}
+        fixtures = [
+            ("snapshot-wrong-id", "contractBreach", {"report_id": "UA-D-OTHER"}, full),
+            ("snapshot-wrong-version", "contractBreach", {"version": 2}, full),
+            ("snapshot-wrong-reason", "signingRefusal", {"reason": "contractBreach"}, {
+                "rejection_ambiguous": False, "written_refusal_within_deadline": False,
+                "day_3_shifted": False}),
+            ("snapshot-incomplete", "contractBreach", {}, {
+                "rejection_ambiguous": False, "rejection_present": True,
+                "contract_deadline_expired": True, "day_5_shifted": False}),
+        ]
+        for report_id, reason, overrides, context in fixtures:
+            payload = report_payload(decisions=[{"id": "synthetic-official-decision"}])
+            payload.update({"id": report_id, "violationReportID": f"UA-D-{report_id}", "status": "satisfied"})
+            payload["details"]["reason"] = reason
+            with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                server.save_violation_report(payload)
+            snapshot = {"version": 1, "report_id": f"UA-D-{report_id}", "reason": reason,
+                        "procurement_context": context, **overrides}
+            with server.db() as con:
+                con.execute("""INSERT INTO violation_report_reviews
+                    (report_id,review_status,completed_at,updated_at) VALUES (?,?,?,?)""",
+                    (report_id, "reviewed", "2026-10-25T10:00:00+03:00", "2026-10-25T10:00:00+03:00"))
+                con.execute("""INSERT INTO violation_report_review_events
+                    (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                    VALUES (?,?,?,?,?,?)""",
+                    (report_id, "decision_context_snapshotted", "decision_context_snapshot",
+                     json.dumps(snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+        with patch.object(server, "api_get", side_effect=AssertionError("list API must not request Prozorro")), \
+             patch.object(server, "build_procurement_context", side_effect=AssertionError("list API must use snapshots")), \
+             patch.object(server, "save_violation_report_with_retry", side_effect=AssertionError("list API must not write reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            result = server.list_violation_reports({"page": ["1"], "size": ["100"]})
+        projected = {item["id"]: item for item in result["items"]}
+        for report_id, _, _, _ in fixtures:
+            self.assertEqual(projected[report_id]["scenario_summary"], "", report_id)
+
+    def test_list_scenario_projection_has_zero_network_calls_and_bounded_latency_through_200_rows(self):
+        full_context = {"rejection_ambiguous": False, "rejected_before_deadline": False,
+                        "rejection_present": False, "contract_deadline_expired": True,
+                        "performance_security_required": False, "day_5_shifted": False}
+        groups = ((1, "81000001"), (50, "81000050"), (100, "81000100"), (200, "81000200"))
+        sequence = 0
+        source_updated_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        for count, supplier_code in groups:
+            for index in range(count):
+                sequence += 1
+                report_id = f"perf-{count:03d}-{index:03d}"
+                payload = report_payload()
+                payload.update({"id": report_id,
+                                "violationReportID": f"UA-D-2026-10-25-{sequence:06d}"})
+                payload["defendants"] = [organization(supplier_code)]
+                with patch.object(server, "_resolve_violation_tender", return_value=("UA-TEST", "")):
+                    server.save_violation_report(payload)
+                saved_snapshot = {"version": 1, "report_id": f"UA-D-{report_id}",
+                                  "reason": "contractBreach", "procurement_context": full_context}
+                with server.db() as con:
+                    con.execute("""INSERT INTO violation_report_reviews
+                        (report_id,review_status,completed_at,updated_at) VALUES (?,?,?,?)""",
+                        (report_id, "reviewed", "2026-10-25T10:00:00+03:00",
+                         "2026-10-25T10:00:00+03:00"))
+                    con.execute("""INSERT INTO violation_report_review_events
+                        (report_id,event_type,field_name,new_value,changed_at,changed_by)
+                        VALUES (?,?,?,?,?,?)""",
+                        (report_id, "decision_context_snapshotted", "decision_context_snapshot",
+                         json.dumps(saved_snapshot), "2026-10-25T10:00:00+03:00", "Синтетична УО"))
+                    report_row = dict(con.execute("SELECT * FROM violation_reports WHERE id=?",
+                                                  (report_id,)).fetchone())
+                    review_row = con.execute("SELECT * FROM violation_report_reviews WHERE report_id=?",
+                                             (report_id,)).fetchone()
+                cache_context = dict(full_context)
+                cache_context["_scenario_context_metadata"] = {
+                    "source_updated_at": source_updated_at,
+                    "observed_at_ns": time.time_ns(),
+                }
+                server._save_violation_scenario_context_snapshot(
+                    report_row, server._review_dict(review_row), cache_context)
+        with patch.object(server, "api_get", side_effect=AssertionError("unexpected network request")), \
+             patch.object(server, "resolve_violation_procurement_context",
+                          side_effect=AssertionError("external resolver must not run")), \
+             patch.object(server, "save_violation_report_with_retry",
+                          side_effect=AssertionError("list must not save reports")), \
+             patch.object(violation_protocol_summary, "present", return_value=None):
+            timings = {}
+            for count, supplier_code in groups:
+                size = max(10, count)
+                started = __import__("time").perf_counter()
+                result = server.list_violation_reports({"page": ["1"], "size": [str(size)],
+                                                        "supplier_code": [supplier_code]})
+                timings[count] = __import__("time").perf_counter() - started
+                self.assertEqual(len(result["items"]), count)
+                self.assertTrue(all(item["scenario_summary"] for item in result["items"]))
+        self.assertTrue(all(value < 5.0 for value in timings.values()), timings)
+        print("READ_ONLY_LIST_TIMINGS_SECONDS " + json.dumps(timings, sort_keys=True))
+
+    def _individual_protocol_fixture(self, reason):
+        return {
+            "id": "report-internal", "report_id": "UA-D-SYNTHETIC", "reason": reason,
+            "authority_code": "40996564", "date_published": "2026-08-18T10:00:00+03:00",
+            "date_created": "2026-08-18T10:00:00+03:00", "tender_pretty_id": "UA-TEST",
+            "author_name": "Замовник", "author_code": "11111111",
+            "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "Синтетичний опис", "evidence_documents": [],
+            "defendant_statements": [], "supplier_verified": None,
+            "deadline_control": {"supplier_ready": True}, "has_official_decision": False,
+            "procurement_context": {"available": True, "tender_date_published": "2026-07-30",
+                                    "winner_state": "unknown", "rejection_ambiguous": False},
+            "review": {"review_status": "in_review", "assigned_officer": "Тестова УО",
+                       "internal_decision": "decline", "decision_justification": "Окреме обґрунтування",
+                       "review_notes": "Актуальний коментар УО", "protocol_number": "SYN-1",
+                       "protocol_date": "2026-08-31"},
+        }
+
+    @patch.object(server, "violation_protocol_declensions", lambda *_: [])
+    def test_individual_decline_protocol_is_explicit_and_maps_reference_from_request_basis(self):
+        expected = {"contractBreach": "пп. 1 п. 49", "signingRefusal": "пп. 2 п. 49",
+                    "goodsNonCompliance": "пп. 3 п. 49"}
+        for reason, reference in expected.items():
+            with self.subTest(reason=reason):
+                item = self._individual_protocol_fixture(reason)
+                item["procurement_context"]["rejection_ambiguous"] = True
+                gate = server.violation_protocol_readiness(
+                    item, requested_protocol_type="decline_individual_review")
+                self.assertTrue(gate["ready"], gate["reasons"])
+                self.assertEqual(gate["protocol_type"], "decline_individual_review")
+                with patch.object(server, "require_local_violation_report_owned"), \
+                        patch.object(server, "require_owned_violation_report"), \
+                        patch.object(server, "violation_report_detail", return_value=item), \
+                        patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+                    prepared = server.generate_violation_protocol(item["id"], {
+                        "protocol_type": "decline_individual_review", "protocol_number": "SYN-1",
+                        "protocol_date": "2026-08-31", "confirm_review_notes": True,
+                        "confirmed_review_notes": "Актуальний коментар УО",
+                    }, prepare_only=True)
+                self.assertEqual(prepared["values"]["p49_reference"], reference)
+                self.assertEqual(prepared["values"]["review_notes"], item["review"]["review_notes"])
+                self.assertEqual(prepared["values"]["decision_justification"],
+                                 item["review"]["decision_justification"])
+                self.assertEqual(prepared["values"]["winner_date"], "")
+
+    @patch.object(server, "violation_protocol_declensions", lambda *_: [])
+    def test_individual_decline_blocks_unknown_basis_wrong_decision_and_stale_comment(self):
+        for reason, decision in (("supplierMisconduct", "decline"),
+                                 ("contractBreach", "warning")):
+            item = self._individual_protocol_fixture(reason)
+            item["review"]["internal_decision"] = decision
+            gate = server.violation_protocol_readiness(
+                item, requested_protocol_type="decline_individual_review")
+            self.assertFalse(gate["ready"])
+            self.assertTrue(any("лише для рішення" in message for message in gate["reasons"]))
+        item = self._individual_protocol_fixture("contractBreach")
+        for supplied, confirmed in ((False, "Актуальний коментар УО"),
+                                    (True, "Застарілий коментар")):
+            payload = {"protocol_type": "decline_individual_review", "protocol_number": "SYN-1",
+                       "protocol_date": "2026-08-31", "confirm_review_notes": supplied,
+                       "confirmed_review_notes": confirmed}
+            with patch.object(server, "require_local_violation_report_owned"), \
+                    patch.object(server, "require_owned_violation_report"), \
+                    patch.object(server, "violation_report_detail", return_value=item):
+                with self.assertRaisesRegex(ValueError, "Коментар УО змінився"):
+                    server.generate_violation_protocol(item["id"], payload, prepare_only=True)
+
+    @patch.object(server, "violation_protocol_declensions", lambda *_: [])
+    def test_individual_protocol_generation_does_not_complete_review(self):
+        item = self._individual_protocol_fixture("goodsNonCompliance")
+        with server.db() as con:
+            con.execute("INSERT INTO violation_report_reviews (report_id,review_status,assigned_officer,internal_decision,decision_justification,review_notes,protocol_number,protocol_date,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        ("report-internal", "in_review", "Тестова УО", "decline", "Обґрунтування", "Актуальний коментар УО", "SYN-1", "2026-08-31", "2026-08-31T12:00:00+03:00"))
+        output_dir = Path(self.temp.name) / "protocols"
+        def write_docx(_kind, path, *_args):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic-docx")
+            return path
+        payload = {"protocol_type": "decline_individual_review", "protocol_number": "SYN-1",
+                   "protocol_date": "2026-08-31", "confirm_review_notes": True,
+                   "confirmed_review_notes": "Актуальний коментар УО"}
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}), \
+                patch.object(server, "PROTOCOLS_DIR", output_dir), \
+                patch.object(server, "build_violation_protocol_docx", side_effect=write_docx):
+            result = server.generate_violation_protocol("report-internal", payload)
+        with server.db() as con:
+            row = con.execute("SELECT review_status,completed_at,generated_protocol_metadata_json FROM violation_report_reviews WHERE report_id='report-internal'").fetchone()
+        self.assertEqual(row["review_status"], "in_review")
+        self.assertFalse(row["completed_at"])
+        self.assertEqual(__import__("json").loads(row["generated_protocol_metadata_json"])["protocol_type"],
+                         "decline_individual_review")
+        self.assertTrue((output_dir / result["filename"]).is_file())
+
+    def test_protocol_missing_required_context_returns_422(self):
+        request = SimpleNamespace(
+            path="/api/violation-reports/report-internal/protocol/generate",
+            auth_user="УО", read_json=lambda: {},
+            send_json=lambda body, status=200: (body, status))
+        error = server.ProtocolContextValidationError(
+            "Не заповнено обов’язкові поля: supplier_name", missing=("supplier_name",))
+        with patch.object(server, "generate_violation_protocol", side_effect=error):
+            body, status = server.Handler._do_POST(request)
+        self.assertEqual(status, 422)
+        self.assertEqual(body["missing"], ["supplier_name"])
+
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
+    def test_prod_empty_description_fixture_is_not_a_generation_blocker(self):
+        item = {
+            "id": "7733b223a90f4770b39d35082bbcb9cd",
+            "report_id": "UA-D-2026-09-25-000001", "reason": "signingRefusal",
+            "author_name": "Замовник", "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "", "has_official_decision": False,
+            "deadline_control": {"supplier_ready": True},
+            "procurement_context": {"available": True, "tender_date_published": "2026-09-20", "winner_selected_at": "2026-09-21",
+                "winner_state": "confirmed", "rejection_present": False,
+                "rejection_ambiguous": False},
+            "review": {"assigned_officer": "УО", "internal_decision": "decline",
+                "decision_justification": "Погоджений текст", "protocol_number": "P-1",
+                "protocol_date": "2026-10-05", "written_refusal_date": "2026-09-24",
+                "written_refusal_number": "42", "written_refusal_url": "https://example.test/refusal"},
+        }
+        self.assertTrue(server.violation_protocol_readiness(item)["ready"])
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+            prepared = server.generate_violation_protocol(item["id"], {}, prepare_only=True)
+        self.assertEqual(prepared["values"]["violation_description"], "")
+        self.assertEqual(prepared["values"]["procurement_date"], "20.09.2026")
 
     def test_justification_plain_text_normalization(self):
         raw = "\tПерший абзац.\r\n\r\n  Другий абзац.\rТретій абзац.\n\n"
@@ -384,7 +988,7 @@ class ViolationReportTests(unittest.TestCase):
         self.assertNotIn("getDay(", renderer)
         self.assertNotIn("new Date(c.day_5", renderer)
 
-    def test_contract_checkbox_visibility_uses_complete_rejection_facts(self):
+    def test_contract_checkbox_visibility_uses_backend_business_flag(self):
         self.assertFalse(server.violation_has_complete_rejection({}))
         self.assertFalse(server.violation_has_complete_rejection({
             "rejection_date": "2026-09-01", "rejection_title": ""}))
@@ -395,7 +999,9 @@ class ViolationReportTests(unittest.TestCase):
         source = (server.ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("function violationHasCompleteRejection(context={})", source)
         self.assertIn("context.rejection_date&&String(context.rejection_reason||context.rejection_title||context.rejection_description||'').trim()", source)
-        self.assertIn("const contractState=violationHasCompleteRejection(c)?'':", source)
+        self.assertIn("const contract=violationContractEditorVisible(item)?", source)
+        self.assertIn("context.rejection_present===true", source)
+        self.assertIn("const extension=item.reason==='contractBreach'?", source)
 
     # These four tests isolate review/persistence, not the separately tested name gate.
     @patch.object(server, "violation_protocol_declensions", lambda _: [])
@@ -694,7 +1300,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_name": "Постачальник", "defendant_code": "22222222", "description": "Порушення",
             "evidence_documents": [], "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-08-01T10:00:00+03:00"},
+            "procurement_context": {"available": True, "tender_date_published": "2026-07-30", "winner_selected_at": "2026-08-01T10:00:00+03:00"},
             "review": {"review_status": "in_review", "assigned_officer": "Тестова УО",
                        "customer_verified_short_name": "Замовник",
                        "internal_decision": "warning", "decision_justification": "Остаточне ручне обґрунтування",
@@ -726,6 +1332,9 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(review["generated_protocol_filename"], result["filename"])
         metadata = json.loads(review["generated_protocol_metadata_json"])
         self.assertEqual(metadata, result["metadata"])
+        self.assertEqual(server._violation_protocol_download_filename(result["filename"]), result["download_filename"])
+        self.assertEqual(metadata["protocol_download"]["filename"], result["download_filename"])
+        self.assertEqual(server._violation_protocol_download_filename("other-generator.docx"), "other-generator.docx")
         self.assertEqual(metadata["protocol_subject"]["label"], "Тема протоколу / короткий зміст")
         self.assertIn("UA-D-TEST", metadata["protocol_subject"]["value"])
         self.assertEqual(result["resolved_metadata"], [{
@@ -759,7 +1368,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "contract_date": "2020-01-01",
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-01", "contract_date": "2020-01-01",
                                     "contract_pretty_id": "UA-AUTO-a1",
                                     "winner_selected_at": "2026-08-01T10:00:00+03:00"},
             "review": {"review_status": "in_review", "assigned_officer": "Тестова УО",
@@ -779,8 +1388,45 @@ class ViolationReportTests(unittest.TestCase):
                 "protocol_number": "TEST-MANUAL", "protocol_date": "2026-09-07"})
         self.assertEqual(captured["values"]["contract_number"], "MANUAL-42")
         self.assertEqual(captured["values"]["contract_date"], "06.09.2026")
+        self.assertEqual(captured["values"]["contract_url"], "")
         self.assertNotIn("UA-AUTO-a1", captured["values"].values())
         self.assertTrue(captured["flags"]["has_contract"])
+
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
+    def test_saved_contract_url_reaches_protocol_without_changing_date_or_number(self):
+        with patch.object(server, "api_get", return_value={"data": report_payload()}), \
+                patch.object(server, "build_procurement_context", return_value={"available": True}):
+            server.save_violation_review("report-internal", {
+                "actual_contract_signed": True, "actual_contract_date": "2026-08-14",
+                "actual_contract_number": "2026/08-25",
+                "actual_contract_url": "https://example.test/contract",
+            })
+        with patch.object(server, "build_procurement_context", return_value={"available": True}):
+            review = server.violation_report_detail("report-internal", refresh=False)["review"]
+        item = {
+            "id": "report-internal", "report_id": "UA-D-TEST", "reason": "goodsNonCompliance",
+            "authority_code": "40996564", "date_published": "2026-08-18T10:00:00+03:00",
+            "date_created": "2026-08-18T10:00:00+03:00", "tender_pretty_id": "UA-TEST",
+            "author_name": "Замовник", "author_code": "11111111",
+            "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "Порушення", "evidence_documents": [], "defendant_statements": [],
+            "supplier_verified": None, "deadline_control": {"supplier_ready": True},
+            "procurement_context": {"available": True, "tender_date_published": "2026-07-30",
+                                    "winner_selected_at": "2026-08-01T10:00:00+03:00"},
+            "review": {**review, "review_status": "in_review", "assigned_officer": "УО",
+                       "customer_verified_short_name": "Замовник", "internal_decision": "decline",
+                       "decision_justification": "Обґрунтування", "protocol_number": "42",
+                       "protocol_date": "2026-10-04"},
+        }
+        self.assertEqual(item["review"]["actual_contract_url"], "https://example.test/contract")
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+            prepared = server.generate_violation_protocol("report-internal", {}, prepare_only=True)
+        self.assertEqual(prepared["values"]["contract_url"], "https://example.test/contract")
+        self.assertEqual(prepared["values"]["contract_date"], "14.08.2026")
+        self.assertEqual(prepared["values"]["contract_number"], "2026/08-25")
 
     def test_protocol_normalizes_customer_supplier_quotes_before_all_declensions(self):
         now = server.now_iso()
@@ -800,7 +1446,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": {"full_name": supplier, "short_name": 'ТОВ "ОХТИРКА М\'ЯСОПРОДУКТ"'},
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-09-01"},
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-30", "winner_selected_at": "2026-09-01"},
             "review": {"assigned_officer": "Тестова УО", "internal_decision": "warning",
                        "customer_verified_short_name": "ДП «ЗАМОВНИК»",
                        "decision_justification": "Погоджений текст", "protocol_number": "TEST-QUOTES",
@@ -850,7 +1496,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-09-01",
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-30", "winner_selected_at": "2026-09-01",
                                     "day_5_shifted": False, "day_3_shifted": True},
             "review": {"assigned_officer": "Тестова УО", "internal_decision": "warning",
                        "customer_verified_short_name": "Замовник",
@@ -979,7 +1625,7 @@ class ViolationReportTests(unittest.TestCase):
             "defendant_code": "22222222", "description": "Порушення", "evidence_documents": [],
             "defendant_statements": [], "supplier_verified": None,
             "deadline_control": {"supplier_ready": True, "supplier_deadline": "2026-09-05"},
-            "procurement_context": {"available": True, "winner_selected_at": "2026-09-01", "dk_code": "44110000-4"},
+            "procurement_context": {"available": True, "tender_date_published": "2026-08-30", "winner_selected_at": "2026-09-01", "dk_code": "44110000-4"},
             "review": {"assigned_officer": "Тестова УО", "internal_decision": "warning",
                        "customer_verified_short_name": "Замовник",
                        "decision_justification": "Останній збережений текст УО — без змін.",
@@ -1165,6 +1811,15 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(official["read_only_reason"], "official_decision")
         self.assertEqual(official["procurement_context"]["dk_code"], "OLD-CPV")
         self.assertEqual(official["recommendation"]["recommendation_reason"], "Збережено")
+        late_rejection = {"available": True, "rejection_present": True,
+                          "rejection_award_id": "later-award",
+                          "rejection_datetime": "2026-09-29T09:20:17+03:00"}
+        with patch.object(server, "build_procurement_context", return_value=late_rejection), \
+                patch.object(server, "_fresh_violation_report", return_value=None):
+            current = server.violation_report_detail("report-internal", refresh=True)
+        self.assertEqual(current["procurement_context"]["dk_code"], "OLD-CPV")
+        self.assertEqual(current["recommendation"]["recommendation_reason"], "Збережено")
+        self.assertEqual(current["factual_procurement_context"]["rejection_award_id"], "later-award")
 
     def test_single_report_sheets_json_is_sparse_kyiv_dated_and_snapshot_only(self):
         snapshot = {"version": 1, "procurement_context": {
@@ -1405,6 +2060,12 @@ class ViolationReportTests(unittest.TestCase):
         self.assertFalse(result["review"]["justification_manually_edited"])
         self.assertEqual(result["review"]["decision_template_key"],
                          "p49_1_warning_guarantee_no_documents_no_explanation")
+        self.assertFalse(result["justification_stale"],
+                         "A freshly generated draft cannot be stale without an input change")
+        changed_context = {**context, "rejection_date": "2026-08-08T12:00:00+03:00"}
+        with patch.object(server, "build_procurement_context", return_value=changed_context):
+            changed = server.violation_report_detail("report-internal", refresh=False)
+        self.assertTrue(changed["justification_stale"])
 
     def test_p1_approved_template_requires_exact_supported_combination(self):
         report = {"reason": "contractBreach", "defendant_statements": []}
@@ -1426,6 +2087,202 @@ class ViolationReportTests(unittest.TestCase):
         self.assertEqual(server.build_violation_decision_justification(
             {**report, "defendant_statements": [{"description": "Надано пояснення"}]},
             context, review), "")
+
+    def test_p3_existing_no_court_no_explanation_justification_restored_exactly(self):
+        report = {"reason": "goodsNonCompliance", "defendant_statements": []}
+        review = {"internal_decision": "decline", "court_decision_final_present": False}
+        expected = "\n".join((
+            "Замовником подано звернення про порушення з посиланням на пп. 3 п. 49 Порядку № 822. Зазначена норма передбачає вжиття заходів реагування у разі, якщо постачальник не виконав зобов’язання за раніше укладеним договором із цим самим замовником, що призвело до його дострокового розірвання та застосування санкцій.",
+            "Відповідно до положень Порядку № 822, факт невиконання зобов'язань та застосування санкцій (штрафів/збитків) має обов'язково підтверджуватися рішенням суду, що набрало законної сили.",
+            "Однак Замовником до звернення не додано відповідного судового рішення, яке б підтверджувало факт порушення та застосування санкцій до Постачальника. Оскільки наявність такого рішення є імперативною (обов'язковою) умовою для кваліфікації порушення за пп. 3 п. 49 Порядку № 822, відсутність документального підтвердження унеможливлює задоволення звернення.",
+            "Отже, Адміністратор приймає рішення про відмову в задоволенні звернення Замовника.",
+        ))
+        self.assertEqual(server.violation_decision_template_key(report, {}, review),
+                         "p49_3_decline_no_final_court_decision_no_explanation")
+        self.assertEqual(server.build_violation_decision_justification(report, {}, review), expected)
+        for stored_value in (False, 0, "0", "false"):
+            with self.subTest(stored_value=stored_value):
+                self.assertEqual(server.violation_decision_template_key(
+                    report, {}, {**review, "court_decision_final_present": stored_value}),
+                    "p49_3_decline_no_final_court_decision_no_explanation")
+        # The approved rule is only applied after the officer selects decline.
+        unselected = {**review, "internal_decision": ""}
+        self.assertEqual(server.violation_decision_template_key(report, {}, unselected), "")
+        self.assertEqual(server.build_violation_decision_justification(report, {}, unselected), "")
+        # Live SANDBOX UA-D-2026-09-25-000002: a saved manual text remains
+        # authoritative in the card; the resolver must not rewrite it.
+        saved = {**review, "decision_justification": expected}
+        self.assertEqual(saved["decision_justification"], expected)
+        for changed_report, changed_review in (
+            (report, {**review, "court_decision_final_present": True}),
+            (report, {**review, "court_decision_final_present": None}),
+            (report, {**review, "internal_decision": "warning"}),
+            ({**report, "defendant_statements": [{"description": "Пояснення"}]}, review),
+        ):
+            self.assertEqual(server.violation_decision_template_key(changed_report, {}, changed_review), "")
+
+    def test_p3_decision_round_trip_recomputes_rule_from_current_tri_state_fact(self):
+        payload = report_payload()
+        payload["details"]["reason"] = "goodsNonCompliance"
+        payload["defendantStatements"] = []
+        server.save_violation_report(payload)
+        context = {"available": True, "rejection_present": False}
+        with patch.object(server, "api_get", return_value={"data": payload}), \
+                patch.object(server, "build_procurement_context", return_value=context):
+            first = server.save_violation_review("report-internal", {
+                "action": "regenerate_justification", "internal_decision": "decline",
+                "court_decision_final_present": "0"})
+            draft = first["review"]["decision_justification"]
+            self.assertTrue(draft)
+            self.assertFalse(first["justification_stale"])
+            warning = server.save_violation_review("report-internal", {"internal_decision": "warning"})
+            self.assertEqual(warning["justification_template_key"], "")
+            restored = server.save_violation_review("report-internal", {
+                "action": "regenerate_justification", "internal_decision": "decline",
+                "court_decision_final_present": "0"})
+            self.assertEqual(restored["review"]["decision_justification"], draft)
+            self.assertFalse(restored["justification_stale"])
+            repeated = server.save_violation_review("report-internal", {
+                "action": "regenerate_justification", "internal_decision": "decline",
+                "court_decision_final_present": "0"})
+            self.assertEqual(repeated["review"]["decision_justification"], draft)
+            self.assertFalse(repeated["justification_stale"])
+            manual = server.save_violation_review("report-internal", {
+                "internal_decision": "warning", "decision_justification": "Ручний текст УО"})
+            self.assertEqual(manual["review"]["decision_justification"], "Ручний текст УО")
+            back_without_regeneration = server.save_violation_review("report-internal", {
+                "internal_decision": "decline"})
+            self.assertEqual(back_without_regeneration["review"]["decision_justification"], "Ручний текст УО")
+
+    def test_contrary_officer_decision_requires_review_of_recommendation_draft(self):
+        report = {"reason": "goodsNonCompliance", "defendant_statements": []}
+        recommendation = {"recommended_decision": "decline"}
+        draft = server.build_violation_decision_justification(
+            report, {}, {"internal_decision": "decline", "court_decision_final_present": False})
+        item = {**report, "recommendation": recommendation,
+                "procurement_context": {"available": True},
+                "deadline_control": {"supplier_ready": True},
+                "review": {"internal_decision": "warning", "court_decision_final_present": False,
+                           "decision_justification": draft}}
+        gate = server.violation_protocol_readiness(item)
+        self.assertTrue(any("не відповідає рішенню УО" in reason for reason in gate["reasons"]))
+        item["review"].update(decision_template_key="p49_3_decline_no_final_court_decision_no_explanation",
+                              justification_manually_edited=False,
+                              decision_justification="Раніше автоматично збережений текст")
+        gate = server.violation_protocol_readiness(item)
+        self.assertTrue(any("не відповідає рішенню УО" in reason for reason in gate["reasons"]))
+        item["review"]["justification_manually_edited"] = True
+        item["review"]["decision_justification"] = "Перевірене та відредаговане УО обґрунтування."
+        gate = server.violation_protocol_readiness(item)
+        self.assertFalse(any("не відповідає рішенню УО" in reason for reason in gate["reasons"]))
+
+    def test_generated_justification_fingerprint_ignores_sqlite_boolean_representation(self):
+        report = {"reason": "contractBreach", "defendant_statements": [],
+                  "description": "Підстава звернення"}
+        context = {"winner_selected_at": "2026-09-24", "rejection_date": "2026-09-28"}
+        saved = {"internal_decision": "decline", "additional_check_required": 0,
+                 "guarantee_documents_visible": 0, "court_decision_final_present": 0}
+        saved_fingerprint = server._justification_hash(report, context, saved)
+        reopened = {**saved, "additional_check_required": False,
+                    "guarantee_documents_visible": False, "court_decision_final_present": False}
+        self.assertEqual(server._justification_hash(report, context, reopened), saved_fingerprint)
+        self.assertNotEqual(server._justification_hash(report, context,
+                            {**reopened, "additional_check_required": True}), saved_fingerprint)
+        self.assertNotEqual(server._justification_hash(report,
+                            {**context, "rejection_date": "2026-09-29"}, reopened), saved_fingerprint)
+
+    def test_review_ready_separates_missing_facts_from_no_auto_rule(self):
+        item = {"reason": "contractBreach", "deadline_control": {"supplier_ready": False},
+                "procurement_context": {"winner_state": "present", "winner_selected_at": "2026-09-25",
+                                        "rejection_present": False}, "review": {}}
+        self.assertFalse(server.violation_review_ready(item))
+        item["deadline_control"]["supplier_ready"] = True
+        self.assertTrue(server.violation_review_ready(item))
+        self.assertIsNone(server.violation_rules_engine("contractBreach", item["procurement_context"],
+                                                        item["review"])["recommended_decision"])
+        item["procurement_context"].update(winner_state="ambiguous", winner_selected_at=None)
+        self.assertFalse(server.violation_review_ready(item))
+        item["procurement_context"].update(winner_date_source="officer_manual",
+                                            winner_selected_at="2026-09-26",
+                                            winner_manual_provenance={"basis": "Перевірено ЕСЗ"})
+        self.assertTrue(server.violation_review_ready(item))
+        item["reason"] = "signingRefusal"
+        self.assertFalse(server.violation_review_ready(item))
+        item["review"]["written_refusal_date"] = "2026-09-28"
+        self.assertTrue(server.violation_review_ready(item))
+        item["reason"] = "goodsNonCompliance"
+        self.assertFalse(server.violation_review_ready(item))
+        item["review"]["court_decision_final_present"] = False
+        self.assertTrue(server.violation_review_ready(item))
+
+    def test_existing_p1_p2_justification_keys_remain_reachable(self):
+        cases = (
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"available": True, "winner_state": "absent_confirmed"},
+             {"internal_decision": "decline"}, "winner_absent_decline"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": True},
+             {"internal_decision": "decline"}, "p49_1_decline_before_deadline"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": True,
+              "day_5_shifted": True},
+             {"internal_decision": "decline"}, "p49_1_decline_before_deadline_civil_shift"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": False,
+              "contract_guarantee_required": False},
+             {"internal_decision": "warning"}, "p49_1_warning"),
+            ({"reason": "contractBreach", "defendant_statements": []},
+             {"rejection_present": True, "rejected_before_deadline": False,
+              "contract_guarantee_required": True},
+             {"internal_decision": "warning", "guarantee_documents_visible": False},
+             "p49_1_warning_guarantee_no_documents_no_explanation"),
+            ({"reason": "signingRefusal", "defendant_statements": []},
+             {"written_refusal_within_deadline": True},
+             {"internal_decision": "decline"}, "p49_2_decline_timely_refusal"),
+            ({"reason": "signingRefusal", "defendant_statements": []},
+             {"written_refusal_within_deadline": True, "day_3_shifted": True},
+             {"internal_decision": "decline"}, "p49_2_decline_timely_refusal_civil_shift"),
+        )
+        for report, context, review, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(server.violation_decision_template_key(report, context, review), expected)
+                unselected = {**review, "internal_decision": ""}
+                self.assertEqual(server.violation_decision_template_key(report, context, unselected), "")
+                self.assertFalse(server.build_violation_decision_justification(report, context, unselected))
+                opposite = "warning" if review["internal_decision"] == "decline" else "decline"
+                self.assertEqual(server.violation_decision_template_key(
+                    report, context, {**review, "internal_decision": opposite}), "")
+
+    def test_both_live_p3_review_states_resolve_approved_draft_without_overwriting_manual_text(self):
+        key = "p49_3_decline_no_final_court_decision_no_explanation"
+        cases = (
+            ("UA-D-2026-09-25-000002", "decline", "Збережений ручний текст УО"),
+            ("UA-D-2026-09-29-000002", "", ""),
+        )
+        for report_id, officer_decision, saved_text in cases:
+            with self.subTest(report_id=report_id):
+                review = {"court_decision_final_present": False,
+                          "internal_decision": officer_decision,
+                          "decision_justification": saved_text}
+                report = {"report_id": report_id, "reason": "goodsNonCompliance",
+                          "defendant_statements": [], "review": review}
+                recommendation = server.violation_rules_engine(
+                    report["reason"], {"defendant_statements_present": False}, review)
+                self.assertEqual(recommendation["recommended_decision"], "decline")
+                self.assertEqual(recommendation["recommended_scenario"], "court_decision_absent")
+                self.assertIn("пояснення постачальника — відсутні",
+                              server.violation_scenario_summary(report, {}))
+                self.assertEqual(server.violation_decision_template_key(report, {}, review),
+                                 key if officer_decision else "")
+                selected = {**review, "internal_decision": "decline"}
+                draft = server.build_violation_decision_justification(report, {}, selected)
+                self.assertTrue(draft.startswith("Замовником подано звернення про порушення"))
+                self.assertEqual(review["decision_justification"], saved_text)
+                if saved_text:
+                    self.assertNotEqual(saved_text, draft)
+                else:
+                    self.assertEqual(saved_text or draft, draft)
+                self.assertEqual(review["internal_decision"], officer_decision)
 
     def test_p1_warning_without_guarantee_uses_approved_base_scenario(self):
         report = {"reason": "contractBreach", "defendant_statements": []}
@@ -1460,6 +2317,370 @@ class ViolationReportTests(unittest.TestCase):
             report, {**context, "day_3_shifted": False}, review)
         self.assertNotIn("ст. 254 ЦК України", ordinary)
 
+    def test_p2_timely_refusal_recommendation_does_not_depend_on_later_rejection(self):
+        facts = {"written_refusal_within_deadline": True,
+                 "winner_selected_at": "2026-09-24T12:18:44+03:00",
+                 "written_refusal_deadline": "2026-09-28",
+                 "rejection_present": True,
+                 "rejection_datetime": "2026-09-29T09:20:17+03:00",
+                 "rejection_ambiguous": True}
+        result = server.violation_rules_engine("signingRefusal", facts,
+                                               {"written_refusal_date": "2026-09-24"})
+        self.assertEqual(result["recommended_decision"], "decline")
+        self.assertEqual(result["recommended_scenario"], "written_refusal_within_deadline")
+        for rejection_present in (False, True):
+            result = server.violation_rules_engine(
+                "signingRefusal", {**facts, "rejection_present": rejection_present,
+                                   "rejection_ambiguous": False},
+                {"written_refusal_date": "2026-09-24"})
+            self.assertEqual(result["recommended_decision"], "decline")
+
+    def test_review_time_rejection_context_keeps_historical_winner_and_raw_evidence(self):
+        cases = (
+            ("UA-D-2026-09-28-000003", "contractBreach", "2026-09-28T11:30:28+03:00",
+             "67428cb69cd04582972a2208f72efa9e", "2026-09-21T13:44:00+03:00",
+             "a7577944b8824a0b9b84de6cd66bee20", "2026-09-28T11:33:37+03:00",
+             "Непідписання договору"),
+            ("UA-D-2026-09-25-000001", "signingRefusal", "2026-09-25T15:15:31+03:00",
+             "5a57485c2052426091dd13c03ecb2c3f", "2026-09-24T12:18:44+03:00",
+             "b89a345d8c7f433ba4f896b126fc4e15", "2026-09-29T09:20:17+03:00",
+             "Письмова відмова"),
+        )
+        for report_id, reason, created, winner_id, notice_at, rejected_id, rejected_at, title in cases:
+            with self.subTest(report_id=report_id):
+                report = {"id": report_id, "report_id": report_id, "reason": reason,
+                          "date_created": created, "tender_id": "test-tender",
+                          "defendant_code": "22222222"}
+                supplier = [{"identifier": {"id": "22222222"}}]
+                winner = {"id": winner_id, "status": "cancelled", "qualified": True,
+                          "date": rejected_at, "suppliers": supplier,
+                          "documents": [{"id": "notice-1", "documentType": "notice",
+                                         "datePublished": notice_at}]}
+                rejected = {"id": rejected_id, "status": "unsuccessful", "qualified": False,
+                            "date": rejected_at, "suppliers": supplier, "title": title,
+                            "description": title,
+                            "documents": [{"id": "rejection-doc", "title": "Протокол відмови.pdf"}]}
+                tender = {"id": "test-tender", "awards": [winner, rejected]}
+                with patch.object(server, "api_get", return_value={"data": tender}):
+                    context = server.build_procurement_context(
+                        report, {"written_refusal_date": "2026-09-24"})
+                self.assertEqual(context["winner_award_id"], winner_id)
+                self.assertEqual(context["historical_winner_decision"]["decision_date"], notice_at[:10])
+                self.assertEqual(context["rejection_award_id"], rejected_id)
+                self.assertEqual(context["rejection_datetime"], rejected_at)
+                self.assertEqual(context["rejection_title"], title)
+                self.assertEqual(context["rejection_provenance"]["award_id"], rejected_id)
+                self.assertEqual(context["rejection_provenance"]["documents"][0]["id"], "rejection-doc")
+                if reason == "signingRefusal":
+                    self.assertTrue(context["written_refusal_within_deadline"])
+                    self.assertEqual(server.violation_rules_engine(reason, context, {})[
+                        "recommended_decision"], "decline")
+
+    def test_review_time_rejection_states_distinguish_absent_from_ambiguous(self):
+        supplier = [{"identifier": {"id": "22222222"}}]
+        report = {"id": "case", "reason": "contractBreach", "tender_id": "test-tender",
+                  "defendant_code": "22222222"}
+        winner = {"id": "winner", "status": "active", "qualified": True,
+                  "suppliers": supplier, "documents": []}
+        with patch.object(server, "api_get", return_value={"data": {
+                "id": "test-tender", "awards": [winner]}}):
+            absent = server.build_procurement_context(report)
+        self.assertFalse(absent["rejection_present"])
+        self.assertFalse(absent["rejection_ambiguous"])
+        self.assertEqual(absent["rejection_date_display"], "—")
+        rejects = [{"id": key, "status": "unsuccessful", "qualified": False,
+                    "suppliers": supplier, "date": "2026-09-29T09:20:17+03:00"}
+                   for key in ("reject-1", "reject-2")]
+        with patch.object(server, "api_get", return_value={"data": {
+                "id": "test-tender", "awards": [winner, *rejects]}}):
+            ambiguous = server.build_procurement_context(report)
+        self.assertTrue(ambiguous["rejection_ambiguous"])
+        self.assertIsNone(ambiguous["rejection_date_display"])
+        self.assertIsNone(server.violation_rules_engine("contractBreach", ambiguous, {})[
+            "recommended_decision"])
+
+    def test_late_winner_is_review_time_deadline_base_without_report_date_comparison(self):
+        report = {"id": "report-internal", "report_id": "UA-D-TEST",
+                  "reason": "signingRefusal", "tender_id": "tender-id",
+                  "defendant_code": "22222222",
+                  "date_created": "2026-09-25T12:00:00+03:00"}
+        winner = {"id": "late-winner", "status": "active", "qualified": True,
+                  "suppliers": [{"identifier": {"id": "22222222"}}],
+                  "documents": [{"id": "winner-notice", "documentType": "notice",
+                                 "datePublished": "2026-09-26T10:00:00+03:00"}]}
+        with patch.object(server, "api_get", return_value={"data": {
+                "id": "tender-id", "awards": [winner]}}):
+            context = server.build_procurement_context(
+                report, {"contract_deadline_extended": True,
+                         "written_refusal_date": "2026-09-29"})
+        self.assertTrue(context["winner_present"])
+        self.assertEqual(context["winner_state"], "present")
+        self.assertFalse(context["winner_ambiguous"])
+        self.assertEqual(context["winner_award_id"], "late-winner")
+        self.assertEqual(context["winner_provenance"]["evidence_document"]["id"], "winner-notice")
+        self.assertEqual(context["winner_selected_at"], "2026-09-26")
+        self.assertEqual(context["written_refusal_deadline"], "2026-09-29")
+        self.assertEqual(context["day_5"], "2026-10-01")
+        self.assertEqual(context["day_10"], "2026-10-06")
+        self.assertNotIn("winner_chronology_mismatch", context)
+        self.assertTrue(context["written_refusal_within_deadline"])
+        self.assertEqual(server.violation_rules_engine("signingRefusal", context, {})[
+            "recommended_decision"], "decline")
+
+    def test_winner_absent_declines_but_ambiguity_and_unavailable_do_not(self):
+        report = {"id": "unsnapshotted-case", "reason": "signingRefusal",
+                  "tender_id": "tender-id", "defendant_code": "22222222",
+                  "date_created": "2026-09-25T12:00:00+03:00"}
+        with patch.object(server, "api_get", return_value={"data": {
+                "id": "tender-id", "awards": []}}):
+            absent = server.build_procurement_context(report, {"written_refusal_date": "2026-09-29"})
+        self.assertFalse(absent["winner_present"])
+        self.assertEqual(absent["winner_state"], "absent_confirmed")
+        self.assertFalse(absent["winner_ambiguous"])
+        for reason in ("signingRefusal", "contractBreach"):
+            decision = server.violation_rules_engine(reason, absent, {})
+            self.assertEqual(decision["recommended_decision"], "decline")
+            self.assertEqual(decision["recommended_scenario"], "winner_absent")
+            approved = server.build_violation_decision_justification(
+                {"reason": reason}, absent, {"internal_decision": "decline"})
+            self.assertIn("Відсутня дата визначення переможцем", approved)
+            self.assertIn("факт порушення", approved)
+        ambiguous = {**absent, "winner_state": "ambiguous", "winner_ambiguous": True}
+        self.assertIsNone(server.violation_rules_engine("signingRefusal", ambiguous, {})[
+            "recommended_decision"])
+        self.assertEqual(server.violation_rules_engine("signingRefusal", ambiguous, {})[
+            "recommended_scenario"], "winner_unresolved")
+        unavailable = {**absent, "available": False, "winner_state": "unavailable"}
+        self.assertEqual(server.violation_rules_engine("signingRefusal", unavailable, {})[
+            "recommended_scenario"], "winner_unavailable")
+
+    def test_winner_same_day_uses_winner_date_without_report_date_comparison(self):
+        report = {"id": "unsnapshotted-same-day", "reason": "signingRefusal",
+                  "tender_id": "tender-id", "defendant_code": "22222222",
+                  "date_created": "2026-09-26T09:00:00+03:00"}
+        award = {"id": "same-day", "status": "active", "qualified": True,
+                 "suppliers": [{"identifier": {"id": "22222222"}}],
+                 "documents": [{"id": "notice", "documentType": "notice",
+                                "datePublished": "2026-09-26T10:00:00+03:00"}]}
+        with patch.object(server, "api_get", return_value={"data": {
+                "id": "tender-id", "awards": [award]}}):
+            context = server.build_procurement_context(report)
+        self.assertTrue(context["winner_present"])
+        self.assertEqual(context["winner_state"], "present")
+        self.assertNotIn("winner_chronology_mismatch", context)
+
+    def test_manual_winner_date_resolves_unknown_ambiguous_and_unavailable(self):
+        report = {"id": "manual-winner-fixture", "reason": "signingRefusal",
+                  "tender_id": "tender-id", "defendant_code": "22222222",
+                  "date_created": "2026-09-25T12:00:00+03:00"}
+        manual = {"manual_winner_date": "2026-09-26", "manual_winner_basis": "Перевірено ЕСЗ",
+                  "manual_winner_entered_by": "Тестова УО",
+                  "manual_winner_entered_at": "2026-10-04T12:00:00+03:00"}
+        award = {"id": "no-notice", "status": "active", "qualified": True,
+                 "suppliers": [{"identifier": {"id": "22222222"}}]}
+        tenders = ({"id": "tender-id", "awards": [award]},
+                   {"id": "tender-id", "awards": [
+                       {**award, "id": "first", "documents": [{"id": "n1", "documentType": "notice",
+                         "datePublished": "2026-09-26T10:00:00+03:00"}]},
+                       {**award, "id": "second", "documents": [{"id": "n2", "documentType": "notice",
+                         "datePublished": "2026-09-27T10:00:00+03:00"}]}]},
+                   None)
+        for expected_state, tender in zip(("unknown", "ambiguous", "unavailable"), tenders):
+            with self.subTest(state=expected_state), patch.object(
+                    server, "api_get", return_value={"data": tender}):
+                context = server.build_procurement_context(report, manual)
+                self.assertEqual(context["winner_state"], expected_state)
+                self.assertEqual(context["winner_date_source"], "officer_manual")
+                self.assertEqual(context["winner_selected_at"], "2026-09-26")
+                self.assertEqual(context["winner_manual_provenance"]["basis"], "Перевірено ЕСЗ")
+                self.assertEqual(context["written_refusal_deadline"], "2026-09-29")
+                self.assertEqual(context["contract_deadline"], "2026-10-01")
+                if expected_state != "unavailable":
+                    self.assertEqual(server.build_procurement_context(
+                        report, {**manual, "contract_deadline_extended": True})["contract_deadline"],
+                        "2026-10-06")
+
+    def test_confirmed_and_absent_winner_ignore_manual_date(self):
+        report = {"id": "manual-priority-fixture", "reason": "contractBreach",
+                  "tender_id": "tender-id", "defendant_code": "22222222"}
+        manual = {"manual_winner_date": "2026-09-26", "manual_winner_basis": "Перевірено ЕСЗ",
+                  "manual_winner_entered_by": "Тестова УО",
+                  "manual_winner_entered_at": "2026-10-04T12:00:00+03:00"}
+        award = {"id": "confirmed", "status": "active", "qualified": True,
+                 "suppliers": [{"identifier": {"id": "22222222"}}],
+                 "documents": [{"id": "notice", "documentType": "notice",
+                                "datePublished": "2026-09-24T10:00:00+03:00"}]}
+        with patch.object(server, "api_get", return_value={"data": {
+                "id": "tender-id", "awards": [award]}}):
+            confirmed = server.build_procurement_context(report, manual)
+        self.assertEqual(confirmed["winner_date_source"], "prozorro")
+        self.assertEqual(confirmed["winner_selected_at"], "2026-09-24")
+        self.assertIsNone(confirmed["winner_manual_provenance"])
+        with patch.object(server, "api_get", return_value={"data": {
+                "id": "tender-id", "awards": []}}):
+            absent = server.build_procurement_context(report, manual)
+        self.assertEqual(absent["winner_state"], "absent_confirmed")
+        self.assertEqual(absent["winner_date_source"], "absent_confirmed")
+        self.assertIsNone(absent["winner_selected_at"])
+
+    def test_unavailable_tender_does_not_override_frozen_prozorro_winner(self):
+        with server.db() as connection:
+            connection.execute("UPDATE violation_winner_decision_snapshots SET decision_json=? "
+                               "WHERE report_id='report-internal'", (json.dumps({
+                "award_id": "confirmed", "decision_date": "2026-09-24",
+                "decision_datetime": "2026-09-24T10:00:00+03:00"}),))
+        context = server._unavailable_winner_context({"id": "report-internal"}, {
+            "manual_winner_date": "2026-09-26", "manual_winner_basis": "ЕСЗ",
+            "manual_winner_entered_by": "УО", "manual_winner_entered_at": "2026-10-04T12:00:00+03:00"},
+            "Tender API unavailable")
+        self.assertEqual(context["winner_date_source"], "prozorro")
+        self.assertEqual(context["winner_selected_at"], "2026-09-24T10:00:00+03:00")
+        self.assertIsNone(context["winner_manual_provenance"])
+
+    def test_manual_winner_persists_with_server_audit_fields(self):
+        with server.db() as connection:
+            raw_before = connection.execute("SELECT raw_json FROM violation_reports WHERE id='report-internal'").fetchone()[0]
+            winner_before = connection.execute("SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id='report-internal'").fetchone()[0]
+        with patch.object(server, "_fresh_violation_report", return_value=report_payload()), \
+                patch.object(server, "violation_report_detail", return_value={"id": "report-internal"}):
+            server.save_violation_review("report-internal", {
+                "manual_winner_date": "2026-09-26", "manual_winner_basis": "Перевірено ЕСЗ"},
+                updated_by="Тестова УО")
+        with server.db() as connection:
+            row = dict(connection.execute("SELECT manual_winner_date,manual_winner_basis,"
+                "manual_winner_entered_by,manual_winner_entered_at FROM violation_report_reviews "
+                "WHERE report_id='report-internal'").fetchone())
+            self.assertEqual(connection.execute("SELECT raw_json FROM violation_reports WHERE id='report-internal'").fetchone()[0], raw_before)
+            self.assertEqual(connection.execute("SELECT decision_json FROM violation_winner_decision_snapshots WHERE report_id='report-internal'").fetchone()[0], winner_before)
+        self.assertEqual(row["manual_winner_date"], "2026-09-26")
+        self.assertEqual(row["manual_winner_basis"], "Перевірено ЕСЗ")
+        self.assertEqual(row["manual_winner_entered_by"], "Тестова УО")
+        self.assertTrue(row["manual_winner_entered_at"])
+        self.assertEqual(server._manual_winner_fact(row)["date"], "2026-09-26")
+        with patch.object(server, "api_get", return_value={"data": {"id": "tender-id", "awards": [
+                {"id": "no-notice", "status": "active", "qualified": True,
+                 "suppliers": [{"identifier": {"id": "22222222"}}]}]}}):
+            reopened = server.violation_report_detail("report-internal", refresh=False)
+        self.assertEqual(reopened["review"]["manual_winner_date"], "2026-09-26")
+        self.assertEqual(reopened["review"]["manual_winner_basis"], "Перевірено ЕСЗ")
+        self.assertEqual(reopened["procurement_context"]["winner_date_source"], "officer_manual")
+        frozen = server.violation_decision_context_snapshot({
+            "id": "report-internal", "reason": "contractBreach",
+            "procurement_context": {"winner_selected_at": "2026-09-26",
+                                    "winner_date_source": "officer_manual",
+                                    "winner_manual_provenance": server._manual_winner_fact(row)}},
+            row, "2026-10-04T12:00:00+03:00")
+        self.assertEqual(frozen["procurement_context"]["winner_date_source"], "officer_manual")
+        self.assertEqual(frozen["procurement_context"]["winner_manual_provenance"]["entered_by"],
+                         "Тестова УО")
+        with self.assertRaisesRegex(ValueError, "джерело"):
+            server._validate_manual_winner_edit({"manual_winner_date": "2026-09-27"}, {},
+                                                "УО", server.now_iso())
+
+    def test_manual_winner_control_is_sandbox_review_only(self):
+        source = (server.ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn("['unknown','ambiguous','unavailable'].includes(c.winner_state)", source)
+        self.assertIn('data-review="manual_winner_date"', source)
+        self.assertIn('data-review="manual_winner_basis"', source)
+        self.assertIn("Підтверджено УО вручну", source)
+
+    def test_manual_winner_is_frozen_in_completed_decision_context(self):
+        now = server.now_iso()
+        with server.db() as connection:
+            connection.execute("""INSERT INTO violation_report_reviews
+                (report_id,review_status,assigned_officer,internal_decision,
+                 decision_justification,manual_winner_date,manual_winner_basis,
+                 manual_winner_entered_by,manual_winner_entered_at,updated_at,updated_by)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (
+                "report-internal", "in_review", "Тестова УО", "decline",
+                "Ручне обґрунтування", "2026-09-26", "Перевірено ЕСЗ",
+                "Тестова УО", now, now, "Тестова УО"))
+        detail = {"id": "report-internal", "report_id": "UA-D-TEST",
+                  "reason": "contractBreach", "tender_id": "tender-id",
+                  "defendant_code": "22222222", "authority_code": "40996564",
+                  "date_created": "2026-09-25T12:00:00+03:00",
+                  "deadline_control": {"supplier_ready": True},
+                  "defendant_statements": [], "has_official_decision": False}
+        tender = {"id": "tender-id", "awards": [{"id": "no-notice", "status": "active",
+                  "qualified": True, "suppliers": [{"identifier": {"id": "22222222"}}]}]}
+        with patch.object(server, "violation_report_detail", return_value=detail), \
+                patch.object(server, "api_get", return_value={"data": tender}):
+            server.complete_violation_review("report-internal", "Тестова УО")
+        with server.db() as connection:
+            raw = connection.execute("SELECT new_value FROM violation_report_review_events "
+                "WHERE report_id='report-internal' AND event_type='decision_context_snapshotted'").fetchone()[0]
+        frozen = json.loads(raw)["procurement_context"]
+        self.assertEqual(frozen["winner_date_source"], "officer_manual")
+        self.assertEqual(frozen["winner_selected_at"], "2026-09-26")
+        self.assertEqual(frozen["winner_manual_provenance"]["basis"], "Перевірено ЕСЗ")
+
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
+    def test_unmodelled_facts_allow_manual_officer_decision_and_protocol(self):
+        context = {"available": True, "winner_present": True,
+                   "winner_selected_at": "2026-09-26", "rejection_present": False,
+                   "rejection_ambiguous": False}
+        report = {"reason": "contractBreach"}
+        auto = server.violation_rules_engine("contractBreach", context, {})
+        self.assertIsNone(auto["recommended_decision"])
+        review = {"assigned_officer": "УО", "internal_decision": "warning",
+                  "decision_justification": "Ручне обґрунтування УО на підставі перевірених фактів.",
+                  "protocol_number": "17", "protocol_date": "2026-10-04"}
+        self.assertEqual(server.violation_decision_template_key(report, context, review), "")
+        item = {**report, "review": review, "procurement_context": context,
+                "deadline_control": {"supplier_ready": True}, "has_official_decision": False}
+        gate = server.violation_protocol_readiness(item)
+        self.assertTrue(gate["ready"], gate["reasons"])
+        self.assertEqual(gate["protocol_type"], "warning")
+
+    @patch.object(server, "violation_protocol_declensions", lambda _: [])
+    def test_confirmed_winner_absence_uses_dash_only_in_manual_decline_protocol(self):
+        item = {"id": "report-internal", "report_id": "UA-D-TEST",
+                "reason": "contractBreach", "author_name": "ТОВ ЗАМОВНИК",
+                "author_code": "11111111", "defendant_name": "ТОВ ПОСТАЧАЛЬНИК",
+                "defendant_code": "22222222", "tender_pretty_id": "UA-TEST",
+                "date_created": "2026-09-25T12:00:00+03:00",
+                "deadline_control": {"supplier_ready": True, "supplier_deadline": "2026-09-28"},
+                "has_official_decision": False,
+                "procurement_context": {"available": True, "tender_date_published": "2026-09-20", "winner_present": False,
+                                        "winner_state": "absent_confirmed",
+                                        "winner_ambiguous": False, "rejection_present": False,
+                                        "rejection_ambiguous": False},
+                "review": {"assigned_officer": "УО", "internal_decision": "decline",
+                           "decision_justification": "Переможця не визначено.",
+                           "protocol_number": "17", "protocol_date": "2026-10-04"}}
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+            prepared = server.generate_violation_protocol("report-internal", {}, prepare_only=True)
+        self.assertTrue(prepared["gate"]["ready"])
+        self.assertEqual(prepared["values"]["winner_date"], "—")
+        self.assertEqual(prepared["values"]["rejection_date"], "—")
+        self.assertEqual(prepared["values"]["rejection_reason"], "—")
+        for state in ("unknown", "ambiguous", "unavailable"):
+            uncertain = {**item, "procurement_context": {
+                **item["procurement_context"], "winner_state": state}}
+            self.assertFalse(server.violation_protocol_readiness(uncertain)["ready"])
+            claimed_date = {**uncertain, "procurement_context": {
+                **uncertain["procurement_context"], "winner_selected_at": "2026-09-26"}}
+            self.assertFalse(server.violation_protocol_readiness(claimed_date)["ready"])
+            self.assertNotEqual(server.violation_decision_template_key(
+                item, uncertain["procurement_context"], item["review"]),
+                "winner_absent_decline")
+            manual = {**uncertain, "procurement_context": {
+                **uncertain["procurement_context"], "available": state != "unavailable",
+                "winner_selected_at": "2026-09-26",
+                "winner_date_source": "officer_manual",
+                "winner_manual_provenance": {"date": "2026-09-26", "basis": "ЕСЗ",
+                    "entered_by": "УО", "entered_at": "2026-10-04T12:00:00+03:00"}}}
+            self.assertTrue(server.violation_protocol_readiness(manual)["ready"])
+            with patch.object(server, "require_local_violation_report_owned"), \
+                    patch.object(server, "require_owned_violation_report"), \
+                    patch.object(server, "violation_report_detail", return_value=manual), \
+                    patch.object(server, "_resolve_violation_protocol_metadata", return_value={}):
+                prepared = server.generate_violation_protocol("report-internal", {}, prepare_only=True)
+            self.assertEqual(prepared["values"]["winner_date"], "26.09.2026")
+
     def test_unsupported_reason_has_no_generated_legal_text(self):
         self.assertEqual(server.build_violation_decision_justification(
             {"reason": "goodsNonCompliance"}, {}, {"internal_decision": "warning"}), "")
@@ -1489,9 +2710,20 @@ class ViolationReportTests(unittest.TestCase):
         p1 = reason_fields[reason_fields.find("if(item.reason==='contractBreach')"):
                            reason_fields.find("if(item.reason==='signingRefusal')")]
         self.assertIn("Дата визначення переможцем", p1)
-        self.assertIn("Дата укладення договору", p1)
         self.assertIn("Забезпечення виконання договору", p1)
-        self.assertIn("violationContractSigned", p1)
+        self.assertIn("Дата укладення договору", source)
+        self.assertIn("violationContractSigned", source)
+        self.assertNotIn("Дата визначення переможцем не збігається з датою подання звернення", source)
+        self.assertNotIn("winner_chronology_mismatch", source)
+        self.assertIn("Автоматичну рекомендацію не визначено", source)
+        self.assertIn("УО може внести обґрунтування вручну", source)
+        p2 = reason_fields[reason_fields.find("if(item.reason==='signingRefusal')"):]
+        self.assertIn("Дата письмової відмови</small>", p2)
+        self.assertNotIn("Дата звернення замовника</small>", p2)
+        self.assertIn("rejectionDate", p2)
+        self.assertIn("rejectionGround", p2)
+        self.assertIn("context.contract_info_required!==true", source)
+        self.assertIn("context.rejection_present===true", source)
         self.assertNotIn("Письмова відмова", p1)
         self.assertNotIn("Рішення суду", p1)
 
@@ -1503,6 +2735,237 @@ class ViolationReportTests(unittest.TestCase):
         wide_override = module_css.rfind(".request-details-dialog-wide .request-details-body{display:block")
         self.assertGreater(wide_override, legacy_grid)
         self.assertIn(".request-details-dialog.request-details-dialog-wide{width:min(1500px,96vw)", module_css)
+
+
+class WarningCivilCodeScenarioTests(unittest.TestCase):
+    def test_late_rejection_warning_does_not_require_extra_civil_code(self):
+        report = {"reason": "contractBreach", "defendant_statements": []}
+        for shifted in (False, True):
+            for guarantee in (False, True):
+                context = {"rejection_present": True, "rejected_before_deadline": False,
+                           "day_5_shifted": shifted, "contract_guarantee_required": guarantee}
+                review = {"internal_decision": "warning", "guarantee_documents_visible": 0,
+                          "decision_template_key": "p49_1_decline_before_deadline_civil_shift"}
+                with self.subTest(shifted=shifted, guarantee=guarantee):
+                    self.assertFalse(server.violation_civil_code_required(report, context, review))
+
+    def test_refusals_and_other_warning_scenarios_preserve_existing_rules(self):
+        for reason in ("contractBreach", "signingRefusal", "goodsNonCompliance"):
+            for shifted in (False, True):
+                context = {"day_5_shifted": shifted, "day_3_shifted": shifted,
+                           "rejection_present": True, "rejected_before_deadline": True}
+                report = {"reason": reason, "defendant_statements": []}
+                expected = shifted if reason != "goodsNonCompliance" else False
+                self.assertEqual(server.violation_civil_code_required(
+                    report, context, {"internal_decision": "decline"}), expected)
+                self.assertEqual(server.violation_civil_code_required(
+                    report, context, {"internal_decision": "warning"}), expected)
+        report = {"reason": "contractBreach", "defendant_statements": [{"description": "Пояснення"}]}
+        context = {"rejection_present": True, "rejected_before_deadline": False, "day_5_shifted": True}
+        self.assertTrue(server.violation_civil_code_required(report, context, {"internal_decision": "warning"}))
+        self.assertTrue(server.violation_civil_code_required(
+            {**report, "defendant_statements": []}, {**context, "rejection_ambiguous": True},
+            {"internal_decision": "warning"}))
+
+    def test_769_2_preparation_preserves_saved_text_and_other_requisites(self):
+        item = {"id": "fixture-report", "report_id": "UA-D-2026-10-06-000002",
+            "reason": "contractBreach", "author_name": "Замовник", "author_code": "11111111",
+            "defendant_name": "Постачальник", "defendant_code": "22222222",
+            "description": "Опис порушення без автоматичних доповнень", "defendant_statements": [],
+            "deadline_control": {"supplier_ready": True},
+            "procurement_context": {"available": True, "winner_selected_at": "2026-09-28",
+                "tender_date_published": "2026-09-28", "day_5_shifted": True,
+                "rejection_present": True, "rejection_date": "2026-10-06",
+                "rejection_title": "Непідписання договору", "rejected_before_deadline": False},
+            "review": {"internal_decision": "warning", "assigned_officer": "УО",
+                "protocol_number": "769-2", "protocol_date": "2026-10-12",
+                "decision_justification": "Обґрунтування УО збережене дослівно"}}
+        before = json.loads(json.dumps(item))
+        with patch.object(server, "require_local_violation_report_owned"), \
+                patch.object(server, "require_owned_violation_report"), \
+                patch.object(server, "violation_report_detail", return_value=item), \
+                patch.object(server, "violation_protocol_declensions", return_value=[]), \
+                patch.object(server, "_resolve_violation_protocol_metadata", return_value={}), \
+                patch.object(server, "decline_name", side_effect=lambda value, entity, case:
+                    DeclensionResult(value, "resolved", "automatic", value, entity)):
+            prepared = server.generate_violation_protocol(item["id"], {}, prepare_only=True)
+        self.assertFalse(prepared["flags"]["has_civil_code_basis"])
+        for key, expected in (("protocol_number", "769-2"), ("protocol_date", "12.10.2026"),
+                ("report_id", "UA-D-2026-10-06-000002"),
+                ("violation_description", item["description"]),
+                ("decision_justification", item["review"]["decision_justification"]),
+                ("rejection_date", "06.10.2026")):
+            self.assertEqual(prepared["values"][key], expected)
+        self.assertEqual(item, before)
+
+
+class ViolationProtocolFilenameTests(unittest.TestCase):
+    def item(self):
+        return {"report_id": "UA-D-2026-10-06-000001", "defendant_code": "45727617",
+                "author_name": "ТЕРИТОРІАЛЬНЕ УПРАВЛІННЯ ДЕРЖАВНОЇ СУДОВОЇ АДМІНІСТРАЦІЇ УКРАЇНИ В КІРОВОГРАДСЬКІЙ ОБЛАСТІ",
+                "defendant_name": "ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ «СІСТО»",
+                "review": {"customer_verified_short_name": "ТУДСА УКРАЇНИ В КІРОВОГРАДСЬКІЙ ОБЛАСТІ"},
+                "supplier_verified": {"short_name": "ТОВ «СІСТО»"}}
+
+    def gate(self, kind="decline_p49_1_2"):
+        return {"protocol_number": "769-1", "protocol_type": kind}
+
+    def test_exact_format_both_decisions_and_hyphen(self):
+        for kind, marker in (("warning", "П"), ("decline_p49_1_2", "В"), ("decline_p49_3", "В")):
+            self.assertEqual(server._violation_protocol_filename(self.item(), self.gate(kind)),
+                f"UA-D-2026-10-06-000001_769-1_{marker}_ТУДСА УКРАЇНИ В КІРОВОГРАДСЬКІЙ ОБЛАСТІ (на ТОВ «СІСТО»; 45727617).docx")
+
+    def test_missing_customer_short_uses_exact_report_name(self):
+        item = self.item()
+        item["review"] = {"customer_verified_short_name": "  ", "customer_verified_full_name": "ІНША НАЗВА"}
+        name = server._violation_protocol_filename(item, self.gate())
+        self.assertIn(item["author_name"], name)
+        self.assertNotIn("ІНША НАЗВА", name)
+        self.assertEqual(name, f"UA-D-2026-10-06-000001_769-1_В_{item['author_name']} (на ТОВ «СІСТО»; 45727617).docx")
+
+    def test_long_unicode_full_names_are_preserved_not_linux_components(self):
+        item = self.item(); item["review"] = {}; item["supplier_verified"] = {}
+        name = server._violation_protocol_filename(item, self.gate())
+        self.assertGreater(len(name.encode('utf-8')), 255)
+        self.assertLessEqual(len(name.encode('utf-16-le')) // 2, 240)
+        self.assertIn(item["author_name"], name)
+        self.assertIn(item["defendant_name"], name)
+
+    def test_missing_supplier_short_uses_exact_report_full_name(self):
+        item = self.item()
+        item["supplier_verified"] = {"full_name": "АКТУАЛЬНА ПОВНА НАЗВА З ЄДР", "short_name": "—"}
+        name = server._violation_protocol_filename(item, self.gate())
+        self.assertIn(item["supplier_verified"]["full_name"], name)
+        self.assertNotIn(item["defendant_name"], name)
+
+    def test_sanitization_preserves_unicode_punctuation_and_blocks_traversal(self):
+        item = self.item()
+        item["review"]["customer_verified_short_name"] = '  ../Назва<>:"/\\|?*\n  «тест»  '
+        filename = server._violation_protocol_filename(item, self.gate())
+        self.assertNotRegex(filename, r'[<>:"/\\|?*\x00-\x1f]')
+        self.assertIn('«тест» (на ТОВ «СІСТО»; 45727617)', filename)
+        self.assertIn('_769-1_В_', filename)
+        self.assertEqual(Path(filename).name, filename)
+
+    def test_supplier_filename_uses_same_quote_presentation_as_document_names(self):
+        item = self.item()
+        item["defendant_name"] = 'ТОВ "КОНТИНЕНТ-СТАЛЬ"'
+        item["supplier_verified"] = {
+            "full_name": 'ТОВ "КОНТИНЕНТ-СТАЛЬ"',
+            "short_name": 'ТОВ "КОНТИНЕНТ-СТАЛЬ"',
+        }
+        names = server.protocol_supplier_names.resolve(item, server.normalize_document_name)
+        for key in ("full_name", "short_name", "filename_name"):
+            self.assertEqual(names[key]["value"], "ТОВ «КОНТИНЕНТ-СТАЛЬ»")
+        filename = server._violation_protocol_filename(item, self.gate())
+        self.assertIn("(на ТОВ «КОНТИНЕНТ-СТАЛЬ»; 45727617)", filename)
+        self.assertNotIn('"КОНТИНЕНТ-СТАЛЬ"', filename)
+
+    def test_missing_requisites_and_long_names_fail_without_truncation(self):
+        for field in ("report_id", "defendant_code"):
+            item = self.item(); item[field] = ""
+            with self.assertRaisesRegex(ValueError, "реквізит"):
+                server._violation_protocol_filename(item, self.gate())
+        for party in ("customer", "supplier"):
+            item = self.item()
+            if party == "customer": item["review"] = {}; item["author_name"] = ""
+            else: item["supplier_verified"] = {}; item["defendant_name"] = ""
+            with self.assertRaisesRegex(ValueError, "назва"):
+                server._violation_protocol_filename(item, self.gate())
+        item = self.item(); item["review"]["customer_verified_short_name"] = "Назва" * 100
+        with self.assertRaisesRegex(ValueError, "240"):
+            server._violation_protocol_filename(item, self.gate())
+        with self.assertRaisesRegex(ValueError, "номер протоколу"):
+            server._violation_protocol_filename(self.item(), {**self.gate(), "protocol_number": ""})
+
+    def test_download_header_and_docx_bytes_are_unchanged(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp).resolve() / "violation-physical.docx"
+            original = b"synthetic-docx-bytes"
+            path.write_bytes(original)
+            headers = {}
+            request = SimpleNamespace(path="/api/protocol/files/violation-physical.docx",
+                send_response=lambda status: self.assertEqual(status, 200),
+                send_header=lambda key, value: headers.update({key: value}),
+                end_headers=lambda: None, wfile=io.BytesIO())
+            name = server._violation_protocol_filename(self.item(), self.gate())
+            with patch.object(server, "PROTOCOLS_DIR", path.parent), \
+                    patch.object(server, "_violation_protocol_download_filename", return_value=name):
+                server.Handler._do_GET(request)
+            encoded = headers["Content-Disposition"].split("filename*=UTF-8''", 1)[1]
+            self.assertEqual(server.urllib.parse.unquote(encoded), name)
+            self.assertEqual(request.wfile.getvalue(), original)
+            self.assertEqual(path.read_bytes(), original)
+
+
+class ProcurementPublicationDateTests(unittest.TestCase):
+    def test_source_is_exact_tender_notice_not_report_or_other_events(self):
+        tender = {"id": "exact-tender", "tenderID": "UA-2026-09-28-004953-a",
+                  "noticePublicationDate": "2026-09-27T22:30:00Z",
+                  "dateCreated": "2026-09-20T10:00:00+03:00",
+                  "dateModified": "2026-10-07T10:00:00+03:00", "awards": []}
+        original = json.loads(json.dumps(tender))
+        report = {"tender_id": "exact-tender", "report_id": "UA-D-2026-10-06-000001",
+                  "date_created": "2026-10-06T10:00:00+03:00", "defendant_code": "22222222"}
+        with patch.object(server, "api_get", return_value={"data": tender}) as api, \
+                patch.object(server, "_report_winner_decision", return_value=None):
+            context = server.build_procurement_context(report)
+        api.assert_called_once_with(f"{server.API_ROOT}/tenders/exact-tender")
+        self.assertEqual(context["tender_date_published"], "2026-09-28")
+        self.assertEqual(context["tender_date_published_source"], "tender.noticePublicationDate")
+        self.assertEqual(tender, original)
+        for raw in (None, "not-a-date"):
+            with self.subTest(raw=raw), \
+                    patch.object(server, "api_get", return_value={"data": {**tender, "noticePublicationDate": raw}}), \
+                    patch.object(server, "_report_winner_decision", return_value=None):
+                missing = server.build_procurement_context(report)
+                self.assertEqual(missing["tender_date_published"], "2026-09-28")
+                self.assertEqual(missing["tender_date_published_source"], "tender_id_date")
+
+    def test_missing_invalid_publication_fails_before_document_write(self):
+        for value in (None, "", "invalid", "2026-02-30", "2026-09-28T10:00:00"):
+            with self.subTest(value=value):
+                item = {"date_created": "2026-10-06", "tender_pretty_id": "UA-2026-09-28-004953-a",
+                        "procurement_context": {"tender_date_published": value}}
+                with patch.object(server, "require_local_violation_report_owned"), \
+                        patch.object(server, "require_owned_violation_report"), \
+                        patch.object(server, "violation_report_detail", return_value=item), \
+                        patch.object(server, "violation_protocol_readiness", return_value={"ready": True}), \
+                        patch.object(server, "build_violation_protocol_docx") as renderer:
+                    with self.assertRaisesRegex(ValueError, "Не вказано дату оголошення закупівлі"):
+                        server.generate_violation_protocol("test", {}, prepare_only=True)
+                    renderer.assert_not_called()
+
+    def test_publication_timezone_calendar_bounds(self):
+        self.assertEqual(server._procurement_publication_date("2026-09-27T22:30:00Z"), "2026-09-28")
+        self.assertEqual(server._procurement_publication_date("2026-09-28T00:30:00+03:00"), "2026-09-28")
+        self.assertEqual(server._procurement_publication_date("2026-09-28"), "2026-09-28")
+
+    def test_fallback_requires_valid_calendar_and_exact_identity(self):
+        report = {"tender_id": "exact", "tender_pretty_id": "UA-2026-09-28-004953-a"}
+        tender = {"id": "exact", "tenderID": report["tender_pretty_id"],
+                  "noticePublicationDate": None}
+        fields = server._procurement_publication_fields(tender, report)
+        self.assertEqual(fields["tender_date_published"], "2026-09-28")
+        self.assertEqual(server._violation_publication_document_metadata(fields),
+                         {"date": "2026-09-28", "source": "tender_id_date"})
+        for invalid in (None, 123, "UA-2026-02-30-004953-a", "UA-2026-09-28-4953-a",
+                        "UA-D-2026-09-28-000001", "UA-2026-09-28-004953-a-extra"):
+            with self.subTest(invalid=invalid):
+                fields = server._procurement_publication_fields({**tender, "tenderID": invalid},
+                                                               {"tender_id": "exact"})
+                self.assertEqual(fields["tender_date_published"], "")
+        for changed in ({**tender, "id": "other"}, {**tender, "id": None},
+                        {**tender, "tenderID": "UA-2026-09-29-004953-a"}):
+            self.assertEqual(server._procurement_publication_fields(changed, report)["tender_date_published"], "")
+
+    def test_api_date_wins_over_different_id_date(self):
+        fields = server._procurement_publication_fields(
+            {"id": "exact", "tenderID": "UA-2026-09-28-004953-a",
+             "noticePublicationDate": "2026-09-29T00:30:00+03:00"}, {"tender_id": "exact"})
+        self.assertEqual(fields["tender_date_published"], "2026-09-29")
+        self.assertEqual(fields["tender_date_published_source"], "tender.noticePublicationDate")
+        self.assertTrue(fields["tender_date_published_id_mismatch"])
 
 
 if __name__ == "__main__":

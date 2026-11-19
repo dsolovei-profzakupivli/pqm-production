@@ -1,0 +1,85 @@
+{
+  "variant_id": "sandbox-nazk-appeals-stabilization-v3",
+  "baseline_sha": "fc719b07f7ce6bd43fcdf9815795f0f2906901e8",
+  "base_manifest": "test_sandbox_nazk_appeals_stabilization_v2.json",
+  "base_manifest_sha256": "61512ea36622fd1173704c5123212471d4830831798af9be6595514cb381014c",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "cache-minimal-current-scenario-context-separately-from-decision-snapshot",
+    "prevent-older-or-concurrent-context-from-overwriting-newer-snapshot",
+    "reuse-card-fetched-prozorro-context-for-list-without-network-calls",
+    "validate-report-reason-version-freshness-and-input-fingerprint"
+  ],
+  "product_overrides": {
+    "server.py": {
+      "sha256": "d39827893eccadf23170704905599772526f3fa9c3d84965723914ce83854097"
+    },
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "c3c511d2f5e03d91ae7b4ec76bfe042b79e9df0080bfd96acb7121a9de1a0874"
+    },
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "4447c505f7d0a67eb4f0cd56fa0765fd0b2891c7d716ccf9fa839132e4db50d2"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "bd8b42bdb9363b14ccbde92170160d05bc07b978d3a9bceadb0917fd241444cb"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "98a73792ca3fee8e49be7db3b4a0f6b64eb351dd806902d00321b3fbb8c47b66"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "1d862a76218d75ccac5540fe34293d2a220227c379c4f46fca91b337871547c2"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "a34d1b1bdd0f253f5149beefd066ff425ac14f4b1d03949a08ed3279cc73c047"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "40e237cb39b7e389b12cde583dbadcaaf79d10a57099f5a6fa09489df6970e31"
+    },
+    "validation/local_release_20260911/test_violation_reports.py": {
+      "sha256": "e0143bd0725004dd54cd0da67d0fb05f3423d0d556a018e4fe83f670bda01822"
+    }
+  },
+  "product_files_additional": {
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py": {
+      "sha256": "2cca348db87ad368514c85966654abfaac9ee9e7ea96130c3a3b1ff653a4523d"
+    }
+  },
+  "protected_overrides": {
+    "server.py": {
+      "sha256": "d39827893eccadf23170704905599772526f3fa9c3d84965723914ce83854097",
+      "halloween_normalized_sha256": "d39827893eccadf23170704905599772526f3fa9c3d84965723914ce83854097",
+      "personal_theme_normalized_sha256": "6b1b5f2bc4798aad611fcf442822107ed2d1326b1e5c6ca0d8c2cfed60b5f556"
+    }
+  },
+  "guarded_overrides": {
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "c3c511d2f5e03d91ae7b4ec76bfe042b79e9df0080bfd96acb7121a9de1a0874"
+    },
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "4447c505f7d0a67eb4f0cd56fa0765fd0b2891c7d716ccf9fa839132e4db50d2"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "bd8b42bdb9363b14ccbde92170160d05bc07b978d3a9bceadb0917fd241444cb"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "98a73792ca3fee8e49be7db3b4a0f6b64eb351dd806902d00321b3fbb8c47b66"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "1d862a76218d75ccac5540fe34293d2a220227c379c4f46fca91b337871547c2"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "a34d1b1bdd0f253f5149beefd066ff425ac14f4b1d03949a08ed3279cc73c047"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "40e237cb39b7e389b12cde583dbadcaaf79d10a57099f5a6fa09489df6970e31"
+    },
+    "validation/local_release_20260911/test_violation_reports.py": {
+      "sha256": "e0143bd0725004dd54cd0da67d0fb05f3423d0d556a018e4fe83f670bda01822"
+    }
+  },
+  "guarded_additions": {
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py": {
+      "sha256": "2cca348db87ad368514c85966654abfaac9ee9e7ea96130c3a3b1ff653a4523d"
+    }
+  }
+}

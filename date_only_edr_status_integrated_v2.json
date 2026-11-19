@@ -1,0 +1,52 @@
+{
+  "baseline": "12329bd4cb428052367cba7e41c381c3a802d02e",
+  "contract": "pqm-sandbox-date-only-status-follow-up",
+  "version": 2,
+  "files": {
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs": "98858a2f9258009122b3ac258a2cc40f8ea02565a51a2591c786d957a69d25ce",
+    "scripts/pqm-google-writer/PqmSandboxExpandedChangeAudit.gs": "331e490a11bc731df807842f841fafdca62305cd920b0be4af84b0f0106ce1ff",
+    "scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs": "8cdecfc22a27b81371d847b10ccebeae59350a10dbc8bf61e3d07618a130993d",
+    "scripts/pqm-google-writer/sandbox-expanded-change-audit.test.cjs": "00eb1a3bba126a3e7d4b0a2b6d91e79ae4745409b17a99f461deedba5dc1257f",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "39aa9e154721f34b6c0275c3043d3736741d037e683c5f9e0caa493689827df3",
+    "validation/local_release_20260911/daily_cycle_evening_fixture.py": "caac6c8d4921e943133a1c94e5299c8456053c4925057236efc9df7083527d2b",
+    "validation/run_date_only_previous_contract_overlays.py": "9b5d32839005e62ba56318898f83fd092ba5b57c5941436f730aef0b2b1cbf3b",
+    "validation/run_local_release.py": "6935205292b7125e8e3879c1e21ea87dd17bfe7136659f52cac1b569efde88e1",
+    "validation/fixtures/date_only_edr_status_integrated_v1_12329.zip": "05d2359d57155097d3f87e0fb26fdd222fc9aa2e808250ac6f03a1da1e3d12a8"
+  },
+  "mutation_targets": [
+    "scripts/pqm-google-writer/PqmGoogleBusinessMatrix.gs",
+    "scripts/pqm-google-writer/PqmSandboxExpandedChangeAudit.gs",
+    "scripts/pqm-google-writer/sandbox-append-daily-cycle.test.cjs",
+    "scripts/pqm-google-writer/sandbox-expanded-change-audit.test.cjs",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs",
+    "validation/local_release_20260911/daily_cycle_evening_fixture.py",
+    "validation/run_date_only_previous_contract_overlays.py",
+    "validation/run_local_release.py",
+    "validation/fixtures/date_only_edr_status_integrated_v1_12329.zip"
+  ],
+  "baseline_files": {
+    "edr_sync_v2.py": "b0988d1198703635a5a59689134e2a2838adef4648ed6a6ec256c96cfea21c47",
+    "google_verification_contract.py": "cded357168c112dc1117bfd6b5a5c2e144820bd6cfea80b56468d7f3cee4a0dd",
+    "server.py": "5063e2fa4728e431e42305ee14059a13ad421fb6c8bc31f4d8fc540945ef0a03",
+    "supplier_registry_integration.py": "957bb1296db34c96d36290c8babbb76e4354bec6904418d8cd40938f9120810b",
+    "supplier_classification.py": "fe46a1593279095ed0f03feaa69bd85956945fdae7d3e42f49976aacd30ffc63",
+    "validation/local_release_20260911/test_edr_sync_v2.py": "daef5c300d397991cc4ac360752509acae137a2fbe6e5818273ded4a7c830a0c",
+    "validation/local_release_20260911/test_permanent_edr_sync_safety.py": "35eb1329186671bcb7ab2d8d43b42abadd707574689aac2d37c953d3ad569d25",
+    "scripts/pqm-google-writer/PqmSandboxFullApply.gs": "7fe4cc979fe99982aee35b7a314c8f0961c1e47fe791e8db064990dcf9865978"
+  },
+  "historical_manifests": {
+    "date_only_edr_status_integrated_v1.json": "b39769187968f9f3849c0050ea74b68120821f1d0b9ce140183d5929cc02a4e8",
+    "google_edr_date_only_midnight_v1.json": "b487feaf21182b2a445dd1967d2a2ce70ae7f0cf90c14ea90050679acb560a91",
+    "validation/local_release_20260911/edr_status_evidence_v1.json": "c9c3d2484eccbaf982c47625f43c4c7dd3dbde8df9228a1cf7d71088af5f55e8"
+  },
+  "behavior": {
+    "equal_timestamp_blank_manager_on_both_sides_is_equivalent": true,
+    "one_sided_blank_or_different_manager_status_or_officer_remains_conflict": true,
+    "unconfirmed_edr_status_is_never_written": true,
+    "read_only_audit_projects_actual_planned_edr_target": true,
+    "same_timestamp_status_conflict_blocks_apply_without_mutation": true,
+    "date_only_uses_kyiv_midnight_without_physical_normalization": true,
+    "repeat_preview_after_append_does_not_append_duplicate": true,
+    "historical_integrity_runs_on_exact_12329_tree": true
+  }
+}

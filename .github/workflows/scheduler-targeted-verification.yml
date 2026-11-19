@@ -1,0 +1,38 @@
+name: Scheduler targeted verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Record exact snapshot
+        run: |
+          mkdir -p ci-evidence
+          git rev-parse HEAD > ci-evidence/tested-sha.txt
+          sha256sum validation/sandbox_prozorro_fixture.py validation/sandbox_scheduler_smoke.py > ci-evidence/fixture-hashes.txt
+          echo '1b3f03908cb2974efac68b2b29efec6ee69204d10f463b2e1095c7cd4f24c7cb  validation/sandbox_prozorro_fixture.py' | sha256sum --check
+          echo '127c8cba3e023499793ccd09d72a623f4a6ab4213a2aa3d65d0eac6e23df5e91  validation/sandbox_scheduler_smoke.py' | sha256sum --check
+      - name: Build isolated test image
+        run: |
+          set -euo pipefail
+          docker build --tag pqm-scheduler-targeted:tested . 2>&1 | tee ci-evidence/build.log
+          docker image inspect pqm-scheduler-targeted:tested --format '{{.Id}}' > ci-evidence/image-id.txt
+      - name: Run targeted synthetic scheduler test
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python \
+            -e PYTHONPATH=/app/validation:/app pqm-scheduler-targeted:tested \
+            -B -m unittest -v sandbox_scheduler_smoke.AutomaticHTTP.test_automatic_start_schedule_restart_and_orphan_recovery \
+            2>&1 | tee ci-evidence/targeted.log
+      - name: Save evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scheduler-targeted-${{ github.run_id }}
+          path: ci-evidence/

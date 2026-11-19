@@ -1,0 +1,124 @@
+{
+  "visualAcceptance": "PASS: approved by user on 2026-10-19",
+  "parentCandidate": "d3f9965ba13ec199aa6323a7c46fd41f6e9ad408",
+  "scope": "Approved distinct smooth vertical maneuvers with 0-20 CSS px adaptive amplitude; approved 420ms one-eye winks and occasional post-flight reaction. Existing horizontal speed, 20-30s flight pauses, artwork, cat geometry, original blink/gaze, shared host/controller and theme/season gates preserved.",
+  "browserMatrixCases": 78,
+  "browserChecks": [
+    {
+      "waitingTimerPreservedAcross13Views": true,
+      "delay": 29666.142599192397
+    },
+    {
+      "sameFlightAndCanvasAcrossSafeAndPausedViews": true,
+      "progressContinues": true
+    },
+    {
+      "workingSurfacesDoNotPauseFlight": true,
+      "oneController": true,
+      "alternation": true,
+      "reducedMotion": true,
+      "manualOff": true,
+      "kyivBoundaries": [
+        false,
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "realFirstFlightDelay": 22967.279065693263,
+      "noEarlyFlight": true
+    }
+  ],
+  "catChecks": [
+    {
+      "theme": "light",
+      "winks": [
+        {
+          "index": 0,
+          "time": 44381.39999997616,
+          "duration": 420
+        },
+        {
+          "index": 1,
+          "time": 88383.59999996424,
+          "duration": 420
+        }
+      ],
+      "normalBilateralBlink": true,
+      "otherEyeStaysOpen": true,
+      "duration": 420,
+      "oneEyelidClockAcross13Tabs": true,
+      "reactionAfterCentredGaze": true,
+      "reactionCooldown": true,
+      "randomReactionMaySkip": true,
+      "geometryUnchanged": true,
+      "reducedMotionCancelsActiveLids": true,
+      "off": true
+    },
+    {
+      "theme": "dark",
+      "winks": [
+        {
+          "index": 0,
+          "time": 44225.200000047684,
+          "duration": 420
+        },
+        {
+          "index": 1,
+          "time": 88227.20000004768,
+          "duration": 420
+        }
+      ],
+      "normalBilateralBlink": true,
+      "otherEyeStaysOpen": true,
+      "duration": 420,
+      "oneEyelidClockAcross13Tabs": true,
+      "reactionAfterCentredGaze": true,
+      "reactionCooldown": true,
+      "randomReactionMaySkip": true,
+      "geometryUnchanged": true,
+      "reducedMotionCancelsActiveLids": true,
+      "off": true
+    }
+  ],
+  "motionChecks": [
+    {
+      "theme": "light",
+      "variants": [
+        {
+          "amplitude": 13.4140625,
+          "duration": 19710.327455919392
+        },
+        {
+          "amplitude": 13.4140625,
+          "duration": 19710.327455919392
+        }
+      ]
+    },
+    {
+      "theme": "dark",
+      "variants": [
+        {
+          "amplitude": 13.4140625,
+          "duration": 19710.327455919392
+        },
+        {
+          "amplitude": 13.4140625,
+          "duration": 19710.327455919392
+        }
+      ]
+    }
+  ],
+  "contracts": "10 integration/personal-theme tests PASS; protected themes/business/backend/scheduler/Google/runtime invariants unchanged.",
+  "artworkSHA256": {
+    "assets/halloween-witch-cat.webp": "62991ef629660918e07247008cbae56a1ebe7ef4a6beb87199d745f86acdb528",
+    "assets/halloween-witches-sheet.png": "33fb88e9f37a11986b33f94cdab45e819567ec81eb3e3ad8243ccf8f8072934c"
+  },
+  "sourceSHA256_LF": {
+    "halloween_motion.js": "3d8bfd37a8121b6927b5e6677b91618016fe40999b8253b06e813eeb460a5543",
+    "halloween_motion.css": "a276f51b3a015cd33377a71c77a5592c241d996c7e5c6a43cecf39baf368f0e5"
+  },
+  "localReview": "evidence/halloween-maneuvers/index.html (local screenshots and videos are not committed)",
+  "releaseGate": "Pending manual full Release Gate against the new exact candidate SHA. No merge, deploy or restart authorized."
+}

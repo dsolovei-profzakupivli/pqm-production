@@ -3,8 +3,10 @@ import sqlite3
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from uo_work_queue import default_protocol_period, get_current_qualification_summary, get_uo_work_queue
+from uo_work_progress import work_queue_application_statistics
 
 
 class UoWorkQueueTests(unittest.TestCase):
@@ -30,10 +32,11 @@ class UoWorkQueueTests(unittest.TestCase):
         self.con.executescript("""
           CREATE TABLE frameworks(id TEXT PRIMARY KEY,pretty_id TEXT,dk_code TEXT,status TEXT,raw_json TEXT);
           CREATE TABLE framework_officers(framework_id TEXT,officer TEXT,category TEXT);
+          CREATE TABLE framework_service_directory(pretty_id TEXT,framework_id TEXT,responsible_officer TEXT,source TEXT,synced_at TEXT);
           CREATE TABLE submissions(id TEXT PRIMARY KEY,framework_id TEXT,supplier_name TEXT,supplier_code TEXT,date_published TEXT,qualification_id TEXT);
           CREATE TABLE qualifications(id TEXT PRIMARY KEY,status TEXT);
           CREATE TABLE registry_contracts(qualification_id TEXT,status TEXT);
-          CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,protocol_officer TEXT,protocol_date TEXT DEFAULT '',protocol_decision TEXT DEFAULT '',marketplace_decision TEXT DEFAULT '');
+          CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,review_officer TEXT DEFAULT '',protocol_officer TEXT,protocol_date TEXT DEFAULT '',protocol_decision TEXT DEFAULT '',marketplace_decision TEXT DEFAULT '');
           CREATE TABLE supplier_managers(id INTEGER PRIMARY KEY,manager_tax_id TEXT);
           CREATE TABLE submission_nazk_controls(id INTEGER PRIMARY KEY,submission_id TEXT,supplier_code TEXT,manager_id INTEGER,manager_name TEXT,nazk_certificate_required INTEGER,nazk_certificate_checked INTEGER,created_at TEXT);
           CREATE TABLE supplier_registry_summary(supplier_code TEXT PRIMARY KEY,supplier_name TEXT,active_count INTEGER);
@@ -45,6 +48,7 @@ class UoWorkQueueTests(unittest.TestCase):
         end_year = date.today().year + 1
         self.con.execute("INSERT INTO frameworks VALUES ('f1','UA-F-1','12340000-0','active',?)", (json.dumps({"qualificationPeriod": {"endDate": f"{end_year}-12-31T00:00:00"}}),))
         self.con.execute("INSERT INTO framework_officers VALUES ('f1','Світлана НАМЯСЕНКО','ЇЖА')")
+        self.con.execute("INSERT INTO framework_service_directory VALUES ('UA-F-1','f1','Світлана НАМЯСЕНКО','Google Sheets: Оголошення','2026-01-01')")
         self.con.execute("INSERT INTO qualifications VALUES ('q-pending','pending')")
         self.con.execute("INSERT INTO qualifications VALUES ('q-complete','active')")
         current_year = date.today().year
@@ -109,6 +113,127 @@ class UoWorkQueueTests(unittest.TestCase):
             "protocol_from": "2026-08-25", "protocol_to": "2026-08-25"
         })
         self.assertEqual(summary["protocol"]["total"], 1)
+
+    def test_review_progress_api_keeps_review_officer_grouping_by_default(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-progress-a", "f1", "ТОВ А", "701", "2026-08-25T09:00:00", "q-pending"),
+            ("s-progress-b", "f1", "ТОВ Б", "702", "2026-08-25T10:00:00", "q-pending"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer,protocol_decision) VALUES (?,?,?,?)", [
+            ("s-progress-a", "ОЛЕНА ЄРЬОМІНА", "ДМИТРО САВВА", "admit"),
+            ("s-progress-b", "ОЛЕНА ЄРЬОМІНА", "ТЕТЯНА ФЕДЧЕНКО", ""),
+        ])
+        rows=work_queue_application_statistics(self.con,"SUBSTR(s.date_published,1,10) BETWEEN ? AND ?",["2026-08-25","2026-08-25"],review_progress=True)
+        self.assertEqual(rows,[{"review_officer":"ОЛЕНА ЄРЬОМІНА","total":2,"reviewed":1,"pending":1}])
+
+    def test_review_progress_api_can_group_by_protocol_officer_and_uses_card_cohort(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-progress-a", "f1", "ТОВ А", "701", "2026-08-25T09:00:00", "q-pending"),
+            ("s-progress-b", "f1", "ТОВ Б", "702", "2026-08-25T10:00:00", "q-pending"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer,protocol_decision) VALUES (?,?,?,?)", [
+            ("s-progress-a", "ОЛЕНА ЄРЬОМІНА", "ДМИТРО САВВА", "admit"),
+            ("s-progress-b", "ОЛЕНА ЄРЬОМІНА", "", ""),
+        ])
+        rows=work_queue_application_statistics(self.con,"SUBSTR(s.date_published,1,10) BETWEEN ? AND ?",["2026-08-25","2026-08-25"],review_progress=True,group_by="protocol_officer")
+        self.assertEqual(rows,[
+            {"protocol_officer":"Дмитро САВВА","total":1,"reviewed":1,"pending":0},
+            {"protocol_officer":"Світлана НАМЯСЕНКО","total":1,"reviewed":0,"pending":1},
+        ])
+        self.assertEqual(sum(row["total"] for row in rows),2)
+
+    def test_review_progress_api_returns_no_groups_for_empty_period(self):
+        rows=work_queue_application_statistics(self.con,"SUBSTR(s.date_published,1,10) BETWEEN ? AND ?",["1900-01-01","1900-01-02"],review_progress=True,group_by="protocol_officer")
+        self.assertEqual(rows,[])
+
+    def test_application_statistics_protocol_field_uses_the_protocol_card_fallback(self):
+        rows=work_queue_application_statistics(self.con,"1=1",[],review_progress=False)
+        row=next(item for item in rows if item["status"]=="pending")
+        self.assertEqual(row["protocol_officer"],"Світлана НАМЯСЕНКО")
+
+    def test_protocol_officer_fallback_depends_on_prozorro_status_and_review_is_independent(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-pending-blank", "f1", "Очікує", "811", "2026-08-25T09:00:00", "q-pending"),
+            ("s-active-blank", "f1", "Допущено", "812", "2026-08-25T10:00:00", "q-complete"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer) VALUES (?,?,?)", [
+            ("s-pending-blank", "Інша УО РОЗГЛЯДУ", ""),
+            ("s-active-blank", "Інша УО РОЗГЛЯДУ", "  "),
+        ])
+        rows = work_queue_application_statistics(self.con,"1=1",[],review_progress=False)
+        pending = next(row for row in rows if row["status"] == "pending")
+        active = next(row for row in rows if row["status"] == "active")
+        self.assertEqual(pending["review_officer"], "Інша УО РОЗГЛЯДУ")
+        self.assertEqual(active["protocol_officer"], "Не визначено")
+
+    def test_manual_protocol_value_wins_and_review_filter_does_not_reassign_protocol(self):
+        self.con.execute("INSERT INTO submissions VALUES ('s-manual','f1','Ручне','813','2026-08-25T11:00:00','q-pending')")
+        self.con.execute("INSERT INTO application_fields(submission_id,review_officer,protocol_officer) VALUES ('s-manual','УО РОЗГЛЯДУ','РУЧНЕ ПРИЗНАЧЕННЯ')")
+        rows = work_queue_application_statistics(self.con,"1=1",[],review_progress=False,
+            filters={"review_officer":"УО РОЗГЛЯДУ"})
+        manual = next(row for row in rows if row["protocol_officer"] == "РУЧНЕ ПРИЗНАЧЕННЯ")
+        self.assertEqual(manual["review_officer"], "УО РОЗГЛЯДУ")
+
+    def test_application_statistics_filters_supplier_type_before_server_aggregation(self):
+        self.con.executemany("INSERT INTO submissions VALUES (?,?,?,?,?,?)", [
+            ("s-type-fop", "f1", "ФОП", "111", "2026-08-25T09:00:00", "q-pending"),
+            ("s-type-legal", "f1", "ЮО", "222", "2026-08-25T10:00:00", "q-complete"),
+            ("s-type-foreign", "f1", "Нерезидент", "333", "2026-08-25T11:00:00", "q-complete"),
+            ("s-type-unknown", "f1", "Невідомий", "444", "2026-08-25T12:00:00", "q-pending"),
+        ])
+        self.con.executemany("INSERT INTO application_fields(submission_id,review_officer,protocol_officer,protocol_decision) VALUES (?,?,?,?)", [
+            ("s-type-fop", "УО А", "УО П", ""),
+            ("s-type-legal", "УО Б", "УО П", "admit"),
+            ("s-type-foreign", "УО А", "УО Q", "reject"),
+            ("s-type-unknown", "УО Б", "УО Q", ""),
+        ])
+        classifications = {
+            "111": {"entity_type": "individual_entrepreneur"},
+            "222": {"entity_type": "legal_entity"},
+            "333": {"entity_type": "foreign_legal_entity"},
+            "444": {"entity_type": "unknown"},
+        }
+        with patch("uo_work_progress.supplier_classification.build_index", return_value=classifications), \
+             patch("uo_work_progress.supplier_manual_classification.build_index", return_value={}):
+            fops = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="individual_entrepreneur")
+            legal = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="legal_entity")
+            foreign = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="foreign_legal_entity")
+            unknown = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="unknown")
+        self.assertEqual(sum(row["total"] for row in fops), 1)
+        self.assertEqual((fops[0]["status"], fops[0]["review_officer"]), ("pending", "УО А"))
+        self.assertEqual(sum(row["total"] for row in legal), 1)
+        self.assertEqual((legal[0]["status"], legal[0]["review_officer"]), ("active", "УО Б"))
+        self.assertEqual((sum(row["total"] for row in foreign), sum(row["total"] for row in unknown)), (1, 1))
+        manual = {"111": {"is_active": 1, "subject_type": "legal_entity", "residency": "UA",
+            "google_group": "legal_other", "revision": 1, "changed_by": "test",
+            "changed_officer_id": 1, "changed_officer_name": "Test", "changed_at": "2026-01-01T00:00:00Z"}}
+        with patch("uo_work_progress.supplier_classification.build_index", return_value=classifications), \
+             patch("uo_work_progress.supplier_manual_classification.build_index", return_value=manual):
+            manual_legal = work_queue_application_statistics(self.con, "SUBSTR(s.date_published,1,10)=?", ["2026-08-25"],
+                review_progress=False, entity_type="legal_entity")
+        self.assertEqual(sum(row["total"] for row in manual_legal), 2,
+            "manual classification takes precedence exactly as in the supplier registry")
+
+    def test_application_statistics_type_filter_composes_with_date_and_rejects_unknown_values(self):
+        self.con.execute("INSERT INTO submissions VALUES ('s-type-fop','f1','ФОП','111','2026-08-25T09:00:00','q-pending')")
+        with patch("uo_work_progress.supplier_classification.build_index", return_value={"111": {"entity_type": "individual_entrepreneur"}}), \
+             patch("uo_work_progress.supplier_manual_classification.build_index", return_value={}):
+            rows = work_queue_application_statistics(self.con,
+                "SUBSTR(s.date_published,1,10)>=? AND SUBSTR(s.date_published,1,10)<=?",
+                ["2026-08-25", "2026-08-25"], review_progress=False,
+                entity_type="individual_entrepreneur")
+            empty = work_queue_application_statistics(self.con,
+                "SUBSTR(s.date_published,1,10)=?", ["1900-01-01"], review_progress=False,
+                entity_type="individual_entrepreneur")
+            with self.assertRaisesRegex(ValueError, "Невідомий тип постачальника"):
+                work_queue_application_statistics(self.con, "1=1", [], review_progress=False,
+                    entity_type="not-a-type")
+        self.assertEqual(sum(row["total"] for row in rows), 1)
+        self.assertEqual(empty, [])
 
     def test_publication_control_uses_synced_status_without_local_action(self):
         self.con.executemany("INSERT INTO qualifications VALUES (?,?)", [

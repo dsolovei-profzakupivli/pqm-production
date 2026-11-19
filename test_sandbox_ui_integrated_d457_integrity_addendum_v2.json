@@ -1,0 +1,62 @@
+{
+  "variant_id": "sandbox-ui-integrated-d457-v2",
+  "baseline_sha": "d457aae211bc0b88cdc66414b9e5765ac7ba350d",
+  "base_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum.json",
+  "base_manifest_sha256": "da4a79667f29e7e1f9ac7d1394dae99cfd225bd38c6da286e5822dd0ac86d284",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "central_shared_width_order_visibility_for_non_personal_tables",
+    "admin_only_shared_layout_update_and_reset_server_enforced",
+    "preserve_personal_application_and_history_layouts_per_user",
+    "legacy_width_records_merge_order_visibility_and_new_columns_default_visible",
+    "no_local_storage_as_source_for_shared_table_layouts",
+    "cross_browser_shared_layout_and_cross_account_personal_layout_isolation",
+    "release_tests_use_isolated_source_paths_and_schema_fixtures"
+  ],
+  "product_files_additional": {
+    "table_widths.py": {"sha256": "1ea3899e463e03562c2503e36b793b397f58fcec8fe2d3fa202c0b1c71fa4fc4"},
+    "validation/sandbox_editable_smoke.py": {"sha256": "f15ba9d14a52f131e7a2b1d9e84ea920667dfeefe4143ef27266d7d4c4795521"}
+  },
+  "product_overrides": {
+    "app.js": {"sha256": "0d04bf068922b3c60ad0ad346ccf6b645d1d4a2635089a365be941cbc9a13ff1"},
+    "history_columns.js": {"sha256": "74c10b2cd2cd3a0c70e96898db2e01c8599b135668fc0eb0683c5891fd5b5ac7"},
+    "server.py": {"sha256": "286d057019cca6435fa7d8477d7ed03dd4bcfb8f39f1b1f6eb75f7b28d843a5c"},
+    "styles.css": {"sha256": "f828f2cd82e94d7d6de3a90d603dccdb9be1223fa6fc7ada36e5a4820444a911"},
+    "table_widths_ui.js": {"sha256": "3ab7c60b71194c5b93967e6ebdbf9480793afa9744c2b2907504d97280ea06a2"},
+    "test_sandbox_nazk_columns_integrity.py": {"sha256": "c960db5317e5e21dc80e3aac5c8d202afde8399068688035e7bb203aad3f0db9"},
+    "test_sandbox_ui_integrated_d457_integrity.py": {"sha256": "b13d5dd4d639b40c86fbb99cb955240f1277d06726de86be36d7bc991d7afc02"},
+    "validation/local_release_20260911/test_chat_widths.py": {"sha256": "813c47f97602e83ce25e92a492aaf478ad8230407c7d9af7f8581bb9be7dbdad"},
+    "validation/local_release_20260911/test_supplier_edr_filter.py": {"sha256": "e628f32740fab8958f0d43a548e24f5dd5fa472a8e86ae91c9fc80b380f8b4b9"},
+    "validation/table_widths_native_browser.cjs": {"sha256": "5701002b8533cd02900c790bcc97c552a9dee98deabc1b3f8e2cfbc74cb453c1"},
+    "validation/table_widths_unified_browser.cjs": {"sha256": "5feabbd34d2ebd047864a3c1d62e2317c6ebfe7bbd7cbe6b20dba6642bfa18e7"}
+  },
+  "protected_overrides": {
+    "app.js": {
+      "sha256": "0d04bf068922b3c60ad0ad346ccf6b645d1d4a2635089a365be941cbc9a13ff1",
+      "halloween_normalized_sha256": "0d04bf068922b3c60ad0ad346ccf6b645d1d4a2635089a365be941cbc9a13ff1",
+      "personal_theme_normalized_sha256": "c8aae09ea080f7975d0d32321b9e14217b1d0706d5fb79bf2beb0779c8d25766"
+    },
+    "server.py": {
+      "sha256": "286d057019cca6435fa7d8477d7ed03dd4bcfb8f39f1b1f6eb75f7b28d843a5c",
+      "halloween_normalized_sha256": "286d057019cca6435fa7d8477d7ed03dd4bcfb8f39f1b1f6eb75f7b28d843a5c",
+      "personal_theme_normalized_sha256": "e9fca54b822f04528b3907b33d58e8b6e920b80a9e1a7b818526b84f4a3d4494"
+    }
+  },
+  "remove_from_guarded_files": [
+    "test_sandbox_nazk_columns_integrity.py",
+    "test_sandbox_ui_integrated_d457_integrity.py",
+    "validation/local_release_20260911/test_chat_widths.py",
+    "validation/local_release_20260911/test_supplier_edr_filter.py",
+    "validation/table_widths_native_browser.cjs",
+    "validation/table_widths_unified_browser.cjs"
+  ],
+  "remove_from_protected_files": [],
+  "guarded_overrides": {
+    "test_sandbox_admin_officer_link_integrity.py": {"sha256": "d63e9a2300299bab185b9339f525ad05d28adf8541edf2a9a1ce2fe1af49fb7a"},
+    "test_violation_report_kpi_facets.py": {"sha256": "78145705a37f1806f5d28e142dba98cd6a12a4f76ef61c3304874b42cba6f7c7"},
+    "validation/nazk_toolbar_layout_browser.cjs": {"sha256": "ac167c758a91c41001b454960b078b2e45130dff46f53fd71d57703d8aa6500c"},
+    "validation/column_settings_popover_browser.cjs": {"sha256": "2a3ef7af1920848ebdc2120417ab17264c6e70bf7fad03236de72d91351bf6fa"},
+    "validation/fixtures/column_widths_baseline_4625498.zip": {"sha256": "e097419090fb4d0e83e32f6a0a5e9ff21cecdec897e7ac28f2a15ad82966e6c1"},
+    "validation/run_local_release.py": {"sha256": "1a25d78f59d95dcd640655471730e98567ce2649b3ab510e6d4c8fffffdcbc74"}
+  }
+}

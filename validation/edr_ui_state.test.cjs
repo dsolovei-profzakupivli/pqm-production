@@ -46,7 +46,7 @@ for(const scenario of [
 test('shared topbar keeps the existing Back action separate from PQM and preserves its history handler',()=>{
   const html=fs.readFileSync('index.html','utf8');
   const css=fs.readFileSync('styles.css','utf8');
-  assert.match(html,/<header class="topbar">[\s\S]*?<div class="brand">[\s\S]*?id="environmentBanner"[^>]*>PQM<\/em>/);
+  assert.match(html,/<header class="topbar">[\s\S]*?<div class="brand prod-brand">[\s\S]*?id="environmentBanner"[^>]*>PQM<\/em>/);
   assert.match(navigation,/button\.textContent='← Назад';button\.id='pqmBack'/);
   assert.match(navigation,/document\.querySelector\('header\.topbar'\);header\?\.insertBefore\(button,header\.querySelector\('#mainNav'\)\)/);
   assert.match(navigation,/dialogButton=button\.cloneNode\(true\);dialogButton\.id='pqmDialogBack'/);
@@ -166,8 +166,9 @@ test('shared supplier code action keeps code and arrow in one row',()=>{
   assert.equal(opened,1);assert.equal(stopped,true);
 });
 
-test('five EDR metadata cards retain readable typography and SANDBOX theme',()=>{
+test('five EDR metadata cards retain readable typography and follow selected theme',()=>{
   const css=fs.readFileSync('styles.css','utf8');
+  const theme=fs.readFileSync('theme.css','utf8');
   const root=fs.readFileSync('index.html','utf8');
   const sandbox=fs.readFileSync('sandbox_runtime.py','utf8');
   const metadata=css.match(/\.supplier-edr-metadata\{([^}]*)\}/)?.[1]||'';
@@ -177,7 +178,8 @@ test('five EDR metadata cards retain readable typography and SANDBOX theme',()=>
   assert.ok(Number(labels.match(/font-size:(\d+)px/)?.[1])>=12);
   assert.ok(Number(values.match(/font-size:(\d+)px/)?.[1])>=14);
   assert.ok(Number(values.match(/font-weight:(\d+)/)?.[1])>=700);
-  assert.match(css,/html\[data-pqm-environment="sandbox"\] \.supplier-edr-metadata>div\{[^}]*background:/);
+  assert.doesNotMatch(css,/html\[data-pqm-environment="sandbox"\] \.supplier-edr-metadata/);
+  assert.match(theme,/html\[data-theme="dark"\] #supplierProfileBody \.supplier-edr-metadata>div\{[^}]*background-color:#132840/);
   assert.match(sandbox,/id="sandboxWarning"[^\n]*position:fixed;bottom:0/);
   assert.doesNotMatch(root,/id="sandboxWarning"|id="pqmSandboxTheme"/);
   const edr=app.slice(app.indexOf('<section class="supplier-profile-section supplier-profile-edr">'),app.indexOf('<section class="supplier-profile-section supplier-nazk-context">'));

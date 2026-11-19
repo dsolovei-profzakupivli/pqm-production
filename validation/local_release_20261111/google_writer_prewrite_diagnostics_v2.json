@@ -1,0 +1,34 @@
+{
+  "contract": "pqm-sandbox-google-writer-prewrite-diagnostics",
+  "version": 2,
+  "baseline": "40a6598c13221372969f556c48e8165769d59343",
+  "normalization": "CRLF-to-LF only for text files",
+  "scope": [
+    "google_writer_execution.py",
+    "google_writer_ui.js",
+    "test_google_writer_execution.py",
+    "test_google_writer_prewrite_close.py",
+    "validation/google_writer_prewrite_preflight_ui.test.cjs",
+    "server.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs",
+    "test_google_writer_prewrite_diagnostics_integrity_v2.py",
+    "validation/run_google_writer_prewrite_diagnostics_v2.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "9beb6dbcd952bce6f1e97bc229373f35c908091c2577848c424a474cb93f527d",
+    "google_writer_ui.js": "24527e639a3a7ec8a358b0fb7b43164382cca6cc01ade869cfef65b2795ac795",
+    "test_google_writer_execution.py": "a79bb5c13e6102310a73ce68587f98b82f6db31d91d820ff6f7070f8b91017ab",
+    "test_google_writer_prewrite_close.py": "f433fd30bea1d8e78949dc678a8b3cdabfd04a632b0d1a47d220498593ca1606",
+    "validation/google_writer_prewrite_preflight_ui.test.cjs": "44137e855913d940e30e22638eeb7d7c8f365ef7474a0294bbf7c278a9a6260a",
+    "server.py": "f5e9104e1120ba5e772928a4a707a658d042304eec7617dec119c34a83245901",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "e9d394577d87be8ef6c7cf07194adb54cb7692839e8918112de75d356cf5fbea",
+    "test_google_writer_prewrite_diagnostics_integrity_v2.py": "72433b4ecbff85c85cd7190a06689ca53226d1f832cad6e86b0e529ba565a059",
+    "validation/run_google_writer_prewrite_diagnostics_v2.py": "cc77b2bb40990e1943bb60d4e0a3a446ec3272eaabfb7c4b7b6db40380dd8554"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+    "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6",
+    "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494",
+    "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd"
+  }
+}

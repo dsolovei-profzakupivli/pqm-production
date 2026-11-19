@@ -201,7 +201,9 @@ class RegistryUxCleanupTests(unittest.TestCase):
 
     def test_framework_search_ignores_stale_responses(self):
         self.assertIn("frameworkRequestSequence", self.app)
-        self.assertIn("if(requestSequence!==frameworkRequestSequence)return", self.app)
+        self.assertIn("const seq=++frameworkRequestSequence", self.app)
+        self.assertIn("if(seq!==frameworkRequestSequence)return", self.app)
+        self.assertIn("if(seq===frameworkRequestSequence)", self.app)
 
     def test_framework_search_enriches_bids_candidates_with_local_titles(self):
         source = (ROOT / "server.py").read_text(encoding="utf-8")

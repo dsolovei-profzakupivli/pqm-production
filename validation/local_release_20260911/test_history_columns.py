@@ -27,5 +27,14 @@ class HistoryColumnsTests(unittest.TestCase):
         self.c.executemany('INSERT INTO submissions VALUES(?,?,?,?)',[('a','123','Old','2026-09-01T10:00:00+03:00'),('b','123','Latest','2026-09-03T10:00:00+03:00'),('c','999','Other','2026-09-04T10:00:00+03:00')])
         self.assertEqual(server.latest_supplier_submission_name(self.c,'123'),'Latest')
         self.assertEqual(server.latest_supplier_submission_name(self.c,'000'),'')
+    def test_latest_literal_name_is_not_google_qualification_eligibility(self):
+        self.c.create_function('DIGITS',1,lambda s:''.join(x for x in (s or '') if x.isdigit()))
+        self.c.execute('CREATE TABLE submissions(id TEXT,supplier_code TEXT,supplier_name TEXT,date_published TEXT,status TEXT)')
+        self.c.executemany('INSERT INTO submissions VALUES(?,?,?,?,?)',[
+            ('old','123','Earlier literal','2026-10-13T09:00:00+03:00','active'),
+            ('pending','123','Latest pending literal','2026-10-13T10:00:01+03:00','pending'),
+        ])
+        self.assertEqual(server.latest_supplier_submission_name(self.c,'123'),'Latest pending literal')
+        self.assertEqual(self.c.execute('SELECT supplier_name,status FROM submissions WHERE id=?',('old',)).fetchone()[:],('Earlier literal','active'))
 
 if __name__=='__main__':unittest.main()

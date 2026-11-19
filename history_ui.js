@@ -25,16 +25,28 @@ async function loadApplicationHistory(){
   await ensureHistoryColumns();
   q.set('sorts',JSON.stringify(historySorts));
   document.querySelectorAll('[data-history]').forEach(el=>q.set(el.dataset.history,el.value.trim()));
+  const selection=$$('#historyReviewOfficerOptions input:checked').map(input=>input.value);
+  selection.forEach(value=>q.append('review_officer',value));
   try{
     const data=await request(`/api/application-history?${q}`);if(ticket!==historyRequest)return;
     historyItems=data.items;historyPages=data.pages;
+    const checked=$$('#historyReviewOfficerOptions input:checked').map(input=>input.value);
+    $('#historyReviewOfficerOptions').innerHTML=(data.review_officers||[]).map(name=>
+      `<label><input type="checkbox" value="${esc(name)}" ${checked.includes(name)?'checked':''}> ${esc(formatOfficerName(name))}</label>`).join('');
+    updateMultiSummary('historyReviewOfficerFilter','УО розгляду',checked,formatOfficerName);
     $('#historyTotal').textContent=String(data.total);syncHistorySupplierCardButton();
     renderHistoryTable();
     $('#historyCount').textContent=`${data.total} заявок · сторінка ${data.page} із ${data.pages}`;
     $('#historyPrev').disabled=historyPage<=1;$('#historyNext').disabled=historyPage>=historyPages;
   }catch(error){if(ticket===historyRequest){$('#historyCount').textContent=error.message;$('#historyTotal').textContent='—'}}
 }
+function resetHistoryReviewOfficers(){
+  $$('#historyReviewOfficerOptions input').forEach(input=>input.checked=false);
+  $('#historyReviewOfficerFilter').open=false;
+  updateMultiSummary('historyReviewOfficerFilter','УО розгляду',[]);
+}
 function openSupplierHistory(code){
+  resetHistoryReviewOfficers();
   $('#supplierProfileDialog').close();document.querySelectorAll('[data-history]').forEach(el=>el.value='');
   document.querySelector('[data-history="code"]').value=String(code||'').trim();historyPage=1;syncHistorySupplierCardButton();showModule('history');loadApplicationHistory();
 }
@@ -42,7 +54,7 @@ document.querySelector('#historyHeadingActions').insertAdjacentHTML('afterbegin'
 document.querySelector('#historySupplierCard').onclick=()=>{const code=historySupplierCode();if(code)openSupplierProfile(code)};
 $('#historyNav').onclick=()=>{showModule('history');loadApplicationHistory()};
 $('#historyFilters').oninput=()=>{syncHistorySupplierCardButton();clearTimeout(historyTimer);historyTimer=setTimeout(()=>{historyPage=1;loadApplicationHistory()},300)};
-$('#historyReset').onclick=()=>{document.querySelectorAll('[data-history]').forEach(el=>el.value='');historyPage=1;syncHistorySupplierCardButton();loadApplicationHistory()};
+$('#historyReset').onclick=()=>{resetHistoryReviewOfficers();document.querySelectorAll('[data-history]').forEach(el=>el.value='');historyPage=1;syncHistorySupplierCardButton();loadApplicationHistory()};
 $('#historyPrev').onclick=()=>{if(historyPage>1){historyPage--;loadApplicationHistory()}};
 $('#historyNext').onclick=()=>{if(historyPage<historyPages){historyPage++;loadApplicationHistory()}};
 $('#historyRows').onclick=e=>{const b=e.target.closest('[data-history-docs]');if(b){const x=historyItems[Number(b.dataset.historyDocs)];openHistoryDocuments(mapRow(x),x.document_groups||{supplier:x.documents||[],decision:x.decision_documents||[],registry:x.registry_documents||[]})}};

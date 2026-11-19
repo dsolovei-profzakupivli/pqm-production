@@ -77,8 +77,13 @@ class WebAcceptance(unittest.TestCase):
         for path in ['/api/health','/api/auth/me','/api/account','/api/applications','/api/application-history','/api/application-profiles','/api/admin/access-roles','/api/admin/users','/api/admin/schema','/api/admin/frameworks','/api/admin/templates','/api/uo-work-queue','/api/violation-reports','/api/chats','/api/table-widths','/api/runtime-features','/api/supplier-profile/00000000']:
             self.assertEqual(200,self.request(path)[0],path)
         templates=self.request('/api/admin/templates')[1]
-        self.assertEqual(7,len(templates['items']))
-        self.assertTrue({'amcu_exclusion_protocol','termination_exclusion_protocol','nazk_supplier_request'} <= {x['key'] for x in templates['items']})
+        expected_template_keys = {
+            'warning', 'decline_p49_1_2', 'decline_p49_3', 'application_protocol',
+            'nazk_supplier_request', 'nazk_authority_request', 'amcu_exclusion_protocol', 'termination_exclusion_protocol',
+            'decline_individual_review',
+        }
+        actual_template_keys = {item['key'] for item in templates['items']}
+        self.assertEqual(expected_template_keys, actual_template_keys)
         for item in templates['items']:
             self.assertEqual(200,self.request('/api/admin/templates/'+item['key']+'/download')[0])
         self.assertEqual(404,self.request('/api/nonexistent')[0])
@@ -246,7 +251,7 @@ class WebAcceptance(unittest.TestCase):
 
     def test_09_public_favicons(self):
         from html.parser import HTMLParser
-        import struct
+        import xml.etree.ElementTree as ET
         class IconLinks(HTMLParser):
             def __init__(self):super().__init__();self.items=[]
             def handle_starttag(self, tag, attrs):
@@ -255,16 +260,25 @@ class WebAcceptance(unittest.TestCase):
         status,html,_=self.request('/',None)
         self.assertEqual(200,status)
         links=IconLinks();links.feed(html.decode())
-        expected={'/assets/pqm-search-icon.png':192,'/assets/pqm-tab-icon.png':32}
-        self.assertEqual(set(expected),{item['href'] for item in links.items})
+        expected=[
+            ('icon','/assets/pqm-q-favicon-prod-192.png?v=6','192x192'),
+            ('icon','/assets/pqm-q-favicon-prod.svg?v=6','any'),
+            ('icon','/assets/pqm-q-favicon-prod-16.png?v=6','16x16'),
+            ('icon','/assets/pqm-q-favicon-prod-32.png?v=6','32x32'),
+            ('apple-touch-icon','/assets/pqm-q-favicon-prod-180.png?v=6',None),
+        ]
+        self.assertEqual(expected,[(item['rel'],item['href'],item.get('sizes')) for item in links.items])
         for item in links.items:
             status,raw,headers=self.request(item['href'],None)
             self.assertEqual(200,status)
-            self.assertEqual('image/png',headers['Content-Type'])
-            self.assertEqual(b'\x89PNG\r\n\x1a\n',raw[:8])
-            size=expected[item['href']]
-            self.assertEqual((size,size),struct.unpack('>II',raw[16:24]))
-            if item['rel']=='icon':self.assertEqual(f'{size}x{size}',item['sizes'])
+            if item['href'].endswith('.png?v=6'):
+                self.assertEqual('image/png',headers['Content-Type'])
+                self.assertTrue(raw.startswith(b'\x89PNG\r\n\x1a\n'))
+                continue
+            self.assertEqual('image/svg+xml',headers['Content-Type'])
+            root=ET.fromstring(raw)
+            ns='{http://www.w3.org/2000/svg}'
+            self.assertEqual('0 0 48 48',root.get('viewBox'))
 
 if __name__=='__main__':
     if '--serve' in sys.argv:

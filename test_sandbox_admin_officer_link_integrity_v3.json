@@ -1,0 +1,61 @@
+{
+  "variant_id": "sandbox-admin-officer-link-v3",
+  "baseline_sha": "4625498cdb938f704cb8dc125c77bf58b2c2a7da",
+  "base_manifest": "test_sandbox_admin_officer_link_integrity_v2.json",
+  "base_manifest_sha256": "0c908cbc2c8da86c7ff95d8e09d99122c8524090d9205e3d4951678fda66db08",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "close_reference_directory_sqlite_connections",
+    "close_winner_snapshot_sqlite_connections",
+    "release_test_fixture_sqlite_connections",
+    "ascii_safe_amcu_worker_json",
+    "stable_local_http_fixture_teardown"
+  ],
+  "product_files_additional": {
+    "reference_directories.py": {
+      "sha256": "8b893ae98a514e698145bcd6285787a115c045f1eb8afd716468cc5e9f50fe7a"
+    }
+  },
+  "product_overrides": {
+    "server.py": {
+      "sha256": "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58"
+    }
+  },
+  "protected_overrides": {
+    "server.py": {
+      "sha256": "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58",
+      "halloween_normalized_sha256": "1fff8455afa5adb9a59c76941d4b32cb7b14252672ac4361325d1a211ea5ce58",
+      "personal_theme_normalized_sha256": "f3e4311b965e73fb97383d557e7c1b52007991d56329412ff9bb3d458bc1b598"
+    }
+  },
+  "remove_from_guarded_files": [
+    "reference_directories.py"
+  ],
+  "remove_from_protected_files": [],
+  "guarded_overrides": {
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "045b5d72f0514dc5e9b0e89fdc3e84d7815409ca1ff51fc4b019940a0ef1aa71"
+    },
+    "test_supplier_filter_excel.py": {
+      "sha256": "86ee2cf0209e3b4637c13204164499ba66fb9a543ed9c515f5f758a6c84d7ddd"
+    },
+    "validation/local_release_20260911/test_amcu_open_data.py": {
+      "sha256": "807edfe3d88824ae2b72d52e428e07c5f053b042224e0ac976308f58b8983353"
+    },
+    "validation/local_release_20260911/test_amcu_refresh_recovery.py": {
+      "sha256": "66ddf583b0160128ddb2ceeb074c91c037ff790685cbaae20c07d2d4f5ee06c6"
+    },
+    "validation/local_release_20260911/test_winner_decisions.py": {
+      "sha256": "bd744e729fa6d60b589d3479e47a74d64cda94af71d1f23598b6bb79e79d053b"
+    },
+    "validation/local_release_20260911/test_sandbox_operational_phase1.py": {
+      "sha256": "69fbacdcbaaf32dd04657dd8428eac97a6856fde5c9c8697aca747e05a099183"
+    },
+    "validation/local_release_20260911/test_bids_runtime.py": {
+      "sha256": "f36145967a52d19632a845ca4206562429e7a5f2f6c0a4be4da6b40b19f6195d"
+    },
+    "validation/local_release_20260911/test_admin_officer_linkage.py": {
+      "sha256": "eef9cf905325fd223c4288ea3c36bd24c6765551d50d1b785bca16c0e3b88bbe"
+    }
+  }
+}

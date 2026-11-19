@@ -181,6 +181,21 @@ def apply_plan(con, plan, expected_sha256):
         raise
 
 
+def project_decree_fields(record):
+    """Expose only decree scalars from stored raw data; never alter evidence."""
+    item = dict(record)
+    try:
+        raw = json.loads(item.pop("raw_json", None) or "{}")
+    except (TypeError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    for source, target in (("decreeNumber", "decree_number"), ("decreeDate", "decree_date")):
+        value = raw.get(source)
+        item[target] = value if isinstance(value, str) else ""
+    return item
+
+
 def registry_records(con, check_id):
     """Current projection plus explicitly labelled historical evidence, read-only."""
     evidence_exists = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone()
@@ -198,7 +213,7 @@ def registry_records(con, check_id):
             if evidence:
                 item["evidence_observed_at"] = evidence[0]["observed_at"]
                 item["registry_provenance"] = json.loads(evidence[0]["provenance_json"])
-        item.pop("raw_json", None)
+        item = project_decree_fields(item)
         item["match_status"] = relation["match_status"]
         result.append(item)
     return sorted(result, key=lambda r: (r.get("sentence_date") or "", r["source_id"]))

@@ -22,6 +22,12 @@ class ApplicationPageFirstTests(unittest.TestCase):
                 (server.now_iso(),),
             )
             con.execute(
+                """INSERT INTO framework_service_directory
+                   (pretty_id,framework_id,responsible_officer,source,synced_at)
+                   VALUES ('UA-F-PAGE','framework-page','УО ВІДБОРУ','PQM',?)""",
+                (server.now_iso(),),
+            )
+            con.execute(
                 """INSERT INTO supplier_edr_profiles
                    (supplier_code,manager_name,edr_checked_at,synced_at)
                    VALUES ('12-34','КЕРІВНИК З ЄДР','2026-08-20',?)""",
@@ -94,9 +100,45 @@ class ApplicationPageFirstTests(unittest.TestCase):
             "category": ["Їжа"],
         })
         self.assertIn("COALESCE(af.marketplace_decision,'') IN (?)", clause)
-        self.assertIn("COALESCE(q.status,'pending') IN (?)", clause)
         self.assertIn("COALESCE(fo.category,'')=?", clause)
         self.assertEqual(args, ["admit", "Їжа", "active"])
+
+    def test_status_filter_behaves_for_missing_null_pending_active_and_empty_status(self):
+        with server.db() as con:
+            con.execute("UPDATE qualifications SET status='unsuccessful'")
+            con.execute("DELETE FROM qualifications WHERE submission_id='submission-00'")
+            con.execute("UPDATE qualifications SET status=NULL WHERE submission_id='submission-01'")
+            con.execute("UPDATE qualifications SET status='pending' WHERE submission_id='submission-02'")
+            con.execute("UPDATE qualifications SET status='active' WHERE submission_id='submission-03'")
+            con.execute("UPDATE qualifications SET status='' WHERE submission_id='submission-04'")
+
+        def ids_for(status):
+            return {row["id"] for row in server.list_applications({
+                "status": [status], "size": ["100"],
+            })["items"]}
+
+        pending = ids_for("Очікує рішення")
+        active = ids_for("Допущено")
+        unsuccessful = ids_for("Відхилено")
+        self.assertEqual({"submission-00", "submission-01", "submission-02"}, pending)
+        self.assertEqual({"submission-03"}, active)
+        self.assertEqual({f"submission-{index:02d}" for index in range(5, 60)}, unsuccessful)
+        self.assertNotIn("submission-04", pending | active | unsuccessful)
+
+        all_rows = server.list_applications({"size": ["100"]})
+        self.assertEqual(all_rows["total"], 60)
+        empty_status = next(row for row in all_rows["items"] if row["id"] == "submission-04")
+        self.assertEqual(empty_status["id"], "submission-04")
+        with server.db() as con:
+            stored_status = con.execute(
+                "SELECT q.status FROM qualifications q WHERE q.submission_id=?",
+                ("submission-04",),
+            ).fetchone()
+        self.assertIsNotNone(stored_status)
+        self.assertEqual(stored_status["status"], "")
+        # Known presentation/filter mismatch: decision_label currently presents
+        # an empty status as pending, while the status filter excludes it.
+        # Keep this diagnostic visible; do not alter production behavior here.
 
     def test_search_whitelist_contains_manager_and_contract_details(self):
         clause, args = server.application_filter({"search": ["договір 42"]})
@@ -131,6 +173,7 @@ class ApplicationPageFirstTests(unittest.TestCase):
         fallback = server.list_applications({"officer": ["УО ВІДБОРУ"], "size": ["100"]})
         self.assertEqual([item["id"] for item in manual["items"]], ["submission-00"])
         self.assertNotIn("submission-00", {item["id"] for item in fallback["items"]})
+        self.assertIn("submission-01", {item["id"] for item in fallback["items"]})
         self.assertEqual(manual["items"][0]["protocol_officer"], "РУЧНА УО")
 
 

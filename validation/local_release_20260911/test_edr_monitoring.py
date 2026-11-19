@@ -1,6 +1,8 @@
 import unittest
 import csv
 import io
+import os
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,11 +11,11 @@ import edr_sync_v2
 
 
 class EdrMonitoringTests(unittest.TestCase):
-    def test_active_qualification_defaults_to_registered_without_newer_check(self):
-        for old in ('', 'Неактуально', 'Немає інформації'):
-            with self.subTest(old=old):
-                self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', []), 'Зареєстровано')
-        self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Зареєстровано')
+    def test_active_qualification_does_not_establish_edr_status(self):
+        self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', []), 'Немає інформації')
+        self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Немає інформації')
+        self.assertEqual(edr_sync_v2.operational_edr_status(
+            'Активний', '2026-08-31', [], 'Припинено'), 'Припинено')
 
     def test_sandbox_active_blank_metadata_regression_cases(self):
         # These are synthetic reproductions of the reported SANDBOX rows, not live DB assertions.
@@ -23,7 +25,7 @@ class EdrMonitoringTests(unittest.TestCase):
         ):
             with self.subTest(supplier_code=supplier_code):
                 self.assertGreater(active_qualifications, 0)
-                self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Зареєстровано')
+                self.assertEqual(edr_sync_v2.active_edr_status('', []), 'Немає інформації')
                 source = Path('server.py').read_text(encoding='utf-8')
                 projection = source.split('def _edr_monitoring_rows()', 1)[1].split('def _edr_monitoring_dk_map()', 1)[0]
                 self.assertIn('"verification_date": checked', projection)
@@ -33,13 +35,68 @@ class EdrMonitoringTests(unittest.TestCase):
         event = {'event_type': 'manual_edr', 'occurred_at': '2026-09-02',
             'officer': 'EDR Officer', 'snapshot_json': '{"edr_status":"Припинено"}'}
         self.assertEqual(edr_sync_v2.active_edr_status('2026-08-31', [event]), 'Припинено')
-        self.assertEqual(edr_sync_v2.active_edr_status('2026-09-03', [event]), 'Зареєстровано')
+        self.assertEqual(edr_sync_v2.active_edr_status('2026-09-03', [event]), 'Припинено')
+
+    def test_admission_only_establishes_registered_when_officer_checked_edr(self):
+        self.assertEqual(edr_sync_v2.active_edr_status(
+            '', [], admission_date='2026-09-03', admission_officer='Authorized UO'), 'Зареєстровано')
+        self.assertEqual(edr_sync_v2.active_edr_status(
+            '', [], 'Припинено', '2026-08-01', '2026-09-04', ''), 'Припинено')
+
+    def test_legacy_factual_evidence_requires_configured_spreadsheet_and_provenance(self):
+        digest = 'a' * 64
+        for configured in ('sandbox-registry', 'prod-registry'):
+            with self.subTest(configured=configured):
+                snapshot = {
+                    'source': 'legacy_google_registry', 'verification_date': '2026-09-02',
+                    'verification_officer': 'Actual Officer', 'source_tab': 'ФОП',
+                    'source_row': 12, 'source_digest': digest,
+                    'factual_edr_status': 'Припинено',
+                    'factual_spreadsheet_id': configured,
+                    'factual_source_tab': 'ФОП', 'factual_source_row': 12,
+                    'factual_source_digest': digest, 'factual_provenance_version': 1,
+                }
+                event = {'id': 1, 'event_type': 'legacy_google_registry',
+                         'source': 'legacy_google_registry', 'occurred_at': '2026-09-02',
+                         'officer': 'Actual Officer', 'source_sheet': 'ФОП',
+                         'source_row': 12, 'snapshot_json': json.dumps(snapshot)}
+                def projected():
+                    return edr_sync_v2.active_edr_status('2026-09-01', [event])
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': configured}):
+                    for status in edr_sync_v2.LEGACY_GOOGLE_FACTUAL_STATUSES:
+                        snapshot['factual_edr_status'] = status
+                        event['snapshot_json'] = json.dumps(snapshot)
+                        self.assertEqual(projected(), status)
+                    snapshot['factual_edr_status'] = 'Зареєстровано'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Немає інформації')
+                    snapshot['factual_edr_status'] = 'Неактуально'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Немає інформації')
+                    snapshot['factual_edr_status'] = 'Припинено'
+                    snapshot['factual_source_digest'] = ''
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Немає інформації')
+                    snapshot['factual_source_digest'] = digest
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    event['event_type'] = 'manual_edr'
+                    self.assertEqual(projected(), 'Немає інформації')
+                    event['event_type'] = 'legacy_google_registry'
+                    snapshot.pop('factual_edr_status')
+                    event['snapshot_json'] = json.dumps(snapshot)
+                    self.assertEqual(projected(), 'Немає інформації')
+                    snapshot['factual_edr_status'] = 'Припинено'
+                    event['snapshot_json'] = json.dumps(snapshot)
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': 'wrong-registry'}):
+                    self.assertEqual(projected(), 'Немає інформації')
+                with patch.dict(os.environ, {'PQM_GOOGLE_REGISTRY_SPREADSHEET_ID': ''}):
+                    self.assertEqual(projected(), 'Немає інформації')
 
     def test_current_operational_edr_status_preserves_historical_evidence(self):
         later = {'event_type': 'manual_edr', 'occurred_at': '2026-09-03',
                  'snapshot_json': '{"edr_status":"Припинено"}'}
         self.assertEqual(edr_sync_v2.operational_edr_status(
-            'Активний','2026-09-02',[],'Припинено'),'Зареєстровано')
+            'Активний','2026-09-02',[],'Припинено'),'Припинено')
         self.assertEqual(edr_sync_v2.operational_edr_status(
             'Активний','2026-09-02',[later],'Зареєстровано'),'Припинено')
         for status in ('Неактивний','Ще не в реєстрі'):
@@ -157,16 +214,15 @@ class EdrMonitoringTests(unittest.TestCase):
             self.assertEqual(server.edr_monitoring_filtered_codes(params),['46130719'])
 
     def test_missing_names_filter_combines_with_existing_filters_and_exact_export_codes(self):
-        rows = [dict(self.rows()[0], supplier_code="46130719", edr_full_name=" — ",
+        rows = [dict(self.rows()[0], entity_type="legal_entity", supplier_code="46130719", edr_full_name=" — ",
                      edr_short_name="null", prozorro_status="Активний"),
-                dict(self.rows()[0], supplier_code="33333333", edr_full_name="Назва",
+                dict(self.rows()[0], entity_type="legal_entity", supplier_code="33333333", edr_full_name="Назва",
                      edr_short_name=" ", prozorro_status="Неактивний"),
-                dict(self.rows()[0], supplier_code="44444444", edr_full_name="Назва",
+                dict(self.rows()[0], entity_type="legal_entity", supplier_code="44444444", edr_full_name="Назва",
                      edr_short_name="Коротка", prozorro_status="Активний")]
         params = {"edr_names": ["missing_any"], "prozorro_status": ["Активний"],
                   "application_from": ["2026-09-01"], "entity_type": ["legal_entity"]}
-        with patch.object(server, "_edr_monitoring_rows", return_value=rows), \
-             patch.object(server, "supplier_entity_type", return_value="legal_entity"):
+        with patch.object(server, "_edr_monitoring_rows", return_value=rows):
             listing = server.list_edr_monitoring(params)
             codes = server.edr_monitoring_filtered_codes(params)
             exported = list(csv.reader(io.StringIO(

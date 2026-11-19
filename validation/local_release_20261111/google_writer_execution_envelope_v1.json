@@ -1,0 +1,27 @@
+{
+  "contract": "pqm-sandbox-google-writer-execution-envelope",
+  "version": 1,
+  "baseline": "b4f35fc3c55ad2919dd1c08925fa2cfd13acd657",
+  "normalization": "CRLF-to-LF only for text files",
+  "scope": [
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs",
+    "test_sandbox_execution_transport.py",
+    "test_sandbox_execution_envelope_limit_v1.py",
+    "validation/run_google_writer_execution_envelope_v1.py"
+  ],
+  "files": {
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxAllScopeExecution20261109.gs": "a534eebdf8bbf672e00bf092f0c81a0fed5aa66c41144d5b750a6f139f44162e",
+    "scripts/pqm-google-writer/sandbox-full-apply.test.cjs": "6b5e5cbf191633323907c1819c360b8c9d46033a606c79ede7eb86e0f39048f5",
+    "test_sandbox_execution_transport.py": "6196e3d0d152f85de84d16e497637b6c2719cffec709c7597ad6e7f8c0504a0e",
+    "test_sandbox_execution_envelope_limit_v1.py": "e5ada740413eeddff2cd43d5441abf016a90bbfeb0db0d7e7fad0c8bd84f028c",
+    "validation/run_google_writer_execution_envelope_v1.py": "bfad4e744451651fa25c764133356d096a39b1359307412e86803b10fb2556b4"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261111/google_writer_prewrite_egress_v1.json": "92d475bc10a69e1053204600bbb64edad2d40e36f336339ea6456ae08fb33e5e",
+    "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+    "validation/local_release_20261111/google_writer_prewrite_diagnostics_v2.json": "61e31d839778b8c930f3d79d2402e1f710827ed25441920e5bf5cc85f2f51507",
+    "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+    "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6"
+  }
+}

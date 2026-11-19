@@ -1,0 +1,110 @@
+{
+  "variant_id": "sandbox-nazk-appeals-stabilization-v4",
+  "baseline_sha": "fc719b07f7ce6bd43fcdf9815795f0f2906901e8",
+  "base_manifest": "test_sandbox_nazk_appeals_stabilization_v3.json",
+  "base_manifest_sha256": "3b90b40c6474c1be098c00e345b996ad4b9313359d59fc4c88c54ac440877c15",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "allow-appeals-scenario-row-height-to-grow-without-clipping",
+    "increase-supplier-warning-counter-heading-gap",
+    "link-appeal-card-to-exact-zakupivli-pro-platform-id",
+    "map-technical-appeal-statuses-to-ukrainian-labels",
+    "render-full-appeals-scenario-with-natural-wrapping-at-configured-column-width"
+  ],
+  "product_overrides": {
+    "styles.css": {
+      "sha256": "e9aa774b1d4919de236ecead54802fb4c888e2a97c24595eee3857035efe96f4"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "e7808ec7caa962ceea8b3e6763e6827899bc1dc0a728219ad12e808899802d87"
+    },
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "e9846f4211cecf6b96e80ff5e4d5a4b5df069b59132202929b05e941717dad18"
+    },
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "dc863f4a1075d56be16697266af101a9bcdd65babefca08702a4097810a5aff1"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "9953b013d18856d7b6c7a7079681e9a5baa2622f3e9b07d9cd0b319029366077"
+    },
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py": {
+      "sha256": "5d010468ff753ad6f7f07ff1969076559ae55ee4f0f23b035631c0b9542e4803"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "9ed91178c8d23ac22d5b374f10a0f1eae90897efdc9cfd374eee9775f3a8068d"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "de5a28fe1e7e8c2245cd05c8eba6a0418c2b29c51bc3c69bd47cb3a2967574ff"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "222efcddb8f54c04d2a27e5cb74528f1cedc33f6bea916afab13b0912d96e9cc"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "ce9b1a6fca6327d052033709028e3cd72fb859f3c666f1edf386aed0b3875560"
+    },
+    "validation/table_widths_unified_browser.cjs": {
+      "sha256": "4d93a0bd805a825026ecc2509cd427ab8a24b85aa8c3af53bf51bc1e8037b93e"
+    },
+    "app.js": {
+      "sha256": "592b68352d3fe875bf7027c7d8740c5d2abe4b085bb7a84e26ee63db32cbab7c"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "a97b14a6e34e171e2bc2294a45ea8c1b8e81d4d65ddc30580c20e6f5caa933e2"
+    }
+  },
+  "product_files_additional": {
+    "test_sandbox_nazk_appeals_stabilization_v4_integrity.py": {
+      "sha256": "444f60126fc98715b3f01f6ade80c4afa4532c73842a5863bb52266d9f057138"
+    },
+    "validation/fixtures/table_widths_v11_tail.zip": {
+      "sha256": "b7e55b6048e5dccc920ef895ce16d9f0e2e6d9b64673055c1a0762f9029b2d95"
+    }
+  },
+  "guarded_overrides": {
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "e7808ec7caa962ceea8b3e6763e6827899bc1dc0a728219ad12e808899802d87"
+    },
+    "test_sandbox_appeals_scenario_api_integrity.py": {
+      "sha256": "e9846f4211cecf6b96e80ff5e4d5a4b5df069b59132202929b05e941717dad18"
+    },
+    "test_sandbox_appeals_scenario_readonly_integrity.py": {
+      "sha256": "dc863f4a1075d56be16697266af101a9bcdd65babefca08702a4097810a5aff1"
+    },
+    "test_sandbox_nazk_appeals_stabilization_integrity.py": {
+      "sha256": "9953b013d18856d7b6c7a7079681e9a5baa2622f3e9b07d9cd0b319029366077"
+    },
+    "test_sandbox_nazk_appeals_stabilization_v3_integrity.py": {
+      "sha256": "5d010468ff753ad6f7f07ff1969076559ae55ee4f0f23b035631c0b9542e4803"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "9ed91178c8d23ac22d5b374f10a0f1eae90897efdc9cfd374eee9775f3a8068d"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "de5a28fe1e7e8c2245cd05c8eba6a0418c2b29c51bc3c69bd47cb3a2967574ff"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "222efcddb8f54c04d2a27e5cb74528f1cedc33f6bea916afab13b0912d96e9cc"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "ce9b1a6fca6327d052033709028e3cd72fb859f3c666f1edf386aed0b3875560"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "a97b14a6e34e171e2bc2294a45ea8c1b8e81d4d65ddc30580c20e6f5caa933e2"
+    }
+  },
+  "guarded_additions": {
+    "test_sandbox_nazk_appeals_stabilization_v4_integrity.py": {
+      "sha256": "444f60126fc98715b3f01f6ade80c4afa4532c73842a5863bb52266d9f057138"
+    },
+    "validation/fixtures/table_widths_v11_tail.zip": {
+      "sha256": "b7e55b6048e5dccc920ef895ce16d9f0e2e6d9b64673055c1a0762f9029b2d95"
+    }
+  },
+  "protected_overrides": {
+    "app.js": {
+      "sha256": "592b68352d3fe875bf7027c7d8740c5d2abe4b085bb7a84e26ee63db32cbab7c",
+      "halloween_normalized_sha256": "592b68352d3fe875bf7027c7d8740c5d2abe4b085bb7a84e26ee63db32cbab7c",
+      "personal_theme_normalized_sha256": "6271361e30e08b1a45f3bbb56c40f562b8deaa29a004cff1088ab8df312eefbb"
+    }
+  }
+}

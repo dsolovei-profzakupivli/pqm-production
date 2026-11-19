@@ -1,0 +1,41 @@
+{
+  "variant_id": "sandbox-nazk-scroll-v1",
+  "baseline_sha": "fc719b07f7ce6bd43fcdf9815795f0f2906901e8",
+  "base_manifest": "test_sandbox_nazk_appeals_integrated_v1.json",
+  "base_manifest_sha256": "0cb672a1d10e55562a2672a36c4089cd657bc62cba7499ffa42ecc15d3eaa3e2",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "restore-bounded-vertical-scroll-to-last-nazk-row",
+    "preserve-sticky-header-and-horizontal-overflow",
+    "compact-preview-toolbar-and-remove-duplicate-read-only-notice"
+  ],
+  "product_overrides": {
+    "nazk_preview.css": {
+      "sha256": "b3d0dd81278c8de0fb52e6536df244bc5a0b778b61b5bac9cb22a154a1e395d8"
+    },
+    "nazk_preview.js": {
+      "sha256": "508b21cdccca14fbd68d150be2ad535e351e988d3003a3d2b793a2326aa8593e"
+    },
+    "validation/nazk_preview_browser.cjs": {
+      "sha256": "bd6f96d719e519fc3385586703336184dad406079fb51c16381c0f33f3c8e2df"
+    },
+    "validation/nazk_preview_scroll_browser.cjs": {
+      "sha256": "3576f7b905faafc33e80f89bcb04bdd2657d86ee6257660b1c95ee172194f8d5"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "ffb787bd963ed98b1b7c0149c9bd1a941982f88599778c52b0c509d7059c2146"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "b2af3b55e0abf78d31be3753c96231aa5c034471f1e16f89860f9ef681425e43"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "8d378c8af4128c031018b8a100b8df05fbc550501f193809fa1a528f79a93c94"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "f8926d19a379926b3ee34a763412099cea56b02af36bebd690794c183defb5e8"
+    },
+    "test_sandbox_nazk_scroll_integrity.py": {
+      "sha256": "b7397f27f9a64e8c1b3d996106a2fe036bddbfdd7a26db65cd9dd6e81c57f85b"
+    }
+  }
+}

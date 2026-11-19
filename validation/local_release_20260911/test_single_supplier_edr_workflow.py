@@ -25,19 +25,24 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
             con.execute("""INSERT INTO submissions
               (id,framework_id,supplier_code,supplier_name,date_published,raw_json,synced_at)
               VALUES('s','f','46130719','ІСТОРИЧНА НАЗВА','2026-09-27',?,?)""",
-              (json.dumps({'tenderers': [{'identifier': {'id': '46130719', 'scheme': 'UA-EDR'}}]}),
+              (json.dumps({'tenderers': [{'identifier': {'id': '46130719', 'scheme': 'UA-EDR'}, 'address': {'countryName': 'Україна'}, 'legalForm': 'legal_entity'}]}),
                server.now_iso()))
             con.execute("""INSERT INTO application_fields(submission_id,protocol_decision)
               VALUES('s','admit')""")
+            con.execute("""INSERT INTO qualifications
+              (id,framework_id,submission_id,status,decision_date,raw_json,synced_at)
+              VALUES('q','f','s','active','2026-09-27','{}',?)""",
+              (server.now_iso(),))
+            con.execute("UPDATE submissions SET qualification_id='q' WHERE id='s'")
 
     def tearDown(self):
         server.DB_PATH = self.old_db
         self.temp.cleanup()
 
     @staticmethod
-    def source(full, short, status='✅ Зареєстровано'):
+    def source(full, short, status='✅ Зареєстровано', checked='28.09.2026 12:00:00'):
         values = ['', '46130719', 'ІСТОРИЧНА НАЗВА', 'КЕРІВНИК', status,
-                  'Активний', '', '', '27.09.2026', '', '', 'УО', '', full, short]
+                  'Активний', '', '', checked, '', '', 'УО', '', full, short]
         return edr_sync_v2.source_snapshot({'ФОП': [list(edr_sync_v2.HEADERS)],
                                             'ЮО': [list(edr_sync_v2.HEADERS), values]})
 
@@ -46,7 +51,45 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
             return edr_sync_v2.apply(con, source, source['source_fingerprint'],
                                      confirmed=True, actor='offline-test', synced_at=server.now_iso())
 
+    def add_active_contract(self):
+        with server.db() as con:
+            con.execute("""INSERT INTO registry_contracts
+              (id,framework_id,qualification_id,supplier_code,status,raw_json,synced_at)
+              VALUES('rc','f','q','46130719','active','{}',?)""", (server.now_iso(),))
+
+    def test_legacy_edr_statuses_are_canonical_at_card_boundary_without_db_migration(self):
+        self.add_active_contract()
+        pairs = (
+            ('✅ Зареєстровано', 'Зареєстровано'),
+            ('⚪️ Неактуально', 'Неактуально'),
+            ('🔴 Припинено', 'Припинено'),
+            ('🟡 В стані припинення', 'В стані припинення'),
+            ('🟡 Порушено справу про банкрутство', 'Порушено справу про банкрутство'),
+            ('⚪️ Немає інформації', 'Немає інформації'),
+        )
+        for presented, canonical in pairs:
+            for raw in (presented, canonical):
+                with self.subTest(raw=raw):
+                    with server.db() as con:
+                        con.execute("""INSERT INTO supplier_edr_profiles
+                          (supplier_code,edr_status,synced_at) VALUES('46130719',?,'fixture')
+                          ON CONFLICT(supplier_code) DO UPDATE SET edr_status=excluded.edr_status""",
+                          (raw,))
+                    self.assertEqual(server.supplier_profile('46130719')['edr_profile']['edr_status'],
+                                     canonical)
+                    self.assertEqual(edr_sync_v2.operational_edr_status(
+                        'Призупинений', '', [], raw), canonical)
+                    self.assertEqual(edr_sync_v2.active_edr_status('2026-09-01', [{
+                        'id': 1, 'event_type': 'manual_edr', 'occurred_at': '2026-09-02',
+                        'snapshot_json': json.dumps({'edr_status': raw})
+                    }]), canonical)
+                    with server.db() as con:
+                        self.assertEqual(con.execute(
+                            "SELECT edr_status FROM supplier_edr_profiles WHERE supplier_code='46130719'"
+                        ).fetchone()[0], raw)
+
     def test_new_row_preview_apply_card_lookup_and_repeat_noop(self):
+        self.add_active_contract()
         with server.db() as con:
             item = next(x for x in server.supplier_registry_integration.full_registry(con)['items']
                         if x['supplier_code'] == '46130719')
@@ -95,10 +138,42 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'ambiguous'):
                 server.sandbox_supplier_google_row('46130719')
 
+    def test_monitoring_literal_eligible_codes_survive_projection_and_endpoint(self):
+        codes = ('2981209581 ', 'СР 918414', '00001234', 'AB-12')
+        with server.db() as con:
+            for index, code in enumerate(codes):
+                submission_id, qualification_id = f's{index}', f'q{index}'
+                con.execute("""INSERT INTO submissions
+                  (id,framework_id,supplier_code,supplier_name,date_published,raw_json,synced_at,qualification_id)
+                  VALUES(?,?,?,?,?,'{}',?,?)""",
+                  (submission_id, 'f', code, code, '2026-09-28', server.now_iso(), qualification_id))
+                con.execute("""INSERT INTO qualifications
+                  (id,framework_id,submission_id,status,decision_date,raw_json,synced_at)
+                  VALUES(?,?,?,?,'2026-09-28','{}',?)""",
+                  (qualification_id, 'f', submission_id,
+                   'unsuccessful' if index == 1 else 'active', server.now_iso()))
+            expected = server.edr_sync_v2.monitoring_population_codes(con)
+            self.assertEqual(len(expected), 5)
+            self.assertEqual(len(expected), len(expected))
+            registry = server.supplier_registry_integration.eligible_full_registry(con)
+            self.assertEqual({item['supplier_code'] for item in registry['items']},
+                             expected)
+        server.EDR_MONITORING_CACHE['fingerprint'] = None
+        response = server.list_edr_monitoring({'page': ['1'], 'size': ['100']})
+        self.assertEqual(response['total'], len(expected))
+        self.assertEqual(sum(response['kpis'].values()), len(expected))
+        self.assertEqual({item['supplier_code'] for item in response['items']}, expected)
+        handler = SimpleNamespace(path='/api/edr-monitoring?page=1&size=100',
+                                  send_json=lambda body, status=200: (status, body))
+        status, payload = server.Handler._do_GET(handler)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload['total'], len(expected))
+
     def test_existing_profile_preview_apply_card_and_noop(self):
+        self.add_active_contract()
         first = self.source('ПЕРША ПОВНА', 'ПЕРША КОРОТКА', 'Зареєстровано')
         self.apply(first)
-        second = self.source('ОНОВЛЕНА ПОВНА', 'ОНОВЛЕНА КОРОТКА')
+        second = self.source('ОНОВЛЕНА ПОВНА', 'ОНОВЛЕНА КОРОТКА', checked='28.09.2026 12:00:01')
         with server.db() as con:
             preview = edr_sync_v2.build_preview(con, second)
         item = preview['items'][0]
@@ -113,6 +188,40 @@ class SingleSupplierEdrWorkflowTests(unittest.TestCase):
         repeated = self.apply(second)
         self.assertEqual(repeated['updated_profiles'], 0)
         self.assertEqual(repeated['verification_events'], 0)
+
+    def test_supplier_card_keeps_edr_termination_until_authorized_admission(self):
+        self.add_active_contract()
+        with server.db() as con:
+            con.execute("""INSERT INTO supplier_edr_profiles
+              (supplier_code,edr_status,edr_checked_at,synced_at)
+              VALUES('46130719','Припинено','2026-08-20',?)""", (server.now_iso(),))
+        card = server.supplier_profile('46130719')
+        self.assertEqual(card['edr_profile']['edr_status'], 'Припинено')
+        self.assertEqual(card['edr_canonical']['prozorro_status'], 'Активний')
+        with server.db() as con:
+            writer = next(row for row in server.supplier_registry_integration.full_registry(con)['items']
+                          if row['supplier_code'] == '46130719')
+        server.EDR_MONITORING_CACHE.update(fingerprint=None, rows=[])
+        monitoring = next(row for row in server._edr_monitoring_rows()
+                          if row['supplier_code'] == '46130719')
+        self.assertEqual((card['edr_profile']['edr_status'], monitoring['edr_status'],
+                          writer['edr_status_current']),
+                         ('Припинено', 'Припинено', 'Припинено'))
+        with server.db() as con:
+            con.execute("""UPDATE application_fields SET protocol_decision='admit',
+              protocol_date='2026-09-25',protocol_officer='Authorized UO' WHERE submission_id='s'""")
+        after = server.supplier_profile('46130719')
+        self.assertEqual(after['edr_profile']['edr_status'], 'Зареєстровано')
+        self.assertEqual(after['edr_canonical']['prozorro_status'], 'Активний')
+        with server.db() as con:
+            after_writer = next(row for row in server.supplier_registry_integration.full_registry(con)['items']
+                                if row['supplier_code'] == '46130719')
+        server.EDR_MONITORING_CACHE.update(fingerprint=None, rows=[])
+        after_monitoring = next(row for row in server._edr_monitoring_rows()
+                                if row['supplier_code'] == '46130719')
+        self.assertEqual((after['edr_profile']['edr_status'], after_monitoring['edr_status'],
+                          after_writer['edr_status_current']),
+                         ('Зареєстровано', 'Зареєстровано', 'Зареєстровано'))
 
 
 if __name__ == '__main__':

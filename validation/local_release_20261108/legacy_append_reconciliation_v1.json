@@ -1,0 +1,41 @@
+{
+  "contract": "pqm-sandbox-legacy-append-reconciliation",
+  "version": 1,
+  "baseline": "24554fefbfed9caf998c9ea142ce6dc7284f45cc",
+  "normalization": "CRLF-to-LF only for text files",
+  "scope": [
+    "google_writer_execution.py",
+    "sandbox_runtime.py",
+    "server.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs",
+    "test_google_writer_partial_reconciliation.py",
+    "test_partial_reconciliation_legacy_20261108.py",
+    "test_sandbox_execution_transport.py",
+    "validation/run_local_release.py",
+    "validation/run_google_writer_receipt_recovery_v1_history.py",
+    "validation/fixtures/google_writer_receipt_recovery_v1_exact_24554fef.zip",
+    "test_legacy_append_reconciliation_integrity_v1.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "2ce246332c75fa3a23ae37ee47a03dad20daa2b5b7931c01ae76a4d4a5ba5f2f",
+    "sandbox_runtime.py": "aa2388c3ba675322de4e85248efdf74ef2dd5765492c1bcc2da7ee82d3b141ac",
+    "server.py": "8c717e737dd155f758b9fa0c12f48a33578ddd18a5cbb290e56c3aaa176502e7",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/PqmSandboxExecution.gs": "e1e144530727b1b330183fa79a8ab4fe26f1e4efe6ece709a2bd0dd3b3c48a5e",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/partial-reconciliation.test.cjs": "09eba73cf4222594a602566ec38f7b62566beb3046cba900e45979c417c05fcc",
+    "test_google_writer_partial_reconciliation.py": "00d7e1babfc0b68cbd1e10d18b500dddf3fc32b29e5a1ff57d62ba40dd9c8068",
+    "test_partial_reconciliation_legacy_20261108.py": "56f250ad957f44decaad44381e8a9bb26b65af83ce9d5b37818ce75cc307474e",
+    "test_sandbox_execution_transport.py": "562d53334da6cc4aec80176fe9ee6551787ad0e03213793d7d154e9835514f20",
+    "validation/run_local_release.py": "4bdbd07e1b4c895c7aca77eb2f3077d324e50ce9b18938be3000cc65ba09cbda",
+    "validation/run_google_writer_receipt_recovery_v1_history.py": "3a7340aac558b192f9bba04636a81d0367f08efce818dc5c797c2d59b5d93d04",
+    "validation/fixtures/google_writer_receipt_recovery_v1_exact_24554fef.zip": "0061afdc2513977d4dd527dea701d972268444a3d99678b0478f353d35f35a5e",
+    "test_legacy_append_reconciliation_integrity_v1.py": "7f620c88a9b5efb452ab6a38aa125157f079a68a1341175789ef34256f37a955"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261108/google_writer_receipt_recovery_v1.json": "bc73d1e6a1927ed71a50846a77fcfcdd0c8537a1e58b0478a6e03d1d3cf7af3b",
+    "validation/local_release_20261107/partial_reconciliation_prepared_retry_v1.json": "9af626c5970e486be10e05869e3dcd060e773819820550a30f23205987be4905",
+    "validation/local_release_20260911/partial_reconciliation_first_append_only_v1.json": "bfab6425ec9bbad98bf36e85b4c96f018519b747548c44f8f6d7ec0a5f03a291",
+    "validation/local_release_20260911/partial_reconciliation_second_run_v1.json": "700ebf70c46e00c4f6487dbd0b6120b9fbc06a6c8e5dbd64faa2fba23ee010e3",
+    "validation/local_release_20260911/partial_apply_reconciliation_v2.json": "d99da6feec2eb7533968ce2dd3ad5f11b3726cc7e810d4a7900388f1b3feae40"
+  }
+}

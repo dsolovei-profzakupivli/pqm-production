@@ -20,14 +20,33 @@ class ReleaseV2Tests(unittest.TestCase):
     def setUpClass(cls):
         web.fixture()
 
-    def test_web_account_controls_belong_to_admin_not_appeals(self):
-        tree=html.fromstring((web.ROOT/'index.html').read_text())
+    def test_web_account_controls_belong_to_admin_access_tab_not_appeals(self):
+        tree=html.fromstring((web.ROOT/'index.html').read_text(encoding='utf-8'))
         for ident in ('adminUserForm','adminUserAvatarFile','adminUsersBody'):
             nodes=tree.xpath('//*[@id=$id]',id=ident)
             self.assertEqual(1,len(nodes),ident)
-            self.assertTrue(nodes[0].xpath('ancestor::section[@id="adminOfficersPanel"]'),ident)
+            self.assertTrue(nodes[0].xpath('ancestor::section[@id="adminAccountsPanel"]'),ident)
+            self.assertTrue(nodes[0].xpath('ancestor::section[@data-admin-only]'),ident)
             self.assertTrue(nodes[0].xpath('ancestor::main[@id="administrationView"]'),ident)
             self.assertFalse(nodes[0].xpath('ancestor::main[@id="requestsView"]'),ident)
+        for ident in ('adminOfficerName','adminOfficerRole','adminOfficerAdd','adminOfficersBody'):
+            nodes=tree.xpath('//*[@id=$id]',id=ident)
+            self.assertEqual(1,len(nodes),ident)
+            self.assertTrue(nodes[0].xpath('ancestor::section[@id="adminOfficersPanel"]'),ident)
+            self.assertFalse(nodes[0].xpath('ancestor::section[@id="adminAccountsPanel"]'),ident)
+        self.assertTrue(tree.xpath('//button[@data-admin-tab="officers" and normalize-space(.)="Довідник УО"]'))
+        self.assertTrue(tree.xpath('//button[@data-admin-tab="accounts" and @data-admin-only and normalize-space(.)="Доступ до PQM"]'))
+        auth_ui=(web.ROOT/'auth_ui.js').read_text(encoding='utf-8')
+        self.assertIn("document.querySelector('#adminAccountsPanel')",auth_ui)
+        self.assertIn("currentMe?.role!=='admin'",auth_ui)
+        self.assertIn("return prior('officers')",auth_ui)
+        self.assertIn('id="accessPanel"',auth_ui)
+        self.assertIn('id="accessAccountsPanel"',auth_ui)
+        self.assertIn('<summary>Ролі та права доступу</summary>',auth_ui)
+        self.assertIn('<summary>Облікові записи PQM</summary>',auth_ui)
+        self.assertNotIn('Облікові записи WEB TEST',auth_ui)
+        for ident in ('accessUser','accessUsername','accessName','accessUserRole','accessOfficer','accessPassword','accessActive','accessSaveUser'):
+            self.assertEqual(1,auth_ui.count(f'id="{ident}"'),ident)
         self.assertTrue(tree.xpath('//main[@id="requestsView"]/section[contains(@class,"requests-toolbar")]'))
 
     def test_additive_release_twice_preserves_every_existing_business_value(self):

@@ -15,7 +15,7 @@ def luminance(value):
 
 class Theme(unittest.TestCase):
     def test_detail_surface_contract(self):
-        css = (sandbox.ROOT / 'sandbox_theme.css').read_text()
+        css = (sandbox.ROOT / 'theme.css').read_text()
         for selector in ('dialog>form', 'dialog form>header', 'dialog form>footer',
                          '.request-details-body section', '.supplier-profile-section',
                          '.supplier-profile-stats>div', '.module-kpis>article',
@@ -35,11 +35,11 @@ class Theme(unittest.TestCase):
         for flag in ('0', '1'):
             with patch.dict(os.environ, PQM_SANDBOX=flag):
                 html = sandbox.decorate_html(raw).decode()
-                self.assertEqual('pqm-q-favicon.svg' in html, flag == '1')
-                self.assertEqual('pqm-q-favicon-16.png' in html, flag == '1')
-                self.assertEqual('pqm-q-favicon-180.png' in html, flag == '1')
-                self.assertEqual('pqm-brand-mark.svg' in html, flag == '1')
-                if flag == '0': self.assertIn('pqm-tab-icon.png', html)
+                self.assertEqual('pqm-q-favicon.svg?v=4' in html, flag == '1')
+                self.assertEqual('pqm-q-favicon-16.png?v=4' in html, flag == '1')
+                self.assertEqual('pqm-q-favicon-180.png?v=4' in html, flag == '1')
+                self.assertIn('pqm-brand-mark-prod.svg', html)
+                if flag == '0': self.assertIn('pqm-q-favicon-prod-192.png?v=6', html)
         root = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}rect').get('fill'), '#132840')
         self.assertEqual(root.find('{http://www.w3.org/2000/svg}title').text, 'Q — PQM')
@@ -84,7 +84,7 @@ class Theme(unittest.TestCase):
         with patch.dict(os.environ, PQM_SANDBOX='0'):
             prod_html = sandbox.decorate_html(raw).decode()
         self.assertIn('class="brand sandbox-brand"', html)
-        self.assertIn('<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark.svg"', html)
+        self.assertIn('<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark-prod.svg"', html)
         self.assertIn('class="sandbox-brand-divider"', html)
         self.assertIn('<strong>Професійні закупівлі</strong>', html)
         self.assertIn('<small>Procurement Qualification Manager</small>', html)
@@ -93,16 +93,32 @@ class Theme(unittest.TestCase):
         self.assertIn('id="sandboxWarning"', html)
         self.assertIn('<nav id="mainNav" aria-label="Основна навігація"></nav>', html)
         self.assertNotIn('sandbox-brand', prod_html)
-        self.assertIn('<img class="brand-logo"', prod_html)
-        self.assertIn('id="environmentBanner" title="Profzakupivli Qualification Manager">PQM</em>', prod_html)
+        self.assertIn('<img class="prod-brand-initials" src="/assets/pqm-brand-mark-prod.svg"', prod_html)
+        self.assertIn('id="environmentBanner" class="prod-brand-accessible">PQM</em>', prod_html)
         self.assertIn('<nav id="mainNav" aria-label="Основна навігація"></nav>', prod_html)
+    def test_prod_brand_reuses_sandbox_geometry(self):
+        import xml.etree.ElementTree as ET
+        ns = '{http://www.w3.org/2000/svg}'
+        sandbox_logo = ET.parse(sandbox.ROOT / 'assets/pqm-brand-mark.svg').getroot()
+        prod_logo = ET.parse(sandbox.ROOT / 'assets/pqm-brand-mark-prod.svg').getroot()
+        sandbox_favicon = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon.svg').getroot()
+        prod_favicon = ET.parse(sandbox.ROOT / 'assets/pqm-q-favicon-prod.svg').getroot()
+        def geometry(root):
+            return [(node.tag, tuple(sorted((key, value) for key, value in node.attrib.items() if key != 'fill')))
+                    for node in root.iter()]
+        self.assertEqual(geometry(sandbox_logo), geometry(prod_logo))
+        self.assertEqual(geometry(sandbox_favicon), geometry(prod_favicon))
+        self.assertEqual(prod_logo.find(ns + 'g').get('fill'), sandbox_logo.find(ns + 'g').get('fill'))
+        self.assertEqual(prod_favicon.find(ns + 'path').get('d'), sandbox_favicon.find(ns + 'path').get('d'))
+        self.assertEqual(prod_favicon.find(ns + 'path').get('fill'), '#63b2ff')
+        self.assertEqual(prod_favicon.find(ns + 'rect').get('fill'), '#f5f7f8')
     def test_text_contrast(self):
         for foreground in ('#edf3fc', '#b2c3db', '#86bdff'):
             for background in ('#0b172a', '#132840', '#193451'):
                 ratio = (luminance(foreground)+.05)/(luminance(background)+.05)
                 self.assertGreaterEqual(ratio, 4.5, (foreground, background, ratio))
     def test_light_surfaces_contrast(self):
-        css = (sandbox.ROOT / 'sandbox_theme.css').read_text()
+        css = (sandbox.ROOT / 'theme.css').read_text()
         for selector in ('.multi-filter', '.advanced-filters', '.toolbar-settings', '.table-card>footer', '.paperclip>span'):
             self.assertIn(selector, css)
         for background in ('#f2f5fa', '#e8eff7'):

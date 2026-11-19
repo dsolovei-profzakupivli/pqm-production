@@ -1,0 +1,28 @@
+{
+  "contract": "pqm-sandbox-google-writer-prewrite-stage",
+  "version": 1,
+  "baseline": "c9bc1fef7ccf2adae0185f87ba18cfd2ef42f897",
+  "normalization": "CRLF-to-LF only for text files",
+  "scope": [
+    "google_writer_execution.py",
+    "test_google_writer_prewrite_stage_contract.py",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/prewrite-stage-contract.test.cjs",
+    "test_google_writer_prewrite_stage_integrity_v1.py",
+    "run_google_writer_prewrite_stage_v1.py"
+  ],
+  "files": {
+    "google_writer_execution.py": "c273f4fcd1e64e0a330dfa2899a7eb5d2c2556023b819b1b0884e4e19358e510",
+    "test_google_writer_prewrite_stage_contract.py": "43b930b32220256876824f76cae7115419c7ebc57e0c844ec5e008e05d285d14",
+    "scripts/pqm-google-writer/mirror-alignment/sandbox/prewrite-stage-contract.test.cjs": "75560f1de29fda1afe3004b8b26b30ced655e5a8be4824acc59154a9afcf3e28",
+    "test_google_writer_prewrite_stage_integrity_v1.py": "0afe3ca9540db9d8832992db090f89bd6c195b54177c1490081ac8f75786760d",
+    "run_google_writer_prewrite_stage_v1.py": "7ae2289df63095636d14b9b692634a274d24019704c3579466abb0fb45942e8d"
+  },
+  "preserved_manifests": {
+    "validation/local_release_20261111/google_writer_execution_envelope_v1.json": "92620f4066b23414170590b27ba7c26a79eef76851b3e10ff469004d28e2c401",
+    "validation/local_release_20261111/google_writer_prewrite_egress_v1.json": "92d475bc10a69e1053204600bbb64edad2d40e36f336339ea6456ae08fb33e5e",
+    "validation/local_release_20261111/google_writer_prewrite_readonly_v1.json": "e62544033cf683620368dfccfced91499180655ad47e728530315f7cf2528e0c",
+    "validation/local_release_20261111/google_writer_prewrite_diagnostics_v2.json": "61e31d839778b8c930f3d79d2402e1f710827ed25441920e5bf5cc85f2f51507",
+    "validation/local_release_20261109/google_writer_legacy_source_snapshots_v1.json": "5974fdff6faa703603ef7ce41d78f40e162df2d9501906c5d9fc9a136071debd",
+    "validation/local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json": "72c63161435081aec44f98a4605338bd9263afc9064614bce931caa3e43a0fa6"
+  }
+}

@@ -1,0 +1,45 @@
+/* 2026-10-17 approved overrides: presentation only, never table widths/data. */
+.topbar #mainNav{flex-wrap:nowrap!important;overflow-x:auto!important;overflow-y:hidden!important;align-items:center;min-height:48px;padding-block:4px}
+.topbar #mainNav>*{flex-shrink:0}
+#applicationsView [data-kpi-card="applications"]{min-width:72px;cursor:default}
+#applicationsView [data-kpi-card="suppliers"]{cursor:default}
+#workQueueView #workQueueKpis,#workQueueView .work-queue-toolbar,#workQueueView #queueFilterChips,#workQueueView .work-queue-details{display:none!important}
+#workQueueView .qualification-summary-cards,#workQueueView .publication-control-cards{display:flex;flex-wrap:wrap;gap:12px;overflow:visible;align-items:stretch}
+#workQueueView .qualification-summary-officer,#workQueueView .publication-control-cards>button{box-sizing:border-box;flex:0 1 var(--card-basis,184px);width:var(--card-basis,184px);min-width:0;max-width:none;white-space:normal}
+#workQueueView .qualification-summary-officer span,#workQueueView .qualification-summary-officer small{overflow:visible;text-overflow:clip}
+#historyFilters .history-filter-row>select{width:auto;min-width:170px;padding:5px 32px 5px 12px;line-height:22px;height:36px;min-height:36px}
+#historyFilters .history-filter-row input,#historyReset{height:36px;min-height:36px}
+#historyFilters .history-filter-secondary{grid-template-columns:minmax(160px,1fr) auto auto 170px 36px}
+#historyReset{width:36px!important;min-width:36px!important;max-width:36px!important}
+#historyView{padding-bottom:44px;box-sizing:border-box}
+#historyView>.pagination{flex:0 0 auto;padding-bottom:8px}
+.pqm-clear-wrap:has(>.multi-search),.multi-panel>.pqm-clear-wrap{display:flex;width:100%;box-sizing:border-box}
+#suppliersView .supplier-toolbar-compact{display:flex;flex-wrap:nowrap;align-items:end;gap:8px}
+#suppliersView .supplier-filter-search{flex:1 1 320px;min-width:200px}
+#suppliersView .supplier-toolbar-compact>.supplier-filter-field:not(.supplier-filter-search){flex:0 1 auto;min-width:125px;width:max-content}
+#suppliersView .supplier-filter-field select{width:auto;min-width:135px;padding-inline:10px 30px}
+#suppliersView .supplier-filter-field>.multi-filter{min-width:135px}
+#suppliersView .supplier-toolbar-compact>.system-width-button{flex:0 0 auto;align-self:end}
+.amcu-toolbar>div:first-child{flex:0 1 115px;min-width:100px}
+.amcu-toolbar>.pqm-clear-wrap{flex:1 1 150px;max-width:210px}
+.amcu-toolbar select{width:auto;min-width:120px;max-width:160px;flex:0 1 auto;padding-right:28px}
+.amcu-toolbar button{padding-inline:12px;line-height:20px}
+#schedulerScheduleEditors{display:block}
+#schedulerJobs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+#schedulerJobs>.scheduler-job{min-width:0;display:flex;flex-direction:column;gap:8px}
+html[data-pqm-environment="sandbox"] #schedulerJobs>.scheduler-job{background:#152b46!important;color:#edf3fc}
+#schedulerJobs .scheduler-editor{border:0;padding:0;min-width:0}
+#schedulerJobs footer{display:flex;flex-wrap:wrap;gap:6px}
+#schedulerJobs button{width:max-content;max-width:100%;white-space:normal;padding:7px 12px}
+#schedulerJobs button:disabled{opacity:.55;cursor:not-allowed}
+#schedulerJobs label{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;margin:3px 5px 3px 0}
+#schedulerJobs input[type=number]{width:64px;box-sizing:border-box}
+#auditDialog .audit-filters{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:10px 16px}
+#auditDialog .audit-filters>.pqm-clear-wrap:first-child{flex:2 1 240px}
+#auditDialog .audit-filters>.pqm-clear-wrap{flex:1 1 140px}
+#auditDialog .audit-filters input{box-sizing:border-box;width:100%;min-width:0}
+#auditDialog .audit-filters label{display:flex;align-items:center;gap:5px}
+#auditDialog:not(:modal){position:fixed;z-index:1000;top:90px;box-shadow:0 12px 40px #0005}
+dialog header[data-viewport-drag]{cursor:move;touch-action:none}
+@media(max-width:1300px){#suppliersView .supplier-toolbar-compact{flex-wrap:wrap}#schedulerJobs{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:750px){#schedulerJobs{grid-template-columns:minmax(0,1fr)}#historyFilters .history-filter-secondary{display:flex;flex-wrap:wrap}#workQueueView .work-queue-operational-grid{grid-template-columns:minmax(0,1fr)}}

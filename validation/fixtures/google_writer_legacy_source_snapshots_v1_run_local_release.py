@@ -1,0 +1,382 @@
+"""Run the delivered LOCAL suite on a disposable WEB-code/synthetic-DB fixture.
+
+The delivered tests expect source and tests side-by-side, unlike ZIP layout.
+No production/local database or credential is read. Outbound network is denied.
+"""
+import os
+import gc
+import logging
+from contextlib import closing
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+
+ROOT=Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[1]).resolve()
+HISTORICAL_INTEGRITY_MODULES={
+    'test_google_sandbox_baseline_compatibility',
+    'test_halloween_motion_integration',
+    'test_sandbox_admin_officer_link_integrity',
+    'test_sandbox_appeals_scenario_api_integrity',
+    'test_sandbox_appeals_scenario_readonly_integrity',
+    'test_sandbox_dst_hotfix_integrity',
+    'test_sandbox_nazk_appeals_stabilization_integrity',
+    'test_sandbox_nazk_appeals_stabilization_v3_integrity',
+    'test_sandbox_nazk_appeals_stabilization_v4_integrity',
+    'test_sandbox_nazk_appeals_stabilization_v5_integrity',
+    'test_sandbox_nazk_columns_integrity',
+    'test_sandbox_nazk_preview_integrity',
+    'test_sandbox_nazk_recovery_integrity',
+    'test_sandbox_nazk_recovery_qualification_integrity',
+    'test_sandbox_nazk_scroll_integrity',
+    'test_sandbox_messages_integrity',
+    'test_sandbox_messages_header_polish_integrity_v3',
+    'test_sandbox_messages_search_header_integrity_v2',
+    'test_sandbox_nazk_messages_integrated_integrity',
+    'test_nazk_authority_request_integrity',
+    'test_sandbox_edr_google_nazk_reconcile_integrity',
+    'test_google_edr_timezone_alias_integrity_v1',
+    'test_edr_preview_skipped_integrity',
+    'test_edr_preview_skipped_rows',
+    'test_google_writer_supplier_types_integrity',
+    # Checkpoint v1 pins its exact 95bc pre-reconciliation source tree; run it
+    # only against the immutable c8a97d6 fixture via the additive overlay.
+    'test_checkpointed_apply_integrity_v1',
+    # v3's exact-tree contract is executed only against its original pinned
+    # commit by the overlay runner below; the current candidate has additive
+    # manual-classification changes to files pinned by that historical tree.
+    'test_supplier_classification_v3_integrity',
+    'test_supplier_manual_classification_v4_integrity',
+    # v1 remains byte-pinned to the original digest candidate and runs only
+    # through its exact-tree overlay; v2 protects later additive changes.
+    'test_preview_digest_contract_integrity_v1',
+    'test_google_edr_date_only_midnight_integrity_v1',
+    'test_date_only_edr_status_integrated_integrity_v1',
+    'test_date_only_edr_status_integrated_integrity_v2',
+    'validation.local_release_20260911.test_date_only_edr_status_integrated_integrity_v2',
+    'test_edr_status_evidence_integrity_v1',
+    'test_messages_historical_line_endings',
+    'test_sandbox_personal_theme',
+    'test_sandbox_ui_integrated_d457_integrity',
+    'test_supplier_classification_integrity',
+    'test_google_writer_update_append_integrity',
+    'test_google_writer_supplier_types_integrity',
+    # These candidate-specific overlays run against their declared source
+    # pins outside the disposable product-test copy.
+    'test_partial_reconciliation_second_integrity_v1',
+    # These v1 overlays keep their original exact-source pins and run against
+    # the immutable 067e2e8 fixture; the additive candidate overlay pins the
+    # current source and the historical-routing runners.
+    'test_sandbox_preview_append_only_integrity_v1',
+    'test_sandbox_preview_workflow_integrity_v1',
+}
+EXACT_TREE_OVERLAY_MODULES={
+    # Run this original exact-source pin on the immutable 1fd48f4 fixture;
+    # the candidate carries its own additive prepared-intent retry overlay.
+    'test_partial_reconciliation_first_append_only_integrity_v1',
+    # Keep the prepared-retry v1 pin on its immutable d386586 snapshot;
+    # newer receipt-recovery changes are pinned by the additive v2 overlay.
+    'test_partial_reconciliation_prepared_append_only_retry_integrity_v1',
+    # Receipt-recovery v1 remains pinned to its original 24554fef tree; its
+    # additive successor is tested against the current candidate separately.
+    'test_google_writer_receipt_recovery_integrity_v1',
+    # Legacy append reconciliation v1 remains pinned to the original 1111eb9
+    # profile source; its source-digest-absence successor is an additive v2.
+    'test_legacy_append_reconciliation_integrity_v1',
+    # Legacy append reconciliation v2 remains pinned to the exact 98eb5d5
+    # source snapshot; the corrected 25+0 profile is pinned by additive v3.
+    'test_legacy_append_reconciliation_integrity_v2',
+    # The v3 and bounded-read exact-source contracts run only against their
+    # immutable source snapshots, never against the evolving candidate tree.
+    'test_legacy_append_reconciliation_integrity_v3',
+    # The flattened discovery copy is also present beside the namespace import.
+    'test_legacy_sheet_read_bounds_integrity_v1',
+    'validation.local_release_20260911.test_legacy_sheet_read_bounds_integrity_v1',
+}
+
+def selected_suite(suite,mode):
+    selected=[]
+    def visit(node):
+        for test in node:
+            if isinstance(test,unittest.TestSuite):visit(test)
+            else:
+                modules=set(test.id().split('.')[:-1])
+                if modules & EXACT_TREE_OVERLAY_MODULES:
+                    continue
+                historic=bool(modules & HISTORICAL_INTEGRITY_MODULES)
+                if (mode=='historical_integrity' and historic) or (mode!='historical_integrity' and not historic):
+                    selected.append(test)
+    visit(suite)
+    return unittest.TestSuite(selected)
+
+def copy_candidate_manifests(source_root, validation_target, mode):
+    if mode == 'historical_integrity':
+        return
+    Path(validation_target).mkdir(parents=True, exist_ok=True)
+    for manifest_name in ('sandbox_preview_append_only_v1.json',
+                          'sandbox_preview_workflow_v1.json',
+                          'local_release_20261107/partial_reconciliation_prepared_retry_v1.json',
+                          'local_release_20261108/google_writer_receipt_recovery_v1.json',
+                          'local_release_20261108/legacy_append_reconciliation_v1.json',
+                          'local_release_20261108/legacy_append_reconciliation_v2.json',
+                          'local_release_20261108/legacy_append_reconciliation_v3.json',
+                          'local_release_20261109/google_writer_all_scope_receipt_recovery_v1.json',
+                          'local_release_20261109/google_writer_legacy_source_snapshots_v1.json',
+                          'local_release_20261109/legacy_reconciliation_evidence_v2.json'):
+        source=Path(source_root)/'validation'/manifest_name
+        target=Path(validation_target)/manifest_name
+        target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,target)
+
+def main():
+    mode=os.environ.get('PQM_RELEASE_MODE','')
+    full_candidate_run=not mode and len(sys.argv)==1
+    with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
+        root=Path(tmp)
+        for source in ROOT.iterdir():
+            if source.name.startswith('.') or source.name in {'data','validation','__pycache__','backups','output','logs','evidence'}:continue
+            if source.is_dir():shutil.copytree(source,root/source.name)
+            else:shutil.copy2(source,root/source.name)
+        for source in (ROOT/'validation/local_release_20260911').glob('test_*.py'):
+            shutil.copy2(source,root/source.name)
+        # Preserve namespace imports used by root-level regressions. The flat
+        # copies above remain the discovery layout expected by delivered tests.
+        shutil.copytree(ROOT/'validation/local_release_20260911',
+                        root/'validation/local_release_20260911',
+                        ignore=shutil.ignore_patterns('__pycache__'))
+        # The integrated UI-v2 integrity contract pins this local-only
+        # destination/safety smoke helper; include it in the disposable tree
+        # so exact-tree and adversarial mutation checks see the same fixture.
+        for helper_name in ('sandbox_editable_smoke.py', 'nazk_scheduler_failure_smoke.py',
+                            'nazk_recovery_unit_smoke.py', 'sandbox_smoke.py', 'web_smoke.py',
+                            'run_integrated_messages_v1_integrity.py',
+                            'run_messages_search_header_v2_integrity.py',
+                            'run_messages_header_polish_v3_integrity.py',
+                            'run_sandbox_edr_google_nazk_reconcile_v1_integrity.py',
+                            'run_google_edr_timezone_alias_v1_integrity.py', 'supplier_classification_planner.cjs', 'run_local_release.py', 'run_classification_parent_integrity.py',
+                            'run_integrated_source_integrity_overlays.py',
+                            'run_messages_integrated_v1_history.py',
+                            'run_date_only_previous_contract_overlays.py',
+                            'run_date_only_status_integrated_v2_history.py',
+                            'run_supplier_classification_v3_integrity.py',
+                            'run_supplier_manual_classification_v4_integrity.py',
+                            'run_preview_digest_contract_v1_integrity.py',
+                            'run_checkpointed_apply_v1_integrity.py',
+                            'run_partial_reconciliation_second_v1_history.py',
+                            'run_partial_reconciliation_first_append_only_v1_history.py',
+                            'run_prepared_append_only_retry_v1_history.py',
+                            'run_google_writer_receipt_recovery_v1_history.py',
+                            'run_legacy_append_reconciliation_v1_history.py',
+                            'run_legacy_append_reconciliation_v2_history.py',
+                            'run_immutable_google_writer_source_overlays.py',
+                            'run_sandbox_preview_append_only_v1_history.py',
+                            'run_sandbox_preview_workflow_v1_history.py',
+                            'run_messages_integrated_v1_history_addendum.py'):
+            helper_source=ROOT/'validation'/helper_name
+            if helper_source.is_file():
+                shutil.copy2(helper_source,root/'validation'/helper_name)
+        fixture_target=root/'validation/fixtures'
+        fixture_target.mkdir(parents=True,exist_ok=True)
+        fixture_names=('supplier_classification_parent_integrity_6b9830b.zip', 'supplier_classification_parent_6b9830b.json', 'messages_v1_test_parent.zip',
+                             'google_writer_supplier_types_integration_v1_97788.zip',
+                             'integrated_classification_v1_overlay_6b9830b.zip', 'integrated_writer_v1_overlay_64f7fda.zip',
+                             'messages_parent_c246edef.zip',
+                             'protocol_integrity_history.zip',
+                             'nazk_authority_parent_c246.zip',
+                             'nazk_authority_request_v1.json',
+                             'nazk_integrity_baseline_de77401.zip',
+                             'column_widths_baseline_4625498.zip',
+                             'nazk_preview_baseline_f394d4c.zip',
+                             'appeals_scenario_v11_tail.zip',
+                             'appeals_scenario_v11_api_tail.zip',
+                             'table_widths_v11_tail.zip',
+                             'dst_parent_94c5e37.zip',
+                             'dst_v5_parent_overrides.zip',
+                             'nazk_recovery_v2_parent_overrides.zip',
+                             'nazk_recovery_testfix_parent_override.zip',
+                             'nazk_recovery_baseline_990483_server.py',
+                             'nazk_recovery_test_v2_compat.zip',
+                             'nazk_recovery_v4_tree_overrides.zip',
+                             'messages_integrated_v1_overrides.zip',
+                             'messages_search_header_v2_overrides.zip',
+                             'messages_search_header_v2_runner_40da.zip',
+                             'messages_header_polish_v3_baseline_40da.zip',
+                             'edr_google_nazk_baseline_40da.zip',
+                             'edr_google_nazk_personal_theme_baseline_40da.zip',
+                             'edr_google_nazk_reconcile_v1_candidate_a40aa70.zip',
+                             'edr_google_nazk_contract_v2_baseline_64f7fda.zip',
+                             'google_edr_timezone_alias_v1_baseline_6c310.zip',
+                             'messages_integrated_v1_appjs_baseline_6c310.zip',
+                             'edr_preview_skipped_v1_6b9830b.zip',
+                             'google_writer_supplier_types_v1_97788.zip',
+                             'google_edr_date_only_midnight_v1_97788.zip',
+                             'supplier_classification_v3_baseline_59177.zip',
+                             'supplier_manual_classification_v4_baseline_e0fed.zip',
+                             'edr_status_evidence_v1_15b8.zip',
+                             'date_only_edr_status_integrated_v1_12329.zip',
+                             'date_only_status_integrated_v2_a1f8.zip',
+                             'preview_digest_contract_v1_baseline_3a63ac.zip',
+                             'checkpointed_apply_v1_exact_c8a97d6.zip',
+                             'release_checks_baseline_0347404.yml',
+                             'sandbox_preview_append_only_v1_exact_067e2e8.zip',
+                             'sandbox_preview_workflow_v1_exact_067e2e8.zip',
+                             'partial_reconciliation_first_append_only_v1_exact_1fd48f4.zip',
+                              'prepared_append_only_retry_v1_exact_d386586.zip',
+                             'google_writer_receipt_recovery_v1_exact_24554fef.zip',
+                             'legacy_append_reconciliation_v1_exact_1111eb9.zip',
+                             'legacy_append_reconciliation_v2_exact_98eb5d5.zip',
+                             'google_writer_legacy_reconciliation_v3_immutable.zip',
+                             'google_writer_legacy_sheet_bounds_v1_immutable.zip')
+        for fixture_name in fixture_names:
+            fixture_source=ROOT/'validation/fixtures'/fixture_name
+            if not fixture_source.is_file():
+                if mode=='historical_integrity':
+                    continue
+                raise FileNotFoundError(f'Candidate release fixture missing: {fixture_name}')
+            shutil.copy2(fixture_source,fixture_target/fixture_name)
+        validation_target=root/'validation'
+        validation_target.mkdir(parents=True,exist_ok=True)
+        copy_candidate_manifests(ROOT, validation_target, mode)
+        for helper in ('nazk_preview_fixture.py', 'nazk_preview_browser_fixture.py'):
+            shutil.copy2(ROOT/'validation'/helper, root/'validation'/helper)
+        # The runner is itself pinned by the column-width integrity variant.
+        shutil.copy2(ROOT/'validation/run_local_release.py',root/'validation/run_local_release.py')
+        shutil.copy2(ROOT/'validation/docker_release_gate.py',root/'validation/docker_release_gate.py')
+        # The integrated UI integrity manifest now guards the required host-runner
+        # browser workflow, so include that exact CI file in the disposable tree.
+        workflow_source=ROOT/'.github/workflows/release-checks.yml'
+        workflow_target=root/'.github/workflows/release-checks.yml'
+        workflow_target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(workflow_source,workflow_target)
+        # Node regressions run against this same disposable source fixture.
+        for source in (ROOT/'validation').glob('*.cjs'):
+            shutil.copy2(source,root/'validation'/source.name)
+        # Delivered tests assume runtime DOCX copies have already been installed.
+        shutil.copytree(root/'templates', root/'data/templates', dirs_exist_ok=True)
+        os.environ.update(HOST='127.0.0.1',PORT='8080',PQM_ENV='local',PQM_DATA_DIR=str(root/'data'),PQM_DB_PATH=str(root/'data/pqm.sqlite3'),
+                          PQM_RELEASE_SCHEMA_ONLY='0',PQM_AUTH_ENABLED='0',PQM_USERS_JSON='',
+                          PQM_ENABLE_SCHEDULER='0',PQM_ENABLE_PROZORRO_SCHEDULER='0',PQM_ENABLE_VIOLATION_SCHEDULER='0',
+                          PQM_ENABLE_NAZK_SCHEDULER='0',PQM_ENABLE_GOOGLE='0',PQM_ENABLE_BROWSER='0',
+                          PQM_ENABLE_BIDS_UPDATE='0',PQM_ENABLE_POWERBI='0',PQM_BIDS_MODE='disabled')
+        original_connect=socket.socket.connect
+        original_getfqdn=socket.getfqdn
+        socket.getfqdn=lambda name='':name or 'localhost'
+        def isolated_connect(sock,address):
+            if isinstance(address,tuple) and address[0] not in {'127.0.0.1','localhost','::1'}:
+                raise RuntimeError('Outbound network forbidden in release tests')
+            return original_connect(sock,address)
+        socket.socket.connect=isolated_connect
+        old_cwd=Path.cwd()
+        os.chdir(root)
+        sys.path.insert(0,str(root))
+        try:
+            import server
+            server.init_db()
+            server.init_reference_tables(server.DB_PATH)
+            import scheduler_runtime
+            with closing(server.db()) as con:
+                with con:scheduler_runtime.migrate(con)
+            suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
+            if mode=='historical_integrity' or full_candidate_run:
+                suite=selected_suite(suite,'historical_integrity' if mode=='historical_integrity' else 'candidate')
+            result=unittest.TextTestRunner(verbosity=2).run(suite)
+            if mode=='historical_integrity' or not full_candidate_run:
+                return 0 if result.wasSuccessful() else 1
+            candidate_ok=result.wasSuccessful()
+            v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_messages_integrated_v1_history_addendum.py')],
+                cwd=old_cwd, check=False)
+            v2_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_classification_parent_integrity.py'),'--messages-v2'],
+                cwd=old_cwd, check=False)
+            v3_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_messages_header_polish_v3_integrity.py')],
+                cwd=old_cwd, check=False)
+            edr_v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_sandbox_edr_google_nazk_reconcile_v1_integrity.py')],
+                cwd=old_cwd, check=False)
+            google_timezone_v1_overlay=subprocess.run(
+                [sys.executable, str(ROOT/'validation/run_google_edr_timezone_alias_v1_integrity.py')],
+                cwd=old_cwd, check=False)
+            classification_parent_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_classification_parent_integrity.py')],
+                cwd=old_cwd,check=False)
+            classification_v3_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_supplier_classification_v3_integrity.py')],
+                cwd=old_cwd,check=False)
+            manual_classification_v4_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_supplier_manual_classification_v4_integrity.py')],
+                cwd=old_cwd,check=False)
+            source_integrity_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_integrated_source_integrity_overlays.py')],
+                cwd=old_cwd,check=False)
+            date_only_previous_contract_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_date_only_previous_contract_overlays.py')],
+                cwd=old_cwd,check=False)
+            date_only_status_v2_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_date_only_status_integrated_v2_history.py')],
+                cwd=old_cwd,check=False)
+            preview_digest_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_preview_digest_contract_v1_integrity.py')],
+                cwd=old_cwd,check=False)
+            checkpointed_apply_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_checkpointed_apply_v1_integrity.py')],
+                cwd=old_cwd,check=False)
+            partial_reconciliation_second_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_partial_reconciliation_second_v1_history.py')],
+                cwd=old_cwd,check=False)
+            sandbox_preview_append_only_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_sandbox_preview_append_only_v1_history.py')],
+                cwd=old_cwd,check=False)
+            sandbox_preview_workflow_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_sandbox_preview_workflow_v1_history.py')],
+                cwd=old_cwd,check=False)
+            first_append_only_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_partial_reconciliation_first_append_only_v1_history.py')],
+                cwd=old_cwd,check=False)
+            prepared_retry_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_prepared_append_only_retry_v1_history.py')],
+                cwd=old_cwd,check=False)
+            receipt_recovery_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_google_writer_receipt_recovery_v1_history.py')],
+                cwd=old_cwd,check=False)
+            legacy_append_reconciliation_v1_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v1_history.py')],
+                cwd=old_cwd,check=False)
+            legacy_append_reconciliation_v2_overlay=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v2_history.py')],
+                cwd=old_cwd,check=False)
+            immutable_google_writer_source_overlays=subprocess.run(
+                [sys.executable,str(ROOT/'validation/run_immutable_google_writer_source_overlays.py')],
+                cwd=old_cwd,check=False)
+            historical_root=Path(tmp)/'historical-c246-source'
+            historical_root.mkdir()
+            baseline_archive=ROOT/'validation/fixtures/messages_parent_c246edef.zip'
+            with zipfile.ZipFile(baseline_archive) as archive:
+                base=historical_root.resolve()
+                for member in archive.infolist():
+                    if member.is_dir():
+                        continue
+                    target=(historical_root/member.filename).resolve()
+                    if not target.is_relative_to(base):raise RuntimeError('Unsafe path in historical baseline fixture')
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    target.write_bytes(archive.read(member))
+            historical_env=os.environ.copy()
+            historical_env['PQM_RELEASE_SOURCE_ROOT']=str(historical_root)
+            historical_env['PQM_RELEASE_MODE']='historical_integrity'
+            print('LOCAL RELEASE: run unchanged historical integrity suites on pinned c246edef baseline',flush=True)
+            historic=subprocess.run([sys.executable,str(Path(__file__).resolve())],cwd=old_cwd,
+                                    env=historical_env,check=False)
+            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and historic.returncode==0 else 1
+        finally:
+            socket.socket.connect=original_connect
+            socket.getfqdn=original_getfqdn
+            os.chdir(old_cwd)
+            gc.collect()  # Release cyclic SQLite handles before Windows cleanup.
+            logging.shutdown()
+
+if __name__=='__main__':raise SystemExit(main())

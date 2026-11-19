@@ -1,0 +1,115 @@
+{
+  "variant_id": "sandbox-nazk-appeals-integrated-v1",
+  "baseline_sha": "f394d4c5e5f7afd76f39985d54e3e157ae65c811",
+  "scenario_manifest": "test_sandbox_ui_integrated_d457_integrity_addendum_v12.json",
+  "scenario_manifest_sha256": "a08b5eb0abc8289e324f7246b52266c8f0bca85766afee85c4bdf7a66dcb3d7f",
+  "preview_manifest": "test_sandbox_nazk_preview_integrity_variant.json",
+  "preview_manifest_sha256": "71b8ae89a87099061f72427b759829fd8129a05f976d5fa5a4678dcbf1e17b15",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, binary assets are hashed byte-for-byte",
+  "approved_scope_additions": [
+    "combine-read-only-nazk-preview-and-appeals-scenario-fix"
+  ],
+  "product_overrides": {
+    "app.js": {
+      "sha256": "a1fb20152a719373433637af3b04791bddd5edc153c76c5f1bfa41f1c5185382"
+    },
+    "index.html": {
+      "sha256": "952af65ad9cc4b13302ef31374db706c355ac9884d9402938a2dcb739631e915"
+    },
+    "nazk_preview.css": {
+      "sha256": "819d3f4ec065176d2d54171c437dd9024e7c09f6082931e151e86e6eac26c334"
+    },
+    "nazk_preview.js": {
+      "sha256": "da60e9b271ce59200c1d8092d06038f5185c19d638411b4e8a98fc13d9f2ff41"
+    },
+    "nazk_preview.py": {
+      "sha256": "1e210977d598902f4ae4e1b6e139caf8da51cded07c31059ba941f5c042cf629"
+    },
+    "server.py": {
+      "sha256": "3a6404641b5ab829573391ddeb54d0466edf60fad8f21396fef3c2de7b33dd82"
+    },
+    "styles.css": {
+      "sha256": "9d06bbe0882a040eeffce709d6545d9d449920855582303cd619bc87fb8f17d6"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "6273b56bf476fe52f68550c7cb39c894fdba38a4edd83efd19a20e75667258e5"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "d447f5c7234ac47a0f98aba6032f98d0f870606c31a125e47f0faad9208599a4"
+    },
+    "test_sandbox_nazk_preview_integrity.py": {
+      "sha256": "0869114da984be0bacd8334c37fffb866ba70f7e2d6dea26654583a9ab9e2ff8"
+    },
+    "test_sandbox_ui_integrated_d457_integrity.py": {
+      "sha256": "ad9ac31798393951f957521bc53fdb24983c4cdf4232c76e58faebb0853597e7"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "f4d203a4bb0d68d2cc802b8794067603268e8f09d2743bc4d797026e1a45d944"
+    },
+    "validation/fixtures/appeals_scenario_v11_tail.zip": {
+      "sha256": "2e4e1fb4bca620d0cc33855925b69ff8a68f21b8739792a1b281457176877984"
+    },
+    "validation/fixtures/nazk_preview_baseline_f394d4c.zip": {
+      "sha256": "4eceb1817d619ba6c01d4e046b6f9f4ab027ab0e17a669a8ac7377540d167433"
+    },
+    "validation/local_release_20260911/test_nazk_preview.py": {
+      "sha256": "396c75a5d47cad41ea61f090ef83209f86c83cb6c7741ed6244405c54ca0bfb7"
+    },
+    "validation/nazk_preview_browser.cjs": {
+      "sha256": "6faefff7b450f53f9f4cc7d23e8f8f1d368cbf2bda3bc0fc2f4934dd9973a71a"
+    },
+    "validation/nazk_preview_browser_fixture.py": {
+      "sha256": "a89b47d1c5e273fdd8e4cbfa1fbeafb1d7dcd2c5513ee36b7c27eb6642414c65"
+    },
+    "validation/nazk_preview_fixture.py": {
+      "sha256": "f4aeff274a9a879a2f513279f94f13ba5ab7ef4b743be589f1c6b3937cec0f77"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "72dd691e767700eedb22c4baaa240700481cf7cb3694cb84d85440ced75d43d4"
+    }
+  },
+  "protected_overrides": {
+    "app.js": {
+      "sha256": "a1fb20152a719373433637af3b04791bddd5edc153c76c5f1bfa41f1c5185382",
+      "halloween_normalized_sha256": "a1fb20152a719373433637af3b04791bddd5edc153c76c5f1bfa41f1c5185382",
+      "personal_theme_normalized_sha256": "5538b25b662d5d7660ba06b77e1231dae8463c43388f6d33c29c862c4b0041f3"
+    },
+    "server.py": {
+      "sha256": "3a6404641b5ab829573391ddeb54d0466edf60fad8f21396fef3c2de7b33dd82",
+      "halloween_normalized_sha256": "3a6404641b5ab829573391ddeb54d0466edf60fad8f21396fef3c2de7b33dd82",
+      "personal_theme_normalized_sha256": "7ddf919cc4d38cec04e2056df7c582358aa317e294dece6ce3167ff01fd8b306"
+    }
+  },
+  "guarded_overrides": {
+    "nazk_evidence.py": {
+      "sha256": "117e8bf2e0397b5a55bcf979263517ba5cc2df46ac7170b4baa510ade2616552"
+    },
+    "nazk_workflow.py": {
+      "sha256": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3"
+    },
+    "operational_tasks.py": {
+      "sha256": "4ee9a932e0c9be6d2fccf9c6f4485630f748aae0b518fda44c19fe45e1751d96"
+    },
+    "registry_popovers.js": {
+      "sha256": "dd974f8f682f4bb53bf61be8976e617ffcd8cba84b6df84c3e58efe6a84e19e8"
+    },
+    "scheduler_runtime.py": {
+      "sha256": "7196fee231fa7b89edf287d1d81c26b350c67c807a0ba75e600091753a562be0"
+    },
+    "supplier_activity.py": {
+      "sha256": "064e7d6fc70cbbddf8f9e78f60fd6e509191997197fbb7949122a279a984589b"
+    },
+    "test_sandbox_admin_officer_link_integrity.py": {
+      "sha256": "6273b56bf476fe52f68550c7cb39c894fdba38a4edd83efd19a20e75667258e5"
+    },
+    "test_sandbox_nazk_columns_integrity.py": {
+      "sha256": "d447f5c7234ac47a0f98aba6032f98d0f870606c31a125e47f0faad9208599a4"
+    },
+    "validation/appeals_justification_browser.cjs": {
+      "sha256": "f4d203a4bb0d68d2cc802b8794067603268e8f09d2743bc4d797026e1a45d944"
+    },
+    "validation/run_local_release.py": {
+      "sha256": "72dd691e767700eedb22c4baaa240700481cf7cb3694cb84d85440ced75d43d4"
+    }
+  }
+}

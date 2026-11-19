@@ -7,7 +7,11 @@ require an independently attested SANDBOX-owned destination.
 from __future__ import annotations
 
 import datetime
+import base64
 from contextlib import closing
+from execution_digest import is_canonical_sha256_b64url
+from execution_apply_contract import checkpoint_apply_enabled
+import hashlib
 import ipaddress
 import json
 import os
@@ -28,6 +32,12 @@ import sandbox_documents
 import sandbox_amcu
 
 ROOT = Path(__file__).resolve().parent
+
+
+class SandboxExecutionPreflightRejected(RuntimeError):
+    """The local Sandbox egress policy rejected a request before network I/O."""
+
+
 POLICY = {
     'PQM_SANDBOX': '1', 'PQM_ENV': 'test_web', 'PQM_SAFE_MODE': '1',
     'PQM_AUTH_ENABLED': '1', 'PQM_LOCAL_ROLE_IMPERSONATION': '0',
@@ -47,7 +57,22 @@ GOOGLE_SHEETS_HOST = 'sheets.googleapis.com'
 NAZK_HOST = 'corruptinfo.nazk.gov.ua'
 NAZK_PATH = '/ep/1.0/corrupt/getAllData'
 SANDBOX_EDR_SPREADSHEET_ID = '1lZtneKmCTvFcEL0erlJbegVzTTLNA-IKnjempn1G8Ww'
+SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT = '9be34ff2df1e661346176eeb'
+SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS = frozenset({
+    SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT,
+    '18a4aba10c1c13ab3bf59f56',
+    '30331b560493209210f1e507',
+    '816c6424279bff220878b0c4',
+})
+SANDBOX_LEGACY_WRITER_REQUEST_IDS = frozenset({'592128d9837d4b71bbeb330ef8aabf4b'})
 _original_getaddrinfo = socket.getaddrinfo
+
+
+def _sandbox_append_identity_digest(identities):
+    """Digest sorted [tab,row,code] identities using the Writer canonical JSON contract."""
+    normalized=sorted(identities,key=lambda item:(item[0],item[1],item[2]))
+    raw=json.dumps(normalized,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+    return base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).decode().rstrip('=')
 
 
 def validate_environment(env=None):
@@ -229,6 +254,7 @@ def validate_prozorro_url(url):
 def _restricted_getaddrinfo(host, port, *args, **kwargs):
     if getattr(_egress, 'active', False):
         permitted_host = (getattr(_egress, 'google_host', None) or
+                          getattr(_egress, 'execution_host', None) or
                           getattr(_egress, 'reference_host', None) or PROZORRO_HOST)
         if host != permitted_host or port not in (443, '443'):
             raise RuntimeError('Sandbox DNS destination is not approved')
@@ -393,6 +419,443 @@ def google_open(request, timeout=60):
         _egress.addresses = set()
 
 
+def validate_execution_request(request, environment, script_id, spreadsheet_id, deployment_id):
+    """Only attested OAuth refresh or one pinned API-executable invocation."""
+    expected_script = '1Ht0jL2xQc3hsd6uWKui4uA6o1z2Oe_BAUbZq8HTXcw6C1Kpyi7JxNtmQ'
+    if (os.getenv('PQM_SANDBOX', '').lower() not in ('1', 'true') or
+            os.getenv('RENDER_SERVICE_ID') != 'srv-dalfd77f3r2c7392uub0' or
+            os.getenv('PQM_SANDBOX_EXECUTION_READY', '').lower() not in ('1', 'true') or
+            not edr_google_enabled() or environment != 'SANDBOX' or
+            script_id != expected_script or spreadsheet_id != SANDBOX_EDR_SPREADSHEET_ID or
+            not re.fullmatch(r'[A-Za-z0-9_-]{20,256}', str(deployment_id or '')) or
+            deployment_id != os.getenv('PQM_SANDBOX_EXECUTION_DEPLOYMENT_ID')):
+        raise SandboxExecutionPreflightRejected('Sandbox execution identity or configuration is not approved')
+    url = request.full_url
+    if request.get_method() != 'POST' or not isinstance(request.data, bytes):
+        raise SandboxExecutionPreflightRejected('Sandbox execution method is not approved')
+    if url == 'https://oauth2.googleapis.com/token':
+        try:
+            fields = urllib.parse.parse_qs(request.data.decode('ascii'), strict_parsing=True)
+            if (set(fields) != {'client_id', 'client_secret', 'refresh_token', 'grant_type'} or
+                    any(len(v) != 1 or not v[0] for v in fields.values()) or
+                    fields['grant_type'] != ['refresh_token']):
+                raise ValueError()
+        except (ValueError, UnicodeError):
+            raise SandboxExecutionPreflightRejected('Sandbox execution OAuth request is not approved') from None
+        return GOOGLE_TOKEN_HOST
+    if url != 'https://script.googleapis.com/v1/scripts/' + deployment_id + ':run':
+        raise SandboxExecutionPreflightRejected('Sandbox execution endpoint is not approved')
+    try:
+        body = json.loads(request.data)
+        envelope = body['parameters'][0]
+        payload = json.loads(envelope['payload'])
+        if not isinstance(body, dict) or not isinstance(payload, dict):
+            raise ValueError()
+        action = payload.get('action')
+        function = body.get('function')
+        all_scope_endpoint = function == 'pqmSandboxAllScopeExecution20261109'
+        append_diagnostic_endpoint = function == 'pqmSandboxAppendDiagnostic20261112'
+        all_scope_shape = (all_scope_endpoint and action in {'apply', 'recover_apply_chunk'} and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'ALL' and
+            payload.get('requestId') not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            payload.get('trigger') == 'manual' and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            type(payload.get('chunkIndex')) is int and 0 <= payload.get('chunkIndex') <= 499 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            is_canonical_sha256_b64url(payload.get('chunkDetailsDigest')) and
+            payload.get('chunkPhase') in {'append', 'update'} and
+            (payload.get('chunkPhase') == 'update' and payload.get('chunkAddedAt') is None or
+             payload.get('chunkPhase') == 'append' and isinstance(payload.get('chunkAddedAt'), str) and
+             re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}', payload.get('chunkAddedAt'))))
+        diagnostic_targets = payload.get('targetIdentities')
+        diagnostic_codes = set()
+        diagnostic_targets_valid = isinstance(diagnostic_targets, list) and 1 <= len(diagnostic_targets) <= 10000
+        if diagnostic_targets_valid:
+            for item in diagnostic_targets:
+                if (not isinstance(item, dict) or set(item) != {'tab', 'code', 'row'} or
+                        item.get('tab') not in {'ФОП', 'ЮО'} or
+                        not isinstance(item.get('code'), str) or
+                        not re.fullmatch(r'\d{8,10}', item['code']) or
+                        type(item.get('row')) is not int or item['row'] < 2 or
+                        item['code'] in diagnostic_codes):
+                    diagnostic_targets_valid = False
+                    break
+                diagnostic_codes.add(item['code'])
+        append_diagnostic_shape = (append_diagnostic_endpoint and action == 'diagnose_append_plan' and
+            set(payload) == {'environment', 'scriptId', 'spreadsheetId', 'contract', 'action',
+                'requestId', 'actor', 'trigger', 'issuedAt', 'expiresAt', 'expectedDigest',
+                'planScope', 'chunkIndex', 'chunkId', 'chunkDigest', 'planId',
+                'detailsDigest', 'fullPlanDigest', 'sourceDigest', 'totalAppendCount', 'targetIdentities',
+                'diagnosticMode'} and
+            payload.get('diagnosticMode') == 'recovery' and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'APPEND_ONLY' and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload['requestId']) and
+            payload['requestId'] not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            isinstance(payload.get('actor'), str) and bool(payload['actor'].strip()) and
+            len(payload['actor']) <= 128 and payload.get('trigger') == 'manual' and
+            type(payload.get('issuedAt')) is int and type(payload.get('expiresAt')) is int and
+            payload['issuedAt'] < payload['expiresAt'] <= payload['issuedAt'] + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('detailsDigest')) and
+            is_canonical_sha256_b64url(payload.get('fullPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('sourceDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex'] == 0 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            type(payload.get('totalAppendCount')) is int and
+            payload.get('totalAppendCount') == len(diagnostic_targets or []) and diagnostic_targets_valid)
+        audit_targets=payload.get('auditTargets')
+        audit_codes=set()
+        audit_targets_valid=isinstance(audit_targets,list) and 1<=len(audit_targets)<=10000
+        if audit_targets_valid:
+            for item in audit_targets:
+                if (not isinstance(item,list) or len(item)!=4 or item[0] not in {'ФОП','ЮО'} or
+                        not isinstance(item[1],str) or not re.fullmatch(r'\d{8,10}',item[1]) or
+                        type(item[2]) is not int or item[2]<2 or item[1] in audit_codes or
+                        not is_canonical_sha256_b64url(item[3])):
+                    audit_targets_valid=False;break
+                audit_codes.add(item[1])
+        try:
+            audit_targets_digest=base64.urlsafe_b64encode(hashlib.sha256(json.dumps(
+                audit_targets,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')).digest()).decode().rstrip('=')
+        except (TypeError,ValueError): audit_targets_digest=None
+        append_audit_page_shape = (append_diagnostic_endpoint and action == 'diagnose_append_plan' and
+            set(payload) == {'environment','scriptId','spreadsheetId','contract','action','requestId','actor',
+                'trigger','issuedAt','expiresAt','expectedDigest','planScope','chunkIndex','planId',
+                'detailsDigest','fullPlanDigest','sourceDigest','totalAppendCount','diagnosticMode',
+                'auditTargets','auditTargetsDigest'} and
+            payload.get('diagnosticMode')=='audit' and payload.get('environment')=='SANDBOX' and
+            payload.get('planScope')=='APPEND_ONLY' and isinstance(payload.get('requestId'),str) and
+            re.fullmatch(r'[0-9a-f]{32}',payload['requestId']) and
+            payload['requestId'] not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            isinstance(payload.get('actor'),str) and bool(payload['actor'].strip()) and len(payload['actor'])<=128 and
+            payload.get('trigger')=='manual' and type(payload.get('issuedAt')) is int and
+            type(payload.get('expiresAt')) is int and payload['issuedAt']<payload['expiresAt']<=payload['issuedAt']+300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('detailsDigest')) and
+            is_canonical_sha256_b64url(payload.get('fullPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('sourceDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex']==0 and
+            payload.get('planId')==payload.get('requestId') and
+            type(payload.get('totalAppendCount')) is int and 1<=payload['totalAppendCount']<=10000 and
+            len(audit_targets or [])==payload['totalAppendCount'] and audit_targets_valid and
+            is_canonical_sha256_b64url(payload.get('auditTargetsDigest')) and
+            payload.get('auditTargetsDigest')==audit_targets_digest)
+        append_audit_recovery_shape = (append_diagnostic_endpoint and action == 'diagnose_append_plan' and
+            set(payload) == {'environment','scriptId','spreadsheetId','contract','action','requestId','actor',
+                'trigger','issuedAt','expiresAt','expectedDigest','planScope','chunkIndex','chunkId','chunkDigest',
+                'planId','detailsDigest','fullPlanDigest','sourceDigest','totalAppendCount','diagnosticMode',
+                'auditTargets','auditTargetsDigest','expectedPlanCounts','expectedUpdateIdentityDigest',
+                'expectedUpdateIdentities','expectedCellDigests'} and
+            payload.get('diagnosticMode')=='audit_recovery' and payload.get('environment')=='SANDBOX' and
+            payload.get('planScope')=='APPEND_ONLY' and isinstance(payload.get('requestId'),str) and
+            re.fullmatch(r'[0-9a-f]{32}',payload['requestId']) and
+            payload['requestId'] not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            isinstance(payload.get('actor'),str) and bool(payload['actor'].strip()) and len(payload['actor'])<=128 and
+            payload.get('trigger')=='manual' and type(payload.get('issuedAt')) is int and
+            type(payload.get('expiresAt')) is int and payload['issuedAt']<payload['expiresAt']<=payload['issuedAt']+300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('detailsDigest')) and
+            is_canonical_sha256_b64url(payload.get('fullPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('sourceDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex']==0 and
+            re.fullmatch(r'[0-9a-f]{32}',str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId')==payload.get('requestId') and
+            type(payload.get('totalAppendCount')) is int and 1<=payload['totalAppendCount']<=10000 and
+            len(audit_targets or [])==payload['totalAppendCount'] and audit_targets_valid and
+            is_canonical_sha256_b64url(payload.get('auditTargetsDigest')) and
+            payload.get('auditTargetsDigest')==audit_targets_digest and
+            isinstance(payload.get('expectedPlanCounts'),dict) and
+            set(payload['expectedPlanCounts'])=={'append','update','conflict','error'} and
+            all(type(payload['expectedPlanCounts'].get(key)) is int and payload['expectedPlanCounts'][key]>=0
+                for key in ('append','update','conflict','error')) and
+            payload['expectedPlanCounts']['append']==payload['totalAppendCount'] and
+            is_canonical_sha256_b64url(payload.get('expectedUpdateIdentityDigest')) and
+            isinstance(payload.get('expectedUpdateIdentities'),list) and len(payload['expectedUpdateIdentities'])<=1000 and
+            payload['expectedPlanCounts']['update']==len(payload['expectedUpdateIdentities']) and
+            all(isinstance(item,list) and len(item)==3 and item[0] in ('ФОП','ЮО') and
+                type(item[1]) is int and item[1]>=2 and isinstance(item[2],str) and
+                re.fullmatch(r'\d{8,10}',item[2]) for item in payload['expectedUpdateIdentities']) and
+            _sandbox_append_identity_digest(payload['expectedUpdateIdentities'])==payload['expectedUpdateIdentityDigest'] and
+            isinstance(payload.get('expectedCellDigests'),dict) and 1<=len(payload['expectedCellDigests'])<=30 and
+            all(re.fullmatch(r'(?:value|formula):[A-O]',str(key)) and is_canonical_sha256_b64url(value)
+                for key,value in payload['expectedCellDigests'].items()))
+        audit_field_targets=payload.get('auditFieldTargets')
+        audit_field_codes=set()
+        audit_field_targets_valid=isinstance(audit_field_targets,list) and 1<=len(audit_field_targets)<=25
+        if audit_field_targets_valid:
+            for item in audit_field_targets:
+                if (not isinstance(item,list) or len(item)!=5 or item[0] not in {'ФОП','ЮО'} or
+                        not isinstance(item[1],str) or not re.fullmatch(r'\d{8,10}',item[1]) or
+                        type(item[2]) is not int or item[2]<2 or item[1] in audit_field_codes or
+                        not is_canonical_sha256_b64url(item[3]) or not isinstance(item[4],list) or
+                        len(item[4])!=15 or any(not isinstance(value,list) or len(value)!=2 or
+                            value[0] not in {'blank','value','formula'} or
+                            not is_canonical_sha256_b64url(value[1]) for value in item[4])):
+                    audit_field_targets_valid=False;break
+                audit_field_codes.add(item[1])
+        try:
+            audit_field_targets_digest=base64.urlsafe_b64encode(hashlib.sha256(json.dumps(
+                audit_field_targets,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')).digest()).decode().rstrip('=')
+        except (TypeError,ValueError): audit_field_targets_digest=None
+        append_audit_fields_shape = (append_diagnostic_endpoint and action == 'diagnose_append_plan' and
+            set(payload) == {'environment','scriptId','spreadsheetId','contract','action','requestId','actor',
+                'trigger','issuedAt','expiresAt','expectedDigest','planScope','chunkIndex','planId',
+                'detailsDigest','fullPlanDigest','sourceDigest','totalAppendCount','diagnosticMode',
+                'auditFieldTargets','auditFieldTargetsDigest'} and
+            payload.get('diagnosticMode')=='audit_fields' and payload.get('environment')=='SANDBOX' and
+            payload.get('planScope')=='APPEND_ONLY' and isinstance(payload.get('requestId'),str) and
+            re.fullmatch(r'[0-9a-f]{32}',payload['requestId']) and
+            payload['requestId'] not in SANDBOX_LEGACY_WRITER_REQUEST_IDS and
+            isinstance(payload.get('actor'),str) and bool(payload['actor'].strip()) and len(payload['actor'])<=128 and
+            payload.get('trigger')=='manual' and type(payload.get('issuedAt')) is int and
+            type(payload.get('expiresAt')) is int and payload['issuedAt']<payload['expiresAt']<=payload['issuedAt']+300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('detailsDigest')) and
+            is_canonical_sha256_b64url(payload.get('fullPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('sourceDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex']==0 and
+            payload.get('planId')==payload.get('requestId') and
+            type(payload.get('totalAppendCount')) is int and 1<=payload['totalAppendCount']<=10000 and
+            audit_field_targets_valid and
+            is_canonical_sha256_b64url(payload.get('auditFieldTargetsDigest')) and
+            payload.get('auditFieldTargetsDigest')==audit_field_targets_digest)
+        close_unknown_shape = (all_scope_endpoint and action == 'close_unknown_run' and
+            set(payload) == {'environment', 'scriptId', 'spreadsheetId', 'contract', 'action',
+                'requestId', 'actor', 'trigger', 'issuedAt', 'expiresAt', 'expectedDigest',
+                'planScope', 'closeId', 'closeEvidenceDigest', 'reasonDigest'} and
+            payload.get('environment') == 'SANDBOX' and
+            payload.get('planScope') in {'ALL', 'APPEND_ONLY'} and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('requestId')) and
+            isinstance(payload.get('actor'), str) and bool(payload.get('actor').strip()) and
+            len(payload.get('actor')) <= 128 and payload.get('trigger') == 'manual' and
+            type(payload.get('issuedAt')) is int and
+            type(payload.get('expiresAt')) is int and
+            payload.get('issuedAt') < payload.get('expiresAt') <= payload.get('issuedAt') + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            isinstance(payload.get('closeId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('closeId')) and
+            is_canonical_sha256_b64url(payload.get('closeEvidenceDigest')) and
+            is_canonical_sha256_b64url(payload.get('reasonDigest')))
+        prewrite_preflight_fields = {'environment', 'scriptId', 'spreadsheetId', 'contract', 'action',
+            'requestId', 'actor', 'trigger', 'issuedAt', 'expiresAt', 'expectedDigest', 'planScope',
+            'chunkIndex', 'chunkId', 'chunkDigest', 'planId', 'prewriteStage',
+            'targetIdentityDigest', 'targetIdentities'}
+        legacy_prewrite_fields = {'legacyManifestRows', 'legacyManifestProjectionDigest'}
+        prewrite_stage = payload.get('prewriteStage')
+        prewrite_keys = set(payload)
+        prewrite_identity_digest = None
+        identity_pairs = []
+        try:
+            target_identities = payload.get('targetIdentities')
+            if not isinstance(target_identities, list) or not 1 <= len(target_identities) <= 25:
+                raise ValueError()
+            codes = set()
+            identity_pairs = []
+            for identity in target_identities:
+                if (not isinstance(identity, dict) or set(identity) != {'tab', 'code'} or
+                        identity.get('tab') not in {'ФОП', 'ЮО'} or
+                        not isinstance(identity.get('code'), str) or
+                        not re.fullmatch(r'\d{8,10}', identity['code']) or
+                        identity['code'] in codes):
+                    raise ValueError()
+                codes.add(identity['code'])
+                identity_pairs.append([identity['tab'], identity['code']])
+            identity_raw = json.dumps(identity_pairs, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+            prewrite_identity_digest = base64.urlsafe_b64encode(
+                hashlib.sha256(identity_raw).digest()).decode('ascii').rstrip('=')
+        except (ValueError, TypeError, KeyError):
+            target_identities = None
+        legacy_prewrite_valid = True
+        if prewrite_stage == 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1':
+            try:
+                rows = payload.get('legacyManifestRows')
+                projection = []
+                if (payload.get('requestId') != 'b11433e8efb84b4492bf2df7c7c25908' or
+                        not isinstance(rows, list) or len(rows) != 25):
+                    raise ValueError()
+                for item in rows:
+                    if (not isinstance(item, dict) or set(item) != {'tab', 'row', 'code', 'formulaA'} or
+                            item.get('tab') not in {'ФОП', 'ЮО'} or
+                            type(item.get('row')) is not int or item['row'] < 2 or
+                            not isinstance(item.get('code'), str) or
+                            not re.fullmatch(r'\d{8,10}', item['code']) or
+                            not isinstance(item.get('formulaA'), str) or not item['formulaA'].startswith('=')):
+                        raise ValueError()
+                    projection.append(item)
+                projection_raw = json.dumps(projection, ensure_ascii=False, sort_keys=True,
+                    separators=(',', ':')).encode('utf-8')
+                projection_digest = base64.urlsafe_b64encode(
+                    hashlib.sha256(projection_raw).digest()).decode('ascii').rstrip('=')
+                if (projection_digest != payload.get('legacyManifestProjectionDigest') or
+                        [[item['tab'], item['code']] for item in projection] != identity_pairs):
+                    raise ValueError()
+            except (ValueError, TypeError, KeyError):
+                legacy_prewrite_valid = False
+        elif prewrite_keys & legacy_prewrite_fields:
+            legacy_prewrite_valid = False
+        expected_prewrite_keys = (prewrite_preflight_fields | legacy_prewrite_fields
+            if prewrite_stage == 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' else prewrite_preflight_fields)
+        prewrite_preflight_shape = (all_scope_endpoint and action == 'prewrite_close_preflight' and
+            prewrite_keys == expected_prewrite_keys and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'APPEND_ONLY' and
+            payload.get('trigger') == 'manual' and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload['requestId']) and
+            isinstance(payload.get('actor'), str) and bool(payload['actor'].strip()) and
+            len(payload['actor']) <= 128 and
+            type(payload.get('issuedAt')) is int and type(payload.get('expiresAt')) is int and
+            payload['issuedAt'] < payload['expiresAt'] <= payload['issuedAt'] + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex'] == 0 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            isinstance(prewrite_stage, str) and re.fullmatch(r'[A-Za-z0-9_]{1,40}', prewrite_stage) and
+            is_canonical_sha256_b64url(payload.get('targetIdentityDigest')) and
+            payload.get('targetIdentityDigest') == prewrite_identity_digest and
+            target_identities is not None and legacy_prewrite_valid and
+            (prewrite_stage != 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' or
+             is_canonical_sha256_b64url(payload.get('legacyManifestProjectionDigest'))))
+        prewrite_close_fields = {'closeId', 'closeEvidenceDigest', 'reasonDigest'}
+        expected_prewrite_close_keys = (prewrite_preflight_fields | prewrite_close_fields |
+            (legacy_prewrite_fields if prewrite_stage == 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' else set()))
+        prewrite_close_shape = (all_scope_endpoint and action == 'close_prewrite_failure' and
+            prewrite_keys == expected_prewrite_close_keys and
+            payload.get('environment') == 'SANDBOX' and payload.get('planScope') == 'APPEND_ONLY' and
+            payload.get('trigger') == 'manual' and
+            isinstance(payload.get('requestId'), str) and re.fullmatch(r'[0-9a-f]{32}', payload['requestId']) and
+            isinstance(payload.get('actor'), str) and bool(payload['actor'].strip()) and
+            len(payload['actor']) <= 128 and
+            type(payload.get('issuedAt')) is int and type(payload.get('expiresAt')) is int and
+            payload['issuedAt'] < payload['expiresAt'] <= payload['issuedAt'] + 300 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            isinstance(prewrite_stage, str) and prewrite_stage in {
+                'source_and_sheet_guard', 'chunk_selection', 'append_prewrite_guard',
+                'append_request_build', 'append_inflight_save',
+                'APPS_SCRIPT_PREWRITE_GUARD_V1', 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1'} and
+            type(payload.get('chunkIndex')) is int and payload['chunkIndex'] == 0 and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('chunkId') or '')) and
+            is_canonical_sha256_b64url(payload.get('chunkDigest')) and
+            payload.get('planId') == payload.get('requestId') and
+            is_canonical_sha256_b64url(payload.get('targetIdentityDigest')) and
+            payload.get('targetIdentityDigest') == prewrite_identity_digest and
+            target_identities is not None and legacy_prewrite_valid and
+            re.fullmatch(r'[0-9a-f]{32}', str(payload.get('closeId') or '')) and
+            is_canonical_sha256_b64url(payload.get('closeEvidenceDigest')) and
+            is_canonical_sha256_b64url(payload.get('reasonDigest')) and
+            (prewrite_stage != 'LEGACY_V1_WRITEAHEAD_LIMIT_PROOF_V1' or
+             is_canonical_sha256_b64url(payload.get('legacyManifestProjectionDigest'))))
+        continuation_v2_fields = {'continuationVersion','continuationSourcePlanDigest','continuationExclusionsDigest'}
+        continuation_v2_present = bool(set(payload) & continuation_v2_fields)
+        continuation_guard_rows=payload.get('continuationGuardRows')
+        continuation_guard_valid=(isinstance(continuation_guard_rows,list) and len(continuation_guard_rows)==25)
+        if continuation_guard_valid:
+            continuation_guard_seen=set()
+            for item in continuation_guard_rows:
+                identity=(item.get('tab'),item.get('row'),item.get('codeDigest')) if isinstance(item,dict) else None
+                if (not isinstance(item,dict) or set(item)!={'tab','row','codeDigest','rowDigest','serviceDigest'} or
+                        item.get('tab') not in {'ФОП','ЮО'} or type(item.get('row')) is not int or
+                        item['row']<2 or identity in continuation_guard_seen or
+                        not all(is_canonical_sha256_b64url(item.get(key)) for key in
+                            ('codeDigest','rowDigest','serviceDigest'))):
+                    continuation_guard_valid=False;break
+                continuation_guard_seen.add(identity)
+        continuation_v2_shape = (continuation_v2_present and
+            continuation_v2_fields.issubset(payload) and payload.get('continuationVersion') == 2 and
+            action in {'apply','resume_check'} and payload.get('environment') == 'SANDBOX' and
+            payload.get('planScope') == 'APPEND_ONLY' and payload.get('trigger') == 'manual' and
+            isinstance(payload.get('requestId'),str) and re.fullmatch(r'[0-9a-f]{32}',payload['requestId']) and
+            payload.get('requestId')!=payload.get('continuationSourceRequestId') and
+            type(payload.get('chunkIndex')) is int and 0<=payload['chunkIndex']<11 and
+            is_canonical_sha256_b64url(payload.get('expectedDigest')) and
+            is_canonical_sha256_b64url(payload.get('continuationPlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('continuationRemainingDigest')) and
+            continuation_guard_valid and
+            payload.get('continuationSourceRequestId') == '71487a74779f4445a186a8dbe6252fbc' and
+            is_canonical_sha256_b64url(payload.get('continuationSourcePlanDigest')) and
+            is_canonical_sha256_b64url(payload.get('continuationExclusionsDigest')) and
+            (action!='resume_check' or is_canonical_sha256_b64url(payload.get('expectedCheckpointDigest'))))
+        legacy_shape = (function == 'pqmSandboxExecution' and
+            (action in ('preview', 'apply', 'reconcile_partial') or
+                (action=='resume_check' and continuation_v2_shape)) and
+            not (action == 'apply' and payload.get('planScope', 'ALL') == 'ALL') and
+            (not continuation_v2_present or continuation_v2_shape))
+        allowed_reconciliation_fingerprints = (
+            SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINTS |
+            {SANDBOX_PARTIAL_RECONCILIATION_REQUEST_FINGERPRINT}
+        )
+        reconciliation_allowed = action == 'reconcile_partial' and (
+            payload.get('trigger') == 'manual' and
+            payload.get('expectedDigest') is None and
+            isinstance(payload.get('actor'), str) and
+            bool(payload.get('actor').strip()) and len(payload.get('actor')) <= 128 and
+            isinstance(payload.get('requestId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('requestId')) and
+            isinstance(payload.get('reconciliationId'), str) and
+            re.fullmatch(r'[0-9a-f]{32}', payload.get('reconciliationId')) and
+            payload.get('requestFingerprint') in allowed_reconciliation_fingerprints and
+            hashlib.sha256(payload['requestId'].encode('utf-8')).hexdigest()[:24] ==
+                payload.get('requestFingerprint') and
+            is_canonical_sha256_b64url(payload.get('evidenceDigest'))
+        )
+        if (set(body) != {'function', 'devMode', 'parameters'} or
+                not (legacy_shape or all_scope_shape or append_diagnostic_shape or append_audit_page_shape or append_audit_recovery_shape or append_audit_fields_shape or close_unknown_shape or prewrite_preflight_shape or prewrite_close_shape) or body['devMode'] is not False or
+                len(body['parameters']) != 1 or
+                set(envelope) != {'payload', 'signature'} or
+                not re.fullmatch(r'[A-Za-z0-9_-]{43}', str(envelope['signature'])) or
+                payload['environment'] != environment or payload['scriptId'] != script_id or
+                payload['spreadsheetId'] != spreadsheet_id or
+                payload['contract'] != 'pqm-mirror-datetime-v1' or
+                action not in ('preview', 'apply', 'resume_check', 'reconcile_partial', 'recover_apply_chunk', 'close_unknown_run',
+                    'prewrite_close_preflight', 'close_prewrite_failure', 'diagnose_append_plan') or
+                (action == 'reconcile_partial' and not reconciliation_allowed) or
+                (payload['action'] == 'apply' and not is_canonical_sha256_b64url(payload.get('expectedDigest'))) or
+                (checkpoint_apply_enabled(environment) and payload['action'] == 'apply' and
+                 (type(payload.get('chunkIndex')) is not int or not 0 <= payload['chunkIndex'] <= 499)) or
+                (checkpoint_apply_enabled(environment) and payload['action'] == 'preview' and 'chunkIndex' in payload) or
+                not re.fullmatch(r'Bearer [A-Za-z0-9._~+/-]+=*', request.get_header('Authorization', ''))):
+            raise ValueError()
+    except (ValueError, KeyError, TypeError, IndexError):
+        raise SandboxExecutionPreflightRejected('Sandbox execution envelope is not approved') from None
+    return 'script.googleapis.com'
+
+
+@contextmanager
+def execution_open(request, timeout, *, environment, script_id, spreadsheet_id, deployment_id):
+    identity = (environment, script_id, spreadsheet_id, deployment_id)
+    try:
+        host = validate_execution_request(request, *identity)
+    except SandboxExecutionPreflightRejected:
+        # google_writer_execution is already loaded before this transport is
+        # entered; its typed preflight exception keeps this local rejection out
+        # of the remote-outcome-unknown path.
+        from google_writer_execution import ExecutionPreflightError
+        raise ExecutionPreflightError(
+            'Execution transport preflight rejected; Apps Script was not called') from None
+    if getattr(_egress, 'active', False):
+        raise RuntimeError('Nested sandbox network scope is not supported')
+    _egress.active = True
+    _egress.execution_host = host
+    _egress.execution_identity = identity
+    _egress.addresses = set()
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoGoogleRedirect())
+        with opener.open(request, timeout=timeout) as response:
+            yield response
+    finally:
+        _egress.active = False
+        _egress.execution_host = None
+        _egress.execution_identity = None
+        _egress.addresses = set()
+
+
 def fetch_prozorro_json(url):
     """One bounded credential-free HTTPS GET, never a generic egress exception."""
     if not prozorro_read_enabled():
@@ -436,7 +899,7 @@ def local_edit_allowed(method, path):
         'POST': (
             r'/api/account/avatar', r'/api/admin/users',
             r'/api/admin/users/[A-Za-z0-9._-]+/avatar', r'/api/admin/officers',
-            r'/api/chats', r'/api/chats/\d+/(?:messages|read)',
+            r'/api/chats', r'/api/chats/\d+/(?:messages|read|messages/\d+/marks)',
             r'/api/application-profiles', r'/api/history-columns',
             r'/api/admin/declension-overrides',
         ),
@@ -463,10 +926,14 @@ def outbound_audit(event, args):
         if not (event == 'socket.getaddrinfo' and getattr(_egress, 'active', False)
                 and ((prozorro_read_enabled() and args[0] == PROZORRO_HOST)
                      or (edr_google_enabled() and args[0] == getattr(_egress, 'google_host', None))
+                     or (edr_google_enabled() and args[0] == getattr(_egress, 'execution_host', None))
                      or (nazk_read_enabled() and args[0] == getattr(_egress, 'reference_host', None)))):
             raise RuntimeError('Sandbox external DNS is disabled')
     if event == 'urllib.Request' and getattr(_egress, 'active', False):
-        if getattr(_egress, 'google_host', None):
+        if getattr(_egress, 'execution_host', None):
+            request = urllib.request.Request(args[0], data=args[1], headers=args[2], method=args[3])
+            validate_execution_request(request, *_egress.execution_identity)
+        elif getattr(_egress, 'google_host', None):
             validate_google_request(args[0], args[3])
         elif getattr(_egress, 'public_read', False):
             validate_public_read_request(args[0], args[3])
@@ -608,11 +1075,14 @@ def decorate_html(raw):
     text = raw.decode('utf-8')
     if os.environ.get('PQM_SANDBOX') == '1':
         text = text.replace('<html', '<html data-pqm-environment="sandbox"', 1)
-        current_brand = ('<div class="brand"><img class="brand-logo" src="assets/professional-purchasing-logo.webp" '
-                         'alt="ДУ Професійні закупівлі"><div><em id="environmentBanner" '
-                         'title="Profzakupivli Qualification Manager">PQM</em></div></div>')
+        current_brand = ('<div class="brand prod-brand"><img class="prod-brand-initials" '
+                         'src="/assets/pqm-brand-mark-prod.svg" alt="" aria-hidden="true">'
+                         '<span class="prod-brand-divider" aria-hidden="true"></span>'
+                         '<span class="prod-brand-copy"><strong>Професійні закупівлі</strong>'
+                         '<small>Procurement Qualification Manager</small></span>'
+                         '<em id="environmentBanner" class="prod-brand-accessible">PQM</em></div>')
         sandbox_brand = ('<div class="brand sandbox-brand">'
-                         '<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark.svg" alt="" aria-hidden="true">'
+                         '<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark-prod.svg" alt="" aria-hidden="true">'
                          '<span class="sandbox-brand-divider" aria-hidden="true"></span>'
                          '<span class="sandbox-brand-copy"><strong>Професійні закупівлі</strong>'
                          '<small>Procurement Qualification Manager</small></span>'
@@ -620,17 +1090,40 @@ def decorate_html(raw):
         if text.count(current_brand) != 1:
             raise RuntimeError('STOP: SANDBOX navbar brand markup mismatch')
         text = text.replace(current_brand, sandbox_brand, 1)
-        text = text.replace('<link rel="icon" href="/assets/pqm-search-icon.png" type="image/png" sizes="192x192">',
-                            '<link rel="icon" href="/assets/pqm-q-favicon-192.png?v=4" type="image/png" sizes="192x192">')
-        text = text.replace('<link rel="icon" href="/assets/pqm-tab-icon.png" type="image/png" sizes="32x32">',
-                            '<link rel="icon" href="/assets/pqm-q-favicon.svg?v=4" type="image/svg+xml" sizes="any">'
-                            '<link rel="icon" href="/assets/pqm-q-favicon-16.png?v=4" type="image/png" sizes="16x16">'
-                            '<link rel="icon" href="/assets/pqm-q-favicon-32.png?v=4" type="image/png" sizes="32x32">')
-        text = text.replace('<link rel="apple-touch-icon" href="/assets/pqm-search-icon.png">',
-                            '<link rel="apple-touch-icon" href="/assets/pqm-q-favicon-180.png?v=4">')
+        prod_favicon = ('<link rel="icon" href="/assets/pqm-q-favicon-prod-192.png?v=6" type="image/png" sizes="192x192">'
+                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-prod.svg?v=6" type="image/svg+xml" sizes="any">'
+                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-prod-16.png?v=6" type="image/png" sizes="16x16">'
+                        '\n  <link rel="icon" href="/assets/pqm-q-favicon-prod-32.png?v=6" type="image/png" sizes="32x32">'
+                        '\n  <link rel="apple-touch-icon" href="/assets/pqm-q-favicon-prod-180.png?v=6">')
+        prod_favicon = prod_favicon.replace('\n', '\r\n' if '\r\n' in text else '\n')
+        sandbox_favicon = ('<link rel="icon" href="/assets/pqm-q-favicon-192.png?v=4" type="image/png" sizes="192x192">'
+                           '<link rel="icon" href="/assets/pqm-q-favicon.svg?v=4" type="image/svg+xml" sizes="any">'
+                           '<link rel="icon" href="/assets/pqm-q-favicon-16.png?v=4" type="image/png" sizes="16x16">'
+                           '<link rel="icon" href="/assets/pqm-q-favicon-32.png?v=4" type="image/png" sizes="32x32">'
+                           '<link rel="apple-touch-icon" href="/assets/pqm-q-favicon-180.png?v=4">')
+        if text.count(prod_favicon) != 1:
+            raise RuntimeError('STOP: SANDBOX favicon markup mismatch')
+        text = text.replace(prod_favicon, sandbox_favicon, 1)
         theme = (ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
         text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
         text = text.replace('</head>', '<script src="/sandbox_contrast.js?v=1" defer></script></head>', 1)
+        # Presentation only: Halloween motion is included exclusively in Sandbox HTML.
+        halloween_anchor = '<script src="halloween.js"></script>'
+        if text.count(halloween_anchor) != 1:
+            raise RuntimeError('STOP: SANDBOX Halloween script markup mismatch')
+        text = text.replace(halloween_anchor, halloween_anchor +
+                            '\n  <script src="registry_popovers.js"></script>'
+                            '\n  <script src="operational_task_officers.js?v=1"></script>'
+                            '\n  <link rel="stylesheet" href="halloween_motion.css">'
+                            '\n  <script src="halloween_motion.js"></script>'
+                            '\n  <link rel="stylesheet" href="halloween_cat_season.css?v=1">'
+                            '\n  <script src="halloween_cat_season.js?v=1"></script>', 1)
+        if text.count('<script src="operational_task_officers.js?v=1"></script>') != 1:
+            raise RuntimeError('STOP: SANDBOX operational officer module include mismatch')
+        if text.count('<link rel="stylesheet" href="halloween_cat_season.css?v=1">') != 1:
+            raise RuntimeError('STOP: SANDBOX permanent cat stylesheet include mismatch')
+        if text.count('<script src="halloween_cat_season.js?v=1"></script>') != 1:
+            raise RuntimeError('STOP: SANDBOX permanent cat controller include mismatch')
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
     mode = ('ЗОВНІШНІ ДЖЕРЕЛА — читання · локальні записи лише в SANDBOX · '
             'Google-записи лише в підтверджену SANDBOX Sheet · PROD призначення заблоковані')

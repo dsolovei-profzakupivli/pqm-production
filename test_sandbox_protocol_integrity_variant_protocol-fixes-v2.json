@@ -1,0 +1,66 @@
+{
+  "variant_id": "sandbox-protocol-fixes-v2",
+  "baseline_sha": "b2027e6d687bc4018a2720f10fae228ccff7b201",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, DOCX is hashed byte-for-byte",
+  "approved_scope": [
+    "preserve_manual_document_review_state_without_discarding_unsaved_fields",
+    "normalize_supplier_protocol_filename_presentation_only",
+    "render_customer_unavailable_document_note_with_approved_formatting",
+    "present_supplier_name_provenance_and_review_notes_confirmation"
+  ],
+  "product_files": {
+    "app.js": {
+      "sha256": "ed905909640e43cac001e5bce492aa5e43fdda40c798dcc22c7316aeaa44e9f6"
+    },
+    "protocol_supplier_names.py": {
+      "sha256": "2073337bfa562ef6734a0139c8b95647f41f5d2ee563d00e0a0936cf7237a6ca"
+    },
+    "styles.css": {
+      "sha256": "7617c35731558a926e55f18929862e2d3e1b6bc5d3541cf3c50dc8c6a5ea37aa"
+    },
+    "violation_protocol_docx.py": {
+      "sha256": "a1a3ad24cf6e9cf34dea3f8bbdc92c95c0b264db03b5a3ade4b1491d4279949f"
+    }
+  },
+  "protected_files": {
+    "app.js": {
+      "sha256": "ed905909640e43cac001e5bce492aa5e43fdda40c798dcc22c7316aeaa44e9f6",
+      "halloween_normalized_sha256": "ed905909640e43cac001e5bce492aa5e43fdda40c798dcc22c7316aeaa44e9f6",
+      "personal_theme_normalized_sha256": "9d0d22989de0875719b8da48e76665c2ffd446cd5797110ef6d7ea8b79b5325c"
+    },
+    "server.py": {
+      "sha256": "8ad164eafb0caeefbd896a1584886bd24311634c416b64fe0cb10459f24236b9",
+      "halloween_normalized_sha256": "8ad164eafb0caeefbd896a1584886bd24311634c416b64fe0cb10459f24236b9",
+      "personal_theme_normalized_sha256": "0a88cd31457a5aea015d76b4df48caffbdd2c3f1af04072197c2bdddfb6e5b60"
+    }
+  },
+  "guarded_files": {
+    "application_selection.js": {"sha256": "90f664bbbb819294e5271e3f1e5b9f4f8f0eff636765b4c12dd87321c537ff3e"},
+    "filters.css": {"sha256": "23ceb7fa4d734a271f729d8f416004641b56e263d03125a0a5a1318a1a2e440c"},
+    "halloween_motion.css": {"sha256": "a276f51b3a015cd33377a71c77a5592c241d996c7e5c6a43cecf39baf368f0e5"},
+    "halloween_motion.js": {"sha256": "86358bbfdf498b04fe0f5d8c3f2f56cc5905e3c4f5ea4ffc141b9f8ff706153f"},
+    "assets/halloween-witch-cat.webp": {"sha256": "62991ef629660918e07247008cbae56a1ebe7ef4a6beb87199d745f86acdb528"},
+    "assets/halloween-workqueue-dark.webp": {"sha256": "54201419649b53a1d41f3dc33abe38b25fe3a7d26707c7446831df233d364377"},
+    "assets/halloween-workqueue-light.webp": {"sha256": "f11bb9e7b4f042fde5f24f2e55ea9b0895275823d0196e1780cef734f3747302"},
+    "auth_access.py": {"sha256": "9b6fc68f4141af76112326bf241697b1a4d008d8ae68fad12be12b004a5a4558"},
+    "background_jobs.py": {"sha256": "a7a646735771f2d384f1394751f148602fbf970020b568e2cbbd6b3503d6629a"},
+    "bulk_application_save.js": {"sha256": "f7ecef3ac9b542510918d15942d6cb77599688c1cdba8cd453d70c15cf215cc0"},
+    "google_writer_execution.py": {"sha256": "6a739ce800a83354ac5a036fe9ca4d61b800a53ea416862ca4dab53f038be518"},
+    "halloween.css": {"sha256": "e3ed1c1af7a6e939ce6b4c4f8ae052c0d9c51662bfa38e4444cff1522aaa7041"},
+    "halloween.js": {"sha256": "738409340f50a306c2397b5fc90f97709238cc4e6b9c01a335bf955eaeed58d9"},
+    "halloween_season.js": {"sha256": "ad799ef80123f8df49b8c5b7f0240a47344a1a4298cadde18e99723320fa53ff"},
+    "index.html": {"sha256": "6df729786800846aa483a8f1681caf503e9167bd6ef68204253624a62d719457"},
+    "modules.css": {"sha256": "d30760f0ff5d8f81b13a8557a97aa6010d8c6e51cf71fb184c9a0a714245f077"},
+    "operational_task_officers.js": {"sha256": "cb438753d78b4bae5d723e178d075d3b6b0a20c3e64f73e02d3d10828cd27282"},
+    "registry_popovers.js": {"sha256": "dd974f8f682f4bb53bf61be8976e617ffcd8cba84b6df84c3e58efe6a84e19e8"},
+    "sandbox_amcu.py": {"sha256": "8a2b143cb2e236e55aafcea4dae35a025beab543ef2d39e1da83d01c422a868d"},
+    "sandbox_contrast.js": {"sha256": "de344949e5f2cef4967a562399698608c01c872be74e09a8c2bb372072aed9b5"},
+    "sandbox_documents.py": {"sha256": "70d45d181a6ceef62306230d63d12cc5633d659312732e5e3625dc19134a16ca"},
+    "sandbox_theme.css": {"sha256": "976bd8b3e675674b9da1559ccc1cce089a775c63bc3be4a57111078546b86c37"},
+    "scheduler_runtime.py": {"sha256": "7196fee231fa7b89edf287d1d81c26b350c67c807a0ba75e600091753a562be0"},
+    "theme.css": {"sha256": "1e127957ae92b53c0dcbf66e2fccce2cc6c876c34eb026d3e786a0a59bf9283d"},
+    "theme_ui.js": {"sha256": "bffe598802f3f3b52cae0ac3781b0bae1e195b6883825c1aa2a076cc8e921b94"},
+    "ui_final.js": {"sha256": "bfbec74ba77c61ff000344ee088bdd4680e4851840f029dc3cf2c1281c87077b"},
+    "ui_tz2.js": {"sha256": "7dfe2af32ed178b139b74c0de7dd3a320ba18dea514c6742c663861422a7e8d2"}
+  }
+}

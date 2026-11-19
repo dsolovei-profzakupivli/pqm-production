@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import unittest
 from unittest import mock
 import urllib.request
@@ -14,6 +15,58 @@ except ImportError:
 
 
 class SandboxEdrReviewTests(unittest.TestCase):
+    def test_independent_mirrors_remain_reviewable_when_verification_fields_are_date_blocked(self):
+        con = database()
+        con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_status,
+          full_name,short_name,edr_checked_at,edr_officer,termination_decision_details,edr_notes,synced_at)
+          VALUES('12345678','СТАРИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
+          '2026-09-15','УО','old G','old M','old')""")
+        values = row(checked='', manager='НОВИЙ КЕРІВНИК', status='Припинено')
+        values[6], values[12] = 'new G', 'new M'
+        preview = sync.build_preview(con, snapshot(values))
+        details = sandbox_edr_review.details(preview)
+        mirrors = {item['field']: item for item in details
+                   if item['field'] in {'termination_decision_details', 'edr_notes'}}
+        self.assertTrue(preview['items'][0]['independent_mirror_only'])
+        self.assertEqual(mirrors['termination_decision_details']['action'], 'update')
+        self.assertEqual(mirrors['termination_decision_details']['planned_pqm_value'], 'new G')
+        self.assertEqual(mirrors['edr_notes']['action'], 'update')
+        self.assertEqual(mirrors['edr_notes']['planned_pqm_value'], 'new M')
+
+    def test_google_grid_requires_kyiv_timezone_and_preserves_cell_presence(self):
+        class Response:
+            def __init__(self, body): self.body = json.dumps(body).encode()
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return self.body
+
+        cells = [{"formattedValue": str(index)} for index in range(8)]
+        cells.append({"effectiveValue": {"numberValue": 46307.7106365741},
+                      "formattedValue": "23.10.2026 17:03:19"})
+        for zone in ("Europe/Kyiv", "Europe/Kiev"):
+            body = {"properties": {"timeZone": zone},
+                    "sheets": [{"properties": {"title": "ФОП"}, "data": [
+                        {"startRow": 1, "startColumn": 0, "rowData": [{"values": cells}]}]}]}
+            with self.subTest(timezone=zone), \
+                 mock.patch.object(server, "google_edr_effective_enabled", return_value=True), \
+                 mock.patch.object(server, "_google_access_token", return_value="synthetic"), \
+                 mock.patch.object(server, "SANDBOX_MODE", False), \
+                 mock.patch.object(server.urllib.request, "urlopen", return_value=Response(body)):
+                values = server._google_edr_sheet_values("ФОП")
+            self.assertEqual(len(values[1]), 9)
+            self.assertEqual(values[1][8], "23.10.2026 17:03:19")
+        for zone in ("Etc/GMT", "UTC", "Europe/Moscow"):
+            wrong_zone = {"properties": {"timeZone": zone},
+                          "sheets": [{"properties": {"title": "ФОП"}, "data": [
+                              {"startRow": 1, "startColumn": 0, "rowData": [{"values": cells}]}]}]}
+            with self.subTest(rejected_timezone=zone), \
+                 mock.patch.object(server, "google_edr_effective_enabled", return_value=True), \
+                 mock.patch.object(server, "_google_access_token", return_value="synthetic"), \
+                 mock.patch.object(server, "SANDBOX_MODE", False), \
+                 mock.patch.object(server.urllib.request, "urlopen", return_value=Response(wrong_zone)):
+                with self.assertRaisesRegex(ValueError, "Europe/Kyiv"):
+                    server._google_edr_sheet_values("ФОП")
+
     def test_runtime_google_status_uses_sandbox_destination_scope(self):
         con = mock.MagicMock()
         con.execute.return_value.fetchone.return_value = None
@@ -35,7 +88,7 @@ class SandboxEdrReviewTests(unittest.TestCase):
                              {'PQM_SANDBOX': '1', 'PQM_SANDBOX_EDR_GOOGLE': '0'}):
             self.assertTrue(server.google_integration_status()['enabled'])
 
-    def test_complete_detail_and_clear_without_preview_write(self):
+    def test_confirmed_blank_google_owned_values_clear_pqm(self):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
           (supplier_code,full_name,edr_status,edr_checked_at,edr_officer,
@@ -48,12 +101,17 @@ class SandboxEdrReviewTests(unittest.TestCase):
         google[12] = ''
         source = snapshot(google)
         before = con.total_changes
-        preview = sync.build_preview(con, source)
+        preview = sync.build_preview(con, source, sandbox_mode=True)
         details = sandbox_edr_review.details(preview)
         self.assertEqual(con.total_changes, before)
         self.assertEqual(next(x for x in details if x['field'] == 'verification_pair')['action'], 'accept_google_pair')
-        self.assertEqual(next(x for x in details if x['field'] == 'termination_decision_details')['action'], 'clear')
-        self.assertEqual(next(x for x in details if x['field'] == 'edr_notes')['action'], 'clear')
+        mirror_rows = [x for x in details if x['field'] in {'termination_decision_details', 'edr_notes'}]
+        self.assertEqual({item['action'] for item in mirror_rows}, {'clear'})
+        result = sync.apply(con, source, source['source_fingerprint'], confirmed=True,
+                            actor='admin', synced_at='2026-09-15T18:00:00', sandbox_mode=True)
+        cleared = con.execute("SELECT termination_decision_details,edr_notes FROM supplier_edr_profiles").fetchone()
+        self.assertEqual(tuple(cleared), ('',''))
+        self.assertEqual(result['google_mirror_clears'], 2)
         self.assertEqual(sandbox_edr_review.summary_additions(preview, details)['m_note_clears'], 1)
         self.assertEqual(len(details), len(sandbox_edr_review.details(preview)))
 

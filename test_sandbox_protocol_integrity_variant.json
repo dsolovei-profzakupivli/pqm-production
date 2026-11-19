@@ -1,0 +1,43 @@
+{
+  "variant_id": "sandbox-universal-decline-p49-3-v1",
+  "baseline_sha": "565a2fff45675b6b49feb90edf67e83aa2af4a7b",
+  "hash_format": "Full-file SHA-256; text files use canonical LF line endings, DOCX is hashed byte-for-byte",
+  "approved_scope": [
+    "explicit_individual_decline_protocol_choice",
+    "current_review_notes_confirmation",
+    "server_validation_of_individual_decline_type",
+    "p49_reference_from_request_basis",
+    "individual_protocol_docx_context",
+    "p49_3_winner_date_exemption_only"
+  ],
+  "product_files": {
+    "app.js": {
+      "sha256": "bfd1115c477c94a1d29a9c831c6dfa2f21f2e09f0e3fbe3b5bb6382def59536e"
+    },
+    "server.py": {
+      "sha256": "8ad164eafb0caeefbd896a1584886bd24311634c416b64fe0cb10459f24236b9"
+    },
+    "template_catalog.py": {
+      "sha256": "3f4639fd9c6341542edcc158cc64197bd0d77fb6bf64c2c9f8729ca8b7130a15"
+    },
+    "violation_protocol_docx.py": {
+      "sha256": "8582ee17063ab376aad8d3e782ad7162df51f37194ca3c478f953fee1a6973e7"
+    },
+    "metadata/template_legacy_tokens.v1.json": {
+      "sha256": "a52f4438acd181005d3d0273c45437d36286f3876e3d49dedb62f37c06cf3987"
+    },
+    "templates/violation_protocols/decline_individual_review.docx": {
+      "sha256": "4b2e1509f441dc5b72bfad3f59b4798cef73a622dea092f57f2fc52869f42037"
+    }
+  },
+  "protected_files": {
+    "app.js": {
+      "halloween_normalized_sha256": "bfd1115c477c94a1d29a9c831c6dfa2f21f2e09f0e3fbe3b5bb6382def59536e",
+      "personal_theme_normalized_sha256": "c1562a9bb8111b8960cac79b686f4454714c014bec219c2d65cd0edef1117cfa"
+    },
+    "server.py": {
+      "halloween_normalized_sha256": "8ad164eafb0caeefbd896a1584886bd24311634c416b64fe0cb10459f24236b9",
+      "personal_theme_normalized_sha256": "0a88cd31457a5aea015d76b4df48caffbdd2c3f1af04072197c2bdddfb6e5b60"
+    }
+  }
+}
