@@ -64,6 +64,31 @@ async function makePage(browser,theme='light',width=1920,height=1080){
   return page;
 }
 
+async function makeAuxPage(browser,theme,viewId,width,height){
+  const page=await browser.newPage({viewport:{width,height},deviceScaleFactor:1});
+  await page.setContent(html);
+  for(const name of styles)await page.addStyleTag({content:read(name)});
+  await page.evaluate(({theme,viewId})=>{
+    document.documentElement.dataset.theme=theme;
+    document.documentElement.dataset.pqmEnvironment='sandbox';
+    document.documentElement.dataset.halloween='off';
+    document.querySelector('#loginGate').hidden=true;
+    document.querySelector('#applicationShell').hidden=false;
+    document.querySelectorAll('main').forEach(main=>{main.hidden=main.id!==viewId;});
+    if(viewId==='historyView'){
+      document.querySelectorAll('#historyFilters input[data-history]').forEach(input=>{
+        const wrapper=document.createElement('div');wrapper.className='pqm-clear-wrap';input.before(wrapper);wrapper.append(input);
+        const button=document.createElement('button');button.type='button';button.className='pqm-search-clear';button.textContent='×';button.hidden=true;wrapper.append(button);
+      });
+    }
+    if(viewId==='requestsView'){
+      document.querySelector('#requestAuthorityCards').innerHTML=['Профзакупівлі','МЗУ','УСС'].map((name,index)=>`<button class="request-authority-card"><span>${name}</span><strong>${index+2}</strong></button>`).join('');
+      document.querySelector('#requestsPending').textContent='12';document.querySelector('#requestsSatisfied').textContent='18';document.querySelector('#requestsDeclined').textContent='3';
+    }
+  },{theme,viewId});
+  return page;
+}
+
 (async()=>{
   fs.mkdirSync(OUT,{recursive:true});
   const browser=await chromium.launch({headless:true,executablePath:process.env.PQM_CHROMIUM_EXECUTABLE||undefined});
@@ -82,9 +107,9 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       assert.ok(layout.current.y-layout.protocol.bottom<24,'left summaries keep a compact vertical gap');
       assert.ok(layout.statistics.x>=layout.left.right-2,'statistics occupies the separate right column');
       assert.ok(Math.abs(layout.statistics.y-layout.grid.y)<2,'statistics aligns to the top of the operational grid');
-      assert.equal(layout.statsAlign,'start','statistics retains its natural compact height instead of stretching');
-      assert.ok(layout.statistics.height<layout.left.height,'statistics stays compact while the left column continues below it');
-      assert.ok(layout.left.width/layout.statistics.width>0.62&&layout.left.width/layout.statistics.width<0.72,`wide layout keeps approximately 40/60 columns: ${JSON.stringify(layout)}`);
+      assert.equal(layout.statsAlign,'stretch','statistics shares the two-block left column height');
+      assert.ok(Math.abs(layout.statistics.bottom-layout.left.bottom)<3,`statistics bottom aligns with the stacked left blocks: ${JSON.stringify(layout)}`);
+      assert.ok(layout.left.width/layout.statistics.width>0.74&&layout.left.width/layout.statistics.width<0.9,`wide layout keeps approximately 45/55 columns: ${JSON.stringify(layout)}`);
       const protocolHeader=await page.evaluate(()=>{
         const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{left:r.left,right:r.right};};
         return{title:rect('.queue-protocol-summary h2'),period:rect('.queue-protocol-summary .protocol-period'),total:rect('#queueProtocolTotal'),card:rect('.queue-protocol-summary')};
@@ -124,8 +149,8 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       const table=await page.locator('.queue-statistics-table').evaluate(el=>({client:el.clientHeight,scroll:el.scrollHeight,overflow:getComputedStyle(el).overflowY}));
       assert.ok(table.scroll>table.client,'more than five rows scroll inside the table');
       const toolbar=await page.locator('.queue-statistics-controls').evaluate(el=>[...el.children].map(node=>({id:node.id||node.querySelector('input,select')?.id||node.getAttribute('data-statistics-filter')||node.textContent.trim().slice(0,16),left:node.getBoundingClientRect().left,top:node.getBoundingClientRect().top,right:node.getBoundingClientRect().right})));
-      assert.equal(toolbar.length,6,'statistics toolbar contains dates, filters, grouping, search and reset');
-      assert.ok(toolbar.every(item=>Math.abs(item.top-toolbar[0].top)<2),`all toolbar controls share one row at wide width: ${JSON.stringify(toolbar)}`);
+      assert.equal(toolbar.length,7,'statistics toolbar contains dates, apply, reset, separator, grouping and filters');
+      assert.ok(toolbar.filter(item=>item.id).every(item=>Math.abs(item.top-toolbar[0].top)<2),`all toolbar controls share one row at wide width: ${JSON.stringify(toolbar)}`);
       assert.ok(toolbar.every((item,index)=>index===0||item.left>=toolbar[index-1].right-1),`toolbar controls keep the requested order: ${JSON.stringify(toolbar)}`);
       const typeOptions=await page.locator('[data-statistics-filter="supplier_type"] option').evaluateAll(nodes=>nodes.map(option=>[option.value,option.textContent.trim()]));
       assert.deepEqual(typeOptions,[['','Усі'],['individual_entrepreneur','ФОП'],['legal_entity','ЮО та інші'],['foreign_legal_entity','Нерезидент'],['unknown','Потребує перевірки']]);
@@ -143,6 +168,8 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       assert.equal(controls,'flex');
       const controlHeights=await page.locator('#queueProtocolFrom,#queueProtocolTo,#queueProtocolApply,#queueStatisticsFrom,#queueStatisticsTo,#queueStatisticsFilterToggle,#queueStatisticsGroup,#queueStatisticsSearch,#queueStatisticsReset').evaluateAll(nodes=>nodes.map(node=>({id:node.id,height:node.getBoundingClientRect().height,borderRadius:getComputedStyle(node).borderRadius})));
       assert.ok(controlHeights.every(control=>control.height===34&&control.borderRadius==='7px'),`page controls share a 34px height and matching corners: ${JSON.stringify(controlHeights)}`);
+      const statsControlOrder=await page.locator('.queue-statistics-controls>*').evaluateAll(nodes=>nodes.map(node=>node.id||node.className));
+      assert.deepEqual(statsControlOrder.slice(0,7),['queueStatisticsFromField','queueStatisticsToField','queueStatisticsSearch','queueStatisticsReset','queue-statistics-control-separator','queueStatisticsGroupField','queueStatisticsFilterToggle'],'statistics controls follow the approved date/apply/reset/group/filter order');
       const kpis=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>({bg:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderTopColor})));
       assert.equal(kpis.length,4);
       const kpiRows=await page.locator('#queueStatisticsKpis button').evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
@@ -178,15 +205,61 @@ async function makePage(browser,theme='light',width=1920,height=1080){
         const card=document.querySelector('.queue-statistics-card'),work=document.querySelector('#queueStatisticsWorkspace'),results=document.querySelector('.queue-statistics-results'),panel=document.querySelector('#queueStatisticsFilterPanel');
         const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
         const workspaceStyle=getComputedStyle(work),panelStyle=getComputedStyle(panel);
-        return{viewport:document.documentElement.clientWidth,height:document.documentElement.clientHeight,scroll:document.documentElement.scrollWidth,card:rect(card),workspace:rect(work),results:rect(results),panel:rect(panel),columns:workspaceStyle.gridTemplateColumns,areas:workspaceStyle.gridTemplateAreas,panelArea:panelStyle.gridArea,panelPosition:panelStyle.position,panelHeight:panelStyle.height};
+        return{viewport:document.documentElement.clientWidth,height:document.documentElement.clientHeight,scroll:document.documentElement.scrollWidth,card:rect(card),workspace:rect(work),results:rect(results),panel:rect(panel),columns:workspaceStyle.gridTemplateColumns,areas:workspaceStyle.gridTemplateAreas,panelArea:panelStyle.gridArea,panelPosition:panelStyle.position,panelHeight:panelStyle.height,panelTop:panelStyle.top,panelBottom:panelStyle.bottom,ancestors:[...function*(node){while(node){const style=getComputedStyle(node);yield{tag:node.tagName,id:node.id,position:style.position,transform:style.transform,filter:style.filter,perspective:style.perspective,contain:style.contain};node=node.parentElement}}(panel)]};
       });
       assert.ok(panelLayout.scroll<=panelLayout.viewport+2,`filter panel does not cause page overflow: ${JSON.stringify(panelLayout)}`);
       assert.ok(panelLayout.panel.left>=panelLayout.results.right-1,`filter panel does not cover the table: ${JSON.stringify(panelLayout)}`);
       assert.ok(panelLayout.panel.right<=panelLayout.viewport+1&&panelLayout.panel.left>=0,'drawer remains inside the browser viewport');
       assert.equal(panelLayout.panelPosition,'fixed','filter drawer is fixed to the viewport');
-      assert.ok(Math.abs(panelLayout.panel.height-panelLayout.height)<=1,'filter drawer fills the viewport height');
+      assert.ok(panelLayout.panel.top<=1&&panelLayout.panel.bottom<=panelLayout.height-39,'filter drawer fills the viewport but stays above the Sandbox footer');
+      assert.ok(panelLayout.panel.height>=panelLayout.height-44,`filter drawer keeps nearly all available viewport height: ${JSON.stringify(panelLayout)}`);
+      assert.equal(await panel.locator('.queue-statistics-filter-header-actions button').count(),3,'drawer header keeps clear, apply and close actions visible');
+      assert.equal(await panel.locator('.queue-statistics-filter-actions').count(),0,'drawer actions are not hidden at the bottom of the scroll area');
       const panelShot=path.join(OUT,`work-uo-${theme}-filter-panel.png`);
       await page.screenshot({path:panelShot,fullPage:true});evidence.push(panelShot);
+      await page.close();
+    }
+    for(const theme of ['light','dark']){
+      const page=await makeAuxPage(browser,theme,'historyView',1920,1080);
+      const historyRows=await page.evaluate(()=>['.history-filter-primary','.history-filter-secondary'].map(selector=>{
+        const row=document.querySelector(selector),children=[...row.children],tops=children.map(node=>Math.round(node.getBoundingClientRect().top));
+        return{selector,count:children.length,tops:[...new Set(tops)],width:row.clientWidth,scroll:row.scrollWidth,fields:children.map(node=>({field:node.querySelector('[data-history]')?.dataset.history||node.dataset.history||node.id||node.className,rect:(r=>({x:r.x,y:r.y,width:r.width,right:r.right}))(node.getBoundingClientRect())}))};
+      }));
+      assert.equal(historyRows[0].count,7,'history search row retains all seven agreed fields');
+      assert.equal(historyRows[1].count,7,'history status row retains all seven agreed fields');
+      assert.ok(historyRows.every(row=>Math.max(...row.tops)-Math.min(...row.tops)<=2&&row.scroll<=row.width+1),`history filters remain on two rows after search-clear wrappers are installed: ${JSON.stringify(historyRows)}`);
+      const review=await page.locator('#historyReviewOfficerFilter').evaluate(node=>({width:node.getBoundingClientRect().width,summary:node.querySelector('summary').getBoundingClientRect().height,search:node.querySelector('input').getBoundingClientRect().height}));
+      assert.ok(review.width>=140&&review.summary===34&&review.search>=30,'searchable review-officer filter remains usable and compact');
+      const historyShot=path.join(OUT,`application-history-${theme}-wide.png`);await page.screenshot({path:historyShot,fullPage:true});evidence.push(historyShot);
+      await page.close();
+    }
+    for(const theme of ['light','dark'])for(const width of [1920,1536,1366,1280,1024,900]){
+      const page=await makeAuxPage(browser,theme,'requestsView',width,1000);
+      const layout=await page.evaluate(()=>{
+        const actions=document.querySelector('.request-heading-actions'),authorities=document.querySelector('#requestAuthorityCards'),statuses=document.querySelector('#requestQuickFilters');
+        const rect=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
+        return{viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,actions:rect(actions),authorities:rect(authorities),statuses:rect(statuses),authorityCards:[...authorities.children].map(rect),statusCards:[...statuses.children].map(rect)};
+      });
+      assert.equal(layout.authorityCards.length,3,'all three organization cards are rendered');
+      assert.equal(layout.statusCards.length,3,'only three status counters are rendered');
+      assert.ok(layout.scroll<=layout.viewport+2,`requests page has no horizontal overflow at ${width}px`);
+      if(width>=1024){
+        assert.ok(layout.authorities.height<=60&&layout.statuses.height<=40&&Math.abs((layout.authorities.top+layout.authorities.bottom)/2-(layout.statuses.top+layout.statuses.bottom)/2)<2,`three organization cards and three status counters stay in one row at ${width}px: ${JSON.stringify(layout)}`);
+        assert.ok(layout.authorityCards.every(card=>Math.abs(card.top-layout.authorityCards[0].top)<2&&Math.abs(card.height-layout.authorityCards[0].height)<2&&Math.abs(card.width-layout.authorityCards[0].width)<2),'organization cards have equal width and height on one row');
+        if(width>1350)assert.ok(layout.statuses.left-layout.authorities.right>=20&&layout.statuses.left-layout.authorities.right<=24,`organization cards sit slightly farther left with the agreed inter-group gap: ${JSON.stringify(layout)}`);
+        assert.ok(layout.statusCards.every(card=>Math.abs(card.top-layout.statusCards[0].top)<2&&Math.abs(card.height-layout.statusCards[0].height)<2),'status counters align on one row');
+        assert.ok(layout.statusCards.every(card=>card.width<layout.authorityCards[0].width&&card.height<layout.authorityCards[0].height),'status counters are substantially smaller than organization cards');
+      }
+      const controls=await page.locator('#requestQuickFilters button').evaluateAll(nodes=>nodes.map(node=>({title:node.title,label:node.getAttribute('aria-label'),pressed:node.getAttribute('aria-pressed'),visibleText:node.innerText.trim(),tooltip:getComputedStyle(node,'::after').content})));
+      assert.deepEqual(controls.map(item=>item.title),['Очікує розгляду','Задоволено','Відхилено']);
+      assert.ok(controls.every(item=>item.label.startsWith(item.title+':')&&/^\d/.test(item.visibleText)&&!item.visibleText.includes(' ')),'status counters show only their number and expose full accessible labels');
+      assert.equal(await page.locator('#requestsExpiredFilter,#requestsExpired').count(),0,'the expired-response KPI duplicate is absent');
+      if(width===1920){
+        const firstStatus=page.locator('#requestQuickFilters button').first();
+        await firstStatus.focus();await page.waitForTimeout(160);
+        assert.equal(await firstStatus.evaluate(node=>node.matches(':focus')&&getComputedStyle(node,'::after').visibility),'visible','tooltip is available on keyboard focus');
+      }
+      if(width===1920){const requestShot=path.join(OUT,`requests-${theme}-wide.png`);await page.screenshot({path:requestShot,fullPage:true});evidence.push(requestShot);}
       await page.close();
     }
     for(const count of [3,5,8]){
@@ -203,14 +276,14 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       else {assert.ok(wrap.scroll>wrap.client,`${count} rows use internal vertical scroll`);assert.equal(wrap.visibleRows,5,'exactly five rows are visible before scrolling');assert.equal(wrap.headerPosition,'sticky','table header stays visible while scrolling');}
       await page.close();
     }
-    for(const zoom of [1,1.25,1.5]){
+    for(const zoom of [0.8,1,1.25,1.5]){
       // Browser zoom reduces the effective CSS viewport. Model that viewport directly so
       // responsive media queries behave as they do in a real zoomed browser window.
       const page=await makePage(browser,'dark',Math.round(1536/zoom),Math.round(864/zoom));
       const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,grid:getComputedStyle(document.querySelector('.work-queue-operational-grid')).gridTemplateColumns,overflow:[...document.querySelectorAll('#workQueueView *')].map(el=>({selector:el.id?`#${el.id}`:el.className&&typeof el.className==='string'?`.${el.className.trim().split(/\s+/).join('.')}`:el.tagName.toLowerCase(),left:Math.round(el.getBoundingClientRect().left),right:Math.round(el.getBoundingClientRect().right),width:Math.round(el.getBoundingClientRect().width)})).filter(item=>item.right>document.documentElement.clientWidth+2).slice(0,12)}));
       assert.ok(dimensions.scroll<=dimensions.width+2,`no page-level horizontal overflow at ${zoom*100}%: ${JSON.stringify(dimensions)}`);
       const shot=path.join(OUT,`work-uo-dark-${Math.round(zoom*100)}.png`);
-      if(zoom>1) {await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:shot});evidence.push(shot);}
+      if(zoom!==1) {await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:shot});evidence.push(shot);}
       await page.close();
     }
     for(const width of [650,480,360]){
@@ -233,11 +306,11 @@ async function makePage(browser,theme='light',width=1920,height=1080){
       assert.ok(layout.scroll<=layout.viewport+2,`responsive filter panel has no page overflow at ${width}px: ${JSON.stringify(layout)}`);
       assert.equal(layout.panelPosition,'fixed',`filter drawer stays attached to the browser window at ${width}px`);
       assert.ok(layout.panel.left>=0&&layout.panel.right<=layout.viewport+1,`filter drawer stays inside the viewport at ${width}px: ${JSON.stringify(layout)}`);
-      assert.ok(Math.abs(layout.panel.bottom-layout.height)<=1,`filter drawer fills viewport height at ${width}px: ${JSON.stringify(layout)}`);
+      assert.ok(layout.panel.top<=1&&layout.panel.bottom<=layout.height-39,`filter drawer stays above the Sandbox footer at ${width}px: ${JSON.stringify(layout)}`);
       if(width>=1200)assert.ok(layout.panel.left>=layout.results.right-1,`wide filter drawer does not cover the table at ${width}px: ${JSON.stringify(layout)}`);
       else assert.equal(layout.panelVisibility,'hidden',`table is hidden while the full-screen drawer is open at ${width}px`);
       await page.close();
     }
-    console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','3 rows','5 rows','8 rows','100%','125%','150%'],screenshots:evidence},null,2));
+    console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','history filters: two rows with clear wrappers, light/dark','requests: three organization cards plus three status counters in one row at 1920/1536/1366/1280/1024, adaptive 900px, light/dark','3 rows','5 rows','8 rows','80%','100%','125%','150%'],screenshots:evidence},null,2));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

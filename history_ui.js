@@ -6,7 +6,15 @@ function historyDateCell(value){
 }
 let historyPage=1,historyPages=1,historyRequest=0,historyTimer,historyItems=[];
 let historySorts=[{key:'date',direction:'desc'}];
+let historyReviewOfficerNames=[],historyReviewOfficerSelection=new Set();
 function historySupplierCode(){return document.querySelector('[data-history="code"]').value.trim()}
+function renderHistoryReviewOfficers(){
+  const term=$('#historyReviewOfficerSearch').value.trim().toLocaleLowerCase('uk'),selected=historyReviewOfficerSelection;
+  $('#historyReviewOfficerOptions').innerHTML=historyReviewOfficerNames.filter(name=>!term||name.toLocaleLowerCase('uk').includes(term)).map(name=>
+    `<label><input type="checkbox" value="${esc(name)}" ${selected.has(name)?'checked':''}> <span>${esc(formatOfficerName(name))}</span></label>`).join('')||'<p class="muted">УО не знайдено</p>';
+  const summary=$('#historyReviewOfficerFilter summary'),values=[...selected];
+  summary.textContent=!values.length?'Усі':values.length===1?formatOfficerName(values[0]):`Вибрано: ${values.length}`;
+}
 function syncHistorySupplierCardButton(){const button=document.querySelector('#historySupplierCard'),code=historySupplierCode();button.disabled=!code;button.dataset.supplierCode=code;button.title=code?`Відкрити картку постачальника ${code}`:'Встановіть точний фільтр ЄДРПОУ / РНОКПП'}
 function drawHistorySort(){
   document.querySelectorAll('[data-history-sort]').forEach(button=>{const i=historySorts.findIndex(x=>x.key===button.dataset.historySort);button.querySelector('small').textContent=i<0?'':`${historySorts[i].direction==='asc'?'↑':'↓'}${i+1}`;button.setAttribute('aria-label',`${button.dataset.label}${i<0?'':`, ${historySorts[i].direction}, пріоритет ${i+1}`}`)});
@@ -25,15 +33,12 @@ async function loadApplicationHistory(){
   await ensureHistoryColumns();
   q.set('sorts',JSON.stringify(historySorts));
   document.querySelectorAll('[data-history]').forEach(el=>q.set(el.dataset.history,el.value.trim()));
-  const selection=$$('#historyReviewOfficerOptions input:checked').map(input=>input.value);
-  selection.forEach(value=>q.append('review_officer',value));
+  [...historyReviewOfficerSelection].forEach(value=>q.append('review_officer',value));
   try{
     const data=await request(`/api/application-history?${q}`);if(ticket!==historyRequest)return;
     historyItems=data.items;historyPages=data.pages;
-    const checked=$$('#historyReviewOfficerOptions input:checked').map(input=>input.value);
-    $('#historyReviewOfficerOptions').innerHTML=(data.review_officers||[]).map(name=>
-      `<label><input type="checkbox" value="${esc(name)}" ${checked.includes(name)?'checked':''}> ${esc(formatOfficerName(name))}</label>`).join('');
-    updateMultiSummary('historyReviewOfficerFilter','УО розгляду',checked,formatOfficerName);
+    historyReviewOfficerNames=[...new Set([...(data.review_officers||[]),...historyReviewOfficerSelection])].sort((a,b)=>a.localeCompare(b,'uk'));
+    renderHistoryReviewOfficers();
     $('#historyTotal').textContent=String(data.total);syncHistorySupplierCardButton();
     renderHistoryTable();
     $('#historyCount').textContent=`${data.total} заявок · сторінка ${data.page} із ${data.pages}`;
@@ -41,9 +46,10 @@ async function loadApplicationHistory(){
   }catch(error){if(ticket===historyRequest){$('#historyCount').textContent=error.message;$('#historyTotal').textContent='—'}}
 }
 function resetHistoryReviewOfficers(){
-  $$('#historyReviewOfficerOptions input').forEach(input=>input.checked=false);
+  historyReviewOfficerSelection.clear();
+  $('#historyReviewOfficerSearch').value='';
+  renderHistoryReviewOfficers();
   $('#historyReviewOfficerFilter').open=false;
-  updateMultiSummary('historyReviewOfficerFilter','УО розгляду',[]);
 }
 function openSupplierHistory(code){
   resetHistoryReviewOfficers();
@@ -53,7 +59,13 @@ function openSupplierHistory(code){
 document.querySelector('#historyHeadingActions').insertAdjacentHTML('afterbegin','<button type="button" id="historySupplierCard" disabled>Картка постачальника</button>');
 document.querySelector('#historySupplierCard').onclick=()=>{const code=historySupplierCode();if(code)openSupplierProfile(code)};
 $('#historyNav').onclick=()=>{showModule('history');loadApplicationHistory()};
-$('#historyFilters').oninput=()=>{syncHistorySupplierCardButton();clearTimeout(historyTimer);historyTimer=setTimeout(()=>{historyPage=1;loadApplicationHistory()},300)};
+$('#historyFilters').oninput=event=>{if(event.target.id==='historyReviewOfficerSearch')return;syncHistorySupplierCardButton();clearTimeout(historyTimer);historyTimer=setTimeout(()=>{historyPage=1;loadApplicationHistory()},300)};
+$('#historyReviewOfficerSearch').oninput=renderHistoryReviewOfficers;
+$('#historyReviewOfficerFilter').onchange=event=>{
+  const input=event.target.closest('#historyReviewOfficerOptions input[type="checkbox"]');if(!input)return;
+  input.checked?historyReviewOfficerSelection.add(input.value):historyReviewOfficerSelection.delete(input.value);
+  renderHistoryReviewOfficers();historyPage=1;loadApplicationHistory();
+};
 $('#historyReset').onclick=()=>{resetHistoryReviewOfficers();document.querySelectorAll('[data-history]').forEach(el=>el.value='');historyPage=1;syncHistorySupplierCardButton();loadApplicationHistory()};
 $('#historyPrev').onclick=()=>{if(historyPage>1){historyPage--;loadApplicationHistory()}};
 $('#historyNext').onclick=()=>{if(historyPage<historyPages){historyPage++;loadApplicationHistory()}};

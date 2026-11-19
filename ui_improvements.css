@@ -49,15 +49,15 @@ html[data-pqm-environment="sandbox"] #applicationsView .heading-metrics .officer
 #suppliersView .supplier-filter-field .multi-options span{overflow-wrap:anywhere}
 #historyView #historyFilters{display:flex;flex-direction:column;align-items:stretch}
 #historyFilters .history-filter-row{display:grid;flex:0 0 auto;gap:6px;min-width:0;width:100%;box-sizing:border-box;align-items:center}
-#historyFilters .history-filter-primary{grid-template-columns:1.5fr 1fr 1.3fr .75fr 1.3fr 1.1fr 1.1fr 1fr}
-#historyFilters .history-filter-secondary{grid-template-columns:minmax(220px,1fr) auto auto auto auto}
+#historyFilters .history-filter-primary{grid-template-columns:minmax(230px,2fr) 118px minmax(180px,1.45fr) 112px 145px minmax(150px,1fr) minmax(150px,1fr)}
+#historyFilters .history-filter-secondary{grid-template-columns:minmax(200px,1.7fr) minmax(145px,1fr) minmax(145px,1fr) minmax(118px,.8fr) minmax(118px,.8fr) minmax(150px,1fr) 38px}
 #historyFilters .history-filter-row>input,#historyFilters .history-filter-row>.pqm-clear-wrap{width:100%;min-width:0}
 #historyFilters .history-filter-row>label{display:flex;align-items:center;gap:5px;white-space:nowrap}
-#historyFilters .history-filter-row>label input{width:130px;min-width:0}
-#historyFilters .history-filter-row>select,#historyReset{width:max-content;min-width:0;white-space:nowrap}
+#historyFilters .history-filter-row>label input{flex:1 1 auto;width:calc(100% - 22px);min-width:0}
+#historyFilters .history-filter-row>select,#historyReset{width:100%;min-width:0;white-space:nowrap}
 #historyFilters .history-filter-row input,#historyFilters .history-filter-row select,#historyReset{box-sizing:border-box;height:34px;min-height:34px}
-@media(max-width:1100px){#historyFilters .history-filter-primary{grid-template-columns:repeat(4,minmax(0,1fr))}#historyFilters .history-filter-secondary{display:flex;flex-wrap:wrap}#historyFilters .history-filter-secondary>.pqm-clear-wrap,#historyFilters .history-filter-secondary>input{flex:1 1 240px;width:auto}}
-@media(max-width:650px){#historyFilters .history-filter-primary{grid-template-columns:repeat(2,minmax(0,1fr))}#historyFilters .history-filter-secondary{grid-template-columns:repeat(2,minmax(0,1fr))}#historyFilters .history-filter-secondary>.pqm-clear-wrap,#historyFilters .history-filter-secondary>input{grid-column:1/-1}}
+@media(max-width:1120px){#historyFilters .history-filter-primary{grid-template-columns:minmax(190px,2fr) 105px minmax(155px,1.4fr) 100px 130px}#historyFilters .history-filter-primary>.pqm-clear-wrap:has(>input[data-history="contract"]),#historyFilters .history-filter-primary>.pqm-clear-wrap:has(>input[data-history="manager"]){grid-row:2}#historyFilters .history-filter-secondary{grid-template-columns:minmax(170px,1.4fr) minmax(125px,1fr) minmax(130px,1fr) minmax(100px,.8fr) minmax(100px,.8fr) minmax(130px,1fr) 36px}}
+@media(max-width:760px){#historyFilters .history-filter-primary,#historyFilters .history-filter-secondary{grid-template-columns:repeat(2,minmax(0,1fr))}#historyFilters .history-filter-primary>.pqm-clear-wrap:has(>input[data-history="search"]),#historyFilters .history-filter-secondary>.pqm-clear-wrap:has(>input[data-history="remarks"]){grid-column:1/-1}#historyFilters .history-filter-primary>.pqm-clear-wrap:has(>input[data-history="contract"]),#historyFilters .history-filter-primary>.pqm-clear-wrap:has(>input[data-history="manager"]){grid-row:auto}}
 .amcu-toolbar{display:flex!important;flex-wrap:wrap;gap:6px!important;align-items:center}
 .amcu-toolbar>div:first-child{flex:0 1 135px;min-width:115px}
 .amcu-toolbar>.pqm-clear-wrap{flex:1 1 180px;max-width:260px}

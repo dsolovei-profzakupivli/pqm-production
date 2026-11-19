@@ -53,10 +53,6 @@
     try{await navigator.clipboard.writeText(button.dataset.copyFrameworkNumber);toast('Номер відбору скопійовано')}
     catch{toast('Не вдалося скопіювати номер відбору','error')}
   });
-  const expired=document.createElement('button');expired.type='button';expired.id='requestsExpiredFilter';
-  expired.textContent='Строк відповіді сплив';expired.setAttribute('aria-pressed','false');
-  expired.onclick=()=>{PqmUi.responseExpired=!PqmUi.responseExpired;expired.classList.toggle('active',PqmUi.responseExpired);expired.setAttribute('aria-pressed',String(PqmUi.responseExpired));requestsPage=1;loadViolationReports()};
-  document.querySelector('#requestQuickFilters').append(expired);
   const counts=new Map();let refreshing=false;
   function badge(id,count){
     const target=document.getElementById(id);if(!target)return;
@@ -76,7 +72,8 @@
     ].map(async([permission,id,path])=>{
       if(!me.permissions?.[permission]){counts.set(id,0);badge(id,0);return}
       try{const result=await request(`${API}${path}`,{cache:'no-store'});if(currentMe!==me)return;
-        const value=Number.isInteger(result.count)&&result.count>=0?result.count:null;counts.set(id,value);badge(id,value)}
+        const value=Number.isInteger(result.count)&&result.count>=0?result.count:null;counts.set(id,value);badge(id,value);
+      }
       catch{counts.set(id,null);badge(id,null)}
     }))}finally{refreshing=false}
   }
@@ -95,7 +92,6 @@
         clearTimeout(requestsTimer);
         for(const id of ['requestsSearch','requestsStatus','requestsReason','requestsDateFrom','requestsDateTo'])document.getElementById(id).value='';
         selectedRequestAuthority='40996564';requestsPage=1;PqmUi.responseExpired=true;
-        expired.classList.add('active');expired.setAttribute('aria-pressed','true');
       }
       clearState();
     }

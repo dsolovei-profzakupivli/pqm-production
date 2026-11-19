@@ -5,6 +5,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync('queue_statistics_ui.js', 'utf8');
 const appSource = fs.readFileSync('app.js', 'utf8');
+const historySource = fs.readFileSync('history_ui.js', 'utf8');
 const serverSource = fs.readFileSync('server.py', 'utf8');
 const indexSource = fs.readFileSync('index.html', 'utf8');
 const stylesSource = fs.readFileSync('styles.css', 'utf8') + fs.readFileSync('uo_work_page.css', 'utf8');
@@ -330,11 +331,11 @@ test('trend switches day/week/month, fills empty periods and exposes a keyboard 
   const month=h.trendButtons.find(button=>button.dataset.trendGranularity==='month');
   month.onclick();
   const monthly=h.nodes.queueStatisticsTrendSvg.innerHTML;
-  assert.equal((monthly.match(/trend-axis-label/g)||[]).length,1,'monthly view includes the selected calendar month');
+  assert.equal((monthly.match(/trend-axis-label/g)||[]).length,1,`monthly view includes the selected calendar month: ${monthly}`);
   h.nodes.queueStatisticsTrendSvg.onkeydown({key:'ArrowRight',preventDefault(){}});
   assert.equal(h.nodes.queueStatisticsTrendTooltip.hidden,false);
   assert.match(h.nodes.queueStatisticsTrendTooltip.innerHTML,/Надійшло:/);
-  assert.equal(h.nodes.queueStatisticsKpis.innerHTML.match(/Подано заявок/g)?.length,1);
+  assert.equal(h.nodes.queueStatisticsKpis.innerHTML.match(/<span>Подано заявок<\/span>/g)?.length,1);
 });
 
 test('daily, Monday-based weekly and calendar-month buckets count intervals instead of accumulating',()=>{
@@ -481,13 +482,17 @@ test('approved Work UO layout order, filters, dark palette and long-table behavi
     assert.ok(typeField.includes(`<option value="${value}">${label}</option>`),`type option ${label} uses the registry value`);
   assert.match(serverSource,/entity_type=params\.get\("entity_type", \[""\]\)\[0\]/);
   assert.doesNotMatch(serverSource,/entity_type=\(params\.get\("entity_type", \[""\]\)\[0\][\s\S]+if summary == "application-statistics" else ""\)/);
-  assert.match(stats,/id="queueStatisticsFilterApply"[^>]*>Застосувати/);
-  assert.match(stats,/id="queueStatisticsFilterClear"[^>]*>Очистити/);
+  assert.match(stats,/id="queueStatisticsFilterApply"[^>]*aria-label="Застосувати вибрані фільтри"/);
+  assert.match(stats,/id="queueStatisticsFilterClear"[^>]*aria-label="Очистити всі фільтри"/);
+  assert.match(stats,/id="queueStatisticsFilterApply"[^>]*>[\s\S]*?<svg/);
+  assert.match(stats,/id="queueStatisticsFilterClear"[^>]*>[\s\S]*?<svg/);
   assert.ok(stats.indexOf('queueStatisticsFromField')<stats.indexOf('queueStatisticsFilterToggle'));
-  assert.ok(stats.indexOf('queueStatisticsFilterToggle')<stats.indexOf('queueStatisticsGroupField'));
-  assert.ok(stats.indexOf('queueStatisticsGroupField')<stats.indexOf('queueStatisticsSearch'));
+  assert.ok(stats.indexOf('queueStatisticsToField')<stats.indexOf('queueStatisticsSearch'));
   assert.ok(stats.indexOf('queueStatisticsSearch')<stats.indexOf('queueStatisticsReset'));
-  assert.ok(stats.indexOf('queueStatisticsFilterApply')<stats.indexOf('queueStatisticsFilterClear'));
+  assert.ok(stats.indexOf('queueStatisticsReset')<stats.indexOf('queueStatisticsGroupField'));
+  assert.ok(stats.indexOf('queueStatisticsGroupField')<stats.indexOf('queueStatisticsFilterToggle'));
+  assert.ok(stats.indexOf('queueStatisticsFilterClear')<stats.indexOf('queueStatisticsFilterApply'));
+  assert.ok(stats.indexOf('queueStatisticsFilterApply')<stats.indexOf('queueStatisticsFilterClose'));
   assert.match(stats,/id="queueStatisticsFilterClose"/);
   assert.match(stats,/id="queueStatisticsTrendSvg"/);
   assert.match(stats,/data-trend-granularity="day"/);
@@ -517,4 +522,33 @@ test('shared officer formatter uses first-name then uppercase-surname and preser
   assert.equal(formatQueueOfficer(''),'Не визначено');
   assert.equal(formatOfficerName('MANAGER'),'MANAGER');
   assert.equal(formatQueueOfficer('ДМИТРО САВВА'),'<span>Дмитро</span><span>САВВА</span>');
+});
+
+test('history review-officer search preserves multiple selections and summarizes them',()=>{
+  const search={value:''},options={innerHTML:''},summary={textContent:''};
+  const nodes={
+    '#historyReviewOfficerSearch':search,
+    '#historyReviewOfficerOptions':options,
+    '#historyReviewOfficerFilter summary':summary,
+  };
+  const context=vm.createContext({
+    $:selector=>nodes[selector],esc:value=>String(value),formatOfficerName,
+    historyReviewOfficerNames:['ДМИТРО САВВА','ОЛЕНА ЄРЬОМІНА','ТЕТЯНА ФЕДЧЕНКО'],
+    historyReviewOfficerSelection:new Set(['ДМИТРО САВВА','ТЕТЯНА ФЕДЧЕНКО']),
+  });
+  const render=historySource.match(/function renderHistoryReviewOfficers\(\)\{[\s\S]*?\n\}/)?.[0];
+  assert.ok(render,'the test exercises the actual officer-option renderer');
+  vm.runInContext(`${render};renderHistoryReviewOfficers()`,context);
+  assert.equal(summary.textContent,'Вибрано: 2');
+  assert.match(options.innerHTML,/value="ДМИТРО САВВА" checked/);
+  assert.match(options.innerHTML,/value="ТЕТЯНА ФЕДЧЕНКО" checked/);
+  assert.doesNotMatch(options.innerHTML,/value="ОЛЕНА ЄРЬОМІНА" checked/);
+  search.value='Тетяна';
+  vm.runInContext('renderHistoryReviewOfficers()',context);
+  assert.equal(summary.textContent,'Вибрано: 2','searching does not change the current selection');
+  assert.match(options.innerHTML,/value="ТЕТЯНА ФЕДЧЕНКО" checked/);
+  assert.doesNotMatch(options.innerHTML,/ДМИТРО САВВА/,'nonmatching selected officers stay selected while filtered out of view');
+  search.value='';
+  vm.runInContext('renderHistoryReviewOfficers()',context);
+  assert.match(options.innerHTML,/value="ДМИТРО САВВА" checked/,'clearing search restores the retained selection');
 });
