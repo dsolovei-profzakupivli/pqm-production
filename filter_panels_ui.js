@@ -150,9 +150,26 @@
     bind(panel,'.queue-statistics-filter-section','.queue-statistics-section-toggle','.queue-statistics-filter-section-content');
   }
 
+  function prepareSharedPanel(panel) {
+    panel.classList.add('pqm-filter-panel');
+    panel.querySelectorAll('.filter-section-heading,.queue-statistics-filter-section-heading').forEach(heading=>{
+      heading.classList.add('pqm-filter-heading');
+      const toggle=heading.querySelector('.filter-accordion-toggle,.queue-statistics-section-toggle');
+      toggle?.classList.add('pqm-filter-toggle');
+      const title=toggle?.querySelector('span');title?.classList.add('filter-accordion-title');
+      const count=toggle?.querySelector('.filter-accordion-count,.queue-statistics-section-count');count?.classList.add('pqm-filter-count');
+    });
+    const actions=panel.querySelector('.filter-panel-header-actions');
+    actions?.querySelectorAll('button').forEach((button,index)=>{
+      button.classList.add('pqm-panel-action');
+      button.classList.toggle('pqm-panel-apply',index===1);
+    });
+  }
+
   prepareApplicationFilters();
   prepareEdrFilters();
   prepareQueueStatisticsFilters();
+  document.querySelectorAll('#applicationFilterPanel,#queueStatisticsFilterPanel,#edrMonitoringFilterPanel').forEach(prepareSharedPanel);
   window.PqmFilterAccordion={collapseAll,collapseControl};
   [['#applicationFilters','#applicationFilterPanel'],['#edrMonitoringAdvanced','#edrMonitoringFilterPanel']].forEach(([detailsSelector,panelSelector])=>{
     const details=document.querySelector(detailsSelector),panel=document.querySelector(panelSelector);

@@ -21,6 +21,8 @@
   }
 
   function positionPanel(details, bringToFront = false) {
+    // Nested drawer filters participate in layout; only the drawer enters the top layer.
+    if (details.matches('.multi-filter') && details.closest('#applicationFilterPanel,#edrMonitoringFilterPanel')) return;
     const panel = panelFor(details);
     const summary = details.querySelector(':scope > summary');
     if (!panel || !summary) return;
@@ -100,6 +102,8 @@
   });
   document.addEventListener('change', event => {
     const details = event.target.closest('.multi-filter.popover-fixed[open]');
+    // Drawer multi-selects keep drafts open until an explicit Apply or dismissal.
+    if (details?.closest('.pqm-filter-panel')) return;
     if (details && event.target.matches('input[type="checkbox"],input[type="radio"]')) details.open = false;
   }, true);
   document.addEventListener('keydown', event => {
