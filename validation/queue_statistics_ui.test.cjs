@@ -24,6 +24,8 @@ const protocolEditorContext = vm.createContext({
 });
 vm.runInContext(`${protocolOfficerEditDefinition};globalThis.protocolOfficerEditOptions=protocolOfficerEditOptions;`, protocolEditorContext);
 const protocolOfficerEditOptions = protocolEditorContext.protocolOfficerEditOptions;
+const statisticsActionMatcherDefinition=appSource.match(/window\.pqmStatisticsActionMatchesCurrentFilters=\(\{[\s\S]*?\n\};/)?.[0];
+assert.ok(statisticsActionMatcherDefinition,'the selected statistics cell is derived from the current registry filter scope');
 
 test('protocol officer editor preserves stored/manual values and does not persist a computed fallback implicitly', () => {
   const automatic = protocolOfficerEditOptions({protocolOfficer:'Олена ЄРЬОМІНА',protocolOfficerStored:''});
@@ -39,6 +41,19 @@ test('protocol officer editor preserves stored/manual values and does not persis
   assert.match(appSource,/if\(key===['\"]protocolOfficer['\"]\)editor\.innerHTML=protocolOfficerEditOptions\(row\)/);
 });
 
+test('statistics-cell selection matches the real applied registry scope, not an independent flag',()=>{
+  const fields={'#dateFromFilter':{value:'2026-01-01'},'#dateToFilter':{value:'2026-01-31'},'#searchInput':{value:''},'#protocolNumberFilter':{value:''},'#protocolDecisionFilter':{value:''},'#complianceStatusFilter':{value:''}};
+  const context=vm.createContext({window:{},$:selector=>fields[selector],filterSelections:{dk:new Set(['02100000-6']),status:new Set(['Відхилено']),supplier:new Set(),registry:new Set(),framework:new Set(),marketplace:new Set()},queueRegistryFilters:{entity_type:'individual_entrepreneur',review_officer:'ДМИТРО САВВА',protocol_officer:'ТЕТЯНА ФЕДЧЕНКО'},categoryFilter:'ЇЖА',officerFilter:'',deepLinkSubmissionId:''});
+  vm.runInContext(`${statisticsActionMatcherDefinition};globalThis.matches=window.pqmStatisticsActionMatchesCurrentFilters`,context);
+  const action={filters:{date_from:'2026-01-01',date_to:'2026-01-31',entity_type:'individual_entrepreneur',review_officer:'ДМИТРО САВВА',protocol_officer:'ТЕТЯНА ФЕДЧЕНКО',category:'ЇЖА',dk_code:['02100000-6']},status:'unsuccessful'};
+  assert.equal(context.matches(action),true);
+  context.filterSelections.status.clear();
+  assert.equal(context.matches(action),false,'the cell is no longer selected after its applied status filter is removed');
+  context.filterSelections.status.add('Відхилено');
+  context.queueRegistryFilters.entity_type='legal_entity';
+  assert.equal(context.matches(action),false,'the cell selection clears when the actual supplier-type filter changes');
+});
+
 function makeNode(value = '') {
   const classes = new Set();
   const summary = {textContent:'',title:''};
@@ -50,7 +65,7 @@ function makeNode(value = '') {
     replaceChildren(...children){this.options=children;},
     setAttribute(name,value){this.attributes[name]=value;}, removeAttribute(name){delete this.attributes[name];},
     querySelector(selector){return selector==='summary'?summary:selector==='thead'?{getBoundingClientRect:()=>({height:28})}:selector==='.queue-statistics-filter-section-content'?this.content:null;},
-    querySelectorAll(selector){return selector==='tr'?[...this.innerHTML.matchAll(/<tr>/g)].map(()=>({getBoundingClientRect:()=>({height:30})})):[];},
+    querySelectorAll(selector){if(selector==='[data-statistics-action]')return this.actionButtons||[];return selector==='tr'?[...this.innerHTML.matchAll(/<tr>/g)].map(()=>({getBoundingClientRect:()=>({height:30})})):[];},
     closest(){return null;},
   };
 }
@@ -70,12 +85,14 @@ function harness(items) {
   nodes.queueStatisticsTrendSvg.getBoundingClientRect=()=>({left:0,top:0,width:900,height:250});
   const sections=['supplier_type','category','dk_code','review_officer','protocol_officer'].map(key=>{
     const section=makeNode();section.dataset.statisticsFilterSection=key;
-    section.state=makeNode();section.count=makeNode();section.reset=makeNode();section.content=makeNode();
-    section.reset.dataset.statisticsFilterReset=key;
-    section.querySelector=selector=>selector==='.queue-statistics-section-state'?section.state:selector==='.queue-statistics-section-count'?section.count:selector==='[data-statistics-filter-reset]'?section.reset:selector==='.queue-statistics-filter-section-content'?section.content:null;
+    section.state=makeNode();section.count=makeNode();section.reset=makeNode();section.apply=makeNode();section.content=makeNode();section.toggle=makeNode();
+    section.toggle.attributes['aria-expanded']='false';section.content.hidden=true;
+    section.reset.dataset.statisticsFilterReset=key;section.apply.dataset.statisticsFilterApply=key;
+    section.querySelector=selector=>selector==='.queue-statistics-section-state'?section.state:selector==='.queue-statistics-section-count'?section.count:selector==='[data-statistics-filter-reset]'?section.reset:selector==='[data-statistics-filter-apply]'?section.apply:selector==='.queue-statistics-filter-section-content'?section.content:selector==='.queue-statistics-section-toggle'?section.toggle:null;
     return section;
   });
   nodes.queueStatisticsFilterPanel.querySelectorAll=selector=>selector==='[data-statistics-filter-section]'?sections:[];
+  nodes.queueStatisticsFilterPanel.querySelector=selector=>{const match=selector.match(/data-statistics-filter-section="([^"]+)"/);return match?sections.find(section=>section.dataset.statisticsFilterSection===match[1]):null};
   nodes.queueStatisticsFilterPanel.onclick=null;
   nodes.queueStatisticsFilterPanel.hidden=true;
   nodes.queueStatisticsFrom.value='2026-01-01';
@@ -89,6 +106,8 @@ function harness(items) {
   const labels=controls.map(()=>makeNode());
   controls.forEach((control,index)=>{control.closest=selector=>selector==='label'?labels[index]:null;});
   const calls=[];
+  const accordionCalls=[];
+  const window={PqmFilterAccordion:{collapseControl(control){const section=sections.find(item=>item.dataset.statisticsFilterSection===control.dataset.statisticsFilter);if(!section)return false;section.toggle.setAttribute('aria-expanded','false');section.content.hidden=true;accordionCalls.push(control.dataset.statisticsFilter);return true;},collapseAll(){sections.forEach(section=>{section.toggle.setAttribute('aria-expanded','false');section.content.hidden=true})}}};
   const trendButtons=['day','week','month'].map(value=>{const node=makeNode();node.dataset.trendGranularity=value;return node;});
   const summarize=(rows)=>{
     const totals={total:0,active:0,unsuccessful:0,pending:0},byDate=new Map(),diagnostics={empty_status:0,unknown_status:0,null_status:0,missing_qualification:0,unknown_values:[]};
@@ -98,7 +117,7 @@ function harness(items) {
   };
   let context;
   context=vm.createContext({
-    API:'/api',URLSearchParams,Option:function Option(text,value){this.text=text;this.value=value;},window:{},document:{body:makeNode(),addEventListener(){}},
+    API:'/api',URLSearchParams,Option:function Option(text,value){this.text=text;this.value=value;},window,document:{body:makeNode(),addEventListener(){}},
     $(selector){return selector.startsWith('.')?nodes.queueStatisticsTable:nodes[selector.replace(/^#/,'')];},
     $$(selector){return selector==='[data-statistics-filter]'?controls:selector==='[data-trend-granularity]'?trendButtons:[];},
     request:async url=>{calls.push(url);const parsed=new URL(url,'https://pqm.test');if(parsed.searchParams.get('summary')==='review-progress')return{items:[]};let rows=items;const entityType=parsed.searchParams.get('entity_type');if(entityType)rows=rows.filter(row=>row.entity_type===entityType);for(const key of ['category','review_officer','protocol_officer']){const value=parsed.searchParams.get(key);if(value)rows=rows.filter(row=>(row[key]||'')===(value==='__unassigned__'?'':value));}const codes=parsed.searchParams.getAll('dk_code');if(codes.length)rows=rows.filter(row=>codes.includes(row.dk_code||''));return summarize(rows);},esc:value=>String(value),formatOfficerName,
@@ -108,7 +127,7 @@ function harness(items) {
   });
   const testSource=source.replace('  function renderTrend() {','  window.__buildTrendBuckets=buildTrendBuckets;\n\n  function renderTrend() {');
   vm.runInContext(testSource,context,{filename:'queue_statistics_ui.js'});
-  return{context,nodes,calls,controls,labels,sections,trendButtons};
+  return{context,nodes,calls,controls,labels,sections,trendButtons,accordionCalls};
 }
 
 const sample=[
@@ -143,6 +162,67 @@ test('FOP rejected KPI drilldown transfers every applied filter and canonical st
   assert.match(h.nodes.queueRegistryScope.textContent,/Тип постачальника · ФОП/);
 });
 
+test('single-value statistics filters apply immediately while DK stays a draft until checked',async()=>{
+  const h=harness(sample);
+  h.context.window.refreshQueueApplicationStatistics();
+  await new Promise(resolve=>setImmediate(resolve));
+  const supplierType=h.controls.find(control=>control.dataset.statisticsFilter==='supplier_type');
+  supplierType.value='individual_entrepreneur';
+  supplierType.onchange();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(new URL(h.calls.filter(url=>url.includes('application-statistics')).at(-1),'https://pqm.test').searchParams.get('entity_type'),'individual_entrepreneur');
+  assert.equal(h.sections[0].classList.contains('filter-active'),true);
+  assert.equal(h.sections[0].apply.hidden,true,'single-value filters do not wait for the check action');
+  assert.equal(h.sections[0].toggle.attributes['aria-expanded'],'false','single-value selection collapses its own section');
+  assert.equal(h.sections[0].content.hidden,true,'collapsed section content is hidden after applying the value');
+  assert.equal(h.accordionCalls.at(-1),'supplier_type');
+  h.sections[0].toggle.setAttribute('aria-expanded','true');h.sections[0].content.hidden=false;
+  supplierType.value='legal_entity';supplierType.onchange();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(new URL(h.calls.filter(url=>url.includes('application-statistics')).at(-1),'https://pqm.test').searchParams.get('entity_type'),'legal_entity','a reopened mono filter can be changed and reapplied');
+  assert.equal(h.sections[0].toggle.attributes['aria-expanded'],'false');
+  for(const [key,value] of [['category','ЇЖА'],['review_officer','ДМИТРО САВВА'],['protocol_officer','ТЕТЯНА ФЕДЧЕНКО']]){
+    const control=h.controls.find(item=>item.dataset.statisticsFilter===key),section=h.sections.find(item=>item.dataset.statisticsFilterSection===key);
+    control.value=value;control.onchange();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(h.accordionCalls.at(-1),key,`${key} selection collapses only its own section`);
+    assert.equal(section.toggle.attributes['aria-expanded'],'false');assert.equal(section.content.hidden,true);
+    assert.equal(new URL(h.calls.filter(url=>url.includes('application-statistics')).at(-1),'https://pqm.test').searchParams.get(key),value,`${key} is applied immediately`);
+  }
+  const count=h.calls.filter(url=>url.includes('application-statistics')).length;
+  h.nodes.queueStatisticsDkOptions.onchange({target:{closest:selector=>selector==='[data-statistics-dk-option]'?{checked:true,value:'02100000-6'}:null}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.calls.filter(url=>url.includes('application-statistics')).length,count,'DK checkbox edits do not update results before application');
+  assert.equal(h.sections[2].apply.hidden,false,'a changed DK draft exposes its check action');
+});
+
+test('a clicked statistics number stays highlighted only while its actual registry filter is applied',async()=>{
+  const h=harness(sample);
+  h.context.window.refreshQueueApplicationStatistics();
+  await new Promise(resolve=>setImmediate(resolve));
+  const button={dataset:{statisticsAction:'2'},attributes:{},classes:new Set(),setAttribute(name,value){this.attributes[name]=value;},classList:{toggle(name,active){if(active)button.classes.add(name);else button.classes.delete(name);}}};
+  h.nodes.queueStatisticsKpis.actionButtons=[button];
+  h.nodes.queueStatisticsRows.actionButtons=[];
+  h.context.window.pqmStatisticsActionMatchesCurrentFilters=action=>{
+    const c=h.context,labels={active:'Допущено',unsuccessful:'Відхилено',pending:'Очікує рішення'};
+    return (c.queueRegistryFilters.entity_type||'')===(action.filters.entity_type||'')&&
+      (c.queueRegistryFilters.review_officer||'')===(action.filters.review_officer||'')&&
+      (c.queueRegistryFilters.protocol_officer||'')===(action.filters.protocol_officer||'')&&
+      c.categoryFilter===(action.filters.category||'')&&
+      JSON.stringify([...c.filterSelections.dk].sort())===JSON.stringify([].concat(action.filters.dk_code||[]).sort())&&
+      JSON.stringify([...c.filterSelections.status].sort())===JSON.stringify(action.status?[labels[action.status]]:[]);
+  };
+  h.context.window.refreshQueueStatisticsActionSelection();
+  assert.equal(button.attributes['aria-pressed'],'false');
+  h.nodes.queueStatisticsKpis.onclick({target:{closest:selector=>selector==='[data-statistics-action]'?button:null}});
+  assert.deepEqual([...h.context.filterSelections.status],['Відхилено'],'the click applies the action’s real status filter');
+  assert.equal(button.attributes['aria-pressed'],'true');
+  assert.equal(button.classes.has('is-selected'),true);
+  h.context.filterSelections.status.clear();
+  h.context.window.refreshQueueStatisticsActionSelection();
+  assert.equal(button.attributes['aria-pressed'],'false','clearing the actual filter removes the persistent selection style');
+  assert.equal(button.classes.has('is-selected'),false);
+});
+
 test('ordinary registry supplier type filter is visible, persisted, query-backed, and cleared independently of saved views',()=>{
   const select=indexSource.match(/<select id="applicationEntityTypeFilter"[^>]*>([\s\S]*?)<\/select>/)?.[0]||'';
   assert.ok(select,'the registry exposes a dedicated supplier-type selector');
@@ -150,7 +230,7 @@ test('ordinary registry supplier type filter is visible, persisted, query-backed
     assert.ok(select.includes(`<option value="${value}">${label}</option>`),`registry selector offers ${label}`);
   }
   assert.match(appSource,/function currentFilterParams\(\)\{return \{\.\.\.queueRegistryFilters/,'the selected type participates in registry requests and counts');
-  assert.match(appSource,/\$\('#applicationEntityTypeFilter'\)\.onchange=\(\)=>\{queueRegistryFilters\.entity_type=/,'changing the selector loads rows with the selected type');
+  assert.match(appSource,/\$\('#applicationEntityTypeFilter'\)\.onchange=function\(\)\{queueRegistryFilters\.entity_type=this\.value;page=1;statsSignature='';loadRows\(\);collapseApplicationFilterControl\(this\)\}/,'changing the selector loads rows with the selected type and collapses its section');
   assert.match(appSource,/entityType:queueRegistryFilters\.entity_type\|\|''/,'the ordinary filter survives registry reloads');
   assert.match(appSource,/query\.get\('entity_type'\)\?\?state\.entityType/,'the type restores from the transition URL before the prior local filter');
   assert.match(appSource,/queueRegistryFilters=\{\};\$\('#applicationEntityTypeFilter'\)\.value=''/,'clear-all returns the type selector to All');
@@ -207,7 +287,7 @@ test('statistics table shows at most five rows before internal scrolling and cle
   }
 });
 
-test('filter edits remain distinct from applied dates; grouping does not change aggregate totals',async()=>{
+test('single-value filter changes refresh the current period; grouping does not change aggregate totals',async()=>{
   const h=harness(sample);
   h.context.window.refreshQueueApplicationStatistics();
   await new Promise(resolve=>setImmediate(resolve));
@@ -225,9 +305,12 @@ test('filter edits remain distinct from applied dates; grouping does not change 
   assert.equal(h.nodes.queueStatisticsKpis.innerHTML,before);
   h.controls.find(control=>control.dataset.statisticsFilter==='category').value='ЇЖА';
   h.controls.find(control=>control.dataset.statisticsFilter==='category').onchange();
-  assert.equal(h.nodes.queueStatisticsFilterSummary.textContent,'Фільтри');
-  assert.ok(h.sections.find(section=>section.dataset.statisticsFilterSection==='category').classList.contains('filter-pending'));
-  assert.equal(h.nodes.queueStatisticsPending.hidden,false);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.nodes.queueStatisticsFilterSummary.textContent,'Фільтри · 1','a single-value filter applies immediately');
+  assert.ok(h.sections.find(section=>section.dataset.statisticsFilterSection==='category').classList.contains('filter-active'));
+  assert.ok(!h.sections.find(section=>section.dataset.statisticsFilterSection==='category').classList.contains('filter-pending'));
+  assert.equal(new URL(h.calls.filter(url=>url.includes('application-statistics')).at(-1),'https://pqm.test').searchParams.get('category'),'ЇЖА');
+  assert.equal(h.nodes.queueStatisticsPending.hidden,true,'the immediate filter request applies the current date range too');
   h.nodes.queueStatisticsFilterToggle.onclick();
   assert.equal(h.nodes.queueStatisticsFilterPanel.hidden,false);
   assert.equal(h.nodes.queueStatisticsFilterToggle.attributes['aria-expanded'],'true');
@@ -258,24 +341,40 @@ test('closing by the panel x keeps drafts and per-filter x clears only that appl
   h.context.window.refreshQueueApplicationStatistics();
   await new Promise(resolve=>setImmediate(resolve));
   const category=h.controls.find(control=>control.dataset.statisticsFilter==='category');
-  const officer=h.controls.find(control=>control.dataset.statisticsFilter==='review_officer');
-  category.value='ЇЖА';h.nodes.queueStatisticsFilterApply.onclick();
+  category.value='ЇЖА';category.onchange();
   await new Promise(resolve=>setImmediate(resolve));
+  h.nodes.queueStatisticsDkOptions.onchange({target:{closest:selector=>selector==='[data-statistics-dk-option]'?{checked:true,value:'02100000-6'}:null}});
   h.nodes.queueStatisticsFilterToggle.onclick();
-  officer.value='СВІТЛАНА НАМЯСЕНКО';officer.onchange();h.nodes.queueStatisticsFilterClose.onclick();
+  h.nodes.queueStatisticsFilterClose.onclick();
   assert.equal(h.nodes.queueStatisticsFilterPanel.hidden,true);
-  assert.equal(officer.value,'СВІТЛАНА НАМЯСЕНКО','close preserves unapplied draft');
   h.nodes.queueStatisticsFilterToggle.onclick();
   const categorySection=h.sections.find(section=>section.dataset.statisticsFilterSection==='category');
   assert.ok(categorySection.classList.contains('filter-active'));
-  assert.ok(h.sections.find(section=>section.dataset.statisticsFilterSection==='review_officer').classList.contains('filter-pending'));
+  assert.ok(h.sections.find(section=>section.dataset.statisticsFilterSection==='dk_code').classList.contains('filter-pending'),'closing and reopening preserves an unapplied multiselect draft');
   h.nodes.queueStatisticsFilterPanel.onclick({target:{closest(selector){return selector==='[data-statistics-filter-reset]'?categorySection.reset:null;}}});
   await new Promise(resolve=>setImmediate(resolve));
   const latest=new URL(h.calls.at(-1),'https://pqm.test');
   assert.equal(latest.searchParams.has('category'),false,'single x removes its applied filter');
-  assert.equal(latest.searchParams.has('review_officer'),false,'another draft is not applied');
-  assert.equal(officer.value,'СВІТЛАНА НАМЯСЕНКО','other draft remains for a later Apply');
-  assert.ok(h.sections.find(section=>section.dataset.statisticsFilterSection==='review_officer').classList.contains('filter-pending'));
+  assert.equal(latest.searchParams.has('dk_code'),false,'another draft is not applied');
+  assert.equal(categorySection.toggle.attributes['aria-expanded'],'false','the filter x does not reopen or toggle its section');
+  assert.equal(categorySection.content.hidden,true);
+  assert.ok(h.sections.find(section=>section.dataset.statisticsFilterSection==='dk_code').classList.contains('filter-pending'),'independent x preserves another dimension draft');
+});
+
+test('per-filter check applies only its own draft dimension and collapses that section',async()=>{
+  const h=harness(sample);
+  h.context.window.refreshQueueApplicationStatistics();
+  await new Promise(resolve=>setImmediate(resolve));
+  h.controls.find(control=>control.dataset.statisticsFilter==='supplier_type').value='individual_entrepreneur';
+  h.controls.find(control=>control.dataset.statisticsFilter==='category').value='ЇЖА';
+  const apply=h.sections.find(section=>section.dataset.statisticsFilterSection==='supplier_type').apply;
+  h.nodes.queueStatisticsFilterPanel.onclick({target:{closest:selector=>selector==='[data-statistics-filter-apply]'?apply:null}});
+  await new Promise(resolve=>setImmediate(resolve));
+  const query=new URL(h.calls.at(-1),'https://pqm.test').searchParams;
+  assert.equal(query.get('entity_type'),'individual_entrepreneur');
+  assert.equal(query.has('category'),false,'an unrelated unapplied draft is not included');
+  assert.equal(h.sections[0].toggle.attributes['aria-expanded'],'false','applying collapses the row');
+  assert.equal(h.sections[0].content.hidden,true);
 });
 
 test('clear all resets drawer filters but preserves the selected date range',async()=>{
@@ -360,6 +459,7 @@ test('daily, Monday-based weekly and calendar-month buckets count intervals inst
 });
 
 test('DK code accepts multiple selected values as one applied filter dimension',async()=>{
+  assert.doesNotMatch(source,/Чернетка/,'the visible UI does not expose an internal draft label');
   const h=harness(sample);
   h.context.window.refreshQueueApplicationStatistics();
   await new Promise(resolve=>setImmediate(resolve));
@@ -367,7 +467,7 @@ test('DK code accepts multiple selected values as one applied filter dimension',
   const first={value:'02100000-6',checked:true,closest:selector=>selector==='[data-statistics-dk-option]'?first:null};
   h.nodes.queueStatisticsDkOptions.onchange({target:first});
   assert.equal(h.nodes.queueStatisticsFilterSummary.textContent,'Фільтри');
-  assert.equal(h.nodes.queueStatisticsDkSummary.textContent,'Чернетка: 1');
+  assert.equal(h.nodes.queueStatisticsDkSummary.textContent,'Не застосовано: 1');
   assert.equal(h.nodes.queueStatisticsKpis.innerHTML,initial,'draft DK selection does not alter statistics before Apply');
   h.nodes.queueStatisticsDkSearch.value='030';
   h.nodes.queueStatisticsDkSearch.listeners.input();
@@ -503,13 +603,17 @@ test('approved Work UO layout order, filters, dark palette and long-table behavi
   assert.match(stylesSource,/queue-statistics-heading\{display:flex/);
   assert.match(stylesSource,/queue-statistics-controls\{display:flex/);
   assert.match(stylesSource,/queue-statistics-table--scroll\{max-height/);
-  assert.match(stylesSource,/queue-statistics-kpis\{grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
+  assert.match(stylesSource,/queue-statistics-kpis\{grid-template-columns:repeat\(auto-fit,minmax\(min\(100%,115px\),1fr\)\)/);
   assert.match(stylesSource,/queue-statistics-filter-panel\{position:fixed/);
   assert.match(stylesSource,/queue-statistics-dk-heading\{display:grid;grid-template-columns:minmax\(0,1fr\)/);
   assert.match(stylesSource,/queue-statistics-filter-fields\{display:grid;align-content:start;gap:8px;min-height:0;overflow:auto/);
   assert.match(themeSource,/--uo-kpi-rejected-bg:#482932/);
   assert.match(themeSource,/--uo-kpi-pending-bg:#443b26/);
   assert.match(stylesSource,/queue-statistics-table td button\.publication-kpi[^}]+color:var\(--ink\)!important/);
+  assert.match(stylesSource,/queue-statistics-table tbody tr:hover th\[scope="row"\],[^}]*queue-statistics-table tbody tr:hover td\{background:/,'hovering a statistics row highlights the whole row');
+  assert.match(stylesSource,/queue-statistics-table td button\.publication-kpi\{[^}]*background:var\(--surface,#fff\)!important[^}]*border:1px solid transparent!important/,'table numbers keep their own surface without idle borders');
+  assert.match(stylesSource,/queue-statistics-table td button\.publication-kpi:hover\{[^}]*background:var\(--soft\)!important;border-color:/,'only the hovered number receives the rounded bordered highlight');
+  assert.match(stylesSource,/queue-statistics-table td button\.publication-kpi:focus-visible[^}]*aria-pressed="true"[^}]*is-selected/,'keyboard focus and selected numbers keep persistent emphasis');
 });
 
 test('shared officer formatter uses first-name then uppercase-surname and preserves special values',()=>{

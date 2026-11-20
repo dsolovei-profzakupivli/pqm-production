@@ -11,7 +11,7 @@ const filterCode=app.slice(app.indexOf("const edrMonitoringStorageKey="),app.ind
 function filterSession(saved){
   const controls=Object.fromEntries(['edrMonitoringSearch','edrMonitoringDk','edrMonitoringType','edrMonitoringNames','edrMonitoringFullName','edrMonitoringShortName','edrMonitoringFreshness','edrMonitoringVerifiedFrom','edrMonitoringVerifiedTo','edrMonitoringApplicationFrom','edrMonitoringApplicationTo'].map(id=>['#'+id,{value:''}]));
   const storage=new Map(saved||[]);
-  const context=vm.createContext({Set,JSON,Object,localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},$:(selector)=>controls[selector],edrMonitoringStatusSelections:{prozorro_status:new Set(),edr_status:new Set()},edrMonitoringSort:'freshness',edrMonitoringDirection:'asc',edrMonitoringPage:1});
+  const context=vm.createContext({Set,JSON,Object,localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},$:(selector)=>controls[selector],edrMonitoringStatusSelections:{prozorro_status:new Set(),edr_status:new Set()},edrMonitoringStatusDrafts:{prozorro_status:new Set(),edr_status:new Set()},edrMonitoringSort:'freshness',edrMonitoringDirection:'asc',edrMonitoringPage:1});
   vm.runInContext(paramsCode+filterCode,context);
   return {context,controls,storage,run:code=>vm.runInContext(code,context)};
 }

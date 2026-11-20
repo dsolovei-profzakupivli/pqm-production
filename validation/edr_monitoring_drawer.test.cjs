@@ -23,6 +23,9 @@ test('EDR drawer contains every current filter, per-filter reset, and top action
   assert.match(panel,/id="edrMonitoringDk"[^>]*placeholder="Код або частина коду"/);
   assert.match(accordions,/prepareEdrFilters\(\)/,'EDR sections use the common collapsed accordion');
   assert.match(accordions,/buildToggle\(title,'data-edr-filter-count'\)/,'each EDR section has a numeric active-value badge');
+  assert.match(accordions,/data-edr-filter-apply/,'EDR multi-select sections have an independent apply check');
+  assert.match(accordions,/className='filter-row-actions'/,'EDR reserves fixed positions for per-filter actions');
+  assert.match(accordions,/if\(event\.target\.closest\('\.filter-row-actions'\)\)return/,'EDR check and x buttons cannot toggle their accordion row');
   assert.match(css,/\.edr-monitoring-filter-heading \.filter-accordion-toggle/,'EDR filter labels use the same row toggle layout');
   assert.match(css,/\.filter-panel-header-actions button\{[^}]*width:36px;height:36px/,'top drawer actions share identical icon button dimensions');
   assert.match(html,/<div id="edrMonitoringChips"[^>]*hidden><\/div>/,'legacy element remains hidden for compatibility');
@@ -31,7 +34,9 @@ test('EDR drawer contains every current filter, per-filter reset, and top action
   assert.match(css,/\.edr-monitoring-filter-fields\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable[^}]*scrollbar-width:thin[^}]*scrollbar-color:/,'filter content scrolls internally with a visible, theme-aware scrollbar');
   assert.match(css,/\.edr-monitoring-filter-fields::-webkit-scrollbar-thumb\{[^}]*background:#5d9bd8/,'light theme has a colored scrollbar thumb');
   assert.match(css,/html\[data-theme="dark"\] #edrMonitoringFilterPanel \.edr-monitoring-filter-fields::-webkit-scrollbar-thumb\{[^}]*background:#6488B5/,'dark theme has a contrasting scrollbar thumb');
-  assert.match(app,/#edrMonitoringApply'\)\.onclick=\(\)=>\{saveEdrMonitoringFilters\(\);edrMonitoringPage=1;loadEdrMonitoring\(\);\$\('#edrMonitoringAdvanced'\)\.open=false\}/);
+  assert.match(app,/#edrMonitoringApply'\)\.onclick=\(\)=>\{const changed=Object\.keys\(edrMonitoringStatusSelections\)\.some/);
+  assert.match(app,/if\(changed\)\{saveEdrMonitoringFilters\(\);edrMonitoringPage=1;updateEdrMonitoringFilters\(\);loadEdrMonitoring\(\)\}/,'global apply avoids a request if no multiselect draft changed');
+  assert.ok(app.includes('const section=document.querySelector(`[data-edr-filter-section="${key}"]`)') ,'applying one dimension collapses its own accordion row');
   assert.match(app,/\[data-edr-filter-clear\].*onclick=\(\)=>clearEdrMonitoringFilter\(button\.dataset\.edrFilterClear\)/);
 });
 
@@ -44,4 +49,85 @@ test('EDR active filter state counts each selected dimension once and keeps mult
   assert.equal(context.active('edr_status',{}),false,'empty status selection is neutral');
   assert.equal(context.active('dk_code',{dk_code:'45'}),true);
   assert.equal(context.active('dk_code',{dk_code:''}),false);
+});
+
+test('EDR multi-select draft does not affect request until its own apply check is used',()=>{
+  const params=app.slice(app.indexOf('function edrMonitoringParams()'),app.indexOf('const edrMonitoringStorageKey='));
+  const apply=app.match(/function applyEdrMonitoringFilter\(key\)\{[^\n]+/)?.[0];
+  const sets={prozorro_status:new Set(),edr_status:new Set()},drafts={prozorro_status:new Set(['Активний']),edr_status:new Set()};
+  const controls=Object.fromEntries(['edrMonitoringSearch','edrMonitoringDk','edrMonitoringType','edrMonitoringNames','edrMonitoringFullName','edrMonitoringShortName','edrMonitoringFreshness','edrMonitoringVerifiedFrom','edrMonitoringVerifiedTo','edrMonitoringApplicationFrom','edrMonitoringApplicationTo'].map(id=>['#'+id,{value:''}]));
+  const section={querySelector:selector=>selector==='.filter-accordion-toggle'?{setAttribute(){}}:{hidden:false}};
+  const context=vm.createContext({edrMonitoringStatusSelections:sets,edrMonitoringStatusDrafts:drafts,edrMonitoringSort:'freshness',edrMonitoringDirection:'asc',edrMonitoringPage:1,saveEdrMonitoringFilters(){},updateEdrMonitoringFilters(){},loadEdrMonitoring(){},document:{querySelector:()=>section}});
+  context.$=selector=>selector==='#edrMonitoringProzorro'?{open:true}:controls[selector];
+  vm.runInContext(params+';'+apply+';globalThis.params=edrMonitoringParams;globalThis.apply=applyEdrMonitoringFilter',context);
+  assert.equal(context.params().prozorro_status,'','draft does not leak into the API request');
+  context.apply('prozorro_status');
+  assert.equal(context.params().prozorro_status,'Активний','the per-filter check applies only that dimension');
+  assert.equal(context.params().edr_status,'','the other status dimension remains unchanged');
+});
+
+test('EDR mono filters apply on completion, collapse only their own section, and remain independently clearable',()=>{
+  const start=app.indexOf('function scheduleEdrMonitoringSearch()');
+  const end=app.indexOf("$('#edrMonitoringKpis')",start);
+  const handlers=app.slice(start,end);
+  assert.ok(start>=0&&end>start,'the EDR mono filter handlers are present');
+  const ids=['edrMonitoringSearch','edrMonitoringDk','edrMonitoringType','edrMonitoringNames','edrMonitoringFullName','edrMonitoringShortName','edrMonitoringFreshness','edrMonitoringVerifiedFrom','edrMonitoringVerifiedTo','edrMonitoringApplicationFrom','edrMonitoringApplicationTo'];
+  const controls=Object.fromEntries(ids.map(id=>[id,{id,value:'',oninput:null,onchange:null}]));
+  const calls={save:0,update:0,load:0,collapse:[]};
+  let scheduled=null;
+  const context=vm.createContext({
+    edrMonitoringPage:1,edrMonitoringPages:1,edrMonitoringTimer:null,edrMonitoringTimerPending:false,
+    edrMonitoringStatusSelections:{prozorro_status:new Set(),edr_status:new Set()},
+    edrMonitoringStatusDrafts:{prozorro_status:new Set(),edr_status:new Set()},
+    window:{PqmFilterAccordion:{collapseControl(control){calls.collapse.push(control.id)}}},
+    $(selector){return controls[selector.slice(1)]},
+    saveEdrMonitoringFilters(){calls.save++},updateEdrMonitoringFilters(){calls.update++},loadEdrMonitoring(){calls.load++},
+    bindEdrMonitoringStatusMulti(){},
+    clearTimeout(){},setTimeout(callback,delay){assert.equal(delay,250);scheduled=callback;return 1;}
+  });
+  vm.runInContext(handlers,context);
+
+  controls.edrMonitoringType.value='individual_entrepreneur';controls.edrMonitoringType.onchange.call(controls.edrMonitoringType);
+  assert.equal(calls.load,1,'single select applies immediately');
+  assert.deepEqual(calls.collapse,['edrMonitoringType'],'only the changed section collapses');
+  for(const [id,value] of [['edrMonitoringNames','missing_any'],['edrMonitoringFullName','missing'],['edrMonitoringShortName','filled'],['edrMonitoringFreshness','gt30']]){
+    const before=calls.load;controls[id].value=value;controls[id].onchange.call(controls[id]);
+    assert.equal(calls.load,before+1,`${id} applies immediately`);
+    assert.equal(calls.collapse.at(-1),id,`${id} collapses its own section after selection`);
+  }
+
+  const beforeVerifiedDates=calls.collapse.length;
+  controls.edrMonitoringVerifiedFrom.value='2026-01-01';controls.edrMonitoringVerifiedFrom.onchange.call(controls.edrMonitoringVerifiedFrom);
+  assert.equal(calls.collapse.length,beforeVerifiedDates,'the first date boundary does not collapse the accordion');
+  controls.edrMonitoringVerifiedTo.value='2026-01-31';controls.edrMonitoringVerifiedTo.onchange.call(controls.edrMonitoringVerifiedTo);
+  assert.equal(calls.collapse.at(-1),'edrMonitoringVerifiedTo','the date section collapses only when both boundaries are present');
+
+  const beforeApplicationDates=calls.collapse.length;
+  controls.edrMonitoringApplicationFrom.value='2026-02-01';controls.edrMonitoringApplicationFrom.onchange.call(controls.edrMonitoringApplicationFrom);
+  assert.equal(calls.collapse.length,beforeApplicationDates,'the first application-date boundary leaves its section available');
+  controls.edrMonitoringApplicationTo.value='2026-02-28';controls.edrMonitoringApplicationTo.onchange.call(controls.edrMonitoringApplicationTo);
+  assert.equal(calls.collapse.at(-1),'edrMonitoringApplicationTo','the application-date range collapses after its second boundary');
+
+  const beforeDk=calls.load,beforeDkCollapse=calls.collapse.at(-1);controls.edrMonitoringDk.value='45000000';controls.edrMonitoringDk.oninput();
+  assert.equal(calls.collapse.at(-1),beforeDkCollapse,'typing and debounce do not collapse the DK section');
+  assert.equal(calls.load,beforeDk,'DK search remains debounced before completion');
+  controls.edrMonitoringDk.onchange();
+  assert.equal(calls.load,beforeDk+1,'completion flushes a pending DK request exactly once');
+  assert.equal(calls.collapse.at(-1),'edrMonitoringDk');
+
+  controls.edrMonitoringDk.oninput();scheduled();
+  const afterDebounce=calls.load;
+  controls.edrMonitoringDk.onchange();
+  assert.equal(calls.load,afterDebounce,'blur after an elapsed debounce does not issue a duplicate request');
+  assert.equal(calls.collapse.at(-1),'edrMonitoringDk');
+
+  const clear=app.match(/function clearEdrMonitoringFilter\(key,statusValue=''\)\{[^\n]+/)?.[0];
+  assert.ok(clear,'per-filter clear remains available');
+  vm.runInContext(clear+';globalThis.clearMono=clearEdrMonitoringFilter',context);
+  controls.edrMonitoringType.value='individual_entrepreneur';
+  const collapseCount=calls.collapse.length;
+  context.clearMono('entity_type');
+  assert.equal(controls.edrMonitoringType.value,'');
+  assert.equal(calls.collapse.length,collapseCount,'x clears the field without opening or toggling an accordion');
+  assert.ok(calls.save>0&&calls.update>0,'selection and clear refresh the active filter presentation/count');
 });

@@ -231,11 +231,11 @@ html[data-theme="dark"] #applicationFilterPanel .application-filter-content>inpu
 .application-filter-section:not(.filter-active) .filter-accordion-count[hidden],.edr-monitoring-filter-section:not(.filter-active) .filter-accordion-count[hidden]{display:none}
 .edr-monitoring-filter-heading{position:relative;display:flex!important;align-items:center;gap:6px;min-height:42px;padding:0 5px!important}
 .edr-monitoring-filter-heading .filter-accordion-toggle{flex:1 1 auto;width:100%;padding-right:64px}
-.edr-monitoring-filter-heading [data-edr-filter-clear]{position:absolute;top:50%;right:31px;z-index:1;flex:0 0 25px;width:25px;height:25px;min-height:25px;padding:0;border-radius:50%;transform:translateY(-50%)}
+.edr-monitoring-filter-heading [data-edr-filter-clear]{position:static;flex:0 0 25px;width:25px;height:25px;min-height:25px;padding:0;border-radius:50%;transform:none}
 .queue-statistics-filter-fields{grid-template-columns:minmax(0,1fr)!important}
 .queue-statistics-filter-section-heading{position:relative;display:flex!important;align-items:center;gap:5px;min-height:42px;padding:3px 5px!important}
 .queue-statistics-filter-section-heading .queue-statistics-section-toggle{flex:1 1 auto;grid-template-columns:minmax(0,1fr) auto auto;padding-right:64px}
-.queue-statistics-filter-section-heading .queue-statistics-section-clear{position:absolute;top:50%;right:31px;z-index:1;transform:translateY(-50%)}
+.queue-statistics-filter-section-heading .queue-statistics-section-clear{position:static;transform:none}
 .queue-statistics-filter-section.filter-active .queue-statistics-section-toggle{background:#e4efff;color:#155c9f}
 .queue-statistics-section-toggle .queue-statistics-section-state{min-width:0;color:#8b5b00;font-size:10px;font-weight:550}
 .queue-statistics-filter-section.filter-pending .queue-statistics-section-toggle{outline:1px dashed #c58a19;outline-offset:-2px}
@@ -250,6 +250,40 @@ html[data-theme="dark"] .queue-statistics-filter-section.filter-pending .queue-s
 #edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-accordion-toggle{box-sizing:border-box;flex:1 1 auto;width:auto;height:auto;min-width:0;min-height:42px;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--ink);font-size:13px;line-height:normal}
 #edrMonitoringFilterPanel .edr-monitoring-filter-section.filter-active .edr-monitoring-filter-heading .filter-accordion-toggle{background:#e4efff;color:#155c9f}
 html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-section.filter-active .edr-monitoring-filter-heading .filter-accordion-toggle{background:#294765;color:#b9d9ff}
+
+/* Shared fixed action slots keep filter counts and arrows aligned in every drawer. */
+.filter-section-heading,.edr-monitoring-filter-heading,.queue-statistics-filter-section-heading{position:relative;box-sizing:border-box;display:grid!important;grid-template-columns:minmax(0,1fr) 58px;align-items:center;gap:4px;min-height:42px;padding:0 22px 0 5px!important;border-radius:7px}
+.filter-section-heading::after,.edr-monitoring-filter-heading::after,.queue-statistics-filter-section-heading::after{content:"›";position:absolute;top:50%;right:7px;display:grid;place-items:center;width:13px;height:13px;color:var(--muted);font:20px/13px Arial,sans-serif;transform:translateY(-50%);pointer-events:none}
+.filter-section-heading:has(.filter-accordion-toggle[aria-expanded="true"])::after,.edr-monitoring-filter-heading:has(.filter-accordion-toggle[aria-expanded="true"])::after,.queue-statistics-filter-section-heading:has(.queue-statistics-section-toggle[aria-expanded="true"])::after{content:"⌃"}
+.filter-section-heading .filter-accordion-toggle,.edr-monitoring-filter-heading .filter-accordion-toggle,.queue-statistics-filter-section-heading .queue-statistics-section-toggle{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;box-sizing:border-box;width:100%;min-width:0;min-height:42px;padding:7px 7px 7px 5px!important;border:0;border-radius:7px;background:transparent;color:var(--ink);font:inherit;font-size:13px;font-weight:650;text-align:left;cursor:pointer}
+.filter-section-heading .filter-accordion-toggle::after,.edr-monitoring-filter-heading .filter-accordion-toggle::after,.queue-statistics-filter-section-heading .queue-statistics-section-toggle::after{content:none!important}
+.filter-row-actions{box-sizing:border-box;display:grid;grid-template-columns:27px 27px;align-items:center;justify-content:end;gap:2px;width:58px;height:32px}
+.filter-row-actions>button{box-sizing:border-box;display:grid;place-items:center;width:27px;height:27px;min-width:27px;min-height:27px;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:var(--muted);font:600 17px/1 Arial,sans-serif;box-shadow:none;cursor:pointer}
+.filter-row-actions>button[hidden]{display:grid!important;visibility:hidden;pointer-events:none}
+.filter-row-actions>.filter-row-apply{font-size:15px;color:#2f8052}
+.filter-row-actions>.filter-row-apply:not([hidden]){visibility:visible}
+.filter-row-actions>.filter-row-clear:not([hidden]){visibility:visible}
+.filter-row-actions>button:hover{background:#0000000c}
+.filter-row-actions>.filter-row-apply:hover{background:#2f9b5d24;color:#17633a}
+.filter-row-actions>button:focus-visible{outline:2px solid #1265d6;outline-offset:1px}
+.application-filter-section.filter-active .filter-section-heading,.edr-monitoring-filter-section.filter-active .edr-monitoring-filter-heading,.queue-statistics-filter-section.filter-active .queue-statistics-filter-section-heading{background:#e4efff;color:#155c9f}
+.application-filter-section.filter-active .filter-section-heading .filter-accordion-toggle,.edr-monitoring-filter-section.filter-active .edr-monitoring-filter-heading .filter-accordion-toggle,.queue-statistics-filter-section.filter-active .queue-statistics-filter-section-heading .queue-statistics-section-toggle{background:transparent;color:#155c9f}
+.application-filter-section.filter-pending .filter-section-heading,.edr-monitoring-filter-section.filter-pending .edr-monitoring-filter-heading,.queue-statistics-filter-section.filter-pending .queue-statistics-filter-section-heading{box-shadow:inset 0 0 0 1px #c58a19}
+.filter-accordion-toggle:focus-visible,.queue-statistics-section-toggle:focus-visible{outline:2px solid #1265d6;outline-offset:-2px}
+html[data-theme="dark"] .application-filter-section.filter-active .filter-section-heading,html[data-theme="dark"] .edr-monitoring-filter-section.filter-active .edr-monitoring-filter-heading,html[data-theme="dark"] .queue-statistics-filter-section.filter-active .queue-statistics-filter-section-heading{background:#243e5a;color:#9dcbff}
+html[data-theme="dark"] .application-filter-section.filter-active .filter-section-heading .filter-accordion-toggle,html[data-theme="dark"] .edr-monitoring-filter-section.filter-active .edr-monitoring-filter-heading .filter-accordion-toggle,html[data-theme="dark"] .queue-statistics-filter-section.filter-active .queue-statistics-filter-section-heading .queue-statistics-section-toggle{color:#9dcbff}
+html[data-theme="dark"] .filter-row-actions>button:hover{background:#ffffff14}
+html[data-theme="dark"] .filter-row-actions>.filter-row-apply{color:#78d99a}
+html[data-theme="dark"] .filter-row-actions>.filter-row-apply:hover{background:#64c78a25;color:#a1efba}
+html[data-theme="dark"] .application-filter-section.filter-pending .filter-section-heading,html[data-theme="dark"] .edr-monitoring-filter-section.filter-pending .edr-monitoring-filter-heading,html[data-theme="dark"] .queue-statistics-filter-section.filter-pending .queue-statistics-filter-section-heading{box-shadow:inset 0 0 0 1px #ffd17c}
+#applicationFilterPanel .filter-section-heading .filter-row-actions>button,#edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-row-actions>button,#workQueueView .queue-statistics-filter-section-heading .filter-row-actions>button{border:0!important;border-radius:50%!important;background:transparent!important;box-shadow:none!important;color:var(--muted)!important}
+#applicationFilterPanel .filter-section-heading .filter-row-actions>.filter-row-apply,#edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-row-actions>.filter-row-apply,#workQueueView .queue-statistics-filter-section-heading .filter-row-actions>.filter-row-apply{color:#2f8052!important}
+#applicationFilterPanel .filter-section-heading .filter-row-actions>button:hover,#edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-row-actions>button:hover,#workQueueView .queue-statistics-filter-section-heading .filter-row-actions>button:hover{background:#0000000c!important}
+#applicationFilterPanel .filter-section-heading .filter-row-actions>.filter-row-apply:hover,#edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-row-actions>.filter-row-apply:hover,#workQueueView .queue-statistics-filter-section-heading .filter-row-actions>.filter-row-apply:hover{background:#2f9b5d24!important;color:#17633a!important}
+html[data-theme="dark"] #applicationFilterPanel .filter-section-heading .filter-row-actions>.filter-row-apply,html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-row-actions>.filter-row-apply,html[data-theme="dark"] #workQueueView .queue-statistics-filter-section-heading .filter-row-actions>.filter-row-apply{color:#78d99a!important}
+html[data-theme="dark"] #applicationFilterPanel .filter-section-heading .filter-row-actions>button:hover,html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-row-actions>button:hover,html[data-theme="dark"] #workQueueView .queue-statistics-filter-section-heading .filter-row-actions>button:hover{background:#ffffff14!important}
+html[data-theme="dark"] #applicationFilterPanel .filter-section-heading .filter-row-actions>.filter-row-apply:hover,html[data-theme="dark"] #edrMonitoringFilterPanel .edr-monitoring-filter-heading .filter-row-actions>.filter-row-apply:hover,html[data-theme="dark"] #workQueueView .queue-statistics-filter-section-heading .filter-row-actions>.filter-row-apply:hover{background:#64c78a25!important;color:#a1efba!important}
+.queue-statistics-dk-draft-summary{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
 
 /* Keep redundant field captions available to assistive technology without repeating the accordion title. */
 .filter-field-caption{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}

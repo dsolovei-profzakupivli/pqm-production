@@ -11,6 +11,9 @@ const c={URL,URLSearchParams,Set,selected,applicationSelection:snapshots,activeR
   profilesMetadataReady:true,applicationRowsCurrent:()=>true,
   initializeApplicationsRegistry:()=>{c.loaded=(c.loaded||0)+1;return true}};
 vm.createContext(c);
+// The isolated harness evaluates the real application reset function, so it
+// must provide the same independent draft sets as the browser bootstrap.
+c.filterDrafts=Object.fromEntries(Object.keys(c.filterSelections).map(key=>[key,new Set()]));
 const start=src.indexOf('function resetApplicationsForExternalKpi(){'),end=src.indexOf("$('#queueSearch')",start);
 assert(start>0&&end>start);
 // Stop at the last known KPI handler, without installing unrelated queue controls.
@@ -18,9 +21,9 @@ const block=src.slice(start,src.indexOf('\n',src.indexOf("$('#queuePublicationCo
 vm.runInContext(block,c);
 const fields=['searchInput','protocolNumberFilter','protocolDecisionFilter','complianceStatusFilter','dateFromFilter','dateToFilter'];
 const profile={columns:[{width:321}],kpis:['officers','decision_yes']},unchanged=JSON.stringify(profile);
-function stale(){for(const field of fields)node('#'+field).value='old';for(const set of Object.values(c.filterSelections))set.add('old');snapshots.toggle({id:'previous',protocolNumber:'old'},true);c.officerFilter='old';c.categoryFilter='old';c.deepLinkSubmissionId='old';node('#queueProtocolFrom').value='2026-10-01';node('#queueProtocolTo').value='2026-10-08'}
+function stale(){for(const field of fields)node('#'+field).value='old';for(const set of Object.values(c.filterSelections))set.add('old-applied');for(const set of Object.values(c.filterDrafts))set.add('old-draft');snapshots.toggle({id:'previous',protocolNumber:'old'},true);c.officerFilter='old';c.categoryFilter='old';c.deepLinkSubmissionId='old';node('#queueProtocolFrom').value='2026-10-01';node('#queueProtocolTo').value='2026-10-08'}
 function click(id,data){node('#'+id).onclick({target:{closest:()=>({dataset:data})}})}
-function clean(){for(const field of fields.slice(0,4))assert.equal(node('#'+field).value,'');for(const key of ['marketplace','registry','supplier','framework','dk'])assert.equal(c.filterSelections[key].size,0);assert.equal(selected.size,0);assert.equal(snapshots.entries().length,0);assert.equal(c.deepLinkSubmissionId,'');assert.equal(c.page,1);assert.equal(c.activeModule,'applications');assert.equal(JSON.stringify(profile),unchanged)}
+function clean(){for(const field of fields.slice(0,4))assert.equal(node('#'+field).value,'');for(const key of ['marketplace','registry','supplier','framework','dk'])assert.equal(c.filterSelections[key].size,0);for(const [key,set] of Object.entries(c.filterSelections))assert(!set.has('old-applied'),`external reset clears the prior applied ${key} value`);for(const [key,set] of Object.entries(c.filterDrafts)){assert.equal(set.size,0,`external reset clears every ${key} draft`);assert.notEqual(set,c.filterSelections[key],`${key} applied and draft Sets are independent`)}assert.equal(selected.size,0);assert.equal(snapshots.entries().length,0);assert.equal(c.deepLinkSubmissionId,'');assert.equal(c.page,1);assert.equal(c.activeModule,'applications');assert.equal(JSON.stringify(profile),unchanged)}
 stale();const oldRevision=snapshots.revision;click('queueQualificationCards',{qualificationOfficer:'Officer A'});clean();assert.equal(c.officerFilter,'Officer A');assert.equal(c.categoryFilter,'');assert.equal(node('#dateFromFilter').value,'2026-10-09');assert.equal(node('#dateToFilter').value,'');assert.deepEqual([...c.filterSelections.status],['Очікує рішення']);assert(snapshots.revision>oldRevision);
 stale();click('queueCategoryCards',{qualificationCategory:'Їжа'});clean();assert.equal(c.categoryFilter,'Їжа');assert.equal(c.officerFilter,'');
 stale();click('queueProtocolCategoryCards',{protocolCategory:'Газ/ЕЕ'});clean();assert.equal(c.categoryFilter,'Газ/ЕЕ');assert.equal(c.officerFilter,'');

@@ -7,10 +7,29 @@ const {chromium}=require('playwright');
 const ROOT=path.resolve(__dirname,'..');
 const OUT=process.env.PQM_UO_EVIDENCE_DIR||path.join(os.tmpdir(),'pqm-uo-work-layout-evidence');
 const read=name=>fs.readFileSync(path.join(ROOT,name),'utf8');
+const statisticsActionMatcher=read('app.js').match(/window\.pqmStatisticsActionMatchesCurrentFilters=\(\{[\s\S]*?\n\};/)?.[0];
+assert.ok(statisticsActionMatcher,'the browser scenario uses the production registry-scope matcher');
 const html=read('index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi,'');
 const styles=['styles.css','chat_annotations.css','filters.css','modules.css','schema_ui.css','ui_improvements.css','ui_final.css','theme.css','uo_work_page.css','nazk_preview.css','ui_tz2.css','halloween.css'];
 const officers=['Дмитро САВВА','Олена ЄРЬОМІНА','Тетяна ФЕДЧЕНКО','Світлана НАМЯСЕНКО','Дуже Довге Ім’я Уповноваженої ОСОБИ'];
 const esc=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+
+async function waitForNumberBorder(page,locator,{hovered,visible},description){
+  return locator.evaluate(async(element,{hovered,visible,description})=>{
+    const deadline=performance.now()+1200;
+    while(performance.now()<deadline){
+      const color=getComputedStyle(element).borderTopColor;
+      const slash=color.match(/\/\s*([\d.]+)(%)?\s*\)$/);
+      const legacy=color.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)$/i);
+      const alpha=slash?Number(slash[1])/(slash[2]?100:1):legacy?Number(legacy[1]):color.trim().toLowerCase()==='transparent'?0:1;
+      const directlyHovered=element.matches(':hover');
+      const transitioning=element.getAnimations().some(animation=>animation.playState==='pending'||animation.playState==='running');
+      if(!transitioning&&directlyHovered===hovered&&(visible?alpha>0:alpha===0))return{color,alpha,hovered:directlyHovered};
+      await new Promise(requestAnimationFrame);
+    }
+    throw new Error(`${description}: border transition did not reach alpha ${visible?'above zero':'zero'} with hover=${hovered}; final ${getComputedStyle(element).borderTopColor}`);
+  },{hovered,visible,description});
+}
 
 function protocolCard(name,index){
   const total=[9,7,5,4,3][index%5],reviewed=[4,7,0,1,2][index%5],pending=total-reviewed,ratio=total?Math.round(reviewed*100/total):0;
@@ -92,13 +111,107 @@ async function makeAuxPage(browser,theme,viewId,width,height){
   return page;
 }
 
+async function verifyRealStatisticsSelection(browser,theme){
+  const page=await makeAuxPage(browser,theme,'workQueueView',1280,800);
+  await page.evaluate(matcher=>{
+    window.API='/api';window.$=selector=>document.querySelector(selector);window.$$=selector=>[...document.querySelectorAll(selector)];
+    window.esc=value=>String(value??'');window.formatOfficerName=value=>String(value||'Не призначено');
+    window.filterSelections={dk:new Set(),status:new Set(),supplier:new Set(),registry:new Set(),framework:new Set(),marketplace:new Set()};
+    window.filterDrafts={dk:new Set(),registry:new Set(),supplier:new Set(),framework:new Set()};window.queueRegistryFilters={};window.categoryFilter='';window.officerFilter='';window.deepLinkSubmissionId='';window.page=1;
+    window.resetApplicationsForExternalKpi=()=>{Object.values(window.filterSelections).forEach(set=>set.clear());window.queueRegistryFilters={};window.categoryFilter='';window.officerFilter='';window.deepLinkSubmissionId='';};
+    window.syncPrimaryFilters=()=>{};window.updateMultiSummary=()=>{};window.saveFilterState=()=>{};window.showModule=()=>{};window.loadApplicationsForExternalKpi=async()=>{};
+    window.updateApplicationFilterStyles=()=>window.refreshQueueStatisticsActionSelection?.();
+    window.pqmStatisticsActionMatchesCurrentFilters=Function(`return (${matcher.replace(/^window\.pqmStatisticsActionMatchesCurrentFilters=/,'').replace(/;$/,'')})`)();
+    window.request=async url=>{
+      const query=new URL(url,'https://pqm.test').searchParams;
+      if(query.get('summary')==='review-progress')return{items:[]};
+      return{totals:{total:1,active:1,unsuccessful:0,pending:0},items:[{review_officer:'ДМИТРО САВВА',protocol_officer:'',status:'active',total:1,date:'2026-10-01'}],trend:[{date:'2026-10-01',submitted:1,active:1,unsuccessful:0,pending:0}],filter_options:{category:[],dk_code:[],review_officer:['ДМИТРО САВВА'],protocol_officer:[]},diagnostics:{}};
+    };
+    document.querySelector('#queueStatisticsFrom').value='2026-10-01';document.querySelector('#queueStatisticsTo').value='2026-10-03';
+  },statisticsActionMatcher);
+  await page.addScriptTag({path:path.join(ROOT,'queue_statistics_ui.js')});
+  await page.evaluate(()=>window.refreshQueueApplicationStatistics());
+  await page.waitForFunction(()=>document.querySelector('#queueStatisticsRows button[data-statistics-action]')!==null);
+  const selected=page.locator('#queueStatisticsRows button[data-statistics-action="4"]');
+  assert.equal(await selected.getAttribute('aria-pressed'),'false','a number is initially unselected without the matching registry scope');
+  const unselectedStyle=await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth}));
+  await selected.click();
+  assert.equal(await selected.getAttribute('aria-pressed'),'true',`real click applies the matching registry filter in ${theme} theme`);
+  assert.equal(await selected.evaluate(node=>node.classList.contains('is-selected')),true,'the selected visual state comes from the applied-scope matcher');
+  await waitForNumberBorder(page,selected,{hovered:true,visible:true},'applied number finishes its selected border transition');
+  const selectedStyle=await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth}));
+  assert.deepEqual(await page.evaluate(()=>({status:[...filterSelections.status],review_officer:queueRegistryFilters.review_officer,date_from:document.querySelector('#dateFromFilter').value,date_to:document.querySelector('#dateToFilter').value})),{status:['Допущено'],review_officer:'ДМИТРО САВВА',date_from:'2026-10-01',date_to:'2026-10-03'},'the selected style corresponds to the actual registry status, officer, and dates');
+  const otherNumber=page.locator('#queueStatisticsRows button[data-statistics-action="5"]');
+  await otherNumber.hover();
+  await waitForNumberBorder(page,selected,{hovered:false,visible:true},'applied number retains its border after hover moves');
+  await waitForNumberBorder(page,otherNumber,{hovered:true,visible:true},'the newly hovered number receives its temporary border');
+  assert.equal(await selected.getAttribute('aria-pressed'),'true','the applied number stays selected while another number is hovered');
+  assert.equal(await selected.evaluate(node=>node.classList.contains('is-selected')),true,'the applied number keeps its selected class while the pointer moves');
+  assert.deepEqual(await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth})),selectedStyle,'the applied number keeps its visual highlight while the pointer moves');
+  await page.evaluate(()=>{filterSelections.status.clear();queueRegistryFilters={};window.refreshQueueStatisticsActionSelection();});
+  assert.equal(await selected.getAttribute('aria-pressed'),'false','removing the actual registry filter clears selected styling');
+  assert.equal(await selected.evaluate(node=>node.classList.contains('is-selected')),false,'the cleared action is no longer selected');
+  await waitForNumberBorder(page,selected,{hovered:false,visible:false},'reset selected number finishes transition to transparent border');
+  assert.deepEqual(await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth})),unselectedStyle,'clearing the applied filter removes mouse-focus emphasis');
+  await page.close();
+}
+
+async function verifyEdrHeaderGeometry(page,theme,width,failures){
+  const snapshots=[];
+  for(const state of ['neutral','applied','pending']){
+    await page.locator('#edrMonitoringFilterPanel').evaluate((panel,state)=>{
+      panel.querySelectorAll('.edr-monitoring-filter-section').forEach(section=>{
+        const count=section.querySelector('[data-edr-filter-count]');count.hidden=state==='neutral';count.textContent=state==='neutral'?'':'1';
+        section.querySelector('[data-edr-filter-apply]').hidden=state!=='pending';
+        section.querySelector('[data-edr-filter-clear]').hidden=state==='neutral';
+      });
+    },state);
+    const rows=await page.locator('#edrMonitoringFilterPanel .edr-monitoring-filter-heading').evaluateAll(headings=>headings.map(h=>{
+      const box=n=>{const r=n.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
+      const toggle=h.querySelector('.filter-accordion-toggle'),name=toggle.firstElementChild,count=toggle.lastElementChild,slot=h.querySelector('.filter-row-actions'),style=getComputedStyle(h),ts=getComputedStyle(toggle),ss=getComputedStyle(h.parentElement);
+      const hr=box(h),sr=box(h.parentElement),pseudo=getComputedStyle(h,'::after'),ar=hr.right-parseFloat(pseudo.right),aw=parseFloat(pseudo.width),ah=parseFloat(pseudo.height),cols=style.gridTemplateColumns.split(' ').map(parseFloat);
+      const range=document.createRange();range.selectNodeContents(name);
+      return{key:h.parentElement.dataset.edrFilterSection,heading:hr,section:sr,headingExpectedLeft:sr.left+parseFloat(ss.borderLeftWidth)+parseFloat(ss.paddingLeft),headingExpectedRight:sr.right-parseFloat(ss.borderRightWidth)-parseFloat(ss.paddingRight),cellLeft:hr.left+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft),cellWidth:cols[0],toggle:box(toggle),radius:ts.borderRadius,border:ts.borderWidth,name:box(name),text:[...range.getClientRects()].map(r=>({left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height})),count:count.hidden?null:box(count),slot:box(slot),buttons:[...slot.children].map(n=>({...box(n),hidden:n.hidden,text:n.textContent.trim()})),arrow:{left:ar-aw,right:ar,top:hr.top+hr.height/2-ah/2,bottom:hr.top+hr.height/2+ah/2,width:aw,height:ah}};
+    }));
+    const overlap=(a,b)=>Math.min(a.right,b.right)-Math.max(a.left,b.left)>0.5&&Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>0.5;
+    const check=(ok,message,row)=>{if(!ok)failures.push({theme,width,state,key:row.key,message,measurement:row});};
+    for(const r of rows){
+      check(Math.abs(r.heading.left-r.headingExpectedLeft)<1&&Math.abs(r.heading.right-r.headingExpectedRight)<1,'heading fills available section width',r);
+      check(Math.abs(r.toggle.left-r.cellLeft)<1&&Math.abs(r.toggle.width-r.cellWidth)<1,'toggle fills first grid cell',r);
+      check(Math.abs(r.toggle.height-42)<1&&r.radius==='7px'&&r.border==='0px','compact rectangular heading style',r);
+      check(r.slot.width===58,'action slot reserves 58px',r);
+      check(Math.abs(r.slot.left-rows[0].slot.left)<1&&Math.abs(r.arrow.left-rows[0].arrow.left)<1,'slots and arrows share a horizontal axis',r);
+      for(const text of r.text){check(text.left>=r.name.left-1&&text.right<=r.name.right+1,'label text stays within allocated name area',r);for(const obstacle of [r.count,...r.buttons.filter(b=>!b.hidden),r.arrow].filter(Boolean))check(!overlap(text,obstacle),'label text does not overlap count, actions or arrow',r);}
+      const visible=r.buttons.filter(b=>!b.hidden);for(let i=0;i<visible.length;i++){const b=visible[i];check(b.left>=r.slot.left-1&&b.right<=r.slot.right+1,'button remains inside reserved action slot',r);check(!overlap(b,r.arrow),'button does not overlap arrow',r);for(let j=i+1;j<visible.length;j++)check(!overlap(b,visible[j]),'action buttons do not overlap',r);}
+      if(snapshots.length){const before=snapshots[0].rows.find(b=>b.key===r.key);check(Math.abs(before.slot.left-r.slot.left)<1&&Math.abs(before.arrow.left-r.arrow.left)<1,'reserved coordinates remain stable across states',r);}
+    }
+    snapshots.push({theme,width,state,rows});
+    if(state==='pending'&&(width===1920||width===360))await page.screenshot({path:path.join(OUT,`edr-header-${theme}-${width}-pending.png`),fullPage:false});
+  }
+  fs.writeFileSync(path.join(OUT,`edr-header-geometry-${theme}-${width}.json`),JSON.stringify(snapshots,null,2));
+}
+
 (async()=>{
   fs.mkdirSync(OUT,{recursive:true});
   const browser=await chromium.launch({headless:true,ignoreDefaultArgs:['--hide-scrollbars'],executablePath:process.env.PQM_CHROMIUM_EXECUTABLE||undefined});
   try{
-    const evidence=[];
+    const evidence=[],layoutFailures=[];
     for(const theme of ['light','dark']){
       const page=await makePage(browser,theme);
+      for(const [viewId,detailsId,panelId,sectionSelector,toggleSelector,applySelector] of [
+        ['applicationsView','applicationFilters','applicationFilterPanel','#applicationFilterPanel .application-filter-section','.filter-accordion-toggle','[data-application-filter-apply]'],
+        ['edrMonitoringView','edrMonitoringAdvanced','edrMonitoringFilterPanel','#edrMonitoringFilterPanel .edr-monitoring-filter-section','.filter-accordion-toggle','[data-edr-filter-apply]'],
+        ['workQueueView','','queueStatisticsFilterPanel','#queueStatisticsFilterPanel .queue-statistics-filter-section','.queue-statistics-section-toggle','[data-statistics-filter-apply]'],
+      ]){
+        await page.evaluate(({viewId,detailsId,panelId})=>{document.getElementById(viewId).hidden=false;if(detailsId)document.getElementById(detailsId).open=true;const panel=document.getElementById(panelId);panel.hidden=false;if(viewId==='workQueueView')document.querySelector('#queueStatisticsWorkspace').classList.add('is-filter-open');},{viewId,detailsId,panelId});
+        const section=page.locator(sectionSelector).first(),toggle=section.locator(toggleSelector),apply=section.locator(applySelector);
+        await toggle.click();assert.equal(await toggle.getAttribute('aria-expanded'),'true',`heading click opens ${sectionSelector}`);
+        await apply.evaluate(node=>node.hidden=false);await apply.click();
+        assert.equal(await toggle.getAttribute('aria-expanded'),'true',`reserved action click does not toggle ${sectionSelector}`);
+        await apply.evaluate(node=>node.hidden=true);
+        await toggle.click();assert.equal(await toggle.getAttribute('aria-expanded'),'false',`heading click closes ${sectionSelector}`);
+        await page.evaluate(({viewId,detailsId,panelId})=>{if(detailsId)document.getElementById(detailsId).open=false;const panel=document.getElementById(panelId);if(panelId==='queueStatisticsFilterPanel'){panel.hidden=true;document.querySelector('#queueStatisticsWorkspace').classList.remove('is-filter-open');}if(viewId!=='workQueueView')document.getElementById(viewId).hidden=true;},{viewId,detailsId,panelId});
+      }
       const layout=await page.evaluate(()=>{
         const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
         return{protocol:rect('.queue-protocol-summary'),current:rect('.queue-current-summary'),left:rect('.queue-summary-left'),statistics:rect('.queue-statistics-card'),grid:rect('.work-queue-operational-grid'),statsAlign:getComputedStyle(document.querySelector('.queue-statistics-card')).alignSelf,heading:document.querySelector('#workQueueView .module-heading').innerText.trim(),kpisNext:document.querySelector('#workQueueKpis').nextElementSibling.className};
@@ -110,8 +223,8 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       assert.ok(layout.current.y-layout.protocol.bottom<24,'left summaries keep a compact vertical gap');
       assert.ok(layout.statistics.x>=layout.left.right-2,'statistics occupies the separate right column');
       assert.ok(Math.abs(layout.statistics.y-layout.grid.y)<2,'statistics aligns to the top of the operational grid');
-      assert.equal(layout.statsAlign,'start','statistics remains sized to its own content');
-      assert.ok(layout.statistics.height<layout.left.height&&layout.statistics.bottom<layout.left.bottom,`statistics stays content-sized instead of being stretched to match both left blocks: ${JSON.stringify(layout)}`);
+      assert.equal(layout.statsAlign,'stretch','statistics fills the height of the two stacked left summaries');
+      assert.ok(Math.abs(layout.statistics.height-layout.left.height)<=2&&Math.abs(layout.statistics.bottom-layout.left.bottom)<=2,`statistics tracks the combined left-column height without a fixed height: ${JSON.stringify(layout)}`);
       assert.ok(layout.left.width/layout.statistics.width>0.74&&layout.left.width/layout.statistics.width<0.9,`wide layout keeps approximately 45/55 columns: ${JSON.stringify(layout)}`);
       const leftMarkers=await page.evaluate(()=>['#queueProtocolCategoryCards>.qualification-summary-category','#queueCategoryCards>.qualification-summary-category','#queueProtocolOfficerCards>.protocol-officer-card:not([data-protocol-officer="Не призначено"])','#queueQualificationCards>.qualification-summary-officer','#queueStatisticsKpis button','#queuePublicationControl button'].map(selector=>{const node=document.querySelector(selector);return{selector,color:getComputedStyle(node).borderLeftColor,width:getComputedStyle(node).borderLeftWidth}}));
       assert.ok(leftMarkers.every(item=>item.width==='4px'&&item.color!=='rgba(0, 0, 0, 0)'),`work dashboard keeps its approved colored left markers: ${JSON.stringify(leftMarkers)}`);
@@ -143,7 +256,7 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       assert.ok(officerRows.protocol.every(card=>Math.abs(card.top-officerRows.protocol[0].top)<2),'five protocol officer cards fit in one wide-screen row');
       assert.equal(officerRows.current.length,3,'current summary renders the available officer cards');
       assert.ok(officerRows.current.every(card=>Math.abs(card.top-officerRows.current[0].top)<2),'current officer cards fit in one wide-screen row');
-      assert.ok(officerRows.current.at(-1).right<officerRows.currentContainerRight-20,'three current officer cards do not stretch to fill all five columns');
+      assert.ok(Math.abs(officerRows.current.at(-1).right-officerRows.currentContainerRight)<=2,'three current officer cards evenly use the available row width');
       for(const selector of ['#queueProtocolOfficerCards>.protocol-officer-card','#queueQualificationCards>.qualification-summary-officer']){
         const names=page.locator(selector);
         const cards=await names.evaluateAll(nodes=>nodes.map(card=>{const name=card.querySelector('span'),main=card.querySelector('.protocol-officer-main'),progress=card.querySelector('.protocol-officer-progress');return{height:card.getBoundingClientRect().height,name:{clientWidth:name.clientWidth,scrollWidth:name.scrollWidth,clientHeight:name.clientHeight,scrollHeight:name.scrollHeight,text:name.textContent},mainBottom:main?.getBoundingClientRect().bottom,progressTop:progress?.getBoundingClientRect().top};}));
@@ -193,8 +306,42 @@ async function makeAuxPage(browser,theme,viewId,width,height){
         const leftRejected=await page.locator('#queuePublicationControl .publication-kpi--rejected').evaluate(el=>({bg:getComputedStyle(el).backgroundColor,color:getComputedStyle(el).color,border:getComputedStyle(el).borderTopColor}));
         assert.deepEqual(leftRejected,{bg:'rgb(253, 232, 231)',color:'rgb(0, 0, 0)',border:'rgb(233, 165, 160)'},'left rejected KPI matches the approved light red style');
       }
+      const firstRow=page.locator('#queueStatisticsRows tr').first(),rowHead=firstRow.locator('th[scope="row"]'),numberButtons=firstRow.locator('button.publication-kpi');
+      if(await numberButtons.count()>=2){
+        await page.mouse.move(5,5);
+        const rowInitial=await rowHead.evaluate(node=>getComputedStyle(node).backgroundColor);
+        const initial=await numberButtons.nth(0).evaluate(node=>({background:getComputedStyle(node).backgroundColor}));
+        await rowHead.hover({position:{x:2,y:Math.max(2,Math.floor((await rowHead.boundingBox()).height/2))}});
+        const rowHover=await firstRow.evaluate(node=>getComputedStyle(node.querySelector('th[scope="row"]')).backgroundColor);
+        const numberDuringRowHover=await numberButtons.nth(0).evaluate(node=>({background:getComputedStyle(node).backgroundColor}));
+        assert.notEqual(rowHover,rowInitial,`the entire row highlights on hover in ${theme} theme`);
+        assert.equal(numberDuringRowHover.background,initial.background,'row hover does not replace a number’s own background');
+        await numberButtons.nth(0).hover();
+        const firstHovered=await waitForNumberBorder(page,numberButtons.nth(0),{hovered:true,visible:true},'the first hovered number receives its temporary border');
+        assert.equal(firstHovered.hovered,true,'the first number remains directly under the pointer');
+        await numberButtons.nth(1).hover();
+        const previousBorder=await waitForNumberBorder(page,numberButtons.nth(0),{hovered:false,visible:false},'the previous unselected number loses its temporary border');
+        const currentBorder=await waitForNumberBorder(page,numberButtons.nth(1),{hovered:true,visible:true},'the newly hovered number receives its temporary border');
+        assert.equal(previousBorder.hovered,false,'the previous number is no longer under the pointer');
+        assert.equal(currentBorder.hovered,true,'the next number is directly under the pointer');
+        const moved=await numberButtons.evaluateAll(nodes=>nodes.slice(0,2).map(node=>({background:getComputedStyle(node).backgroundColor})));
+        const rowAfterMove=await rowHead.evaluate(node=>getComputedStyle(node).backgroundColor);
+        assert.notEqual(rowAfterMove,rowInitial,`row highlighting remains while the pointer moves between numbers in ${theme} theme`);
+        assert.equal(rowAfterMove,rowHover,'moving between numbers preserves the same row highlight');
+        assert.equal(moved[0].background,initial.background,'the old number keeps its own background after row hover');
+        await numberButtons.nth(1).hover();
+        await page.locator('body').hover({position:{x:5,y:5}});
+        await waitForNumberBorder(page,numberButtons.nth(1),{hovered:false,visible:false},'temporary number hover styling disappears after leaving the table');
+      }
       const screenshot=path.join(OUT,`work-uo-${theme}-wide-closed.png`);
       await page.screenshot({path:screenshot,fullPage:true});evidence.push(screenshot);
+      for(const selector of ['#queueCategoryCards','#queueQualificationCards'])for(const count of [2,3,4,6]){
+        const rows=await page.locator(selector).evaluate((container,count)=>{const originals=[...container.children],template=originals[0];container.replaceChildren(...Array.from({length:count},()=>template.cloneNode(true)));const cards=[...container.children],rects=cards.map(node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,width:r.width,height:r.height}}),lineTops=[...new Set(rects.map(item=>Math.round(item.top)))],result={width:container.getBoundingClientRect().width,scroll:container.scrollWidth,rects,lineTops};container.replaceChildren(...originals);return result;},count);
+        assert.ok(rows.scroll<=rows.width+1,`${selector} has no horizontal overflow with ${count} cards`);
+        for(const top of rows.lineTops){const line=rows.rects.filter(card=>Math.round(card.top)===top);assert.ok(line.every(card=>Math.abs(card.width-line[0].width)<=1&&Math.abs(card.height-line[0].height)<=1),`${selector} cards share equal dimensions in each ${count}-card row`);}
+        if(count<=4)assert.equal(rows.lineTops.length,1,`${count} cards fill one row`);
+        if(count<=4)assert.ok(Math.abs(rows.rects.at(-1).right-rows.rects[0].left-rows.width)<=2,`${count} cards use the full available row width`);
+      }
       const workspace=page.locator('#queueStatisticsWorkspace'),panel=page.locator('#queueStatisticsFilterPanel');
       await panel.evaluate(node=>node.hidden=false);
       assert.equal(await page.locator('.queue-statistics-section-toggle[aria-expanded="false"]').count(),5,'all statistics filter rows start collapsed');
@@ -210,7 +357,21 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       assert.ok(expandedHeights.length>=5&&expandedHeights.every(control=>control.height>=32&&control.height<=40&&control.borderRadius==='7px'),`expanded filters keep compact controls: ${JSON.stringify(expandedHeights)}`);
       assert.equal(await page.locator('.queue-statistics-section-toggle[aria-expanded="true"]').count(),1,'opening a row collapses the previously open filter');
       await page.locator('[data-statistics-filter-section="dk_code"] .queue-statistics-section-toggle').click();
-      assert.deepEqual(await page.locator('[data-statistics-filter-section="dk_code"] .queue-statistics-section-toggle').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'10px'},'expanded statistics filter points upward at the shared right inset');
+      assert.deepEqual(await page.locator('[data-statistics-filter-section="dk_code"] .queue-statistics-filter-section-heading').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'7px'},'expanded statistics filter points upward from the shared right slot');
+      const actionSlots=await page.locator('#queueStatisticsFilterPanel .filter-row-actions').evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect(),buttons=[...node.querySelectorAll('button')];return{left:r.left,width:r.width,buttons:buttons.map(button=>({text:button.textContent.trim(),background:getComputedStyle(button).backgroundColor,hidden:button.hidden}))}}));
+      assert.equal(actionSlots.length,5,'all filter dimensions reserve the same row action slot');
+      assert.ok(actionSlots.every(item=>item.width===58&&Math.abs(item.left-actionSlots[0].left)<1),'apply and reset actions keep a fixed horizontal axis');
+      const applyAction=page.locator('#queueStatisticsFilterPanel [data-statistics-filter-apply="supplier_type"]');
+      await applyAction.evaluate(node=>node.hidden=false);
+      assert.equal(await applyAction.evaluate(node=>getComputedStyle(node).backgroundColor),'rgba(0, 0, 0, 0)','check has no permanent circular background');
+      await applyAction.hover();
+      assert.notEqual(await applyAction.evaluate(node=>getComputedStyle(node).backgroundColor),'rgba(0, 0, 0, 0)','check gets a subtle hover background');
+      // Enter the action through keyboard navigation so :focus-visible is exercised.
+      await page.locator('[data-statistics-filter-section="supplier_type"] .queue-statistics-section-toggle').focus();
+      await page.keyboard.press('Tab');
+      assert.equal(await applyAction.evaluate(node=>node===document.activeElement&&node.matches(':focus-visible')),true,'keyboard navigation reaches the apply action with visible focus');
+      assert.equal(await applyAction.evaluate(node=>getComputedStyle(node).outlineStyle),'solid','keyboard focus outline is rendered');
+      assert.equal(await applyAction.evaluate(node=>getComputedStyle(node).outlineWidth),'2px','check retains a visible keyboard focus');
       const dkSearchLayout=await page.evaluate(()=>{
         const heading=document.querySelector('.queue-statistics-dk-heading'),input=document.querySelector('#queueStatisticsDkSearch'),clear=document.querySelector('#queueStatisticsDkClear');
         const rect=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width};};
@@ -243,6 +404,7 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       const panelShot=path.join(OUT,`work-uo-${theme}-filter-panel.png`);
       await page.screenshot({path:panelShot,fullPage:true});evidence.push(panelShot);
       await page.close();
+      await verifyRealStatisticsSelection(browser,theme);
     }
     for(const theme of ['light','dark'])for(const width of [1920,1280,1120,800,520,360]){
       const page=await makeAuxPage(browser,theme,'historyView',width,1080);
@@ -289,12 +451,12 @@ async function makeAuxPage(browser,theme,viewId,width,height){
         await page.locator('#edrMonitoringFilterSummary').click();
         assert.equal(await page.locator('#edrMonitoringAdvanced').evaluate(node=>node.open),true,'the toolbar control opens the native drawer');
         assert.equal(await page.locator('#edrMonitoringFilterPanel .filter-accordion-toggle[aria-expanded="false"]').count(),12,'all EDR filter sections start collapsed');
-        const compactRows=await page.locator('#edrMonitoringFilterPanel').evaluate(panel=>({gap:getComputedStyle(panel.querySelector('.edr-monitoring-filter-fields')).rowGap,rows:[...panel.querySelectorAll('.edr-monitoring-filter-section')].map(section=>{const toggle=section.querySelector('.filter-accordion-toggle'),icon=getComputedStyle(toggle,'::after');return{section:section.getBoundingClientRect().height,toggle:toggle.getBoundingClientRect().height,icon:{content:icon.content,right:icon.right}}})}));
+        const compactRows=await page.locator('#edrMonitoringFilterPanel').evaluate(panel=>({gap:getComputedStyle(panel.querySelector('.edr-monitoring-filter-fields')).rowGap,rows:[...panel.querySelectorAll('.edr-monitoring-filter-section')].map(section=>{const toggle=section.querySelector('.filter-accordion-toggle'),heading=section.querySelector('.edr-monitoring-filter-heading'),icon=getComputedStyle(heading,'::after');return{section:section.getBoundingClientRect().height,toggle:toggle.getBoundingClientRect().height,icon:{content:icon.content,right:icon.right},actions:section.querySelector('.filter-row-actions').getBoundingClientRect().width}})}));
         assert.equal(compactRows.gap,'7px','EDR uses the same compact section gap as the application registry drawer');
-        assert.ok(compactRows.rows.every(row=>Math.abs(row.toggle-42)<1&&Math.abs(row.section-44)<1&&row.icon.content==='"›"'&&row.icon.right==='10px'),`EDR collapsed rows match registry height and arrow placement: ${JSON.stringify(compactRows.rows)}`);
+        assert.ok(compactRows.rows.every(row=>Math.abs(row.toggle-42)<1&&Math.abs(row.section-44)<1&&row.icon.content==='"›"'&&row.icon.right==='7px'&&row.actions===58),`EDR collapsed rows match registry height and arrow/action placement: ${JSON.stringify(compactRows.rows)}`);
         assert.deepEqual(await page.locator('#edrMonitoringType').evaluate(node=>({labels:node.labels.length,labelText:node.labels[0]?.querySelector('span')?.textContent.trim(),captionClass:node.labels[0]?.querySelector('span')?.classList.contains('filter-field-caption')})),{labels:1,labelText:'Виберіть тип',captionClass:true},'the redundant EDR prompt remains the control label for assistive technology');
         await page.locator('[data-edr-filter-section="dk_code"] .filter-accordion-toggle').click();
-        assert.deepEqual(await page.locator('[data-edr-filter-section="dk_code"] .filter-accordion-toggle').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'10px'},'expanded EDR filter points upward at the shared right inset');
+        assert.deepEqual(await page.locator('[data-edr-filter-section="dk_code"] .edr-monitoring-filter-heading').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'7px'},'expanded EDR filter points upward from the shared right slot');
         const dkWidth=await page.locator('#edrMonitoringDk').evaluate(node=>node.getBoundingClientRect().width);
         assert.ok(dkWidth>=250,'expanded DK search uses the full panel width');
         await page.locator('[data-edr-filter-section="entity_type"] .filter-accordion-toggle').click();
@@ -302,13 +464,13 @@ async function makeAuxPage(browser,theme,viewId,width,height){
         await page.locator('[data-edr-filter-section="entity_type"][data-edr-filter-section] [data-edr-filter-count]').evaluate(node=>{node.textContent='1';node.hidden=false;node.closest('[data-edr-filter-section]').classList.add('filter-active')});
         await page.locator('[data-edr-filter-section="entity_type"] [data-edr-filter-clear]').evaluate(node=>node.hidden=false);
         await page.locator('#edrMonitoringFilterSummary').evaluate(node=>node.textContent='Фільтри · 1');
-        const edrToggleStyles=await page.locator('#edrMonitoringFilterPanel .filter-accordion-toggle').evaluateAll(nodes=>nodes.map(node=>({width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height,radius:getComputedStyle(node).borderRadius,border:getComputedStyle(node).borderWidth})));
-        assert.ok(edrToggleStyles.every(item=>item.width>=300&&Math.abs(item.height-42)<1&&item.radius==='7px'&&item.border==='0px'),`EDR accordion headings use full-width compact rows rather than inherited circular button styles: ${JSON.stringify(edrToggleStyles)}`);
         const drawer=await page.locator('#edrMonitoringFilterPanel').evaluate(node=>{const r=node.getBoundingClientRect();return{x:r.x,right:r.right,width:r.width,height:r.height,position:getComputedStyle(node).position,header:node.querySelector('.edr-monitoring-filter-header').getBoundingClientRect().height,scroll:node.querySelector('.edr-monitoring-filter-fields').scrollHeight,client:node.querySelector('.edr-monitoring-filter-fields').clientHeight,apply:!!node.querySelector('#edrMonitoringApply'),clear:!!node.querySelector('#edrMonitoringReset'),close:!!node.querySelector('#edrMonitoringClose')}});
         assert.ok(drawer.position==='fixed'&&drawer.x>=0&&drawer.right<=edr.viewport+1&&drawer.height>=999&&drawer.width<=430,`drawer stays at the browser edge and fills the viewport: ${JSON.stringify(drawer)}`);
         assert.ok(dkWidth>=250&&drawer.header>=50&&drawer.apply&&drawer.clear&&drawer.close,'drawer retains a readable DK control and top-level actions');
         const shot=path.join(OUT,`edr-monitoring-${theme}-filters-open.png`);await page.screenshot({path:shot,fullPage:true});evidence.push(shot);
       }
+      if(width!==1920)await page.locator('#edrMonitoringFilterSummary').click();
+      await verifyEdrHeaderGeometry(page,theme,width,layoutFailures);
       await page.close();
     }
     for(const theme of ['light','dark']){
@@ -356,27 +518,52 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       if(width===1920){const requestShot=path.join(OUT,`requests-${theme}-wide.png`);await page.screenshot({path:requestShot,fullPage:true});evidence.push(requestShot);}
       await page.close();
     }
-    for(const count of [3,5,8]){
-      const page=await makePage(browser,'light');
-      await page.evaluate(count=>{
-        const names=['Альфа УО','Бета УО','Гамма УО','Дельта УО','Епсилон УО','Дзета УО','Ета УО','Тета УО'];
-        const table=document.querySelector('#queueStatisticsRows');
-        table.innerHTML=names.slice(0,count).map((name,i)=>`<tr><th scope="row">${name}</th><td>${i}</td><td>${i}</td><td>${i}</td><td>${i}</td></tr>`).join('');
-        const wrap=document.querySelector('.queue-statistics-table');wrap.classList.toggle('queue-statistics-table--scroll',count>5);
-        if(count>5){const header=wrap.querySelector('thead'),firstFive=[...table.querySelectorAll('tr')].slice(0,5);wrap.style.maxHeight=`${Math.ceil(header.getBoundingClientRect().height+firstFive.reduce((sum,row)=>sum+row.getBoundingClientRect().height,0))}px`;}else wrap.style.maxHeight='';
-      },count);
-      const wrap=await page.locator('.queue-statistics-table').evaluate(el=>({client:el.clientHeight,scroll:el.scrollHeight,overflow:getComputedStyle(el).overflowY,visibleRows:[...el.querySelectorAll('tbody tr')].filter(row=>row.getBoundingClientRect().bottom<=el.getBoundingClientRect().bottom+1).length,headerPosition:getComputedStyle(el.querySelector('thead th')).position}));
-      if(count<=5)assert.ok(wrap.scroll<=wrap.client+1,`${count} rows fit without vertical scroll`);
-      else {assert.ok(wrap.scroll>wrap.client,`${count} rows use internal vertical scroll`);assert.equal(wrap.visibleRows,5,'exactly five rows are visible before scrolling');assert.equal(wrap.headerPosition,'sticky','table header stays visible while scrolling');}
+    const tableEvidence=[];
+    const tableViewports=[[1920,1080],[1920,1000],[1536,864],[1366,1000],[1280,900],[1280,720],[1120,1000],[1024,1000],[900,1000],[800,900],[700,1000],[650,900],[520,1000],[480,900],[390,420],[360,900]];
+    for(const theme of ['light','dark'])for(const [width,height] of tableViewports){
+      const page=await makePage(browser,theme,width,height);
+      let baselineRowHeight;
+      for(const count of [1,5,6,8]){
+        await page.evaluate(count=>{
+          const names=['Альфа УО','Бета УО','Гамма УО','Дельта УО','Епсилон УО','Дзета УО','Ета УО','Тета УО'];
+          const table=document.querySelector('#queueStatisticsRows');
+          table.innerHTML=names.slice(0,count).map((name,i)=>`<tr><th scope="row">${name}</th><td>${i}</td><td>${i}</td><td>${i}</td><td>${i}</td></tr>`).join('');
+          const wrap=document.querySelector('.queue-statistics-table');wrap.scrollTop=0;wrap.scrollLeft=0;wrap.classList.toggle('queue-statistics-table--scroll',count>5);
+          if(count>5){const header=wrap.querySelector('thead'),firstFive=[...table.querySelectorAll('tr')].slice(0,5);wrap.style.maxHeight=`${Math.ceil(header.getBoundingClientRect().height+firstFive.reduce((sum,row)=>sum+row.getBoundingClientRect().height,0))}px`;}else wrap.style.maxHeight='';
+        },count);
+        const before=await page.locator('.queue-statistics-table').evaluate(el=>{
+          const rect=n=>{const r=n.getBoundingClientRect();return{top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height};},r=rect(el),header=el.querySelector('thead th');
+          return{client:el.clientHeight,scroll:el.scrollHeight,overflow:getComputedStyle(el).overflowY,maxHeight:getComputedStyle(el).maxHeight,rect:r,header:rect(header),headerPosition:getComputedStyle(header).position,rowHeights:[...el.querySelectorAll('tbody tr')].map(row=>row.getBoundingClientRect().height),visibleRows:[...el.querySelectorAll('tbody tr')].filter(row=>{const b=row.getBoundingClientRect();return b.top>=header.getBoundingClientRect().bottom-1&&b.bottom<=r.top+el.clientTop+el.clientHeight+1;}).length,pageWidth:document.documentElement.clientWidth,pageScroll:document.documentElement.scrollWidth};
+        });
+        baselineRowHeight??=before.rowHeights[0];
+        const check=(ok,message,measurement=before)=>{if(!ok)layoutFailures.push({theme,width,height,count,message,measurement});};
+        check(before.pageScroll<=before.pageWidth+2,'table does not cause page-level horizontal overflow');
+        check(before.rowHeights.every(h=>h<=42&&Math.abs(h-baselineRowHeight)<1),'table rows keep a compact stable height');
+        if(count<=5){check(before.scroll<=before.client+1,`${count} rows fit without vertical scroll`);check(before.visibleRows===count,'all rows up to five are visible');}
+        else{
+          check(before.scroll>before.client,`${count} rows use internal vertical scroll`);
+          check(before.visibleRows>=1&&before.visibleRows<=5,'no more than five complete rows are visible before scrolling');
+          if(width>720)check(before.visibleRows===5,'exactly five rows are visible before scrolling on desktop');
+          check(before.headerPosition==='sticky','table header uses sticky positioning');
+          await page.locator('.queue-statistics-table').evaluate(el=>el.scrollTop=el.scrollHeight);
+          const after=await page.locator('.queue-statistics-table').evaluate(el=>{const h=el.querySelector('thead th').getBoundingClientRect(),last=el.querySelector('tbody tr:last-child').getBoundingClientRect(),r=el.getBoundingClientRect();return{scrollTop:el.scrollTop,headerTop:h.top,headerBottom:h.bottom,lastTop:last.top,lastBottom:last.bottom,clientBottom:r.top+el.clientTop+el.clientHeight};});
+          check(after.scrollTop>0,'table can actually scroll',after);
+          check(Math.abs(after.headerTop-before.header.top)<1,'table header stays pinned during actual scrolling',{before,after});
+          check(after.lastTop>=after.headerBottom-1&&after.lastBottom<=after.clientBottom+1,'last table row is fully reachable',after);
+          tableEvidence.push({theme,width,height,count,before,after});
+        }
+        if(count<=5)tableEvidence.push({theme,width,height,count,before});
+      }
       await page.close();
     }
-    for(const zoom of [0.8,1,1.25,1.5]){
+    fs.writeFileSync(path.join(OUT,'table-row-matrix.json'),JSON.stringify(tableEvidence,null,2));
+    for(const theme of ['light','dark'])for(const zoom of [0.8,1,1.25,1.5]){
       // Browser zoom reduces the effective CSS viewport. Model that viewport directly so
       // responsive media queries behave as they do in a real zoomed browser window.
-      const page=await makePage(browser,'dark',Math.round(1536/zoom),Math.round(864/zoom));
+      const page=await makePage(browser,theme,Math.round(1536/zoom),Math.round(864/zoom));
       const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,grid:getComputedStyle(document.querySelector('.work-queue-operational-grid')).gridTemplateColumns,overflow:[...document.querySelectorAll('#workQueueView *')].map(el=>({selector:el.id?`#${el.id}`:el.className&&typeof el.className==='string'?`.${el.className.trim().split(/\s+/).join('.')}`:el.tagName.toLowerCase(),left:Math.round(el.getBoundingClientRect().left),right:Math.round(el.getBoundingClientRect().right),width:Math.round(el.getBoundingClientRect().width)})).filter(item=>item.right>document.documentElement.clientWidth+2).slice(0,12)}));
       assert.ok(dimensions.scroll<=dimensions.width+2,`no page-level horizontal overflow at ${zoom*100}%: ${JSON.stringify(dimensions)}`);
-      const shot=path.join(OUT,`work-uo-dark-${Math.round(zoom*100)}.png`);
+      const shot=path.join(OUT,`work-uo-${theme}-${Math.round(zoom*100)}.png`);
       if(zoom!==1) {await page.locator('#workQueueView .work-queue-operational-grid').screenshot({path:shot});evidence.push(shot);}
       await page.close();
     }
@@ -405,6 +592,9 @@ async function makeAuxPage(browser,theme,viewId,width,height){
       else assert.equal(layout.panelVisibility,'hidden',`table is hidden while the full-screen drawer is open at ${width}px`);
       await page.close();
     }
+    fs.writeFileSync(path.join(OUT,'layout-failures.json'),JSON.stringify(layoutFailures,null,2));
+    console.log(JSON.stringify({executionCompleted:true,layoutViolations:layoutFailures.length,evidenceDirectory:OUT}));
+    assert.equal(layoutFailures.length,0,`browser layout violations: ${JSON.stringify(layoutFailures.map(({theme,width,state,key,message})=>({theme,width,state,key,message})))}`);
     console.log(JSON.stringify({result:'PASS',responsiveCases:['five categories in one row: light/dark','five categories wrap: 650px/480px/360px','filter panel no-overlap at 1920/1280/800/480px','history officer fields 90–110px, compact decisions, dates right of status, flexible remarks: 1920/1280/1120/800/520/360px light/dark','EDR full-height right drawer, 12 sections, top actions, no chip row, DK filter and six freshness KPI markers: 1920/1024/700/480/360px light/dark','requests: three organization cards plus three status counters in one row at 1920/1536/1366/1280/1024, adaptive 900px, light/dark','3 rows','5 rows','8 rows','80%','100%','125%','150%'],screenshots:evidence},null,2));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
