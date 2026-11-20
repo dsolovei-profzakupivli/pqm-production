@@ -1,13 +1,20 @@
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const ui=require('../ui_improvements.js');
 const buttons=new Map();let syncCalls=0;
-for(const id of [...ui.resetIds,...ui.prozorroIds])buttons.set('#'+id,{textContent:ui.resetIds.includes(id)?'↺':'Оновити з Prozorro',title:'',disabled:true,onclick:()=>syncCalls++,classList:{add(){}},setAttribute(key,value){this[key]=value}});
+for(const id of [...ui.resetIds,...ui.prozorroIds])buttons.set('#'+id,{textContent:ui.resetIds.includes(id)?'↺':'Оновити з Prozorro',title:'',disabled:true,closest(){return null},onclick:()=>syncCalls++,classList:{add(){}},setAttribute(key,value){this[key]=value}});
 const root={querySelector:key=>buttons.get(key)};
 ui.formatActionButtons(root);
 for(const id of ui.resetIds){assert.equal(buttons.get('#'+id).textContent,'×');assert.equal(buttons.get('#'+id).title,'Скинути всі фільтри');assert(buttons.get('#'+id).disabled)}
 for(const id of ui.prozorroIds){assert.equal(buttons.get('#'+id).textContent,'↻ Prozorro');assert.equal(buttons.get('#'+id).title,'Оновити дані з Prozorro');assert(buttons.get('#'+id).disabled)}
 const busy=buttons.get('#requestsRefresh'),handler=busy.onclick;busy.textContent='Оновлення…';busy.title='Оновлення вже триває';ui.formatActionButtons(root);
 assert.equal(busy.textContent,'Оновлення…');assert.equal(busy.title,'Оновлення вже триває');assert.equal(busy.onclick,handler);assert.equal(syncCalls,0);
+const drawerTrash=buttons.get('#edrMonitoringReset'),svg={tagName:'svg'};
+drawerTrash.closest=()=>({});drawerTrash.querySelector=selector=>selector==='svg'?svg:null;
+drawerTrash.textContent='';drawerTrash.innerHTML='<svg data-existing-trash></svg>';
+ui.formatActionButtons(root);ui.formatActionButtons(root);
+assert.equal(drawerTrash.innerHTML,'<svg data-existing-trash></svg>','repeated formatting preserves the drawer trash SVG');
+assert.equal(drawerTrash.textContent,'','drawer reset is not rewritten as x');
+
 assert.equal(ui.compactOfficer('Дмитро САВВА'),'Дмитро САВВА');
 assert.equal(ui.compactOfficer('Олена ЄРЬОМІНА'),'Олена ЄРЬОМІНА');
 assert.equal(ui.compactOfficer('Не визначено'),'Не визначено');

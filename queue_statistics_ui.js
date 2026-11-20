@@ -65,7 +65,8 @@
     $('#dateToFilter').value=filters.date_to||'';
     $('#protocolDecisionFilter').value=review?'__empty__':'';
     const dkCodes=Array.isArray(filters.dk_code)?filters.dk_code:filters.dk_code?[filters.dk_code]:[];
-    dkCodes.forEach(value=>filterSelections.dk.add(value));
+    dkCodes.forEach(value=>{filterSelections.dk.add(value);filterDrafts.dk.add(value)});
+    $$('#dkFilter input[type="checkbox"]').forEach(input=>input.checked=filterDrafts.dk.has(input.value));
     categoryFilter=filters.category||'';
     const entityType=filters.entity_type||filters.supplier_type||'';
     if(entityType)queueRegistryFilters.entity_type=entityType;

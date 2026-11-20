@@ -1074,7 +1074,7 @@ def bootstrap(server):
 def decorate_html(raw):
     text = raw.decode('utf-8')
     if os.environ.get('PQM_SANDBOX') == '1':
-        text = text.replace('<html', '<html data-pqm-environment="sandbox"', 1)
+        text = text.replace('<html', '<html data-pqm-environment="sandbox" data-halloween="off" data-pqm-cat="on"', 1)
         current_brand = ('<div class="brand prod-brand"><img class="prod-brand-initials" '
                          'src="/assets/pqm-brand-mark-prod.svg" alt="" aria-hidden="true">'
                          '<span class="prod-brand-divider" aria-hidden="true"></span>'
@@ -1082,9 +1082,11 @@ def decorate_html(raw):
                          '<small>Procurement Qualification Manager</small></span>'
                          '<em id="environmentBanner" class="prod-brand-accessible">PQM</em></div>')
         sandbox_brand = ('<div class="brand sandbox-brand">'
-                         '<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark-prod.svg" alt="" aria-hidden="true">'
+                         '<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark-prod.svg" width="82" height="40" alt="" aria-hidden="true">'
                          '<span class="sandbox-brand-divider" aria-hidden="true"></span>'
-                         '<span class="sandbox-brand-copy"><strong>Професійні закупівлі</strong>'
+                         '<span class="sandbox-brand-copy"><strong class="halloween-title" style="position:relative">Професійні закупівлі'
+                         '<img class="halloween-cat" src="assets/pqm-cat-no-hat.png" width="180" height="97" '
+                         'style="position:absolute;pointer-events:none;max-width:none" alt="" aria-hidden="true" draggable="false"></strong>'
                          '<small>Procurement Qualification Manager</small></span>'
                          '<em id="environmentBanner" class="sandbox-brand-accessible">PQM</em></div>')
         if text.count(current_brand) != 1:
@@ -1107,23 +1109,22 @@ def decorate_html(raw):
         theme = (ROOT / 'sandbox_theme.css').read_text(encoding='utf-8')
         text = text.replace('</head>', '<style id="pqmSandboxTheme">' + theme + '</style></head>', 1)
         text = text.replace('</head>', '<script src="/sandbox_contrast.js?v=1" defer></script></head>', 1)
-        # Presentation only: Halloween motion is included exclusively in Sandbox HTML.
+        # Permanent geometry is independent of the seasonal resource pack.
+        text = text.replace('</head>', '<link rel="stylesheet" href="pqm_cat.css"></head>', 1)
+        # The permanent controller alone decides whether to request seasonal resources.
+        text = text.replace('<link rel="stylesheet" href="halloween.css">', '', 1)
         halloween_anchor = '<script src="halloween.js"></script>'
         if text.count(halloween_anchor) != 1:
-            raise RuntimeError('STOP: SANDBOX Halloween script markup mismatch')
-        text = text.replace(halloween_anchor, halloween_anchor +
+            raise RuntimeError('STOP: SANDBOX seasonal loader markup mismatch')
+        text = text.replace(halloween_anchor,
+                            '<script src="pqm_cat.js"></script>'
                             '\n  <script src="registry_popovers.js"></script>'
-                            '\n  <script src="operational_task_officers.js?v=1"></script>'
-                            '\n  <link rel="stylesheet" href="halloween_motion.css">'
-                            '\n  <script src="halloween_motion.js"></script>'
-                            '\n  <link rel="stylesheet" href="halloween_cat_season.css?v=1">'
-                            '\n  <script src="halloween_cat_season.js?v=1"></script>', 1)
-        if text.count('<script src="operational_task_officers.js?v=1"></script>') != 1:
-            raise RuntimeError('STOP: SANDBOX operational officer module include mismatch')
-        if text.count('<link rel="stylesheet" href="halloween_cat_season.css?v=1">') != 1:
-            raise RuntimeError('STOP: SANDBOX permanent cat stylesheet include mismatch')
-        if text.count('<script src="halloween_cat_season.js?v=1"></script>') != 1:
-            raise RuntimeError('STOP: SANDBOX permanent cat controller include mismatch')
+                            '\n  <script src="operational_task_officers.js?v=1"></script>', 1)
+        for include in ('<script src="pqm_cat.js"></script>',
+                        '<link rel="stylesheet" href="pqm_cat.css">',
+                        '<script src="operational_task_officers.js?v=1"></script>'):
+            if text.count(include) != 1:
+                raise RuntimeError('STOP: SANDBOX permanent UI include mismatch')
     text = text.replace('<head>', '<head><meta name="robots" content="noindex,nofollow,noarchive">', 1)
     mode = ('ЗОВНІШНІ ДЖЕРЕЛА — читання · локальні записи лише в SANDBOX · '
             'Google-записи лише в підтверджену SANDBOX Sheet · PROD призначення заблоковані')

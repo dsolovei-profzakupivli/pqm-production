@@ -73,7 +73,8 @@ test('EDR mono filters apply on completion, collapse only their own section, and
   assert.ok(start>=0&&end>start,'the EDR mono filter handlers are present');
   const ids=['edrMonitoringSearch','edrMonitoringDk','edrMonitoringType','edrMonitoringNames','edrMonitoringFullName','edrMonitoringShortName','edrMonitoringFreshness','edrMonitoringVerifiedFrom','edrMonitoringVerifiedTo','edrMonitoringApplicationFrom','edrMonitoringApplicationTo'];
   const controls=Object.fromEntries(ids.map(id=>[id,{id,value:'',oninput:null,onchange:null}]));
-  const calls={save:0,update:0,load:0,collapse:[]};
+  controls['edrMonitoringDkFilter .multi-search']={value:'',oninput:null};
+  const calls={save:0,update:0,load:0,collapse:[],dkRender:0};
   let scheduled=null;
   const context=vm.createContext({
     edrMonitoringPage:1,edrMonitoringPages:1,edrMonitoringTimer:null,edrMonitoringTimerPending:false,
@@ -82,7 +83,7 @@ test('EDR mono filters apply on completion, collapse only their own section, and
     window:{PqmFilterAccordion:{collapseControl(control){calls.collapse.push(control.id)}}},
     $(selector){return controls[selector.slice(1)]},
     saveEdrMonitoringFilters(){calls.save++},updateEdrMonitoringFilters(){calls.update++},loadEdrMonitoring(){calls.load++},
-    bindEdrMonitoringStatusMulti(){},
+    bindEdrMonitoringStatusMulti(){},renderEdrMonitoringDkOptions(){calls.dkRender++},
     clearTimeout(){},setTimeout(callback,delay){assert.equal(delay,250);scheduled=callback;return 1;}
   });
   vm.runInContext(handlers,context);
@@ -108,18 +109,12 @@ test('EDR mono filters apply on completion, collapse only their own section, and
   controls.edrMonitoringApplicationTo.value='2026-02-28';controls.edrMonitoringApplicationTo.onchange.call(controls.edrMonitoringApplicationTo);
   assert.equal(calls.collapse.at(-1),'edrMonitoringApplicationTo','the application-date range collapses after its second boundary');
 
-  const beforeDk=calls.load,beforeDkCollapse=calls.collapse.at(-1);controls.edrMonitoringDk.value='45000000';controls.edrMonitoringDk.oninput();
-  assert.equal(calls.collapse.at(-1),beforeDkCollapse,'typing and debounce do not collapse the DK section');
-  assert.equal(calls.load,beforeDk,'DK search remains debounced before completion');
-  controls.edrMonitoringDk.onchange();
-  assert.equal(calls.load,beforeDk+1,'completion flushes a pending DK request exactly once');
-  assert.equal(calls.collapse.at(-1),'edrMonitoringDk');
-
-  controls.edrMonitoringDk.oninput();scheduled();
-  const afterDebounce=calls.load;
-  controls.edrMonitoringDk.onchange();
-  assert.equal(calls.load,afterDebounce,'blur after an elapsed debounce does not issue a duplicate request');
-  assert.equal(calls.collapse.at(-1),'edrMonitoringDk');
+  const beforeDk=calls.load,beforeDkCollapse=calls.collapse.length;
+  const dkSearch=controls['edrMonitoringDkFilter .multi-search'];dkSearch.value='0322';dkSearch.oninput();
+  assert.equal(calls.dkRender,1,'DK typing filters the options locally');
+  assert.equal(calls.load,beforeDk,'typing does not submit an unselected DK substring');
+  assert.equal(calls.collapse.length,beforeDkCollapse,'DK lookup never collapses the panel');
+  assert.equal(controls.edrMonitoringDk.value,'','lookup does not alter applied codes');
 
   const clear=app.match(/function clearEdrMonitoringFilter\(key,statusValue=''\)\{[^\n]+/)?.[0];
   assert.ok(clear,'per-filter clear remains available');

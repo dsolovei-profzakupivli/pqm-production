@@ -17,7 +17,9 @@
   function formatActionButtons(documentRoot){
     for(const id of resetIds){
       const button=documentRoot.querySelector('#'+id);if(!button)continue;
-      if(button.textContent!=='×')button.textContent='×';
+      if(button.closest('.filter-panel-header-actions')){
+        if(!button.querySelector('svg'))button.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16M7 5l1 15h8l1-15M9 5V3h6v2"/></svg>';
+      }else if(button.textContent!=='×')button.textContent='×';
       button.title='Скинути всі фільтри';button.setAttribute('aria-label',button.title);
       button.classList.add('pqm-filter-reset');
     }

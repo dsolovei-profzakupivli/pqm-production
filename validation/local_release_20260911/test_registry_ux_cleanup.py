@@ -287,7 +287,9 @@ class RegistryUxCleanupTests(unittest.TestCase):
         self.assertIn("toggle('#supplierCodeFilter',filterSelections.supplier.size)", self.app)
         self.assertIn("toggle('#frameworkFilter',filterSelections.framework.size)", self.app)
         self.assertIn("toggle('#dkFilter',filterSelections.dk.size)", self.app)
-        self.assertIn("$('#dateFromFilter').value,$('#dateToFilter').value", self.app)
+        self.assertIn("($('#dateFromFilter').value||$('#dateToFilter').value)", self.app)
+        # Both bounds share one panel section, independently styled above.
+        self.assertIn("application_date:Number(Boolean($('#dateFromFilter').value))+Number(Boolean($('#dateToFilter').value))", self.app)
         self.assertIn("overflow-y:visible", styles)
         self.assertIn("overflow-x:auto", styles)
 

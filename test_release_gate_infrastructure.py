@@ -44,6 +44,9 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             "PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE": "/tmp/v26.zip",
             "PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_SHA256": "d" * 64,
             "PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_OUT": "/tmp/should-not-forward-v26.zip",
+            "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE": "/tmp/v27.zip",
+            "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256": "e" * 64,
+            "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_OUT": "/tmp/should-not-forward-v27.zip",
             "GOOGLE_WRITER_TOKEN": "must-not-forward",
             "PATH": "untrusted-path",
         }
@@ -60,6 +63,9 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertEqual(env["PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE"], "/tmp/v26.zip")
         self.assertEqual(env["PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_SHA256"], "d" * 64)
         self.assertNotIn("PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_OUT", env)
+        self.assertEqual(env["PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE"], "/tmp/v27.zip")
+        self.assertEqual(env["PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256"], "e" * 64)
+        self.assertNotIn("PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_OUT", env)
         self.assertNotIn("GOOGLE_WRITER_TOKEN", env)
         self.assertEqual(env["PATH"], "/usr/local/bin:/usr/bin:/bin")
 
@@ -306,7 +312,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         previous_integrated_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         previous_current_overlay = "test_google_writer_integrated_candidate_integrity_v8"
         previous_integrated_overlay_v9 = "test_google_writer_integrated_candidate_integrity_v9"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v27"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v28"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
@@ -494,6 +500,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertNotIn("test_google_writer_integrated_candidate_integrity_v24", current_integrity_command)
         self.assertNotIn("test_google_writer_integrated_candidate_integrity_v25", current_integrity_command)
         self.assertNotIn("test_google_writer_integrated_candidate_integrity_v26", current_integrity_command)
+        self.assertNotIn("test_google_writer_integrated_candidate_integrity_v27", current_integrity_command)
         self.assertIn("validation.local_release_20260911.test_integrated_snapshot_staging", current_integrity_command)
         self.assertIn("validation.local_release_20260911.test_release_test_package", current_integrity_command)
         self.assertNotRegex(
@@ -648,7 +655,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("integrated_v24_history", runner)
         self.assertIn("integrated_v25_history", runner)
         self.assertIn("integrated_v26_history", runner)
-        self.assertIn("integrated_v27_current", runner)
+        self.assertIn("integrated_v27_history", runner)
+        self.assertIn("integrated_v28_current", runner)
+        self.assertIn("run_integrated_writer_ui_v27_history.py", runner)
+        self.assertIn("test_google_writer_integrated_candidate_integrity_v28", runner)
         self.assertIn("run_integrated_writer_ui_v26_history.py", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v27", runner)
         self.assertIn("run_integrated_writer_ui_v23_history.py", runner)

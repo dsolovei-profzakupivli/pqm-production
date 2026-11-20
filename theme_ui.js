@@ -9,7 +9,12 @@
     document.documentElement.dataset.theme=theme;
     if(document.body)document.body.dataset.theme=theme;
     for(const logo of document.querySelectorAll('img.prod-brand-initials,img.sandbox-brand-initials')){
-      logo.setAttribute('src',theme==='dark'?'/assets/pqm-brand-mark-prod-dark.svg':'/assets/pqm-brand-mark-prod.svg');
+      const source=theme==='dark'?'/assets/pqm-brand-mark-prod-dark.svg':'/assets/pqm-brand-mark-prod.svg';
+      if(logo.getAttribute('src')!==source){
+        const image=new Image();
+        image.onload=()=>{if(document.documentElement.dataset.theme===theme)logo.setAttribute('src',source)};
+        image.src=source;
+      }
     }
     const status=document.getElementById('accountThemeStatus');
     if(status){status.hidden=!unavailable;status.textContent=unavailable?'Не вдалося завантажити темну тему. Залишено світле оформлення.':''}

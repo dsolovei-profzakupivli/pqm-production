@@ -121,7 +121,7 @@ function harness(items) {
     $(selector){return selector.startsWith('.')?nodes.queueStatisticsTable:nodes[selector.replace(/^#/,'')];},
     $$(selector){return selector==='[data-statistics-filter]'?controls:selector==='[data-trend-granularity]'?trendButtons:[];},
     request:async url=>{calls.push(url);const parsed=new URL(url,'https://pqm.test');if(parsed.searchParams.get('summary')==='review-progress')return{items:[]};let rows=items;const entityType=parsed.searchParams.get('entity_type');if(entityType)rows=rows.filter(row=>row.entity_type===entityType);for(const key of ['category','review_officer','protocol_officer']){const value=parsed.searchParams.get(key);if(value)rows=rows.filter(row=>(row[key]||'')===(value==='__unassigned__'?'':value));}const codes=parsed.searchParams.getAll('dk_code');if(codes.length)rows=rows.filter(row=>codes.includes(row.dk_code||''));return summarize(rows);},esc:value=>String(value),formatOfficerName,
-    filterSelections:{dk:new Set(),status:new Set()},queueRegistryFilters:{},categoryFilter:'',resetApplicationsForExternalKpi(){context.queueRegistryFilters={};context.filterSelections.dk.clear();context.filterSelections.status.clear();context.categoryFilter='';},
+    filterSelections:{dk:new Set(),status:new Set()},filterDrafts:{dk:new Set(),status:new Set()},queueRegistryFilters:{},categoryFilter:'',resetApplicationsForExternalKpi(){context.queueRegistryFilters={};context.filterSelections.dk.clear();context.filterSelections.status.clear();context.categoryFilter='';},
     syncPrimaryFilters(){},updateMultiSummary(){},saveFilterState(){},updateApplicationFilterStyles(){},showModule(){},
     loadApplicationsForExternalKpi:async()=>{},page:1,
   });
@@ -155,6 +155,8 @@ test('FOP rejected KPI drilldown transfers every applied filter and canonical st
   assert.equal(h.context.queueRegistryFilters.officer,undefined,'previous registry filters are discarded');
   assert.equal(h.context.categoryFilter,'ЇЖА');
   assert.deepEqual([...h.context.filterSelections.dk],['02100000-6']);
+  assert.deepEqual([...h.context.filterDrafts.dk],['02100000-6'],'drilldown synchronizes independent DK drafts');
+  assert.notEqual(h.context.filterDrafts.dk,h.context.filterSelections.dk);
   assert.deepEqual([...h.context.filterSelections.status],['Відхилено']);
   assert.equal(h.context.queueRegistryFilters.actual_status,undefined,'no broad status-only guard replaces the selected status');
   assert.equal(h.nodes.dateFromFilter.value,'2026-01-01');

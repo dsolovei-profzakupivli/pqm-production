@@ -21,7 +21,7 @@ function fixture(start,stored='1'){
  let now=Date.parse(start),serial=0;const timers=new Map(),listeners={},storage=new Map([['pqm.halloween.cat.enabled.v1',stored]]);
  const input={checked:false,disabled:false,addEventListener:(name,fn)=>listeners['input:'+name]=fn};
  const hint={textContent:''},label={querySelector:s=>s==='input'?input:hint};
- const title={classList:{add(){}},insertAdjacentHTML(){}},form={querySelector:()=>({before(){}})};
+ const title={style:{},querySelector(){return null},classList:{add(){}},insertAdjacentHTML(){}},form={querySelector:()=>({before(){}})};
  const document={documentElement:{dataset:{}},addEventListener:(name,fn)=>listeners[name]=fn,createElement:()=>({...label}),querySelector:s=>s.includes('strong')?title:s==='#accountSettingsForm'?form:null};
  class Clock extends Date{constructor(...args){super(...(args.length?args:[now]))}static now(){return now}}
  const context={Date:Clock,document,window:{addEventListener:(name,fn)=>listeners[name]=fn},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},setTimeout:(fn,delay)=>{assert(delay>=1&&delay<=60000);timers.set(++serial,{fn,at:now+delay});return serial},clearTimeout:id=>timers.delete(id)};

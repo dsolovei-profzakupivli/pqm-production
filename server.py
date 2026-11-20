@@ -5726,7 +5726,7 @@ def _edr_monitoring_dk_map() -> dict[str, set[str]]:
 def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_freshness=True) -> list[dict]:
     value = lambda key: str((params.get(key) or [""])[0] or "").strip()
     values = lambda key: {part.strip() for raw in (params.get(key) or []) for part in str(raw or "").split(",") if part.strip()}
-    search, dk_code = value("search").casefold(), value("dk_code")
+    search, dk_codes = value("search").casefold(), values("dk_code")
     entity_type = value("entity_type")
     prozorro_statuses = values("prozorro_status")
     edr_statuses = {_edr_monitoring_status(status) for status in values("edr_status")}
@@ -5740,10 +5740,10 @@ def _filter_edr_monitoring_rows(rows: list[dict], params: dict, *, include_fresh
     if entity_type and entity_type not in supplier_classification.ENTITY_TYPES:
         raise ValueError("Невідомий тип постачальника")
     result = []
-    dk_map = _edr_monitoring_dk_map() if dk_code else {}
+    dk_map = _edr_monitoring_dk_map() if dk_codes else {}
     for row in rows:
         if search and search not in " ".join((row["supplier_code"], row["supplier_name"], row["manager_name"], str(row.get("google_note") or ""))).casefold(): continue
-        if dk_code and dk_code not in dk_map.get(row["supplier_code"], set()): continue
+        if dk_codes and not dk_codes.intersection(dk_map.get(row["supplier_code"], set())): continue
         if entity_type and row.get("entity_type", "unknown") != entity_type: continue
         if prozorro_statuses and row["prozorro_status"] not in prozorro_statuses: continue
         if edr_statuses and _edr_monitoring_status(row["edr_status"]) not in edr_statuses: continue
