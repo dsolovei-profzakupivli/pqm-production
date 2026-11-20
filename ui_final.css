@@ -231,11 +231,11 @@ html[data-theme="dark"] #applicationFilterPanel .application-filter-content>inpu
 .application-filter-section:not(.filter-active) .filter-accordion-count[hidden],.edr-monitoring-filter-section:not(.filter-active) .filter-accordion-count[hidden]{display:none}
 .edr-monitoring-filter-heading{position:relative;display:flex!important;align-items:center;gap:6px;min-height:42px;padding:0 5px!important}
 .edr-monitoring-filter-heading .filter-accordion-toggle{flex:1 1 auto;width:100%;padding-right:64px}
-.edr-monitoring-filter-heading [data-edr-filter-clear]{position:absolute;top:50%;right:31px;z-index:1;flex:0 0 25px;width:25px;height:25px;min-height:25px;padding:0;border-radius:50%;transform:translateY(-50%)}
+.edr-monitoring-filter-heading [data-edr-filter-clear]{position:static;flex:0 0 25px;width:25px;height:25px;min-height:25px;padding:0;border-radius:50%;transform:none}
 .queue-statistics-filter-fields{grid-template-columns:minmax(0,1fr)!important}
 .queue-statistics-filter-section-heading{position:relative;display:flex!important;align-items:center;gap:5px;min-height:42px;padding:3px 5px!important}
 .queue-statistics-filter-section-heading .queue-statistics-section-toggle{flex:1 1 auto;grid-template-columns:minmax(0,1fr) auto auto;padding-right:64px}
-.queue-statistics-filter-section-heading .queue-statistics-section-clear{position:absolute;top:50%;right:31px;z-index:1;transform:translateY(-50%)}
+.queue-statistics-filter-section-heading .queue-statistics-section-clear{position:static;transform:none}
 .queue-statistics-filter-section.filter-active .queue-statistics-section-toggle{background:#e4efff;color:#155c9f}
 .queue-statistics-section-toggle .queue-statistics-section-state{min-width:0;color:#8b5b00;font-size:10px;font-weight:550}
 .queue-statistics-filter-section.filter-pending .queue-statistics-section-toggle{outline:1px dashed #c58a19;outline-offset:-2px}

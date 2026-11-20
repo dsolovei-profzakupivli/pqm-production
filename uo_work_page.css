@@ -155,6 +155,7 @@ html[data-theme="dark"] #workQueueView .queue-statistics-message--warning{backgr
 #workQueueView .queue-statistics-filter-header button{width:34px;height:34px;min-height:34px;padding:0;font-size:22px;line-height:1}
 #workQueueView .queue-statistics-filter-fields{display:grid;align-content:start;gap:8px;min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}
 #workQueueView .queue-statistics-filter-section{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--surface,#fff)}
+#workQueueView .queue-statistics-filter-section.queue-statistics-dk-field{padding:0}
 #workQueueView .queue-statistics-filter-section-heading{display:flex;align-items:center;gap:8px;min-height:42px;padding:4px 7px;border-radius:7px}
 #workQueueView .queue-statistics-section-toggle{position:relative;display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;padding:8px 64px 8px 10px;border:0;background:transparent;color:var(--ink);font:inherit;font-weight:650;text-align:left}
 #workQueueView .queue-statistics-section-toggle::after{content:"›";position:absolute;top:50%;right:10px;display:grid;place-items:center;width:13px;height:13px;color:var(--muted);font:20px/13px Arial,sans-serif;text-align:center;transform:translateY(-50%)}
@@ -231,7 +232,7 @@ html[data-theme="dark"] #workQueueView .queue-statistics-section-clear{backgroun
   #workQueueView .queue-statistics-workspace,#workQueueView .queue-statistics-results{display:flex;flex:1 1 auto;flex-direction:column;min-height:0}
   #workQueueView .queue-statistics-trend{display:flex;flex:1 1 56%;flex-direction:column;min-height:205px;margin-bottom:7px}
   #workQueueView .queue-statistics-trend-chart{flex:1 1 auto;height:auto;min-height:150px}
-  #workQueueView .queue-statistics-table,#workQueueView .queue-statistics-table--scroll{box-sizing:border-box;flex:1 1 44%;min-height:110px;max-height:none!important;overflow:auto;overscroll-behavior:contain}
+  #workQueueView .queue-statistics-table,#workQueueView .queue-statistics-table--scroll{box-sizing:border-box;flex:1 1 44%;min-height:110px;overflow:auto;overscroll-behavior:contain}
 }
 @media(max-width:1100px){
   #workQueueView .queue-statistics-card{display:block;align-self:start;min-height:0;height:auto}
