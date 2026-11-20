@@ -14,6 +14,23 @@ const styles=['styles.css','chat_annotations.css','filters.css','modules.css','s
 const officers=['Дмитро САВВА','Олена ЄРЬОМІНА','Тетяна ФЕДЧЕНКО','Світлана НАМЯСЕНКО','Дуже Довге Ім’я Уповноваженої ОСОБИ'];
 const esc=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 
+async function waitForNumberBorder(page,locator,{hovered,visible},description){
+  return locator.evaluate(async(element,{hovered,visible,description})=>{
+    const deadline=performance.now()+1200;
+    while(performance.now()<deadline){
+      const color=getComputedStyle(element).borderTopColor;
+      const slash=color.match(/\/\s*([\d.]+)(%)?\s*\)$/);
+      const legacy=color.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)$/i);
+      const alpha=slash?Number(slash[1])/(slash[2]?100:1):legacy?Number(legacy[1]):color.trim().toLowerCase()==='transparent'?0:1;
+      const directlyHovered=element.matches(':hover');
+      const transitioning=element.getAnimations().some(animation=>animation.playState==='pending'||animation.playState==='running');
+      if(!transitioning&&directlyHovered===hovered&&(visible?alpha>0:alpha===0))return{color,alpha,hovered:directlyHovered};
+      await new Promise(requestAnimationFrame);
+    }
+    throw new Error(`${description}: border transition did not reach alpha ${visible?'above zero':'zero'} with hover=${hovered}; final ${getComputedStyle(element).borderTopColor}`);
+  },{hovered,visible,description});
+}
+
 function protocolCard(name,index){
   const total=[9,7,5,4,3][index%5],reviewed=[4,7,0,1,2][index%5],pending=total-reviewed,ratio=total?Math.round(reviewed*100/total):0;
   return `<article class="qualification-summary-officer protocol-officer-card" data-protocol-officer="${esc(name)}"><button type="button" class="protocol-officer-main"><span>${esc(name)}</span><strong>${total}</strong></button><div class="protocol-officer-progress"><div class="protocol-progress-track" title="Розглянуто: ${reviewed} із ${total} (${ratio}%)"><span style="width:${ratio}%"></span></div><div class="protocol-progress-meta"><span>${ratio}%</span><button class="protocol-pending-count" type="button" title="Не розглянуто: ${pending}. Відкрити в реєстрі заявок" ${pending===0?'disabled':''}>${pending}</button></div></div></article>`;
@@ -117,18 +134,25 @@ async function verifyRealStatisticsSelection(browser,theme){
   await page.waitForFunction(()=>document.querySelector('#queueStatisticsRows button[data-statistics-action]')!==null);
   const selected=page.locator('#queueStatisticsRows button[data-statistics-action="4"]');
   assert.equal(await selected.getAttribute('aria-pressed'),'false','a number is initially unselected without the matching registry scope');
-  const unselectedStyle=await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor}));
+  const unselectedStyle=await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth}));
   await selected.click();
   assert.equal(await selected.getAttribute('aria-pressed'),'true',`real click applies the matching registry filter in ${theme} theme`);
   assert.equal(await selected.evaluate(node=>node.classList.contains('is-selected')),true,'the selected visual state comes from the applied-scope matcher');
-  const selectedStyle=await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor}));
+  await waitForNumberBorder(page,selected,{hovered:true,visible:true},'applied number finishes its selected border transition');
+  const selectedStyle=await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth}));
   assert.deepEqual(await page.evaluate(()=>({status:[...filterSelections.status],review_officer:queueRegistryFilters.review_officer,date_from:document.querySelector('#dateFromFilter').value,date_to:document.querySelector('#dateToFilter').value})),{status:['Допущено'],review_officer:'ДМИТРО САВВА',date_from:'2026-10-01',date_to:'2026-10-03'},'the selected style corresponds to the actual registry status, officer, and dates');
-  await page.locator('#queueStatisticsRows button[data-statistics-action="5"]').hover();
+  const otherNumber=page.locator('#queueStatisticsRows button[data-statistics-action="5"]');
+  await otherNumber.hover();
+  await waitForNumberBorder(page,selected,{hovered:false,visible:true},'applied number retains its border after hover moves');
+  await waitForNumberBorder(page,otherNumber,{hovered:true,visible:true},'the newly hovered number receives its temporary border');
   assert.equal(await selected.getAttribute('aria-pressed'),'true','the applied number stays selected while another number is hovered');
-  assert.deepEqual(await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor})),selectedStyle,'the applied number keeps its visual highlight while the pointer moves');
+  assert.equal(await selected.evaluate(node=>node.classList.contains('is-selected')),true,'the applied number keeps its selected class while the pointer moves');
+  assert.deepEqual(await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth})),selectedStyle,'the applied number keeps its visual highlight while the pointer moves');
   await page.evaluate(()=>{filterSelections.status.clear();queueRegistryFilters={};window.refreshQueueStatisticsActionSelection();});
   assert.equal(await selected.getAttribute('aria-pressed'),'false','removing the actual registry filter clears selected styling');
-  assert.deepEqual(await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor})),unselectedStyle,'clearing the applied filter removes mouse-focus emphasis');
+  assert.equal(await selected.evaluate(node=>node.classList.contains('is-selected')),false,'the cleared action is no longer selected');
+  await waitForNumberBorder(page,selected,{hovered:false,visible:false},'reset selected number finishes transition to transparent border');
+  assert.deepEqual(await selected.evaluate(node=>({background:getComputedStyle(node).backgroundColor,borderStyle:getComputedStyle(node).borderTopStyle,borderWidth:getComputedStyle(node).borderTopWidth})),unselectedStyle,'clearing the applied filter removes mouse-focus emphasis');
   await page.close();
 }
 
@@ -249,23 +273,30 @@ async function verifyRealStatisticsSelection(browser,theme){
       }
       const firstRow=page.locator('#queueStatisticsRows tr').first(),rowHead=firstRow.locator('th[scope="row"]'),numberButtons=firstRow.locator('button.publication-kpi');
       if(await numberButtons.count()>=2){
-        const initial=await numberButtons.nth(0).evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor}));
+        await page.mouse.move(5,5);
+        const rowInitial=await rowHead.evaluate(node=>getComputedStyle(node).backgroundColor);
+        const initial=await numberButtons.nth(0).evaluate(node=>({background:getComputedStyle(node).backgroundColor}));
         await rowHead.hover({position:{x:2,y:Math.max(2,Math.floor((await rowHead.boundingBox()).height/2))}});
         const rowHover=await firstRow.evaluate(node=>getComputedStyle(node.querySelector('th[scope="row"]')).backgroundColor);
-        const numberDuringRowHover=await numberButtons.nth(0).evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor}));
-        assert.notEqual(rowHover,initial.background,`the entire row highlights on hover in ${theme} theme`);
+        const numberDuringRowHover=await numberButtons.nth(0).evaluate(node=>({background:getComputedStyle(node).backgroundColor}));
+        assert.notEqual(rowHover,rowInitial,`the entire row highlights on hover in ${theme} theme`);
         assert.equal(numberDuringRowHover.background,initial.background,'row hover does not replace a number’s own background');
         await numberButtons.nth(0).hover();
-        const firstHovered=await numberButtons.nth(0).evaluate(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor}));
-        assert.notEqual(firstHovered.border,initial.border,'only the hovered number receives a border');
+        const firstHovered=await waitForNumberBorder(page,numberButtons.nth(0),{hovered:true,visible:true},'the first hovered number receives its temporary border');
+        assert.equal(firstHovered.hovered,true,'the first number remains directly under the pointer');
         await numberButtons.nth(1).hover();
-        const moved=await numberButtons.evaluateAll(nodes=>nodes.slice(0,2).map(node=>({background:getComputedStyle(node).backgroundColor,border:getComputedStyle(node).borderTopColor})));
-        assert.equal(moved[0].border,initial.border,'the previous number loses its temporary hover border');
-        assert.notEqual(moved[1].border,initial.border,'the hover border moves to the next number');
+        const previousBorder=await waitForNumberBorder(page,numberButtons.nth(0),{hovered:false,visible:false},'the previous unselected number loses its temporary border');
+        const currentBorder=await waitForNumberBorder(page,numberButtons.nth(1),{hovered:true,visible:true},'the newly hovered number receives its temporary border');
+        assert.equal(previousBorder.hovered,false,'the previous number is no longer under the pointer');
+        assert.equal(currentBorder.hovered,true,'the next number is directly under the pointer');
+        const moved=await numberButtons.evaluateAll(nodes=>nodes.slice(0,2).map(node=>({background:getComputedStyle(node).backgroundColor})));
+        const rowAfterMove=await rowHead.evaluate(node=>getComputedStyle(node).backgroundColor);
+        assert.notEqual(rowAfterMove,rowInitial,`row highlighting remains while the pointer moves between numbers in ${theme} theme`);
+        assert.equal(rowAfterMove,rowHover,'moving between numbers preserves the same row highlight');
+        assert.equal(moved[0].background,initial.background,'the old number keeps its own background after row hover');
         await numberButtons.nth(1).hover();
         await page.locator('body').hover({position:{x:5,y:5}});
-        const afterLeave=await numberButtons.nth(1).evaluate(node=>getComputedStyle(node).borderTopColor);
-        assert.equal(afterLeave,initial.border,'temporary number hover styling disappears when leaving the table');
+        await waitForNumberBorder(page,numberButtons.nth(1),{hovered:false,visible:false},'temporary number hover styling disappears after leaving the table');
       }
       const screenshot=path.join(OUT,`work-uo-${theme}-wide-closed.png`);
       await page.screenshot({path:screenshot,fullPage:true});evidence.push(screenshot);
