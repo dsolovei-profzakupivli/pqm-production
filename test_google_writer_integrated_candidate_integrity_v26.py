@@ -10,7 +10,7 @@ from validation.integrated_snapshot_archive import canonical_eol
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v26.json")
-MANIFEST_SHA256 = "6ac2833c9cb664f1e18e8370833d71153646d63199819a009a28479ef50ce0ed"
+MANIFEST_SHA256 = "34f020326010de6bf13cf8bbcbe7196cfcfee5fcae434dd2cd4528650db18402"
 PREVIOUS_MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v25.json")
 PREVIOUS_MANIFEST_SHA256 = "c553b5147d66bcc1fdbbfa32a90afa5ffb4f1bb873b190c6906d3502176e791b"
 PREVIOUS_HISTORY_RUNNER = Path("validation/run_integrated_writer_ui_v25_history.py")
@@ -28,6 +28,7 @@ V26_CHANGES = {
     "ui_final.css",
     "uo_work_page.css",
     "validation/application_filter_drawer.test.cjs",
+    "validation/chat_messages_browser.cjs",
     "validation/edr_monitoring_drawer.test.cjs",
     "validation/edr_monitoring_filter_state.cjs",
     "validation/edr_ui_state.test.cjs",

@@ -70,6 +70,7 @@
     "uo_work_queue.py",
     "validation/appeals_justification_browser.cjs",
     "validation/application_filter_drawer.test.cjs",
+    "validation/chat_messages_browser.cjs",
     "validation/application_filter_drawer_browser.cjs",
     "validation/docker_release_gate.py",
     "validation/edr_monitoring_drawer.test.cjs",
@@ -227,6 +228,7 @@
     "uo_work_queue.py": "56b083c5d10b7701c75a08ba1dddef4d1634351f106e86d8dbad3afd37d5c9db",
     "validation/appeals_justification_browser.cjs": "7385c428e7075cee8417861dc1c39519b971afcf32d13696d678a8a4a13ec994",
     "validation/application_filter_drawer.test.cjs": "91754692a33ee42310800d8b743488a33c82d68b85826ec3f3fdd57b6d2c1232",
+    "validation/chat_messages_browser.cjs": "9c8f9ba3f40011a7a431b0c8ec051e69d236ed6e84ab2bc05285564ae7e507cd",
     "validation/application_filter_drawer_browser.cjs": "b90eecbc04406dc843a097e670ed785afa44b99bf2533a3a13645ed89261973c",
     "validation/docker_release_gate.py": "4e49aa8dc7c4468a76d82933e3266ebb9d1110b07a59d0697f29804b59dfd6fe",
     "validation/edr_monitoring_drawer.test.cjs": "9d8731882a6008e9b7d51987e6a156f8650079e4b42033d5b76198c68ab85ac8",
@@ -317,7 +319,7 @@
     "validation/uo_work_page_layout_browser.cjs": "d0c3d488dc17ebe46f5451e5f268109d241abd6f7a6bfa57c5ea2f972f256664",
     "validation/local_release_20261116/pqm_sync_ui_integrated_v25.json": "c553b5147d66bcc1fdbbfa32a90afa5ffb4f1bb873b190c6906d3502176e791b",
     "validation/run_integrated_writer_ui_v25_history.py": "7d7198111d30c909ad69e51bacf7022a37a9cb7d2bce719f3df82e037493bfcd",
-    "test_google_writer_integrated_candidate_integrity_v26.py": "167c745ded7646f8a2b5b8e98bcedda56746741c511b7821af7cfec4278637dc",
+    "test_google_writer_integrated_candidate_integrity_v26.py": "28a6b2254c3771ffa90a39280089929d90893d98bdd872f80bcfa6f7d596c5da",
     "validation/edr_monitoring_filter_state.cjs": "240bc3ab8080e5f73c32c5b9149a12580f084c256c8fa5f3ede0d31aeaedb969",
     "validation/edr_ui_state.test.cjs": "4b6bde5add9a00b8dfb2e3a400bc5ec1bb4992c99ed4f01c42af79517e8ca770"
   }
