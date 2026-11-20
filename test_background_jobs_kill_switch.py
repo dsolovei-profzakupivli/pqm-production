@@ -1,5 +1,5 @@
 """Offline execution-interlock regressions; only synthetic SQLite is used."""
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
@@ -18,6 +18,33 @@ import sandbox_runtime
 import server
 
 
+def assert_no_continuation_threads():
+    alive = [thread for thread in threading.enumerate()
+             if thread.name == 'pqm-google-writer-continuation']
+    if alive:
+        raise AssertionError(f'Continuation threads escaped test ownership: {alive!r}')
+
+
+@contextmanager
+def isolated_continuation_worker():
+    """Own the real manual watchdog and join it before surrounding mocks unwind."""
+    assert_no_continuation_threads()
+    with patch.object(server, 'GOOGLE_WRITER_CONTINUATION', None):
+        try:
+            yield
+        finally:
+            worker = server.GOOGLE_WRITER_CONTINUATION
+            if worker is not None:
+                worker.stop.set()
+                thread = worker.thread
+                # Thread.start() can fail after the Thread object is assigned.
+                if thread is not None and thread.ident is not None:
+                    thread.join(timeout=5)
+                if thread is not None and thread.is_alive():
+                    raise AssertionError('Continuation worker did not stop and join')
+            assert_no_continuation_threads()
+
+
 class BackgroundJobsKillSwitchTests(unittest.TestCase):
     def setUp(self):
         self.env=patch.dict(os.environ, {'PQM_DISABLE_BACKGROUND_JOBS':'1','PQM_SANDBOX':'1'})
@@ -29,6 +56,9 @@ class BackgroundJobsKillSwitchTests(unittest.TestCase):
             self.con.execute("INSERT INTO scheduler_job_settings(job_key,enabled,updated_at,updated_by,revision,schedule_json,timezone) VALUES(?,1,'fixture','admin',2,?, 'Europe/Kyiv')",
                              (key,'{"kind":"hourly","minute":50}'))
         self.con.commit()
+
+    def tearDown(self):
+        assert_no_continuation_threads()
 
     def snapshot(self):
         return self.con.execute('SELECT * FROM scheduler_job_settings ORDER BY job_key').fetchall()
@@ -133,9 +163,55 @@ class BackgroundJobsKillSwitchTests(unittest.TestCase):
             register=stack.enter_context(patch.object(server,'register_scheduler_job'))
             google=stack.enter_context(patch.object(server,'google_writer_service'))
             rebuild=stack.enter_context(patch.object(server,'rebuild_operational_tasks'))
-            server.main();server.main()
+            # Keep the manual continuation path real; scheduled jobs stay mocked.
+            # Register ownership last so stop/join runs before DB/mode mocks unwind.
+            stack.enter_context(isolated_continuation_worker())
+            server.main()
+            continuation = server.GOOGLE_WRITER_CONTINUATION
+            self.assertIsNotNone(continuation)
+            self.assertTrue(continuation.thread.is_alive())
+            server.main()
+            self.assertIs(server.GOOGLE_WRITER_CONTINUATION, continuation)
             register.assert_not_called();google.assert_not_called();rebuild.assert_not_called()
         self.assertEqual(self.snapshot(),before)
+
+    def test_continuation_fixture_joins_on_normal_exit(self):
+        previous = server.GOOGLE_WRITER_CONTINUATION
+        with isolated_continuation_worker():
+            worker = writer.AppendOnlyContinuationWorker('unused', Mock(), lambda: False)
+            server.GOOGLE_WRITER_CONTINUATION = worker
+            self.assertTrue(worker.start())
+            self.assertTrue(worker.thread.is_alive())
+        self.assertTrue(worker.stop.is_set())
+        self.assertFalse(worker.thread.is_alive())
+        self.assertIs(server.GOOGLE_WRITER_CONTINUATION, previous)
+        assert_no_continuation_threads()
+
+    def test_continuation_fixture_joins_when_test_body_raises(self):
+        previous = server.GOOGLE_WRITER_CONTINUATION
+        with self.assertRaisesRegex(RuntimeError, 'synthetic body failure'):
+            with isolated_continuation_worker():
+                worker = writer.AppendOnlyContinuationWorker('unused', Mock(), lambda: False)
+                server.GOOGLE_WRITER_CONTINUATION = worker
+                self.assertTrue(worker.start())
+                raise RuntimeError('synthetic body failure')
+        self.assertTrue(worker.stop.is_set())
+        self.assertFalse(worker.thread.is_alive())
+        self.assertIs(server.GOOGLE_WRITER_CONTINUATION, previous)
+        assert_no_continuation_threads()
+
+    def test_continuation_fixture_handles_thread_start_failure(self):
+        previous = server.GOOGLE_WRITER_CONTINUATION
+        with self.assertRaisesRegex(RuntimeError, 'synthetic start failure'):
+            with isolated_continuation_worker():
+                worker = writer.AppendOnlyContinuationWorker('unused', Mock(), lambda: False)
+                server.GOOGLE_WRITER_CONTINUATION = worker
+                with patch.object(threading.Thread, 'start', side_effect=RuntimeError('synthetic start failure')):
+                    worker.start()
+        self.assertTrue(worker.stop.is_set())
+        self.assertFalse(worker.thread.is_alive())
+        self.assertIs(server.GOOGLE_WRITER_CONTINUATION, previous)
+        assert_no_continuation_threads()
 
     def test_unset_switch_preserves_prod_persisted_enabled_behavior(self):
         with patch.dict(os.environ,{'PQM_DISABLE_BACKGROUND_JOBS':''}),patch.object(server,'SANDBOX_MODE',False),patch.object(server,'SAFE_MODE',False),patch.object(server,'db',return_value=self.con):

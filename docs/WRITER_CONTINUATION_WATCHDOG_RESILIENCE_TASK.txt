@@ -1,0 +1,51 @@
+Technical task: Sandbox continuation watchdog resilience
+Status: proposed; no Writer runtime changes are included in the UI candidate.
+
+Evidence
+- Baseline: e436c952b17fc79ccb8fc1f8c366cbbf18ca31fc.
+- AppendOnlyContinuationWorker.run_once calls guard() outside an exception handler.
+- loop() does not contain a guard-exception boundary.
+- An unexpected guard exception terminates the daemon without setting stop.
+- start() subsequently returns False because self.thread is non-None, even though dead.
+- The behavior is identical on baseline and the UI candidate.
+- The exact _GeneratorContextManager traceback was a separate cross-test DB-mock
+  collision. Fixing test ownership does not modify this runtime behavior.
+
+Risk and scope
+The Sandbox watchdog may stop automatically continuing an already-manual run after
+an unexpected guard/attestation failure. This is an availability/observability risk,
+not evidence of unauthorized writes or corrupted checkpoints. This worker is not
+started for environment PROD. No live incident has been reproduced or claimed.
+
+Offline reproduction (no network, credentials or real database)
+1. Instantiate the existing AppendOnlyContinuationWorker with a temporary path,
+   environment='SANDBOX', a client factory that raises if invoked, and a guard
+   that raises RuntimeError('synthetic unexpected guard/attestation failure').
+2. Start the worker and join its thread with a bounded timeout.
+3. Observe the unhandled exception, thread.is_alive()==False and stop.is_set()==False.
+4. Observe worker.start()==False; verify the client factory was never invoked.
+5. Set stop and join during diagnostic cleanup.
+Control: guard returning False leaves the worker alive and waiting; stop + join
+terminates it cleanly. Original diagnostic evidence is retained outside the repo
+in pqm-writer-trace-diagnostics-20261120/*-guard-lifecycle.json.
+
+Requirements for a separately approved runtime change
+- Preserve all Sandbox, destination, credential, Preview/Apply and checkpoint guards.
+- A guard exception must fail closed: no client invocation or write attempt.
+- Define explicit recovery semantics: either a bounded read-only recheck loop, or
+  a visible terminal failed state with an explicit safe restart mechanism.
+- Never blindly retry writes, unknown outcomes or unconfirmed/inflight chunks.
+- Restart semantics must prevent duplicate workers and handle the stop event safely.
+- Surface worker failure/liveness in diagnostics; do not silently swallow failures.
+- Guarantee bounded stop/join behavior.
+
+Acceptance checks
+- Fault injection for guard exceptions, normal guard rejection and shutdown races.
+- No external calls/writes and no checkpoint/journal changes on guard failure.
+- At most one active worker during concurrent start/restart attempts.
+- Existing Writer security, continuation and historical integrity suites unchanged.
+- Fresh integrity coverage for whichever runtime files a future change modifies.
+
+Out of scope now
+No changes to google_writer_execution.py, server.py, Production, Google Sheets,
+Writer Apply, deployment, or memory optimization stage 1.
