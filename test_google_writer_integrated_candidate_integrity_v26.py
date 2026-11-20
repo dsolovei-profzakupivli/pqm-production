@@ -10,7 +10,7 @@ from validation.integrated_snapshot_archive import canonical_eol
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v26.json")
-MANIFEST_SHA256 = "38ae71fac5df051c6ebcf663137e972bd10d2a67f301df639e44efd5c2f6a76a"
+MANIFEST_SHA256 = "d858aa19de810f8a40a935a528006f6d38537961ba4b1e97d31f6272323a62dc"
 PREVIOUS_MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v25.json")
 PREVIOUS_MANIFEST_SHA256 = "c553b5147d66bcc1fdbbfa32a90afa5ffb4f1bb873b190c6906d3502176e791b"
 PREVIOUS_HISTORY_RUNNER = Path("validation/run_integrated_writer_ui_v25_history.py")
@@ -31,8 +31,11 @@ V26_CHANGES = {
     "validation/chat_messages_browser.cjs",
     "validation/edr_monitoring_drawer.test.cjs",
     "validation/edr_monitoring_filter_state.cjs",
+    "validation/external_kpi_filters.cjs",
     "validation/edr_ui_state.test.cjs",
     "validation/local_release_20260911/test_release_test_package.py",
+    "validation/local_release_20260911/test_edr_monitoring.py",
+    "validation/local_release_20260911/test_registry_profile_loading.py",
     "validation/queue_statistics_ui.test.cjs",
     "validation/uo_work_page_layout_browser.cjs",
     "validation/docker_release_gate.py",

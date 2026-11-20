@@ -313,9 +313,14 @@ class EdrMonitoringTests(unittest.TestCase):
         names_params = next(line for line in app.splitlines()
                             if line.startswith('function edrMonitoringParams()'))
         self.assertIn("edr_names:$('#edrMonitoringNames').value", names_params)
-        names_change = next(line for line in app.splitlines()
-                            if "$('#edrMonitoringNames').onchange" in line)
-        self.assertIn('saveEdrMonitoringFilters();updateEdrMonitoringFilters();loadEdrMonitoring()', names_change)
+        names_binding = next(line for line in app.splitlines()
+                             if "'edrMonitoringNames'" in line and '.forEach(id=>' in line
+                             and '.onchange=function(){applyEdrMonitoringMonoFilter(this)}' in line)
+        self.assertIn("'edrMonitoringNames'", names_binding,
+                      'the names control is bound with the other mono filters')
+        names_handler = next(line for line in app.splitlines()
+                             if line.startswith('function applyEdrMonitoringMonoFilter('))
+        self.assertIn('saveEdrMonitoringFilters();updateEdrMonitoringFilters();loadEdrMonitoring()', names_handler)
         query_loader = next(line for line in app.splitlines()
                             if line.startswith('async function edrMonitoringLatestResponse()'))
         self.assertIn('new URLSearchParams(edrMonitoringParams()).toString()', query_loader)
