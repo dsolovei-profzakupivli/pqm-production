@@ -1,5 +1,8 @@
 /* Sandbox decoration only. One bounded calendar timer, no API/profile writes. */
 (()=>{
+  if(document.documentElement.dataset.pqmEnvironment==='sandbox'){
+    try{if(!globalThis.PqmHalloweenSeason?.state(new Date()).available)return}catch{return}
+  }
   const title=document.querySelector('.sandbox-brand-copy strong, .prod-brand-copy strong');
   const key='pqm.halloween.cat.enabled.v1';
   let preferred=true,enabled=false,seasonTimer=null,input=null,hint=null;
@@ -10,7 +13,7 @@
   const season=()=>globalThis.PqmHalloweenSeason?.state(new Date())||{available:false,nextTransitionAt:null};
   const synchronize=()=>{
     if(seasonTimer!==null)clearTimeout(seasonTimer);
-    const current=season();enabled=current.available&&preferred;
+    const current=season();enabled=current.available&&preferred&&document.documentElement.dataset.pqmSeasonalState!=='failed';
     document.documentElement.dataset.halloween=enabled?'on':'off';
     if(input){input.disabled=!current.available;input.checked=enabled;input.title=current.available?'':'Доступно лише у жовтні за часом Києва'}
     if(hint)hint.textContent=current.available?'Декоративне оформлення лише в цьому браузері':'Доступно лише у жовтні · Europe/Kyiv. Ваш вибір збережено.';
@@ -20,9 +23,13 @@
     seasonTimer=setTimeout(synchronize,delay);
   };
   synchronize();
-  if(title){
+  if(title&&!title.querySelector('img.halloween-cat')){
   title.classList.add('halloween-title');
-  title.insertAdjacentHTML('beforeend','<img class="halloween-cat" src="assets/halloween-witch-cat.webp" width="720" height="389" alt="" aria-hidden="true" draggable="false">');
+  title.style.position='relative';
+  const sandbox=document.documentElement.dataset.pqmEnvironment==='sandbox';
+  if(sandbox)document.documentElement.dataset.pqmCat=preferred?'on':'off';
+  const source=sandbox&&!season().available?'assets/pqm-cat-no-hat.png':'assets/halloween-witch-cat.webp';
+  title.insertAdjacentHTML('beforeend',`<img class="halloween-cat" src="${source}" width="180" height="97" style="position:absolute;pointer-events:none;max-width:none" alt="" aria-hidden="true" draggable="false">`);
   }
   const nav=document.querySelector('#mainNav');
   if(nav){
@@ -113,9 +120,13 @@
   }
   const form=document.querySelector('#accountSettingsForm');
   if(form){
-    const label=document.createElement('label');label.className='halloween-preference';
+    const existing=document.querySelector('#halloweenDecorationEnabled');
+    let label=existing?.closest('label');
+    if(!label){
+    label=document.createElement('label');label.className='halloween-preference';
     label.innerHTML='<input id="halloweenDecorationEnabled" type="checkbox"><span>Halloween · святкове оформлення<small>Декоративне оформлення лише в цьому браузері</small></span>';
     form.querySelector('footer').before(label);
+    }
     input=label.querySelector('input');hint=label.querySelector('small');
     input.addEventListener('change',()=>{
       if(!season().available){synchronize();return}

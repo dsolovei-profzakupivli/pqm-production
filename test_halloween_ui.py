@@ -9,8 +9,9 @@ class HalloweenUiTests(unittest.TestCase):
     def test_witch_cat_is_responsive_local_and_noninteractive(self):
         source=Path('halloween.js').read_text(encoding='utf-8')
         css=Path('halloween.css').read_text(encoding='utf-8')
-        self.assertIn('src="assets/halloween-witch-cat.webp"',source)
-        self.assertIn('width="720" height="389" alt=""',source)
+        self.assertIn('assets/halloween-witch-cat.webp',source)
+        self.assertIn('width="180" height="97"',source)
+        self.assertIn('style="position:absolute;pointer-events:none;max-width:none"',source)
         self.assertIn('width:180px;max-width:none;height:auto',css)
         self.assertIn('@media(max-width:900px){.halloween-cat{width:100px',css)
         self.assertIn('@media(max-width:600px){.halloween-cat{width:95px',css)
@@ -84,7 +85,7 @@ class HalloweenUiTests(unittest.TestCase):
 
     def test_cat_svg_is_identical_to_approved_parent(self):
         current=Path('halloween.js').read_text(encoding='utf-8')
-        self.assertIn('src="assets/halloween-witch-cat.webp"', current)
+        self.assertIn('assets/halloween-witch-cat.webp', current)
         data=Path('assets/halloween-witch-cat.webp').read_bytes()
         self.assertEqual(data[:4],b'RIFF')
         self.assertIn(b'ALPH',data)
@@ -115,12 +116,14 @@ class HalloweenUiTests(unittest.TestCase):
         for(const stored of [null,'0','1','denied']){
           let svg='',added=false;
           const document={addEventListener:()=>{},documentElement:{dataset:{}},querySelector:s=>s.includes('strong')?{
-            classList:{add:()=>added=true},insertAdjacentHTML:(_,html)=>svg=html
+            style:{},querySelector(){return null},classList:{add:()=>added=true},insertAdjacentHTML:(_,html)=>svg=html
           }:null};
           class Clock extends Date{constructor(...args){super(...(args.length?args:['2026-10-18T12:00:00Z']))}static now(){return Date.parse('2026-10-18T12:00:00Z')}}
           vm.runInNewContext(fs.readFileSync('halloween_season.js','utf8')+'\n'+source,{document,Date:Clock,window:{addEventListener:()=>{}},setTimeout:()=>1,clearTimeout:()=>{},localStorage:{getItem:()=>{if(stored==='denied')throw Error('blocked');return stored}}});
           assert.equal(document.documentElement.dataset.halloween,stored==='0'?'off':'on');
-          assert(added&&svg.includes('halloween-witch-cat.webp'));
+          assert(added&&svg.includes('src="assets/halloween-witch-cat.webp"'));
+          assert(svg.includes('width="180" height="97"'));
+          assert(svg.includes('position:absolute;pointer-events:none;max-width:none'));
         }
         """
         result=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=15)

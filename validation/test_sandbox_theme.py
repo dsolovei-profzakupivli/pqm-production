@@ -1,10 +1,46 @@
 import os
+from html.parser import HTMLParser
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import sandbox_runtime as sandbox
+
+
+class BrandMarkup(HTMLParser):
+    """Parse descendants so attributes and decorative children cannot hide lost text."""
+    def __init__(self, html):
+        super().__init__()
+        self.root = {'tag': None, 'attrs': {}, 'children': [], 'text': ''}
+        self.stack = [self.root]
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        node = {'tag': tag, 'attrs': dict(attrs), 'children': [], 'text': ''}
+        self.stack[-1]['children'].append(node)
+        if tag not in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+                       'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+            self.stack.append(node)
+
+    def handle_endtag(self, tag):
+        for index in range(len(self.stack) - 1, 0, -1):
+            if self.stack[index]['tag'] == tag:
+                del self.stack[index:]
+                return
+
+    def handle_data(self, data):
+        for node in self.stack:
+            node['text'] += data
+
+    def find(self, parent=None, *, tag=None, css_class=None):
+        found = []
+        for node in (parent or self.root)['children']:
+            if (tag is None or node['tag'] == tag) and (
+                    css_class is None or css_class in node['attrs'].get('class', '').split()):
+                found.append(node)
+            found.extend(self.find(node, tag=tag, css_class=css_class))
+        return found
 
 
 def luminance(value):
@@ -86,16 +122,59 @@ class Theme(unittest.TestCase):
         self.assertIn('class="brand sandbox-brand"', html)
         self.assertIn('<img class="sandbox-brand-initials" src="/assets/pqm-brand-mark-prod.svg"', html)
         self.assertIn('class="sandbox-brand-divider"', html)
-        self.assertIn('<strong>Професійні закупівлі</strong>', html)
+        markup = BrandMarkup(html)
+        brands = markup.find(tag='div', css_class='sandbox-brand')
+        self.assertEqual(len(brands), 1)
+        copies = markup.find(brands[0], tag='span', css_class='sandbox-brand-copy')
+        self.assertEqual(len(copies), 1)
+        titles = markup.find(copies[0], tag='strong')
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0]['text'], 'Професійні закупівлі')
+        self.assertIn('halloween-title', titles[0]['attrs'].get('class', '').split())
+        cats = markup.find(titles[0], tag='img', css_class='halloween-cat')
+        self.assertEqual(len(cats), 1)
+        self.assertEqual(cats[0]['attrs']['src'], 'assets/pqm-cat-no-hat.png')
+        self.assertEqual((cats[0]['attrs']['width'], cats[0]['attrs']['height']), ('180', '97'))
+        self.assertEqual(cats[0]['attrs']['alt'], '')
+        self.assertEqual(cats[0]['attrs']['aria-hidden'], 'true')
+        self.assertEqual(markup.find(copies[0], tag='small')[0]['text'],
+                         'Procurement Qualification Manager')
         self.assertIn('<small>Procurement Qualification Manager</small>', html)
         self.assertIn('id="environmentBanner" class="sandbox-brand-accessible"', html)
         self.assertNotIn('<img class="brand-logo"', html)
         self.assertIn('id="sandboxWarning"', html)
         self.assertIn('<nav id="mainNav" aria-label="Основна навігація"></nav>', html)
         self.assertNotIn('sandbox-brand', prod_html)
+        prod_markup = BrandMarkup(prod_html)
+        prod_copies = prod_markup.find(tag='span', css_class='prod-brand-copy')
+        self.assertEqual(len(prod_copies), 1)
+        self.assertEqual([node['text'] for node in prod_markup.find(prod_copies[0], tag='strong')],
+                         ['Професійні закупівлі'])
+        self.assertEqual(prod_markup.find(css_class='halloween-cat'), [])
+        self.assertEqual(prod_markup.find(css_class='halloween-title'), [])
         self.assertIn('<img class="prod-brand-initials" src="/assets/pqm-brand-mark-prod.svg"', prod_html)
         self.assertIn('id="environmentBanner" class="prod-brand-accessible">PQM</em>', prod_html)
         self.assertIn('<nav id="mainNav" aria-label="Основна навігація"></nav>', prod_html)
+    def test_navbar_brand_contract_rejects_structural_and_isolation_regressions(self):
+        raw = (sandbox.ROOT / 'index.html').read_bytes()
+        with patch.dict(os.environ, PQM_SANDBOX='1'):
+            html = sandbox.decorate_html(raw).decode()
+        with patch.dict(os.environ, PQM_SANDBOX='0'):
+            production = sandbox.decorate_html(raw).decode()
+        mutations = {
+            'title text lost': (html.replace('Професійні закупівлі', 'Wrong title'), production),
+            'copy moved outside brand': (html.replace('sandbox-brand-copy', 'unrelated-copy'), production),
+            'ordinary cat missing': (html.replace('class="halloween-cat"', 'class="missing-cat"'), production),
+            'seasonal cat used initially': (html.replace('assets/pqm-cat-no-hat.png', 'assets/halloween-witch-cat.webp'), production),
+            'cat accessible to screen readers': (html.replace('aria-hidden="true" draggable="false"', 'aria-hidden="false" draggable="false"'), production),
+            'Sandbox leaked into Production': (html, html),
+            'cat leaked into Production': (html, production.replace('</strong>', '<img class="halloween-cat"></strong>', 1)),
+        }
+        for name, (candidate, prod_candidate) in mutations.items():
+            with self.subTest(name=name), patch.object(
+                    sandbox, 'decorate_html', side_effect=[candidate.encode(), prod_candidate.encode()]):
+                with self.assertRaises(AssertionError):
+                    self.test_navbar_brand_is_sandbox_only()
     def test_prod_brand_reuses_sandbox_geometry(self):
         import xml.etree.ElementTree as ET
         ns = '{http://www.w3.org/2000/svg}'

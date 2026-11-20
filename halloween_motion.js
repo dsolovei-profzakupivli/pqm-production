@@ -2,6 +2,8 @@
 (()=>{
   const root=document.documentElement;
   if(root.dataset.pqmEnvironment!=='sandbox')return;
+  const inSeason=()=>{try{return root.dataset.pqmSeasonalState!=='failed'&&globalThis.PqmHalloweenSeason?.state(new Date()).available===true}catch{return false}};
+  if(!inSeason())return;
   if(document.getElementById('pqmHalloweenHost'))return;
   const shell=document.querySelector('#applicationShell'),views=[...document.querySelectorAll('main')];
   const host=document.createElement('div');host.id='pqmHalloweenHost';host.className='halloween-flight-lane';
@@ -21,8 +23,8 @@
     eyes.innerHTML='<svg viewBox="0 0 720 389" focusable="false"><defs><clipPath id="pqmCatEyeMask"><path d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190ZM565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatEyeMask)"><g class="pqm-cat-eye-art" opacity="0"><defs><linearGradient id="pqmCatIris" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d4e65c"/><stop offset=".6" stop-color="#e5ef7e"/><stop offset="1" stop-color="#bacc4d"/></linearGradient></defs><path fill="url(#pqmCatIris)" d="M479 168H535V228H479ZM556 208H620V265H556Z"/><g class="pqm-cat-gaze" fill="#090d0b"><ellipse cx="510" cy="201" rx="9" ry="14" transform="rotate(25 510 201)"/><ellipse cx="581" cy="235" rx="9" ry="14" transform="rotate(25 581 235)"/><g fill="#ffffe9"><ellipse cx="508" cy="192" rx="3.5" ry="4"/><circle cx="513" cy="197" r="1.5"/><ellipse cx="578" cy="226" rx="3.5" ry="4"/><circle cx="583" cy="231" r="1.5"/></g></g></g></g><defs><clipPath id="pqmCatLidMask"><path transform="translate(507 199) scale(1.2) translate(-507 -199)" d="M487 190C493 169 522 173 527 198C530 215 520 226 505 222C490 219 483 207 487 190Z"/><path transform="translate(590 236) scale(1.2) translate(-590 -236)" d="M565 230C575 212 600 213 611 227C620 245 603 261 584 258C571 256 560 246 565 230Z"/></clipPath></defs><g clip-path="url(#pqmCatLidMask)"><g class="pqm-cat-lids"><path fill="#0b0c10" d="M479 168H535V228H479Z"/><path d="M486 194Q504 208 529 203" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g><g class="pqm-cat-lids"><path fill="#0b0c10" d="M556 208H620V265H556Z"/><path d="M564 233Q586 246 614 238" fill="none" stroke="#25232b" stroke-width="1.8" stroke-linecap="round"/></g></g></svg>';
     cat.after(eyes);
   }
-  const allowed=()=>!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on'&&!!shell&&!shell.hidden;
-  const catAllowed=()=>!paused&&!document.hidden&&!reduce.matches&&(root.dataset.pqmCat==='on'||(!('pqmCat' in root.dataset)&&root.dataset.halloween==='on'))&&!!shell&&!shell.hidden;
+  const allowed=()=>inSeason()&&!paused&&!document.hidden&&!reduce.matches&&root.dataset.halloween==='on'&&!!shell&&!shell.hidden;
+  const catAllowed=()=>inSeason()&&!paused&&!document.hidden&&!reduce.matches&&(root.dataset.pqmCat==='on'||(!('pqmCat' in root.dataset)&&root.dataset.halloween==='on'))&&!!shell&&!shell.hidden;
   // Cursor and automatic gaze share the existing clipped pupil group. The
   // original iris is fully covered while pupils move, avoiding ghost pupils.
   let cursorOwns=false,cursorEngaged=false,cursorJob=null,cursorIdle=null,cursorPoint=null,cursorEpoch=0;
@@ -219,6 +221,7 @@
     },20000+Math.random()*10000);
   };
   const launchFlight=()=>{
+      if(!allowed())return;
       const lane=host;
       const sprite=document.createElement('span');sprite.className='halloween-flight-sprite';
       const second=variant++%2!==0,box=second?'1050 0 933 793':'0 0 1050 793';

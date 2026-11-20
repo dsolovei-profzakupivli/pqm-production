@@ -1,0 +1,19 @@
+Separate task: EDR monitoring cold latency and memory use
+
+Reported observations (user measurements, not reproduced against live systems here):
+- Sandbox: individual EDR requests 15-32 seconds, repeated requests about 105 ms.
+- Production: slow loading and memory use close to the 4 GB limit.
+
+Keep this work separate from the V27 UI correction. No memory optimization stage 1
+or Writer, synchronization, database/schema, or Production changes are included.
+
+Future investigation on an authorized isolated instance:
+- Capture exact route, parameters, dataset size, cache state, concurrency and timestamps.
+- Measure cold and warm latency, query counts/timings, process RSS and peak allocations.
+- Check projection/revision/CPV cache rebuild and invalidation behavior.
+- Compare rows, counts, filters and export before/after any proposed optimization.
+- Reproduce near-limit behavior using synthetic/private disposable data only.
+- Define separate acceptance thresholds, gate, rollback and deployment approval.
+
+Do not infer a cache defect solely from warm/cold timings. Do not publish live data,
+credentials, spreadsheet contents or databases in CI evidence.

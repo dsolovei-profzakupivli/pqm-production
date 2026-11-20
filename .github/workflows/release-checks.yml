@@ -156,10 +156,13 @@ jobs:
           PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v26-snapshot.zip" \
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v26_history.py
           echo "PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v26-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          # Immutable integrated v1-v26 checks ran on their pinned snapshots above;
-          # only the current integrated overlay v27 runs against this checkout.
+          PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip" \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v27_history.py
+          echo "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # Immutable integrated v1-v27 checks ran on their pinned snapshots above;
+          # only the current integrated overlay v28 runs against this checkout.
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v27 \
+            test_google_writer_integrated_candidate_integrity_v28 \
             validation.local_release_20260911.test_release_test_package \
             validation.local_release_20260911.test_integrated_snapshot_staging \
             validation.local_release_20260911.test_uo_work_queue_http \
@@ -185,6 +188,8 @@ jobs:
           PQM_APPLICATION_FILTER_EVIDENCE_DIR: ${{ runner.temp }}/pqm-registry-filter-evidence
           PQM_UNIFIED_EVIDENCE_DIR: ${{ runner.temp }}/pqm-unified-filter-evidence
           PQM_CONTEXT_EVIDENCE_DIR: ${{ runner.temp }}/pqm-context-filter-evidence
+          PQM_LIVE_FIX_EVIDENCE: ${{ runner.temp }}/pqm-full-page-filter-evidence
+          PQM_CALENDAR_EVIDENCE: ${{ runner.temp }}/pqm-calendar-evidence
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$(cat ci-evidence/tested-sha.txt)"
@@ -200,6 +205,17 @@ jobs:
           node validation/application_filter_drawer_browser.cjs
           node validation/filter_panels_unified_browser.cjs
           node validation/filter_panels_context_browser.cjs
+          mkdir -p "$PQM_LIVE_FIX_EVIDENCE"
+          PQM_SANDBOX=1 "$RUNNER_TEMP/pqm-release-python/bin/python" -B - <<'PY'
+          import os
+          from pathlib import Path
+          import sandbox_runtime
+          Path(os.environ['PQM_LIVE_FIX_EVIDENCE'], 'sandbox-index.html').write_bytes(sandbox_runtime.decorate_html(Path('index.html').read_bytes()))
+          PY
+          node validation/v27_live_regressions_browser.cjs
+          mkdir -p "$PQM_CALENDAR_EVIDENCE"
+          cp "$PQM_LIVE_FIX_EVIDENCE/sandbox-index.html" "$PQM_CALENDAR_EVIDENCE/sandbox-index.html"
+          node validation/halloween_resource_gate_browser.cjs
       - name: Build release image
         shell: bash
         run: |
@@ -281,6 +297,7 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v24-snapshot.zip,dst=/tmp/pqm-integrated-v24-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v25-snapshot.zip,dst=/tmp/pqm-integrated-v25-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v26-snapshot.zip,dst=/tmp/pqm-integrated-v26-snapshot.zip,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip,dst=/tmp/pqm-integrated-v27-snapshot.zip,readonly" \
             -e PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v21-snapshot.zip \
             -e PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v22-snapshot.zip \
@@ -293,6 +310,8 @@ jobs:
             -e PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v26-snapshot.zip \
             -e PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_SHA256" \
+            -e PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v27-snapshot.zip \
+            -e PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v16-snapshot.zip \
             -e PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V17_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v17-snapshot.zip \
@@ -316,5 +335,7 @@ jobs:
             ${{ runner.temp }}/pqm-registry-filter-evidence/
             ${{ runner.temp }}/pqm-unified-filter-evidence/
             ${{ runner.temp }}/pqm-context-filter-evidence/
+            ${{ runner.temp }}/pqm-full-page-filter-evidence/
+            ${{ runner.temp }}/pqm-calendar-evidence/
           retention-days: 14
           if-no-files-found: error

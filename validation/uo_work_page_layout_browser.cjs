@@ -458,7 +458,8 @@ async function verifyEdrHeaderGeometry(page,theme,width,failures){
         assert.deepEqual(await page.locator('#edrMonitoringType').evaluate(node=>({labels:node.labels.length,labelText:node.labels[0]?.querySelector('span')?.textContent.trim(),captionClass:node.labels[0]?.querySelector('span')?.classList.contains('filter-field-caption')})),{labels:1,labelText:'Виберіть тип',captionClass:true},'the redundant EDR prompt remains the control label for assistive technology');
         await page.locator('[data-edr-filter-section="dk_code"] .filter-accordion-toggle').click();
         assert.deepEqual(await page.locator('[data-edr-filter-section="dk_code"] .edr-monitoring-filter-heading').evaluate(node=>{const style=getComputedStyle(node,'::after');return{content:style.content,right:style.right}}),{content:'"⌃"',right:'7px'},'expanded EDR filter points upward from the shared right slot');
-        const dkWidth=await page.locator('#edrMonitoringDk').evaluate(node=>node.getBoundingClientRect().width);
+        await page.locator('#edrMonitoringDkFilter').evaluate(node=>node.open=true);
+        const dkWidth=await page.locator('#edrMonitoringDkFilter .multi-search').evaluate(node=>node.getBoundingClientRect().width);
         assert.ok(dkWidth>=250,'expanded DK search uses the full panel width');
         await page.locator('[data-edr-filter-section="entity_type"] .filter-accordion-toggle').click();
         await page.locator('#edrMonitoringType').selectOption('individual_entrepreneur');

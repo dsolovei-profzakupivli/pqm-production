@@ -79,7 +79,7 @@ class ReleaseTestPackageTests(unittest.TestCase):
             self.assertFalse((staged / ".git").exists())
             self.assertEqual(source_missing, [])
             self.assertEqual(staging_missing, [])
-            for version in range(1, 27):
+            for version in range(1, 28):
                 self.assertTrue(
                     (staged / f"validation/run_integrated_writer_ui_v{version}_history.py").is_file()
                 )
