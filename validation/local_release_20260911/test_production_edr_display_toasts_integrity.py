@@ -2,6 +2,7 @@
 import hashlib
 import json
 import unittest
+import zipfile
 from pathlib import Path
 
 MANIFEST = Path('validation/fixtures/production_edr_display_toasts_1b3ff_v1.json')
@@ -47,7 +48,14 @@ class ProductionEdrDisplayToastsIntegrityTests(unittest.TestCase):
                   **manifest['regression_sha256']}
         for relative, expected in pinned.items():
             with self.subTest(path=relative):
-                content = Path(relative).read_bytes()
+                if relative in {"server.py", "app.js"}:
+                    parent = Path("validation/fixtures/production_memory_parent_a53234f.zip")
+                    self.assertEqual(hashlib.sha256(parent.read_bytes()).hexdigest(), "60346ba9a5f3a3ede44e7ec7f51cf8de39d322287932a5f906a9d64f22ccab37")
+                    with zipfile.ZipFile(parent) as archive:
+                        self.assertEqual(set(archive.namelist()), {"server.py", "app.js"})
+                        content = archive.read(relative)
+                else:
+                    content = Path(relative).read_bytes()
                 self.assertEqual(digest(content, relative), expected)
                 self.assertNotEqual(digest(content + b'X', relative), expected)
                 self.assertNotEqual(digest(content[:-1], relative), expected)

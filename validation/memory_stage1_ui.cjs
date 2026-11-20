@@ -1,0 +1,33 @@
+const fs=require('node:fs');
+const vm=require('node:vm');
+const assert=require('node:assert/strict');
+const source=fs.readFileSync('app.js','utf8');
+const helper=source.split('\n').find(line=>line.startsWith('async function pollDocumentCheckJob('));
+assert(helper);
+const calls=[];
+let responses=[];
+const context=vm.createContext({API:'/api',Date,request:async url=>{
+  calls.push(url);const result=responses.shift();if(result instanceof Error)throw result;return result;
+}});
+vm.runInContext(helper,context);
+const missing=()=>Object.assign(new Error('missing'),{httpStatus:404});
+(async()=>{
+  responses=[{status:'running'}];
+  assert.equal((await context.pollDocumentCheckJob('job','s')).status,'running');
+  responses=[{status:'complete',result:{document_check_job_id:'job'}}];
+  assert.equal((await context.pollDocumentCheckJob('job','s')).status,'complete');
+  responses=[missing(),{document_check_job_id:'job',ready:false,stale_categories:['signature']}];
+  const recovered=await context.pollDocumentCheckJob('job','s');
+  assert.equal(recovered.status,'complete');assert.equal(recovered.result.ready,false);
+  assert(calls.at(-1).startsWith('/api/applications/s/document-check-result'));
+  responses=[missing(),{document_check_job_id:'older'}];
+  await assert.rejects(context.pollDocumentCheckJob('job','other'));
+  assert(calls.at(-1).startsWith('/api/applications/other/document-check-result'));
+  const count=calls.length;
+  responses=[Object.assign(new Error('unauthorized'),{httpStatus:401})];
+  await assert.rejects(context.pollDocumentCheckJob('job','s'),/unauthorized/);
+  assert.equal(calls.length,count+1);
+  responses=[missing(),missing()];
+  await assert.rejects(context.pollDocumentCheckJob('job','s'),/missing/);
+  console.log('memory stage1 UI: 6 scenarios PASS');
+})().catch(error=>{console.error(error);process.exitCode=1});

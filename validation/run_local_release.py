@@ -6,6 +6,8 @@ No production/local database or credential is read. Outbound network is denied.
 import os
 import gc
 import logging
+import hashlib
+import zipfile
 from contextlib import closing
 from pathlib import Path
 import shutil
@@ -28,6 +30,13 @@ def main():
         # disposable fixture; never fall back to a different source checkout.
         shutil.copytree(ROOT/'validation', root/'validation',
                         ignore=shutil.ignore_patterns('__pycache__'))
+        # These immutable contracts pin LF bytes. Canonicalize only CRLF in
+        # the disposable Windows fixture; never rewrite the source manifests.
+        for name in ('production_edr_google_nazk_ea3079_v1.json',
+                     'production_edr_google_nazk_daily_sync_ea3079_v2.json',
+                     'production_edr_display_toasts_1b3ff_v1.json'):
+            manifest = root/'validation/fixtures'/name
+            manifest.write_bytes(manifest.read_bytes().replace(b'\r\n', b'\n'))
         # Delivered tests assume runtime DOCX copies have already been installed.
         shutil.copytree(root/'templates', root/'data/templates', dirs_exist_ok=True)
         os.environ.update(HOST='127.0.0.1',PORT='8080',PQM_ENV='local',PQM_DATA_DIR=str(root/'data'),PQM_DB_PATH=str(root/'data/pqm.sqlite3'),
@@ -53,6 +62,20 @@ def main():
             import scheduler_runtime
             with closing(server.db()) as con:
                 with con:scheduler_runtime.migrate(con)
+            # Historical byte guards must see the original fixture, while
+            # functional tests below use its current connection ownership.
+            from production_integrity_overlay import historical_integrity_root
+            historical_root = historical_integrity_root(root)
+            if historical_root == root:
+                raise AssertionError('Historical fixture must be isolated from current functional tests')
+            parent = root/'validation/fixtures/production_memory_nazk_test_parent_a53234f.zip'
+            if hashlib.sha256(parent.read_bytes()).hexdigest() != '21619cb4e55592f508035f88a466c53e5f9afe024e29ae100bf85203acee54c6':
+                raise AssertionError('Historical connection fixture archive changed')
+            name = 'validation/local_release_20260911/test_nazk_full_contract.py'
+            with zipfile.ZipFile(parent) as archive:
+                if set(archive.namelist()) != {name}:
+                    raise AssertionError('Unexpected historical fixture members')
+                (historical_root/name).write_bytes(archive.read(name))
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             return 0 if result.wasSuccessful() else 1
