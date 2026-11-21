@@ -161,7 +161,7 @@ jobs:
           echo "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           # Immutable integrated v1-v27 checks ran on their pinned snapshots above;
           # only the current integrated overlay v28 runs against this checkout.
-          "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/sandbox_integrity_routes.py -v \
             test_google_writer_integrated_candidate_integrity_v28 \
             validation.local_release_20260911.test_release_test_package \
             validation.local_release_20260911.test_integrated_snapshot_staging \
@@ -173,7 +173,8 @@ jobs:
             validation.local_release_20260911.test_sandbox_edr_review \
             test_google_writer_saved_continuation_audit \
             test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks \
-            test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd
+            test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd \
+            validation.local_release_20260911.test_sandbox_integrity_audit
       - name: Install Playwright and Chromium for browser regressions
         shell: bash
         run: |
