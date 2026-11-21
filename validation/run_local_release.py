@@ -77,6 +77,8 @@ def main():
                     raise AssertionError('Unexpected historical fixture members')
                 (historical_root/name).write_bytes(archive.read(name))
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
+            from validation.production_integrity_routes import route_integrity_suite
+            route_integrity_suite(suite, root)
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             return 0 if result.wasSuccessful() else 1
         finally:
