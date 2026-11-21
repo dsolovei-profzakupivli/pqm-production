@@ -930,7 +930,10 @@ def outbound_audit(event, args):
                      or (nazk_read_enabled() and args[0] == getattr(_egress, 'reference_host', None)))):
             raise RuntimeError('Sandbox external DNS is disabled')
     if event == 'urllib.Request' and getattr(_egress, 'active', False):
-        if getattr(_egress, 'execution_host', None):
+        if getattr(_egress, 'eds_verify', False):
+            import sandbox_eds
+            sandbox_eds.validate_verification_request(args[0], args[3], args[1])
+        elif getattr(_egress, 'execution_host', None):
             request = urllib.request.Request(args[0], data=args[1], headers=args[2], method=args[3])
             validate_execution_request(request, *_egress.execution_identity)
         elif getattr(_egress, 'google_host', None):
@@ -944,6 +947,9 @@ def outbound_audit(event, args):
             if args[1] is not None or args[3] != 'GET':
                 raise RuntimeError('Sandbox external mutations are disabled')
     if event in {'subprocess.Popen', 'os.system', 'os.exec', 'os.posix_spawn'}:
+        import sandbox_eds
+        if sandbox_eds.permitted_process(event, args):
+            return
         if sandbox_amcu.enabled() and sandbox_amcu.permitted_process(event, args):
             return
         if sandbox_documents.enabled() and sandbox_documents.permitted_process(event, args):

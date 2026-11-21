@@ -21,6 +21,9 @@ def load_package_manifest(source_root: Path) -> dict:
     audit = Path(source_root) / 'validation/release_test_package_integrity_v3.json'
     if audit.is_file():
         path = audit
+    functionality = Path(source_root) / 'validation/release_test_package_functionality_v4.json'
+    if functionality.is_file():
+        path = functionality
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
         raise RuntimeError(f"Unsupported release test package manifest: {path}")

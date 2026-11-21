@@ -92,7 +92,7 @@ class ContractCache:
 
 
 class DocumentJobs:
-    """Running jobs never evict; terminal results are disposable RAM copies only."""
+    """Running jobs never evict; terminal RAM entries contain metadata only."""
     def __init__(self, max_active=16, max_completed=256, ttl=3600,
                  max_bytes=16 * 1024 * 1024, clock=time.monotonic):
         self.max_active = max_active
@@ -112,7 +112,9 @@ class DocumentJobs:
         with self._lock:
             job = self._active.pop(job_id, None)
             if job is not None:
-                self._completed.put(job_id, {**job, **update}, self.ttl)
+                # Completed evidence lives only in SQLite, never in the job cache.
+                metadata = {key: value for key, value in update.items() if key != 'result'}
+                self._completed.put(job_id, {**job, **metadata}, self.ttl)
 
     def get(self, job_id):
         with self._lock:
