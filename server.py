@@ -648,6 +648,9 @@ CONTRACT_EXPERIENCE_RETRY_DELAY = 60
 CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES = 2
 CONTRACT_EXPERIENCE_LAST_REQUEST = 0.0
 CONTRACT_EXPERIENCE_PENDING: set[str] = set()
+CONTRACT_EXPERIENCE_SCOPE_PENDING: set[str] = set()
+CONTRACT_EXPERIENCE_QUEUE_LIMIT = 128
+CONTRACT_EXPERIENCE_BATCH_SIZE = 32
 CONTRACT_EXPERIENCE_PENDING_LOCK = threading.Lock()
 CONTRACT_EXPERIENCE_RETRY_PENDING: set[str] = set()
 CONTRACT_EXPERIENCE_RETRY_ATTEMPTS: dict[str, int] = {}
@@ -2043,7 +2046,8 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
         # an intermediate qualification-only snapshot is not a lifecycle gap.
         for submission_id, outcome in shadow_application_decisions:
             evidence_shadow.application_decision(con, submission_id, outcome, now_iso())
-    enqueue_contract_experience_search(experience_submission_ids)
+    # Queue admission owns the environment policy; ingestion only passes context.
+    enqueue_contract_experience_search(experience_submission_ids, framework_id)
     return {"framework": framework.get("prettyID"), "submissions": submission_count, "qualifications": qualification_count, "contracts": contract_count}
 
 
@@ -2292,6 +2296,30 @@ def _finish_scheduler_lease(job_key: str, owner: str, status: str = "ok", error:
         SERVER_LOG.exception("Cannot finish scheduler lease job=%s owner=%s", job_key, owner)
 
 
+def uo_statistics_revision() -> str | None:
+    """Stream only УО source values; sync timestamps are not data changes."""
+    fingerprint = hashlib.sha256()
+    try:
+        with db() as con:
+            rows = con.execute(f"""SELECT s.id,s.date_published,s.supplier_code,s.supplier_name,
+                {WORK_QUEUE_STATUS_SQL},{PROTOCOL_OFFICER_SQL},{REVIEW_OFFICER_SQL},
+                COALESCE(f.dk_code,''),COALESCE(fo.category,''),COALESCE(af.protocol_decision,''),
+                COALESCE(af.protocol_number,''),COALESCE(af.protocol_date,''),
+                COALESCE(af.generated_protocol_number,''),COALESCE(af.protocol_generated_at,''),
+                CASE WHEN json_valid(s.raw_json) THEN json_extract(s.raw_json,'$.tenderers') ELSE NULL END
+                FROM submissions s JOIN frameworks f ON f.id=s.framework_id
+                LEFT JOIN qualifications q ON q.id=s.qualification_id
+                LEFT JOIN application_fields af ON af.submission_id=s.id
+                LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id ORDER BY s.id""")
+            for row in rows:
+                fingerprint.update(json.dumps(tuple(row),ensure_ascii=False,separators=(',', ':')).encode('utf-8'))
+                fingerprint.update(b'\n')
+        return fingerprint.hexdigest()
+    except sqlite3.Error:
+        SERVER_LOG.warning("UO statistics revision unavailable")
+        return None
+
+
 def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
                         trigger: str = "manual", expected_revision=None,
                         manual_authorized: bool = False, actor: str = "") -> bool:
@@ -2309,10 +2337,12 @@ def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
                                         manual_authorized=manual_override, actor=actor)
         if not owner:
             return False
-        SYNC_STATE.update(running=True, mode=mode, started_at=now_iso(), message=message)
+        SYNC_STATE.update(running=True, mode=mode, started_at=now_iso(), message=message,
+                          data_changed=False, data_revision=None)
     def guarded_target():
         error = ""
         status = "ok"
+        before = uo_statistics_revision()
         try:
             with scheduler_runtime.keepalive(DB_PATH, "prozorro", owner):
                 target(*args)
@@ -2325,6 +2355,9 @@ def start_prozorro_sync(target, *, mode: str, message: str, args: tuple = (),
             status = "error"
             raise
         finally:
+            after = uo_statistics_revision() if status == 'ok' else None
+            SYNC_STATE.update(data_revision=after,
+                data_changed=bool(before is not None and after is not None and before != after))
             SYNC_STATE['running'] = False
             _finish_scheduler_lease("prozorro", owner, status, error)
     try:
@@ -3226,8 +3259,6 @@ def list_applications(params: dict) -> dict:
           LEFT JOIN submission_nazk_controls snc ON snc.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}
           ORDER BY {order_sql}, s.id ASC LIMIT ? OFFSET ?""", (*args, size, (page - 1) * size)).fetchall()]
-        document_sources = application_document_sources(con, [row["id"] for row in records
-            if row.get("document_check_result_json")])
         formed_protocols.enrich(con, records)
         supplier_codes = sorted({re.sub(r"\D", "", row.get("supplier_code") or "") for row in records
                                  if re.sub(r"\D", "", row.get("supplier_code") or "")})
@@ -3280,11 +3311,7 @@ def list_applications(params: dict) -> dict:
         except (TypeError, ValueError):
             stored_check = {}
         if stored_check:
-            source_documents = document_sources.get(item["id"], ("", []))[1]
-            stored_check = document_result_for_current_sources(item["id"], stored_check, source_documents)
-            if stored_check.get("stale_categories"):
-                item["document_check_status"] = "warning"
-                item["document_check_summary"] = stored_check["notice"]
+            stored_check = document_result_for_current_sources(item["id"], stored_check)
         item["document_check_categories"] = document_check_category_summaries(stored_check)
         supplier_code = re.sub(r"\D", "", item.get("supplier_code") or "")
         manager_name = " ".join(re.sub(r"[’'`\-]+", " ", (item.get("manager_name") or "").casefold()).split())
@@ -10085,16 +10112,16 @@ def verify_prozorro_eds(sign_url: str) -> dict:
     if not EDS_ADAPTER_PATH.is_file():
         return {"status": "technical_error", "error": "Адаптер перевірки КЕП не знайдено"}
     try:
-        process = subprocess.run(
-            [_node_binary(), str(EDS_ADAPTER_PATH)],
-            input=json.dumps({"signUrl": sign_url}, ensure_ascii=False),
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            timeout=EDS_TIMEOUT_SECONDS,
-            cwd=str(EDS_ADAPTER_PATH.parent),
-            check=False,
-        )
+        if SANDBOX_MODE:
+            import sandbox_eds
+            process = sandbox_eds.run_adapter(_node_binary(), EDS_ADAPTER_PATH, sign_url, EDS_TIMEOUT_SECONDS)
+        else:
+            process = subprocess.run(
+                [_node_binary(), str(EDS_ADAPTER_PATH)],
+                input=json.dumps({"signUrl": sign_url}, ensure_ascii=False),
+                text=True, encoding="utf-8", capture_output=True,
+                timeout=EDS_TIMEOUT_SECONDS, cwd=str(EDS_ADAPTER_PATH.parent), check=False,
+            )
     except subprocess.TimeoutExpired:
         return {"status": "service_unavailable", "error": "Сервіс перевірки підпису не відповів вчасно"}
     except Exception:
@@ -10818,36 +10845,8 @@ def document_source_fingerprint(documents) -> str:
 
 
 def document_result_for_current_sources(submission_id: str, result: dict, documents=None) -> dict:
-    """Preserve saved evidence; never present a changed/unknown source as current."""
-    visible = current_document_check_result(result)
-    categories = (set(document_check_category_summaries(visible)) | {
-        document_check_category(str(item.get("key") or "")) for item in visible.get("checks", [])
-    }) & {"signature", "mvs"}
-    if not categories:
-        return visible
-    if documents is None:
-        collected = application_documents(submission_id)
-        documents = collected[1] if collected else []
-    fingerprint = document_source_fingerprint(documents)
-    stored = visible.get("document_fingerprints") or {}
-    stale = sorted(category for category in categories if not documents or stored.get(category) != fingerprint)
-    visible["stale_categories"] = stale
-    visible["source_freshness"] = "stale_or_unverified" if stale else "metadata_matches"
-    if stale:
-        notice = "Збережений результат є історичним: документи змінилися або їхню відповідність не підтверджено. Повторіть перевірку."
-        # Raw persisted results remain unchanged, including the original statuses.
-        for item in visible.get("checks", []):
-            if document_check_category(str(item.get("key") or "")) in stale:
-                item["historical_status"] = item.get("status")
-                item["historical_detail"] = item.get("detail", "")
-                item["status"] = "warning"
-                item["detail"] = notice + " " + item["historical_detail"]
-        for category in stale:
-            visible.setdefault("category_results", {}).setdefault(category, {})["status"] = "warning"
-        visible["counts"], _ = document_check_status(visible.get("checks", []))
-        visible["ready"] = False
-        visible["notice"] = notice
-    return visible
+    """Compatibility reader: return saved evidence without checking immutable sources."""
+    return json.loads(json.dumps(result if isinstance(result, dict) else {}, ensure_ascii=False))
 
 
 def document_check_category(key: str) -> str:
@@ -11000,16 +10999,59 @@ def _stored_experience_is_fresh(existing: dict) -> bool:
     return bool(checked_at and (datetime.now(timezone.utc) - checked_at).total_seconds() < CONTRACT_EXPERIENCE_CACHE_TTL)
 
 
-def _store_document_check_result(submission_id: str, current: dict, updated_by: str) -> dict:
+def experience_input_signature(supplier_code, cpv_code, published_at) -> str:
+    cutoff = _contract_experience_cutoff(published_at)
+    value = [_digits(supplier_code), normalize_experience_cpv(cpv_code),
+             cutoff.isoformat() if cutoff else '', CONTRACT_EXPERIENCE_ALGORITHM_VERSION]
+    return hashlib.sha256(json.dumps(value,separators=(',', ':')).encode()).hexdigest()
+
+
+def _store_document_check_result(submission_id: str, current: dict, updated_by: str, *, require_pending=False, expected_experience_input=None, require_editable=False, actor_role="admin") -> dict | None:
     """Merge one category without losing a concurrent KEP/MVS result."""
+    if require_pending:
+        if not SANDBOX_MODE:
+            raise RuntimeError("Pending-only storage requires Sandbox")
+        if background_jobs.disabled():
+            return None
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+    if require_editable:
+        historical_applications.assert_editable(submission_id)
     with DOCUMENT_CHECK_LOCK:
         with db() as con:
-            stored = con.execute("SELECT document_check_result_json FROM application_fields WHERE submission_id=?", (submission_id,)).fetchone()
+            if require_editable or require_pending:
+                con.execute("BEGIN IMMEDIATE")
+            if require_editable:
+                marketplace = con.execute('SELECT marketplace_decision FROM application_fields WHERE submission_id=?',(submission_id,)).fetchone()
+                if application_final_status(con, submission_id) or application_marketplace_locked(marketplace[0] if marketplace else '', actor_role):
+                    raise ValueError('Заявку заблоковано; попередній результат збережено')
+            if require_pending:
+                eligible = con.execute(f"""SELECT s.supplier_code,f.dk_code,s.date_published FROM submissions s
+                    JOIN frameworks f ON f.id=s.framework_id
+                    LEFT JOIN qualifications q ON q.id=s.qualification_id
+                    WHERE s.id=? AND {WORK_QUEUE_STATUS_SQL}='pending'""", (submission_id,)).fetchone()
+                if not eligible or (expected_experience_input is not None and
+                        experience_input_signature(*eligible) != expected_experience_input):
+                    return None
+            stored = con.execute("SELECT document_check_result_json,document_checked_at FROM application_fields WHERE submission_id=?", (submission_id,)).fetchone()
             try:
                 existing = json.loads(stored[0] or "{}") if stored else {}
             except (TypeError, ValueError):
                 existing = {}
-            result = merge_document_check_results(existing, current)
+            if require_editable:
+                # A completed manual run replaces the previous manual evidence.
+                # Independent background experience remains its own current category.
+                independent = (existing.get('category_results') or {}).get('experience')
+                base = {'category_results': {'experience': independent}} if isinstance(independent, dict) else {}
+                for key in ('contract_experience', 'experience_input_signature'):
+                    if key in existing:
+                        base[key] = existing[key]
+            else:
+                base = existing
+            result = merge_document_check_results(base, current)
+            experience_only = set(current.get('selected_categories') or []) == {'experience'}
+            checked_at = (stored[1] if stored else None) if experience_only else now_iso()
+            if checked_at:
+                result['checked_at'] = checked_at
             counts = result.get("counts") or {}
             check_status = ("error" if counts.get("error") else "warning" if counts.get("warning") else
                             "ok" if counts.get("ok") else "neutral")
@@ -11023,7 +11065,7 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
               document_checked_at=excluded.document_checked_at,
               document_check_result_json=excluded.document_check_result_json,
               updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
-              (submission_id, check_status, summary, now_iso(), json.dumps(result, ensure_ascii=False), now_iso(), updated_by))
+              (submission_id, check_status, summary, checked_at, json.dumps(result, ensure_ascii=False), now_iso(), updated_by))
     return result
 
 
@@ -11034,13 +11076,17 @@ def _schedule_contract_experience_retry(submission_id: str) -> bool:
         attempts = CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(submission_id, 0)
         if attempts >= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES or submission_id in CONTRACT_EXPERIENCE_RETRY_PENDING:
             return False
+        if SANDBOX_MODE and submission_id not in CONTRACT_EXPERIENCE_RETRY_ATTEMPTS and len(CONTRACT_EXPERIENCE_RETRY_ATTEMPTS) >= CONTRACT_EXPERIENCE_QUEUE_LIMIT:
+            return False
         CONTRACT_EXPERIENCE_RETRY_ATTEMPTS[submission_id] = attempts + 1
         CONTRACT_EXPERIENCE_RETRY_PENDING.add(submission_id)
 
     def retry():
         with CONTRACT_EXPERIENCE_PENDING_LOCK:
             CONTRACT_EXPERIENCE_RETRY_PENDING.discard(submission_id)
-        enqueue_contract_experience_search([submission_id])
+        if not enqueue_contract_experience_search([submission_id]) and SANDBOX_MODE:
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(submission_id, None)
 
     timer = threading.Timer(CONTRACT_EXPERIENCE_RETRY_DELAY, retry)
     timer.daemon = True
@@ -11052,20 +11098,32 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
     try:
         for submission_id in submission_ids:
             try:
+                if SANDBOX_MODE:
+                    if background_jobs.disabled():
+                        break
+                    sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
                 with db() as con:
                     row = con.execute("""SELECT s.supplier_name,s.supplier_code,s.date_published,
                       COALESCE(f.dk_code,'') dk_code,COALESCE(f.pretty_id,'') pretty_id,
-                      COALESCE(af.document_check_result_json,'') stored_result
+                      COALESCE(af.document_check_result_json,'') stored_result,
+                      CASE WHEN q.id IS NULL OR q.status IS NULL THEN 'pending' ELSE q.status END qualification_status
                       FROM submissions s JOIN frameworks f ON f.id=s.framework_id
+                      LEFT JOIN qualifications q ON q.id=s.qualification_id
                       LEFT JOIN application_fields af ON af.submission_id=s.id WHERE s.id=?""",
                       (submission_id,)).fetchone()
-                if not row:
+                if not row or (SANDBOX_MODE and (row['qualification_status'] != 'pending'
+                        or historical_applications.is_read_only(submission_id))):
                     continue
                 try:
                     existing = json.loads(row["stored_result"] or "{}")
                 except (TypeError, ValueError):
                     existing = {}
-                if _stored_experience_is_fresh(existing):
+                input_signature = experience_input_signature(row['supplier_code'], row['dk_code'], row['date_published'])
+                if _stored_experience_is_fresh(existing) and (not SANDBOX_MODE or
+                        existing.get('experience_input_signature') == input_signature):
+                    if SANDBOX_MODE:
+                        with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                            CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(submission_id, None)
                     continue
                 search = search_supplier_contract_experience(
                     row["supplier_code"], row["dk_code"], row["date_published"] or "", submission_id
@@ -11081,9 +11139,17 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                            "contract_experience": search,
                            "counts": {"ok": 0, "warning": 0, "error": 0, "neutral": 1},
                            "ready": True, "notice": ""}
-                _store_document_check_result(submission_id, current, "PQM background contract search")
+                if SANDBOX_MODE:
+                    current['experience_input_signature'] = input_signature
+                stored = _store_document_check_result(submission_id, current, "PQM background contract search",
+                    require_pending=SANDBOX_MODE, expected_experience_input=input_signature if SANDBOX_MODE else None)
+                if stored is None:
+                    continue
                 if search.get("status") == "unavailable":
-                    _schedule_contract_experience_retry(submission_id)
+                    scheduled = _schedule_contract_experience_retry(submission_id)
+                    if SANDBOX_MODE and not scheduled:
+                        with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                            CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(submission_id, None)
                 else:
                     with CONTRACT_EXPERIENCE_PENDING_LOCK:
                         CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(submission_id, None)
@@ -11095,30 +11161,119 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
             CONTRACT_EXPERIENCE_PENDING.difference_update(submission_ids)
 
 
-def enqueue_contract_experience_search(submission_ids) -> int:
+def _sandbox_experience_scope_worker(framework_id: str) -> None:
+    """Drain the existing worker in fixed-size batches, never one future per row."""
+    cursor = ""
+    try:
+        while not background_jobs.disabled():
+            sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+            with db() as con:
+                rows = con.execute(f"""SELECT s.id FROM submissions s
+                    LEFT JOIN qualifications q ON q.id=s.qualification_id
+                    WHERE s.framework_id=? AND s.id>? AND {WORK_QUEUE_STATUS_SQL}='pending'
+                    ORDER BY s.id LIMIT ?""", (framework_id, cursor, CONTRACT_EXPERIENCE_BATCH_SIZE)).fetchall()
+            if not rows:
+                break
+            identifiers = [row[0] for row in rows]
+            cursor = identifiers[-1]
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                room = CONTRACT_EXPERIENCE_QUEUE_LIMIT - len(CONTRACT_EXPERIENCE_PENDING)
+                batch = [sid for sid in identifiers if sid not in CONTRACT_EXPERIENCE_PENDING][:max(0, room)]
+                CONTRACT_EXPERIENCE_PENDING.update(batch)
+            if batch:
+                contract_experience_worker(batch)
+    except Exception:
+        SERVER_LOG.exception("Sandbox contract experience scope failed")
+    finally:
+        with CONTRACT_EXPERIENCE_PENDING_LOCK:
+            CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(framework_id)
+
+
+def enqueue_contract_experience_search(submission_ids, framework_id: str = "") -> int:
     if background_jobs.disabled():
         return 0
     if SANDBOX_MODE:
-        # Separate document/tender integration is not part of the approved
-        # framework API scope; do not queue failing retries or overwrite checks.
-        return 0
-    unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
+        sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
+        if framework_id:
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                if framework_id in CONTRACT_EXPERIENCE_SCOPE_PENDING or len(CONTRACT_EXPERIENCE_SCOPE_PENDING) >= CONTRACT_EXPERIENCE_QUEUE_LIMIT:
+                    return 0
+                CONTRACT_EXPERIENCE_SCOPE_PENDING.add(framework_id)
+            try:
+                CONTRACT_EXPERIENCE_EXECUTOR.submit(_sandbox_experience_scope_worker, framework_id)
+            except BaseException:
+                with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                    CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(framework_id)
+                raise
+            return 1
+        # Retries use the same worker and a bounded, deduplicated application list.
+        unique = []
+        for value in submission_ids:
+            if value and str(value) not in unique:
+                unique.append(str(value))
+            if len(unique) >= CONTRACT_EXPERIENCE_BATCH_SIZE:
+                break
+        if not unique:
+            return 0
+        with db() as con:
+            marks = ','.join('?' for _ in unique)
+            eligible = {row[0] for row in con.execute(f"""SELECT s.id FROM submissions s
+                LEFT JOIN qualifications q ON q.id=s.qualification_id
+                WHERE s.id IN ({marks}) AND {WORK_QUEUE_STATUS_SQL}='pending'""", unique)}
+        unique = [sid for sid in unique if sid in eligible]
+    else:
+        unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
+        if SANDBOX_MODE:
+            queued = queued[:max(0, CONTRACT_EXPERIENCE_QUEUE_LIMIT-len(CONTRACT_EXPERIENCE_PENDING))]
         CONTRACT_EXPERIENCE_PENDING.update(queued)
     if queued:
-        CONTRACT_EXPERIENCE_EXECUTOR.submit(contract_experience_worker, queued)
+        try:
+            CONTRACT_EXPERIENCE_EXECUTOR.submit(contract_experience_worker, queued)
+        except BaseException:
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                CONTRACT_EXPERIENCE_PENDING.difference_update(queued)
+            raise
     return len(queued)
 
 
-def document_check_worker(job_id: str, submission_id: str, selection: dict | None = None) -> None:
+def application_marketplace_locked(marketplace_decision, role):
+    """The pre-existing role-dependent row-edit rule, shared with checking."""
+    return bool(marketplace_decision) and role != 'admin'
+
+
+def application_final_status(con, submission_id):
+    """The existing all-role row lock, shared by edits and document checking."""
+    row = con.execute("""SELECT COALESCE(q.status,'pending') FROM submissions s
+        LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE s.id=?""", (submission_id,)).fetchone()
+    return row[0] if row and row[0] in {'active','unsuccessful'} else None
+
+
+def document_check_technical_failure(result: dict) -> bool:
+    """Technical interruptions must not replace the last completed evidence."""
+    selected = set(result.get('selected_categories') or [])
+    failures = {'technical_error', 'service_unavailable'}
+    if 'signature' in selected and (result.get('signature') or {}).get('technical_status') in failures:
+        return True
+    if 'mvs_signature' in selected and (result.get('mvs_seal') or {}).get('technical_status') in failures:
+        return True
+    return any(item.get('error') or (item.get('ocr_error') and not item.get('text_available'))
+               for item in result.get('files', []) if isinstance(item, dict))
+
+
+def document_check_worker(job_id: str, submission_id: str, selection: dict | None = None, actor_role="admin") -> None:
     try:
         result = analyze_application_documents(submission_id, selection)
         if not result:
             raise ValueError("Заявку не знайдено")
+        if document_check_technical_failure(result):
+            raise RuntimeError('Технічна помилка перевірки; попередній завершений результат збережено')
+        if not result.get('checks'):
+            raise ValueError('Не вибрано документів для завершеної перевірки')
         result["document_check_job_id"] = job_id
-        result = _store_document_check_result(submission_id, result, "PQM manual document check")
-        update = {"status": "complete", "result": result}
+        _store_document_check_result(submission_id, result, "PQM manual document check", require_editable=True, actor_role=actor_role)
+        update = {"status": "complete"}
     except Exception as exc:
         SERVER_LOG.exception("Document check worker failed submission=%s", submission_id)
         update = {"status": "error", "error": f"Не вдалося перевірити документи: {exc}"}
@@ -11126,12 +11281,17 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
         DOCUMENT_CHECK_JOBS.finish(job_id, update)
 
 
-def launch_document_check_job(job_id: str, submission_id: str, selection=None) -> bool:
+def launch_document_check_job(job_id: str, submission_id: str, selection=None, *, actor_role="admin") -> bool:
+    historical_applications.assert_editable(submission_id)
+    with db() as con:
+        marketplace = con.execute('SELECT marketplace_decision FROM application_fields WHERE submission_id=?',(submission_id,)).fetchone()
+        if application_final_status(con, submission_id) or application_marketplace_locked(marketplace[0] if marketplace else '',actor_role):
+            raise ValueError('Заявку заблоковано; повторна перевірка недоступна')
     with DOCUMENT_CHECK_LOCK:
         if not DOCUMENT_CHECK_JOBS.start(job_id, submission_id):
             return False
     try:
-        threading.Thread(target=document_check_worker, args=(job_id, submission_id, selection), daemon=True).start()
+        threading.Thread(target=document_check_worker, args=(job_id, submission_id, selection, actor_role), daemon=True).start()
     except BaseException:
         DOCUMENT_CHECK_JOBS.finish(job_id, {"status": "error", "error": "Не вдалося запустити перевірку"})
         raise
@@ -11390,16 +11550,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Дія доступна лише для призначених вам заявок або звернень",
                                    "status": 403}, 403)
         application_mutation = re.fullmatch(r"/api/applications/([^/]+)(?:/.*)?", path)
-        if self.command in {"POST", "PATCH", "PUT", "DELETE"} and application_mutation:
+        checking_documents = (self.command == 'GET' and
+                              bool(re.fullmatch(r'/api/applications/[^/]+/verify-documents/start', path)))
+        if (self.command in {"POST", "PATCH", "PUT", "DELETE"} or checking_documents) and application_mutation:
             submission_id = urllib.parse.unquote(application_mutation.group(1))
             with db() as con:
-                status = con.execute("""SELECT COALESCE(q.status,'pending') FROM submissions s
-                  LEFT JOIN qualifications q ON q.id=s.qualification_id WHERE s.id=?""",
-                  (submission_id,)).fetchone()
-            if status and status[0] in {"active", "unsuccessful"}:
-                label = "Допущено" if status[0] == "active" else "Відхилено"
+                status = application_final_status(con, submission_id)
+            if status:
+                label = "Допущено" if status == "active" else "Відхилено"
                 return self.send_json({"error": f"Заявка має фінальний статус «{label}». Будь-які зміни рядка заблоковано для всіх ролей.",
                                        "code": "application_final_locked", "status": 409}, 409)
+        if (checking_documents or (self.command == 'POST' and
+                re.fullmatch(r'/api/applications/[^/]+/verify-documents',path))):
+            submission_id = urllib.parse.unquote(application_mutation.group(1))
+            with db() as con:
+                marketplace = con.execute('SELECT marketplace_decision FROM application_fields WHERE submission_id=?',(submission_id,)).fetchone()
+            if application_marketplace_locked(marketplace[0] if marketplace else '',self.auth_role):
+                return self.send_json({'error':'Рядок заблоковано виконаною дією на майданчику','status':409},409)
         try:
             method()
         except BidsUnavailableError as exc:
@@ -11677,8 +11844,14 @@ class Handler(BaseHTTPRequestHandler):
                 payload = dict(job) if job else None
             if not payload:
                 return self.send_json({"error": "Завдання перевірки не знайдено"}, 404)
-            if payload.get("result"):
-                payload["result"] = document_result_for_current_sources(payload["submission_id"], payload["result"])
+            if payload.get('status') == 'complete':
+                with db() as con:
+                    row = con.execute('SELECT document_check_result_json FROM application_fields WHERE submission_id=?',
+                                      (payload['submission_id'],)).fetchone()
+                result = json.loads(row[0]) if row and row[0] else {}
+                if result.get('document_check_job_id') != job_id:
+                    return self.send_json({'error':'Результат цього завдання замінено новішою перевіркою'},404)
+                payload['result'] = result
             return self.send_json(payload)
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/document-check-result"):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
@@ -11741,7 +11914,7 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError, json.JSONDecodeError):
                 selection = {}
             job_id = uuid.uuid4().hex
-            if not launch_document_check_job(job_id, submission_id, selection):
+            if not launch_document_check_job(job_id, submission_id, selection, actor_role=self.auth_role):
                 return self.send_json({"error": "Забагато одночасних перевірок. Спробуйте пізніше."}, 429)
             return self.send_json({"job_id": job_id, "status": "running"}, 202)
         if parsed.path == "/api/applications":
@@ -13316,7 +13489,7 @@ class Handler(BaseHTTPRequestHandler):
             except historical_applications.HistoricalApplicationReadOnlyError as exc:
                 return self.send_json({"error": str(exc), "historical_read_only": True}, 409)
             job_id = uuid.uuid4().hex
-            if not launch_document_check_job(job_id, submission_id):
+            if not launch_document_check_job(job_id, submission_id, actor_role=self.auth_role):
                 return self.send_json({"error": "Забагато одночасних перевірок. Спробуйте пізніше."}, 429)
             return self.send_json({"job_id": job_id, "status": "running"}, 202)
         if parsed.path == "/api/protocol/readiness":
@@ -14167,7 +14340,7 @@ class Handler(BaseHTTPRequestHandler):
             for field, value in payload.items():
                 if field not in EDITABLE_FIELDS: continue
                 if role == "viewer": return self.send_json({"error": "Роль не може редагувати"}, 403)
-                if current_marketplace_decision and role != "admin":
+                if application_marketplace_locked(current_marketplace_decision, role):
                     return self.send_json({"error": "Рядок заблоковано виконаною дією на майданчику"}, 409)
                 old = con.execute(f"SELECT {field} FROM application_fields WHERE submission_id=?", (submission_id,)).fetchone()[0] or ""
                 new = str(value or "")

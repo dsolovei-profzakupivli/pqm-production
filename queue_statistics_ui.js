@@ -35,7 +35,7 @@
   let statistics = [];
   let period = null, initialPeriod;
   let statisticsRequest = 0, progressRequest = 0;
-  let progressPeriod = '', progressItems = [], initialized = false;
+  let progressPeriod = '', progressItems = [], initialized = false, dataDirty = false;
   let dkSelection = new Set();
   let dkValues = [];
   let appliedSelection = {};
@@ -388,9 +388,19 @@
     renderFilterPresentation();
   }
 
+  document.addEventListener('pqm:applications-synchronized',()=>{
+    dataDirty=true;
+    ++statisticsRequest; ++progressRequest;
+    progressPeriod='';
+    if(typeof activeModule!=='undefined'&&activeModule==='workQueue')window.refreshQueueApplicationStatistics();
+  });
   window.refreshQueueApplicationStatistics=()=>{
     loadProgress();
-    if (initialized) return;
+    if (initialized) {
+      if(dataDirty){dataDirty=false;loadStatistics();}
+      return;
+    }
+    dataDirty=false;
     const now=new Date(),today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     if(!from.value)from.value=`${now.getFullYear()}-01-01`;
     if(!to.value)to.value=today;
