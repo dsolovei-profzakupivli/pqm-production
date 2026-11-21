@@ -5,6 +5,7 @@ import json
 import application_officers
 import background_jobs
 import auth_access
+import runtime_memory
 import chat_annotations
 import table_widths
 import protocol_supplier_names
@@ -628,9 +629,9 @@ REGISTERED_SCHEDULER_JOBS: set[str] = set()
 SCHEDULER_STOP_EVENTS: dict[str, threading.Event] = {}
 SCHEDULER_THREADS: dict[str, threading.Thread] = {}
 SCHEDULER_HEARTBEATS: dict[str, str] = {}
-DOCUMENT_CHECK_JOBS = {}
+DOCUMENT_CHECK_JOBS = runtime_memory.DocumentJobs()
 DOCUMENT_CHECK_LOCK = threading.Lock()
-CONTRACT_EXPERIENCE_CACHE: dict[tuple[str, str, str], dict] = {}
+CONTRACT_EXPERIENCE_CACHE = runtime_memory.ContractCache()
 CONTRACT_EXPERIENCE_LOCK = threading.Lock()
 CONTRACT_EXPERIENCE_CACHE_TTL = 6 * 60 * 60
 CONTRACT_EXPERIENCE_UNAVAILABLE_CACHE_TTL = 60
@@ -1043,18 +1044,22 @@ def _timestamp_us(value) -> int | None:
 
 
 def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH, timeout=60)
-    con.row_factory = sqlite3.Row
-    con.create_function("CASEFOLD", 1, unicode_casefold, deterministic=True)
-    con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
-    edr_sync_v2.register_verification_sql_functions(con)
-    con.create_function("NORMALIZED_DATE", 1, lambda value: edr_sync_v2.normalized_date(value), deterministic=True)
-    con.create_function("EDR_FRESHNESS", 2, lambda status, checked: edr_sync_v2.freshness_state(
-        str(status or ""), str(checked or ""))["bucket"], deterministic=True)
-    con.execute("PRAGMA foreign_keys=ON")
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA busy_timeout=60000")
-    return con
+    con = sqlite3.connect(DB_PATH, timeout=60, factory=runtime_memory.ClosingConnection)
+    try:
+        con.row_factory = sqlite3.Row
+        con.create_function("CASEFOLD", 1, unicode_casefold, deterministic=True)
+        con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
+        edr_sync_v2.register_verification_sql_functions(con)
+        con.create_function("NORMALIZED_DATE", 1, lambda value: edr_sync_v2.normalized_date(value), deterministic=True)
+        con.create_function("EDR_FRESHNESS", 2, lambda status, checked: edr_sync_v2.freshness_state(
+            str(status or ""), str(checked or ""))["bucket"], deterministic=True)
+        con.execute("PRAGMA foreign_keys=ON")
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=60000")
+        return con
+    except BaseException:
+        con.close()
+        raise
 
 
 def ensure_runtime_feature_settings(con: sqlite3.Connection) -> None:
@@ -1198,14 +1203,18 @@ def bids_db() -> sqlite3.Connection:
     if not BIDS_DB_PATH.is_file():
         raise BidsUnavailableError("Локальна база ProzorroBids недоступна в цьому середовищі")
     try:
-        con = sqlite3.connect(f"file:{BIDS_DB_PATH.as_posix()}?mode=ro", uri=True, timeout=30)
+        con = sqlite3.connect(f"file:{BIDS_DB_PATH.as_posix()}?mode=ro", uri=True, timeout=30, factory=runtime_memory.ClosingConnection)
     except sqlite3.Error as exc:
         raise BidsUnavailableError("Не вдалося відкрити базу ProzorroBids у read-only режимі") from exc
-    con.row_factory = sqlite3.Row
-    con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
-    con.execute("PRAGMA query_only=ON")
-    con.execute("PRAGMA busy_timeout=30000")
-    return con
+    try:
+        con.row_factory = sqlite3.Row
+        con.create_function("DIGITS", 1, lambda value: re.sub(r"\D", "", str(value or "")), deterministic=True)
+        con.execute("PRAGMA query_only=ON")
+        con.execute("PRAGMA busy_timeout=30000")
+        return con
+    except BaseException:
+        con.close()
+        raise
 
 
 def init_db() -> None:
@@ -3217,6 +3226,8 @@ def list_applications(params: dict) -> dict:
           LEFT JOIN submission_nazk_controls snc ON snc.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id WHERE {clause}
           ORDER BY {order_sql}, s.id ASC LIMIT ? OFFSET ?""", (*args, size, (page - 1) * size)).fetchall()]
+        document_sources = application_document_sources(con, [row["id"] for row in records
+            if row.get("document_check_result_json")])
         formed_protocols.enrich(con, records)
         supplier_codes = sorted({re.sub(r"\D", "", row.get("supplier_code") or "") for row in records
                                  if re.sub(r"\D", "", row.get("supplier_code") or "")})
@@ -3268,6 +3279,12 @@ def list_applications(params: dict) -> dict:
             stored_check = json.loads(item.pop("document_check_result_json") or "{}")
         except (TypeError, ValueError):
             stored_check = {}
+        if stored_check:
+            source_documents = document_sources.get(item["id"], ("", []))[1]
+            stored_check = document_result_for_current_sources(item["id"], stored_check, source_documents)
+            if stored_check.get("stale_categories"):
+                item["document_check_status"] = "warning"
+                item["document_check_summary"] = stored_check["notice"]
         item["document_check_categories"] = document_check_category_summaries(stored_check)
         supplier_code = re.sub(r"\D", "", item.get("supplier_code") or "")
         manager_name = " ".join(re.sub(r"[’'`\-]+", " ", (item.get("manager_name") or "").casefold()).split())
@@ -3456,6 +3473,12 @@ def protocol_readiness(payload: dict) -> dict:
           LEFT JOIN application_fields af ON af.submission_id=s.id
           LEFT JOIN framework_officers fo ON fo.framework_id=s.framework_id
           WHERE ({filter_clause}) AND ({' AND '.join(scope)}) ORDER BY s.date_published,s.id""", (*filter_args, *args)).fetchall()
+        availability_errors = {}
+        for raw in rows:
+            try:
+                formed_protocols.available(con, raw['id'])
+            except ValueError as exc:
+                availability_errors[raw['id']] = str(exc)
     if selected_ids is not None and set(selected_ids)!={row['id'] for row in rows}:
         raise ValueError('Частина вибраних заявок більше не відповідає вибірці. Повторіть перевірку.')
     items, admitted, rejected, unresolved = [], 0, 0, 0
@@ -3463,8 +3486,8 @@ def protocol_readiness(payload: dict) -> dict:
         row, errors, warnings = dict(raw), [], []
         if historical_applications.is_read_only(row["id"]):
             errors.append("Історична заявка MedData доступна лише для перегляду")
-        try: formed_protocols.available(con,row['id'])
-        except ValueError as exc: errors.append(str(exc))
+        if row['id'] in availability_errors:
+            errors.append(availability_errors[row['id']])
         if not row["manager_name"]:
             errors.append("Не заповнено ПІБ керівника")
         if not row["protocol_number"]:
@@ -9494,30 +9517,43 @@ def safe_archive_name(value: str, fallback: str) -> str:
     return name[:180] or fallback
 
 
+def application_document_sources(con: sqlite3.Connection, submission_ids) -> dict:
+    """Read check provenance for a bounded batch; keep list business joins intact."""
+    identifiers = list(dict.fromkeys(str(value) for value in submission_ids))
+    result = {}
+    for offset in range(0, len(identifiers), 400):
+        batch = identifiers[offset:offset + 400]
+        placeholders = ",".join("?" for _ in batch)
+        rows = con.execute(f"""WITH requested AS (
+            SELECT id,supplier_name,documents_json,qualification_id FROM submissions
+            WHERE id IN ({placeholders})
+          ), preferred AS (
+            SELECT id,submission_id,ROW_NUMBER() OVER (PARTITION BY submission_id ORDER BY
+              CASE status WHEN 'active' THEN 3 WHEN 'unsuccessful' THEN 2 ELSE 1 END DESC,
+              COALESCE(NULLIF(decision_date,''),synced_at) DESC,id DESC) rn FROM qualifications
+            WHERE COALESCE(submission_id,'')<>'' AND submission_id IN (SELECT id FROM requested)
+          )
+          SELECT s.id,s.supplier_name,s.documents_json,
+            q.documents_json qualification_documents,q.status qualification_status,
+            (SELECT rc.status FROM registry_contracts rc
+             WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
+            (SELECT rc.milestones_json FROM registry_contracts rc
+             WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones
+          FROM requested s LEFT JOIN preferred final_q ON final_q.submission_id=s.id AND final_q.rn=1
+          LEFT JOIN qualifications q ON q.id=COALESCE(final_q.id,s.qualification_id)""", batch)
+        for row in rows:
+            groups = grouped_application_documents(row["documents_json"], row["qualification_documents"],
+                row["registry_milestones"], row["qualification_status"], row["registry_status"])
+            documents = [(folder, document) for key, folder in (
+                ("supplier", "01-документи-постачальника"), ("decision", "02-документи-розгляду"),
+                ("registry", "03-документи-реєстру")) for document in groups[key]]
+            result[row["id"]] = (row["supplier_name"] or row["id"], documents)
+    return result
+
+
 def application_documents(submission_id: str) -> tuple[str, list[tuple[str, dict]]] | None:
     with db() as con:
-        row = con.execute("""SELECT s.supplier_name, s.documents_json,
-          q.documents_json qualification_documents,q.status qualification_status,
-          (SELECT rc.status FROM registry_contracts rc
-           WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_status,
-          (SELECT rc.milestones_json FROM registry_contracts rc
-           WHERE rc.qualification_id=q.id ORDER BY rc.synced_at DESC LIMIT 1) registry_milestones
-          FROM submissions s
-          LEFT JOIN (SELECT id,submission_id,ROW_NUMBER() OVER (PARTITION BY submission_id ORDER BY
-            CASE status WHEN 'active' THEN 3 WHEN 'unsuccessful' THEN 2 ELSE 1 END DESC,
-            COALESCE(NULLIF(decision_date,''),synced_at) DESC,id DESC) rn FROM qualifications
-            WHERE COALESCE(submission_id,'')<>'') final_q ON final_q.submission_id=s.id AND final_q.rn=1
-          LEFT JOIN qualifications q ON q.id=COALESCE(final_q.id,s.qualification_id)
-          WHERE s.id=?""", (submission_id,)).fetchone()
-    if not row:
-        return None
-    groups = grouped_application_documents(row["documents_json"], row["qualification_documents"],
-                                           row["registry_milestones"], row["qualification_status"],
-                                           row["registry_status"])
-    documents = [(folder, document) for key, folder in (("supplier", "01-документи-постачальника"),
-                 ("decision", "02-документи-розгляду"), ("registry", "03-документи-реєстру"))
-                 for document in groups[key]]
-    return row["supplier_name"] or submission_id, documents
+        return application_document_sources(con, [submission_id]).get(submission_id)
 
 
 def _download_archive_document(document: dict, opener=urllib.request.urlopen, sleeper=time.sleep,
@@ -10538,7 +10574,9 @@ def search_supplier_contract_experience(supplier_code: str, cpv_code: str, submi
             "Contract experience completed submission=%s supplier=%s cpv=%s status=%s candidates=%s",
             submission_id, supplier, cpv, result["status"], len(candidates),
         )
-        CONTRACT_EXPERIENCE_CACHE[cache_key] = {"cached_at": time.monotonic(), "value": result}
+        CONTRACT_EXPERIENCE_CACHE.put(cache_key, {"cached_at": time.monotonic(), "value": result},
+            CONTRACT_EXPERIENCE_UNAVAILABLE_CACHE_TTL if result["status"] == "unavailable"
+            else CONTRACT_EXPERIENCE_CACHE_TTL)
         return dict(result)
 
 
@@ -10764,8 +10802,52 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         "counts": counts, "ready": counts["error"] == 0 and counts["warning"] == 0,
         "official_verification_url": "https://czo.gov.ua/verify",
         "selected_categories": sorted(selected_categories),
+        "document_fingerprints": {category: document_source_fingerprint(documents)
+                                  for category in selected_categories if category in {"signature", "mvs"}},
         "notice": "",
     }
+
+
+def document_source_fingerprint(documents) -> str:
+    """Bind saved checks to source metadata, without downloading on a GET."""
+    fields = ("id", "hash", "url", "title", "format", "datePublished", "dateModified", "documentType")
+    identities = [{"folder": folder, **{key: document.get(key, "") for key in fields}}
+                  for folder, document in documents]
+    serialized = sorted(json.dumps(item, ensure_ascii=False, sort_keys=True) for item in identities)
+    return hashlib.sha256(json.dumps(serialized, ensure_ascii=False).encode()).hexdigest()
+
+
+def document_result_for_current_sources(submission_id: str, result: dict, documents=None) -> dict:
+    """Preserve saved evidence; never present a changed/unknown source as current."""
+    visible = current_document_check_result(result)
+    categories = (set(document_check_category_summaries(visible)) | {
+        document_check_category(str(item.get("key") or "")) for item in visible.get("checks", [])
+    }) & {"signature", "mvs"}
+    if not categories:
+        return visible
+    if documents is None:
+        collected = application_documents(submission_id)
+        documents = collected[1] if collected else []
+    fingerprint = document_source_fingerprint(documents)
+    stored = visible.get("document_fingerprints") or {}
+    stale = sorted(category for category in categories if not documents or stored.get(category) != fingerprint)
+    visible["stale_categories"] = stale
+    visible["source_freshness"] = "stale_or_unverified" if stale else "metadata_matches"
+    if stale:
+        notice = "Збережений результат є історичним: документи змінилися або їхню відповідність не підтверджено. Повторіть перевірку."
+        # Raw persisted results remain unchanged, including the original statuses.
+        for item in visible.get("checks", []):
+            if document_check_category(str(item.get("key") or "")) in stale:
+                item["historical_status"] = item.get("status")
+                item["historical_detail"] = item.get("detail", "")
+                item["status"] = "warning"
+                item["detail"] = notice + " " + item["historical_detail"]
+        for category in stale:
+            visible.setdefault("category_results", {}).setdefault(category, {})["status"] = "warning"
+        visible["counts"], _ = document_check_status(visible.get("checks", []))
+        visible["ready"] = False
+        visible["notice"] = notice
+    return visible
 
 
 def document_check_category(key: str) -> str:
@@ -10892,6 +10974,9 @@ def merge_document_check_results(existing: dict, current: dict) -> dict:
         for key in ("mvs_seal", "mvs_extract", "mvs_pairs"):
             if key in existing:
                 merged[key] = existing[key]
+    merged["document_fingerprints"] = {**{key: value for key, value in (existing.get("document_fingerprints") or {}).items()
+                                           if key not in selected},
+                                       **(current.get("document_fingerprints") or {})}
     merged["category_results"] = category_results
     merged["checks"] = combined_checks
     merged["counts"] = combined_counts
@@ -11031,14 +11116,26 @@ def document_check_worker(job_id: str, submission_id: str, selection: dict | Non
         result = analyze_application_documents(submission_id, selection)
         if not result:
             raise ValueError("Заявку не знайдено")
+        result["document_check_job_id"] = job_id
         result = _store_document_check_result(submission_id, result, "PQM manual document check")
         update = {"status": "complete", "result": result}
     except Exception as exc:
         SERVER_LOG.exception("Document check worker failed submission=%s", submission_id)
         update = {"status": "error", "error": f"Не вдалося перевірити документи: {exc}"}
     with DOCUMENT_CHECK_LOCK:
-        if job_id in DOCUMENT_CHECK_JOBS:
-            DOCUMENT_CHECK_JOBS[job_id].update(update)
+        DOCUMENT_CHECK_JOBS.finish(job_id, update)
+
+
+def launch_document_check_job(job_id: str, submission_id: str, selection=None) -> bool:
+    with DOCUMENT_CHECK_LOCK:
+        if not DOCUMENT_CHECK_JOBS.start(job_id, submission_id):
+            return False
+    try:
+        threading.Thread(target=document_check_worker, args=(job_id, submission_id, selection), daemon=True).start()
+    except BaseException:
+        DOCUMENT_CHECK_JOBS.finish(job_id, {"status": "error", "error": "Не вдалося запустити перевірку"})
+        raise
+    return True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -11580,6 +11677,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = dict(job) if job else None
             if not payload:
                 return self.send_json({"error": "Завдання перевірки не знайдено"}, 404)
+            if payload.get("result"):
+                payload["result"] = document_result_for_current_sources(payload["submission_id"], payload["result"])
             return self.send_json(payload)
         if parsed.path.startswith("/api/applications/") and parsed.path.endswith("/document-check-result"):
             submission_id = urllib.parse.unquote(parsed.path.split("/")[3])
@@ -11589,7 +11688,7 @@ class Handler(BaseHTTPRequestHandler):
                   FROM application_fields WHERE submission_id=?""", (submission_id,)).fetchone()
             if not row or not row[3]:
                 return self.send_json({"error": "Збереженого результату перевірки ще немає"}, 404)
-            result = current_document_check_result(json.loads(row[3]))
+            result = document_result_for_current_sources(submission_id, json.loads(row[3]))
             result["authority_review"] = row[4] or ""
             result["mvs_seal_review"] = row[5] or ""
             result["saved_status"] = row[0] or ""
@@ -11642,9 +11741,8 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError, json.JSONDecodeError):
                 selection = {}
             job_id = uuid.uuid4().hex
-            with DOCUMENT_CHECK_LOCK:
-                DOCUMENT_CHECK_JOBS[job_id] = {"job_id": job_id, "submission_id": submission_id, "status": "running"}
-            threading.Thread(target=document_check_worker, args=(job_id, submission_id, selection), daemon=True).start()
+            if not launch_document_check_job(job_id, submission_id, selection):
+                return self.send_json({"error": "Забагато одночасних перевірок. Спробуйте пізніше."}, 429)
             return self.send_json({"job_id": job_id, "status": "running"}, 202)
         if parsed.path == "/api/applications":
             try:
@@ -13218,9 +13316,8 @@ class Handler(BaseHTTPRequestHandler):
             except historical_applications.HistoricalApplicationReadOnlyError as exc:
                 return self.send_json({"error": str(exc), "historical_read_only": True}, 409)
             job_id = uuid.uuid4().hex
-            with DOCUMENT_CHECK_LOCK:
-                DOCUMENT_CHECK_JOBS[job_id] = {"job_id": job_id, "submission_id": submission_id, "status": "running"}
-            threading.Thread(target=document_check_worker, args=(job_id, submission_id), daemon=True).start()
+            if not launch_document_check_job(job_id, submission_id):
+                return self.send_json({"error": "Забагато одночасних перевірок. Спробуйте пізніше."}, 429)
             return self.send_json({"job_id": job_id, "status": "running"}, 202)
         if parsed.path == "/api/protocol/readiness":
             try:

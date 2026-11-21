@@ -107,13 +107,18 @@ class DstDatabaseContracts(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.old_path, self.old_db = server.DB_PATH, server.db
+        self.no_network = patch.object(server, 'api_get', side_effect=AssertionError('No network in DST fixture'))
+        self.no_network.start()
         server.DB_PATH = Path(self.temp.name) / 'synthetic.sqlite3'
-        self.con = self.old_db()
-        server.db = lambda: self.con
         server.init_db()
         server.init_reference_tables(server.DB_PATH)
+        # The diagnostic handle belongs to the fixture; runtime db() now closes
+        # each operation. Do not lend one runtime connection to every call.
+        self.con = sqlite3.connect(server.DB_PATH)
+        self.con.row_factory = sqlite3.Row
 
     def tearDown(self):
+        self.no_network.stop()
         server.db = self.old_db
         self.con.close()
         server.DB_PATH = self.old_path

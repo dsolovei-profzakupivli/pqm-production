@@ -17,7 +17,8 @@ from validation.integrated_snapshot_archive import canonical_eol
 import validation.integrated_snapshot_archive as archive_support
 import validation.integrated_git_snapshot as git_support
 
-ROOT = Path(__file__).resolve().parent
+from validation.memory_v28_history import snapshot_root
+ROOT = snapshot_root('v28')
 MANIFEST = Path('validation/local_release_20261116/pqm_sync_ui_integrated_v28.json')
 MANIFEST_SHA256 = "da17790c32b9a4dccd6c9a06324d6ab0fdc3d1c84123c7fe7737ac8cd4c45728"
 PREVIOUS_MANIFEST = Path('validation/local_release_20261116/pqm_sync_ui_integrated_v27.json')

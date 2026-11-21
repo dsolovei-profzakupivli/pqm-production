@@ -262,6 +262,18 @@ def main():
     if mode=='historical_integrity' and not (ROOT/PACKAGE_MANIFEST).is_file():
         manifest_root=INFRA_ROOT
     package_manifest=load_package_manifest(manifest_root)
+    # Additive Stage 1 support: retain V28's runner, overlays and isolation.
+    # Current-tree tests must be delivered together with their immutable inputs.
+    if mode != 'historical_integrity':
+        for relative in (
+            'runtime_memory.py', 'validation/memory_v28_integration_v1.json',
+            'validation/memory_v28_history.py',
+            'validation/local_release_20260911/test_memory_stage1.py',
+            'validation/local_release_20260911/test_memory_stage1_followup.py',
+            'validation/local_release_20260911/test_memory_v28_integration_integrity.py',
+        ):
+            if not (ROOT / relative).is_file():
+                raise FileNotFoundError('Missing Stage 1 integration dependency: ' + relative)
     full_candidate_run=(not mode and len(sys.argv)==1) or mode=='baseline_full'
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
         root=Path(tmp)
