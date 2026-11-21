@@ -197,24 +197,38 @@ class LastCompletedResultTests(unittest.TestCase):
 class SavedHistoryHTTPTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        import importlib.util
+        import os
+        import socket
         import sys
-        sys.path.insert(0,str(Path(server.__file__).parent/'validation'))
-        import web_smoke
+        import tempfile
+        # Load the helper without leaking its import-time environment changes.
+        # A private module keeps this fixture independent of suite import order.
+        with patch.dict(os.environ), patch.object(socket,'getfqdn',socket.getfqdn), patch.object(sys,'path',list(sys.path)):
+            spec=importlib.util.spec_from_file_location('_saved_history_web_fixture',Path(server.__file__).parent/'validation/web_smoke.py')
+            web_smoke=importlib.util.module_from_spec(spec);spec.loader.exec_module(web_smoke)
+        cls.addClassCleanup(web_smoke.TEMP.cleanup)
         cls.web=web_smoke
-        cls.patch_db=patch.object(server,'DB_PATH',Path(web_smoke.TEMP.name)/'http-history.sqlite3');cls.patch_db.start()
-        cls.patch_auth=patch.object(server,'AUTH_ENABLED',True);cls.patch_auth.start()
-        web_smoke.fixture()
+        cls.folder=tempfile.TemporaryDirectory(prefix='pqm-saved-history-http-')
+        cls.addClassCleanup(cls.folder.cleanup)
+        cls.enterClassContext(patch.object(server,'DB_PATH',Path(cls.folder.name)/'history.sqlite3'))
+        cls.enterClassContext(patch.object(server,'AUTH_ENABLED',True))
+        # Fixed fixture IDs require a schema-only DB, independent of Gate seeds.
+        # This affects this synthetic setup only, not application configuration.
+        with patch.dict(os.environ,{'PQM_RELEASE_SCHEMA_ONLY':'1'}):
+            web_smoke.fixture()
         checks=[{'key':'signer'+str(i),'status':'ok' if i<16 else 'warning','detail':'Original'} for i in range(17)]
         cls.saved={'checks':checks,'counts':{'ok':16,'warning':1,'error':0,'neutral':0},'ready':False,'document_check_job_id':'fixture-job','checked_at':'2026-11-21T10:00:00Z'}
         with server.db() as con:
             con.execute("UPDATE submissions SET documents_json=? WHERE id='pending'",(json.dumps([{'id':'doc','hash':'one'}]),))
             con.execute("UPDATE application_fields SET document_check_result_json=?,document_check_status='warning',document_check_summary='Original 16/1',document_checked_at='2026-11-21T10:00:00Z' WHERE submission_id='pending'",(json.dumps(cls.saved),))
         cls.http=server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
-        cls.port=cls.http.server_address[1];threading.Thread(target=cls.http.serve_forever,daemon=True).start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.http.shutdown();cls.http.server_close();cls.patch_auth.stop();cls.patch_db.stop()
+        cls.addClassCleanup(cls.http.server_close)
+        cls.port=cls.http.server_address[1]
+        cls.thread=threading.Thread(target=cls.http.serve_forever,daemon=True);cls.thread.start()
+        def stop_http():
+            cls.http.shutdown();cls.thread.join(timeout=5)
+        cls.addClassCleanup(stop_http)
 
     def get(self,path,role):
         import base64,http.client

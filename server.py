@@ -2046,10 +2046,8 @@ def sync_one_framework(framework_id: str, framework: dict | None = None, increme
         # an intermediate qualification-only snapshot is not a lifecycle gap.
         for submission_id, outcome in shadow_application_decisions:
             evidence_shadow.application_decision(con, submission_id, outcome, now_iso())
-    if SANDBOX_MODE:
-        enqueue_contract_experience_search(experience_submission_ids, framework_id=framework_id)
-    else:
-        enqueue_contract_experience_search(experience_submission_ids)
+    # Queue admission owns the environment policy; ingestion only passes context.
+    enqueue_contract_experience_search(experience_submission_ids, framework_id)
     return {"framework": framework.get("prettyID"), "submissions": submission_count, "qualifications": qualification_count, "contracts": contract_count}
 
 
@@ -11191,7 +11189,7 @@ def _sandbox_experience_scope_worker(framework_id: str) -> None:
             CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(framework_id)
 
 
-def enqueue_contract_experience_search(submission_ids, *, framework_id: str = "") -> int:
+def enqueue_contract_experience_search(submission_ids, framework_id: str = "") -> int:
     if background_jobs.disabled():
         return 0
     if SANDBOX_MODE:
