@@ -17,7 +17,8 @@ INDEX_SHA256 = '283652f1714e5bbf80b3aa7a39a5446ffaa99b5f7182db8f6435aec85460e2f3
 ROUTED = {'test_google_writer_update_append_v2_integrity',
           'test_google_writer_integrated_candidate_integrity_v28',
           'test_memory_v28_integration_integrity', 'test_sandbox_integrity_audit',
-          'test_memory_stage1_followup', 'test_memory_stage1', 'test_sandbox_functionality_integrity'}
+          'test_memory_stage1_followup', 'test_memory_stage1', 'test_sandbox_functionality_integrity',
+          'test_sandbox_functionality_integrity_v2'}
 _TEMP = []
 _ROOTS = {}
 
@@ -63,10 +64,21 @@ def route_integrity_suite(suite, source, module_root=None):
             for child in node:visit(child)
         else:modules.add(node.__class__.__module__)
     visit(suite)
+    if any(name.rsplit('.',1)[-1] in ROUTED for name in modules):
+        # Keep every prior contract on its exact inputs; current acceptance stays current.
+        module_root = module_root or source
+        from validation.sandbox_experience_history import previous_root
+        source, _ = previous_root(source)
     for name in sorted(modules):
         short=name.rsplit('.',1)[-1]
         if short not in ROUTED:continue
         module=sys.modules[name]
+        if short=='test_sandbox_functionality_integrity_v2':
+            relative='validation/local_release_20260911/test_sandbox_functionality_integrity_v2.py'
+            if digest(Path(module.__file__).read_bytes(),relative)!=digest((source/relative).read_bytes(),relative):
+                raise AssertionError('Original v2 guard changed')
+            module.ROOT=source
+            continue
         if short=='test_sandbox_functionality_integrity':
             from validation.sandbox_gate449_history import bind_previous_guard
             bind_previous_guard(module,source)

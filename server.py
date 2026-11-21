@@ -654,6 +654,11 @@ CONTRACT_EXPERIENCE_BATCH_SIZE = 32
 CONTRACT_EXPERIENCE_PENDING_LOCK = threading.Lock()
 CONTRACT_EXPERIENCE_RETRY_PENDING: set[str] = set()
 CONTRACT_EXPERIENCE_RETRY_ATTEMPTS: dict[str, int] = {}
+# All Sandbox lifecycle metadata is bounded by the existing ID/scope caps.
+CONTRACT_EXPERIENCE_ACTIVE: set[str] = set()
+CONTRACT_EXPERIENCE_RETRY_READY: set[str] = set()
+CONTRACT_EXPERIENCE_RETRY_TIMERS: dict[str, tuple] = {}
+CONTRACT_EXPERIENCE_DEFERRED_SCOPES: dict[str, tuple] = {}
 CONTRACT_EXPERIENCE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pqm-contracts")
 CONTRACT_EXPERIENCE_ALGORITHM_VERSION = 3
 DEFAULT_REMARKS = [
@@ -10999,6 +11004,38 @@ def _stored_experience_is_fresh(existing: dict) -> bool:
     return bool(checked_at and (datetime.now(timezone.utc) - checked_at).total_seconds() < CONTRACT_EXPERIENCE_CACHE_TTL)
 
 
+def contract_experience_enabled() -> bool:
+    """Permit this Sandbox-only read/search task without enabling other automation."""
+    if not background_jobs.disabled():
+        return True
+    return SANDBOX_MODE and background_jobs.sandbox_experience_allowed()
+
+
+def has_saved_experience(result) -> bool:
+    """Saved positive, negative and legacy evidence is never refreshed by this worker."""
+    if not isinstance(result, dict):
+        return True  # Unknown historical shape fails closed.
+    categories = result.get('category_results')
+    if categories is not None and not isinstance(categories, dict):
+        return True
+    if isinstance(categories, dict) and 'experience' in categories:
+        return True
+    if 'contract_experience' in result:
+        return True
+    checks = result.get('checks') or []
+    if not isinstance(checks, list):
+        return True
+    return any(isinstance(item, dict) and document_check_category(str(item.get('key') or '')) == 'experience'
+               for item in checks)
+
+
+def enqueue_missing_sandbox_experience() -> int:
+    """One bounded startup scan of existing pending rows; no Prozorro ingestion."""
+    if not SANDBOX_MODE or not contract_experience_enabled():
+        return 0
+    return enqueue_contract_experience_search([], None)
+
+
 def experience_input_signature(supplier_code, cpv_code, published_at) -> str:
     cutoff = _contract_experience_cutoff(published_at)
     value = [_digits(supplier_code), normalize_experience_cpv(cpv_code),
@@ -11011,7 +11048,7 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
     if require_pending:
         if not SANDBOX_MODE:
             raise RuntimeError("Pending-only storage requires Sandbox")
-        if background_jobs.disabled():
+        if not contract_experience_enabled():
             return None
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
     if require_editable:
@@ -11025,6 +11062,8 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
                 if application_final_status(con, submission_id) or application_marketplace_locked(marketplace[0] if marketplace else '', actor_role):
                     raise ValueError('Заявку заблоковано; попередній результат збережено')
             if require_pending:
+                if not contract_experience_enabled():
+                    return None
                 eligible = con.execute(f"""SELECT s.supplier_code,f.dk_code,s.date_published FROM submissions s
                     JOIN frameworks f ON f.id=s.framework_id
                     LEFT JOIN qualifications q ON q.id=s.qualification_id
@@ -11036,7 +11075,11 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
             try:
                 existing = json.loads(stored[0] or "{}") if stored else {}
             except (TypeError, ValueError):
+                if require_pending:
+                    return None
                 existing = {}
+            if require_pending and has_saved_experience(existing):
+                return None
             if require_editable:
                 # A completed manual run replaces the previous manual evidence.
                 # Independent background experience remains its own current category.
@@ -11069,8 +11112,146 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
     return result
 
 
+def _sandbox_experience_admit_locked(identifiers):
+    """Caller holds the ID lock; PENDING owns queued/active/waiting-retry IDs."""
+    admitted = []
+    for sid in identifiers:
+        if sid in CONTRACT_EXPERIENCE_PENDING or CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(sid, 0) > CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES:
+            continue
+        if len(CONTRACT_EXPERIENCE_PENDING) >= CONTRACT_EXPERIENCE_QUEUE_LIMIT:
+            break
+        if sid not in CONTRACT_EXPERIENCE_RETRY_ATTEMPTS:
+            # Only terminal, unowned markers can be evicted; active budgets never reset.
+            if len(CONTRACT_EXPERIENCE_RETRY_ATTEMPTS) >= CONTRACT_EXPERIENCE_QUEUE_LIMIT:
+                terminal = next((key for key, count in CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.items()
+                                 if count > CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES and key not in CONTRACT_EXPERIENCE_PENDING), None)
+                if terminal is None:
+                    break
+                CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(terminal)
+            CONTRACT_EXPERIENCE_RETRY_ATTEMPTS[sid] = 0
+        CONTRACT_EXPERIENCE_PENDING.add(sid)
+        admitted.append(sid)
+    return admitted
+
+
+def _sandbox_experience_drain():
+    """Transfer ownership atomically; submit outside the lock, never poll/wait."""
+    timers = []
+    jobs = []
+    with CONTRACT_EXPERIENCE_PENDING_LOCK:
+        if not contract_experience_enabled():
+            timers = [entry[1] for entry in CONTRACT_EXPERIENCE_RETRY_TIMERS.values()]
+            CONTRACT_EXPERIENCE_RETRY_TIMERS.clear()
+            CONTRACT_EXPERIENCE_PENDING.difference_update(CONTRACT_EXPERIENCE_RETRY_PENDING - CONTRACT_EXPERIENCE_ACTIVE)
+            CONTRACT_EXPERIENCE_RETRY_PENDING.clear()
+            CONTRACT_EXPERIENCE_RETRY_READY.clear()
+            for key in CONTRACT_EXPERIENCE_DEFERRED_SCOPES:
+                CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(key)
+            CONTRACT_EXPERIENCE_DEFERRED_SCOPES.clear()
+            for sid in list(CONTRACT_EXPERIENCE_RETRY_ATTEMPTS):
+                if sid not in CONTRACT_EXPERIENCE_PENDING:
+                    CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(sid, None)
+        else:
+            for sid in list(CONTRACT_EXPERIENCE_RETRY_READY):
+                if sid in CONTRACT_EXPERIENCE_ACTIVE:
+                    continue
+                CONTRACT_EXPERIENCE_RETRY_READY.discard(sid)
+                CONTRACT_EXPERIENCE_RETRY_PENDING.discard(sid)
+                jobs.append(('retry', sid))  # PENDING reservation is retained.
+            room = CONTRACT_EXPERIENCE_QUEUE_LIMIT - len(CONTRACT_EXPERIENCE_PENDING)
+            for key in list(CONTRACT_EXPERIENCE_DEFERRED_SCOPES)[:min(2, max(0, room))]:
+                jobs.append(('scope', (key, CONTRACT_EXPERIENCE_DEFERRED_SCOPES.pop(key))))
+    for timer in timers:
+        timer.cancel()
+    for kind, value in jobs:
+        try:
+            if kind == 'retry':
+                CONTRACT_EXPERIENCE_EXECUTOR.submit(contract_experience_worker, [value])
+            else:
+                _, (framework_id, cursor) = value
+                CONTRACT_EXPERIENCE_EXECUTOR.submit(_sandbox_experience_scope_worker, framework_id, cursor)
+        except Exception:
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                if kind == 'retry':
+                    CONTRACT_EXPERIENCE_RETRY_PENDING.add(value)
+                    CONTRACT_EXPERIENCE_RETRY_READY.add(value)
+                else:
+                    key, position = value
+                    CONTRACT_EXPERIENCE_DEFERRED_SCOPES[key] = position
+            SERVER_LOG.exception('Sandbox experience dispatch deferred after submit failure')
+
+
+def _sandbox_experience_finish_id(sid, keep_retry=False):
+    timer = None
+    with CONTRACT_EXPERIENCE_PENDING_LOCK:
+        CONTRACT_EXPERIENCE_ACTIVE.discard(sid)
+        if not keep_retry:
+            CONTRACT_EXPERIENCE_RETRY_PENDING.discard(sid)
+            CONTRACT_EXPERIENCE_RETRY_READY.discard(sid)
+            entry = CONTRACT_EXPERIENCE_RETRY_TIMERS.pop(sid, None)
+            timer = entry[1] if entry else None
+            if CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(sid, 0) <= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES:
+                CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(sid, None)
+        if sid not in CONTRACT_EXPERIENCE_RETRY_PENDING:
+            CONTRACT_EXPERIENCE_PENDING.discard(sid)
+    if timer is not None:
+        timer.cancel()
+    _sandbox_experience_drain()
+
+
+def _sandbox_schedule_experience_retry(sid):
+    if not contract_experience_enabled():
+        return False
+    with CONTRACT_EXPERIENCE_PENDING_LOCK:
+        if sid in CONTRACT_EXPERIENCE_RETRY_PENDING:
+            return True  # Idempotent: an existing timer/budget is not a rejection.
+        attempts = CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(sid, 0)
+        if attempts >= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES:
+            CONTRACT_EXPERIENCE_RETRY_ATTEMPTS[sid] = CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES + 1
+            return False
+        if sid not in CONTRACT_EXPERIENCE_PENDING:
+            if not _sandbox_experience_admit_locked([sid]):
+                return False
+        CONTRACT_EXPERIENCE_RETRY_ATTEMPTS[sid] = attempts + 1
+        CONTRACT_EXPERIENCE_RETRY_PENDING.add(sid)
+        token = object()
+        def retry():
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                entry = CONTRACT_EXPERIENCE_RETRY_TIMERS.get(sid)
+                if not entry or entry[0] is not token:
+                    return  # Cancelled/stale/duplicate callback cannot claim a new chain.
+                CONTRACT_EXPERIENCE_RETRY_TIMERS.pop(sid)
+                CONTRACT_EXPERIENCE_RETRY_READY.add(sid)
+            _sandbox_experience_drain()
+        try:
+            timer = threading.Timer(CONTRACT_EXPERIENCE_RETRY_DELAY, retry)
+            timer.daemon = True
+            CONTRACT_EXPERIENCE_RETRY_TIMERS[sid] = (token, timer)
+        except Exception:
+            timer = None
+            CONTRACT_EXPERIENCE_RETRY_READY.add(sid)
+    if timer is None:
+        SERVER_LOG.warning('Sandbox experience timer creation failed; retry retained')
+        _sandbox_experience_drain()
+        return True
+    try:
+        timer.start()
+    except Exception:
+        # Retain the one reserved attempt; use the existing executor if Timer cannot start.
+        with CONTRACT_EXPERIENCE_PENDING_LOCK:
+            entry = CONTRACT_EXPERIENCE_RETRY_TIMERS.get(sid)
+            if entry and entry[0] is token:
+                CONTRACT_EXPERIENCE_RETRY_TIMERS.pop(sid)
+                CONTRACT_EXPERIENCE_RETRY_READY.add(sid)
+        SERVER_LOG.exception('Sandbox experience timer failed; retry retained')
+        _sandbox_experience_drain()
+    return True
+
+
 def _schedule_contract_experience_retry(submission_id: str) -> bool:
-    if background_jobs.disabled():
+    if SANDBOX_MODE:
+        return _sandbox_schedule_experience_retry(submission_id)
+    if not contract_experience_enabled():
         return False
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         attempts = CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(submission_id, 0)
@@ -11095,12 +11276,25 @@ def _schedule_contract_experience_retry(submission_id: str) -> bool:
 
 
 def contract_experience_worker(submission_ids: list[str]) -> None:
+    remaining = set(submission_ids) if SANDBOX_MODE else set()
     try:
         for submission_id in submission_ids:
+            owned = False
+            keep_retry = False
             try:
                 if SANDBOX_MODE:
-                    if background_jobs.disabled():
+                    if not contract_experience_enabled():
                         break
+                    with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                        remaining.discard(submission_id)
+                        if (submission_id in CONTRACT_EXPERIENCE_ACTIVE or
+                                submission_id in CONTRACT_EXPERIENCE_RETRY_PENDING or
+                                CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(submission_id, 0) > CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES):
+                            continue
+                        if submission_id not in CONTRACT_EXPERIENCE_PENDING and not _sandbox_experience_admit_locked([submission_id]):
+                            continue
+                        CONTRACT_EXPERIENCE_ACTIVE.add(submission_id)
+                        owned = True
                     sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
                 with db() as con:
                     row = con.execute("""SELECT s.supplier_name,s.supplier_code,s.date_published,
@@ -11117,7 +11311,11 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                 try:
                     existing = json.loads(row["stored_result"] or "{}")
                 except (TypeError, ValueError):
+                    if SANDBOX_MODE:
+                        continue
                     existing = {}
+                if SANDBOX_MODE and has_saved_experience(existing):
+                    continue
                 input_signature = experience_input_signature(row['supplier_code'], row['dk_code'], row['date_published'])
                 if _stored_experience_is_fresh(existing) and (not SANDBOX_MODE or
                         existing.get('experience_input_signature') == input_signature):
@@ -11128,6 +11326,10 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                 search = search_supplier_contract_experience(
                     row["supplier_code"], row["dk_code"], row["date_published"] or "", submission_id
                 )
+                if SANDBOX_MODE and search.get('status') == 'unavailable':
+                    # A failed attempt is not saved evidence; bounded retries may finish it.
+                    keep_retry = _schedule_contract_experience_retry(submission_id)
+                    continue
                 check = {"key": "contract_experience", "label": "Договори постачальника в Prozorro",
                          "status": "neutral", "detail": f"{search['symbol']} · {search['message']}",
                          "rows": search.get("candidates") or [], "search_status": search.get("status"),
@@ -11156,54 +11358,78 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                         CONTRACT_EXPERIENCE_RETRY_PENDING.discard(submission_id)
             except Exception:
                 SERVER_LOG.exception("Background contract experience failed submission=%s", submission_id)
+                if SANDBOX_MODE and owned:
+                    keep_retry = _schedule_contract_experience_retry(submission_id)
+            finally:
+                if SANDBOX_MODE and owned:
+                    _sandbox_experience_finish_id(submission_id, keep_retry)
     finally:
         with CONTRACT_EXPERIENCE_PENDING_LOCK:
-            CONTRACT_EXPERIENCE_PENDING.difference_update(submission_ids)
+            if SANDBOX_MODE:
+                for sid in remaining - CONTRACT_EXPERIENCE_ACTIVE:
+                    CONTRACT_EXPERIENCE_PENDING.discard(sid)
+                    CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(sid, None)
+            else:
+                CONTRACT_EXPERIENCE_PENDING.difference_update(submission_ids)
+        if SANDBOX_MODE:
+            _sandbox_experience_drain()
 
 
-def _sandbox_experience_scope_worker(framework_id: str) -> None:
+def _sandbox_experience_scope_worker(framework_id: str | None, cursor: str = "") -> None:
     """Drain the existing worker in fixed-size batches, never one future per row."""
-    cursor = ""
+    continuing = False
     try:
-        while not background_jobs.disabled():
+        while contract_experience_enabled():
             sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
             with db() as con:
                 rows = con.execute(f"""SELECT s.id FROM submissions s
                     LEFT JOIN qualifications q ON q.id=s.qualification_id
-                    WHERE s.framework_id=? AND s.id>? AND {WORK_QUEUE_STATUS_SQL}='pending'
-                    ORDER BY s.id LIMIT ?""", (framework_id, cursor, CONTRACT_EXPERIENCE_BATCH_SIZE)).fetchall()
+                    WHERE (? IS NULL OR s.framework_id=?) AND s.id>? AND {WORK_QUEUE_STATUS_SQL}='pending'
+                    ORDER BY s.id LIMIT ?""", (framework_id, framework_id, cursor, CONTRACT_EXPERIENCE_BATCH_SIZE)).fetchall()
             if not rows:
                 break
             identifiers = [row[0] for row in rows]
-            cursor = identifiers[-1]
             with CONTRACT_EXPERIENCE_PENDING_LOCK:
                 room = CONTRACT_EXPERIENCE_QUEUE_LIMIT - len(CONTRACT_EXPERIENCE_PENDING)
-                batch = [sid for sid in identifiers if sid not in CONTRACT_EXPERIENCE_PENDING][:max(0, room)]
-                CONTRACT_EXPERIENCE_PENDING.update(batch)
+                missing = [sid for sid in identifiers if sid not in CONTRACT_EXPERIENCE_PENDING
+                           and CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(sid, 0) <= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES]
+                batch = _sandbox_experience_admit_locked(missing)
+                if missing and not batch:
+                    key = framework_id if framework_id is not None else '__missing_pending__'
+                    CONTRACT_EXPERIENCE_DEFERRED_SCOPES[key] = (framework_id, cursor)
+            if missing and not batch:
+                # Park bounded metadata; a release/retry dispatch resumes this cursor.
+                continuing = True
+                _sandbox_experience_drain()
+                return
+            cursor = batch[-1] if len(batch) < len(missing) else identifiers[-1]
             if batch:
                 contract_experience_worker(batch)
     except Exception:
         SERVER_LOG.exception("Sandbox contract experience scope failed")
     finally:
-        with CONTRACT_EXPERIENCE_PENDING_LOCK:
-            CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(framework_id)
+        if not continuing:
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(framework_id if framework_id is not None else '__missing_pending__')
 
 
-def enqueue_contract_experience_search(submission_ids, framework_id: str = "") -> int:
-    if background_jobs.disabled():
+def enqueue_contract_experience_search(submission_ids, framework_id: str | None = "") -> int:
+    if not contract_experience_enabled():
         return 0
     if SANDBOX_MODE:
         sandbox_runtime.attest_internal_target(DB_PATH, require_operational=False)
-        if framework_id:
+        _sandbox_experience_drain()  # A new admission also wakes retained dispatch failures.
+        if framework_id or framework_id is None:
+            scope_key = framework_id if framework_id is not None else '__missing_pending__'
             with CONTRACT_EXPERIENCE_PENDING_LOCK:
-                if framework_id in CONTRACT_EXPERIENCE_SCOPE_PENDING or len(CONTRACT_EXPERIENCE_SCOPE_PENDING) >= CONTRACT_EXPERIENCE_QUEUE_LIMIT:
+                if scope_key in CONTRACT_EXPERIENCE_SCOPE_PENDING or len(CONTRACT_EXPERIENCE_SCOPE_PENDING) >= CONTRACT_EXPERIENCE_QUEUE_LIMIT:
                     return 0
-                CONTRACT_EXPERIENCE_SCOPE_PENDING.add(framework_id)
+                CONTRACT_EXPERIENCE_SCOPE_PENDING.add(scope_key)
             try:
                 CONTRACT_EXPERIENCE_EXECUTOR.submit(_sandbox_experience_scope_worker, framework_id)
             except BaseException:
                 with CONTRACT_EXPERIENCE_PENDING_LOCK:
-                    CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(framework_id)
+                    CONTRACT_EXPERIENCE_SCOPE_PENDING.discard(framework_id if framework_id is not None else '__missing_pending__')
                 raise
             return 1
         # Retries use the same worker and a bounded, deduplicated application list.
@@ -11224,16 +11450,20 @@ def enqueue_contract_experience_search(submission_ids, framework_id: str = "") -
     else:
         unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
-        queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
         if SANDBOX_MODE:
-            queued = queued[:max(0, CONTRACT_EXPERIENCE_QUEUE_LIMIT-len(CONTRACT_EXPERIENCE_PENDING))]
-        CONTRACT_EXPERIENCE_PENDING.update(queued)
+            queued = _sandbox_experience_admit_locked(unique)
+        else:
+            queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
+            CONTRACT_EXPERIENCE_PENDING.update(queued)
     if queued:
         try:
             CONTRACT_EXPERIENCE_EXECUTOR.submit(contract_experience_worker, queued)
         except BaseException:
             with CONTRACT_EXPERIENCE_PENDING_LOCK:
                 CONTRACT_EXPERIENCE_PENDING.difference_update(queued)
+                if SANDBOX_MODE:
+                    for sid in queued:
+                        CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.pop(sid, None)
             raise
     return len(queued)
 
@@ -14482,6 +14712,12 @@ def main():
     except Exception:
         SERVER_LOG.exception("Operational task builder failed during startup")
 
+    # Only the approved experience task may scan missing pending work at startup.
+    # All scheduler/Writer interlocks below remain unchanged.
+    try:
+        enqueue_missing_sandbox_experience()
+    except Exception:
+        SERVER_LOG.exception("Sandbox missing experience scan could not start")
     scheduler_enabled = apply_scheduler_settings(catch_up=True)
     if not background_jobs.disabled():
         google_writer_service().start()  # Fourth job only: disabled by default, no startup catch-up.
