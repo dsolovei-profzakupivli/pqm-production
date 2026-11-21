@@ -283,6 +283,18 @@ def main():
                 cwd=old_cwd,env=archive_env,check=False)
             if materialized.returncode:
                 raise RuntimeError('Integrated v2 immutable snapshot could not be staged')
+        # Additive Stage 1 support: retain V28's runner, overlays and isolation.
+        # Current-tree tests must be delivered together with their immutable inputs.
+        if mode != 'historical_integrity':
+            for relative in (
+                'runtime_memory.py', 'validation/memory_v28_integration_v1.json',
+                'validation/memory_v28_history.py',
+                'validation/local_release_20260911/test_memory_stage1.py',
+                'validation/local_release_20260911/test_memory_stage1_followup.py',
+                'validation/local_release_20260911/test_memory_v28_integration_integrity.py',
+            ):
+                if not (ROOT / relative).is_file():
+                    raise FileNotFoundError('Missing Stage 1 integration dependency: ' + relative)
         # Stage all declared test-package dependencies from one manifest after
         # generated immutable fixtures are available at the source root.
         stage_declared_files(ROOT,root,INFRA_ROOT,mode,package_manifest)
@@ -316,6 +328,8 @@ def main():
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
             if mode=='historical_integrity' or full_candidate_run or mode=='baseline_candidate':
                 suite=selected_suite(suite,'historical_integrity' if mode=='historical_integrity' else 'candidate')
+            from validation.sandbox_integrity_routes import route_integrity_suite
+            route_integrity_suite(suite, ROOT, module_root=root)
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             if mode=='historical_integrity':
                 integrated_v1_history=subprocess.run(
@@ -486,7 +500,7 @@ def main():
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v27_history.py')],
                 cwd=old_cwd,check=False)
             integrated_v28_current=subprocess.run(
-                [sys.executable,'-B','-m','unittest','-v',
+                [sys.executable,'-B',str(ROOT/'validation/sandbox_integrity_routes.py'),'-v',
                  'test_google_writer_integrated_candidate_integrity_v28'],
                 cwd=ROOT,check=False)
             return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_history.returncode==0 and integrated_v13_history.returncode==0 and integrated_v14_history.returncode==0 and integrated_v15_history.returncode==0 and integrated_v16_history.returncode==0 and integrated_v17_history.returncode==0 and integrated_v18_history.returncode==0 and integrated_v19_history.returncode==0 and integrated_v20_history.returncode==0 and integrated_v21_history.returncode==0 and integrated_v22_history.returncode==0 and integrated_v23_history.returncode==0 and integrated_v24_history.returncode==0 and integrated_v25_history.returncode==0 and integrated_v26_history.returncode==0 and integrated_v27_history.returncode==0 and integrated_v28_current.returncode==0 else 1
