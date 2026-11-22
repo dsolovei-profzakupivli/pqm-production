@@ -5072,7 +5072,36 @@ def supplier_edr_sync_status() -> dict:
 EDR_EXPORT_HEADERS = [
     "Код ЄДРПОУ", "Стара Назва", "Старий Статус", "Старий ПІБ Керівника",
     "Фактична дата перевірки ЄДР",
+    "Статус Prozorro", "Дата останньої заявки", "УО",
 ]
+
+
+def _clarity_export_timestamp(value) -> str:
+    """Retain supplied time, fraction and offset; preserve the legacy day-only format."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}[ T].+", text):
+        text = f"{text[6:10]}-{text[3:5]}-{text[:2]}{text[10:]}"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?", text):
+        try:
+            datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        return text.replace("T", " ", 1)
+    if len(text) > 10:
+        return ""
+    parsed = _export_date(text)
+    return parsed.strftime("%Y-%m-%d 00:00:00") if parsed else ""
+
+
+def _clarity_prozorro_status(value) -> str:
+    """Export canonical labels, without an optional presentation prefix."""
+    text = str(value or "").strip()
+    for label in ("Активний", "Призупинений", "Неактивний", "Ще не в реєстрі"):
+        if text == label or text.endswith(" " + label):
+            return label
+    return text
 
 
 def _export_date(value):
@@ -5089,7 +5118,7 @@ def _export_date(value):
 
 
 def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | None = None) -> list[dict]:
-    """Build the exact five-column ClarityChecker input without changing source data."""
+    """Keep the existing export population and append ClarityChecker context."""
     sheet_type = str(sheet_type or "").strip().upper()
     if sheet_type not in {"ФОП", "ЮО", "ALL"}:
         raise ValueError("Оберіть тип експорту: ФОП, ЮО або ALL")
@@ -5139,6 +5168,7 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
         canonical_states = {code: {
           "prozorro_status": statuses[code],
           "verification_event": verifications[code]["selected_event"],
+          "verification_officer": verifications[code]["verification_officer"],
           "bucket": edr_sync_v2.freshness_state(statuses[code], verifications[code]["verification_date"], today=today)["bucket"]
         } for code in export_codes}
     rows = []
@@ -5156,6 +5186,7 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
           "termination_decision_details": profile.get("termination_decision_details", ""),
           "edr_officer": profile.get("edr_officer", ""), "edr_notes": profile.get("edr_notes", ""),
           "latest_name": last.get("supplier_name", ""), "latest_manager": last.get("manager_name", ""),
+          "latest_application_date": edr_sync_v2.normalized_date(last.get("date_published")),
           "current_manager": managers.get(code, ""), "last_admit": admitted_dates.get(code, ""),
           "active_count": active.get(code, 0)})
     result = []
@@ -5189,7 +5220,9 @@ def build_supplier_edr_export_rows(sheet_type: str, today=None, filters: dict | 
         result.append(dict(zip(EDR_EXPORT_HEADERS, [
             row["code"], name, str(row["edr_status"] or ""),
             row["current_manager"] or row["edr_manager"] or row["latest_manager"],
-            effective_checked.strftime("%Y-%m-%d 00:00:00") if effective_checked else "",
+            _clarity_export_timestamp(verification.get("occurred_at") or row["edr_checked_at"]) if effective_checked else "",
+            _clarity_prozorro_status(prozorro_status), row["latest_application_date"],
+            state.get("verification_officer", ""),
         ])))
     return result
 
@@ -5214,7 +5247,9 @@ def edr_monitoring_export_csv(supplier_codes) -> bytes:
         if not row: continue
         writer.writerow(dict(zip(EDR_EXPORT_HEADERS, [
             code, row["supplier_name"], row["edr_status"], row["manager_name"],
-            f"{row['verification_date']} 00:00:00" if row["verification_date"] else "",
+            _clarity_export_timestamp(row["verification_date"]),
+            _clarity_prozorro_status(row.get("prozorro_status")),
+            row.get("latest_application_date", ""), row.get("verification_officer", ""),
         ])))
     return ("\ufeff" + stream.getvalue()).encode("utf-8")
 
