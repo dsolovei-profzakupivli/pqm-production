@@ -1,0 +1,100 @@
+{
+  "historical_node": "validation/sandbox_functionality_repair_ui.cjs",
+  "current_node": "validation/sandbox_functionality_current_ui.cjs",
+  "historical_browser": "validation/sandbox_functionality_repair_browser.cjs",
+  "current_browser": "validation/sandbox_functionality_current_browser.cjs",
+  "history_sha": "6a5cd4536ef7d2ef9e724ed3cb85140ea270e7c2",
+  "current_source": "integration candidate working tree; unchanged runtime c0c1df0",
+  "rows": [
+    {
+      "scenario": "Подія завершеної синхронізації зберігає фільтри й період",
+      "node_cases": 1,
+      "browser_cases_both_themes": 2
+    },
+    {
+      "scenario": "Прихований модуль, повернення та відсутність повторного запиту",
+      "node_cases": 2,
+      "browser_cases_both_themes": 2
+    },
+    {
+      "scenario": "Дедуплікація подій і нове завершення",
+      "node_cases": 2,
+      "browser_cases_both_themes": 0
+    },
+    {
+      "scenario": "Running/error/partial/unchanged/некоректний час не оновлюють статистику",
+      "node_cases": 6,
+      "browser_cases_both_themes": 2
+    },
+    {
+      "scenario": "Немає фонових таймерів статистики",
+      "node_cases": 1,
+      "browser_cases_both_themes": 0
+    },
+    {
+      "scenario": "Допущено/Відхилено: прямий запуск перевірки заблоковано",
+      "node_cases": 2,
+      "browser_cases_both_themes": 4
+    },
+    {
+      "scenario": "Admin/officer/viewer: збережені результати доступні без нового запуску",
+      "node_cases": 3,
+      "browser_cases_both_themes": 6
+    },
+    {
+      "scenario": "Не перевірено: заблокована заявка",
+      "node_cases": 1,
+      "browser_cases_both_themes": 2
+    },
+    {
+      "scenario": "Не перевірено: редагована заявка без автозапуску",
+      "node_cases": 1,
+      "browser_cases_both_themes": 2
+    },
+    {
+      "scenario": "Документи: два селектори, блокування, завантаження та архів",
+      "node_cases": 3,
+      "browser_cases_both_themes": 0
+    },
+    {
+      "scenario": "Посилання ЦЗО збережене",
+      "node_cases": 1,
+      "browser_cases_both_themes": 0
+    },
+    {
+      "scenario": "Повне завантаження сторінки",
+      "node_cases": 0,
+      "browser_cases_both_themes": 2
+    },
+    {
+      "scenario": "Послідовний вибір документів та доступність перевірки",
+      "node_cases": 0,
+      "browser_cases_both_themes": 2
+    },
+    {
+      "scenario": "Явний повторний запуск редагованої заявки",
+      "node_cases": 0,
+      "browser_cases_both_themes": 2
+    }
+  ],
+  "additional_gate_compatibility": [
+    {
+      "historical": "OnDemandDocumentCheckTests.test_valid_mvs_and_verified_signature_are_green",
+      "current": "test_document_check_current_acceptance.CurrentMvsAcceptance: green MVS without seal + red short extract",
+      "historical_sha": "6a5cd4536ef7d2ef9e724ed3cb85140ea270e7c2"
+    },
+    {
+      "historical": "sandbox_supplier_ux.cjs / supplier_ux.cjs",
+      "current": "sandbox_supplier_ux_current.cjs / supplier_ux_current.cjs; all assertions preserved, dialog attributes allowed"
+    },
+    {
+      "test": "test_history_document_groups.test_registry_modal_splits_supplier_and_decision_documents",
+      "adaptation": "original test unchanged; __file__ names identical nested staged copy so Node cwd is correct"
+    },
+    {
+      "historical": "RegistryUxCleanupTests.test_document_experience_uses_contract_links_not_document_ocr_tag",
+      "current": "CurrentMvsAcceptance.test_experience_uses_current_component_and_contract_links_not_ocr",
+      "reason": "condition moved from inline app rendering into document_check_ui.js; all other assertions retained"
+    }
+  ]
+}
