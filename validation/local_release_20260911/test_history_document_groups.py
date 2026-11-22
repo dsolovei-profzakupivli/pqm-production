@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -50,8 +51,17 @@ class HistoryDocumentGroupsTests(unittest.TestCase):
     def test_registry_modal_splits_supplier_and_decision_documents(self):
         source = Path("app.js").read_text(encoding="utf-8")
         self.assertIn("supplierDocuments,decisionDocuments", source)
-        self.assertIn("renderDocuments(supplier,true)", source)
-        self.assertIn("renderDocuments(decision,false)", source)
+        self.assertIn("PqmApplicationDocuments.groups(row)", source)
+        script = "const ui=require('./application_documents_ui.js');let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(ui.groups(JSON.parse(s)))));"
+        run = subprocess.run(['node', '-e', script], input=json.dumps({
+            'supplierDocuments': self.supplier + self.supplier,
+            'decisionDocuments': self.supplier + self.decision,
+        }), cwd=Path(__file__).resolve().parents[2], text=True, capture_output=True, check=True)
+        grouped = json.loads(run.stdout)
+        self.assertEqual([entry['document'] for entry in grouped['supplier']], self.supplier)
+        self.assertEqual([entry['document'] for entry in grouped['decision']], self.decision)
+        self.assertEqual([entry['index'] for entry in grouped['supplier']], [0])
+        self.assertEqual([entry['index'] for entry in grouped['decision']], [1, 2])
         self.assertIn("openDocs(row,row.registryDocuments,'Документи рішення у реєстрі')", source)
 
 
