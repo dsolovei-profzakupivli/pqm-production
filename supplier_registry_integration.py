@@ -81,11 +81,18 @@ def _file_revision(path):
 
 def database_revision(con):
     """Revision key covers SQLite main DB and its WAL without writing either file."""
+    # A transaction can see uncommitted data or an older read snapshot. Neither
+    # may be published to, or replaced by, a process-wide current-data cache.
+    if con.in_transaction:
+        return None
     main = next((row[2] for row in con.execute("PRAGMA database_list") if row[1] == "main"), "")
     if not main:
         return None
     path = Path(main)
-    return (str(path.resolve()), _file_revision(path), _file_revision(Path(str(path) + "-wal")))
+    wal = _file_revision(Path(str(path) + "-wal"))
+    # SQLite recreates an empty WAL on fresh connections. Its identity is not
+    # a data revision; retain all existing guards for a nonempty WAL and DB.
+    return (str(path.resolve()), _file_revision(path), wal if wal and wal[1] else None)
 
 
 def reset_full_registry_cache():
