@@ -168,20 +168,24 @@ test('append, daytime Google correction, evening real sync, next morning converg
   const preview = f.context.pqmSandboxAppendPreview(); f.arm(preview);
   f.context.pqmSandboxAppendApply();
   const row = f.tabs['ФОП'].rows[1];
-  row.values[8] = f.context.pqmGoogleDate_('2026-09-25');
+  const checkTimeSeconds = 14 * 3600 + 30 * 60;
+  row.values[8] = f.context.pqmGoogleDate_('2026-09-25') + checkTimeSeconds / 86400;
+  row.verificationDateFormat = 'dd.MM.yyyy HH:mm:ss';
   row.values[11] = 'Officer B';
   row.values[6] = 'New G'; row.values[9] = '2026-09-25';
   row.values[10] = 'New K'; row.values[12] = 'New M';
   const repo = process.env.PQM_PERMANENT_REPO || path.resolve(__dirname, '../..');
   const python = process.env.PQM_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   const bridge = path.join(repo, 'validation/local_release_20260911/daily_cycle_evening_fixture.py');
-  const google = {i: '2026-09-25', l: 'Officer B', e: row.values[4],
+  const google = {i: '25.09.2026 14:30:00', l: 'Officer B', e: row.values[4],
     g: row.values[6], j: row.values[9], k: row.values[10], m: row.values[12]};
   const result = spawnSync(python, [bridge], {cwd: repo, encoding: 'utf8',
     env: {...process.env, PYTHONIOENCODING: 'utf-8'},
     input: JSON.stringify({pqm_date: '2026-09-20', pqm_officer: 'Officer A', google})});
   assert.equal(result.status, 0, result.stderr);
   const evening = JSON.parse(result.stdout);
+  assert.equal(evening.first.newer_verification_accepted, 1,
+    'an exact newer timestamp, not a date-only value, authorizes the update');
   assert.deepEqual([evening.date, evening.officer], ['2026-09-25', 'Officer B']);
   assert.deepEqual(evening.gjkm, ['New G', '2026-09-25', 'New K', 'New M']);
   f.supplier.verification_date = evening.date;

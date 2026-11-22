@@ -3,6 +3,18 @@ import json
 import re
 
 
+def contact_from_submission(raw_json):
+    """Extract contacts from this exact submission, never a different framework."""
+    try:
+        payload=json.loads(raw_json or '{}')
+    except (TypeError,ValueError):
+        payload={}
+    tenderers=payload.get('tenderers') or [] if isinstance(payload,dict) else []
+    contact=tenderers[0].get('contactPoint') if tenderers and isinstance(tenderers[0],dict) else {}
+    contact=contact if isinstance(contact,dict) else {}
+    return {key:' '.join(str(contact.get(key) or '').split()) for key in ('name','email','telephone','fax','url')}
+
+
 def supplier_contacts(con, supplier_code):
     current = None
     history = []

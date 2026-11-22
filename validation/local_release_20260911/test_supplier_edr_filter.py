@@ -1,6 +1,7 @@
 import re
 import sqlite3
 import unittest
+from datetime import date
 from unittest.mock import patch
 import server
 import edr_sync_v2
@@ -57,10 +58,10 @@ class SupplierEdrFilterTests(unittest.TestCase):
             # Actual importer, isolated DB and mocked read-only Sheets; no real sync.
             headers=list(edr_sync_v2.HEADERS);values=['']*len(headers)
             for key,value in {'Код ЄДРПОУ':code,'Статус в реєстрі (ЄДР)':'🔴 Припинено',
-                              'Дата перевірки':'07.09.2026','УО':'Тестова УО'}.items():values[headers.index(key)]=value
+                              'Дата перевірки':'10.09.2026 15:00:00','УО':'Тестова УО'}.items():values[headers.index(key)]=value
             sheet=[headers,values]
             sheet_read=lambda name: sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
-            with patch.object(server,'_google_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
+            with patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')
@@ -69,7 +70,8 @@ class SupplierEdrFilterTests(unittest.TestCase):
             data=self.listing(search=code,edr_status='🔴 Припинено')
             self.assertEqual(data['total'],1)
             self.assertEqual(data['items'][0]['edr_profile']['edr_status'],'Припинено')
-            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],'2026-09-07')
+            self.assertEqual(data['items'][0]['edr_profile']['edr_checked_at'],
+                             '2026-09-10T15:00:00+03:00')
         self.assertEqual(self.listing()['edr_statuses'],['Припинено'])
     def test_and_filters_empty_and_injection(self):
         self.assertEqual(self.listing(edr_status='Зареєстровано')['total'],2)
@@ -101,13 +103,16 @@ class SupplierEdrFilterTests(unittest.TestCase):
         self.assertEqual(self.listing(edr_status='✅ Зареєстровано')['total'],1)
 
     def test_canonical_freshness_and_verification_date_filters(self):
+        checked = date.today().isoformat()
+        self.con.execute("UPDATE supplier_edr_profiles SET edr_checked_at=?", (checked,))
         self.con.execute("""INSERT INTO supplier_edr_verification_events
           (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
            source_row,changed_fields,snapshot_hash,snapshot_json,created_at)
-          VALUES('30067771','google_clarity','2026-09-03','Тестова УО','Google Sheets','',
-                 'ЮО',2,'[]','freshness-fixture','{}','2026-09-03T10:00:00Z')""")
+          VALUES('30067771','google_clarity',?,'Тестова УО','Google Sheets','',
+                 'ЮО',2,'[]','freshness-fixture','{}',?)""",
+          (checked, checked + 'T10:00:00Z'))
         self.con.commit()
-        recent=self.listing(freshness='lt30',verification_from='2026-09-01',verification_to='2026-09-04')
+        recent=self.listing(freshness='lt30',verification_from=checked,verification_to=checked)
         self.assertEqual([row['code'] for row in recent['items']],['30067771','3038301896'])
         self.assertEqual(recent['items'][0]['edr_freshness_marker'],'🟢 <30 днів')
         self.assertEqual(recent['items'][0]['edr_verification_officer'],'Тестова УО')

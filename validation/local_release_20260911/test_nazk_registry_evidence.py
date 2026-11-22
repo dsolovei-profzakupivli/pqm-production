@@ -13,9 +13,11 @@ import reference_directories as refs
 class DurableRegistryEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "fixture.sqlite3"
         refs.init_reference_tables(self.path)
         self.con = sqlite3.connect(self.path)
+        self.addCleanup(self.con.close)
         self.con.executescript("""
           CREATE TABLE supplier_nazk_checks(id INTEGER PRIMARY KEY,result TEXT,workflow_status TEXT);
           INSERT INTO supplier_nazk_checks VALUES(112,NULL,'needs_review');
@@ -37,9 +39,11 @@ class DurableRegistryEvidenceTests(unittest.TestCase):
                          "match_status": "candidate", "created_at": "2026-09-11"}]}}
         self.plan = evidence.make_plan(self.con, self.recovery, "2026-09-16T00:00:00Z")
 
-    def tearDown(self):
-        self.con.close()
-        self.tmp.cleanup()
+    def test_init_reference_tables_closes_connection_before_return(self):
+        probe = Path(self.tmp.name) / "connection-close-probe.sqlite3"
+        refs.init_reference_tables(probe)
+        probe.unlink()
+        self.assertFalse(probe.exists())
 
     def apply(self, plan=None):
         plan = plan or self.plan

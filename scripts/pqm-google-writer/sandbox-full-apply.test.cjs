@@ -131,32 +131,46 @@ function setGoogleCell(f, column, value) {
   if (column === 8) cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy'}};
 }
 
+function setGoogleVerificationTimestamp(f, date, time = '14:30:00') {
+  const [hour, minute, second] = time.split(':').map(Number);
+  const serial = f.context.pqmGoogleDate_(date) + (hour * 3600 + minute * 60 + second) / 86400;
+  const cell = f.raw.get('1:2')[8];
+  cell.userEnteredValue = {numberValue: serial};
+  cell.effectiveValue = {numberValue: serial};
+  const [year, month, day] = date.split('-');
+  cell.formattedValue = `${day}.${month}.${year} ${time}`;
+  cell.userEnteredFormat = {numberFormat: {type: 'DATE', pattern: 'dd.MM.yyyy HH:mm:ss'}};
+}
+
 test('eight complete daily cycles converge across real morning and evening code', () => {
   const python = process.env.PQM_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   const repo = process.env.PQM_PERMANENT_REPO || path.resolve(__dirname, '../..');
   const bridge = path.join(repo, 'validation/local_release_20260911/daily_cycle_evening_fixture.py');
   const scenarios = [
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A', final: ['2026-09-20', 'Officer A']},
-    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-25', go: 'Officer B', final: ['2026-09-25', 'Officer B']},
-    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer B', final: ['2026-09-20', 'Officer B']},
+    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-25', timestamp: true,
+      go: 'Officer B', final: ['2026-09-25', 'Officer B']},
+    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer B',
+      final: ['2026-09-20', 'Officer A'], dateOnlyPreserved: true},
     {pqm: '2026-09-25', po: 'Officer B', google: '2026-06-05', go: 'Officer A', final: ['2026-09-25', 'Officer B']},
     {pqm: '2026-09-25', po: 'Officer B', google: '2026-09-25', go: 'Officer B',
       daytime: {i: '2026-06-05', l: 'Officer A'}, final: ['2026-09-25', 'Officer B']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
       startingGjkm: ['Old G', '2026-09-20', 'Old K', 'Old M'],
       daytime: {g: 'Changed G', j: '', k: 'Changed K', m: ''},
-      final: ['2026-09-20', 'Officer A']},
+      daytimeTimestamp: '2026-09-25', final: ['2026-09-25', 'Officer A']},
     {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer A',
       e: 'Немає інформації', final: ['2026-09-20', 'Officer A']},
-    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-20', go: 'Officer B',
-      e: 'Зареєстровано', factual: 'Припинено', final: ['2026-09-20', 'Officer B']}
+    {pqm: '2026-09-20', po: 'Officer A', google: '2026-09-25', timestamp: true, go: 'Officer B',
+      e: 'Зареєстровано', factual: 'Припинено', final: ['2026-09-25', 'Officer B']}
   ];
   for (const [index, s] of scenarios.entries()) {
     const f = fixture(), item = f.body.items[0];
     f.context.PQM_SANDBOX_FULL_CHUNK_MAX_CELLS = 6;
     item.verification_date = s.pqm; item.verification_officer = s.po;
     item.edr_status_current = s.factual || 'Зареєстровано';
-    setGoogleCell(f, 8, f.context.pqmGoogleDate_(s.google));
+    if (s.timestamp) setGoogleVerificationTimestamp(f, s.google);
+    else setGoogleCell(f, 8, f.context.pqmGoogleDate_(s.google));
     setGoogleCell(f, 11, s.go);
     if (s.startingGjkm) for (const [position, column] of [6, 9, 10, 12].entries()) {
       setGoogleCell(f, column, s.startingGjkm[position]);
@@ -170,9 +184,13 @@ test('eight complete daily cycles converge across real morning and evening code'
       const column = {i: 8, l: 11, g: 6, j: 9, k: 10, m: 12}[key];
       setGoogleCell(f, column, key === 'i' ? f.context.pqmGoogleDate_(value) : value);
     }
+    if (s.daytimeTimestamp) setGoogleVerificationTimestamp(f, s.daytimeTimestamp);
     const cell = column => f.raw.get('1:2')[column].effectiveValue;
     const value = column => cell(column).stringValue ?? cell(column).numberValue ?? '';
-    const google = {i: f.context.pqmGoogleCalendarDate_(value(8)).value, l: value(11),
+    const verificationCell = f.raw.get('1:2')[8];
+    const exactTimestamp = ((verificationCell.userEnteredFormat || {}).numberFormat || {}).pattern || '';
+    const google = {i: exactTimestamp.includes('HH:mm:ss') ? verificationCell.formattedValue :
+      f.context.pqmGoogleCalendarDate_(value(8)).value, l: value(11),
       e: value(4), g: value(6), j: value(9), k: value(10), m: value(12)};
     const run = spawnSync(python, [bridge], {cwd: repo, encoding: 'utf8',
       env: {...process.env, PYTHONIOENCODING: 'utf-8',
@@ -182,6 +200,10 @@ test('eight complete daily cycles converge across real morning and evening code'
     assert.equal(run.status, 0, `scenario ${index + 1}: ${run.stderr}`);
     const evening = JSON.parse(run.stdout);
     assert.deepEqual([evening.date, evening.officer], s.final, `scenario ${index + 1}`);
+    if (s.timestamp || s.daytimeTimestamp) assert.equal(evening.first.newer_verification_accepted, 1,
+      `scenario ${index + 1}: exact newer timestamp authorizes the update`);
+    if (s.dateOnlyPreserved) assert.equal(evening.first.date_only_verification_preserved, 1,
+      `scenario ${index + 1}: date-only source cannot authorize a same-day update`);
     assert.equal(evening.second.verification_event_changes, 0, `scenario ${index + 1}: repeat evening`);
     if (index === 5) assert.deepEqual(evening.gjkm, ['Changed G', '', 'Changed K', '']);
     if (index === 7) assert.equal(evening.status, 'Припинено');

@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,11 +16,12 @@ import reference_directories as ref
 class AmcuRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'test.sqlite3'
         ref.init_reference_tables(self.path)
         self.old = ('old', '1', '', '', '1', '2026-09-10', 'AMCU', 'OLD', '12345678', '', '{}')
         self.new = ('new', '1', '', '', '2', '2026-09-14', 'AMCU', 'NEW', '12345678', '', '{}')
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             con.execute('INSERT INTO amcu_registry VALUES (?,?,?,?,?,?,?,?,?,?,?)', self.old)
             con.execute("UPDATE reference_sync_state SET row_count=1,source_updated_at='2026-09-10' WHERE source='amcu'")
 
@@ -27,14 +29,13 @@ class AmcuRecoveryTests(unittest.TestCase):
         self.assertFalse(ref.LOCK.locked())
         self.assertFalse(ref.AMCU_LOCK.locked())
         ref.AMCU_ERRORS.pop(str(self.path.resolve()), None)
-        self.tmp.cleanup()
 
     def rows(self):
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             return con.execute('SELECT * FROM amcu_registry').fetchall()
 
     def persisted(self):
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             return con.execute("SELECT status FROM reference_sync_state WHERE source='amcu'").fetchone()[0]
 
     def test_restart_running_is_read_only_interrupted_projection(self):
@@ -102,7 +103,7 @@ class AmcuRecoveryTests(unittest.TestCase):
         self.assertEqual(self.rows(), [self.old])
 
     def test_database_failure_rolls_back_and_releases_lock(self):
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             con.execute("CREATE TRIGGER fail_amcu BEFORE INSERT ON amcu_registry BEGIN SELECT RAISE(ABORT, 'test write failure'); END")
         with patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [self.new])):
             ref.refresh_amcu(self.path)
@@ -122,12 +123,12 @@ class AmcuRecoveryTests(unittest.TestCase):
         self.assertEqual(self.rows(), [self.old])
 
     def test_amcu_has_no_nazk_callback_or_state_mutation(self):
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             before = con.execute("SELECT * FROM reference_sync_state WHERE source='nazk'").fetchone()
         with patch.object(ref, 'refresh_nazk') as nazk, patch.object(ref, '_amcu_rows_bounded', return_value=('fixture', [self.new])):
             ref.refresh_amcu(self.path)
         nazk.assert_not_called()
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             self.assertEqual(before, con.execute("SELECT * FROM reference_sync_state WHERE source='nazk'").fetchone())
 
     def test_amcu_does_not_take_or_release_nazk_lock(self):
@@ -144,11 +145,12 @@ class AmcuRecoveryTests(unittest.TestCase):
         from openpyxl import Workbook
         wb = Workbook(); ws = wb.active
         ws.append(['Ідентифікаційний код', "Суб'єкт порушення", 'Дата рішення', '№ рішення'])
-        ws.append(['12345678', 'SYNTHETIC', '14.09.2026', '1'])
+        ws.append(['12345678', 'ТОВ «Тест»', '14.09.2026', '1'])
         raw = io.BytesIO(); wb.save(raw); wb.close()
         source, rows = ref._amcu_rows_bounded(raw.getvalue(), 'synthetic.xlsx')
         self.assertEqual(source, 'synthetic.xlsx')
         self.assertEqual(rows[0][5], '2026-09-14')
+        self.assertEqual(rows[0][7], 'ТОВ «ТЕСТ»')
         self.assertEqual(self.rows(), [self.old])
 
 

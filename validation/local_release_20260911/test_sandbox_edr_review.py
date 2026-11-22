@@ -43,7 +43,7 @@ class SandboxEdrReviewTests(unittest.TestCase):
           VALUES('12345678','OLD NAME','Неактуально','2026-09-15','OLD OFFICER',
                  'OLD TERMINATION','OLD NOTE','old')""")
         con.commit()
-        google = row(checked='16.09.2026', officer='NEW OFFICER')
+        google = row(checked='16.09.2026 10:00:00', officer='NEW OFFICER')
         google[6] = ''
         google[12] = ''
         source = snapshot(google)

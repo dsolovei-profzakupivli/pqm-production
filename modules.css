@@ -93,3 +93,14 @@
 @media(max-width:1050px){.violation-review-header{grid-template-columns:repeat(2,minmax(0,1fr))}.bids-status-grid{grid-template-columns:repeat(3,minmax(120px,1fr))}.google-runtime-panel dl,.bids-sync-panel dl,.powerbi-panel dl{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:700px){.reference-toolbar>div:first-child{width:100%;justify-content:space-between}.operational-responses{grid-template-columns:1fr}.operational-responses>*{grid-column:1!important}.operational-response{grid-template-columns:1fr}.operational-edit-response{justify-self:start}.violation-guidance-grid,.violation-review-header{grid-template-columns:1fr}.supplier-nazk-completed-history table{min-width:850px}.bids-status-grid,.google-runtime-panel dl,.bids-sync-panel dl,.powerbi-panel dl{grid-template-columns:1fr}}
 @media(max-width:520px){.section-header{align-items:stretch;flex-direction:column}.section-actions{justify-content:flex-start}.reference-tabs{gap:0}.reference-tabs>button{flex:1 1 auto;padding-inline:8px}.reference-toolbar{align-items:stretch}.reference-toolbar>*{width:100%;min-width:0!important}.scheduler-status-panel,.google-runtime-panel,.bids-sync-panel,.powerbi-panel,.admin-data-section{padding:11px}.admin-sync-actions{flex-wrap:wrap}.admin-sync-actions button{flex:1 1 170px}}
+/* Framework filters: one row when wide, naturally wrapped on narrow screens. */
+#frameworkAnalyticsView .frameworks-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+#frameworkAnalyticsView .frameworks-toolbar>*{flex:0 0 auto;width:auto;min-width:0;box-sizing:border-box}
+#frameworkAnalyticsView #frameworksSearch{flex:1 1 300px;min-width:220px}
+#frameworkAnalyticsView #frameworksStatus{width:145px}
+#frameworkAnalyticsView #frameworksDk{width:125px}
+#frameworkAnalyticsView .frameworks-toolbar>label{display:flex;gap:6px}
+#frameworkAnalyticsView .frameworks-toolbar input[type=date]{width:135px}
+#frameworkAnalyticsView .frameworks-toolbar input,#frameworkAnalyticsView .frameworks-toolbar select,#frameworkAnalyticsView .frameworks-toolbar button{height:38px;padding:8px 10px;box-sizing:border-box}
+#frameworkAnalyticsView .frameworks-toolbar .system-width-button{width:38px;flex:0 0 38px}
+@media(max-width:480px){#frameworkAnalyticsView #frameworksSearch{min-width:0;flex-basis:100%}#frameworkAnalyticsView .frameworks-toolbar{padding:10px}}

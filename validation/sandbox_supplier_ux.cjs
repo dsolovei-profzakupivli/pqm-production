@@ -37,23 +37,48 @@ assert.match(sandboxCss,/\.sandbox-brand-copy strong\s*\{[^}]*font-size:15px/);
 assert.match(sandboxCss,/\.sandbox-brand-copy small\s*\{[^}]*font-size:9\.5px;line-height:1\.1;margin-top:1px/);
 assert.match(navigation,/function update\(\)\{button\.hidden=!canShowBack\(current\);button\.disabled=restoring/);
 assert.match(navigation,/const back=\(\)=>\{if\(current\?\.previous&&!restoring\)\{snapshot\(\);history\.back\(\)\}\}/);
-assert.match(widths,/colgroup\[data-system-widths\]/);
 assert.match(widths,/table\.style\.tableLayout='fixed'/);
-assert.match(widths,/table\.closest\('#suppliersView'\)&&!isVisible\(table\)\)return;apply\(table,saved\[key\]\|\|\{\}\)/);
-assert.match(widths,/saved\[key\]=\{\.\.\.next/);
+const widthInstall=section(widths,'function install(){','function toolbarForFallback(');
+assert.match(widthInstall,/if\(!isVisible\(table\)\)return;[\s\S]*?apply\(table,saved\[key\]\|\|\{\}\)/,
+  'Hidden tables must be skipped before saved widths are applied');
+assert.match(widths,/new MutationObserver\(schedule\)\.observe\(document\.body/,
+  'Visibility changes must schedule a fresh installation pass');
+assert.match(widths,/saved\[key\]=result\.widths\|\|settings/,
+  'Saved settings must use the server-confirmed complete layout');
+const appliedLayouts=[],lifecycleCalls=[];
+const toolbar={querySelector(){return null},append(button){this.button=button}};
+const supplierTable={id:'supplierRegistryTable',dataset:{},tHead:{rows:[{cells:[{}]}]},closest(selector){return selector==='[hidden]'&&this.hidden?this:null},getBoundingClientRect(){return {width:this.hidden?0:470}},hidden:true};
+const lifecycleContext=vm.createContext({
+  document:{body:{dataset:{authRole:'admin'}},querySelectorAll(selector){return selector==='table'?[supplierTable]:[]},createElement(){return {dataset:{},setAttribute(){}}}},
+  dialog:{open:false},saved:{'suppliersView:supplierRegistryBody':{supplier:240,status:150}},
+  CSS:{escape:value=>value},getComputedStyle:()=>({display:'table',visibility:'visible'}),
+  defaultsFor(){lifecycleCalls.push('defaults')},bindResize(){lifecycleCalls.push('resize')},
+  tableKey:()=> 'suppliersView:supplierRegistryBody',
+  apply(table,layout){appliedLayouts.push({table,layout})},toolbarFor:()=>toolbar,
+});
+vm.runInContext(section(widths,'function isVisible(element){','function toolbarFor(table){'),lifecycleContext);
+vm.runInContext(section(widths,'function install(){','function toolbarForFallback('),lifecycleContext);
+lifecycleContext.install();
+assert.equal(appliedLayouts.length,0,'A hidden supplier table must not receive saved widths');
+assert.equal(lifecycleCalls.length,0,'A hidden supplier table must not be measured or bound');
+supplierTable.hidden=false;lifecycleContext.install();
+assert.equal(appliedLayouts.length,1,'The supplier table receives saved settings after becoming visible');
+assert.deepEqual({...appliedLayouts[0].layout},{supplier:240,status:150});
 const widthContext=vm.createContext({WeakMap,Number,Math,Set,Array,document:{createElement(tag){return {style:{},dataset:{},children:[],replaceChildren(...children){this.children=children}}}}});
-vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}",widthContext);
+vm.runInContext("const defaultWidths=new WeakMap();function columnKey(th){return th.dataset.col}function isPersonalTable(){return false}function reorderTable(){}function heads(table){return table.tHead.rows[0].cells}function sizesFor(table,widths){return heads(table).map(th=>Number(widths[th.dataset.col])||th.defaultWidth)}function effectiveVisibility(table){return new Set(heads(table).map(th=>th.dataset.col))}function currentOrder(table){return heads(table).map(th=>th.dataset.col)}",widthContext);
+vm.runInContext(section(widths,'function applyLogical(table,widths){','let suppressClickUntil='),widthContext);
 vm.runInContext(section(widths,'function apply(table,widths){','const dialog='),widthContext);
-function widthTable(){const heads=['name','code','status'].map(col=>({dataset:{col},style:{},hidden:false,getBoundingClientRect(){return {width:col==='name'?240:80}}}));const row={cells:heads.map(()=>({style:{},hidden:false}))};return {tHead:{rows:[{cells:heads}]},tBodies:[{rows:[row]}],dataset:{},style:{},group:null,closest:()=>({}),querySelector(){return this.group},prepend(group){this.group=group}}}
+function widthTable(){const columns=['name','code','status'];const heads=columns.map(col=>({dataset:{col},style:{},hidden:false,colSpan:1,rowSpan:1,defaultWidth:col==='name'?240:80,getBoundingClientRect(){return {width:this.defaultWidth}}}));const row={cells:columns.map(()=>({style:{},hidden:false,colSpan:1,rowSpan:1})),dataset:{}};const style={setProperty(name,value){this[name]=value}};return {tHead:{rows:[{cells:heads,dataset:{}}]},tBodies:[{rows:[row]}],dataset:{},style,closest:()=>null,querySelector(){return null}}}
 const widthFixture=widthTable();widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tHead.rows[0].cells[1].style.width,'150px');
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
-assert.equal(widthFixture.group.children[1].style.width,'150px');
 assert.equal(widthFixture.style.width,'470px');
-widthFixture.tBodies[0].rows=[{cells:[{style:{}},{style:{}},{style:{}}]}];widthContext.apply(widthFixture,{code:150});
+widthFixture.tBodies[0].rows=[{cells:[{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1},{style:{},colSpan:1,rowSpan:1}],dataset:{}}];widthContext.apply(widthFixture,{code:150});
 assert.equal(widthFixture.tBodies[0].rows[0].cells[1].style.width,'150px');
 const afterReload=widthTable();widthContext.apply(afterReload,{code:150});
-assert.equal(afterReload.group.children[1].style.width,'150px');
+assert.equal(afterReload.tHead.rows[0].cells[1].style.width,'150px');
+assert.equal(afterReload.tBodies[0].rows[0].cells[1].style.width,'150px');
+assert.equal(afterReload.style.width,'470px');
 assert.match(css,/@media\(max-width:1280px\)\{[\s\S]*?\.topbar #mainNav\{order:5/);
 assert.equal(context.displayDateOnly('2026-09-09'),'09.09.2026');
 assert.equal(context.displayDate('2026-09-09'),'09.09.2026');
@@ -89,19 +114,34 @@ assert.match(app,/actions\.append\(link\)/);
 assert.match(css,/\.supplier-edr-actions a\{display:inline-flex;align-items:center;justify-content:center;min-height:32px/);
 const caseLabels=['genitive','dative','accusative'].map(value=>({dataset:{declensionCase:value},classList:{active:false,toggle(name,state){this.active=state}}}));
 const editorNodes=new Map();
-for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
+for(const id of ['declensionDialogTitle','declensionType','declensionOriginal','declensionGenitive','declensionDative','declensionAccusative','declensionComment','declensionDialogHint','declensionDialog','declensionSave'])editorNodes.set('#'+id,{value:'',textContent:'',showModal(){},focus(){}});
 for(const value of ['genitive','dative','accusative'])editorNodes.set(`#declensionDialog [data-declension-case="${value}"] input`,{focus(){}});
-const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:()=>caseLabels,editingDeclensionId:null,Set,Array});
-vm.runInContext(section(app,'function openDeclensionEditor(','function declensionLookup('),caseContext);
+const previewCalls=[];
+const caseContext=vm.createContext({$:selector=>editorNodes.get(selector),$$:selector=>{
+  if(selector==='#declensionDialog [data-declension-case]')return caseLabels;
+  if(selector==='#declensionDialog [data-declension-preview-control]')return [];
+  throw new Error('Unexpected editor selector: '+selector);
+},Set,Array,currentMe:{role:'admin',permissions:{'declension.manage':true}},prepareDeclensionEditorPreview:state=>{previewCalls.push(state)}});
+const stateDeclaration=app.match(/^let declensionItems=.*;$/m);
+assert.ok(stateDeclaration,'real application lexical state must be declared');
+vm.runInContext(stateDeclaration[0],caseContext);
+assert.equal(vm.runInContext('declensionPreviewState',caseContext),null);
+assert.equal(Object.hasOwn(caseContext,'declensionPreviewState'),false);
+// This unit tests opening/layout only; the complete preview lifecycle has its own browser suite.
+vm.runInContext(section(app,'function openDeclensionEditor(','function updateViolationCardDeclensionStatus('),caseContext);
 for(const [required,expected] of [[['dative'],[false,true,false]],[['genitive'],[true,false,false]],[['genitive','dative'],[true,true,false]],[[],[false,false,false]]]){
   caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},required);
   assert.deepEqual(caseLabels.map(label=>label.classList.active),expected);
 }
 caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'},['genitive','accusative'],{subject_label:'Постачальник'});
 assert.deepEqual(caseLabels.map(label=>label.hidden),[false,true,false]);
+assert.equal(vm.runInContext('declensionPreviewState',caseContext),null, 'legacy operational context does not start a preview');
+assert.equal(previewCalls.length,4);
 assert.match(modulesCss,/\.declension-form label\[hidden\]\{display:none\}/);
 caseContext.openDeclensionEditor({entity_type:'legal_entity',original:'Тест'});
 assert.deepEqual(caseLabels.map(label=>label.hidden),[false,false,false]);
+assert.equal(previewCalls.length,5);
+assert.equal(vm.runInContext('declensionPreviewState',caseContext),previewCalls.at(-1), 'opening uses the shared lexical state');
 const pendingNodes=new Map(),pendingNode=selector=>{if(!pendingNodes.has(selector))pendingNodes.set(selector,{value:'',textContent:'',hidden:false,close(){}});return pendingNodes.get(selector)};
 const pendingContext=vm.createContext({$:pendingNode,declensionItems:[{entity_type:'legal_entity',original:'Тест',genitive:'Тесту',dative:''}],declensionReturnContext:null,showModule(){},setReferenceTab(){},loadDeclensionOverrides:async()=>{},declensionLookup:value=>String(value||'').toLowerCase().trim(),openDeclensionEditor(_item,cases){pendingContext.selected=cases}});
 vm.runInContext(section(app,'function remainingDeclensionItems(','async function returnToDeclensionReport(')+section(app,'async function openDocumentDeclension(','async function openDeclensionFromValidation('),pendingContext);
@@ -135,15 +175,24 @@ renderTypesContext.renderOperationalTaskTypes({nazk_check:3,amcu_exclusion:2,war
 for(const type of ['nazk_check','amcu_exclusion','warning_block','termination_exclusion'])assert.match(renderedTypes.innerHTML,new RegExp(`data-task-type="${type}"`));
 assert.match(renderedTypes.innerHTML,/data-task-type="warning_block" aria-pressed="true"/);
 assert.match(renderedTypes.innerHTML,/data-task-type="nazk_check" aria-pressed="false"/);
-let typeReloads=0;
-const typeSelect={value:''},typeKpiNode={},typeActions=vm.createContext({$:selector=>selector==='#operationalTaskTypes'?typeKpiNode:typeSelect,loadOperationalTasks(){typeReloads++}});
-vm.runInContext(section(app,"$('#operationalTaskTypes').onclick=","function operationalTaskEmptyMessage"),typeActions);
-for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
-  const typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
-  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);
-  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,'');
+let typeReloads=0;const typeSnapshots=[];
+const typeNodes=new Map(),typeKpiNode={};
+const typeActions=vm.createContext({$:selector=>{if(selector==='#operationalTaskTypes')return typeKpiNode;if(!typeNodes.has(selector))typeNodes.set(selector,{value:''});return typeNodes.get(selector)},operationalTaskTimer:null,operationalBasisDirection:'desc',clearTimeout(){},loadOperationalTasks(){typeReloads++;typeSnapshots.push(JSON.stringify(typeActions.operationalTaskParams()))}});
+vm.runInContext(app.split(/\r?\n/).filter(line=>line.startsWith('function operationalTaskParams()')||line.startsWith("$('#operationalTaskTypes').onclick=")).join('\n'),typeActions);
+const typeSelect=typeActions.$('#operationalTaskType'),statusSelect=typeActions.$('#operationalTaskStatus');
+for(const status of ['completed','awaiting_response'])for(const type of ['amcu_exclusion','nazk_check','warning_block','termination_exclusion']){
+  const shared={operationalTaskSearch:'тест 0001',operationalTaskOfficer:'42',operationalTaskDateFrom:'2026-10-17'};
+  for(const [id,value] of Object.entries(shared))typeActions.$('#'+id).value=value;
+  typeSelect.value='';statusSelect.value=status;
+  const before=JSON.stringify(typeActions.operationalTaskParams()),typeEvent={target:{closest:()=>({dataset:{taskType:type}})}};
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,type);assert.equal(statusSelect.value,status);
+  assert.equal(JSON.stringify(typeActions.operationalTaskParams()),JSON.stringify({...JSON.parse(before),type}));
+  typeKpiNode.onclick(typeEvent);assert.equal(typeSelect.value,'');assert.equal(statusSelect.value,status);
+  assert.equal(JSON.stringify(typeActions.operationalTaskParams()),before);
+  for(const [id,value] of Object.entries(shared))assert.equal(typeActions.$('#'+id).value,value);
 }
-assert.equal(typeReloads,8);
+assert.equal(typeReloads,16);
+for(let i=0;i<typeSnapshots.length;i+=2){assert.notEqual(typeSnapshots[i],typeSnapshots[i+1]);assert.equal(JSON.parse(typeSnapshots[i]).status_group,JSON.parse(typeSnapshots[i+1]).status_group)}
 assert.match(app,/operationalTaskTypeMarker\(item\.task_type\)/);
 assert.match(app,/cell\.classList\.add\('supplier-code-action-cell'\)/);
 assert.match(app,/line\.append\(code,action\);cell\.classList\.add\('supplier-code-action-cell'\);cell\.replaceChildren\(line\)/);

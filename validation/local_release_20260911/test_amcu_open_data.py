@@ -1,5 +1,6 @@
 """Offline AMCU adapter/source/freshness tests; synthetic data only."""
 import copy
+from contextlib import closing
 import io
 import json
 import sqlite3
@@ -25,18 +26,18 @@ def workbook(code_headers=('ЄДРПОУ',)):
 class AmcuOpenDataTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.db = Path(self.tmp.name) / 'synthetic.sqlite3'
         ref.init_reference_tables(self.db)
         self.old = ('old', '1', '', '', '1', '2026-09-10', 'AMCU', 'OLD', '12345678', '', '{}')
         self.new = ('new', '1', '', '', '2', '2026-09-14', 'AMCU', 'NEW', '12345678', '', '{}')
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute('INSERT INTO amcu_registry VALUES (?,?,?,?,?,?,?,?,?,?,?)', self.old)
             con.execute("UPDATE reference_sync_state SET row_count=1,source_updated_at='2026-09-11' WHERE source='amcu'")
 
     def tearDown(self):
         self.assertFalse(ref.AMCU_LOCK.locked())
         ref.AMCU_ERRORS.pop(str(self.db.resolve()), None)
-        self.tmp.cleanup()
 
     def resource(self, day, stamp='2026-09-07', **overrides):
         rid = '2a69c909-3df8-4249-bd6b-1ff874ae708c'
@@ -55,7 +56,7 @@ class AmcuOpenDataTests(unittest.TestCase):
             return ref.discover_amcu_open_data()
 
     def rows(self):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             return con.execute('SELECT * FROM amcu_registry').fetchall()
 
     def refresh(self, rows):
@@ -171,7 +172,7 @@ class AmcuOpenDataTests(unittest.TestCase):
         self.assertEqual(self.rows(), [self.old])
 
     def test_large_count_drop_rejected_but_small_rolling_change_allowed(self):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute('DELETE FROM amcu_registry')
             con.executemany('INSERT INTO amcu_registry VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                             [(str(i), *self.old[1:]) for i in range(100)])

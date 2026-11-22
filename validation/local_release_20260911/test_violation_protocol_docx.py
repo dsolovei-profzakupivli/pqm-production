@@ -43,7 +43,7 @@ BASE_VALUES = {
     "rejection_reason": "Фактична підстава відхилення", "refusal_date": "04.09.2026",
     "refusal_outgoing_number": "42", "refusal_document": "https://example.test/refusal",
     "supplier_response": "Фактичне пояснення постачальника", "contract_date": "03.09.2026",
-    "contract_number": "C-77",
+    "contract_number": "C-77", "review_notes": "Причина відмови — синтетичний текст УО.",
 }
 
 
@@ -82,6 +82,62 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         )
         return output
 
+    def test_publication_date_in_all_three_synthetic_protocols(self):
+        for kind in ("warning", "decline_p49_1_2", "decline_p49_3"):
+            with self.subTest(kind=kind):
+                output = self.build(kind, values={**BASE_VALUES,
+                    "procurement_date": "28.09.2026", "report_date": "06.10.2026",
+                    "rejection_date": "05.10.2026", "winner_date": "01.10.2026"})
+                text = all_text(output)
+                self.assertIn("28.09.2026 оголосив", text)
+                self.assertNotIn("06.10.2026 оголосив", text)
+                self.assertNotIn("05.10.2026 оголосив", text)
+                with self.assertRaises(generator.ProtocolContextValidationError):
+                    self.build(kind, values={**BASE_VALUES, "procurement_date": ""})
+
+    def test_late_rejection_warning_missing_civil_block_is_allowed_only_when_not_required(self):
+        import server
+        supplied = os.environ.get("PQM_WARNING_TEMPLATE_FIXTURE")
+        if supplied:
+            runtime = Path(supplied)
+            self.assertEqual(sha256(runtime), "a7d3ca6977d3247dc7962fae23156bf3ccded214c51f94fee8d0c45f47d1915a")
+        else:
+            # Portable regression fixture; no runtime/packaged template is modified.
+            source = Document(generator.TEMPLATES["warning"])
+            paragraphs = list(source.paragraphs)
+            start = next(i for i, p in enumerate(paragraphs) if "{{#if decision.civil_code_basis" in p.text)
+            end = next(i for i in range(start + 1, len(paragraphs)) if "{{/if}}" in paragraphs[i].text)
+            for p in paragraphs[start:end + 1]:
+                p._p.getparent().remove(p._p)
+            runtime = Path(self.temp.name) / "warning-without-civil-fixture.docx"
+            source.save(runtime)
+        original_hash = sha256(runtime)
+        self.assertNotIn("Цивільного кодексу України", all_text(runtime))
+        context = {"rejection_present": True, "rejected_before_deadline": False, "day_5_shifted": True}
+        required = server.violation_civil_code_required(
+            {"reason": "contractBreach", "defendant_statements": []}, context, {"internal_decision": "warning"})
+        self.assertFalse(required)
+        justification = "Обґрунтування УО збережене дослівно"
+        values = {**BASE_VALUES, "report_id": "UA-D-2026-10-06-000002",
+                  "protocol_number": "769-2", "protocol_date": "12.10.2026"}
+        with patch.dict(generator.TEMPLATES, {"warning": runtime}), \
+                patch.object(generator, "ensure_runtime_templates"):
+            output = Path(self.temp.name) / "769-2-fixture.docx"
+            generator.build_violation_protocol_docx("warning", output, values, justification, [], [],
+                {"has_civil_code_basis": required, "has_written_refusal": True, "has_contract": True})
+            text = all_text(output)
+            self.assertIn(justification, text)
+            self.assertIn(values["violation_description"], text)
+            self.assertIn("769-2", text)
+            self.assertIn("UA-D-2026-10-06-000002", text)
+            self.assertNotIn("Цивільного кодексу України", text)
+            mandatory_output = Path(self.temp.name) / "required-civil-fixture.docx"
+            with self.assertRaisesRegex(ValueError, "відсутній фрагмент ЦКУ"):
+                generator.build_violation_protocol_docx("warning", mandatory_output, values, justification,
+                    [], [], {"has_civil_code_basis": True})
+            self.assertFalse(mandatory_output.exists())
+        self.assertEqual(sha256(runtime), original_hash)
+
     def test_decision_links_are_real_docx_relationships(self):
         urls = {
             "procurement_url": "https://prozorro.gov.ua/uk/tender/UA-2026-TEST",
@@ -96,6 +152,28 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             self.assertIn(url, relationships)
         self.assertEqual(relationships.count(urls["winner_notice_url"]), 1)
         self.assertEqual(relationships.count(urls["rejection_decision_url"]), 1)
+
+    def test_contract_number_links_to_saved_url_without_printing_raw_url(self):
+        url = "https://example.test/signed-contract"
+        values = {**BASE_VALUES, "contract_date": "14.08.2026",
+                  "contract_number": "2026/08-25", "contract_url": url}
+        for protocol_type in ("decline_p49_1_2", "decline_p49_3"):
+            with self.subTest(protocol_type=protocol_type):
+                linked = self.build(protocol_type, values=values)
+                text = all_text(linked)
+                self.assertIn("14.08.2026", text)
+                self.assertIn("2026/08-25", text)
+                self.assertNotIn(url, text)
+                with zipfile.ZipFile(linked) as package:
+                    document_xml = package.read("word/document.xml").decode("utf-8")
+                    relations_xml = package.read("word/_rels/document.xml.rels").decode("utf-8")
+                self.assertIn("2026/08-25", document_xml)
+                self.assertIn("w:hyperlink", document_xml)
+                self.assertIn(url, relations_xml)
+                plain = self.build(protocol_type, values={**values, "contract_url": ""})
+                self.assertIn("2026/08-25", all_text(plain))
+                with zipfile.ZipFile(plain) as package:
+                    self.assertNotIn(url, package.read("word/_rels/document.xml.rels").decode("utf-8"))
 
     def test_decision_dates_and_header_identifiers_link_to_exact_evidence(self):
         urls = {
@@ -284,6 +362,24 @@ class ViolationProtocolDocxTests(unittest.TestCase):
         self.assertEqual(paragraph.text, source)
         self.assertFalse(paragraph._p.xpath(".//w:hyperlink"))
 
+    def test_optional_report_description_is_blank_without_fallback(self):
+        for source in ("", None):
+            for protocol_type in EXPECTED_HASHES:
+                with self.subTest(source=source, protocol_type=protocol_type):
+                    output = self.build(protocol_type, values={**BASE_VALUES,
+                        "violation_description": source})
+                    description = Document(output).tables[1].rows[1].cells[0].text
+                    self.assertEqual(description, "")
+                    self.assertNotIn("не зазначено", all_text(output))
+
+    def test_other_required_template_values_remain_required(self):
+        values = {**BASE_VALUES, "violation_description": "",
+                  "supplier_name": ""}
+        with self.assertRaises(generator.ProtocolContextValidationError) as caught:
+            self.build(values=values)
+        self.assertIn("supplier_name", caught.exception.missing)
+        self.assertNotIn("violation_description", caught.exception.missing)
+
     def test_written_refusal_uses_clickable_label_without_visible_url(self):
         url = "https://example.test/refusal-evidence"
         for protocol_type in ("warning", "decline_p49_1_2"):
@@ -391,17 +487,37 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             self.assertIsNotNone(size)
             self.assertEqual(size.get(qn("w:val")), "24")
 
-    def test_local_unavailable_flag_does_not_claim_source_file_is_damaged(self):
-        output = self.build(customer=[{
-            "id": "c1", "title": "Ламаний файл.docx", "url": "https://example.test/broken",
-            "file_unavailable": True,
-        }])
+    def test_customer_unavailable_flag_adds_only_the_approved_formatted_note(self):
+        note = ("Документ, доданий замовником до звернення, не відкривається, "
+                "що унеможливлює ознайомлення з його змістом.")
+        output = self.build(customer=[
+            {"id": "c1", "title": "Позначений файл.docx", "url": "https://example.test/broken",
+             "file_unavailable": True},
+            {"id": "c2", "title": "Доступний файл.pdf", "url": "https://example.test/ok",
+             "file_unavailable": False},
+        ])
         text = all_text(output)
+        self.assertEqual(text.count(note), 1)
+        self.assertIn("Позначений файл.docx", text)
+        self.assertIn("Доступний файл.pdf", text)
         self.assertNotIn("технічно пошкоджен", text.lower())
         self.assertNotIn("0 байт", text.lower())
+        document = Document(output)
+        marked = [run for paragraph in document.paragraphs for run in paragraph.runs if note in run.text]
+        for table in document.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        marked.extend(run for run in paragraph.runs if note in run.text)
+        self.assertEqual(len(marked), 1)
+        self.assertEqual(marked[0].font.size.pt, 8)
+        self.assertTrue(marked[0].italic)
+        self.assertFalse(marked[0].bold)
+        self.assertEqual(str(marked[0].font.color.rgb), "000000")
         with zipfile.ZipFile(output) as package:
             relationships = package.read("word/_rels/document.xml.rels").decode("utf-8")
         self.assertIn("https://example.test/broken", relationships)
+        self.assertIn("https://example.test/ok", relationships)
 
     def test_supplier_unavailable_adds_no_generated_wording(self):
         output = self.build(supplier=[{
@@ -753,6 +869,85 @@ class ViolationProtocolDocxTests(unittest.TestCase):
             self.assertEqual(sha256(templates["warning"]), original)
             self.assertEqual(list(runtime.glob(".warning.*.tmp.docx")), [])
             self.assertEqual(list((runtime / "_versions").glob("warning_*.docx")), [])
+
+    def test_individual_decline_docx_uses_comment_verbatim_and_keeps_justification_separate(self):
+        values = {**BASE_VALUES, "review_notes": "SYNTHETIC-REVIEW-NOTES-EXACT-731.",
+                  "decision_justification": "Окреме повне обґрунтування рішення."}
+        output = Path(self.temp.name) / "individual-decline.docx"
+        generator.build_violation_protocol_docx(
+            "decline_individual_review", output, values, values["decision_justification"],
+            [], [], {"has_written_refusal": True, "has_contract": False,
+                     "has_civil_code_basis": False, "has_court_decision": False,
+                     "has_supplier_response": True},
+        )
+        text = all_text(output)
+        self.assertIn("SYNTHETIC-REVIEW-NOTES-EXACT-731.", text)
+        self.assertIn("Окреме повне обґрунтування рішення.", text)
+        self.assertNotIn("{{", text)
+        self.assertNotIn("winner_date", generator._template_tokens(
+            generator.TEMPLATES["decline_individual_review"]))
+
+    def test_individual_decline_docx_requires_review_notes(self):
+        values = {**BASE_VALUES, "review_notes": ""}
+        with self.assertRaisesRegex(generator.ProtocolContextValidationError, "Коментар УО"):
+            self.build("decline_individual_review", values=values)
+
+    def test_p49_3_replacement_may_remove_winner_date_and_generates_without_it(self):
+        runtime = Path(self.temp.name) / "runtime"
+        templates = {key: runtime / path.name for key, path in generator.TEMPLATES.items()}
+        replacement = Path(self.temp.name) / "decline_p49_3_without_winner_date.docx"
+        output = Path(self.temp.name) / "generated_p49_3.docx"
+        with patch.object(generator, "TEMPLATE_DIR", runtime), patch.object(generator, "TEMPLATES", templates):
+            generator.ensure_runtime_templates()
+            document = Document(templates["decline_p49_3"])
+            winner_paragraphs = [p for p in generator._all_paragraphs(document)
+                                 if "{{ winner_date }}" in p.text]
+            self.assertTrue(winner_paragraphs)
+            for paragraph in winner_paragraphs:
+                paragraph._p.getparent().remove(paragraph._p)
+            document.save(replacement)
+            original_hash = sha256(templates["decline_p49_3"])
+            generator.replace_runtime_template("decline_p49_3", replacement)
+            self.assertNotEqual(sha256(templates["decline_p49_3"]), original_hash)
+            self.assertEqual(len(list((runtime / "_versions").glob("decline_p49_3_*.docx"))), 1)
+            self.assertNotIn("winner_date", generator._template_tokens(templates["decline_p49_3"]))
+            values = dict(BASE_VALUES)
+            values.pop("winner_date")
+            generator.build_violation_protocol_docx(
+                "decline_p49_3", output, values, "Синтетичне обґрунтування рішення",
+                [], [], {"has_written_refusal": True, "has_contract": True,
+                         "has_contract_security": True, "has_civil_code_basis": True,
+                         "has_court_decision": True, "has_supplier_response": True},
+            )
+            self.assertTrue(output.is_file())
+
+    def test_p49_3_removal_exception_does_not_allow_removing_other_markers(self):
+        runtime = Path(self.temp.name) / "runtime"
+        templates = {key: runtime / path.name for key, path in generator.TEMPLATES.items()}
+        replacement = Path(self.temp.name) / "decline_p49_3_without_supplier.docx"
+        with patch.object(generator, "TEMPLATE_DIR", runtime), patch.object(generator, "TEMPLATES", templates):
+            generator.ensure_runtime_templates()
+            document = Document(templates["decline_p49_3"])
+            for paragraph in list(generator._all_paragraphs(document)):
+                if "{{ supplier_name }}" in paragraph.text:
+                    paragraph._p.getparent().remove(paragraph._p)
+            document.save(replacement)
+            with self.assertRaisesRegex(ValueError, "supplier_name"):
+                generator.replace_runtime_template("decline_p49_3", replacement)
+
+    def test_other_protocol_replacement_cannot_remove_winner_date(self):
+        runtime = Path(self.temp.name) / "runtime"
+        templates = {key: runtime / path.name for key, path in generator.TEMPLATES.items()}
+        replacement = Path(self.temp.name) / "warning_without_winner_date.docx"
+        with patch.object(generator, "TEMPLATE_DIR", runtime), patch.object(generator, "TEMPLATES", templates):
+            generator.ensure_runtime_templates()
+            document = Document(templates["warning"])
+            for paragraph in list(generator._all_paragraphs(document)):
+                if "{{ winner_date }}" in paragraph.text:
+                    paragraph._p.getparent().remove(paragraph._p)
+            document.save(replacement)
+            with self.assertRaisesRegex(ValueError, "winner_date"):
+                generator.replace_runtime_template("warning", replacement)
 
     def test_regeneration_uses_atomic_sibling_and_reports_external_lock(self):
         output = self.build()

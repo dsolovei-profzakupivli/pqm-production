@@ -80,6 +80,30 @@
         "Реквізити рішення (постанови)": "termination.reference",
         "УО": "uo.full_name"
       }
+    },
+    "nazk_authority_request": {
+      "document_type": "nazk_authority_request",
+      "template_key": "nazk_authority_request",
+      "name": "НАЗК — запит до Агентства",
+      "format": "docx",
+      "generation_provider": "docx_local",
+      "active": true,
+      "file": "nazk_authority_request.docx",
+      "source_reference": "user-provided authority request DOCX template",
+      "output_name_pattern": "НАЗК_запит_до_Агентства_{supplier_code}_{date}_v{version}.docx",
+      "required_fields": [
+        "supplier.code",
+        "supplier.entity_type",
+        "manager.full_name_genitive",
+        "manager.rnokpp",
+        "nazk.record.person_name"
+      ],
+      "conditional_variants": {
+        "supplier.entity_type": [
+          "individual_entrepreneur",
+          "legal_entity"
+        ]
+      }
     }
   }
 }

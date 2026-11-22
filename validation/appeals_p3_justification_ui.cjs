@@ -1,0 +1,66 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+const start = source.indexOf('const violationScenarioReviewBase=requestContextBlock;');
+const end = source.indexOf('const violationContractReviewBase=requestContextBlock;', start);
+assert.ok(start > 0 && end > start);
+const context = {requestContextBlock: item => item.review?.decision_justification || ''};
+vm.createContext(context);
+vm.runInContext(source.slice(start, end), context);
+const base = {
+  justification_template_key: 'p49_3_decline_no_final_court_decision_no_explanation',
+  justification_draft: 'Погоджене типове обґрунтування',
+  deadline_control: {supplier_ready: true}, review: {internal_decision: ''},
+};
+assert.equal(context.requestContextBlock(base), '');
+assert.equal(base.review.decision_justification, undefined, 'Rendering must not mutate saved state');
+assert.equal(context.requestContextBlock({...base, review: {decision_justification: 'Власний текст УО'}}), 'Власний текст УО');
+assert.equal(context.requestContextBlock({...base, justification_template_key: ''}), '');
+assert.equal(context.requestContextBlock({...base, deadline_control: {supplier_ready: false}}), '');
+for (const key of ['p49_1_decline_before_deadline', 'p49_1_warning', 'p49_2_decline_timely_refusal']) {
+  assert.equal(context.requestContextBlock({...base, justification_template_key: key}), '');
+}
+const guardStart = source.indexOf('const violationP3DraftReviewNotice=');
+const guardEnd = source.indexOf('async function generateViolationProtocol', guardStart);
+assert.ok(guardStart > 0 && guardEnd > guardStart);
+const declensionActionsStart = source.indexOf('function unresolvedViolationDeclensionsBySide(');
+const declensionActionsEnd = source.indexOf('async function loadReferencesView()', declensionActionsStart);
+assert.ok(declensionActionsStart > 0 && declensionActionsEnd > declensionActionsStart);
+const guardContext = {
+  requestContextBlock: () => '<select data-review="internal_decision"></select><section class="violation-justification"></section>',
+  esc: value => value,
+  currentMe: {permissions: {'appeals.review': true, 'declension.manage': true}},
+};
+vm.createContext(guardContext);
+vm.runInContext(source.slice(declensionActionsStart, declensionActionsEnd), guardContext);
+vm.runInContext(source.slice(guardStart, guardEnd), guardContext);
+const scenario = {...base, reason: 'goodsNonCompliance', review: {court_decision_final_present: false, internal_decision: ''}, defendant_statements: [], recommendation: {recommended_decision: 'decline'}};
+assert.equal(guardContext.violationP3DraftNeedsReview(scenario, '', base.justification_draft), false);
+assert.equal(guardContext.violationP3DraftNeedsReview(scenario, 'decline', base.justification_draft), false);
+assert.equal(guardContext.violationP3DraftNeedsReview(scenario, 'warning', base.justification_draft), true);
+assert.equal(guardContext.violationP3DraftNeedsReview(scenario, 'warning', ''), true);
+const roundTrip = {...scenario, review_ready: true,
+  recommended_justification_key: base.justification_template_key,
+  review: {...scenario.review, justification_manually_edited: false}};
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', '', false), true);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'warning', base.justification_draft, false), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', base.justification_draft, false), true);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', base.justification_draft, false), true,
+  'Repeated matching decision remains deterministic');
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'warning', '', false), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', '', false), true);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'warning', base.justification_draft, false), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision(roundTrip, 'decline', 'Ручний текст УО', true), false);
+assert.equal(guardContext.violationShouldAutoGenerateOnDecision({...roundTrip,
+  review: {...roundTrip.review, justification_manually_edited: true}}, 'decline', 'Ручний текст УО', false), false);
+assert.match(guardContext.requestContextBlock({...scenario, review: {...scenario.review, internal_decision: 'warning', decision_justification: base.justification_draft}}), /id="violationP3DraftReviewNotice" >Рішення УО відрізняється/);
+assert.match(guardContext.requestContextBlock({...scenario, review: {...scenario.review, internal_decision: 'decline'}}), /id="violationP3DraftReviewNotice" hidden>/);
+assert.match(guardContext.requestContextBlock({...scenario, review_ready: false}), /<select data-review="internal_decision" disabled/);
+assert.doesNotMatch(guardContext.requestContextBlock({...scenario, review_ready: true}), /<select data-review="internal_decision" disabled/);
+assert.match(source, /decision\.addEventListener\('change',async\(\)=>\{/);
+assert.match(source, /violationShouldAutoGenerateOnDecision\(item,decision\.value,justification\.value,editedInCard\)/);
+assert.match(source, /await regenerateViolationJustification\(item\)/);
+console.log('APPEALS_P3_JUSTIFICATION_UI=PASS');

@@ -25,7 +25,13 @@ def details(preview: dict) -> list[dict]:
         effective = edr_sync_v2.effective_profile_fields(plan, old)
         base = {"supplier_code": plan["supplier_code"],
                 "supplier_name": incoming["full_name"] or old.get("full_name", ""),
-                "source_sheet": plan["source_sheet"], "source_row": plan["source_row"]}
+                "source_sheet": plan["source_sheet"], "source_row": plan["source_row"],
+                "row_state": plan.get("row_state", "eligible")}
+        if plan.get("row_state") == "skipped":
+            result.append({**base, "field": "row", "category": "skipped",
+                "current_pqm_value": "", "google_value": incoming.get("edr_checked_at_source") or "",
+                "planned_pqm_value": "", "action": "skip",
+                "reason": plan.get("skip_reasons", []) or [plan.get("datetime_gate", {}).get("reason", "unverified_timestamp")]})
         if plan["verification_event_change"] and plan["verification_decision"] in {
                 "newer_verification_accepted", "initial_verification_accepted",
                 "same_date_officer_update_accepted"}:
@@ -49,6 +55,15 @@ def details(preview: dict) -> list[dict]:
             result.append({**base, "field": field, "category": FIELD_GROUPS.get(field, "other"),
                 "current_pqm_value": current or "", "google_value": google or "",
                 "planned_pqm_value": planned or "", "action": action, "reason": reason})
+        for change in plan.get("mirror_field_changes", []):
+            if change.get("action") not in {"blocked", "skipped"}:
+                continue
+            field = change["field"]
+            result.append({**base, "field": field, "category": "gjkm",
+                "current_pqm_value": change.get("current", ""),
+                "google_value": change.get("google", ""),
+                "planned_pqm_value": change.get("planned", ""),
+                "action": change["action"], "reason": change.get("reason", "")})
         if plan["current_supplier_name"] != plan["planned_supplier_name"]:
             result.append({**base, "field": "current_supplier_name", "category": "names_manager",
                 "current_pqm_value": plan["current_supplier_name"],
@@ -73,6 +88,11 @@ def summary_additions(preview: dict, rows: list[dict]) -> dict:
                                    if item["apply_allowed"] and not item["changed_fields"]
                                    and not item["verification_event_change"] and not item["conflicts"]),
             "blocked_suppliers": len(blocked),
+            "eligible": int(preview["summary"].get("eligible", 0)),
+            "skipped": int(preview["summary"].get("skipped", 0)),
+            "conflict": int(preview["summary"].get("conflict", len(blocked))),
+            "skipped_unverified_timestamp": int(preview["summary"].get("skipped_unverified_timestamp", 0)),
+            "skipped_ineligible": int(preview["summary"].get("skipped_ineligible", 0)),
             "malformed_blocked": sum(1 for item in preview["items"]
                                      if any(reason.startswith("malformed_") for reason in item["conflicts"])),
             "m_note_updates": sum(row["action"] == "update" for row in notes),

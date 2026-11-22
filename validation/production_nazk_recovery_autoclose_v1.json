@@ -1,0 +1,61 @@
+{
+  "name": "production-nazk-recovery-qualification-autoclose-v1",
+  "baseline": "3eb465fad28272051478999683605e673a2bdfb1",
+  "server_protected_ast": "6bb69c0ac0b8b9eb4553d80a9e498768813190c8515395aea7b81be9aecb3bc4",
+  "server_variant_excluded_functions": [
+    "rebuild_nazk_tasks",
+    "reconcile_nazk_tasks_after_complete_prozorro_sync",
+    "sync_worker",
+    "sync_all_worker",
+    "sync_incremental_worker",
+    "_finish_scheduler_lease",
+    "start_nazk_registry_refresh"
+  ],
+  "operational_protected_ast": "27333a1e4ba0527cd003af485dbd54b426fffdf10836da5f5e7b5f6f588950df",
+  "operational_variant_excluded_functions": [
+    "reconcile_stale_nazk_tasks_after_prozorro_sync"
+  ],
+  "binary_files": [],
+  "files": {
+    "reference_directories.py": "b8e04e8e38025dfeee7efc965453623e7d61619439e0f2b1b9404f37b97f17e7",
+    "scheduler_runtime.py": "1acfc7219fda370ad495dbe58611d98503b67bc45bca7535d5b2fcca8fbe3bcc",
+    "server.py": "57cd0d78b3cff17bea1ead4130d8bf90f81cadbfadb44f065aeda1611f647646",
+    "operational_tasks.py": "726a10091d56fc560ac067a9e0230f6d04cfbeef48e15b4d2acf13aeccb0a46c",
+    "validation/local_release_20260911/test_production_nazk_recovery.py": "e90b9d47d70e7a5b2b8ee05cd0d1ea376779bad5c6e0f68623cf1cf4c758a94e",
+    "test_production_ui_release_integrity.py": "8ab98f312a93272728735c82233a93844bd0970e32179028d4f2e80e83517fc4",
+    "test_production_scenario_projection_integrity.py": "2b746297f1aa54e666f40ebf36c4f2e565ac28b1be5920c41a35a2cb5834ec86",
+    "validation/local_release_20260911/test_production_nazk_sync_hook.py": "c057828fade407ad85aac352ca73c150ec1c0c0e392d6024d5ced36cb4a9e310"
+  },
+  "protected_file_hashes": {
+    "Dockerfile": "148df1108a0ee00056599efab3aeb47a538363d342d961d06ec7736374245c62",
+    "admission_resolver.py": "6e01f1dc54a3e8a973a41d6269f6e10bf6250b340dd0deebf6ad8b346140e782",
+    "auth_access.py": "16479958294ac52561c4055c1de68a3a39e4f4336b56801e767dff37049ec8e0",
+    "bulk_application_save.js": "f7ecef3ac9b542510918d15942d6cb77599688c1cdba8cd453d70c15cf215cc0",
+    "declension.py": "470940305f8364bf25ed3a828c240a3c5ffb7610d64c2145e42d03762f03cfb8",
+    "declension_overrides.py": "070e197fe7d8db0129783bdd4428f999c55050380731c8a8641eb309e1e447e6",
+    "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+    "index.html": "d430d58b16e2d375e7d12b2dc7dc90603567c27a885dbd977acce0c907757181",
+    "modules.css": "8aec8921267f4e650311719f4f8c97c5337ff8c5267e0d237270a60a017aea57",
+    "nazk_workflow.py": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3",
+    "protocol_docx.py": "80b360589156491ea2c7c64065d1759e05dcf6b4708ba20de4d7e3dc29b40cfc",
+    "sandbox_runtime.py": "bfd39dea106d481a811d5abbd36cd7a7a316e80d8c4b6ae1d04a7109e94ba051",
+    "styles.css": "f35d1831fd5e47da9892487a949ac575c1a301024dfac9c885b1670fdb56b499",
+    "supplier_registry_integration.py": "b92334855878c65405baeb3b2cbe2335ab8c9e6384c291b1ebf72284f38e10a4",
+    "supplier_selection.py": "9725ccf77c8ab08bf576a2c96390e6dc7a52cfe80d1d59412a42680c8df004b4",
+    "supplier_xlsx.py": "509d4400aee4b92669ee2e2d2804c82ebe2c555db546cd18b95016f1cd0d8b26",
+    "table_widths_ui.js": "a7f13dcc3d63cf338d7e3db6f20c5942e752c3bdfb9daf9c1df01b069019332e",
+    "task_documents.py": "ebe6030f39b7c844bf0d593903acbdd8cd9120a01edcd87942c61480b5c5839b",
+    "theme.css": "9c1caa1959ff2779b92144a456e2fcc9437331a08e9d7745974bba08312b97e5",
+    "violation_protocol_docx.py": "a1a3ad24cf6e9cf34dea3f8bbdc92c95c0b264db03b5a3ade4b1491d4279949f"
+  },
+  "historical_integrity_sha256": {
+    "validation/production_ui_baseline_contract.json": "e48197b55f08d5d96b53befd6316b6b598ed5b4396cdb61dd7674e791a28fc0a",
+    "validation/production_dst_hotfix_integrity_v1.json": "9902b0cf1e281cba3c1852a5be83df2d8d925f303a26c234c53744bcfeb93c5a",
+    "validation/production_dst_hotfix_integrity_v2.json": "39b1da68114916865b5307a1aa4e8db56f50ba7cea0fea88562a6583d1e5437b",
+    "validation/production_declension_preview_integrity_v1.json": "a7c06d66a69fefc74231b265d1ec833a5ca3331b4fadbf553050611dd1a2e362",
+    "validation/production_declension_preview_integrity_v2.json": "09119bc0ccaea07cf7e7cb88d0c4ad9fb76ca5052d58b3d0a102b283d2b601c8",
+    "validation/production_scenario_projection_integrity_v1.json": "fe87e329ff5b92d062dfa1bfa1ca77f671d0ddefd1e58742b2be4aaf391b07c1",
+    "test_production_dst_hotfix_integrity.py": "c35d2c90d0dfba3f0bb881652ce23b0aff698698a004c9030c3b43d8acda65dd",
+    "test_production_declension_preview_integrity.py": "39b661da13206f5d8640c4e249d184ee58ab35f25502757c040a5d19c3175e4d"
+  }
+}

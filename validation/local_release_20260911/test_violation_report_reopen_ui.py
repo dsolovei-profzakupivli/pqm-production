@@ -47,12 +47,14 @@ const context = {
     return {ok:true};
   },
   collectViolationReview:()=>({protocol_number:'739',protocol_date:'2026-09-30'}),
+  loadViolationReports:async()=>{calls.push('LIST refresh')},
   unresolvedDeclensionsByReport:new Map(),
   toast:(message)=>notices.push(message),
   violationDetailHtml:item=>item.review.generated_protocol_filename
     ? '<a href="/api/protocol/files/739.docx">DOCX</a><a href="/api/violation-reports/report-1/protocol/pdf">PDF</a>'
     : 'No protocol',
   bindViolationReview:()=>{bound++},
+  bindViolationCardDeclensionActions:()=>{},
   displayDate:value=>value, requestLabel:value=>value,
   requestStatusLabels:{}, esc:value=>value,
 };
@@ -64,6 +66,7 @@ vm.runInContext(opener + '\n' + generator, context);
     'PATCH /api/violation-reports/report-1/review',
     'POST /api/violation-reports/report-1/protocol/generate',
     'GET /api/violation-reports/report-1',
+    'LIST refresh',
   ]);
   assert.equal(modalOpens,0,'an already-open dialog must not be reopened');
   assert.equal(bound,1);

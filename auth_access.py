@@ -105,6 +105,8 @@ def effective(con, username, base):
     return {'code':code,'base_role':base,'active':True,'permissions':rights}
 
 def permission_key(method,path):
+    if method=='GET' and path=='/api/framework-registry':return 'frameworks.read'
+    if method=='GET' and path=='/api/suppliers-registry/export.xlsx':return 'suppliers.read'
     if method=='GET' and path in {'/api/edr-monitoring','/api/suppliers-registry-risk-counts'}:
         return 'suppliers.read'
     if method=='POST' and path=='/api/edr-monitoring/termination-exclusions/preview':
@@ -162,6 +164,31 @@ def users_payload(con):
       p.display_name,COALESCE(a.role_code,u.role) role_code FROM auth_users u
       LEFT JOIN user_preferences p ON p.username=u.username LEFT JOIN auth_user_roles a ON a.username=u.username ORDER BY u.username''')]}
 
+def validated_officer_link(con, username, role, officer_id, active=True):
+    """Explicit linkage only; the partial unique index remains the race guard."""
+    if role not in ('admin', 'officer'):
+        return None
+    if officer_id is None or officer_id == '':
+        if role == 'officer':
+            raise ValueError('Оберіть активну УО')
+        return None
+    if type(officer_id) is int:
+        value = officer_id
+    elif type(officer_id) is str and re.fullmatch(r'[0-9]+', officer_id):
+        value = int(officer_id)
+    else:
+        raise ValueError('Некоректний ID УО')
+    # Check SQLite's binding range before querying. Retain the existing
+    # unsigned-ID input semantics separately; no clamp or lossy conversion.
+    if not -(1 << 63) <= value <= (1 << 63) - 1 or value < 0:
+        raise ValueError('Некоректний ID УО')
+    officer_id = value
+    if not con.execute('SELECT 1 FROM authorized_officers WHERE id=? AND active=1', (officer_id,)).fetchone():
+        raise ValueError('Оберіть активну УО')
+    if active and con.execute('SELECT 1 FROM auth_users WHERE officer_id=? AND active=1 AND username<>?', (officer_id, username)).fetchone():
+        raise ValueError('Ця УО вже має активний акаунт')
+    return officer_id
+
 def save_user(con,payload,actor,configured):
     name=str(payload.get('username') or '').strip()
     if not name or len(name)>100:raise ValueError('Вкажіть логін')
@@ -169,9 +196,8 @@ def save_user(con,payload,actor,configured):
     if not old and name in configured:raise ValueError('Цей логін керується environment; автоматичне перенесення заборонене')
     role=con.execute('SELECT * FROM auth_roles WHERE code=? AND active=1',(payload.get('role_code'),)).fetchone()
     if not role:raise ValueError('Оберіть чинну роль')
-    active=bool(payload.get('active',True));base=role['base_role'];officer=payload.get('officer_id') or None
-    if base=='officer' and not con.execute('SELECT 1 FROM authorized_officers WHERE id=? AND active=1',(officer,)).fetchone():raise ValueError('Оберіть активну УО')
-    if base!='officer':officer=None
+    active=bool(payload.get('active',True));base=role['base_role']
+    officer=validated_officer_link(con,name,base,payload.get('officer_id',old['officer_id'] if old else None),active)
     if name==actor and (not active or base!='admin'):raise ValueError('Не можна заблокувати власний адміністративний доступ')
     if old and old['role']=='admin' and old['active'] and (not active or base!='admin'):
         remaining=accounts(con,configured);remaining.pop(name,None)

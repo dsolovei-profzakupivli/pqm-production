@@ -1,0 +1,242 @@
+{
+  "baseline": "f2aacf88713a63b2d915d16af137c4133a5f1fd8",
+  "server_protected_ast": "f1530667665ac050da81e720efadc87eeb5d4a86a9d043df87b3d42210543edc",
+  "operational_protected_ast": "27333a1e4ba0527cd003af485dbd54b426fffdf10836da5f5e7b5f6f588950df",
+  "server_excluded_functions": [
+    "Handler._do_GET",
+    "application_stats",
+    "list_qualified_suppliers",
+    "list_violation_reports"
+  ],
+  "protected_file_hashes": {
+    "auth_access.py": "16479958294ac52561c4055c1de68a3a39e4f4336b56801e767dff37049ec8e0",
+    "scheduler_runtime.py": "89e49abc73f89451f5e60a9291800689e99f6a3b78425ef058b10e9e9094abbc",
+    "supplier_selection.py": "9725ccf77c8ab08bf576a2c96390e6dc7a52cfe80d1d59412a42680c8df004b4",
+    "supplier_xlsx.py": "509d4400aee4b92669ee2e2d2804c82ebe2c555db546cd18b95016f1cd0d8b26",
+    "admission_resolver.py": "6e01f1dc54a3e8a973a41d6269f6e10bf6250b340dd0deebf6ad8b346140e782",
+    "task_documents.py": "ebe6030f39b7c844bf0d593903acbdd8cd9120a01edcd87942c61480b5c5839b",
+    "edr_sync_v2.py": "a200ff18969b2b50f3dc8c808a754beeafe97befd5362ad8d4b46c1dfefbbbe0",
+    "Dockerfile": "148df1108a0ee00056599efab3aeb47a538363d342d961d06ec7736374245c62",
+    "bulk_application_save.js": "f7ecef3ac9b542510918d15942d6cb77599688c1cdba8cd453d70c15cf215cc0"
+  },
+  "automation_ui_sha256": "5df5428fe555abcdf4dc3afe66c6019f020a44ccc7af01127bc9a157dc1628f6",
+  "approved_product_variants": {
+    "protocols_and_seasonal_cat": {
+      "baseline": "b433bcb290ca9a205910db54f0c9b77af4f02cc7",
+      "server_protected_ast": "f00cc69ecf02d51f768a49c0ff9c753ae36c8b1776adee5473dff57fa2e114aa",
+      "server_variant_excluded_functions": [
+        "violation_report_detail",
+        "violation_protocol_type",
+        "violation_protocol_readiness",
+        "violation_protocol_declensions",
+        "_violation_protocol_filename",
+        "generate_violation_protocol"
+      ],
+      "binary_files": [
+        "assets/pqm-cat-no-hat.png",
+        "templates/violation_protocols/decline_individual_review.docx"
+      ],
+      "files": {
+        "app.js": "4da81a2f8a77c1246c4bb034d59c9e1abf112eb5289996bb277fa58d25c21ecb",
+        "assets/pqm-cat-no-hat.png": "a073d1a06748ef8b52e5b13b72e2abc79a75379e4576b387c53c12ded3fc70a9",
+        "halloween.css": "5284208ec113f3e3fdde1f4f057d3645a530f6c1c7a75a7783ea5baa0f49a787",
+        "halloween.js": "0d9be7912773fbd95aa8f56f0350c0ef5e80db24e2787c2513deafca3d374a95",
+        "halloween_motion.js": "d3a4fcb7dc21beaf7f9a6c229533d2884419259eb74636962d85402170fa94d3",
+        "metadata/template_legacy_tokens.v1.json": "a52f4438acd181005d3d0273c45437d36286f3876e3d49dedb62f37c06cf3987",
+        "protocol_supplier_names.py": "2073337bfa562ef6734a0139c8b95647f41f5d2ee563d00e0a0936cf7237a6ca",
+        "server.py": "c518724c27296a7d3b9e51bd8160816310988a303435f77a6ad647bd4f412f17",
+        "styles.css": "ecc6d5376bd48694d0b927b617052f16e91a43a082ada4843a7938f6329c68e3",
+        "template_catalog.py": "3f4639fd9c6341542edcc158cc64197bd0d77fb6bf64c2c9f8729ca8b7130a15",
+        "templates/violation_protocols/decline_individual_review.docx": "4b2e1509f441dc5b72bfad3f59b4798cef73a622dea092f57f2fc52869f42037",
+        "violation_protocol_docx.py": "a1a3ad24cf6e9cf34dea3f8bbdc92c95c0b264db03b5a3ade4b1491d4279949f"
+      }
+    },
+    "protocols_and_seasonal_cat_css_failsafe": {
+      "baseline": "b433bcb290ca9a205910db54f0c9b77af4f02cc7",
+      "server_protected_ast": "f00cc69ecf02d51f768a49c0ff9c753ae36c8b1776adee5473dff57fa2e114aa",
+      "server_variant_excluded_functions": [
+        "violation_report_detail",
+        "violation_protocol_type",
+        "violation_protocol_readiness",
+        "violation_protocol_declensions",
+        "_violation_protocol_filename",
+        "generate_violation_protocol"
+      ],
+      "binary_files": [
+        "assets/pqm-cat-no-hat.png",
+        "templates/violation_protocols/decline_individual_review.docx"
+      ],
+      "files": {
+        "app.js": "4da81a2f8a77c1246c4bb034d59c9e1abf112eb5289996bb277fa58d25c21ecb",
+        "assets/pqm-cat-no-hat.png": "a073d1a06748ef8b52e5b13b72e2abc79a75379e4576b387c53c12ded3fc70a9",
+        "halloween.css": "5284208ec113f3e3fdde1f4f057d3645a530f6c1c7a75a7783ea5baa0f49a787",
+        "halloween.js": "0d9be7912773fbd95aa8f56f0350c0ef5e80db24e2787c2513deafca3d374a95",
+        "halloween_motion.js": "1d552ed58cc480f79f8d10c8f1a05af3bb1da3a8e69aaf98ad0c3a748b75071c",
+        "metadata/template_legacy_tokens.v1.json": "a52f4438acd181005d3d0273c45437d36286f3876e3d49dedb62f37c06cf3987",
+        "protocol_supplier_names.py": "2073337bfa562ef6734a0139c8b95647f41f5d2ee563d00e0a0936cf7237a6ca",
+        "server.py": "c518724c27296a7d3b9e51bd8160816310988a303435f77a6ad647bd4f412f17",
+        "styles.css": "ecc6d5376bd48694d0b927b617052f16e91a43a082ada4843a7938f6329c68e3",
+        "template_catalog.py": "3f4639fd9c6341542edcc158cc64197bd0d77fb6bf64c2c9f8729ca8b7130a15",
+        "templates/violation_protocols/decline_individual_review.docx": "4b2e1509f441dc5b72bfad3f59b4798cef73a622dea092f57f2fc52869f42037",
+        "violation_protocol_docx.py": "a1a3ad24cf6e9cf34dea3f8bbdc92c95c0b264db03b5a3ade4b1491d4279949f"
+      }
+    },
+    "sandbox_ui_transfer_from_bddd5f6": {
+      "baseline": "f8cd1ded13864587e71f8904ee0bcfe24ec5d471",
+      "server_protected_ast": "785d92128479021f8b02eb567aafb7d3307e1b1e184d97977c107c24e9cfd13b",
+      "server_variant_excluded_functions": [
+        "mutation_allowed",
+        "Handler._do_POST",
+        "Handler._do_PATCH",
+        "_validated_profile_columns"
+      ],
+      "binary_files": [],
+      "files": {
+        "app.js": "46460ffb21bb778a268cbc55ef5e9a59f44e68c6f513089b3415a74869c2e3fb",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+        "history_columns.js": "0fb3f5a936fe8b40c1d29efc673dc7754ef7d2cd342f3d68b36f56d7ae05de7b",
+        "index.html": "d75a14022e5fca3238fc4971c5b9876e994853099fa9d90b4bd2a8d6f8b4dc36",
+        "reference_directories.py": "db994f3806422a3ff992e09672849e086093728ecac4381fd5799973eec1c610",
+        "server.py": "5bc7a698eaa7929bf083ee4d7a66b139c7389940858404e76d9bb80e4555e42e",
+        "styles.css": "e8cc36f520d0d5c9062f2eda5369f6285b549c81d5870f5bb056a55ae747070b",
+        "table_widths.py": "1ea3899e463e03562c2503e36b793b397f58fcec8fe2d3fa202c0b1c71fa4fc4",
+        "table_widths_ui.js": "3ab7c60b71194c5b93967e6ebdbf9480793afa9744c2b2907504d97280ea06a2"
+      }
+    },
+    "card_click_dom_stability_v1": {
+      "baseline": "f8cd1ded13864587e71f8904ee0bcfe24ec5d471",
+      "server_protected_ast": "785d92128479021f8b02eb567aafb7d3307e1b1e184d97977c107c24e9cfd13b",
+      "server_variant_excluded_functions": [
+        "mutation_allowed",
+        "Handler._do_POST",
+        "Handler._do_PATCH",
+        "_validated_profile_columns"
+      ],
+      "binary_files": [],
+      "files": {
+        "app.js": "46460ffb21bb778a268cbc55ef5e9a59f44e68c6f513089b3415a74869c2e3fb",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+        "history_columns.js": "0fb3f5a936fe8b40c1d29efc673dc7754ef7d2cd342f3d68b36f56d7ae05de7b",
+        "index.html": "d75a14022e5fca3238fc4971c5b9876e994853099fa9d90b4bd2a8d6f8b4dc36",
+        "reference_directories.py": "db994f3806422a3ff992e09672849e086093728ecac4381fd5799973eec1c610",
+        "server.py": "5bc7a698eaa7929bf083ee4d7a66b139c7389940858404e76d9bb80e4555e42e",
+        "styles.css": "e8cc36f520d0d5c9062f2eda5369f6285b549c81d5870f5bb056a55ae747070b",
+        "table_widths.py": "1ea3899e463e03562c2503e36b793b397f58fcec8fe2d3fa202c0b1c71fa4fc4",
+        "table_widths_ui.js": "a7f13dcc3d63cf338d7e3db6f20c5942e752c3bdfb9daf9c1df01b069019332e"
+      },
+      "regression_test_sha256": "4de8495963ece4d7ad4615477f4684826e2b88a8ccc218aaf16c04b6dabaaee7"
+    },
+    "production_dom_stability_nazk_punishment_v1": {
+      "baseline": "388d6e1c355d3f3947edd7b9d3142ec28624e62f",
+      "server_protected_ast": "87571dbdb96201c0985e4a60786b1705013f59a19cba508ca13244d38848fd3d",
+      "server_variant_excluded_functions": [
+        "mutation_allowed",
+        "Handler._do_POST",
+        "Handler._do_PATCH",
+        "_validated_profile_columns",
+        "supplier_profile"
+      ],
+      "binary_files": [],
+      "files": {
+        "app.js": "46460ffb21bb778a268cbc55ef5e9a59f44e68c6f513089b3415a74869c2e3fb",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+        "history_columns.js": "0fb3f5a936fe8b40c1d29efc673dc7754ef7d2cd342f3d68b36f56d7ae05de7b",
+        "index.html": "d75a14022e5fca3238fc4971c5b9876e994853099fa9d90b4bd2a8d6f8b4dc36",
+        "reference_directories.py": "db994f3806422a3ff992e09672849e086093728ecac4381fd5799973eec1c610",
+        "server.py": "14a7fab214b7bf1c1b7738e6ffded007915bce6c90d7934c7549366a004e142f",
+        "styles.css": "e8cc36f520d0d5c9062f2eda5369f6285b549c81d5870f5bb056a55ae747070b",
+        "table_widths.py": "1ea3899e463e03562c2503e36b793b397f58fcec8fe2d3fa202c0b1c71fa4fc4",
+        "table_widths_ui.js": "a7f13dcc3d63cf338d7e3db6f20c5942e752c3bdfb9daf9c1df01b069019332e"
+      },
+      "card_regression_test_sha256": "4de8495963ece4d7ad4615477f4684826e2b88a8ccc218aaf16c04b6dabaaee7",
+      "nazk_api_test_sha256": "e05b066ef6886d46ddb7bf17db750b7b84ebdc1d61289565f301f2daf32a0b7b",
+      "nazk_browser_test_sha256": "d45178f0687cfb589d0f82a2debc3a88712a792f6cdb36539fcb928b28a0c303"
+    },
+    "production_nazk_full_contract_v1": {
+      "baseline": "ef4da147a221fd01082dc62253a166223ee58ce8",
+      "server_protected_ast": "87571dbdb96201c0985e4a60786b1705013f59a19cba508ca13244d38848fd3d",
+      "server_variant_excluded_functions": [
+        "mutation_allowed",
+        "Handler._do_POST",
+        "Handler._do_PATCH",
+        "_validated_profile_columns",
+        "supplier_profile"
+      ],
+      "binary_files": [],
+      "files": {
+        "app.js": "a917007497bb516e8e91e7e8a4d68bb5acad5d8d97500ef7dba71931f5b3d720",
+        "reference_directories.py": "f2873e6abfe42e543ed0910c9c97c6aabfcfe089e13875bdb450c221390edf11",
+        "server.py": "33e63c5d6aed71d947ee6c1f0070187821578e5485e2f5ae8d394081eb41f4c6",
+        "nazk_registry_evidence.py": "7cba0685d906943f68a5c970ce9ee627090af75761512886834797eebec0f395",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb"
+      },
+      "api_test_sha256": "829db6538fa96ac4cd4a3fc67c61c12d484d259a739e6b820ccf8760885c01fe",
+      "browser_test_sha256": "0c0dee6bc2323329170eb38cf3602af040bc0491c750e81fdd229980e087328e"
+    },
+    "production_appeals_module_a701e96_v1": {
+      "baseline": "a701e96705afe316bf2fa8e8806a318b5384d4ce",
+      "server_protected_ast": "68ab5f289f1ee25038b9e635a60785332d19c854cdc6f00404e07421eead929a",
+      "server_variant_excluded_functions": [
+        "init_db",
+        "build_procurement_context",
+        "violation_report_detail",
+        "_scenario_timestamp_ns",
+        "_scenario_external_report_id",
+        "_scenario_report_fingerprint",
+        "_minimal_scenario_context",
+        "_validated_scenario_context_snapshot",
+        "_scenario_context_from_card",
+        "_save_violation_scenario_context_snapshot"
+      ],
+      "binary_files": [
+        "validation/fixtures/production_nazk_full_contract_a701e96.zip"
+      ],
+      "files": {
+        "app.js": "63b8a994f23ce3f0ffdff656206a14ff901aafadb619058e5018b94dff47dc28",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+        "index.html": "d430d58b16e2d375e7d12b2dc7dc90603567c27a885dbd977acce0c907757181",
+        "server.py": "04e12430ba6189f6d5bb13d93ea6af4a2207329766ee1af0fe4231d41d13b289",
+        "styles.css": "28187ccb5d59dfa8b146c7623183e979db18a02c1abdc51744b06a7e925ed13a",
+        "validation/docker_release_gate.py": "c28a1ca30845273af93626119e5770a9f6060045f8573a3ce424e568793bf5a5",
+        "validation/sandbox_supplier_ux.cjs": "3133a1f80b237f75a9e3a414f62be4bb87f2ac1be3a3c2c7b3adeb40b4d1777f",
+        "validation/production_appeals_module_ui.cjs": "cd573c076cf31e457eecec3004ec675019656665151e134ee938d0b3cbd72209",
+        "validation/local_release_20260911/test_violation_report_reopen_ui.py": "61bbb7a47bd371889e91daad63e06138d7dc13cededab8bf2993ce904ba3f4c0",
+        "validation/local_release_20260911/test_violation_scenario_context_cache.py": "43de68c6c35224e4ba51b8c2284daf96fa86b5f3681773f2f21524687f568111",
+        "validation/fixtures/production_nazk_full_contract_a701e96.zip": "7603149f2e1ff19087808659ca1baf4efe7a0601977dbcf331dcf1594afff703"
+      }
+    },
+    "production_appeals_declension_loader_292b072_v1": {
+      "baseline": "292b0726b4adc13644c7f98721e569c8809ea785",
+      "server_protected_ast": "68ab5f289f1ee25038b9e635a60785332d19c854cdc6f00404e07421eead929a",
+      "server_variant_excluded_functions": [
+        "init_db",
+        "build_procurement_context",
+        "violation_report_detail",
+        "_scenario_timestamp_ns",
+        "_scenario_external_report_id",
+        "_scenario_report_fingerprint",
+        "_minimal_scenario_context",
+        "_validated_scenario_context_snapshot",
+        "_scenario_context_from_card",
+        "_save_violation_scenario_context_snapshot"
+      ],
+      "binary_files": [
+        "validation/fixtures/production_nazk_full_contract_a701e96.zip"
+      ],
+      "files": {
+        "app.js": "e41a132d353162c989135f0189be7e7abc8679b9f55fe94e5e11453291e24e4f",
+        "edr_sync_v2.py": "9966d9f95c71c0debca4600489f02183c8ddcb02a67967362628d666890ad1bb",
+        "index.html": "d430d58b16e2d375e7d12b2dc7dc90603567c27a885dbd977acce0c907757181",
+        "server.py": "04e12430ba6189f6d5bb13d93ea6af4a2207329766ee1af0fe4231d41d13b289",
+        "styles.css": "28187ccb5d59dfa8b146c7623183e979db18a02c1abdc51744b06a7e925ed13a",
+        "validation/docker_release_gate.py": "63e0c9fa9b6eebe3692edbebe1eae6f7fe207c65a7650dca26f401e2dc76e133",
+        "validation/sandbox_supplier_ux.cjs": "3133a1f80b237f75a9e3a414f62be4bb87f2ac1be3a3c2c7b3adeb40b4d1777f",
+        "validation/production_appeals_module_ui.cjs": "cd573c076cf31e457eecec3004ec675019656665151e134ee938d0b3cbd72209",
+        "validation/local_release_20260911/test_violation_report_reopen_ui.py": "61bbb7a47bd371889e91daad63e06138d7dc13cededab8bf2993ce904ba3f4c0",
+        "validation/local_release_20260911/test_violation_scenario_context_cache.py": "b08967973083a3474a36031c387e4690430dbc2f30d1b20a625c5c1c0a5da891",
+        "validation/fixtures/production_nazk_full_contract_a701e96.zip": "7603149f2e1ff19087808659ca1baf4efe7a0601977dbcf331dcf1594afff703",
+        "validation/declension_loader_result.cjs": "a5473e431d3c7d946417b9b3b11c0eb7bbd4208530722dfc02a57e4eb158484c"
+      }
+    }
+  }
+}
