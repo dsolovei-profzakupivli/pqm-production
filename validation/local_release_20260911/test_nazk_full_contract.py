@@ -1,5 +1,6 @@
 import json
 import gc
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,10 +16,10 @@ class NazkFullContractTests(unittest.TestCase):
         self.old_db = server.DB_PATH
         self.old_db_factory = server.db
         server.DB_PATH = Path(self.temp.name) / "pqm.sqlite3"
-        self.con = self.old_db_factory()
-        server.db = lambda: self.con
         server.init_db()
         server.init_reference_tables(server.DB_PATH)
+        self.con = sqlite3.connect(server.DB_PATH)
+        self.con.row_factory = sqlite3.Row
 
     def tearDown(self):
         server.db = self.old_db_factory
