@@ -60,3 +60,16 @@ def disable_sandbox():
 
 def disabled():
     return status()['disabled']
+
+
+def sandbox_experience_allowed():
+    """Narrow exception to the scheduler environment lock, never an emergency stop."""
+    if os.environ.get('PQM_SANDBOX') != '1':
+        return False
+    current = status()
+    if current.get('persisted') or current.get('state_error'):
+        return False
+    try:
+        return _state_path() is not None
+    except (OSError, RuntimeError, ValueError):
+        return False
