@@ -79,8 +79,6 @@ def main():
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
             from validation.production_integrity_routes import route_integrity_suite
             route_integrity_suite(suite, root)
-            from validation.production_memory_history import route_suite
-            route_suite(suite, root)
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             return 0 if result.wasSuccessful() else 1
         finally:

@@ -107,6 +107,10 @@ def route_integrity_suite(suite, source_root):
         if context:
             routed.append((name, context))
             print('INTEGRITY ROUTE:', name, '=>', context, flush=True)
+    from validation.production_memory_history import route_suite
+    route_suite(suite, source_root)
+    from validation.production_experience_history import route_suite as route_package1
+    route_package1(suite, source_root)
     return routed
 
 if __name__ == '__main__':

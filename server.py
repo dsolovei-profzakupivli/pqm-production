@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import auth_access
 import runtime_memory
+import runtime_experience
 import chat_annotations
 import table_widths
 import protocol_supplier_names
@@ -637,6 +638,10 @@ CONTRACT_EXPERIENCE_CPV_PREFIX_DIGITS = max(
 CONTRACT_EXPERIENCE_RETRY_DELAY = 60
 CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES = 2
 CONTRACT_EXPERIENCE_LAST_REQUEST = 0.0
+CONTRACT_EXPERIENCE_QUEUE = None
+CONTRACT_EXPERIENCE_QUEUE_LOCK = threading.Lock()
+CONTRACT_EXPERIENCE_QUEUE_LIMIT = 128
+CONTRACT_EXPERIENCE_BATCH_SIZE = 32
 CONTRACT_EXPERIENCE_PENDING: set[str] = set()
 CONTRACT_EXPERIENCE_PENDING_LOCK = threading.Lock()
 CONTRACT_EXPERIENCE_RETRY_PENDING: set[str] = set()
@@ -10584,6 +10589,9 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
 
 
 def _schedule_contract_experience_retry(submission_id: str) -> bool:
+    queue = CONTRACT_EXPERIENCE_QUEUE
+    if queue is not None and queue.owns(submission_id):
+        return queue.retry(submission_id)
     with CONTRACT_EXPERIENCE_PENDING_LOCK:
         attempts = CONTRACT_EXPERIENCE_RETRY_ATTEMPTS.get(submission_id, 0)
         if attempts >= CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES or submission_id in CONTRACT_EXPERIENCE_RETRY_PENDING:
@@ -10619,6 +10627,11 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                     existing = json.loads(row["stored_result"] or "{}")
                 except (TypeError, ValueError):
                     existing = {}
+                if CONTRACT_EXPERIENCE_QUEUE is not None:
+                    experience_checks = ((existing.get('category_results') or {}).get('experience') or {}).get('checks') or []
+                    prior_check = next((item for item in experience_checks if isinstance(item, dict)
+                                        and item.get('key') == 'contract_experience'), {})
+                    CONTRACT_EXPERIENCE_QUEUE.restore_attempts(submission_id, prior_check.get('background_retry'))
                 if _stored_experience_is_fresh(existing):
                     continue
                 search = search_supplier_contract_experience(
@@ -10629,6 +10642,9 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
                          "rows": search.get("candidates") or [], "search_status": search.get("status"),
                          "cutoff_note": search.get("cutoff_note", ""),
                          "algorithm_version": CONTRACT_EXPERIENCE_ALGORITHM_VERSION}
+                if CONTRACT_EXPERIENCE_QUEUE is not None:
+                    check['background_retry'] = CONTRACT_EXPERIENCE_QUEUE.result_retry_state(
+                        submission_id, search.get('status') == 'unavailable')
                 current = {"submission_id": submission_id, "supplier_name": row["supplier_name"],
                            "supplier_code": row["supplier_code"], "pretty_id": row["pretty_id"],
                            "checks": [check], "selected_categories": ["experience"],
@@ -10645,22 +10661,26 @@ def contract_experience_worker(submission_ids: list[str]) -> None:
             except Exception:
                 SERVER_LOG.exception("Background contract experience failed submission=%s", submission_id)
     finally:
-        with CONTRACT_EXPERIENCE_PENDING_LOCK:
-            CONTRACT_EXPERIENCE_PENDING.difference_update(submission_ids)
+        if CONTRACT_EXPERIENCE_QUEUE is None:
+            with CONTRACT_EXPERIENCE_PENDING_LOCK:
+                CONTRACT_EXPERIENCE_PENDING.difference_update(submission_ids)
 
 
 def enqueue_contract_experience_search(submission_ids) -> int:
     if SANDBOX_MODE:
-        # Separate document/tender integration is not part of the approved
-        # framework API scope; do not queue failing retries or overwrite checks.
+        # Production-only integration; do not alter Sandbox policy here.
         return 0
     unique = list(dict.fromkeys(str(value) for value in submission_ids if value))
-    with CONTRACT_EXPERIENCE_PENDING_LOCK:
-        queued = [value for value in unique if value not in CONTRACT_EXPERIENCE_PENDING]
-        CONTRACT_EXPERIENCE_PENDING.update(queued)
-    if queued:
-        CONTRACT_EXPERIENCE_EXECUTOR.submit(contract_experience_worker, queued)
-    return len(queued)
+    global CONTRACT_EXPERIENCE_QUEUE
+    with CONTRACT_EXPERIENCE_QUEUE_LOCK:
+        if CONTRACT_EXPERIENCE_QUEUE is None:
+            CONTRACT_EXPERIENCE_QUEUE = runtime_experience.ExperienceQueue(
+                CONTRACT_EXPERIENCE_EXECUTOR, lambda sid: contract_experience_worker([sid]),
+                limit=CONTRACT_EXPERIENCE_QUEUE_LIMIT, batch=CONTRACT_EXPERIENCE_BATCH_SIZE,
+                workers=2, retry_limit=CONTRACT_EXPERIENCE_MAX_BACKGROUND_RETRIES,
+                retry_delay=CONTRACT_EXPERIENCE_RETRY_DELAY, pending=CONTRACT_EXPERIENCE_PENDING)
+        queue = CONTRACT_EXPERIENCE_QUEUE
+    return queue.enqueue(unique)
 
 
 def document_check_technical_failure(result: dict) -> bool:
