@@ -30,6 +30,15 @@ def load_package_manifest(source_root: Path) -> dict:
     experience = Path(source_root) / 'validation/release_test_package_experience_v6.json'
     if experience.is_file():
         path = experience
+    clarity = Path(source_root) / 'validation/release_test_package_clarity_v7.json'
+    if clarity.is_file():
+        path = clarity
+    integrated = Path(source_root) / 'validation/release_test_package_csv_ui_v8.json'
+    if integrated.is_file():
+        path = integrated
+    gate_fix = Path(source_root) / 'validation/release_test_package_csv_ui_v9.json'
+    if gate_fix.is_file():
+        path = gate_fix
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
         raise RuntimeError(f"Unsupported release test package manifest: {path}")

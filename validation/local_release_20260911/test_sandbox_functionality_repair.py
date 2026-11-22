@@ -157,7 +157,7 @@ class LastCompletedResultTests(unittest.TestCase):
         result=json.loads(raw);self.assertEqual(result['checks'][0]['detail'],'run 2');self.assertEqual(result['checked_at'],stamp)
         self.assertEqual(result['document_check_job_id'],'done-2')
 
-    def test_manual_repeat_replaces_prior_manual_categories_not_background_experience(self):
+    def test_manual_repeat_replaces_selected_category_and_keeps_others(self):
         self.seed()
         prior={'checks':[{'key':'signer','status':'error'},{'key':'mvs_person','status':'error'},{'key':'contract_experience','status':'neutral','search_status':'none'}],'selected_categories':['signature','mvs','experience']}
         server._store_document_check_result('s',prior,'fixture')
@@ -165,8 +165,11 @@ class LastCompletedResultTests(unittest.TestCase):
         current={'checks':[{'key':'signer','status':'ok'}],'selected_categories':['signature'],'signature':{'technical_status':'success'}}
         with patch.object(server,'DOCUMENT_CHECK_JOBS',jobs),patch.object(server,'analyze_application_documents',return_value=current):server.document_check_worker('replacement','s')
         with server.db() as con:result=json.loads(con.execute("SELECT document_check_result_json FROM application_fields WHERE submission_id='s'").fetchone()[0])
-        self.assertEqual([item['key'] for item in result['checks']],['signer','contract_experience'])
-        self.assertNotIn('mvs',result['category_results']);self.assertEqual(result['counts']['error'],0)
+        self.assertEqual([item['key'] for item in result['checks']],['signer','mvs_person','contract_experience'])
+        self.assertEqual(result['category_results']['signature']['checks'],current['checks'])
+        self.assertEqual(result['category_results']['mvs']['checks'],[prior['checks'][1]])
+        self.assertEqual(result['category_results']['experience']['checks'],[prior['checks'][2]])
+        self.assertEqual(result['counts']['error'],1)
         self.assertEqual(result['document_check_job_id'],'replacement')
 
     def test_background_experience_does_not_change_complex_check_time(self):
@@ -272,5 +275,37 @@ class SavedHistoryHTTPTests(unittest.TestCase):
                 for role in ['admin','officer','viewer']:
                     self.assertEqual(self.get('/api/applications/'+sid+'/document-check-result',role)['counts'],self.saved['counts'])
             launch.assert_not_called()
+
+    def test_legacy_and_new_seal_totals_survive_saved_and_job_http_reads(self):
+        legacy = {'checks': [{'key': 'signer', 'status': 'ok'},
+                             {'key': 'mvs_seal', 'status': 'warning'}],
+                  'counts': {'ok': 1, 'warning': 1, 'error': 0, 'neutral': 0},
+                  'document_check_job_id': 'policy-job'}
+        current = server.merge_document_check_results(legacy, {
+            'document_check_policy_version': 2, 'selected_categories': ['signature'],
+            'checks': [{'key': 'signer', 'status': 'ok'}]})
+        jobs = runtime_memory.DocumentJobs()
+        jobs.start('policy-job', 'pending'); jobs.finish('policy-job', {'status': 'complete'})
+        with server.db() as con:
+            before = con.execute("SELECT document_check_result_json FROM application_fields WHERE submission_id='pending'").fetchone()[0]
+        try:
+            for payload, warning in [(legacy, 1), (current, 0)]:
+                encoded = json.dumps(payload)
+                with server.db() as con:
+                    con.execute("UPDATE application_fields SET document_check_result_json=? WHERE submission_id='pending'", (encoded,))
+                with patch.object(server, 'DOCUMENT_CHECK_JOBS', jobs), \
+                     patch.object(server, 'launch_document_check_job', side_effect=AssertionError('No new check')), \
+                     patch.object(server, 'verify_prozorro_eds', side_effect=AssertionError('No verification')):
+                    for role in ['admin', 'officer', 'viewer']:
+                        result = self.get('/api/applications/pending/document-check-result', role)
+                        self.assertEqual(result['counts'], payload['counts'])
+                        self.assertEqual(result['counts']['warning'], warning)
+                    recovered = self.get('/api/document-check-jobs/policy-job', 'admin')['result']
+                    self.assertEqual(recovered, payload)
+                with server.db() as con:
+                    self.assertEqual(con.execute("SELECT document_check_result_json FROM application_fields WHERE submission_id='pending'").fetchone()[0], encoded)
+        finally:
+            with server.db() as con:
+                con.execute("UPDATE application_fields SET document_check_result_json=? WHERE submission_id='pending'", (before,))
 
 if __name__=='__main__':unittest.main()

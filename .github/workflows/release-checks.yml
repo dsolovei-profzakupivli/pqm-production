@@ -47,9 +47,10 @@ jobs:
             validation/google_writer_apply_result_ui.test.cjs \
             validation/google_writer_continuation_preview_ui.test.cjs \
             validation/queue_statistics_ui.test.cjs \
-            validation/sandbox_functionality_repair_ui.cjs \
+            validation/sandbox_functionality_current_ui.cjs \
             validation/sandbox_eds_transport.test.mjs \
             validation/edr_monitoring_drawer.test.cjs
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/csv_ui_gate_history.py --node-history
           snapshot="$RUNNER_TEMP/pqm-append-continuation-history-7417591"
           mkdir -p "$snapshot/validation/local_release_20261113"
           git archive 7417591bbd8cb945a85e759d28036b72f97f8e9e | tar -x -C "$snapshot"
@@ -163,7 +164,7 @@ jobs:
           echo "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           # Immutable integrated v1-v27 checks ran on their pinned snapshots above;
           # only the current integrated overlay v28 runs against this checkout.
-          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/sandbox_functionality_history.py -v \
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/csv_ui_gate_history.py -v \
             test_google_writer_integrated_candidate_integrity_v28 \
             validation.local_release_20260911.test_release_test_package \
             validation.local_release_20260911.test_integrated_snapshot_staging \
@@ -187,6 +188,8 @@ jobs:
         shell: bash
         env:
           NODE_PATH: ${{ runner.temp }}/pqm-playwright/node_modules
+          PQM_CURRENT_FUNCTIONALITY_BROWSER_EVIDENCE: ${{ runner.temp }}/pqm-current-functionality-evidence
+          PQM_FUNCTIONALITY_BROWSER_EVIDENCE: ${{ runner.temp }}/pqm-historical-functionality-evidence
           PQM_BROWSER_EVIDENCE_DIR: ${{ runner.temp }}/pqm-chat-messages-evidence
           PQM_UO_EVIDENCE_DIR: ${{ runner.temp }}/pqm-uo-work-layout-evidence
           PQM_APPLICATION_FILTER_EVIDENCE_DIR: ${{ runner.temp }}/pqm-registry-filter-evidence
@@ -202,7 +205,8 @@ jobs:
           node validation/appeals_justification_browser.cjs
           node validation/appeals_declension_card_browser.cjs
           node validation/protocol_names_card_browser.cjs
-          node validation/sandbox_functionality_repair_browser.cjs
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/csv_ui_gate_history.py --browser-history
+          node validation/sandbox_functionality_current_browser.cjs
           node validation/chat_messages_browser.cjs
           node validation/google_writer_preview_modal_browser.cjs
           node validation/google_writer_apply_modal_layout_browser.cjs
@@ -221,6 +225,15 @@ jobs:
           mkdir -p "$PQM_CALENDAR_EVIDENCE"
           cp "$PQM_LIVE_FIX_EVIDENCE/sandbox-index.html" "$PQM_CALENDAR_EVIDENCE/sandbox-index.html"
           node validation/halloween_resource_gate_browser.cjs
+          export PQM_CHROMIUM_EXECUTABLE="$(node -p "require('playwright').chromium.executablePath()")"
+          export PQM_UI001_EVIDENCE="$RUNNER_TEMP/pqm-ui001-evidence"
+          export PQM_UI002_EVIDENCE="$RUNNER_TEMP/pqm-ui002-evidence"
+          mkdir -p "$PQM_UI001_EVIDENCE" "$PQM_UI002_EVIDENCE"
+          cp "$PQM_LIVE_FIX_EVIDENCE/sandbox-index.html" "$PQM_UI001_EVIDENCE/sandbox-index.html"
+          cp "$PQM_LIVE_FIX_EVIDENCE/sandbox-index.html" "$PQM_UI002_EVIDENCE/sandbox-index.html"
+          node --test validation/application_documents_ui.test.cjs validation/document_check_ui.test.cjs
+          node validation/application_documents_browser.cjs
+          node validation/document_check_browser.cjs
       - name: Build release image
         shell: bash
         run: |
@@ -232,7 +245,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --network none --entrypoint python pqm-ci:tested \
-            -B validation/docker_release_gate.py 2>&1 | tee ci-evidence/container-gate.log
+            -B validation/docker_release_gate_csv_ui_v2.py 2>&1 | tee ci-evidence/container-gate.log
       - name: Run AMCU polling regression
         shell: bash
         run: |
@@ -342,5 +355,9 @@ jobs:
             ${{ runner.temp }}/pqm-context-filter-evidence/
             ${{ runner.temp }}/pqm-full-page-filter-evidence/
             ${{ runner.temp }}/pqm-calendar-evidence/
+            ${{ runner.temp }}/pqm-ui001-evidence/
+            ${{ runner.temp }}/pqm-ui002-evidence/
+            ${{ runner.temp }}/pqm-current-functionality-evidence/
+            ${{ runner.temp }}/pqm-historical-functionality-evidence/
           retention-days: 14
           if-no-files-found: error
