@@ -70,6 +70,15 @@ def main():
         [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
     ]
     commands.append([sys.executable, str(root / "validation/csv_ui_gate_history.py"), "--supplier-history"])
+    commands.extend([
+        [sys.executable, str(root / "validation/document_release_history_v1.py"), "--accepted-node"],
+        ["node", "validation/document_partial_selection.test.cjs"],
+        ["node", "validation/sandbox_functionality_partial_ui.cjs"],
+        [sys.executable, "validation/run_local_release.py", "test_document_release_integrity_v1.py"],
+        [sys.executable, "-m", "unittest", "validation.test_document_partial_selection",
+         "validation.test_document_partial_http", "validation.test_mvs_parameter_statuses",
+         "validation.test_mvs_parameter_analysis", "validation.test_document_check_policy"],
+    ])
     for command in commands:
         print("DOCKER GATE: synthetic check", command[-1], flush=True)
         subprocess.run(command, cwd=root, env=env, check=True, timeout=180)
