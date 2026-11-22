@@ -1,0 +1,37 @@
+{
+  "baseline": "a53234f1d4a4c32032bc0b1c311b1a279ab17e22",
+  "files": {
+    "server.py": "12a465f0e2d33edd5ddc1a1e658aa0f81b20aaa73acfeee90e627b597e8f7402",
+    "app.js": "367631a7060d402e7d562215a703b12e0c6d0d81d61fd11c6a36c3ed7a909111",
+    "runtime_memory.py": "fba01ea51fda945b1a06f8abba6b811f4d407ad952f0314ff4f99be685b30416",
+    "validation/local_release_20260911/test_memory_stage1.py": "300ce06859fb3564aaf10c897463ebbda0db5d529f79124a58be2b638f9bac32",
+    "validation/local_release_20260911/test_dst_regression.py": "dd324f140f1b9fd30bb6c7903c3c66af900c2ca6c6fb15892dd181d5559cabe5",
+    "validation/local_release_20260911/test_nazk_full_contract.py": "393239139ff27638538fe951509a705a89b3f4d30178cdfaa65327d3eb34a8e5",
+    "validation/memory_stage1_ui.cjs": "bbf73c410222d8891daee0cb37531c4a8ae2e258c9b4df3e96619defe3824ba5",
+    "validation/memory_stage1_benchmark.py": "08ac88e968a14e1544a2d86932a667f8c88a86559f3de08c19179b6ef62a7355",
+    "validation/memory_sync_benchmark.py": "71e52962fd6cd672e70151dc66f2d458f163302868a1875cc291a7156fbf4c69",
+    "validation/local_release_20260911/test_production_edr_display_toasts_integrity.py": "b0c1e84532c9b8bda256b771c95cf8ec61c042cbcd2c4c6e430191f656824d45",
+    "validation/run_local_release.py": "415b0055e2861699191e8aa37840eefd4b23768a3c9b1effe1611480f93e4117",
+    "validation/fixtures/production_memory_parent_a53234f.zip": "60346ba9a5f3a3ede44e7ec7f51cf8de39d322287932a5f906a9d64f22ccab37",
+    "validation/fixtures/production_memory_nazk_test_parent_a53234f.zip": "21619cb4e55592f508035f88a466c53e5f9afe024e29ae100bf85203acee54c6",
+    "edr_sync_v2.py": "f2af88550e03c78af3bbfd646d4f7713667bb9d2c703cbd32ef325bd024b6a0b",
+    "supplier_registry_integration.py": "b92334855878c65405baeb3b2cbe2335ab8c9e6384c291b1ebf72284f38e10a4",
+    "google_verification_contract.py": "607d21191525ca7c570026cb814787781107210b1f3cc920c0f21d875e537d25",
+    "prod_google_baseline.py": "127c698274be859ba48cb62a5a8ea7f0797b99e885c0c7a7de2669cc1e55ee17",
+    "scheduler_runtime.py": "1acfc7219fda370ad495dbe58611d98503b67bc45bca7535d5b2fcca8fbe3bcc",
+    "reference_directories.py": "b8e04e8e38025dfeee7efc965453623e7d61619439e0f2b1b9404f37b97f17e7",
+    "nazk_workflow.py": "3723e7a95d9cdd42517028bfc9062cc9742d3c88ca6ac8632833c734905b2ba3",
+    "validation/fixtures/production_edr_google_nazk_ea3079_v1.json": "ffbd92ff26994d2e1e278ea64b16126aeb1159164178377632467bd609ded3e3",
+    "validation/fixtures/production_edr_display_toasts_1b3ff_v1.json": "0a6df86f4e8e386e9718564e8cb21a143c85d1738bdd84c9d45d08b886bda7a9"
+  },
+  "unchanged_server_functions": {
+    "sync_one_framework": "cb944b38beea1d4517ec3adcbb26c0211431e0d4bd70499da1efa752c0871591",
+    "discover_active_frameworks": "9ec86830f5ff31f17a31c9dfe04fa239b52914df3a0d6e2291049f722dbdfe3a",
+    "discover_tracked_frameworks": "3d723f126b0687b1668be6b4f495e4ef404cef35c7d422db5dc01487c70ef5b6",
+    "sync_incremental_active_frameworks": "95ba1984d40a24873e06dd8daf3a3844da99e4537e8463d4d6f4aa2a3c31ec49",
+    "sync_incremental_worker": "7fae6c1437faaba538d032f33761dab7098f286d0cef7a95d1d8ebf8d1aec51b",
+    "_edr_monitoring_revision": "e6c8f8d9bd638bc594770fc9b12c320b25a49df5c1237f6b1ebc3caa9de62320",
+    "_edr_monitoring_rows": "960656f5d1489b298ca8c1fc9feb707205b177d1473853552f755c42a7579454",
+    "list_edr_monitoring": "4971d4acfce3bcbd935967fbbc195bd864f88aa58e8a85face07cfbedc343374"
+  }
+}
