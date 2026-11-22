@@ -10623,7 +10623,10 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
     if not row or not collected:
         return None
     _, documents = collected
-    selection = selection or {}
+    # UI-002: legacy seal selections must not download or verify an MVS signature.
+    selection = {index: [category for category in categories if category != "mvs_signature"]
+                 for index, categories in (selection or {}).items() if isinstance(categories, list)}
+    selection = {index: categories for index, categories in selection.items() if categories}
     selected_indexes = {int(index) for index in selection if str(index).isdigit()}
     selected_categories = {category for categories in selection.values() for category in categories}
     main_signature_index, signature_selection_source = (None, "none")
@@ -10722,41 +10725,17 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
     }
     mvs_doc_indexes = [int(index) for index, categories in selection.items()
                        if str(index).isdigit() and "mvs" in (categories if isinstance(categories, list) else [])]
-    mvs_signature_indexes = [int(index) for index, categories in selection.items()
-                             if str(index).isdigit() and "mvs_signature" in (categories if isinstance(categories, list) else [])]
-    if len(mvs_signature_indexes) > 1:
-        raise ValueError("Залиште позначку «Печатка МВС» лише біля одного документа.")
     mvs_docs = [file_by_index[index] for index in mvs_doc_indexes if index in file_by_index and not is_signature(file_by_index[index])]
-    mvs_signature_index = mvs_signature_indexes[0] if mvs_signature_indexes and mvs_signature_indexes[0] in file_by_index else None
-    mvs_pairs = [{"document": document["title"],
-                  "signature": file_by_index[mvs_signature_index]["title"] if mvs_signature_index is not None else "",
-                  "signature_index": mvs_signature_index, "association": "manual" if mvs_signature_index is not None else ""}
-                 for document in mvs_docs]
+    mvs_pairs = [{"document": document["title"], "signature": "", "signature_index": None,
+                  "association": ""} for document in mvs_docs]
     primary_mvs_doc = mvs_docs[0] if mvs_docs else None
     mvs_extract = analyze_mvs_extract(
         extracted_texts.get(primary_mvs_doc["index"], "") if primary_mvs_doc else "",
         manager_name,
         row["date_published"] or "",
     )
-    mvs_eds = verify_prozorro_eds(file_by_index[mvs_signature_index].get("url", "")) if mvs_signature_index is not None else {}
-    mvs_signers = mvs_eds.get("signers") if isinstance(mvs_eds.get("signers"), list) else []
-    mvs_signer = mvs_signers[0] if mvs_signers and isinstance(mvs_signers[0], dict) else {}
-    mvs_code = _digits(mvs_signer.get("subjectEDRPOUCode", ""))
-    mvs_org = str(mvs_signer.get("subjectOrg") or mvs_signer.get("subjectCN") or "")
-    mvs_verified = mvs_eds.get("status") == "success"
-    mvs_code_ok = mvs_code == "00032684"
-    mvs_org_ok = "міністерствовнутрішніхсправукраїни" in normalized_value(mvs_org)
-    mvs_seal = {"technical_status": mvs_eds.get("status", "not_checked"), "code": mvs_code,
-                "organization": mvs_org, "error": mvs_eds.get("error", "")}
-    if mvs_verified:
-        mvs_seal_status = "ok" if mvs_code_ok and mvs_org_ok else "error"
-        mvs_seal_detail = f"{mvs_org or 'Організацію не прочитано'} · {mvs_code or 'код не прочитано'}"
-    elif row["mvs_seal_review"] == "approved":
-        mvs_seal_status, mvs_seal_detail = "warning", "Печатку підтверджено вручну; автоматичну перевірку підпису не завершено"
-    elif row["mvs_seal_review"] == "rejected":
-        mvs_seal_status, mvs_seal_detail = "error", "Електронна печатка не належить МВС або не підтверджена"
-    else:
-        mvs_seal_status, mvs_seal_detail = "warning", (mvs_eds.get("error") or "Печатку МВС не перевірено")
+    # Retain the result shape for readers; no seal check is performed in new runs.
+    mvs_seal = {"technical_status": "not_applicable", "code": "", "organization": "", "error": ""}
     authority_required = bool(signature.get("signer")) and (not manager_name or not signer_match)
     is_fop = len(supplier_digits) == 10 or normalized_value(supplier_name).startswith("фоп")
     eds_success = signature.get("technical_status") == "success"
@@ -10786,7 +10765,6 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         {"key": "mvs_extract_type", "label": "Тип витягу МВС", "status": "ok" if mvs_extract["type"] == "full" else "error" if mvs_extract["type"] == "short" else "warning", "detail": "ПОВНИЙ" if mvs_extract["type"] == "full" else "СКОРОЧЕНИЙ — не відповідає вимозі" if mvs_extract["type"] == "short" else "Не вдалося визначити тип витягу"},
         {"key": "mvs_person", "label": "ПІБ у витягу МВС", "status": "ok" if mvs_extract["person_matches_manager"] else "error" if mvs_extract["person_name"] and manager_name else "warning", "detail": f"{mvs_extract['person_name'] or 'Не прочитано'} · керівник: {manager_name or 'не визначений'}"},
         {"key": "mvs_age", "label": "Строк дії витягу — 30 к.д.", "status": "ok" if mvs_extract["within_30_days"] else "error" if mvs_extract["age_days"] is not None else "warning", "detail": (f"{mvs_extract['age_days']} к.д. · {mvs_extract['issue_date']} → {mvs_extract['submitted_date']}" if mvs_extract["age_days"] is not None else "Не вдалося визначити дату витягу або подання документів")},
-        {"key": "mvs_seal", "label": "Електронна печатка МВС", "status": mvs_seal_status, "detail": mvs_seal_detail},
     ]
     for key, label in (
         ("criminal_liability", "МВС: притягнення до кримінальної відповідальності"),
@@ -10833,6 +10811,7 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         "mvs_seal": mvs_seal, "mvs_extract": mvs_extract, "checks": checks, "files": files, "mvs_pairs": mvs_pairs,
         "counts": counts, "ready": counts["error"] == 0 and counts["warning"] == 0,
         "official_verification_url": "https://czo.gov.ua/verify",
+        "document_check_policy_version": 2,
         "selected_categories": sorted(selected_categories),
         "document_fingerprints": {category: document_source_fingerprint(documents)
                                   for category in selected_categories if category in {"signature", "mvs"}},
@@ -10870,6 +10849,14 @@ def document_check_status(checks: list[dict]) -> tuple[dict, str]:
     return counts, status
 
 
+def document_check_summary_checks(checks, policy_version=None):
+    """New totals exclude seal and experience; legacy categories/results stay intact."""
+    if policy_version == 2:
+        return [item for item in checks if item.get("key") != "mvs_seal"
+                and document_check_category(str(item.get("key") or "")) != "experience"]
+    return checks
+
+
 def document_check_category_summaries(result: dict) -> dict:
     stored = result.get("category_results") if isinstance(result, dict) else None
     if isinstance(stored, dict):
@@ -10877,6 +10864,9 @@ def document_check_category_summaries(result: dict) -> dict:
                      if isinstance(value, dict) and (key != "experience" or any(
                          isinstance(item, dict) and item.get("key") == "contract_experience"
                          for item in value.get("checks", [])))}
+        if result.get("document_check_policy_version") == 2 and isinstance(stored.get("mvs"), dict):
+            summaries["mvs"] = document_check_status(document_check_summary_checks(
+                stored["mvs"].get("checks", []), 2))[1]
         experience = stored.get("experience")
         if isinstance(experience, dict):
             contract_check = next((item for item in experience.get("checks", [])
@@ -10889,6 +10879,8 @@ def document_check_category_summaries(result: dict) -> dict:
     summaries = {}
     for check in result.get("checks", []) if isinstance(result, dict) else []:
         if not isinstance(check, dict):
+            continue
+        if result.get("document_check_policy_version") == 2 and check.get("key") == "mvs_seal":
             continue
         category = document_check_category(str(check.get("key") or ""))
         if category == "experience" and check.get("key") == "contract_experience":
@@ -10936,7 +10928,8 @@ def current_document_check_result(result: dict) -> dict:
             for item in experience.get("checks", [])):
         categories.pop("experience", None)
     visible["category_results"] = categories
-    visible["counts"], _ = document_check_status(checks)
+    visible["counts"], _ = document_check_status(document_check_summary_checks(
+        checks, visible.get("document_check_policy_version")))
     visible["ready"] = not visible["counts"]["error"] and not visible["counts"]["warning"]
     return visible
 
@@ -10964,7 +10957,8 @@ def merge_document_check_results(existing: dict, current: dict) -> dict:
             status = "ok" if contract_check and contract_check.get("search_status") == "found" else "neutral"
         category_results[category] = {"checks": checks, "counts": counts, "status": status, "checked_at": now_iso()}
     combined_checks = [item for category in ("signature", "mvs", "experience") for item in category_results.get(category, {}).get("checks", [])]
-    combined_counts, _ = document_check_status(combined_checks)
+    policy_version = current.get("document_check_policy_version", (existing or {}).get("document_check_policy_version"))
+    combined_counts, _ = document_check_status(document_check_summary_checks(combined_checks, policy_version))
     existing = existing or {}
     merged = dict(existing)
     merged.update(current)
@@ -11080,16 +11074,9 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
                 existing = {}
             if require_pending and has_saved_experience(existing):
                 return None
-            if require_editable:
-                # A completed manual run replaces the previous manual evidence.
-                # Independent background experience remains its own current category.
-                independent = (existing.get('category_results') or {}).get('experience')
-                base = {'category_results': {'experience': independent}} if isinstance(independent, dict) else {}
-                for key in ('contract_experience', 'experience_input_signature'):
-                    if key in existing:
-                        base[key] = existing[key]
-            else:
-                base = existing
+            # UI-002: even manual repeats replace only their selected categories.
+            # Row-lock/technical-failure checks above still protect the last result.
+            base = existing
             result = merge_document_check_results(base, current)
             experience_only = set(current.get('selected_categories') or []) == {'experience'}
             checked_at = (stored[1] if stored else None) if experience_only else now_iso()
