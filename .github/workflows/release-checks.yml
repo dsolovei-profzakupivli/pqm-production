@@ -38,6 +38,32 @@ jobs:
           set -euo pipefail
           docker run --rm --network none --entrypoint python pqm-ci:tested \
             -B validation/docker_release_gate.py 2>&1 | tee ci-evidence/container-gate.log
+      - name: Production documents browser acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/pqm-documents-playwright" --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
+          "$RUNNER_TEMP/pqm-documents-playwright/node_modules/.bin/playwright" install --with-deps chromium
+          export NODE_PATH="$RUNNER_TEMP/pqm-documents-playwright/node_modules"
+          export PQM_CHROMIUM_EXECUTABLE="$(node -p "require('playwright').chromium.executablePath()")"
+          export PQM_UI001_EVIDENCE="$RUNNER_TEMP/pqm-production-ui001"
+          export PQM_UI002_EVIDENCE="$RUNNER_TEMP/pqm-production-ui002"
+          mkdir -p "$PQM_UI001_EVIDENCE" "$PQM_UI002_EVIDENCE" "$RUNNER_TEMP/pqm-production-mvs"
+          cp index.html "$PQM_UI001_EVIDENCE/sandbox-index.html"
+          cp index.html "$PQM_UI002_EVIDENCE/sandbox-index.html"
+          cp index.html "$RUNNER_TEMP/pqm-production-mvs/sandbox-index.html"
+          node --test validation/application_documents_ui.test.cjs validation/document_check_ui.test.cjs validation/document_partial_selection.test.cjs
+          node validation/production_documents_browser.cjs
+          node validation/production_document_results_browser.cjs
+          node validation/production_csv_versions_browser.cjs
+          docker run --rm --network none --entrypoint python \
+            -v "$RUNNER_TEMP/pqm-production-mvs:/evidence" \
+            -e PQM_SANDBOX=0 -e PQM_ENV=local -e PQM_DATA_DIR=/tmp/pqm-doc-fixture \
+            -e PQM_DB_PATH=/tmp/pqm-doc-fixture/synthetic.sqlite3 -e PQM_RELEASE_SCHEMA_ONLY=1 \
+            -e PQM_ENABLE_GOOGLE=0 -e PQM_ENABLE_SCHEDULER=0 \
+            -e PQM_MVS_STATUS_EVIDENCE=/evidence/results.json pqm-ci:tested \
+            -B -m unittest validation.test_mvs_parameter_analysis
+          PQM_UI002_EVIDENCE="$RUNNER_TEMP/pqm-production-mvs" PQM_MVS_STATUS_EVIDENCE="$RUNNER_TEMP/pqm-production-mvs/results.json" node validation/production_mvs_status_browser.cjs
       - name: Run AMCU polling regression
         shell: bash
         run: |
@@ -84,6 +110,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pqm-checks-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ci-evidence/
+          path: |
+            ci-evidence/
+            ${{ runner.temp }}/pqm-production-ui001/
+            ${{ runner.temp }}/pqm-production-ui002/
+            ${{ runner.temp }}/pqm-production-mvs/
           retention-days: 14
           if-no-files-found: error
