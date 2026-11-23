@@ -10405,6 +10405,13 @@ def document_check_status(checks: list[dict]) -> tuple[dict, str]:
     return counts, status
 
 
+def document_check_summary_checks(checks, policy_version=None):
+    """New totals exclude seal and experience; legacy categories/results stay intact."""
+    if policy_version == 2:
+        return [item for item in checks if item.get("key") != "mvs_seal"
+                and document_check_category(str(item.get("key") or "")) != "experience"]
+    return checks
+
 def document_check_category_summaries(result: dict) -> dict:
     stored = result.get("category_results") if isinstance(result, dict) else None
     if isinstance(stored, dict):
@@ -10412,6 +10419,9 @@ def document_check_category_summaries(result: dict) -> dict:
                      if isinstance(value, dict) and (key != "experience" or any(
                          isinstance(item, dict) and item.get("key") == "contract_experience"
                          for item in value.get("checks", [])))}
+        if result.get("document_check_policy_version") == 2 and isinstance(stored.get("mvs"), dict):
+            summaries["mvs"] = document_check_status(document_check_summary_checks(
+                stored["mvs"].get("checks", []), 2))[1]
         experience = stored.get("experience")
         if isinstance(experience, dict):
             contract_check = next((item for item in experience.get("checks", [])
@@ -10424,6 +10434,8 @@ def document_check_category_summaries(result: dict) -> dict:
     summaries = {}
     for check in result.get("checks", []) if isinstance(result, dict) else []:
         if not isinstance(check, dict):
+            continue
+        if result.get("document_check_policy_version") == 2 and check.get("key") == "mvs_seal":
             continue
         category = document_check_category(str(check.get("key") or ""))
         if category == "experience" and check.get("key") == "contract_experience":
@@ -10471,7 +10483,8 @@ def current_document_check_result(result: dict) -> dict:
             for item in experience.get("checks", [])):
         categories.pop("experience", None)
     visible["category_results"] = categories
-    visible["counts"], _ = document_check_status(checks)
+    visible["counts"], _ = document_check_status(document_check_summary_checks(
+        checks, visible.get("document_check_policy_version")))
     visible["ready"] = not visible["counts"]["error"] and not visible["counts"]["warning"]
     return visible
 
@@ -10487,7 +10500,7 @@ def merge_document_check_results(existing: dict, current: dict) -> dict:
             checks = [item for item in existing_checks if isinstance(item, dict) and document_check_category(str(item.get("key") or "")) == category]
             if checks:
                 counts, status = document_check_status(checks)
-                category_results[category] = {"checks": checks, "counts": counts, "status": status}
+                category_results[category] = {"checks": checks, "counts": counts, "status": status, **({"checked_at": existing["checked_at"]} if existing.get("checked_at") else {})}
     selected = set(current.get("selected_categories") or [])
     if not selected:
         selected = {document_check_category(str(item.get("key") or "")) for item in current.get("checks", []) if isinstance(item, dict)}
@@ -10499,7 +10512,8 @@ def merge_document_check_results(existing: dict, current: dict) -> dict:
             status = "ok" if contract_check and contract_check.get("search_status") == "found" else "neutral"
         category_results[category] = {"checks": checks, "counts": counts, "status": status, "checked_at": now_iso()}
     combined_checks = [item for category in ("signature", "mvs", "experience") for item in category_results.get(category, {}).get("checks", [])]
-    combined_counts, _ = document_check_status(combined_checks)
+    policy_version = current.get("document_check_policy_version", (existing or {}).get("document_check_policy_version"))
+    combined_counts, _ = document_check_status(document_check_summary_checks(combined_checks, policy_version))
     existing = existing or {}
     merged = dict(existing)
     merged.update(current)
@@ -10556,16 +10570,7 @@ def _store_document_check_result(submission_id: str, current: dict, updated_by: 
                 existing = json.loads(stored[0] or "{}") if stored else {}
             except (TypeError, ValueError):
                 existing = {}
-            if require_editable:
-                # A completed manual run replaces the previous manual evidence.
-                # Independent background experience remains its own current category.
-                independent = (existing.get('category_results') or {}).get('experience')
-                base = {'category_results': {'experience': independent}} if isinstance(independent, dict) else {}
-                for key in ('contract_experience', 'experience_input_signature'):
-                    if key in existing:
-                        base[key] = existing[key]
-            else:
-                base = existing
+            base = existing
             result = merge_document_check_results(base, current)
             experience_only = set(current.get('selected_categories') or []) == {'experience'}
             checked_at = (stored[1] if stored else None) if experience_only else now_iso()

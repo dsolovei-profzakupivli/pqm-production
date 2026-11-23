@@ -56,6 +56,7 @@ def main():
         [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
         [sys.executable, "validation/run_local_release.py", "test_violation_scenario_context_cache.py"],
     ]
+    commands.append([sys.executable, "validation/run_production_documents_rollback.py"])
     for command in commands:
         print("DOCKER GATE: synthetic check", command[-1], flush=True)
         subprocess.run(command, cwd=root, env=env, check=True, timeout=180)
