@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from validation import production_documents_history as history
 ROOT=Path(os.environ.get('PQM_PRODUCTION_DOCUMENTS_SOURCE_ROOT') or Path(__file__).resolve().parents[2])
-PIN='da90815f4f843bf8da88d60d92553501ea708fd13a8c4905b67c0934f5ab0883'
+PIN='792020603347b79f20e21d524067c0023bb2b6b3db4d7bdc4d6b9acd22089d50'
 def digest(raw):
  if b'\0' not in raw:
   try:raw.decode('utf8');raw=raw.replace(b'\r\n',b'\n')

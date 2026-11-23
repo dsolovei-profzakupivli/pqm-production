@@ -75,3 +75,22 @@ test('UI002 styles preserve link colors while allowing the approved inline exper
  for(const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g))if(/\.contract-experience-links a(?:\s|>|\{|$)/.test(rule[1])&&!/contract-date|contract-time|contract-buyer/.test(rule[1]))assert(!/(?:^|;)\s*(?:color|background)\s*:/.test(rule[2]));
  assert(css.includes('height:auto'));assert(css.includes('grid-template-columns:repeat(3,minmax(0,1fr))'));
 });
+
+test('real app contract renderer integrates with result sections, safe links and registry experience badges',()=>{
+ const vm=require('node:vm'),{extractFunction}=require('./function_test_source.cjs'),source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
+ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const context={esc,displayDate:()=> '23.11.2026, 12:15:00'};vm.createContext(context);
+ for(const name of ['renderBusinessRows','cell'])vm.runInContext(extractFunction(source,name),context);
+ const rows=Array.from({length:4},(_,i)=>({url:'https://example.test/contract/'+i+'?x="unsafe"',contract_id:'Contract-'+i,date_modified:'2026-11-23T10:15:00Z',buyer:'Buyer <'+i+'>'}));
+ const evidence={...check('contract_experience','neutral'),search_status:'found',rows},data={checks:[check('main_signature'),check('mvs_extract'),evidence],counts:{ok:2,warning:0,error:0}},before=JSON.stringify(data);
+ const html=ui.render(data,{esc,renderBusinessRows:context.renderBusinessRows});
+ assert(html.indexOf('data-result-category="mvs"')<html.indexOf('data-result-category="experience"'));assert(html.includes('data-experience-state="found"'));assert(html.includes('>+</i>'));
+ assert.equal((html.match(/class="contract-date"/g)||[]).length,3);assert(!html.includes('Contract-3'));assert(html.includes('href="https://example.test/contract/0?x=&quot;unsafe&quot;"'));assert(html.includes('target="_blank" rel="noopener"'));assert(html.includes('Buyer &lt;0&gt;'));assert(html.includes('23.11.2026'));assert(html.includes('12:15:00'));
+ assert.equal(context.renderBusinessRows(check('mvs_extract')),'');assert.equal(context.renderBusinessRows({...evidence,rows:[]}), '');assert.equal(JSON.stringify(data),before);
+ for(const found of [true,false]){
+  const rendered=ui.render({checks:[{...evidence,search_status:found?'found':'none',rows:found?rows:[]}],counts:{ok:0,warning:0,error:0}},{esc,renderBusinessRows:context.renderBusinessRows});
+  assert(rendered.includes(`>${found?'+':'−'}</i>`));assert(rendered.includes('data-result-count="ok">0</b>'));
+  const marker=context.cell({dkCode:'03220000-9',experienceSearch:found?'ok':'neutral'},{key:'dkCode',width:120},1,0);assert(marker.includes(`contract-experience-marker ${found?'found':'neutral'}`));assert(marker.includes(`>${found?'+':'−'}</span>`));
+ }
+ const badges=context.cell({documentCheckCategories:{signature:'ok',mvs:'warning',experience:'ok'}},{key:'documentCheckStatus',width:120},1,0);assert.equal((badges.match(/doc-category-badge/g)||[]).length,2);assert(badges.includes('КЕП'));assert(badges.includes('МВС'));assert(!badges.includes('Досвід'));assert(context.cell({documentCheckCategories:{}},{key:'documentCheckStatus',width:120},1,0).includes(' · не перевірено'));
+});
