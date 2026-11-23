@@ -13,7 +13,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 from validation import document_release_history_v1 as history
 ROOT = Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[2])
-CONTRACT_SHA = 'ee7d854807d834715c8ad04433776fd10b5134a9b33e2a9c5a74810d226f3210'
+CONTRACT_SHA = '39cfb74e7a3c58b15d63f885fd6d53553aab4421cb21a44b00e77ed721cefb08'
 def digest(raw, name):
     # Git checks out text as CRLF on Windows and LF in Linux images. Binary
     # evidence remains byte-exact; UTF-8 text (including extensionless files)
@@ -52,6 +52,44 @@ class DocumentReleaseIntegrity(unittest.TestCase):
         self.assertEqual(old.ROOT, root)
         result = unittest.TestResult();suite.run(result)
         self.assertTrue(result.wasSuccessful(), str(result.failures) + str(result.errors))
+    def _load_v28(self, path):
+        name = 'test_google_writer_integrated_candidate_integrity_v28'
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return name, module
+    def test_direct_github_and_render_cli_keep_current_module_origin(self):
+        import sys
+        name, module = self._load_v28(ROOT / 'test_google_writer_integrated_candidate_integrity_v28.py')
+        with patch.dict(sys.modules, {name: module}):
+            suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+            history.route_integrity_suite(suite, ROOT)
+            self.assertEqual(Path(module.__file__).resolve().parent, ROOT.resolve())
+            self.assertNotEqual(Path(module.ROOT).resolve(), ROOT.resolve())
+            result = unittest.TestResult()
+            suite.run(result)
+            self.assertTrue(result.wasSuccessful(), str(result.failures) + str(result.errors))
+    def test_render_delivered_suite_retains_explicit_staging_origin(self):
+        import sys
+        with tempfile.TemporaryDirectory(prefix='pqm-document-module-origin-') as folder:
+            target = Path(folder) / 'test_google_writer_integrated_candidate_integrity_v28.py'
+            target.write_bytes((ROOT / target.name).read_bytes())
+            name, module = self._load_v28(target)
+            with patch.dict(sys.modules, {name: module}):
+                suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+                history.route_integrity_suite(suite, ROOT, module_root=Path(folder))
+                self.assertEqual(Path(module.__file__).resolve(), target.resolve())
+                self.assertNotEqual(Path(module.ROOT).resolve(), Path(folder).resolve())
+                result = unittest.TestResult()
+                suite.run(result)
+                self.assertTrue(result.wasSuccessful(), str(result.failures) + str(result.errors))
+    def test_wrong_explicit_module_origin_still_fails_closed(self):
+        import sys
+        name, module = self._load_v28(ROOT / 'test_google_writer_integrated_candidate_integrity_v28.py')
+        with tempfile.TemporaryDirectory() as folder, patch.dict(sys.modules, {name: module}):
+            suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+            with self.assertRaises(ValueError):
+                history.route_integrity_suite(suite, ROOT, module_root=Path(folder))
     def test_text_newlines_are_portable_and_binary_is_byte_exact(self):
         for name in ['Dockerfile', '.gitattributes', 'assets/example.svg', 'config/example.csv', 'scripts/example.gs', 'app.js']:
             self.assertEqual(digest(b'a\r\nb\r\n', name), digest(b'a\nb\n', name))

@@ -51,7 +51,8 @@ def baseline_root(source):
 def route_integrity_suite(suite, source, module_root=None):
     from validation.csv_ui_gate_history import route_integrity_suite as prior
     accepted = baseline_root(source)
-    prior(suite, accepted, module_root=module_root)
+    # Historical data and the origin of the loaded tests are separate roots.
+    prior(suite, accepted, module_root=Path(module_root or source).resolve())
     def visit(node):
         if isinstance(node, unittest.TestSuite):
             for child in node:

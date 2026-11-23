@@ -647,7 +647,7 @@
     "validation/document_check_ui.test.cjs": "770e9b5c7cf95717073bceb8fa3c52511ae1fb0cc73f59dacfb3d6dcd7c9f8fb",
     "validation/document_partial_selection.test.cjs": "72c72a09319adb1699cdbc3df696ad143eac7dae30a0ba9fa30f7beaf5d5c7c4",
     "validation/document_partial_selection_browser.cjs": "2a1e80b47f740a7b8580f67d94af1932a438cf2fefd0c6bc13a52d80a0c1b07e",
-    "validation/document_release_history_v1.py": "2d3cf433b1114f610ff0d42de5ae66eeff04d686e3a7e5235ce7e1479899cc95",
+    "validation/document_release_history_v1.py": "490c483557d850f3393dff05f930583c6820499c0c947a739c597b6d6f9149a0",
     "validation/edr_monitoring_drawer.test.cjs": "e446cdc65e3ef220eeea4c88508066bd5c3f63598accfbef0f5e4d9e7f223b4f",
     "validation/edr_monitoring_filter_state.cjs": "240bc3ab8080e5f73c32c5b9149a12580f084c256c8fa5f3ede0d31aeaedb969",
     "validation/edr_ui_state.test.cjs": "4b6bde5add9a00b8dfb2e3a400bc5ec1bb4992c99ed4f01c42af79517e8ca770",
