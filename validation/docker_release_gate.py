@@ -41,7 +41,7 @@ def main():
         ["node", "validation/declension_loader_result.cjs"],
         ["node", "validation/appeals_admin_deadline_ui.cjs"],
         ["node", "validation/navigation_back_slot_ui.cjs"],
-        ["node", "validation/sandbox_supplier_ux.cjs"],
+        ["node", "validation/production_documents_sandbox_supplier_ux.cjs"],
         [sys.executable, str(root / "validation/release_0916_smoke.py")],
         [sys.executable, str(root / "validation/nazk_scheduler_failure_smoke.py")],
         [sys.executable, str(root / "validation/nazk_evidence_migration_smoke.py")],
@@ -51,11 +51,12 @@ def main():
         ["node", "validation/nazk_application_presentation.cjs"],
         ["node", "validation/appeals_refresh_ui.cjs"],
         ["node", "validation/appeals_declension_ui.cjs"],
-        ["node", "validation/supplier_ux.cjs"],
+        ["node", "validation/production_documents_supplier_ux.cjs"],
         [sys.executable, "validation/run_local_release.py", "test_nazk_workflow.py"],
         [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
         [sys.executable, "validation/run_local_release.py", "test_violation_scenario_context_cache.py"],
     ]
+    commands.extend([[sys.executable, "validation/run_production_documents.py", mode] for mode in ["--history", "--functional", "--integrity"]])
     for command in commands:
         print("DOCKER GATE: synthetic check", command[-1], flush=True)
         subprocess.run(command, cwd=root, env=env, check=True, timeout=180)

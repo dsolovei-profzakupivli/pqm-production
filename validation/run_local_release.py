@@ -17,6 +17,7 @@ import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
+os.environ.setdefault('PQM_PRODUCTION_DOCUMENTS_SOURCE_ROOT', str(ROOT))
 def main():
     with tempfile.TemporaryDirectory(prefix='pqm-local-suite-') as tmp:
         root=Path(tmp)
@@ -79,6 +80,8 @@ def main():
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
             from validation.production_integrity_routes import route_integrity_suite
             route_integrity_suite(suite, root)
+            from validation.production_documents_routes import route_suite as document_routes
+            document_routes(suite, ROOT)
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             return 0 if result.wasSuccessful() else 1
         finally:

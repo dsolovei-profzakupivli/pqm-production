@@ -1,0 +1,23 @@
+/* UI-001 only. Keep the existing shared modal and its scrolling/drag controller. */
+#docsDialog{max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px)}
+#docsDialog[data-application-documents]{width:min(960px,calc(100vw - 24px));box-sizing:border-box}
+#docsDialog[data-application-documents]>form{height:auto;max-height:calc(100dvh - 32px);min-height:0}
+#docsDialog>form>header{cursor:move;touch-action:none}
+#docsDialog>form>header>div{min-width:0}
+#docsDialog #docsSubtitle{overflow-wrap:anywhere}
+#docsDialog .docs-verification-bar{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:12px;padding:14px 24px;border-bottom:1px solid var(--line);background:var(--surface,#fff)}
+#docsDialog .docs-verification-bar[hidden]{display:none}
+#docsDialog .docs-verification-bar label{display:grid;gap:6px;min-width:0;margin:0;color:var(--ink);font-size:13px;font-weight:600}
+#docsDialog .docs-verification-bar select{width:100%;min-width:0;max-width:100%;text-overflow:ellipsis;color:var(--ink);background:var(--surface,#fff)}
+#docsDialog .doc-main{flex:1;min-width:0;overflow-wrap:anywhere}
+#docsDialog .doc-number{flex:0 0 22px;width:22px;text-align:right;font-size:11px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--muted)}
+#docsDialog .doc-icon{flex:0 0 38px}
+#docsDialog .doc-download{display:inline-flex;align-items:center;justify-content:center;flex:0 0 34px;width:34px;height:34px;padding:0;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--blue);text-decoration:none}
+#docsDialog .doc-download svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#docsDialog .doc-download:hover{background:var(--blue2)}
+#docsDialog .doc-download:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+html[data-theme="dark"] #docsDialog :is(.docs-verification-bar,.docs-verification-bar select){background:#132840;color:var(--ink)}
+html[data-theme="dark"] #docsDialog .doc-download{background:transparent;color:#86bdff}
+html[data-theme="dark"] #docsDialog .doc-download:hover{background:#203e62}
+html[data-theme="dark"] #docsDialog .history-document-group h3 span{background:#203e62;color:var(--ink)}
+@media(max-width:650px){#docsDialog .docs-verification-bar{grid-template-columns:minmax(0,1fr);padding:10px 16px;gap:8px}#docsDialog .docs-verification-bar button{justify-self:end}#docsDialog>form>header,#docsDialog>form>footer{padding:12px 16px}}

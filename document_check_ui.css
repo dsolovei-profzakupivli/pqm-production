@@ -1,0 +1,54 @@
+/* UI-002 only: reuse UI-001's adaptive frame and existing viewport drag helper. */
+#documentCheckDialog{box-sizing:border-box;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px)}
+#documentCheckDialog>form{height:auto;max-height:calc(100dvh - 32px);min-height:0}
+#documentCheckDialog>form>header{cursor:move;touch-action:none}
+#documentCheckDialog>form>header>div{min-width:0}
+#documentCheckDialog #documentCheckSubtitle{overflow-wrap:anywhere}
+#documentCheckDialog #documentCheckBody{min-height:0;max-height:none;overflow-y:auto;overscroll-behavior:contain;padding:14px 24px}
+#documentCheckDialog .check-summary{padding:10px 14px;margin-bottom:12px}
+#documentCheckDialog .check-sections{gap:12px}
+#documentCheckDialog .check-section>h3{padding:8px 12px;font-size:14px;background:var(--soft,#edf2f5);color:var(--ink);border-color:var(--line)}
+#documentCheckDialog .document-check-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:10px}
+#documentCheckDialog .document-check-field{min-width:0;padding:7px 10px;border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:6px;overflow-wrap:anywhere;background:var(--surface,#fff)}
+#documentCheckDialog .document-check-grid>.document-check-field{grid-row:var(--check-row);grid-column:var(--check-column)/span var(--check-span)}
+#documentCheckDialog .document-check-line{display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px;align-items:start}
+#documentCheckDialog .document-check-text{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px;min-width:0}
+#documentCheckDialog .document-check-text>strong{font-size:12px;line-height:1.4;color:var(--ink);min-width:0}
+#documentCheckDialog .document-check-value{font-size:14px;line-height:1.4;min-width:0;margin-left:0;text-align:left}
+#documentCheckDialog [data-result-layout="b"] .document-check-value{margin-left:0;text-align:left}
+#documentCheckDialog .document-check-indicator{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:12px;font-style:normal;font-weight:700;background:var(--muted);color:#fff}
+#documentCheckDialog .document-check-field.ok .document-check-indicator{background:#087a4c}
+#documentCheckDialog .document-check-field.warning .document-check-indicator{background:#c08a00}
+#documentCheckDialog .document-check-field.error .document-check-indicator{background:#c53240}
+#documentCheckDialog .document-check-field[data-experience-state="found"] .document-check-indicator{background:#087a4c;color:#fff}
+#documentCheckDialog .document-check-field[data-experience-state="none"] .document-check-indicator{background:#eef2f7;color:#64748b}
+#documentCheckDialog .document-check-field.ok{border-left-color:var(--green)}
+#documentCheckDialog .document-check-field.ok .document-check-value{color:var(--green)}
+#documentCheckDialog .document-check-field.warning{border-left-color:var(--amber)}
+#documentCheckDialog .document-check-field.warning .document-check-value{color:var(--amber)}
+#documentCheckDialog .document-check-field.error{border-left-color:var(--red)}
+#documentCheckDialog .document-check-field.error .document-check-value{color:var(--red)}
+#documentCheckDialog .document-check-field.neutral .document-check-value{color:var(--muted)}
+#documentCheckDialog .document-check-extra,#documentCheckDialog .document-check-experience{display:grid;gap:8px;padding:0 10px 10px}
+#documentCheckDialog .document-check-experience{padding-top:10px}
+#documentCheckDialog .document-check-grid:empty{display:none}
+#documentCheckDialog .document-check-legacy-note{margin:0;color:var(--muted);font-size:11px;line-height:1.4}
+html[data-theme="dark"] #documentCheckDialog .check-section>h3{background:#193451;color:var(--ink)}
+@media(max-width:700px){#documentCheckDialog .document-check-grid{grid-template-columns:minmax(0,1fr)}#documentCheckDialog .document-check-grid>.document-check-field{grid-row:auto;grid-column:1}#documentCheckDialog>form>header,#documentCheckDialog>form>footer{padding:12px 16px}#documentCheckDialog #documentCheckBody{padding:12px 16px}}
+
+#documentCheckDialog .document-check-field[data-experience-state] .document-check-value{color:var(--muted)}
+#documentCheckDialog .contract-experience-links a{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px}
+#documentCheckDialog .contract-experience-links a>strong,#documentCheckDialog .contract-experience-links a>span{margin:0;font-size:12px;line-height:1.4}
+#documentCheckDialog .contract-experience-links .contract-date,#documentCheckDialog .contract-experience-links .contract-time{white-space:nowrap;font-size:12px;color:var(--muted)}
+#documentCheckDialog .contract-experience-links .contract-buyer{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.contract-experience-marker.found{background:#087a4c;color:#fff}
+
+#documentCheckDialog .document-check-field[data-experience-state]{border-left-color:var(--muted)}
+
+/* UI-002 registry badges: use the existing PQM dark palette only. */
+html[data-theme="dark"] #applicationsView .doc-category-badge.ok{background:var(--green2);color:var(--green)}
+html[data-theme="dark"] #applicationsView .doc-category-badge.warning{background:var(--amber2);color:var(--amber)}
+html[data-theme="dark"] #applicationsView .doc-category-badge.error{background:var(--red2);color:var(--red)}
+html[data-theme="dark"] #applicationsView .doc-category-badge:is(.empty,.neutral){background:var(--soft);color:var(--ink);border:1px solid var(--line)}
+html[data-theme="dark"] #applicationsView .supplier-history-open.supplier-profile-icon{background:#193451!important;color:var(--ink)!important;border-color:#4a6788!important}
+html[data-theme="dark"] #applicationsView .supplier-history-open.supplier-profile-icon:hover{background:#28517b!important}
