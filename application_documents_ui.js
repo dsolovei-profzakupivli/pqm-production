@@ -22,7 +22,7 @@
         (/\.pdf$/i.test(name(entry))&&(!entry.document.format||/^application\/octet-stream$/i.test(entry.document.format)))));
   }
   function initialValue(entries,stored,category){
-    if(entries.length===1)return String(entries[0].index);
+    if(category==='signature'&&entries.length===1&&!stored?._explicit)return String(entries[0].index);
     const saved=entries.filter(entry=>Array.isArray(stored?.[entry.index])&&stored[entry.index].includes(category));
     return saved.length===1?String(saved[0].index):'';
   }

@@ -10246,7 +10246,10 @@ def parse_ukrainian_date(value: str):
 def analyze_mvs_extract(text: str, manager_name: str, submitted_at: str) -> dict:
     compact = re.sub(r"[ \t]+", " ", text or "")
     upper = compact.upper()
-    extract_type = "full" if re.search(r"\bПОВНИЙ\b", upper) else "short" if re.search(r"\bСКОРОЧЕНИЙ\b", upper) else "unknown"
+    type_match = re.search(r"\b(ПОВНИЙ|СКОРОЧЕНИЙ)\b", compact, re.IGNORECASE)
+    named_type = re.search(r"ТИП[ \t]+ВИТЯГУ[ \t]*[:\-][ \t]*([^\r\n]+)", compact, re.IGNORECASE)
+    type_value = (type_match.group(1) if type_match else named_type.group(1).strip() if named_type else "")
+    extract_type = "full" if type_value.upper() == "ПОВНИЙ" else "short" if type_value.upper() == "СКОРОЧЕНИЙ" else "other" if type_value else "unknown"
 
     person = ""
     person_match = re.search(
@@ -10283,16 +10286,23 @@ def analyze_mvs_extract(text: str, manager_name: str, submitted_at: str) -> dict
     age_days = (submitted_date - issue_date).days if issue_date and submitted_date else None
 
     def statement(pattern: str) -> dict:
-        match = re.search(pattern + r"\s*[:\-]?\s*([^\r\n]+)", upper)
-        value = re.sub(r"\s+", " ", match.group(1)).strip(" .,:;\t") if match else ""
-        return {"found": bool(match), "value": value, "absent": "ВІДСУТНІ" in value}
+        # Match a value on this line, or one following value line, without
+        # consuming the next parameter when the current value is absent.
+        match = re.search(pattern + r"[ \t]*[:\-]?[ \t]*([^\r\n]*)", compact, re.IGNORECASE)
+        value = match.group(1).strip(" .,:;\t") if match else ""
+        if match and not value:
+            following = compact[match.end():].lstrip("\r\n").splitlines()
+            candidate = following[0].strip(" .,:;\t") if following else ""
+            if candidate and not re.match(r"ВІДОМОСТІ\b|СТАНОМ\b|ДАТА\b", candidate, re.IGNORECASE):
+                value = candidate
+        return {"found": bool(value), "value": value, "absent": value.upper() == "ВІДСУТНІ"}
 
     criminal_liability = statement(r"ВІДОМОСТІ\s+ПРО\s+ПРИТЯГНЕННЯ\s+ДО\s+КРИМІНАЛЬНОЇ\s+ВІДПОВІДАЛЬНОСТІ")
     unspent_conviction = statement(r"ВІДОМОСТІ\s+ПРО\s+НАЯВНІСТЬ\s+НЕЗНЯТОЇ\s+ЧИ\s+НЕПОГАШЕНОЇ\s+СУДИМОСТІ")
     wanted_status = statement(r"ВІДОМОСТІ\s+ПРО\s+РОЗШУК")
 
     return {
-        "type": extract_type,
+        "type": extract_type, "type_value": type_value,
         "person_name": person,
         "manager_name": manager_name or "",
         "person_matches_manager": person_match_status,
@@ -10797,9 +10807,9 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         {"key": "signing_time", "label": "Дата/час підписання", "status": "ok" if signature.get("signing_time") else "warning", "detail": signature.get("signing_time") or "Не прочитано"},
         {"key": "authority", "label": "Повноваження підписанта", "status": "warning" if not signature.get("signer") or (authority_required and row["authority_review"] != "approved") else "ok", "detail": "Спочатку визначте підписанта через перевірку КЕП" if not signature.get("signer") else "Потрібна ручна перевірка" if authority_required and row["authority_review"] != "approved" else "Підтверджено"},
         {"key": "mvs_extract", "label": "Витяг МВС", "status": "ok" if mvs_docs else "warning", "detail": ", ".join(item["title"] for item in mvs_docs) or "Не вибрано"},
-        {"key": "mvs_extract_type", "label": "Тип витягу МВС", "status": "ok" if mvs_extract["type"] == "full" else "error" if mvs_extract["type"] == "short" else "warning", "detail": "ПОВНИЙ" if mvs_extract["type"] == "full" else "СКОРОЧЕНИЙ — не відповідає вимозі" if mvs_extract["type"] == "short" else "Не вдалося визначити тип витягу"},
+        {"key": "mvs_extract_type", "label": "Тип витягу МВС", "status": "ok" if mvs_extract["type"] == "full" else "error" if mvs_extract["type"] in {"short", "other"} else "warning", "detail": mvs_extract.get("type_value") or ("ПОВНИЙ" if mvs_extract["type"] == "full" else "СКОРОЧЕНИЙ" if mvs_extract["type"] == "short" else "Не вдалося визначити тип витягу")},
         {"key": "mvs_person", "label": "ПІБ у витягу МВС", "status": "ok" if mvs_extract["person_matches_manager"] else "error" if mvs_extract["person_name"] and manager_name else "warning", "detail": f"{mvs_extract['person_name'] or 'Не прочитано'} · керівник: {manager_name or 'не визначений'}"},
-        {"key": "mvs_age", "label": "Строк дії витягу — 30 к.д.", "status": "ok" if mvs_extract["within_30_days"] else "error" if mvs_extract["age_days"] is not None else "warning", "detail": (f"{mvs_extract['age_days']} к.д. · {mvs_extract['issue_date']} → {mvs_extract['submitted_date']}" if mvs_extract["age_days"] is not None else "Не вдалося визначити дату витягу або подання документів")},
+        {"key": "mvs_age", "label": "Строк дії витягу — 30 к.д.", "status": "ok" if mvs_extract["within_30_days"] else "error" if mvs_extract["age_days"] is not None and mvs_extract["age_days"] > 30 else "warning", "detail": (f"{mvs_extract['age_days']} к.д. · {mvs_extract['issue_date']} → {mvs_extract['submitted_date']}" if mvs_extract["age_days"] is not None else "Не вдалося визначити дату витягу або подання документів")},
     ]
     for key, label in (
         ("criminal_liability", "МВС: притягнення до кримінальної відповідальності"),
@@ -10841,7 +10851,7 @@ def analyze_application_documents(submission_id: str, selection: dict | None = N
         }
     return {
         "submission_id": submission_id, "supplier_name": supplier_name, "supplier_code": supplier_code,
-        "pretty_id": row["pretty_id"], "manager_name": manager_name, "authority_review": row["authority_review"], "mvs_seal_review": row["mvs_seal_review"],
+        "pretty_id": row["pretty_id"], "dk_code": row["dk_code"], "manager_name": manager_name, "authority_review": row["authority_review"], "mvs_seal_review": row["mvs_seal_review"],
         "signature": signature, "checked_signature_document": checked_signature_document,
         "mvs_seal": mvs_seal, "mvs_extract": mvs_extract, "checks": checks, "files": files, "mvs_pairs": mvs_pairs,
         "counts": counts, "ready": counts["error"] == 0 and counts["warning"] == 0,
@@ -10980,7 +10990,7 @@ def merge_document_check_results(existing: dict, current: dict) -> dict:
             checks = [item for item in existing_checks if isinstance(item, dict) and document_check_category(str(item.get("key") or "")) == category]
             if checks:
                 counts, status = document_check_status(checks)
-                category_results[category] = {"checks": checks, "counts": counts, "status": status}
+                category_results[category] = {"checks": checks, "counts": counts, "status": status, **({"checked_at": existing["checked_at"]} if existing.get("checked_at") else {})}
     selected = set(current.get("selected_categories") or [])
     if not selected:
         selected = {document_check_category(str(item.get("key") or "")) for item in current.get("checks", []) if isinstance(item, dict)}

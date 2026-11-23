@@ -50,7 +50,7 @@
     const headline=status==='error'?'Виявлено помилки':status==='warning'?'Є зауваження':status==='ok'?'Перевірки пройдено':'Довідкова інформація';
     const sections=[];
     for(const [name,title] of [['signature','Перевірка КЕП'],['mvs','Перевірка витягу МВС'],['experience','Досвід у Prozorro']]){
-      const items=checks.filter(item=>category(item)===name);if(!items.length)continue;
+      const items=checks.filter(item=>category(item)===name);if(!items.length){if(name!=='experience')sections.push(`<section class="check-section document-check-section" data-result-category="${name}"><h3>${title}</h3><p class="muted">Не перевірено</p></section>`);continue;}
       if(name==='experience'){
         sections.push(`<section class="check-section document-check-section" data-result-category="experience"><h3>${title}</h3><div class="document-check-experience">${items.map(item=>field(item,esc,null,renderBusinessRows,data)).join('')}</div></section>`);continue;
       }
