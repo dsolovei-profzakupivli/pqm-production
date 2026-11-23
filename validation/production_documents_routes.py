@@ -10,7 +10,7 @@ def route_suite(suite, source):
    for child in item:visit(child)
   else:nodes.append(item)
  visit(suite)
- selected=[n for n in nodes if n.__class__.__module__.rsplit('.',1)[-1] in {'test_production_memory_integrity','test_production_experience_integrity'} or (n.__class__.__module__.rsplit('.',1)[-1]=='test_production_memory_saved' and n._testMethodName==LEGACY_METHOD)]
+ selected=[n for n in nodes if n.__class__.__module__.rsplit('.',1)[-1] in {'test_production_memory_integrity','test_production_experience_integrity','test_production_integrity_routes'} or (n.__class__.__module__.rsplit('.',1)[-1]=='test_production_memory_saved' and n._testMethodName==LEGACY_METHOD)]
  if not selected:return
  root=baseline_root(source)
  for node in selected:
@@ -19,6 +19,11 @@ def route_suite(suite, source):
    from validation.production_experience_history import route_suite as prior
    prior(unittest.TestSuite([node]),root)
   elif short=='test_production_experience_integrity':sys.modules[node.__class__.__module__].ROOT=root
+  elif short=='test_production_integrity_routes':
+   # Rebuild Stage 1 history from the attested Production parent, including
+   # its original container runner; never inherit the current candidate runner.
+   from validation.production_memory_history import route_suite as memory_routes
+   memory_routes(unittest.TestSuite([node]),root)
   elif not getattr(node,'_production_documents_routed',False):
    # Run the unchanged legacy assertion with its actual original server in a
    # child process. No __file__ spoofing or shared-module configuration leaks.

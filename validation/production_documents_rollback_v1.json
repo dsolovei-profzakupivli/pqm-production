@@ -16,7 +16,7 @@
     "validation/run_production_documents_rollback.py": "030e86203907bee314f8c8a43b80ff63f07d7dbfd872caa5fa0717c86ab0bca9",
     "validation/run_local_release.py": "cacbaf1f4bb3be04886ac22c5f3826acf9bff49dc68152b01b666b20fc4632e7",
     "validation/docker_release_gate.py": "58694fcac88a71c1e31591f0f62ebf6530456a2f5bd18f5ce64eb55926731889",
-    "validation/production_documents_routes.py": "84abb9e50b4fb684284b6aaa521ffa88ae057ee08cd3ed787e70927a3df2ef87",
+    "validation/production_documents_routes.py": "0b754715a87d8a1198e5f11118f85d9c7ad3c6fd48a48290c7e21c122c2f701e",
     "validation/production_documents_history.py": "1126839223d8ae4ed9e206be8103040cd456fa04b95863a01cedd75da214f426"
   }
 }
