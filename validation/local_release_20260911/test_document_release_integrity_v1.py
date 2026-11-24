@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
-from validation import document_release_history_v1 as history
+from validation import document_release_history_v2 as history
 ROOT = Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[2])
 CONTRACT_SHA = '39cfb74e7a3c58b15d63f885fd6d53553aab4421cb21a44b00e77ed721cefb08'
 def digest(raw, name):
@@ -35,11 +35,7 @@ class DocumentReleaseIntegrity(unittest.TestCase):
         contract = json.loads(raw)
         self.assertEqual(contract['baseline_sha'], history.BASE_SHA)
         self.assertEqual(contract['container_entrypoint'], 'validation/docker_release_gate_csv_ui_v2.py')
-        for name, expected in contract['files'].items():
-            with self.subTest(file=name):
-                raw = (ROOT / name).read_bytes()
-                self.assertEqual(digest(raw, name), expected)
-                self.assertNotEqual(digest(raw + b'X', name), expected)
+        self.assertEqual(history.verify_v1_source(ROOT), contract)
     def test_history_sha_tree_and_original_runtime(self):
         root = history.baseline_root(ROOT)
         self.assertFalse((root / '.git').exists())
@@ -103,6 +99,9 @@ class DocumentReleaseIntegrity(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / history.ARCHIVE;target.parent.mkdir(parents=True)
             target.write_bytes((ROOT / history.ARCHIVE).read_bytes() + b'X')
+            additive = Path(folder) / history.ADDITIVE_ARCHIVE
+            additive.parent.mkdir(parents=True, exist_ok=True)
+            additive.write_bytes((ROOT / history.ADDITIVE_ARCHIVE).read_bytes())
             with self.assertRaisesRegex(AssertionError, 'archive changed'):
                 history.baseline_root(folder)
             target.write_bytes((ROOT / history.ARCHIVE).read_bytes())
@@ -113,7 +112,7 @@ class DocumentReleaseIntegrity(unittest.TestCase):
         with patch.object(history.subprocess, 'run', return_value=SimpleNamespace(returncode=7)) as run:
             self.assertEqual(history.run_accepted(ROOT, 'node'), 7)
             self.assertEqual(run.call_args.kwargs['cwd'], history.baseline_root(ROOT))
-        spec = importlib.util.spec_from_file_location('_document_candidate_gate', ROOT / 'validation/docker_release_gate_csv_ui_v2.py')
+        spec = importlib.util.spec_from_file_location('_document_candidate_gate', ROOT / 'validation/docker_release_gate_csv_ui_v3.py')
         gate = importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
         with patch.object(gate.subprocess, 'run', side_effect=subprocess.CalledProcessError(9, ['synthetic'])):
             with self.assertRaises(subprocess.CalledProcessError):gate.main()
@@ -126,10 +125,10 @@ class DocumentReleaseIntegrity(unittest.TestCase):
             self.assertIn('data-pqm-environment="sandbox"', html)
     def test_github_and_render_require_current_and_historical_checks(self):
         workflow = (ROOT / '.github/workflows/release-checks.yml').read_text(encoding='utf8')
-        for name in ['docker_release_gate_csv_ui_v2.py','--accepted-node','--accepted-browser','document_partial_selection_browser.cjs','document_check_partial_browser.cjs','mvs_parameter_statuses_browser.cjs']:
+        for name in ['docker_release_gate_csv_ui_v3.py','document_release_history_v2.py','--accepted-node','--accepted-browser','document_partial_selection_browser.cjs','document_check_partial_browser.cjs','mvs_parameter_statuses_browser.cjs']:
             self.assertIn(name, workflow)
         self.assertNotIn('continue-on-error', workflow)
-        gate = (ROOT / 'validation/docker_release_gate_csv_ui_v2.py').read_text(encoding='utf8')
+        gate = (ROOT / 'validation/docker_release_gate_csv_ui_v3.py').read_text(encoding='utf8')
         for name in ['--supplier-history','--accepted-node','document_partial_selection.test.cjs','sandbox_functionality_partial_ui.cjs','test_document_release_integrity_v1.py','validation.test_document_partial_http','validation.test_mvs_parameter_analysis']:
             self.assertIn(name, gate)
         self.assertIn('check=True', gate)

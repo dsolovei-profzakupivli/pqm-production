@@ -1,0 +1,109 @@
+"""Pre-deploy STOP/GO on the built image, using disposable synthetic data only.
+
+Never inherits live PQM config/secrets or opens persistent storage. A failure
+exits nonzero so Render keeps the previous maintenance instance running.
+"""
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+def isolated_test_environment(source=None):
+    """Keep the synthetic gate isolated while forwarding only pinned history archives."""
+    source = os.environ if source is None else source
+    env = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": str(Path(__file__).resolve().parent / "test_runtime"),
+        "PQM_TEST_NETWORK_ISOLATION": "1",
+        "PQM_RELEASE_SCHEMA_ONLY": "1",
+        "PQM_ENABLE_NAZK_WORKFLOW": "0",
+    }
+    for version in range(10, 28):
+        for suffix in ("SNAPSHOT_ARCHIVE", "SNAPSHOT_ARCHIVE_SHA256"):
+            key = f"PQM_INTEGRATED_V{version}_{suffix}"
+            value = str(source.get(key, "")).strip()
+            if value:
+                env[key] = value
+    return env
+
+
+def main():
+    root = Path(__file__).resolve().parents[1]
+    env = isolated_test_environment()
+    commands = [
+        [sys.executable, str(root / "validation/test_sandbox_theme.py")],
+        [sys.executable, str(root / "validation/sandbox_smoke.py")],
+        [sys.executable, str(root / "validation/sandbox_editable_smoke.py")],
+        [sys.executable, str(root / "validation/sandbox_documents_smoke.py")],
+        [sys.executable, str(root / "validation/sandbox_amcu_smoke.py")],
+        [sys.executable, str(root / "validation/sandbox_prozorro_smoke.py")],
+        [sys.executable, str(root / "validation/sandbox_scheduler_smoke.py")],
+        ["node", "validation/sandbox_prozorro_ui.cjs"],
+        ["node", "validation/sandbox_appeals_refresh_ui.cjs"],
+        ["node", "validation/sandbox_appeals_declension_ui.cjs"],
+        ["node", "validation/sandbox_appeals_contract_controls_ui.cjs"],
+        ["node", "validation/appeals_p2_chronology_ui.cjs"],
+        ["node", "validation/appeals_p3_justification_ui.cjs"],
+        ["node", "validation/appeals_admin_deadline_ui.cjs"],
+        ["node", "validation/navigation_back_slot_ui.cjs"],
+        ["node", "validation/sandbox_supplier_ux_current.cjs"],
+        [sys.executable, str(root / "validation/release_0916_smoke.py")],
+        [sys.executable, str(root / "validation/nazk_scheduler_failure_smoke.py")],
+        [sys.executable, str(root / "validation/nazk_recovery_unit_smoke.py")],
+        [sys.executable, str(root / "validation/nazk_evidence_migration_smoke.py")],
+        [sys.executable, "-m", "unittest", "discover", "-s",
+         "validation/local_release_20260911", "-p", "test_nazk_registry_evidence.py", "-v"],
+        ["node", "validation/nazk_evidence_ui.cjs"],
+        ["node", "validation/nazk_application_presentation.cjs"],
+        ["node", "validation/appeals_refresh_ui.cjs"],
+        ["node", "validation/appeals_declension_ui.cjs"],
+        ["node", "validation/supplier_ux_current.cjs"],
+        [sys.executable, "validation/run_local_release.py", "test_nazk_workflow.py"],
+        [sys.executable, "validation/run_local_release.py", "test_release_gate_infrastructure.py"],
+        [sys.executable, "validation/run_local_release.py", "test_nazk_task_relevance.py"],
+        [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
+    ]
+    commands.append([sys.executable, str(root / "validation/csv_ui_gate_history.py"), "--supplier-history"])
+    commands.extend([
+        [sys.executable, str(root / "validation/document_release_history_v2.py"), "--accepted-node"],
+        ["node", "validation/document_partial_selection.test.cjs"],
+        ["node", "validation/sandbox_functionality_partial_ui.cjs"],
+        [sys.executable, "validation/run_local_release.py", "test_document_release_integrity_v1.py"],
+        [sys.executable, "-m", "unittest", "validation.test_document_partial_selection",
+         "validation.test_document_partial_http", "validation.test_mvs_parameter_statuses",
+         "validation.test_mvs_parameter_analysis", "validation.test_document_check_policy"],
+    ])
+    for command in commands:
+        print("DOCKER GATE: synthetic check", command[-1], flush=True)
+        subprocess.run(command, cwd=root, env=env, check=True, timeout=180)
+
+    # Converter smoke cannot generate or replace any operational document.
+    from docx import Document
+    exe = shutil.which("soffice", path=env["PATH"]) or shutil.which("libreoffice", path=env["PATH"])
+    if not exe:
+        raise RuntimeError("STOP: DOCX/PDF converter unavailable in image")
+    with tempfile.TemporaryDirectory(prefix="pqm-docker-pdf-gate-") as tmp:
+        folder = Path(tmp)
+        source = folder / "synthetic.docx"
+        doc = Document()
+        doc.add_paragraph("PQM — синтетична перевірка PDF; без робочих даних.")
+        doc.save(source)
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        subprocess.run([exe, "-env:UserInstallation=" + (folder / "profile").as_uri(),
+                        "--headless", "--convert-to", "pdf", "--outdir", tmp, str(source)],
+                       env=env, check=True, timeout=120)
+        if not (folder / "synthetic.pdf").read_bytes().startswith(b"%PDF-"):
+            raise RuntimeError("STOP: invalid PDF output")
+        if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+            raise RuntimeError("STOP: converter altered source DOCX")
+    print("DOCKER GATE: GO — HTTP, evidence, UI and PDF fixture passed; live DB writes=0", flush=True)
+
+
+if __name__ == "__main__":
+    main()

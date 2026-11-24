@@ -5369,14 +5369,28 @@ def supplier_google_row(code: str) -> dict:
             f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit#gid={gids[0]}&range=B{row_number}"}
 
 
+def supplier_edr_localize_review_details(details):
+    """Render conflict reasons for operators while retaining machine codes."""
+    result = []
+    for detail in details:
+        item = dict(detail)
+        reason = item.get("reason")
+        if item.get("category") == "conflicts" and isinstance(reason, (list, tuple)):
+            item["reason_codes"] = list(reason)
+            item["reason"] = edr_sync_v2.conflict_reason_labels(reason)
+        result.append(item)
+    return result
+
+
 def supplier_edr_sync_preview() -> dict:
     """Return every planned change for explicit, mutation-free operator review."""
+
     snapshot = supplier_edr_source_snapshot()
     with db() as con:
         preview = edr_sync_v2.build_preview(con, snapshot, sandbox_mode=SANDBOX_MODE)
         changes = con.total_changes
     if SANDBOX_MODE:
-        details = sandbox_edr_review.details(preview)
+        details = supplier_edr_localize_review_details(sandbox_edr_review.details(preview))
         return {"source_fingerprint": preview["source_fingerprint"],
                 "state_digest": edr_sync_v2.preview_state_digest(preview),
                 "previewed_at": preview["previewed_at"],
@@ -5385,7 +5399,7 @@ def supplier_edr_sync_preview() -> dict:
                 "sandbox_partial_apply": True,
                 "details": details, "details_total": len(details),
                 "details_complete": True, "db_writes": 0, "google_writes": 0}
-    details = edr_sync_review.details(preview)
+    details = supplier_edr_localize_review_details(edr_sync_review.details(preview))
     return {
         "source_fingerprint": preview["source_fingerprint"],
         "state_digest": edr_sync_v2.preview_state_digest(preview),
@@ -5409,6 +5423,121 @@ def supplier_edr_sync_preview() -> dict:
             if item["changed_fields"] or item["verification_event_change"] or item["conflicts"]
         ][:500],
     }
+
+
+def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
+    """Build a complete, read-only XLSX workbook from a freshly validated preview."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    headers = ["Тип постачальника", "Ідентифікатор", "Найменування", "Причина конфлікту",
+               "Конфліктне поле", "Значення PQM", "Значення Google",
+               "Дата й час перевірки PQM", "Дата й час перевірки Google",
+               "УО в PQM", "УО в Google", "Посилання на картку PQM"]
+    plans = {(str(item.get("supplier_code") or ""), int(item.get("source_row") or 0)): item
+             for item in preview.get("items", [])}
+    field_map = {
+        "Ідентифікатор": ("supplier_code", "supplier_code"),
+        "Статус ЄДР": ("edr_status", "edr_status"),
+        "Дата перевірки ЄДР": ("edr_checked_at", "edr_checked_at"),
+        "УО перевірки": ("edr_officer", "edr_officer"),
+        "ПІБ керівника": ("manager_name", "manager_name"),
+        "Повна назва з ЄДР": ("full_name", "full_name"),
+        "Скорочена назва з ЄДР": ("short_name", "short_name"),
+        "Дата запису про припинення": ("termination_record_date", "termination_record_date"),
+        "Дані ЄДР": ("edr_status", "edr_status"),
+    }
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Конфлікти Preview"
+    sheet.append(headers)
+    for conflict in preview.get("conflicts", []):
+        code = str(conflict.get("supplier_code") or "")
+        source_row = int(conflict.get("source_row") or 0)
+        plan = plans.get((code, source_row), {})
+        incoming = plan.get("incoming") or {}
+        profile = plan.get("current_profile") or {}
+        reasons = conflict.get("reasons") or ["unknown_conflict"]
+        supplier_name = (str(plan.get("current_supplier_name") or "").strip()
+                         or str(incoming.get("full_name") or "").strip()
+                         or str(incoming.get("manager_name") or "").strip())
+        for reason in reasons:
+            reason_label, field_label = edr_sync_v2.conflict_reason_details(reason)
+            current_field, incoming_field = field_map.get(field_label, ("", ""))
+            pqm_value = (plan.get("current_verification_date") if field_label == "Дата перевірки ЄДР"
+                         else plan.get("current_verification_officer") if field_label == "УО перевірки"
+                         else plan.get("current_manager_name") if field_label == "ПІБ керівника"
+                         else profile.get(current_field, "") if current_field else "")
+            google_value = incoming.get(incoming_field, "") if incoming_field else ""
+            row = [str(incoming.get("source_sheet") or ""), code, supplier_name, reason_label,
+                   field_label, str(pqm_value or ""), str(google_value or ""),
+                   _supplier_edr_excel_datetime(plan.get("current_verification_date")),
+                   _supplier_edr_excel_datetime(incoming.get("edr_checked_at")),
+                   str(plan.get("current_verification_officer") or ""),
+                   str(incoming.get("edr_officer") or ""), ""]
+            sheet.append(row)
+            for cell in sheet[sheet.max_row]:
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+            for index in (2,):
+                sheet.cell(sheet.max_row, index).number_format = "@"
+            for index in (8, 9):
+                sheet.cell(sheet.max_row, index).number_format = "dd.mm.yyyy hh:mm:ss"
+            link_cell = sheet.cell(sheet.max_row, 12)
+            link_cell.value = "Відкрити картку постачальника"
+            query = urllib.parse.urlencode({"view": "suppliers", "supplier_code": code})
+            origin = (os.environ.get("PQM_PUBLIC_BASE_URL", "").strip().rstrip("/")
+                      or ("https://" + os.environ["RENDER_EXTERNAL_HOSTNAME"].strip().strip("/")
+                          if os.environ.get("RENDER_EXTERNAL_HOSTNAME") else ""))
+            link_cell.hyperlink = f"{origin}/?{query}" if origin else f"/?{query}"
+            link_cell.data_type = "s"
+            link_cell.style = "Hyperlink"
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    widths = [20, 20, 34, 48, 30, 32, 32, 24, 24, 28, 28, 42]
+    for index, width in enumerate(widths, 1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="245B74")
+        cell.alignment = Alignment(vertical="top", wrap_text=True)
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        row[1].number_format = "@"
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def _supplier_edr_excel_datetime(value):
+    """Convert a source timestamp to a timezone-naive Excel datetime in Kyiv."""
+    if value is None or value == "":
+        return None
+    parsed = edr_sync_v2.verification_instant(value)
+    if parsed.get("kind") != "datetime":
+        return None
+    return parsed["value"].astimezone(edr_sync_v2.KYIV).replace(tzinfo=None)
+
+
+def supplier_edr_sync_conflicts_export(payload: dict) -> bytes:
+    fingerprint = str(payload.get("source_fingerprint") or "").strip().lower()
+    state_digest = str(payload.get("state_digest") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint) or not re.fullmatch(r"[0-9a-f]{64}", state_digest):
+        raise ValueError("Потрібен чинний Preview")
+    snapshot = supplier_edr_source_snapshot()
+    if snapshot.get("source_fingerprint") != fingerprint:
+        raise RuntimeError("Google source змінився; сформуйте новий Preview")
+    with db() as con:
+        preview = edr_sync_v2.build_preview(con, snapshot, sandbox_mode=SANDBOX_MODE)
+    if edr_sync_v2.preview_state_digest(preview) != state_digest:
+        raise RuntimeError("Стан PQM змінився; сформуйте новий Preview")
+    if not preview.get("conflicts"):
+        raise ValueError("У цьому Preview немає конфліктів")
+    return supplier_edr_conflict_xlsx(preview)
 
 
 def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
@@ -5452,6 +5581,10 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
             updated_at=synced_at, processed=result["processed"], inserted=result["inserted"],
             updated=result["updated_profiles"], changed_fields=result["changed_fields"], error=None,
             last_completed_at=synced_at, last_result="completed",
+            last_result_summary={"successful": result["inserted"] + result["updated_profiles"],
+                                 "inserted": result["inserted"], "updated": result["updated_profiles"],
+                                 "skipped_conflicts": result["skipped_conflicts"],
+                                 "unchanged": result["unchanged"], "errors": result.get("errors", 0)},
             last_message=f"Застосовано: {result['inserted']} нових, {result['updated_profiles']} змінених профілів")
     except Exception as exc:
         SERVER_LOG.exception("Supplier EDR synchronization failed")
@@ -5462,7 +5595,10 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                             (finished_at, str(exc), log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False, message=f"Помилка синхронізації ЄДР: {exc}",
                                        updated_at=finished_at, error=str(exc), last_completed_at=finished_at,
-                                       last_result="failed", last_message=f"Помилка синхронізації ЄДР: {exc}")
+                                       last_result="failed", last_message=f"Помилка синхронізації ЄДР: {exc}",
+                                       last_result_summary={"successful": 0, "inserted": 0, "updated": 0,
+                                                            "skipped_conflicts": 0, "unchanged": 0,
+                                                            "errors": 1})
 
 
 def supplier_nazk_review_sync_status() -> dict:
@@ -13879,9 +14015,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "Google source змінився; виконайте новий Preview"}, 409)
                 with db() as con:
                     current_plan = edr_sync_v2.build_preview(con, current_source, sandbox_mode=SANDBOX_MODE)
-                if (edr_sync_v2.preview_state_digest(current_plan) != state_digest
-                        or current_plan["conflicts"]):
+                if edr_sync_v2.preview_state_digest(current_plan) != state_digest:
                     return self.send_json({"error": "Стан PQM змінився або є конфлікти; виконайте новий Preview"}, 409)
+                if current_plan["conflicts"] and not SANDBOX_MODE:
+                    return self.send_json({"error": "Apply заблоковано: Preview містить конфлікти"}, 409)
+                if SANDBOX_MODE and int(current_plan.get("summary", {}).get("eligible", 0)) < 1:
+                    return self.send_json({"error": "Немає готових до застосування записів"}, 409)
             except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
                 return self.send_json({"error": str(exc)}, 409)
             SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
@@ -13889,6 +14028,22 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=supplier_edr_sync_worker,
                              args=(fingerprint, self.auth_user, state_digest), daemon=True).start()
             return self.send_json({"started": True}, 202)
+        if parsed.path == "/api/supplier-edr-sync/conflicts.xlsx":
+            payload = self.read_json()
+            if not google_edr_effective_enabled():
+                return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
+            if SUPPLIER_EDR_SYNC_STATE["running"]:
+                return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
+            try:
+                raw = supplier_edr_sync_conflicts_export(payload)
+            except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            filename = "PQM_EDR_conflicts.xlsx"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(filename))
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers(); self.wfile.write(raw); return
         if parsed.path == "/api/supplier-edr-export":
             payload = self.read_json()
             selected_codes = {_digits(value) for value in (payload.get("supplier_codes") or []) if _digits(value)}

@@ -4,10 +4,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import textwrap
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
@@ -31,6 +34,50 @@ REPOSITORY_ROOT = repository_root()
 
 
 class ReleaseGateInfrastructureTests(unittest.TestCase):
+    def test_uncaught_worker_exception_is_reported_as_gate_failure(self):
+        script = textwrap.dedent("""
+            import threading
+            from validation.run_local_release import UnhandledThreadExceptionMonitor
+
+            previous = threading.excepthook
+            monitor = UnhandledThreadExceptionMonitor()
+            monitor.install()
+            try:
+                def fail_worker():
+                    raise RuntimeError('synthetic background failure')
+
+                worker = threading.Thread(target=fail_worker, name='release-test-worker')
+                worker.start()
+                worker.join(timeout=2)
+                assert not worker.is_alive()
+                assert not monitor.report()
+                assert monitor.exceptions
+            finally:
+                monitor.restore()
+            assert threading.excepthook is previous
+        """)
+        result = release.run_release_subprocess(
+            [sys.executable, '-B', '-c', script], cwd=REPOSITORY_ROOT,
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('RELEASE GATE FAIL: uncaught exception in background thread release-test-worker',
+                      result.stderr)
+
+    def test_release_child_environment_drops_only_git_config_overrides(self):
+        original = {
+            "PATH": "kept-path",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": "*",
+            "GIT_CONFIG_PARAMETERS": "--global",
+            "CUSTOM_SETTING": "kept-value",
+        }
+        child = release.release_subprocess_environment(original)
+        self.assertEqual(child["PATH"], "kept-path")
+        self.assertEqual(child["CUSTOM_SETTING"], "kept-value")
+        self.assertFalse(any(key.startswith("GIT_CONFIG_") for key in child))
+        self.assertEqual(original["GIT_CONFIG_VALUE_0"], "*")
+
     def test_docker_gate_forwards_only_integrated_snapshot_archive_inputs(self):
         source = {
             "PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE": "/tmp/v10.zip",
@@ -47,6 +94,16 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE": "/tmp/v27.zip",
             "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256": "e" * 64,
             "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_OUT": "/tmp/should-not-forward-v27.zip",
+            "PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE": "/tmp/v28-sandbox.zip",
+            "PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE_SHA256": "1" * 64,
+            "PQM_INTEGRATED_V127_SNAPSHOT_ARCHIVE": "/tmp/v27-candidate.zip",
+            "PQM_INTEGRATED_V127_SNAPSHOT_ARCHIVE_SHA256": "2" * 64,
+            "PQM_INTEGRATED_V128_SNAPSHOT_ARCHIVE": "/tmp/v28-candidate.zip",
+            "PQM_INTEGRATED_V128_SNAPSHOT_ARCHIVE_SHA256": "3" * 64,
+            "PQM_INTEGRATED_V29_SNAPSHOT_ARCHIVE": "/tmp/v29-candidate.zip",
+            "PQM_INTEGRATED_V29_SNAPSHOT_ARCHIVE_SHA256": "4" * 64,
+            "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE": "/tmp/update-append-v26.zip",
+            "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256": "5" * 64,
             "GOOGLE_WRITER_TOKEN": "must-not-forward",
             "PATH": "untrusted-path",
         }
@@ -66,6 +123,12 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertEqual(env["PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE"], "/tmp/v27.zip")
         self.assertEqual(env["PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256"], "e" * 64)
         self.assertNotIn("PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_OUT", env)
+        self.assertEqual(env["PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE"], "/tmp/v28-sandbox.zip")
+        self.assertEqual(env["PQM_INTEGRATED_V127_SNAPSHOT_ARCHIVE"], "/tmp/v27-candidate.zip")
+        self.assertEqual(env["PQM_INTEGRATED_V128_SNAPSHOT_ARCHIVE"], "/tmp/v28-candidate.zip")
+        self.assertEqual(env["PQM_INTEGRATED_V29_SNAPSHOT_ARCHIVE"], "/tmp/v29-candidate.zip")
+        self.assertEqual(env["PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE"], "/tmp/update-append-v26.zip")
+        self.assertEqual(env["PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256"], "5" * 64)
         self.assertNotIn("GOOGLE_WRITER_TOKEN", env)
         self.assertEqual(env["PATH"], "/usr/local/bin:/usr/bin:/bin")
 
@@ -312,7 +375,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         previous_integrated_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         previous_current_overlay = "test_google_writer_integrated_candidate_integrity_v8"
         previous_integrated_overlay_v9 = "test_google_writer_integrated_candidate_integrity_v9"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v28"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v30"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
@@ -340,6 +403,8 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         integrated_v23_runner = "validation/run_integrated_writer_ui_v23_history.py"
         integrated_v24_runner = "validation/run_integrated_writer_ui_v24_history.py"
         integrated_v25_runner = "validation/run_integrated_writer_ui_v25_history.py"
+        integrated_v27_runner = "validation/run_integrated_writer_ui_v27_history.py"
+        integrated_v28_runner = "validation/run_integrated_writer_ui_v28_history.py"
         integrated_v4_snapshot = "654bd0de0e5b3de6be61c5293a9fc00cf17217c3"
         integrated_v3_snapshot = "8c6ba07372196b1919a88beb7da3078e6c53d4d0"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
@@ -397,6 +462,18 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn(integrated_v23_runner, workflow)
         self.assertIn(integrated_v24_runner, workflow)
         self.assertIn(integrated_v25_runner, workflow)
+        self.assertIn(integrated_v27_runner, workflow)
+        self.assertIn(integrated_v28_runner, workflow)
+        for token in (
+            "run_integrated_writer_ui_v27_candidate_history.py",
+            "run_integrated_writer_ui_v28_candidate_history.py",
+            "run_integrated_writer_ui_v29_history.py",
+            "PQM_INTEGRATED_V127_SNAPSHOT_ARCHIVE",
+            "PQM_INTEGRATED_V128_SNAPSHOT_ARCHIVE",
+            "PQM_INTEGRATED_V29_SNAPSHOT_ARCHIVE",
+            "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE",
+        ):
+            self.assertIn(token, workflow)
         self.assertIn('PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v22-snapshot.zip"', workflow)
         self.assertIn('PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE_SHA256', workflow)
         self.assertIn('PQM_INTEGRATED_V22_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v22-snapshot.zip', workflow)
@@ -423,7 +500,13 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         )
         self.assertIn(current_overlay, workflow)
         self.assertIn("validation.local_release_20260911.test_uo_work_queue_http", workflow)
-        self.assertNotIn(previous_overlay, workflow)
+        current_integrity_run = workflow.split(
+            'document_release_history_v2.py -v \\\n', 1
+        )[1].split("--mount", 1)[0]
+        self.assertIsNone(re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(previous_overlay)}(?![A-Za-z0-9_])",
+            current_integrity_run,
+        ))
         self.assertNotIn(direct_historical_test, workflow)
         self.assertLess(workflow.index(c246_runner), workflow.index(historical_runner))
         self.assertLess(workflow.index(historical_apply_v5), workflow.index(historical_runner))
@@ -656,7 +739,13 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("integrated_v25_history", runner)
         self.assertIn("integrated_v26_history", runner)
         self.assertIn("integrated_v27_history", runner)
-        self.assertIn("integrated_v28_current", runner)
+        self.assertIn("integrated_v28_history", runner)
+        self.assertIn("integrated_v27_candidate_history", runner)
+        self.assertIn("integrated_v28_candidate_history", runner)
+        self.assertIn("integrated_v29_candidate_history", runner)
+        self.assertIn("integrated_v30_current", runner)
+        self.assertIn("background_exceptions.report()", runner)
+        self.assertIn("release_subprocess_environment", runner)
         self.assertIn("run_integrated_writer_ui_v27_history.py", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v28", runner)
         self.assertIn("run_integrated_writer_ui_v26_history.py", runner)

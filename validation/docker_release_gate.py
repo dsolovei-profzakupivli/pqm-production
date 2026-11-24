@@ -24,12 +24,19 @@ def isolated_test_environment(source=None):
         "PQM_RELEASE_SCHEMA_ONLY": "1",
         "PQM_ENABLE_NAZK_WORKFLOW": "0",
     }
-    for version in range(10, 28):
+    for version in (*range(10, 30), 127, 128):
         for suffix in ("SNAPSHOT_ARCHIVE", "SNAPSHOT_ARCHIVE_SHA256"):
             key = f"PQM_INTEGRATED_V{version}_{suffix}"
             value = str(source.get(key, "")).strip()
             if value:
                 env[key] = value
+    for key in (
+        "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE",
+        "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256",
+    ):
+        value = str(source.get(key, "")).strip()
+        if value:
+            env[key] = value
     return env
 
 
