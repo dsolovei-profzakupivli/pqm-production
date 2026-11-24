@@ -84,6 +84,115 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         self.assertTrue(incoming_verification_gate(
             "21.09.2026 00:00:00", "2026-09-20", require_time=True)["accepted"])
 
+    def test_fop_equal_timestamp_fills_only_blank_names_and_is_idempotent(self):
+        code = "2934702572"
+        existing_name_code = "2934702573"
+        self.con.execute("""INSERT INTO supplier_edr_profiles
+          (supplier_code,edr_status,edr_checked_at,edr_officer,full_name,short_name,synced_at)
+          VALUES (?,?,?,?,?,?,?)""", (code, "Зареєстровано", "2026-11-23T00:00:00+02:00",
+          "УО PQM", "", "", "old"))
+        self.con.execute("""INSERT INTO supplier_edr_profiles
+          (supplier_code,edr_status,edr_checked_at,edr_officer,full_name,short_name,synced_at)
+          VALUES (?,?,?,?,?,?,?)""", (existing_name_code, "Зареєстровано", "2026-11-23T00:00:00+02:00",
+          "УО PQM", "НАЯВНА НАЗВА PQM", "СКОРОЧЕНА НАЗВА PQM", "old"))
+        source_row = row(code=code, checked="23.11.2026 00:00:00", officer="УО PQM",
+                         manager="ПІБ ФОП", date_only=True)
+        source_row[13], source_row[14] = "ПОВНА НАЗВА ФОП", "КОРОТКА НАЗВА ФОП"
+        existing_name_row = row(code=existing_name_code, checked="23.11.2026 00:00:00",
+                                officer="УО PQM", manager="ПІБ ФОП", date_only=True)
+        existing_name_row[13], existing_name_row[14] = "ІНША НАЗВА GOOGLE", "ІНША КОРОТКА GOOGLE"
+        source = sync.source_snapshot({"ФОП": [list(sync.HEADERS), source_row, existing_name_row],
+                                       "ЮО": [list(sync.HEADERS)]})
+
+        preview = sync.build_preview(self.con, source, sandbox_mode=True)
+        plan = preview["items"][0]
+        self.assertEqual(plan["datetime_gate"]["reason"], "equal")
+        self.assertEqual(plan["row_state"], "eligible")
+        self.assertEqual(plan["conflicts"], [])
+        self.assertEqual(plan["fop_name_enrichment_fields"], ["full_name", "short_name"])
+        second_plan = preview["items"][1]
+        self.assertEqual(second_plan["row_state"], "eligible")
+        self.assertEqual(second_plan["fop_name_enrichment_fields"], [])
+        before = self.con.execute("SELECT edr_status,edr_checked_at,edr_officer FROM supplier_edr_profiles WHERE supplier_code=?",
+                                  (code,)).fetchone()
+        result = sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                            actor="test", synced_at="2026-11-24T10:00:00+02:00",
+                            expected_state_digest=sync.preview_state_digest(preview), sandbox_mode=True)
+        after = self.con.execute("SELECT full_name,short_name,edr_status,edr_checked_at,edr_officer FROM supplier_edr_profiles WHERE supplier_code=?",
+                                 (code,)).fetchone()
+        self.assertEqual(tuple(after[:2]), ("ПОВНА НАЗВА ФОП", "КОРОТКА НАЗВА ФОП"))
+        self.assertEqual(tuple(after[2:]), tuple(before))
+        self.assertEqual(result["updated_profiles"], 1)
+        self.assertEqual(result["unchanged"], 1)
+        self.assertEqual(result["errors"], 0)
+        preserved_names = self.con.execute("SELECT full_name,short_name FROM supplier_edr_profiles WHERE supplier_code=?",
+                                           (existing_name_code,)).fetchone()
+        self.assertEqual(tuple(preserved_names), ("НАЯВНА НАЗВА PQM", "СКОРОЧЕНА НАЗВА PQM"))
+
+        repeated = sync.build_preview(self.con, source, sandbox_mode=True)
+        self.assertEqual(repeated["conflicts"], [])
+        self.assertEqual(repeated["items"][0]["fop_name_enrichment_fields"], [])
+        self.assertNotIn("full_name", repeated["items"][0]["changed_fields"])
+        self.assertNotIn("short_name", repeated["items"][0]["changed_fields"])
+
+    def test_sandbox_apply_skips_every_conflict_but_updates_ready_rows(self):
+        good = "12345678"
+        conflicted = "87654321"
+        for code, status in ((good, "Старий статус"), (conflicted, "Зареєстровано")):
+            self.con.execute("""INSERT INTO supplier_edr_profiles
+              (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
+              VALUES (?,?,?,?,?)""", (code, status, "2026-11-23T10:00:00+02:00", "УО", "old"))
+        good_row = row(code=good, checked="23.11.2026 11:00:00", officer="УО", manager="")
+        conflict_row = row(code=conflicted, checked="23.11.2026 10:00:00", officer="УО", manager="")
+        conflict_row[4] = "Призупинено"
+        source = snapshot(good_row, conflict_row)
+        preview = sync.build_preview(self.con, source, sandbox_mode=True)
+        self.assertEqual(preview["summary"]["eligible"], 1)
+        self.assertEqual(preview["summary"]["conflicts"], 1)
+        self.assertEqual(preview["items"][1]["row_state"], "conflict")
+
+        result = sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                            actor="test", synced_at="2026-11-24T10:00:00+02:00",
+                            expected_state_digest=sync.preview_state_digest(preview), sandbox_mode=True)
+        statuses = {row[0]: row[1] for row in self.con.execute(
+            "SELECT supplier_code,edr_status FROM supplier_edr_profiles")}
+        self.assertEqual(statuses[good], "Зареєстровано")
+        self.assertEqual(statuses[conflicted], "Зареєстровано")
+        self.assertEqual(result["skipped_conflicts"], 1)
+        self.assertEqual(result["updated_profiles"], 1)
+        self.assertEqual(result["errors"], 0)
+
+    def test_sandbox_apply_with_many_conflicts_still_updates_one_ready_row(self):
+        rows = []
+        ready_code = "70000000"
+        self.con.execute("""INSERT INTO supplier_edr_profiles
+          (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
+          VALUES (?,?,?,?,?)""", (ready_code, "Старий статус", "2026-11-23T10:00:00+02:00", "УО", "old"))
+        rows.append(row(code=ready_code, checked="23.11.2026 11:00:00", officer="УО", manager=""))
+        conflict_codes = []
+        for index in range(31):
+            code = f"8{index:07d}"
+            conflict_codes.append(code)
+            self.con.execute("""INSERT INTO supplier_edr_profiles
+              (supplier_code,edr_status,edr_checked_at,edr_officer,synced_at)
+              VALUES (?,?,?,?,?)""", (code, "Зареєстровано", "2026-11-23T10:00:00+02:00", "УО", "old"))
+            conflict_row = row(code=code, checked="23.11.2026 10:00:00", officer="УО", manager="")
+            conflict_row[4] = "Призупинено"
+            rows.append(conflict_row)
+        source = snapshot(*rows)
+        preview = sync.build_preview(self.con, source, sandbox_mode=True)
+        self.assertEqual(preview["summary"]["conflicts"], 31)
+        self.assertEqual(preview["summary"]["eligible"], 1)
+        result = sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                            actor="test", synced_at="2026-11-24T10:00:00+02:00",
+                            expected_state_digest=sync.preview_state_digest(preview), sandbox_mode=True)
+        statuses = {row[0]: row[1] for row in self.con.execute(
+            "SELECT supplier_code,edr_status FROM supplier_edr_profiles")}
+        self.assertEqual(statuses[ready_code], "Зареєстровано")
+        self.assertTrue(all(statuses[code] == "Зареєстровано" for code in conflict_codes))
+        self.assertEqual(result["skipped_conflicts"], 31)
+        self.assertEqual(result["updated_profiles"], 1)
+
     def test_google_no_information_is_not_imported_as_factual_or_current_status(self):
         profile(self.con)
         preview, result = observe(self.con, "20.09.2026", "Officer A", status="Немає інформації")

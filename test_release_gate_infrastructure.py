@@ -300,7 +300,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         previous_integrated_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         previous_current_overlay = "test_google_writer_integrated_candidate_integrity_v8"
         previous_integrated_overlay_v9 = "test_google_writer_integrated_candidate_integrity_v9"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v26"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v27"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
@@ -328,6 +328,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         integrated_v23_runner = "validation/run_integrated_writer_ui_v23_history.py"
         integrated_v24_runner = "validation/run_integrated_writer_ui_v24_history.py"
         integrated_v25_runner = "validation/run_integrated_writer_ui_v25_history.py"
+        integrated_v26_runner = "validation/run_integrated_writer_ui_v26_history.py"
         integrated_v4_snapshot = "654bd0de0e5b3de6be61c5293a9fc00cf17217c3"
         integrated_v3_snapshot = "8c6ba07372196b1919a88beb7da3078e6c53d4d0"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
@@ -636,11 +637,14 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("run_integrated_writer_ui_v22_history.py", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v25", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v26", runner)
+        self.assertIn("test_google_writer_integrated_candidate_integrity_v27", runner)
         self.assertIn("run_integrated_writer_ui_v25_history.py", runner)
+        self.assertIn("run_integrated_writer_ui_v26_history.py", runner)
         self.assertIn("run_integrated_writer_ui_v24_history.py", runner)
         self.assertIn("integrated_v24_history", runner)
         self.assertIn("integrated_v25_history", runner)
-        self.assertIn("integrated_v26_current", runner)
+        self.assertIn("integrated_v26_history", runner)
+        self.assertIn("integrated_v27_current", runner)
         self.assertIn("run_integrated_writer_ui_v23_history.py", runner)
         package_manifest = json.loads(
             (ROOT / "validation/release_test_package_v1.json").read_text(encoding="utf-8")

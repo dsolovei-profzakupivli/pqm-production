@@ -902,6 +902,25 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         if str(raw.get("Дата запису") or "").strip() and not incoming["termination_record_date"]:
             row_conflicts.append("malformed_termination_record_date")
 
+        # PQM exports ФОП to the ФОП sheet and Apps Script derives the EDR
+        # names from the person name. On the round trip, the verification
+        # instant is therefore equal. Only fill missing names, after checking
+        # that the row has no other conflict; never replace existing names.
+        fop_name_enrichment_fields = []
+        if datetime_gate["reason"] == "equal" and incoming["source_sheet"] == "ФОП" and not row_conflicts:
+            fop_name_enrichment_fields = [
+                field for field in ("full_name", "short_name")
+                if str(incoming.get(field) or "").strip()
+                and not str(old.get(field) or "").strip()
+            ]
+            for field in fop_name_enrichment_fields:
+                changes.append(field)
+                summary[f"{field}_changes"] += 1
+            if "full_name" in fop_name_enrichment_fields:
+                new_current_name = current_supplier_name(
+                    incoming["full_name"], applications.get(code))
+                summary["current_supplier_name_changes"] += int(old_current_name != new_current_name)
+
         skip_reasons = []
         if sandbox_mode and datetime_gate["reason"] in SKIPPABLE_TIMESTAMP_GATE_REASONS:
             skip_reasons.append("verification_timestamp_unavailable")
@@ -948,6 +967,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                       "independent_mirror_only": independent_mirror_only,
                       "mirror_clear_fields": mirror_clear_fields, "snapshot_hash": snapshot_hash,
                       "verification_decision": verification_decision,
+                      "fop_name_enrichment_fields": fop_name_enrichment_fields,
                       "sandbox_historical_officer_normalization": historical_normalization,
                       "current_verification_date": current_day,
                       "current_verification_officer": current_officer,
@@ -1794,11 +1814,10 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "termination_clears": 0, "termination_events": 0,
               "skipped_no_verification_timestamp": 0,
               "skipped_conflicts": 0,
-              "skipped_ineligible_new": 0, "changed_fields": {}}
+              "skipped_ineligible_new": 0, "changed_fields": {}, "errors": 0}
     for plan in preview["items"]:
         item = plan["incoming"]
-        if (sandbox_mode and plan.get("row_state") == "conflict" and
-                not plan.get("independent_mirror_only")):
+        if sandbox_mode and plan.get("row_state") == "conflict":
             counts["skipped_conflicts"] += 1
             continue
         if plan.get("row_state") == "skipped":
@@ -1865,6 +1884,12 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                               change.get("action") in {"update", "clear"}}
             changed = {field: value for field, value in mirror_updates.items()
                        if str(old.get(field, "") or "") != str(value or "")}
+            fop_name_updates = {
+                field: item[field] for field in plan.get("fop_name_enrichment_fields", [])
+                if not str(old.get(field) or "").strip()
+                and str(item.get(field) or "").strip()
+            }
+            changed.update(fop_name_updates)
             if existing and changed:
                 assignments = [f"{field}=?" for field in changed]
                 assignments.append("synced_at=?")
