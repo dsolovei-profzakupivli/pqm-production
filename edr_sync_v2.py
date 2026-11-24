@@ -63,6 +63,41 @@ INDEPENDENT_MIRROR_MISSING_SOURCE_CONFLICTS = frozenset({
 INDEPENDENT_MIRROR_SAFE_CONFLICTS = (INDEPENDENT_MIRROR_DATE_CONFLICTS |
                                      INDEPENDENT_MIRROR_MISSING_SOURCE_CONFLICTS)
 
+CONFLICT_REASON_DETAILS = {
+    "missing_supplier_code": ("Не вказано ідентифікатор постачальника", "Ідентифікатор"),
+    "duplicate_supplier_code": ("Ідентифікатор повторюється у джерелі", "Ідентифікатор"),
+    "sandbox_officer_identity_unavailable": ("Не вдалося визначити УО перевірки", "УО перевірки"),
+    "manager_change_requires_strictly_newer_verification_timestamp":
+        ("Зміна ПІБ керівника потребує новішої перевірки ЄДР", "ПІБ керівника"),
+    "same_timestamp_verification_conflict":
+        ("Фактичні дані ЄДР відрізняються за однакового часу перевірки", "Статус ЄДР"),
+    "verification_date_required": ("Для зміни даних потрібна дата перевірки ЄДР", "Дата перевірки ЄДР"),
+    "current_verification_date_missing": ("У PQM відсутня дата попередньої перевірки", "Дата перевірки ЄДР"),
+    "ambiguous_missing_current_manager_evidence":
+        ("Неоднозначні дані про поточного керівника", "ПІБ керівника"),
+    "historical_normalization_cannot_attest_factual_changes":
+        ("Історичну нормалізацію не можна використати для зміни фактичних даних", "Дані ЄДР"),
+    "changed_values_without_verification_date": ("Зміни не мають дати перевірки", "Дата перевірки ЄДР"),
+    "changed_values_without_officer": ("Зміни не мають УО перевірки", "УО перевірки"),
+    "malformed_verification_date": ("Некоректна дата перевірки у Google Sheets", "Дата перевірки ЄДР"),
+    "malformed_current_verification_datetime": ("Некоректна дата перевірки у PQM", "Дата перевірки ЄДР"),
+    "malformed_termination_record_date": ("Некоректна дата запису про припинення", "Дата запису про припинення"),
+}
+
+
+def conflict_reason_details(reason) -> tuple[str, str]:
+    """Return the shared Ukrainian explanation and field label for a conflict code."""
+    code = str(reason or "")
+    if code.startswith("missing_source_column:"):
+        column = code.split(":", 1)[1]
+        return f"У Google Sheets відсутня обов’язкова колонка «{column}»", column
+    return CONFLICT_REASON_DETAILS.get(
+        code, ("Невідома причина конфлікту потребує окремої перевірки", "Дані постачальника"))
+
+
+def conflict_reason_labels(reasons) -> list[str]:
+    return [conflict_reason_details(reason)[0] for reason in (reasons or [])]
+
 
 def normalize_code(value) -> str:
     return re.sub(r"\D", "", str(value or ""))

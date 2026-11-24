@@ -7,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from io import BytesIO
+from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -244,12 +245,14 @@ class GoogleRuntimeTests(unittest.TestCase):
         items, conflicts = [], []
         for index in range(31):
             code = f"{index:010d}"
+            pqm_checked = None if index == 1 else "2026-11-23" if index == 0 else "2026-11-23T16:00:00Z"
+            google_checked = None if index == 1 else "2026-11-23T17:04:26Z" if index == 0 else "23.11.2026 00:00:00"
             items.append({"supplier_code": code, "source_row": index + 2,
                           "source_sheet": "ФОП", "current_profile": {"edr_status": "PQM"},
-                          "current_supplier_name": "Постачальник", "current_verification_date": "2026-11-23",
+                          "current_supplier_name": "Постачальник", "current_verification_date": pqm_checked,
                           "current_verification_officer": "УО PQM",
                           "incoming": {"source_sheet": "ФОП", "full_name": "Google name",
-                                       "edr_status": "Google", "edr_checked_at": "23.11.2026 00:00:00",
+                                       "edr_status": "Google", "edr_checked_at": google_checked,
                                        "edr_officer": "УО Google"}})
             conflicts.append({"supplier_code": code, "source_row": index + 2,
                               "reasons": ["same_timestamp_verification_conflict"]})
@@ -276,9 +279,28 @@ class GoogleRuntimeTests(unittest.TestCase):
         self.assertEqual(sheet.cell(2, 2).number_format, "@")
         self.assertEqual(sheet.cell(32, 2).value, "0000000030")
         self.assertEqual(sheet.cell(2, 4).value, "Фактичні дані ЄДР відрізняються за однакового часу перевірки")
+        self.assertIsInstance(sheet.cell(2, 8).value, datetime)
+        self.assertEqual(sheet.cell(2, 8).value, datetime(2026, 11, 23, 0, 0, 0))
+        self.assertEqual(sheet.cell(2, 9).value, datetime(2026, 11, 23, 19, 4, 26))
+        self.assertEqual(sheet.cell(2, 8).number_format, "dd.mm.yyyy hh:mm:ss")
+        self.assertEqual(sheet.cell(2, 9).number_format, "dd.mm.yyyy hh:mm:ss")
+        self.assertIsNone(sheet.cell(3, 8).value)
+        self.assertIsNone(sheet.cell(3, 9).value)
         self.assertEqual(sheet.cell(2, 10).value, "УО PQM")
         self.assertEqual(sheet.cell(2, 11).value, "УО Google")
         self.assertIn("supplier_code=0000000000", sheet.cell(2, 12).hyperlink.target)
+
+    def test_preview_conflict_reasons_are_localized_and_keep_internal_codes(self):
+        reasons = ["same_timestamp_verification_conflict", "missing_source_column:Дата перевірки"]
+        rows = server.supplier_edr_localize_review_details([
+            {"category": "conflicts", "reason": reasons},
+            {"category": "verification", "reason": "newer_verification_accepted"},
+        ])
+        self.assertEqual(rows[0]["reason_codes"], reasons)
+        self.assertEqual(rows[0]["reason"], [
+            server.edr_sync_v2.conflict_reason_details(code)[0] for code in reasons])
+        self.assertEqual(rows[1]["reason"], "newer_verification_accepted")
+        self.assertNotIn("reason_codes", rows[1])
 
     def test_pkce_transaction_survives_memory_restart_and_is_one_time(self):
         client = {"client_id": "test-client", "client_secret": "test-secret",

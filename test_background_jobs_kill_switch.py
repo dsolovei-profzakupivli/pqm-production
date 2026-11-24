@@ -123,6 +123,7 @@ class BackgroundJobsKillSwitchTests(unittest.TestCase):
                 stack.enter_context(patch.object(server,name))
             stack.enter_context(patch.object(server,'DB_PATH',Path(__file__)))
             stack.enter_context(patch.object(server,'db',return_value=self.con))
+            stack.enter_context(patch.dict(os.environ, {'PQM_SANDBOX_AUTO_CONTINUE_CHUNKS':'0'}))
             stack.enter_context(patch.object(scheduler_runtime,'migrate'))
             stack.enter_context(patch.object(server,'ENABLE_BROWSER',False))
             stack.enter_context(patch.object(server,'SANDBOX_MODE',True))
@@ -132,9 +133,11 @@ class BackgroundJobsKillSwitchTests(unittest.TestCase):
             stack.enter_context(patch.object(server,'unregister_scheduler_job'))
             register=stack.enter_context(patch.object(server,'register_scheduler_job'))
             google=stack.enter_context(patch.object(server,'google_writer_service'))
+            continuation=stack.enter_context(patch.object(server,'google_writer_continuation_service'))
             rebuild=stack.enter_context(patch.object(server,'rebuild_operational_tasks'))
             server.main();server.main()
             register.assert_not_called();google.assert_not_called();rebuild.assert_not_called()
+            continuation.assert_not_called()
         self.assertEqual(self.snapshot(),before)
 
     def test_unset_switch_preserves_prod_persisted_enabled_behavior(self):

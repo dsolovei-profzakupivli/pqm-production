@@ -5279,14 +5279,28 @@ def supplier_google_row(code: str) -> dict:
             f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit#gid={gids[0]}&range=B{row_number}"}
 
 
+def supplier_edr_localize_review_details(details):
+    """Render conflict reasons for operators while retaining machine codes."""
+    result = []
+    for detail in details:
+        item = dict(detail)
+        reason = item.get("reason")
+        if item.get("category") == "conflicts" and isinstance(reason, (list, tuple)):
+            item["reason_codes"] = list(reason)
+            item["reason"] = edr_sync_v2.conflict_reason_labels(reason)
+        result.append(item)
+    return result
+
+
 def supplier_edr_sync_preview() -> dict:
     """Return every planned change for explicit, mutation-free operator review."""
+
     snapshot = supplier_edr_source_snapshot()
     with db() as con:
         preview = edr_sync_v2.build_preview(con, snapshot, sandbox_mode=SANDBOX_MODE)
         changes = con.total_changes
     if SANDBOX_MODE:
-        details = sandbox_edr_review.details(preview)
+        details = supplier_edr_localize_review_details(sandbox_edr_review.details(preview))
         return {"source_fingerprint": preview["source_fingerprint"],
                 "state_digest": edr_sync_v2.preview_state_digest(preview),
                 "previewed_at": preview["previewed_at"],
@@ -5295,7 +5309,7 @@ def supplier_edr_sync_preview() -> dict:
                 "sandbox_partial_apply": True,
                 "details": details, "details_total": len(details),
                 "details_complete": True, "db_writes": 0, "google_writes": 0}
-    details = edr_sync_review.details(preview)
+    details = supplier_edr_localize_review_details(edr_sync_review.details(preview))
     return {
         "source_fingerprint": preview["source_fingerprint"],
         "state_digest": edr_sync_v2.preview_state_digest(preview),
@@ -5319,28 +5333,6 @@ def supplier_edr_sync_preview() -> dict:
             if item["changed_fields"] or item["verification_event_change"] or item["conflicts"]
         ][:500],
     }
-
-
-SUPPLIER_EDR_CONFLICT_LABELS = {
-    "missing_supplier_code": ("Не вказано ідентифікатор постачальника", "Ідентифікатор"),
-    "duplicate_supplier_code": ("Ідентифікатор повторюється у джерелі", "Ідентифікатор"),
-    "sandbox_officer_identity_unavailable": ("Не вдалося визначити УО перевірки", "УО перевірки"),
-    "manager_change_requires_strictly_newer_verification_timestamp":
-        ("Зміна ПІБ керівника потребує новішої перевірки ЄДР", "ПІБ керівника"),
-    "same_timestamp_verification_conflict":
-        ("Фактичні дані ЄДР відрізняються за однакового часу перевірки", "Статус ЄДР"),
-    "verification_date_required": ("Для зміни даних потрібна дата перевірки ЄДР", "Дата перевірки ЄДР"),
-    "current_verification_date_missing": ("У PQM відсутня дата попередньої перевірки", "Дата перевірки ЄДР"),
-    "ambiguous_missing_current_manager_evidence":
-        ("Неоднозначні дані про поточного керівника", "ПІБ керівника"),
-    "historical_normalization_cannot_attest_factual_changes":
-        ("Історичну нормалізацію не можна використати для зміни фактичних даних", "Дані ЄДР"),
-    "changed_values_without_verification_date": ("Зміни не мають дати перевірки", "Дата перевірки ЄДР"),
-    "changed_values_without_officer": ("Зміни не мають УО перевірки", "УО перевірки"),
-    "malformed_verification_date": ("Некоректна дата перевірки у Google Sheets", "Дата перевірки ЄДР"),
-    "malformed_current_verification_datetime": ("Некоректна дата перевірки у PQM", "Дата перевірки ЄДР"),
-    "malformed_termination_record_date": ("Некоректна дата запису про припинення", "Дата запису про припинення"),
-}
 
 
 def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
@@ -5382,12 +5374,7 @@ def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
                          or str(incoming.get("full_name") or "").strip()
                          or str(incoming.get("manager_name") or "").strip())
         for reason in reasons:
-            if str(reason).startswith("missing_source_column:"):
-                reason_label = "У Google Sheets відсутня обов’язкова колонка"
-                field_label = str(reason).split(":", 1)[1]
-            else:
-                reason_label, field_label = SUPPLIER_EDR_CONFLICT_LABELS.get(
-                    str(reason), ("Потрібна окрема перевірка конфлікту", "Дані постачальника"))
+            reason_label, field_label = edr_sync_v2.conflict_reason_details(reason)
             current_field, incoming_field = field_map.get(field_label, ("", ""))
             pqm_value = (plan.get("current_verification_date") if field_label == "Дата перевірки ЄДР"
                          else plan.get("current_verification_officer") if field_label == "УО перевірки"
@@ -5396,15 +5383,18 @@ def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
             google_value = incoming.get(incoming_field, "") if incoming_field else ""
             row = [str(incoming.get("source_sheet") or ""), code, supplier_name, reason_label,
                    field_label, str(pqm_value or ""), str(google_value or ""),
-                   str(plan.get("current_verification_date") or ""),
-                   str(incoming.get("edr_checked_at") or ""),
+                   _supplier_edr_excel_datetime(plan.get("current_verification_date")),
+                   _supplier_edr_excel_datetime(incoming.get("edr_checked_at")),
                    str(plan.get("current_verification_officer") or ""),
                    str(incoming.get("edr_officer") or ""), ""]
             sheet.append(row)
             for cell in sheet[sheet.max_row]:
-                cell.data_type = "s"
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
             for index in (2,):
                 sheet.cell(sheet.max_row, index).number_format = "@"
+            for index in (8, 9):
+                sheet.cell(sheet.max_row, index).number_format = "dd.mm.yyyy hh:mm:ss"
             link_cell = sheet.cell(sheet.max_row, 12)
             link_cell.value = "Відкрити картку постачальника"
             query = urllib.parse.urlencode({"view": "suppliers", "supplier_code": code})
@@ -5431,6 +5421,16 @@ def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
+
+
+def _supplier_edr_excel_datetime(value):
+    """Convert a source timestamp to a timezone-naive Excel datetime in Kyiv."""
+    if value is None or value == "":
+        return None
+    parsed = edr_sync_v2.verification_instant(value)
+    if parsed.get("kind") != "datetime":
+        return None
+    return parsed["value"].astimezone(edr_sync_v2.KYIV).replace(tzinfo=None)
 
 
 def supplier_edr_sync_conflicts_export(payload: dict) -> bytes:

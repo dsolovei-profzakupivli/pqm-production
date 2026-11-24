@@ -30,6 +30,11 @@ def isolated_test_environment(source=None):
             value = str(source.get(key, "")).strip()
             if value:
                 env[key] = value
+    for key in ("PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE",
+                "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256"):
+        value = str(source.get(key, "")).strip()
+        if value:
+            env[key] = value
     return env
 
 

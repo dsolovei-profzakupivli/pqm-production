@@ -1212,7 +1212,7 @@ function renderSupplierEdrReviewDetails(){
   const pages=Math.max(1,Math.ceil(rows.length/size));supplierEdrReviewPage=Math.min(pages,Math.max(1,supplierEdrReviewPage));
   const current=rows.slice((supplierEdrReviewPage-1)*size,supplierEdrReviewPage*size);
   const value=x=>esc(typeof x==='object'?JSON.stringify(x):String(x??''));
-  $('#supplierEdrReviewRows').innerHTML=current.map(row=>`<article class="edr-review-row"><strong>${esc(row.supplier_code)} · ${esc(row.supplier_name||'')}</strong><small>${esc(row.field)} · ${esc(row.action)} · ${esc(typeof row.reason==='string'?row.reason:JSON.stringify(row.reason))}</small><dl><div><dt>Поточне PQM</dt><dd>${value(row.current_pqm_value)}</dd></div><div><dt>Google</dt><dd>${value(row.google_value)}</dd></div><div><dt>План PQM</dt><dd>${value(row.planned_pqm_value)}</dd></div></dl></article>`).join('')||'<p>За цим фільтром змін немає.</p>';
+  $('#supplierEdrReviewRows').innerHTML=current.map(row=>`<article class="edr-review-row"><strong>${esc(row.supplier_code)} · ${esc(row.supplier_name||'')}</strong><small>${esc(row.field)} · ${esc(row.action)} · ${esc(Array.isArray(row.reason)?row.reason.join(' · '):String(row.reason??''))}</small><dl><div><dt>Поточне PQM</dt><dd>${value(row.current_pqm_value)}</dd></div><div><dt>Google</dt><dd>${value(row.google_value)}</dd></div><div><dt>План PQM</dt><dd>${value(row.planned_pqm_value)}</dd></div></dl></article>`).join('')||'<p>За цим фільтром змін немає.</p>';
   $('#supplierEdrReviewPageInfo').textContent=`${rows.length} результатів · сторінка ${supplierEdrReviewPage} з ${pages}`;
   $('#supplierEdrReviewPrev').disabled=supplierEdrReviewPage===1;
   $('#supplierEdrReviewNext').disabled=supplierEdrReviewPage===pages;

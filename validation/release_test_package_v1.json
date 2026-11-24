@@ -26,7 +26,8 @@
     23,
     24,
     25,
-    26
+    26,
+    27
   ],
   "integrity_test_versions": [
     1,
@@ -55,7 +56,8 @@
     24,
     25,
     26,
-    27
+    27,
+    28
   ],
   "integrity_manifest_dir": "validation/local_release_20261116",
   "snapshot_support_files": [
@@ -102,11 +104,13 @@
     "run_messages_integrated_v1_history_addendum.py",
     "nazk_preview_fixture.py",
     "nazk_preview_browser_fixture.py",
-    "edr_monitoring_drawer.test.cjs"
+    "edr_monitoring_drawer.test.cjs",
+    "run_google_writer_update_append_v2_v26_history.py"
   ],
   "root_level_release_files": [
     "sandbox_runtime_messages_integrated_v1_86ea864.py",
-    "application_officers.py"
+    "application_officers.py",
+    ".dockerignore"
   ],
   "release_fixture_basenames": [
     "supplier_classification_parent_integrity_6b9830b.zip",

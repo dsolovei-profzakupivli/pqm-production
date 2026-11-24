@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
@@ -30,7 +31,59 @@ def repository_root(test_file=__file__):
 REPOSITORY_ROOT = repository_root()
 
 
+def isolated_git_fixture_environment():
+    """Drop inherited command-scope Git config from temporary-repository tests."""
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if (key in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+                or key.startswith("GIT_CONFIG_KEY_")
+                or key.startswith("GIT_CONFIG_VALUE_")):
+            environment.pop(key, None)
+    return environment
+
+
 class ReleaseGateInfrastructureTests(unittest.TestCase):
+    def test_release_runner_turns_uncaught_thread_exception_into_gate_failure(self):
+        observed=[]
+        with patch.object(threading, 'excepthook', side_effect=observed.append):
+            monitor=release.UnhandledThreadExceptionMonitor()
+            monitor.install()
+            try:
+                def fail_in_background():
+                    raise RuntimeError('synthetic background-thread failure')
+                worker=threading.Thread(target=fail_in_background,name='release-gate-fixture-thread')
+                worker.start(); worker.join(timeout=2)
+                self.assertFalse(worker.is_alive())
+                self.assertTrue(monitor.failed)
+                self.assertEqual(len(observed),1)
+                self.assertEqual(str(observed[0].exc_value),'synthetic background-thread failure')
+            finally:
+                monitor.restore()
+
+    def test_release_child_environment_drops_only_command_scoped_git_config(self):
+        source = {
+            "PATH": "fixture-path",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": "",
+            "GIT_CONFIG_KEY_1": "init.defaultBranch",
+            "GIT_CONFIG_VALUE_1": "main",
+            "GIT_CONFIG_PARAMETERS": "'safe.directory=*'",
+            "PQM_TEST_VALUE": "preserved",
+        }
+        result = release.release_subprocess_environment(source)
+        self.assertEqual(result, {"PATH": "fixture-path", "PQM_TEST_VALUE": "preserved"})
+
+    def test_release_git_child_survives_incomplete_inherited_git_config(self):
+        with patch.dict(os.environ, {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+        }, clear=False):
+            result = release.run_release_subprocess(
+                ["git", "config", "--list"], capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_docker_gate_forwards_only_integrated_snapshot_archive_inputs(self):
         source = {
             "PQM_INTEGRATED_V10_SNAPSHOT_ARCHIVE": "/tmp/v10.zip",
@@ -41,6 +94,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
             "PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE": "/tmp/v25.zip",
             "PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE_SHA256": "c" * 64,
             "PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE_OUT": "/tmp/should-not-forward-v25.zip",
+            "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE": "/tmp/v27.zip",
+            "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256": "d" * 64,
+            "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE": "/tmp/v26-full.zip",
+            "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256": "e" * 64,
             "GOOGLE_WRITER_TOKEN": "must-not-forward",
             "PATH": "untrusted-path",
         }
@@ -54,6 +111,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertEqual(env["PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE"], "/tmp/v25.zip")
         self.assertEqual(env["PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE_SHA256"], "c" * 64)
         self.assertNotIn("PQM_INTEGRATED_V25_SNAPSHOT_ARCHIVE_OUT", env)
+        self.assertEqual(env["PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE"], "/tmp/v27.zip")
+        self.assertEqual(env["PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256"], "d" * 64)
+        self.assertEqual(env["PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE"], "/tmp/v26-full.zip")
+        self.assertEqual(env["PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256"], "e" * 64)
         self.assertNotIn("GOOGLE_WRITER_TOKEN", env)
         self.assertEqual(env["PATH"], "/usr/local/bin:/usr/bin:/bin")
 
@@ -300,7 +361,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         previous_integrated_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         previous_current_overlay = "test_google_writer_integrated_candidate_integrity_v8"
         previous_integrated_overlay_v9 = "test_google_writer_integrated_candidate_integrity_v9"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v27"
+        current_overlay = "test_google_writer_integrated_candidate_integrity_v28"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
@@ -329,6 +390,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         integrated_v24_runner = "validation/run_integrated_writer_ui_v24_history.py"
         integrated_v25_runner = "validation/run_integrated_writer_ui_v25_history.py"
         integrated_v26_runner = "validation/run_integrated_writer_ui_v26_history.py"
+        integrated_v27_runner = "validation/run_integrated_writer_ui_v27_history.py"
         integrated_v4_snapshot = "654bd0de0e5b3de6be61c5293a9fc00cf17217c3"
         integrated_v3_snapshot = "8c6ba07372196b1919a88beb7da3078e6c53d4d0"
         direct_historical_test = "python -B -m unittest -v test_legacy_reconciliation_evidence_v2_integrity"
@@ -345,7 +407,10 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("git archive 2a4e4bff0bbbe84670d3bb10a5ba4b90347a7d78", workflow)
         self.assertIn("test_google_writer_append_continuation_integrity_v2", workflow)
         self.assertIn("test_google_writer_append_continuation_integrity_v3", workflow)
-        self.assertIn("test_google_writer_update_append_v2_integrity", workflow)
+        self.assertIn("run_google_writer_update_append_v2_v26_history.py", workflow)
+        self.assertIn("git archive --format=zip e436c952b17fc79ccb8fc1f8c366cbbf18ca31fc", workflow)
+        self.assertIn("PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE=/tmp/pqm-update-append-v2-v26-full.zip", workflow)
+        self.assertIn("PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v27-snapshot.zip", workflow)
         self.assertIn("test_google_writer_update_append_v3_integrity", workflow)
         self.assertIn(c246_runner, workflow)
         self.assertIn(historical_runner, workflow)
@@ -638,13 +703,17 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("test_google_writer_integrated_candidate_integrity_v25", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v26", runner)
         self.assertIn("test_google_writer_integrated_candidate_integrity_v27", runner)
+        self.assertIn(integrated_v27_runner, runner)
         self.assertIn("run_integrated_writer_ui_v25_history.py", runner)
         self.assertIn("run_integrated_writer_ui_v26_history.py", runner)
+        self.assertIn("run_integrated_writer_ui_v27_history.py", runner)
+        self.assertIn("run_google_writer_update_append_v2_v26_history.py", runner)
         self.assertIn("run_integrated_writer_ui_v24_history.py", runner)
         self.assertIn("integrated_v24_history", runner)
         self.assertIn("integrated_v25_history", runner)
         self.assertIn("integrated_v26_history", runner)
-        self.assertIn("integrated_v27_current", runner)
+        self.assertIn("integrated_v27_history", runner)
+        self.assertIn("integrated_v28_current", runner)
         self.assertIn("run_integrated_writer_ui_v23_history.py", runner)
         package_manifest = json.loads(
             (ROOT / "validation/release_test_package_v1.json").read_text(encoding="utf-8")
@@ -667,7 +736,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         browser_block = workflow.split("- name: Run Appeals browser regressions", 1)[1].split("- name:", 1)[0]
         self.assertIn("node validation/uo_work_page_layout_browser.cjs", browser_block)
         self.assertIn("PQM_INTEGRATED_V14_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v14-snapshot.zip", workflow)
-        self.assertNotIn("'test_google_writer_update_append_v2_integrity'", exact_modules)
+        self.assertIn("'test_google_writer_update_append_v2_integrity'", exact_modules)
         self.assertNotIn("'test_google_writer_update_append_v3_integrity'", exact_modules)
         self.assertNotIn("'test_google_writer_apply_result_diagnostic'", exact_modules)
         self.assertIn("test_google_writer_apply_result_integrity_v7", workflow)
@@ -748,33 +817,42 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
                          "e0931cc43d5c99a001771fdd12ef5bea6a87003400a458c9a3f197372671c865")
 
     def test_c246_snapshot_materialization_fails_closed_on_missing_commit_and_bad_pins(self):
+        environment = isolated_git_fixture_environment()
+        self.assertNotIn("GIT_CONFIG_COUNT", environment)
+        self.assertFalse(any(key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+                             for key in environment))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
             repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Snapshot Test"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "snapshot-test@example.invalid"], check=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True, env=environment)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Snapshot Test"], check=True, env=environment)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "snapshot-test@example.invalid"], check=True, env=environment)
             (repo / "test_example_integrity.py").write_bytes(b"# exact historical test\n")
-            subprocess.run(["git", "-C", str(repo), "add", "test_example_integrity.py"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "snapshot fixture"], check=True)
-            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
-            tree = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"], text=True).strip()
+            subprocess.run(["git", "-C", str(repo), "add", "test_example_integrity.py"], check=True, env=environment)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "snapshot fixture"], check=True, env=environment)
+            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, env=environment).strip()
+            tree = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"], text=True, env=environment).strip()
             test_hash = hashlib.sha256((repo / "test_example_integrity.py").read_bytes()).hexdigest()
             route = {"commit": commit, "tree": tree, "tests": [{
                 "module": "test_example_integrity", "path": "test_example_integrity.py", "sha256": test_hash,
             }]}
             snapshot_root = root / "snapshot"
-            c246_snapshots.materialize_snapshot(repo, route, snapshot_root)
-            self.assertEqual((snapshot_root / "test_example_integrity.py").read_bytes(), b"# exact historical test\n")
+            # The snapshot helper starts Git subprocesses from os.environ.
+            # Keep this fixture isolated from command-scope GIT_CONFIG_* values
+            # inherited by the Release Gate process, just like the git init/
+            # commit commands above.
+            with patch.dict(os.environ, environment, clear=True):
+                c246_snapshots.materialize_snapshot(repo, route, snapshot_root)
+                self.assertEqual((snapshot_root / "test_example_integrity.py").read_bytes(), b"# exact historical test\n")
 
-            with self.assertRaises(c246_snapshots.SnapshotError):
-                c246_snapshots.materialize_snapshot(repo, {**route, "commit": "0" * 40}, root / "missing-commit")
-            with self.assertRaises(c246_snapshots.SnapshotError):
-                c246_snapshots.materialize_snapshot(repo, {**route, "tree": "0" * 40}, root / "wrong-tree")
-            bad_test = {**route, "tests": [{**route["tests"][0], "sha256": "0" * 64}]}
-            with self.assertRaises(c246_snapshots.SnapshotError):
-                c246_snapshots.materialize_snapshot(repo, bad_test, root / "wrong-test-hash")
+                with self.assertRaises(c246_snapshots.SnapshotError):
+                    c246_snapshots.materialize_snapshot(repo, {**route, "commit": "0" * 40}, root / "missing-commit")
+                with self.assertRaises(c246_snapshots.SnapshotError):
+                    c246_snapshots.materialize_snapshot(repo, {**route, "tree": "0" * 40}, root / "wrong-tree")
+                bad_test = {**route, "tests": [{**route["tests"][0], "sha256": "0" * 64}]}
+                with self.assertRaises(c246_snapshots.SnapshotError):
+                    c246_snapshots.materialize_snapshot(repo, bad_test, root / "wrong-test-hash")
 
     def test_c246_offline_historical_copy_is_pinned_to_the_exact_git_tree(self):
         manifest = c246_snapshots.load_manifest()

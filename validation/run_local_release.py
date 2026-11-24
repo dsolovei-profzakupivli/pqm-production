@@ -15,6 +15,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import traceback
 import unittest
 import zipfile
 
@@ -27,6 +29,69 @@ except ImportError:
 
 ROOT=Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or Path(__file__).resolve().parents[1]).resolve()
 INFRA_ROOT=Path(os.environ.get('PQM_RELEASE_INFRA_ROOT') or Path(__file__).resolve().parents[1]).resolve()
+
+def release_subprocess_environment(source=None):
+    """Copy the environment while dropping command-scoped Git config overrides.
+
+    Release tests create temporary repositories and replay immutable snapshots.
+    An injected or partially inherited GIT_CONFIG_* set can make those Git
+    subprocesses fail before the test logic runs. Keep PATH and all unrelated
+    settings intact; never alter the parent process or global Git config.
+    """
+    environment=dict(os.environ if source is None else source)
+    for key in tuple(environment):
+        if (key in {'GIT_CONFIG_COUNT','GIT_CONFIG_PARAMETERS'}
+                or key.startswith('GIT_CONFIG_KEY_')
+                or key.startswith('GIT_CONFIG_VALUE_')):
+            environment.pop(key,None)
+    return environment
+
+def run_release_subprocess(*args,**kwargs):
+    """Launch a Release Gate child with an isolated Git configuration env."""
+    kwargs['env']=release_subprocess_environment(kwargs.get('env'))
+    return subprocess.run(*args,**kwargs)
+
+class UnhandledThreadExceptionMonitor:
+    """Capture uncaught Python thread errors so they fail the Release Gate."""
+    def __init__(self):
+        self.exceptions=[]
+        self._previous=None
+        self._lock=threading.Lock()
+        self._reported_count=0
+
+    def install(self):
+        if self._previous is not None:
+            raise RuntimeError('Thread exception monitor is already installed')
+        self._previous=threading.excepthook
+        threading.excepthook=self._capture
+
+    def _capture(self,args):
+        with self._lock:
+            self.exceptions.append(args)
+        self._previous(args)
+
+    def restore(self):
+        if self._previous is not None:
+            threading.excepthook=self._previous
+            self._previous=None
+
+    @property
+    def failed(self):
+        with self._lock:
+            return bool(self.exceptions)
+
+    def report(self):
+        with self._lock:
+            events=self.exceptions[self._reported_count:]
+            self._reported_count=len(self.exceptions)
+        for event in events:
+            rendered=''.join(traceback.format_exception(
+                event.exc_type,event.exc_value,event.exc_traceback)).rstrip()
+            print(f'RELEASE GATE FAIL: uncaught exception in background thread '
+                  f'{event.thread.name if event.thread else "<unknown>"}:\n{rendered}',
+                  file=sys.stderr,flush=True)
+        return not events
+
 HISTORICAL_INTEGRITY_MODULES={
     'test_google_sandbox_baseline_compatibility',
     'test_halloween_motion_integration',
@@ -100,6 +165,7 @@ HISTORICAL_INTEGRITY_MODULES={
     # current infrastructure overlay and this old assertion runs on its exact snapshot.
     'test_google_writer_legacy_source_snapshots_history_v2',
     'test_google_writer_integrated_candidate_integrity_v26',
+    'test_google_writer_update_append_v2_integrity',
 }
 EXACT_TREE_OVERLAY_MODULES={
     # Continuation v2-v5, Apply Result v5-v10, and integrated candidate v1-v6
@@ -114,8 +180,9 @@ EXACT_TREE_OVERLAY_MODULES={
     'test_google_writer_apply_result_integrity_v8',
     'test_google_writer_apply_result_integrity_v9',
     'test_google_writer_apply_result_integrity_v10',
-    # Integrated UI v1-v26 stay bound to immutable snapshots; v27 pins current.
+    # Integrated UI v1-v27 stay bound to immutable snapshots; v28 pins current.
     # The aggregate runner invokes each route explicitly.
+    'test_google_writer_update_append_v2_integrity',
     'test_google_writer_integrated_candidate_integrity_v1',
     'test_google_writer_integrated_candidate_integrity_v2',
     'test_google_writer_integrated_candidate_integrity_v3',
@@ -277,7 +344,7 @@ def main():
             v2_archive.parent.mkdir(parents=True,exist_ok=True)
             archive_env=os.environ.copy()
             archive_env['PQM_INTEGRATED_V2_ARCHIVE_OUT']=str(v2_archive)
-            materialized=subprocess.run(
+            materialized=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v2_history.py')],
                 cwd=old_cwd,env=archive_env,check=False)
             if materialized.returncode:
@@ -315,178 +382,189 @@ def main():
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
             if mode=='historical_integrity' or full_candidate_run or mode=='baseline_candidate':
                 suite=selected_suite(suite,'historical_integrity' if mode=='historical_integrity' else 'candidate')
+            background_exceptions=UnhandledThreadExceptionMonitor()
+            background_exceptions.install()
             result=unittest.TextTestRunner(verbosity=2).run(suite)
+            background_threads_ok=background_exceptions.report()
             if mode=='historical_integrity':
-                integrated_v1_history=subprocess.run(
+                integrated_v1_history=run_release_subprocess(
                     [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v1_history.py')],
                     cwd=old_cwd,check=False)
-                integrated_v2_history=subprocess.run(
+                integrated_v2_history=run_release_subprocess(
                     [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v2_history.py')],
                     cwd=old_cwd,check=False)
-                return 0 if result.wasSuccessful() and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 else 1
+                return 0 if result.wasSuccessful() and background_threads_ok and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 else 1
             if not full_candidate_run:
-                return 0 if result.wasSuccessful() else 1
-            candidate_ok=result.wasSuccessful()
-            v1_overlay=subprocess.run(
+                return 0 if result.wasSuccessful() and background_threads_ok else 1
+            candidate_ok=result.wasSuccessful() and background_threads_ok
+            v1_overlay=run_release_subprocess(
                 [sys.executable, str(ROOT/'validation/run_messages_integrated_v1_history_addendum.py')],
                 cwd=old_cwd, check=False)
-            v2_overlay=subprocess.run(
+            v2_overlay=run_release_subprocess(
                 [sys.executable, str(ROOT/'validation/run_classification_parent_integrity.py'),'--messages-v2'],
                 cwd=old_cwd, check=False)
-            v3_overlay=subprocess.run(
+            v3_overlay=run_release_subprocess(
                 [sys.executable, str(ROOT/'validation/run_messages_header_polish_v3_integrity.py')],
                 cwd=old_cwd, check=False)
-            edr_v1_overlay=subprocess.run(
+            edr_v1_overlay=run_release_subprocess(
                 [sys.executable, str(ROOT/'validation/run_sandbox_edr_google_nazk_reconcile_v1_integrity.py')],
                 cwd=old_cwd, check=False)
-            google_timezone_v1_overlay=subprocess.run(
+            google_timezone_v1_overlay=run_release_subprocess(
                 [sys.executable, str(ROOT/'validation/run_google_edr_timezone_alias_v1_integrity.py')],
                 cwd=old_cwd, check=False)
-            classification_parent_overlay=subprocess.run(
+            classification_parent_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_classification_parent_integrity.py')],
                 cwd=old_cwd,check=False)
-            classification_v3_overlay=subprocess.run(
+            classification_v3_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_supplier_classification_v3_integrity.py')],
                 cwd=old_cwd,check=False)
-            manual_classification_v4_overlay=subprocess.run(
+            manual_classification_v4_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_supplier_manual_classification_v4_integrity.py')],
                 cwd=old_cwd,check=False)
-            source_integrity_overlays=subprocess.run(
+            source_integrity_overlays=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_source_integrity_overlays.py')],
                 cwd=old_cwd,check=False)
-            date_only_previous_contract_overlays=subprocess.run(
+            date_only_previous_contract_overlays=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_date_only_previous_contract_overlays.py')],
                 cwd=old_cwd,check=False)
-            date_only_status_v2_overlay=subprocess.run(
+            date_only_status_v2_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_date_only_status_integrated_v2_history.py')],
                 cwd=old_cwd,check=False)
-            preview_digest_v1_overlay=subprocess.run(
+            preview_digest_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_preview_digest_contract_v1_integrity.py')],
                 cwd=old_cwd,check=False)
-            checkpointed_apply_v1_overlay=subprocess.run(
+            checkpointed_apply_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_checkpointed_apply_v1_integrity.py')],
                 cwd=old_cwd,check=False)
-            partial_reconciliation_second_v1_overlay=subprocess.run(
+            partial_reconciliation_second_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_partial_reconciliation_second_v1_history.py')],
                 cwd=old_cwd,check=False)
-            sandbox_preview_append_only_v1_overlay=subprocess.run(
+            sandbox_preview_append_only_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_sandbox_preview_append_only_v1_history.py')],
                 cwd=old_cwd,check=False)
-            sandbox_preview_workflow_v1_overlay=subprocess.run(
+            sandbox_preview_workflow_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_sandbox_preview_workflow_v1_history.py')],
                 cwd=old_cwd,check=False)
-            first_append_only_v1_overlay=subprocess.run(
+            first_append_only_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_partial_reconciliation_first_append_only_v1_history.py')],
                 cwd=old_cwd,check=False)
-            prepared_retry_v1_overlay=subprocess.run(
+            prepared_retry_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_prepared_append_only_retry_v1_history.py')],
                 cwd=old_cwd,check=False)
-            receipt_recovery_v1_overlay=subprocess.run(
+            receipt_recovery_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_google_writer_receipt_recovery_v1_history.py')],
                 cwd=old_cwd,check=False)
-            all_scope_recovery_v1_overlay=subprocess.run(
+            all_scope_recovery_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_google_writer_all_scope_receipt_recovery_v1_history.py')],
                 cwd=old_cwd,check=False)
-            legacy_append_reconciliation_v1_overlay=subprocess.run(
+            legacy_append_reconciliation_v1_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v1_history.py')],
                 cwd=old_cwd,check=False)
-            legacy_append_reconciliation_v2_overlay=subprocess.run(
+            legacy_append_reconciliation_v2_overlay=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_legacy_append_reconciliation_v2_history.py')],
                 cwd=old_cwd,check=False)
-            immutable_google_writer_source_overlays=subprocess.run(
+            immutable_google_writer_source_overlays=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_immutable_google_writer_source_overlays.py')],
                 cwd=old_cwd,check=False)
             # c246 contracts are run by the mandatory workflow snapshot step
             # before the container is built. The release image intentionally
             # has no .git directory, so do not attempt a second Git-backed run
             # from inside that image.
-            writer_history_snapshots=subprocess.run(
+            writer_history_snapshots=run_release_subprocess(
                 [sys.executable,str(root/'validation/run_google_writer_historical_integrity_snapshots_v1.py')],
                 cwd=old_cwd,check=False)
-            integrated_v1_history=subprocess.run(
+            integrated_v1_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v1_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v2_history=subprocess.run(
+            integrated_v2_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v2_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v3_history=subprocess.run(
+            integrated_v3_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v3_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v4_history=subprocess.run(
+            integrated_v4_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v4_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v5_history=subprocess.run(
+            integrated_v5_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v5_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v6_history=subprocess.run(
+            integrated_v6_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v6_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v7_history=subprocess.run(
+            integrated_v7_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v7_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v8_history=subprocess.run(
+            integrated_v8_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v8_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v9_history=subprocess.run(
+            integrated_v9_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v9_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v10_history=subprocess.run(
+            integrated_v10_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v10_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v11_history=subprocess.run(
+            integrated_v11_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v11_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v12_history=subprocess.run(
+            integrated_v12_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v12_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v13_history=subprocess.run(
+            integrated_v13_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v13_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v14_history=subprocess.run(
+            integrated_v14_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v14_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v15_history=subprocess.run(
+            integrated_v15_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v15_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v16_history=subprocess.run(
+            integrated_v16_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v16_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v17_history=subprocess.run(
+            integrated_v17_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v17_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v18_history=subprocess.run(
+            integrated_v18_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v18_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v19_history=subprocess.run(
+            integrated_v19_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v19_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v20_history=subprocess.run(
+            integrated_v20_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v20_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v21_history=subprocess.run(
+            integrated_v21_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v21_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v22_history=subprocess.run(
+            integrated_v22_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v22_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v23_history=subprocess.run(
+            integrated_v23_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v23_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v24_history=subprocess.run(
+            integrated_v24_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v24_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v25_history=subprocess.run(
+            integrated_v25_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v25_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v26_history=subprocess.run(
+            integrated_v26_history=run_release_subprocess(
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v26_history.py')],
                 cwd=old_cwd,check=False)
-            integrated_v27_current=subprocess.run(
+            integrated_v27_history=run_release_subprocess(
+                [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v27_history.py')],
+                cwd=old_cwd,check=False)
+            update_append_v2_v26=run_release_subprocess(
+                [sys.executable,str(ROOT/'validation/run_google_writer_update_append_v2_v26_history.py')],
+                cwd=old_cwd,check=False)
+            integrated_v28_current=run_release_subprocess(
                 [sys.executable,'-B','-m','unittest','-v',
-                 'test_google_writer_integrated_candidate_integrity_v27'],
+                 'test_google_writer_integrated_candidate_integrity_v28'],
                 cwd=ROOT,check=False)
-            return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_history.returncode==0 and integrated_v13_history.returncode==0 and integrated_v14_history.returncode==0 and integrated_v15_history.returncode==0 and integrated_v16_history.returncode==0 and integrated_v17_history.returncode==0 and integrated_v18_history.returncode==0 and integrated_v19_history.returncode==0 and integrated_v20_history.returncode==0 and integrated_v21_history.returncode==0 and integrated_v22_history.returncode==0 and integrated_v23_history.returncode==0 and integrated_v24_history.returncode==0 and integrated_v25_history.returncode==0 and integrated_v26_history.returncode==0 and integrated_v27_current.returncode==0 else 1
+            return 0 if candidate_ok and background_exceptions.report() and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_history.returncode==0 and integrated_v13_history.returncode==0 and integrated_v14_history.returncode==0 and integrated_v15_history.returncode==0 and integrated_v16_history.returncode==0 and integrated_v17_history.returncode==0 and integrated_v18_history.returncode==0 and integrated_v19_history.returncode==0 and integrated_v20_history.returncode==0 and integrated_v21_history.returncode==0 and integrated_v22_history.returncode==0 and integrated_v23_history.returncode==0 and integrated_v24_history.returncode==0 and integrated_v25_history.returncode==0 and integrated_v26_history.returncode==0 and integrated_v27_history.returncode==0 and update_append_v2_v26.returncode==0 and integrated_v28_current.returncode==0 else 1
         finally:
+            if 'background_exceptions' in locals():
+                background_exceptions.restore()
             socket.socket.connect=original_connect
             socket.getfqdn=original_getfqdn
             os.chdir(old_cwd)
