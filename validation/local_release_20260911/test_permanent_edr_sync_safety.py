@@ -475,6 +475,43 @@ class PermanentSyncSafetyTests(unittest.TestCase):
         stored = self.con.execute("SELECT manager_name,full_name FROM supplier_edr_profiles").fetchone()
         self.assertEqual(tuple(stored), ("Old Manager", "Old legal name"))
 
+    def test_empty_and_malformed_pqm_verification_dates_have_distinct_reasons(self):
+        cases = (
+            ("", "current_verification_date_missing", "malformed_current_verification_datetime"),
+            ("not-a-date", "malformed_current_verification_datetime", "current_verification_date_missing"),
+        )
+        for stored_date, expected, unexpected in cases:
+            with self.subTest(stored_date=stored_date):
+                self.con.execute("DELETE FROM supplier_edr_profiles")
+                profile(self.con, day=stored_date)
+                # The profile helper treats every ten-character value as a
+                # date-only string; store this malformed fixture verbatim.
+                self.con.execute(
+                    "UPDATE supplier_edr_profiles SET edr_checked_at=? WHERE supplier_code=?",
+                    (stored_date, CODE),
+                )
+                source = snapshot(row(checked="21.09.2026", officer="Officer B"))
+                preview = sync.build_preview(self.con, source)
+                reasons = preview["conflicts"][0]["reasons"]
+                self.assertIn(expected, reasons)
+                self.assertNotIn(unexpected, reasons)
+                with self.assertRaises(ValueError):
+                    sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
+                               actor="audit", synced_at="2026-09-25T12:00:00")
+                self.assertEqual(self.con.execute(
+                    "SELECT edr_checked_at FROM supplier_edr_profiles WHERE supplier_code=?",
+                    (CODE,)).fetchone()[0], stored_date)
+
+    def test_valid_pqm_date_is_compared_normally_and_not_reported_as_bad_or_missing(self):
+        profile(self.con, day="2026-09-20")
+        source = snapshot(row(checked="21.09.2026", officer="Officer B"))
+        preview = sync.build_preview(self.con, source)
+        reasons = preview["conflicts"][0]["reasons"] if preview["conflicts"] else []
+        self.assertEqual(preview["items"][0]["datetime_gate"]["reason"], "newer")
+        self.assertNotIn("current_verification_date_missing", reasons)
+        self.assertNotIn("malformed_current_verification_datetime", reasons)
+        self.assertIn("full_name", preview["items"][0]["changed_fields"])
+
     def test_malformed_date_blocks_without_writes(self):
         profile(self.con)
         source = snapshot(row(checked="not-a-date", officer="Officer B", manager=""))
@@ -484,6 +521,15 @@ class PermanentSyncSafetyTests(unittest.TestCase):
             sync.apply(self.con, source, source["source_fingerprint"], confirmed=True,
                        actor="audit", synced_at="2026-09-25T12:00:00")
         self.assertEqual(current(self.con), ("2026-09-20", "Officer A"))
+
+    def test_empty_google_verification_date_is_required_but_not_malformed(self):
+        profile(self.con)
+        source = snapshot(row(checked="", officer="Officer B"))
+        preview = sync.build_preview(self.con, source)
+        reasons = preview["conflicts"][0]["reasons"]
+        self.assertIn("verification_date_required", reasons)
+        self.assertNotIn("malformed_verification_date", reasons)
+        self.assertNotIn("malformed_current_verification_datetime", reasons)
 
     def test_malformed_google_record_date_cannot_look_like_intentional_clear(self):
         profile(self.con)

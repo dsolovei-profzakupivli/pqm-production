@@ -254,8 +254,12 @@ class GoogleRuntimeTests(unittest.TestCase):
                           "incoming": {"source_sheet": "ФОП", "full_name": "Google name",
                                        "edr_status": "Google", "edr_checked_at": google_checked,
                                        "edr_officer": "УО Google"}})
+            reason = ("current_verification_date_missing" if index == 0 else
+                      "malformed_current_verification_datetime" if index == 1 else
+                      "malformed_verification_date" if index == 2 else
+                      "same_timestamp_verification_conflict")
             conflicts.append({"supplier_code": code, "source_row": index + 2,
-                              "reasons": ["same_timestamp_verification_conflict"]})
+                              "reasons": [reason]})
         preview = {"items": items, "conflicts": conflicts}
         with patch.object(server, "DB_PATH", self.db_path), \
              patch.object(server, "AUTH_ENABLED", False), \
@@ -278,7 +282,12 @@ class GoogleRuntimeTests(unittest.TestCase):
         self.assertEqual(sheet.cell(2, 2).value, "0000000000")
         self.assertEqual(sheet.cell(2, 2).number_format, "@")
         self.assertEqual(sheet.cell(32, 2).value, "0000000030")
-        self.assertEqual(sheet.cell(2, 4).value, "Фактичні дані ЄДР відрізняються за однакового часу перевірки")
+        self.assertEqual(sheet.cell(2, 4).value,
+                         server.edr_sync_v2.conflict_reason_details("current_verification_date_missing")[0])
+        self.assertEqual(sheet.cell(3, 4).value,
+                         "У PQM некоректна дата попередньої перевірки")
+        self.assertEqual(sheet.cell(4, 4).value,
+                         server.edr_sync_v2.conflict_reason_details("malformed_verification_date")[0])
         self.assertIsInstance(sheet.cell(2, 8).value, datetime)
         self.assertEqual(sheet.cell(2, 8).value, datetime(2026, 11, 23, 0, 0, 0))
         self.assertEqual(sheet.cell(2, 9).value, datetime(2026, 11, 23, 19, 4, 26))
@@ -291,7 +300,9 @@ class GoogleRuntimeTests(unittest.TestCase):
         self.assertIn("supplier_code=0000000000", sheet.cell(2, 12).hyperlink.target)
 
     def test_preview_conflict_reasons_are_localized_and_keep_internal_codes(self):
-        reasons = ["same_timestamp_verification_conflict", "missing_source_column:Дата перевірки"]
+        reasons = ["current_verification_date_missing", "malformed_current_verification_datetime",
+                   "malformed_verification_date", "verification_date_required",
+                   "same_timestamp_verification_conflict", "missing_source_column:Дата перевірки"]
         rows = server.supplier_edr_localize_review_details([
             {"category": "conflicts", "reason": reasons},
             {"category": "verification", "reason": "newer_verification_accepted"},
@@ -301,6 +312,8 @@ class GoogleRuntimeTests(unittest.TestCase):
             server.edr_sync_v2.conflict_reason_details(code)[0] for code in reasons])
         self.assertEqual(rows[1]["reason"], "newer_verification_accepted")
         self.assertNotIn("reason_codes", rows[1])
+        self.assertEqual(rows[0]["reason"], [
+            server.edr_sync_v2.conflict_reason_details(code)[0] for code in reasons])
 
     def test_pkce_transaction_survives_memory_restart_and_is_one_time(self):
         client = {"client_id": "test-client", "client_secret": "test-secret",

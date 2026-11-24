@@ -159,13 +159,16 @@ jobs:
           PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip" \
             "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v27_history.py
           echo "PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE_OUT="$RUNNER_TEMP/pqm-integrated-v28-snapshot.zip" \
+            "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_integrated_writer_ui_v28_history.py
+          echo "PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v28-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           git archive --format=zip e436c952b17fc79ccb8fc1f8c366cbbf18ca31fc > "$RUNNER_TEMP/pqm-update-append-v2-v26-full.zip"
           echo "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-update-append-v2-v26-full.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/run_google_writer_update_append_v2_v26_history.py
-          # Immutable integrated v1-v27 checks and Update Append v2 run on their
-          # pinned snapshots; only the current integrated overlay v28 runs here.
+          # Immutable integrated v1-v28 checks and Update Append v2 run on their
+          # pinned snapshots; only the current integrated overlay v29 runs here.
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B -m unittest -v \
-            test_google_writer_integrated_candidate_integrity_v28 \
+            test_google_writer_integrated_candidate_integrity_v29 \
             validation.local_release_20260911.test_release_test_package \
             validation.local_release_20260911.test_integrated_snapshot_staging \
             validation.local_release_20260911.test_uo_work_queue_http \
@@ -281,6 +284,7 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v25-snapshot.zip,dst=/tmp/pqm-integrated-v25-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v26-snapshot.zip,dst=/tmp/pqm-integrated-v26-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v27-snapshot.zip,dst=/tmp/pqm-integrated-v27-snapshot.zip,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/pqm-integrated-v28-snapshot.zip,dst=/tmp/pqm-integrated-v28-snapshot.zip,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/pqm-update-append-v2-v26-full.zip,dst=/tmp/pqm-update-append-v2-v26-full.zip,readonly" \
             -e PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v21-snapshot.zip \
             -e PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256" \
@@ -296,6 +300,8 @@ jobs:
             -e PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V26_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v27-snapshot.zip \
             -e PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V27_SNAPSHOT_ARCHIVE_SHA256" \
+            -e PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v28-snapshot.zip \
+            -e PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE_SHA256="$PQM_INTEGRATED_V28_SNAPSHOT_ARCHIVE_SHA256" \
             -e PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE=/tmp/pqm-update-append-v2-v26-full.zip \
             -e PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256="$PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256" \
             -e PQM_INTEGRATED_V16_SNAPSHOT_ARCHIVE=/tmp/pqm-integrated-v16-snapshot.zip \

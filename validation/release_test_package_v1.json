@@ -27,7 +27,8 @@
     24,
     25,
     26,
-    27
+    27,
+    28
   ],
   "integrity_test_versions": [
     1,
@@ -57,7 +58,8 @@
     25,
     26,
     27,
-    28
+    28,
+    29
   ],
   "integrity_manifest_dir": "validation/local_release_20261116",
   "snapshot_support_files": [
@@ -105,7 +107,8 @@
     "nazk_preview_fixture.py",
     "nazk_preview_browser_fixture.py",
     "edr_monitoring_drawer.test.cjs",
-    "run_google_writer_update_append_v2_v26_history.py"
+    "run_google_writer_update_append_v2_v26_history.py",
+    "run_integrated_writer_ui_v28_history.py"
   ],
   "root_level_release_files": [
     "sandbox_runtime_messages_integrated_v1_86ea864.py",

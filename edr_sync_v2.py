@@ -80,7 +80,7 @@ CONFLICT_REASON_DETAILS = {
     "changed_values_without_verification_date": ("Зміни не мають дати перевірки", "Дата перевірки ЄДР"),
     "changed_values_without_officer": ("Зміни не мають УО перевірки", "УО перевірки"),
     "malformed_verification_date": ("Некоректна дата перевірки у Google Sheets", "Дата перевірки ЄДР"),
-    "malformed_current_verification_datetime": ("Некоректна дата перевірки у PQM", "Дата перевірки ЄДР"),
+    "malformed_current_verification_datetime": ("У PQM некоректна дата попередньої перевірки", "Дата перевірки ЄДР"),
     "malformed_termination_record_date": ("Некоректна дата запису про припинення", "Дата запису про припинення"),
 }
 
@@ -763,6 +763,9 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         incoming_day = incoming["edr_checked_at"]
         current_day = current.get("verification_date", "")
         current_officer = current.get("verification_officer_raw", "")
+        selected_current_event = current.get("selected_event") or {}
+        raw_current_verification_date = (selected_current_event.get("occurred_at")
+            or old.get("edr_checked_at") or current_day)
         current_gate_value = (current.get("selected_event") or {}).get("occurred_at") or current_day
         source_checked_at = raw.get("Дата перевірки")
         gate_checked_at = source_checked_at if str(source_checked_at or "").strip() else None
@@ -824,7 +827,9 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         if not incoming_day and changed_facts:
             row_conflicts.append("verification_date_required")
         elif not current_day and has_existing_facts and changed_facts:
-            row_conflicts.append("current_verification_date_missing")
+            row_conflicts.append("malformed_current_verification_datetime"
+                if str(raw_current_verification_date or "").strip()
+                else "current_verification_date_missing")
         older = not datetime_gate["accepted"]
         protected_status = _protected_factual_at_or_after(ledger.get(code, []), normalized_date(incoming_day))
         status_protected = bool(not datetime_gate["accepted"] and incoming["edr_status"] and protected_status
@@ -929,7 +934,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
             row_conflicts.append("malformed_verification_date")
         mirror_updates_present = any(change["action"] in {"update", "clear"}
                                      for change in mirror_field_changes)
-        if datetime_gate["reason"] == "current_invalid" and not mirror_updates_present:
+        if (datetime_gate["reason"] == "current_invalid" and not mirror_updates_present
+                and "malformed_current_verification_datetime" not in row_conflicts):
             row_conflicts.append("malformed_current_verification_datetime")
         if not sandbox_mode:
             for missing_header in source_missing_fields:
