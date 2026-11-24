@@ -63,6 +63,41 @@ INDEPENDENT_MIRROR_MISSING_SOURCE_CONFLICTS = frozenset({
 INDEPENDENT_MIRROR_SAFE_CONFLICTS = (INDEPENDENT_MIRROR_DATE_CONFLICTS |
                                      INDEPENDENT_MIRROR_MISSING_SOURCE_CONFLICTS)
 
+CONFLICT_REASON_DETAILS = {
+    "missing_supplier_code": ("Не вказано ідентифікатор постачальника", "Ідентифікатор"),
+    "duplicate_supplier_code": ("Ідентифікатор повторюється у джерелі", "Ідентифікатор"),
+    "sandbox_officer_identity_unavailable": ("Не вдалося визначити УО перевірки", "УО перевірки"),
+    "manager_change_requires_strictly_newer_verification_timestamp":
+        ("Зміна ПІБ керівника потребує новішої перевірки ЄДР", "ПІБ керівника"),
+    "same_timestamp_verification_conflict":
+        ("Фактичні дані ЄДР відрізняються за однакового часу перевірки", "Статус ЄДР"),
+    "verification_date_required": ("Для зміни даних потрібна дата перевірки ЄДР", "Дата перевірки ЄДР"),
+    "current_verification_date_missing": ("У PQM відсутня дата попередньої перевірки", "Дата перевірки ЄДР"),
+    "ambiguous_missing_current_manager_evidence":
+        ("Неоднозначні дані про поточного керівника", "ПІБ керівника"),
+    "historical_normalization_cannot_attest_factual_changes":
+        ("Історичну нормалізацію не можна використати для зміни фактичних даних", "Дані ЄДР"),
+    "changed_values_without_verification_date": ("Зміни не мають дати перевірки", "Дата перевірки ЄДР"),
+    "changed_values_without_officer": ("Зміни не мають УО перевірки", "УО перевірки"),
+    "malformed_verification_date": ("Некоректна дата перевірки у Google Sheets", "Дата перевірки ЄДР"),
+    "malformed_current_verification_datetime": ("У PQM некоректна дата попередньої перевірки", "Дата перевірки ЄДР"),
+    "malformed_termination_record_date": ("Некоректна дата запису про припинення", "Дата запису про припинення"),
+}
+
+
+def conflict_reason_details(reason) -> tuple[str, str]:
+    """Return the shared Ukrainian explanation and field label for a conflict code."""
+    code = str(reason or "")
+    if code.startswith("missing_source_column:"):
+        column = code.split(":", 1)[1]
+        return f"У Google Sheets відсутня обов’язкова колонка «{column}»", column
+    return CONFLICT_REASON_DETAILS.get(
+        code, ("Невідома причина конфлікту потребує окремої перевірки", "Дані постачальника"))
+
+
+def conflict_reason_labels(reasons) -> list[str]:
+    return [conflict_reason_details(reason)[0] for reason in (reasons or [])]
+
 
 def normalize_code(value) -> str:
     return re.sub(r"\D", "", str(value or ""))
@@ -728,6 +763,9 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         incoming_day = incoming["edr_checked_at"]
         current_day = current.get("verification_date", "")
         current_officer = current.get("verification_officer_raw", "")
+        selected_current_event = current.get("selected_event") or {}
+        raw_current_verification_date = (selected_current_event.get("occurred_at")
+            or old.get("edr_checked_at") or current_day)
         current_gate_value = (current.get("selected_event") or {}).get("occurred_at") or current_day
         source_checked_at = raw.get("Дата перевірки")
         gate_checked_at = source_checked_at if str(source_checked_at or "").strip() else None
@@ -789,7 +827,9 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         if not incoming_day and changed_facts:
             row_conflicts.append("verification_date_required")
         elif not current_day and has_existing_facts and changed_facts:
-            row_conflicts.append("current_verification_date_missing")
+            row_conflicts.append("malformed_current_verification_datetime"
+                if str(raw_current_verification_date or "").strip()
+                else "current_verification_date_missing")
         older = not datetime_gate["accepted"]
         protected_status = _protected_factual_at_or_after(ledger.get(code, []), normalized_date(incoming_day))
         status_protected = bool(not datetime_gate["accepted"] and incoming["edr_status"] and protected_status
@@ -894,13 +934,33 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
             row_conflicts.append("malformed_verification_date")
         mirror_updates_present = any(change["action"] in {"update", "clear"}
                                      for change in mirror_field_changes)
-        if datetime_gate["reason"] == "current_invalid" and not mirror_updates_present:
+        if (datetime_gate["reason"] == "current_invalid" and not mirror_updates_present
+                and "malformed_current_verification_datetime" not in row_conflicts):
             row_conflicts.append("malformed_current_verification_datetime")
         if not sandbox_mode:
             for missing_header in source_missing_fields:
                 row_conflicts.append("missing_source_column:" + missing_header)
         if str(raw.get("Дата запису") or "").strip() and not incoming["termination_record_date"]:
             row_conflicts.append("malformed_termination_record_date")
+
+        # PQM exports ФОП to the ФОП sheet and Apps Script derives the EDR
+        # names from the person name. On the round trip, the verification
+        # instant is therefore equal. Only fill missing names, after checking
+        # that the row has no other conflict; never replace existing names.
+        fop_name_enrichment_fields = []
+        if datetime_gate["reason"] == "equal" and incoming["source_sheet"] == "ФОП" and not row_conflicts:
+            fop_name_enrichment_fields = [
+                field for field in ("full_name", "short_name")
+                if str(incoming.get(field) or "").strip()
+                and not str(old.get(field) or "").strip()
+            ]
+            for field in fop_name_enrichment_fields:
+                changes.append(field)
+                summary[f"{field}_changes"] += 1
+            if "full_name" in fop_name_enrichment_fields:
+                new_current_name = current_supplier_name(
+                    incoming["full_name"], applications.get(code))
+                summary["current_supplier_name_changes"] += int(old_current_name != new_current_name)
 
         skip_reasons = []
         if sandbox_mode and datetime_gate["reason"] in SKIPPABLE_TIMESTAMP_GATE_REASONS:
@@ -948,6 +1008,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                       "independent_mirror_only": independent_mirror_only,
                       "mirror_clear_fields": mirror_clear_fields, "snapshot_hash": snapshot_hash,
                       "verification_decision": verification_decision,
+                      "fop_name_enrichment_fields": fop_name_enrichment_fields,
                       "sandbox_historical_officer_normalization": historical_normalization,
                       "current_verification_date": current_day,
                       "current_verification_officer": current_officer,
@@ -1794,11 +1855,10 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "termination_clears": 0, "termination_events": 0,
               "skipped_no_verification_timestamp": 0,
               "skipped_conflicts": 0,
-              "skipped_ineligible_new": 0, "changed_fields": {}}
+              "skipped_ineligible_new": 0, "changed_fields": {}, "errors": 0}
     for plan in preview["items"]:
         item = plan["incoming"]
-        if (sandbox_mode and plan.get("row_state") == "conflict" and
-                not plan.get("independent_mirror_only")):
+        if sandbox_mode and plan.get("row_state") == "conflict":
             counts["skipped_conflicts"] += 1
             continue
         if plan.get("row_state") == "skipped":
@@ -1865,6 +1925,12 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                               change.get("action") in {"update", "clear"}}
             changed = {field: value for field, value in mirror_updates.items()
                        if str(old.get(field, "") or "") != str(value or "")}
+            fop_name_updates = {
+                field: item[field] for field in plan.get("fop_name_enrichment_fields", [])
+                if not str(old.get(field) or "").strip()
+                and str(item.get(field) or "").strip()
+            }
+            changed.update(fop_name_updates)
             if existing and changed:
                 assignments = [f"{field}=?" for field in changed]
                 assignments.append("synced_at=?")

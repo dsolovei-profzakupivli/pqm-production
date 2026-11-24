@@ -1232,7 +1232,8 @@ async function previewSupplierEdrSync(){
     const metrics=Object.entries(supplierEdrMetricLabels).map(([key,label])=>`<article><span>${esc(label)}</span><strong>${Number(data.summary?.[key]||0).toLocaleString('uk-UA')}</strong></article>`).join('');
     const conflicts=Number(data.conflicts_total||0);
     const sandboxPartialApply=data.sandbox_partial_apply===true,eligible=Number(data.summary?.eligible||0);
-    $('#supplierEdrPreviewBody').innerHTML=`<div class="edr-preview-grid">${metrics}</div><p><strong>Fingerprint:</strong> <code>${esc(data.source_fingerprint)}</code></p>${conflicts?(sandboxPartialApply?`<p class="sync-note error">${conflicts.toLocaleString('uk-UA')} конфліктних рядків буде пропущено; незалежні коректні рядки можна застосувати (${eligible.toLocaleString('uk-UA')} eligible).</p>`:`<p class="sync-note error">Apply заблоковано: ${conflicts.toLocaleString('uk-UA')} конфліктів. Перегляньте source data.</p>`):'<p class="sync-note success">Apply можливий лише після явного підтвердження.</p>'}`;
+    $('#supplierEdrPreviewBody').innerHTML=`<div class="edr-preview-grid">${metrics}</div><p><strong>Fingerprint:</strong> <code>${esc(data.source_fingerprint)}</code></p>${conflicts?(sandboxPartialApply?`<p class="sync-note error">${conflicts.toLocaleString('uk-UA')} конфліктних записів буде повністю пропущено; готових до застосування: ${eligible.toLocaleString('uk-UA')}.</p>`:`<p class="sync-note error">Apply заблоковано: ${conflicts.toLocaleString('uk-UA')} конфліктів. Перегляньте source data.</p>`):'<p class="sync-note success">Apply можливий лише після явного підтвердження.</p>'}`;
+    $('#supplierEdrConflictExport').hidden=conflicts===0;
     if(Array.isArray(data.details)&&data.details_complete===true){
       supplierEdrReviewCategory='all';supplierEdrReviewSearch='';supplierEdrReviewPage=1;
       $('#supplierEdrPreviewBody').insertAdjacentHTML('beforeend',`<section class="edr-review-section"><h3>Деталі змін</h3><p>${Number(data.details_total||0).toLocaleString('uk-UA')} деталей · повний список, показано сторінками</p><div class="edr-review-filters"><label>Категорія <select id="supplierEdrReviewCategory"><option value="all">Усі зміни</option><option value="edr_status">Статус ЄДР</option><option value="verification">Перевірка I/L</option><option value="names_manager">Назви / керівник</option><option value="gjkm">G/J/K/M</option><option value="clears">Очищення</option><option value="skipped">Пропущені</option><option value="conflicts">Конфлікти</option></select></label><label>Пошук за кодом або назвою <input id="supplierEdrReviewSearch" type="search"></label></div><div id="supplierEdrReviewRows"></div><nav class="edr-review-pages"><button id="supplierEdrReviewPrev" type="button">←</button><span id="supplierEdrReviewPageInfo"></span><button id="supplierEdrReviewNext" type="button">→</button></nav></section>`);
@@ -1251,6 +1252,12 @@ async function previewSupplierEdrSync(){
     }else toast(error.message);
   }finally{await loadSupplierEdrStatus()}
 }
+async function downloadSupplierEdrConflicts(){
+  if(!supplierEdrPreview?.source_fingerprint||!supplierEdrPreview?.state_digest)throw new Error('Спочатку сформуйте актуальний Preview');
+  const response=await fetch(`${API}/supplier-edr-sync/conflicts.xlsx`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_fingerprint:supplierEdrPreview.source_fingerprint,state_digest:supplierEdrPreview.state_digest})});
+  if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||`Не вдалося завантажити XLSX (${response.status})`)}
+  const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='PQM_EDR_conflicts.xlsx';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 function renderSupplierEdrReviewDetails(){
   if(!Array.isArray(supplierEdrPreview?.details))return;
   const size=25,category=supplierEdrReviewCategory,query=supplierEdrReviewSearch;
@@ -1258,7 +1265,7 @@ function renderSupplierEdrReviewDetails(){
   const pages=Math.max(1,Math.ceil(rows.length/size));supplierEdrReviewPage=Math.min(pages,Math.max(1,supplierEdrReviewPage));
   const current=rows.slice((supplierEdrReviewPage-1)*size,supplierEdrReviewPage*size);
   const value=x=>esc(typeof x==='object'?JSON.stringify(x):String(x??''));
-  $('#supplierEdrReviewRows').innerHTML=current.map(row=>`<article class="edr-review-row"><strong>${esc(row.supplier_code)} · ${esc(row.supplier_name||'')}</strong><small>${esc(row.field)} · ${esc(row.action)} · ${esc(typeof row.reason==='string'?row.reason:JSON.stringify(row.reason))}</small><dl><div><dt>Поточне PQM</dt><dd>${value(row.current_pqm_value)}</dd></div><div><dt>Google</dt><dd>${value(row.google_value)}</dd></div><div><dt>План PQM</dt><dd>${value(row.planned_pqm_value)}</dd></div></dl></article>`).join('')||'<p>За цим фільтром змін немає.</p>';
+  $('#supplierEdrReviewRows').innerHTML=current.map(row=>`<article class="edr-review-row"><strong>${esc(row.supplier_code)} · ${esc(row.supplier_name||'')}</strong><small>${esc(row.field)} · ${esc(row.action)} · ${esc(Array.isArray(row.reason)?row.reason.join(' · '):String(row.reason??''))}</small><dl><div><dt>Поточне PQM</dt><dd>${value(row.current_pqm_value)}</dd></div><div><dt>Google</dt><dd>${value(row.google_value)}</dd></div><div><dt>План PQM</dt><dd>${value(row.planned_pqm_value)}</dd></div></dl></article>`).join('')||'<p>За цим фільтром змін немає.</p>';
   $('#supplierEdrReviewPageInfo').textContent=`${rows.length} результатів · сторінка ${supplierEdrReviewPage} з ${pages}`;
   $('#supplierEdrReviewPrev').disabled=supplierEdrReviewPage===1;
   $('#supplierEdrReviewNext').disabled=supplierEdrReviewPage===pages;
@@ -1276,7 +1283,11 @@ async function startSupplierEdrSync(){
       const state=await loadSupplierEdrStatus();
       if(!state.running){
         clearInterval(supplierEdrTimer);supplierEdrTimer=null;
-        toast(state.error?'Синхронізація ЄДР завершилася з помилкою':'Довідник постачальників з ЄДР оновлено');
+        const summary=state.last_result_summary;
+        if(summary){
+          const message=`Оновлено: ${Number(summary.successful||0)} · пропущено конфліктів: ${Number(summary.skipped_conflicts||0)} · без змін: ${Number(summary.unchanged||0)} · помилок: ${Number(summary.errors||0)}`;
+          toast(message,Number(summary.errors||0)?'error':'success');
+        }else toast(state.error?'Синхронізація ЄДР завершилася з помилкою':'Довідник постачальників з ЄДР оновлено');
         try{await loadQualifiedSuppliersFiltered()}catch{}
         if(activeModule==='edrMonitoring')try{await loadEdrMonitoring()}catch{}
       }
@@ -2340,7 +2351,7 @@ $('#supplierRegistrySearch').oninput=$('#supplierRegistryDk').oninput=()=>{updat
 $('#supplierRegistrySelectPage').onchange=event=>{supplierRegistryItems.forEach(item=>{const code=String(item.code);event.target.checked?supplierRegistrySelectedCodes.add(code):supplierRegistrySelectedCodes.delete(code)});$$('#supplierRegistryBody .supplier-registry-check').forEach(input=>{input.checked=event.target.checked});updateSupplierRegistrySelection(Number($('#supplierRegistryPageInfo').textContent.match(/із\s+([\d\s]+)/)?.[1]?.replace(/\s/g,'')||0))};
 $('#supplierEdrExportSelected').onclick=async()=>{if(!supplierRegistrySelectedCodes.size)return;const button=$('#supplierEdrExportSelected');button.disabled=true;try{const response=await fetch(`${API}/supplier-edr-export`,{method:'POST',headers:{'Content-Type':'application/json','X-PQM-Local-Role':role()},body:JSON.stringify({supplier_codes:[...supplierRegistrySelectedCodes].sort()})});if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||`Помилка сервера ${response.status}`)}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='ClarityChecker_вибрані.csv';document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url)}catch(error){toast(error.message,'error')}finally{button.disabled=!supplierRegistrySelectedCodes.size}};
 $$('.supplier-filter-kpi').forEach(card=>card.onclick=()=>{supplierRegistryRisk=supplierRegistryRisk===card.dataset.risk?'':card.dataset.risk;supplierRegistryPage=1;loadQualifiedSuppliersFiltered()});
-$('#supplierEdrSync').onclick=()=>supplierEdrOauth.authorized&&!supplierEdrReconnectRequired?previewSupplierEdrSync():connectSupplierGoogle();$('#supplierEdrPreviewApply').onclick=startSupplierEdrSync;window.addEventListener('message',event=>{if(event.origin!==location.origin||event.data?.type!=='pqm-google-oauth')return;if(event.data.ok)supplierEdrReconnectRequired=false;loadSupplierEdrStatus();loadSupplierNazkReviewStatus();toast(event.data.ok?'Google підключено':'Підключення Google не завершено',event.data.ok?'success':'error')});
+$('#supplierEdrSync').onclick=()=>supplierEdrOauth.authorized&&!supplierEdrReconnectRequired?previewSupplierEdrSync():connectSupplierGoogle();$('#supplierEdrPreviewApply').onclick=startSupplierEdrSync;$('#supplierEdrConflictExport').onclick=async()=>{const button=$('#supplierEdrConflictExport');button.disabled=true;try{await downloadSupplierEdrConflicts()}catch(error){toast(error.message,'error')}finally{button.disabled=false}};window.addEventListener('message',event=>{if(event.origin!==location.origin||event.data?.type!=='pqm-google-oauth')return;if(event.data.ok)supplierEdrReconnectRequired=false;loadSupplierEdrStatus();loadSupplierNazkReviewStatus();toast(event.data.ok?'Google підключено':'Підключення Google не завершено',event.data.ok?'success':'error')});
 $('#supplierNazkReviewSync').onclick=()=>supplierEdrOauth.authorized?startSupplierNazkReviewSync():connectSupplierGoogle();
 $('#suppliersNav').addEventListener('click',loadSupplierNazkReviewStatus);
 $('#suppliersNav').addEventListener('click',loadSupplierRiskCounts);
@@ -2593,7 +2604,7 @@ else if(activeModule==='edrMonitoring'){loadEdrMonitoring();loadSupplierEdrStatu
 else if(activeModule==='frameworks')loadFrameworkAnalytics();
 else if(activeModule==='administration')setAdminTab(adminTab);
 else if(activeModule==='requests')loadViolationReports();
-const initialLink=new URLSearchParams(location.search);if(activeModule==='requests'&&initialLink.get('report_id'))setTimeout(()=>openViolationReportById(initialLink.get('report_id')),0);if(activeModule==='applications'&&initialLink.get('submission_id')){deepLinkSubmissionId=initialLink.get('submission_id');setTimeout(async()=>{await loadRows();if(initialLink.get('nazk_control')==='1'&&rows[0])openSubmissionNazkControl(rows[0])},0)}
+const initialLink=new URLSearchParams(location.search);if(initialLink.get('supplier_code')){const supplierCode=initialLink.get('supplier_code');if(activeModule!=='suppliers')showModule('suppliers');setTimeout(()=>openSupplierProfile(supplierCode),0)}if(activeModule==='requests'&&initialLink.get('report_id'))setTimeout(()=>openViolationReportById(initialLink.get('report_id')),0);if(activeModule==='applications'&&initialLink.get('submission_id')){deepLinkSubmissionId=initialLink.get('submission_id');setTimeout(async()=>{await loadRows();if(initialLink.get('nazk_control')==='1'&&rows[0])openSubmissionNazkControl(rows[0])},0)}
 });
 $('#roleSelect').addEventListener('change',()=>{localStorage.setItem(localRoleKey,$('#roleSelect').value);loadAuthenticatedRole().then(()=>{renderProfiles();render();loadRuntimeFeatures()})});
 loadAdminOfficers=async function(){

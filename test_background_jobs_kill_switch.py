@@ -153,6 +153,7 @@ class BackgroundJobsKillSwitchTests(unittest.TestCase):
                 stack.enter_context(patch.object(server,name))
             stack.enter_context(patch.object(server,'DB_PATH',Path(__file__)))
             stack.enter_context(patch.object(server,'db',return_value=self.con))
+            stack.enter_context(patch.dict(os.environ, {'PQM_SANDBOX_AUTO_CONTINUE_CHUNKS':'0'}))
             stack.enter_context(patch.object(scheduler_runtime,'migrate'))
             stack.enter_context(patch.object(server,'ENABLE_BROWSER',False))
             stack.enter_context(patch.object(server,'SANDBOX_MODE',True))
@@ -162,17 +163,14 @@ class BackgroundJobsKillSwitchTests(unittest.TestCase):
             stack.enter_context(patch.object(server,'unregister_scheduler_job'))
             register=stack.enter_context(patch.object(server,'register_scheduler_job'))
             google=stack.enter_context(patch.object(server,'google_writer_service'))
+            continuation_service=stack.enter_context(patch.object(server,'google_writer_continuation_service'))
             rebuild=stack.enter_context(patch.object(server,'rebuild_operational_tasks'))
-            # Keep the manual continuation path real; scheduled jobs stay mocked.
-            # Register ownership last so stop/join runs before DB/mode mocks unwind.
-            stack.enter_context(isolated_continuation_worker())
             server.main()
-            continuation = server.GOOGLE_WRITER_CONTINUATION
-            self.assertIsNotNone(continuation)
-            self.assertTrue(continuation.thread.is_alive())
+            self.assertIsNone(server.GOOGLE_WRITER_CONTINUATION)
             server.main()
-            self.assertIs(server.GOOGLE_WRITER_CONTINUATION, continuation)
+            self.assertIsNone(server.GOOGLE_WRITER_CONTINUATION)
             register.assert_not_called();google.assert_not_called();rebuild.assert_not_called()
+            continuation_service.assert_not_called()
         self.assertEqual(self.snapshot(),before)
 
     def test_continuation_fixture_joins_on_normal_exit(self):

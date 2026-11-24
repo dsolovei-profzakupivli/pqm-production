@@ -6,8 +6,11 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from io import BytesIO
+from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import auth_access
@@ -35,6 +38,14 @@ class GoogleRuntimeTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.db_path = self.root / "runtime.sqlite3"
         self.token_path = self.root / "oauth" / "token.json"
+        def attest_test_database(path, **_kwargs):
+            if Path(path).resolve() != self.db_path.resolve():
+                raise RuntimeError("Test Sandbox route targeted a database outside its temporary fixture")
+        self.sandbox_runtime_patch = patch.object(
+            server, "sandbox_runtime",
+            SimpleNamespace(attest_internal_target=attest_test_database), create=True)
+        self.sandbox_runtime_patch.start()
+        self.addCleanup(self.sandbox_runtime_patch.stop)
         with sqlite3.connect(self.db_path) as con:
             con.execute("""CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT,submission_id TEXT,
               changed_at TEXT NOT NULL,changed_by TEXT NOT NULL,field_name TEXT NOT NULL,old_value TEXT,new_value TEXT)""")
@@ -61,6 +72,23 @@ class GoogleRuntimeTests(unittest.TestCase):
                 response = exc
             with response:
                 return response.status, json.load(response)
+        finally:
+            http.shutdown(); http.server_close(); thread.join()
+
+    def request_bytes(self, path, payload, role="admin"):
+        http = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=http.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{http.server_port}{path}", data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json", "X-PQM-Local-Role": role}, method="POST")
+            try:
+                response = urllib.request.urlopen(request, timeout=5)
+            except urllib.error.HTTPError as exc:
+                response = exc
+            with response:
+                return response.status, dict(response.headers), response.read()
         finally:
             http.shutdown(); http.server_close(); thread.join()
 
@@ -157,6 +185,135 @@ class GoogleRuntimeTests(unittest.TestCase):
             self.assertEqual(worker.call_args.args[0], fingerprint)
             self.assertEqual(worker.call_args.args[2], state_digest)
             server.SUPPLIER_EDR_SYNC_STATE.update(running=False)
+
+    def test_sandbox_apply_starts_with_conflicts_only_when_ready_and_preview_is_current(self):
+        fingerprint = "a" * 64
+        digest = "b" * 64
+        current_plan = {"conflicts": [{"supplier_code": "1", "source_row": 2,
+                                      "reasons": ["same_timestamp_verification_conflict"]}],
+                        "summary": {"eligible": 1}}
+        with patch.object(server, "DB_PATH", self.db_path), \
+             patch.object(server, "AUTH_ENABLED", False), \
+             patch.object(server, "LOCAL_ROLE_IMPERSONATION", True), \
+             patch.object(server, "SANDBOX_MODE", True), \
+             patch.object(server, "google_edr_effective_enabled", return_value=True), \
+             patch.object(server, "supplier_edr_source_snapshot",
+                          return_value={"source_fingerprint": fingerprint}), \
+             patch.object(server.edr_sync_v2, "build_preview", return_value=current_plan), \
+             patch.object(server.edr_sync_v2, "preview_state_digest", return_value=digest), \
+             patch.object(server, "supplier_edr_sync_worker") as worker:
+            payload = {"confirmed": True, "source_fingerprint": fingerprint, "state_digest": digest}
+            status, result = self.request("/api/supplier-edr-sync", payload=payload)
+            self.assertEqual(status, 202)
+            self.assertTrue(result["started"])
+            worker.assert_called_once_with(fingerprint, server.CURRENT_USER, digest)
+            server.SUPPLIER_EDR_SYNC_STATE.update(running=False)
+
+            current_plan["conflicts"] = []
+            status, result = self.request("/api/supplier-edr-sync", payload=payload)
+            self.assertEqual(status, 202)
+            self.assertEqual(worker.call_count, 2)
+            server.SUPPLIER_EDR_SYNC_STATE.update(running=False)
+            current_plan["conflicts"] = [{"supplier_code": "1", "source_row": 2,
+                                           "reasons": ["same_timestamp_verification_conflict"]}]
+
+            current_plan["summary"]["eligible"] = 0
+            status, result = self.request("/api/supplier-edr-sync", payload=payload)
+            self.assertEqual(status, 409)
+            self.assertIn("Немає готових", result["error"])
+            self.assertEqual(worker.call_count, 2)
+
+            current_plan["summary"]["eligible"] = 1
+            with patch.object(server.edr_sync_v2, "preview_state_digest", return_value="c" * 64):
+                status, result = self.request("/api/supplier-edr-sync", payload=payload)
+            self.assertEqual(status, 409)
+            self.assertIn("Стан PQM змінився", result["error"])
+            self.assertEqual(worker.call_count, 2)
+            with patch.object(server, "supplier_edr_source_snapshot",
+                              return_value={"source_fingerprint": "c" * 64}):
+                status, result = self.request("/api/supplier-edr-sync", payload=payload)
+            self.assertEqual(status, 409)
+            self.assertIn("Google source змінився", result["error"])
+            self.assertEqual(worker.call_count, 2)
+            server.SUPPLIER_EDR_SYNC_STATE.update(running=False)
+
+    def test_conflict_xlsx_http_export_contains_all_preview_conflicts(self):
+        from openpyxl import load_workbook
+
+        fingerprint = "a" * 64
+        digest = "b" * 64
+        items, conflicts = [], []
+        for index in range(31):
+            code = f"{index:010d}"
+            pqm_checked = None if index == 1 else "2026-11-23" if index == 0 else "2026-11-23T16:00:00Z"
+            google_checked = None if index == 1 else "2026-11-23T17:04:26Z" if index == 0 else "23.11.2026 00:00:00"
+            items.append({"supplier_code": code, "source_row": index + 2,
+                          "source_sheet": "ФОП", "current_profile": {"edr_status": "PQM"},
+                          "current_supplier_name": "Постачальник", "current_verification_date": pqm_checked,
+                          "current_verification_officer": "УО PQM",
+                          "incoming": {"source_sheet": "ФОП", "full_name": "Google name",
+                                       "edr_status": "Google", "edr_checked_at": google_checked,
+                                       "edr_officer": "УО Google"}})
+            reason = ("current_verification_date_missing" if index == 0 else
+                      "malformed_current_verification_datetime" if index == 1 else
+                      "malformed_verification_date" if index == 2 else
+                      "same_timestamp_verification_conflict")
+            conflicts.append({"supplier_code": code, "source_row": index + 2,
+                              "reasons": [reason]})
+        preview = {"items": items, "conflicts": conflicts}
+        with patch.object(server, "DB_PATH", self.db_path), \
+             patch.object(server, "AUTH_ENABLED", False), \
+             patch.object(server, "LOCAL_ROLE_IMPERSONATION", True), \
+             patch.object(server, "SANDBOX_MODE", True), \
+             patch.object(server, "google_edr_effective_enabled", return_value=True), \
+             patch.object(server, "supplier_edr_source_snapshot",
+                          return_value={"source_fingerprint": fingerprint}), \
+             patch.object(server.edr_sync_v2, "build_preview", return_value=preview), \
+             patch.object(server.edr_sync_v2, "preview_state_digest", return_value=digest):
+            status, headers, body = self.request_bytes("/api/supplier-edr-sync/conflicts.xlsx",
+                {"source_fingerprint": fingerprint, "state_digest": digest})
+        self.assertEqual(status, 200)
+        self.assertIn("spreadsheetml.sheet", headers.get("Content-Type", ""))
+        workbook = load_workbook(BytesIO(body), read_only=False)
+        sheet = workbook.active
+        self.assertEqual(sheet.max_row, 32)
+        self.assertEqual(sheet.freeze_panes, "A2")
+        self.assertEqual(sheet.auto_filter.ref, "A1:L32")
+        self.assertEqual(sheet.cell(2, 2).value, "0000000000")
+        self.assertEqual(sheet.cell(2, 2).number_format, "@")
+        self.assertEqual(sheet.cell(32, 2).value, "0000000030")
+        self.assertEqual(sheet.cell(2, 4).value,
+                         server.edr_sync_v2.conflict_reason_details("current_verification_date_missing")[0])
+        self.assertEqual(sheet.cell(3, 4).value,
+                         "У PQM некоректна дата попередньої перевірки")
+        self.assertEqual(sheet.cell(4, 4).value,
+                         server.edr_sync_v2.conflict_reason_details("malformed_verification_date")[0])
+        self.assertIsInstance(sheet.cell(2, 8).value, datetime)
+        self.assertEqual(sheet.cell(2, 8).value, datetime(2026, 11, 23, 0, 0, 0))
+        self.assertEqual(sheet.cell(2, 9).value, datetime(2026, 11, 23, 19, 4, 26))
+        self.assertEqual(sheet.cell(2, 8).number_format, "dd.mm.yyyy hh:mm:ss")
+        self.assertEqual(sheet.cell(2, 9).number_format, "dd.mm.yyyy hh:mm:ss")
+        self.assertIsNone(sheet.cell(3, 8).value)
+        self.assertIsNone(sheet.cell(3, 9).value)
+        self.assertEqual(sheet.cell(2, 10).value, "УО PQM")
+        self.assertEqual(sheet.cell(2, 11).value, "УО Google")
+        self.assertIn("supplier_code=0000000000", sheet.cell(2, 12).hyperlink.target)
+
+    def test_preview_conflict_reasons_are_localized_and_keep_internal_codes(self):
+        reasons = ["current_verification_date_missing", "malformed_current_verification_datetime",
+                   "malformed_verification_date", "verification_date_required",
+                   "same_timestamp_verification_conflict", "missing_source_column:Дата перевірки"]
+        rows = server.supplier_edr_localize_review_details([
+            {"category": "conflicts", "reason": reasons},
+            {"category": "verification", "reason": "newer_verification_accepted"},
+        ])
+        self.assertEqual(rows[0]["reason_codes"], reasons)
+        self.assertEqual(rows[0]["reason"], [
+            server.edr_sync_v2.conflict_reason_details(code)[0] for code in reasons])
+        self.assertEqual(rows[1]["reason"], "newer_verification_accepted")
+        self.assertNotIn("reason_codes", rows[1])
+        self.assertEqual(rows[0]["reason"], [
+            server.edr_sync_v2.conflict_reason_details(code)[0] for code in reasons])
 
     def test_pkce_transaction_survives_memory_restart_and_is_one_time(self):
         client = {"client_id": "test-client", "client_secret": "test-secret",
