@@ -9,7 +9,7 @@ from validation.integrated_snapshot_archive import canonical_eol
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v31.json")
-MANIFEST_SHA256 = "ba3cca703fbc5ab5bd03ef07ec331b6aa17ecddd1c3743779723932a56c51e01"
+MANIFEST_SHA256 = "f9149e87a410f8bf3527dc6edbd85da5a408ed260959d94da07cf6293555d006"
 PREVIOUS_MANIFEST = Path("validation/local_release_20261116/pqm_sync_ui_integrated_v30.json")
 PREVIOUS_MANIFEST_SHA256 = "2ae6efcec557efdbe99dce5411824aa01b9391087ea2b1d0f32453a832921bce"
 PREVIOUS_CANDIDATE = "3a0d3bbacc0237fd0916bcfdb9b8e2b7c01fba40"

@@ -1312,7 +1312,7 @@ async function startSupplierEdrSync(){
       $('#supplierEdrApplyOk').hidden=true;$('#supplierEdrApplyDialog').showModal();
       renderSupplierEdrApplyProgress(state);clearInterval(supplierEdrTimer);
       supplierEdrTimer=setInterval(async()=>{const current=await loadSupplierEdrStatus();if(current.running===true)renderSupplierEdrApplyProgress(current);else if(current.running===false&&current.last_result){clearInterval(supplierEdrTimer);supplierEdrTimer=null;showSupplierEdrApplyResult(current)}},1000);
-    }else{supplierEdrApplySubmitting=false;const applyButton=$('#supplierEdrPreviewApply');if(applyButton){applyButton.disabled=!supplierEdrPreview;applyButton.removeAttribute('aria-busy')}toast(error.message)}
+    }else{supplierEdrApplySubmitting=false;clearSupplierEdrApplyBusyState();const applyButton=$('#supplierEdrPreviewApply');if(applyButton)applyButton.disabled=!supplierEdrPreview;toast(error.message)}
   }
 }
 function updateSupplierEdrApplyElapsed(seconds){
@@ -1334,8 +1334,12 @@ function supplierEdrApplyErrorText(error){
   if(/PQM state changed|Стан PQM змінився/i.test(text))return'Дані PQM змінилися після Preview. Сформуйте новий Preview.';
   return text;
 }
+function clearSupplierEdrApplyBusyState(){
+  ['#supplierEdrPreviewApply','#supplierEdrSync','#edrMonitoringSync'].forEach(selector=>$(selector)?.removeAttribute('aria-busy'));
+}
 function showSupplierEdrApplyResult(state){
   supplierEdrApplySubmitting=false;
+  clearSupplierEdrApplyBusyState();
   const summary=state.last_result_summary||{},failed=state.last_result==='failed'||Number(summary.errors||0)>0;
   const conflicts=Number(summary.skipped_conflicts||0),successful=Number(summary.successful||0);
   const title=$('#supplierEdrApplyTitle'),message=$('#supplierEdrApplyResultMessage');
