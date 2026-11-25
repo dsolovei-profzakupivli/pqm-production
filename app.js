@@ -1220,6 +1220,8 @@ async function connectSupplierGoogle(){
   }catch(error){popup.document.body.innerHTML=`<h2>Не вдалося відкрити Google</h2><p>${esc(error.message)}</p>`;toast(error.message)}
 }
 let supplierEdrTimer=null,supplierEdrPreview=null,supplierEdrReconnectRequired=false;
+let supplierEdrApplyStartedAt=0;
+let supplierEdrApplySubmitting=false;
 let supplierEdrReviewCategory='all',supplierEdrReviewSearch='',supplierEdrReviewPage=1;
 const supplierEdrMetricLabels={total_rows:'Всього рядків',matched:'Зіставлено',unmatched:'Не зіставлено',legacy_ineligible:'Legacy/ineligible',eligible:'Готові до застосування',skipped:'Пропущені рядки',skipped_unverified_timestamp:'Пропущено: немає точного часу перевірки',skipped_ineligible:'Пропущено: постачальник не eligible',changed_suppliers:'Постачальники зі змінами',no_op_suppliers:'Без змін',blocked_suppliers:'Заблоковано',malformed_blocked:'Некоректні дані',newer_verification_accepted:'Новіша перевірка Google',same_date_same_officer_equivalent:'Та сама дата й УО',same_date_officer_update_accepted:'Та сама дата, інша УО',older_verification_preserved:'Старіша Google перевірка збережена без змін',initial_verification_accepted:'Перша перевірка',manager_identity_changes:'Реальні зміни керівника',manager_representation_enrichments:'Уточнення ПІБ',manager_reestablishments:'Відновлено відомого керівника',newly_established_managers:'Вперше встановлено керівника',manager_removals:'Підтверджені видалення керівника',edr_status_changes:'Зміна статусу ЄДР',full_name_changes:'Зміна повної назви',short_name_changes:'Зміна скороченої назви',current_supplier_name_changes:'Зміна current supplier name',verification_event_changes:'Зміна verification event',google_mirror_updates:'Оновлення G/J/K/M',google_mirror_clears:'Очищення G/J/K/M',termination_changes:'Очищення/зміна припинення',factual_status_protected:'Фактичний статус захищено',m_note_updates:'Зміни приміток M',m_note_clears:'Очищення приміток M',conflicts:'Конфлікти'};
 supplierEdrMetricLabels.same_datetime_officer_preserved='Однаковий datetime: УО PQM збережено';
@@ -1273,26 +1275,83 @@ function renderSupplierEdrReviewDetails(){
 async function startSupplierEdrSync(){
   try{
     if(!supplierEdrPreview?.source_fingerprint)throw new Error('Спочатку виконайте preview');
+    if(supplierEdrApplySubmitting||supplierEdrTimer||$('#supplierEdrApplyDialog').open)return;
     if(!window.confirm('Застосувати саме показаний preview Google → PQM?'))return;
-    $('#supplierEdrSync').disabled=true;
+    supplierEdrApplySubmitting=true;
+    const applyButton=$('#supplierEdrPreviewApply');if(applyButton){applyButton.disabled=true;applyButton.setAttribute('aria-busy','true')}
+    ['#supplierEdrSync','#edrMonitoringSync'].forEach(selector=>{const button=$(selector);if(button){button.disabled=true;button.setAttribute('aria-busy','true')}});
     await request(`${API}/supplier-edr-sync`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true,source_fingerprint:supplierEdrPreview.source_fingerprint,state_digest:supplierEdrPreview.state_digest})});
     $('#supplierEdrPreviewDialog').close();supplierEdrPreview=null;
-    $('#supplierEdrSyncStatus').textContent='Синхронізацію довідника ЄДР розпочато…';
+    supplierEdrApplyStartedAt=Date.now();
+    $('#supplierEdrApplyDialog').dataset.result='running';
+    $('#supplierEdrApplyTitle').textContent='Синхронізація ЄДР · Google → PQM';
+    $('#supplierEdrApplySubtitle').textContent='Запит прийнято · Google → PQM';
+    $('#supplierEdrApplyProgress').hidden=false;$('#supplierEdrApplyResult').hidden=true;
+    $('#supplierEdrApplyOk').hidden=true;$('#supplierEdrApplyBar').hidden=true;
+    $('#supplierEdrApplyProgressText').textContent='Очікування фактичного стану обробки…';
+    $('#supplierEdrApplyStage').textContent='Запит прийнято';
+    $('#supplierEdrApplyDialog').showModal();
+    updateSupplierEdrApplyElapsed(0);
     clearInterval(supplierEdrTimer);
     supplierEdrTimer=setInterval(async()=>{
       const state=await loadSupplierEdrStatus();
-      if(!state.running){
+      if(state.running===true){renderSupplierEdrApplyProgress(state);return}
+      if(state.running===false&&state.last_result){
         clearInterval(supplierEdrTimer);supplierEdrTimer=null;
-        const summary=state.last_result_summary;
-        if(summary){
-          const message=`Оновлено: ${Number(summary.successful||0)} · пропущено конфліктів: ${Number(summary.skipped_conflicts||0)} · без змін: ${Number(summary.unchanged||0)} · помилок: ${Number(summary.errors||0)}`;
-          toast(message,Number(summary.errors||0)?'error':'success');
-        }else toast(state.error?'Синхронізація ЄДР завершилася з помилкою':'Довідник постачальників з ЄДР оновлено');
+        showSupplierEdrApplyResult(state);
         try{await loadQualifiedSuppliersFiltered()}catch{}
         if(activeModule==='edrMonitoring')try{await loadEdrMonitoring()}catch{}
       }
-    },2000);
-  }catch(error){$('#supplierEdrSync').disabled=false;toast(error.message)}
+    },1000);
+  }catch(error){
+    const state=await loadSupplierEdrStatus();
+    if(state.running===true){
+      supplierEdrApplyStartedAt=Date.now();$('#supplierEdrApplyDialog').dataset.result='running';
+      $('#supplierEdrApplyTitle').textContent='Синхронізація ЄДР · Google → PQM';
+      $('#supplierEdrApplyProgress').hidden=false;$('#supplierEdrApplyResult').hidden=true;
+      $('#supplierEdrApplyOk').hidden=true;$('#supplierEdrApplyDialog').showModal();
+      renderSupplierEdrApplyProgress(state);clearInterval(supplierEdrTimer);
+      supplierEdrTimer=setInterval(async()=>{const current=await loadSupplierEdrStatus();if(current.running===true)renderSupplierEdrApplyProgress(current);else if(current.running===false&&current.last_result){clearInterval(supplierEdrTimer);supplierEdrTimer=null;showSupplierEdrApplyResult(current)}},1000);
+    }else{supplierEdrApplySubmitting=false;const applyButton=$('#supplierEdrPreviewApply');if(applyButton){applyButton.disabled=!supplierEdrPreview;applyButton.removeAttribute('aria-busy')}toast(error.message)}
+  }
+}
+function updateSupplierEdrApplyElapsed(seconds){
+  const value=Math.max(0,Math.floor(Number(seconds)||0));
+  $('#supplierEdrApplyElapsed').textContent=`Тривалість: ${value.toLocaleString('uk-UA')} с`;
+}
+function renderSupplierEdrApplyProgress(state){
+  const stages={queued:'Запит прийнято',loading_source:'Завантаження вкладок Google Sheets',validating_preview:'Перевірка актуальності Preview',applying:'Застосування змін Google → PQM'};
+  $('#supplierEdrApplyStage').textContent=stages[state.stage]||state.message||'Синхронізація триває';
+  updateSupplierEdrApplyElapsed(state.elapsed_seconds??((Date.now()-supplierEdrApplyStartedAt)/1000));
+  const done=Number(state.progress_processed),total=Number(state.progress_total);
+  const bar=$('#supplierEdrApplyBar'),text=$('#supplierEdrApplyProgressText');
+  if(Number.isFinite(done)&&Number.isFinite(total)&&total>0){bar.max=total;bar.value=Math.min(total,Math.max(0,done));bar.hidden=false;text.textContent=`Оброблено ${bar.value.toLocaleString('uk-UA')} з ${total.toLocaleString('uk-UA')} записів`}else{bar.hidden=true;text.textContent='Кількість оброблених записів з’явиться після перевірки Preview'}
+}
+function supplierEdrApplyErrorText(error){
+  const text=String(error||'').trim();if(!text)return'Причину помилки не передано сервером.';
+  if(/offset-naive and offset-aware/i.test(text))return'Не вдалося узгодити часові пояси дати перевірки та ручної зміни керівника. Дані цього Apply не збережено.';
+  if(/Google source змін|Google source changed/i.test(text))return'Дані Google змінилися після Preview. Сформуйте новий Preview.';
+  if(/PQM state changed|Стан PQM змінився/i.test(text))return'Дані PQM змінилися після Preview. Сформуйте новий Preview.';
+  return text;
+}
+function showSupplierEdrApplyResult(state){
+  supplierEdrApplySubmitting=false;
+  const summary=state.last_result_summary||{},failed=state.last_result==='failed'||Number(summary.errors||0)>0;
+  const conflicts=Number(summary.skipped_conflicts||0),successful=Number(summary.successful||0);
+  const title=$('#supplierEdrApplyTitle'),message=$('#supplierEdrApplyResultMessage');
+  $('#supplierEdrApplyDialog').dataset.result=failed?'error':conflicts?'partial':'success';
+  title.textContent=failed?'Синхронізацію завершено з помилкою':conflicts?'Синхронізацію завершено з пропущеними конфліктами':'Синхронізацію успішно завершено';
+  $('#supplierEdrApplySubtitle').textContent='Google → PQM';
+  message.textContent=failed?'Зміни Apply відхилено або скасовано; перегляньте причину нижче.':`Операцію завершено. Успішно оброблено: ${successful.toLocaleString('uk-UA')}.`;
+  $('#supplierEdrApplyInserted').textContent=Number(summary.inserted||0).toLocaleString('uk-UA');
+  $('#supplierEdrApplyUpdated').textContent=Number(summary.updated||0).toLocaleString('uk-UA');
+  $('#supplierEdrApplyConflicts').textContent=conflicts.toLocaleString('uk-UA');
+  $('#supplierEdrApplyUnchanged').textContent=Number(summary.unchanged||0).toLocaleString('uk-UA');
+  $('#supplierEdrApplyErrors').textContent=Number(summary.errors||0).toLocaleString('uk-UA');
+  $('#supplierEdrApplyDuration').textContent=`${Number(state.duration_seconds||0).toLocaleString('uk-UA')} с`;
+  const error=$('#supplierEdrApplyError');error.hidden=!failed;error.textContent=failed?supplierEdrApplyErrorText(state.error||state.last_message):'';
+  $('#supplierEdrApplyProgress').hidden=true;$('#supplierEdrApplyResult').hidden=false;$('#supplierEdrApplyOk').hidden=false;
+  $('#supplierEdrApplyBar').hidden=true;$('#supplierEdrApplyProgressText').textContent='';
 }
 
 function edrMonitoringParams(){return{search:$('#edrMonitoringSearch').value.trim(),dk_code:$('#edrMonitoringDk').value.trim(),entity_type:$('#edrMonitoringType').value,prozorro_status:[...edrMonitoringStatusSelections.prozorro_status].join(','),edr_status:[...edrMonitoringStatusSelections.edr_status].join(','),edr_names:$('#edrMonitoringNames').value,freshness:$('#edrMonitoringFreshness').value,verification_from:$('#edrMonitoringVerifiedFrom').value,verification_to:$('#edrMonitoringVerifiedTo').value,application_from:$('#edrMonitoringApplicationFrom').value,application_to:$('#edrMonitoringApplicationTo').value,sort:edrMonitoringSort,direction:edrMonitoringDirection,page:String(edrMonitoringPage),size:'100'}}
@@ -2351,7 +2410,7 @@ $('#supplierRegistrySearch').oninput=$('#supplierRegistryDk').oninput=()=>{updat
 $('#supplierRegistrySelectPage').onchange=event=>{supplierRegistryItems.forEach(item=>{const code=String(item.code);event.target.checked?supplierRegistrySelectedCodes.add(code):supplierRegistrySelectedCodes.delete(code)});$$('#supplierRegistryBody .supplier-registry-check').forEach(input=>{input.checked=event.target.checked});updateSupplierRegistrySelection(Number($('#supplierRegistryPageInfo').textContent.match(/із\s+([\d\s]+)/)?.[1]?.replace(/\s/g,'')||0))};
 $('#supplierEdrExportSelected').onclick=async()=>{if(!supplierRegistrySelectedCodes.size)return;const button=$('#supplierEdrExportSelected');button.disabled=true;try{const response=await fetch(`${API}/supplier-edr-export`,{method:'POST',headers:{'Content-Type':'application/json','X-PQM-Local-Role':role()},body:JSON.stringify({supplier_codes:[...supplierRegistrySelectedCodes].sort()})});if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||`Помилка сервера ${response.status}`)}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='ClarityChecker_вибрані.csv';document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url)}catch(error){toast(error.message,'error')}finally{button.disabled=!supplierRegistrySelectedCodes.size}};
 $$('.supplier-filter-kpi').forEach(card=>card.onclick=()=>{supplierRegistryRisk=supplierRegistryRisk===card.dataset.risk?'':card.dataset.risk;supplierRegistryPage=1;loadQualifiedSuppliersFiltered()});
-$('#supplierEdrSync').onclick=()=>supplierEdrOauth.authorized&&!supplierEdrReconnectRequired?previewSupplierEdrSync():connectSupplierGoogle();$('#supplierEdrPreviewApply').onclick=startSupplierEdrSync;$('#supplierEdrConflictExport').onclick=async()=>{const button=$('#supplierEdrConflictExport');button.disabled=true;try{await downloadSupplierEdrConflicts()}catch(error){toast(error.message,'error')}finally{button.disabled=false}};window.addEventListener('message',event=>{if(event.origin!==location.origin||event.data?.type!=='pqm-google-oauth')return;if(event.data.ok)supplierEdrReconnectRequired=false;loadSupplierEdrStatus();loadSupplierNazkReviewStatus();toast(event.data.ok?'Google підключено':'Підключення Google не завершено',event.data.ok?'success':'error')});
+$('#supplierEdrSync').onclick=()=>supplierEdrOauth.authorized&&!supplierEdrReconnectRequired?previewSupplierEdrSync():connectSupplierGoogle();$('#supplierEdrPreviewApply').onclick=startSupplierEdrSync;$('#supplierEdrApplyOk').onclick=()=>$('#supplierEdrApplyDialog').close();$('#supplierEdrApplyDialog').addEventListener('cancel',event=>event.preventDefault());$('#supplierEdrApplyDialog').addEventListener('close',()=>{if(supplierEdrTimer){clearInterval(supplierEdrTimer);supplierEdrTimer=null}});$('#supplierEdrConflictExport').onclick=async()=>{const button=$('#supplierEdrConflictExport');button.disabled=true;try{await downloadSupplierEdrConflicts()}catch(error){toast(error.message,'error')}finally{button.disabled=false}};window.addEventListener('message',event=>{if(event.origin!==location.origin||event.data?.type!=='pqm-google-oauth')return;if(event.data.ok)supplierEdrReconnectRequired=false;loadSupplierEdrStatus();loadSupplierNazkReviewStatus();toast(event.data.ok?'Google підключено':'Підключення Google не завершено',event.data.ok?'success':'error')});
 $('#supplierNazkReviewSync').onclick=()=>supplierEdrOauth.authorized?startSupplierNazkReviewSync():connectSupplierGoogle();
 $('#suppliersNav').addEventListener('click',loadSupplierNazkReviewStatus);
 $('#suppliersNav').addEventListener('click',loadSupplierRiskCounts);

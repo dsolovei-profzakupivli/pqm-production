@@ -23,6 +23,7 @@ import legacy_google_factual_edr_preview
 import legacy_google_termination_audit
 import legacy_google_termination_import
 import edr_sync_v2
+import google_verification_contract
 import supplier_evidence_shadow_hooks_v3 as evidence_shadow
 import google_writer_execution
 import sandbox_edr_review
@@ -262,6 +263,7 @@ SUPPLIER_EDR_SYNC_STATE = {"running": False, "message": "Довідник ЄДР
                            "started_at": None, "updated_at": None, "processed": 0,
                            "inserted": 0, "updated": 0, "error": None,
                            "last_completed_at": None, "last_result": None, "last_message": None}
+SUPPLIER_EDR_SYNC_LOCK = threading.Lock()
 SUPPLIER_NAZK_REVIEW_SYNC_STATE = {"running": False, "message": "Перевірки НАЗК ще не синхронізували",
                                    "started_at": None, "updated_at": None, "processed": 0,
                                    "inserted": 0, "updated": 0, "error": None,
@@ -4877,8 +4879,17 @@ def normalize_manager_name(value: str) -> str:
     return " ".join(re.sub(r"[’'`\-]+", " ", (value or "").casefold()).split())
 
 
+def _supplier_manager_priority_instant(value, *, google_source: bool = False) -> datetime | None:
+    """Normalize manager-priority timestamps to UTC without changing history dates."""
+    parser = (google_verification_contract.google_verification_instant if google_source
+              else google_verification_contract.verification_instant)
+    parsed = parser(value)
+    return parsed["value"] if parsed.get("kind") == "datetime" else None
+
+
 def sync_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, manager_name: str,
-                                  source: str = "ЄДР", observed_at: str | None = None) -> dict:
+                                  source: str = "ЄДР", observed_at: str | None = None,
+                                  source_timestamp: str | None = None) -> dict:
     """Keep one current manager while preserving every observed previous manager."""
     code = re.sub(r"\D", "", supplier_code or "")
     name = " ".join((manager_name or "").split())
@@ -4894,8 +4905,10 @@ def sync_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, m
         return {"changed": False, "manager_id": current["id"] if current else None,
                 "reason": "no_edr_manager_observation"}
     if current and incoming_is_edr and current_is_manual:
-        current_at = _parse_prozorro_date(current["updated_at"])
-        incoming_at = _parse_prozorro_date(observed)
+        current_at = _supplier_manager_priority_instant(current["updated_at"])
+        incoming_at = _supplier_manager_priority_instant(
+            source_timestamp if source_timestamp is not None else observed,
+            google_source=source.startswith("Google Sheets"))
         if current["normalized_name"] == normalized or (current_at and incoming_at and current_at >= incoming_at):
             return {"changed": False, "manager_id": current["id"], "reason": "newer_manual_value_preserved"}
     if current and current["normalized_name"] == normalized and normalized:
@@ -4916,7 +4929,8 @@ def sync_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, m
 
 
 def enrich_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, manager_name: str,
-                                    source: str = "ЄДР", observed_at: str | None = None) -> dict:
+                                    source: str = "ЄДР", observed_at: str | None = None,
+                                    source_timestamp: str | None = None) -> dict:
     """Improve the current manager display without opening a new identity cycle."""
     code = re.sub(r"\D", "", supplier_code or "")
     name = " ".join((manager_name or "").split())
@@ -4929,8 +4943,10 @@ def enrich_current_supplier_manager(con: sqlite3.Connection, supplier_code: str,
     incoming_is_edr = source.startswith("Google Sheets") or source == "ЄДР"
     current_is_manual = str(current["source"] or "").startswith("Підтверджено УО")
     if incoming_is_edr and current_is_manual:
-        current_at = _parse_prozorro_date(current["updated_at"])
-        incoming_at = _parse_prozorro_date(observed)
+        current_at = _supplier_manager_priority_instant(current["updated_at"])
+        incoming_at = _supplier_manager_priority_instant(
+            source_timestamp if source_timestamp is not None else observed,
+            google_source=source.startswith("Google Sheets"))
         if current_at and incoming_at and current_at >= incoming_at:
             return {"enriched": False, "manager_id": current["id"],
                     "reason": "newer_manual_value_preserved"}
@@ -5064,9 +5080,14 @@ def supplier_edr_sync_status() -> dict:
         total = int(con.execute("SELECT COUNT(*) FROM supplier_edr_profiles").fetchone()[0])
         last = con.execute("""SELECT started_at,finished_at,status,processed,inserted,updated,error,actor,trigger
           FROM supplier_edr_sync_log ORDER BY id DESC LIMIT 1""").fetchone()
+    state = {key: value for key, value in SUPPLIER_EDR_SYNC_STATE.items()
+             if not key.startswith("_")}
+    started = SUPPLIER_EDR_SYNC_STATE.get("_started_monotonic")
+    if state.get("running") and started is not None:
+        state["elapsed_seconds"] = round(max(0.0, time.monotonic() - started), 1)
     return {"total": total, "last": dict(last) if last else None, "oauth": google_oauth_status(),
             "source_url": f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit",
-            "state": dict(SUPPLIER_EDR_SYNC_STATE)}
+            "state": state}
 
 
 EDR_EXPORT_HEADERS = [
@@ -5541,13 +5562,18 @@ def supplier_edr_sync_conflicts_export(payload: dict) -> bytes:
 
 
 def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
-                             expected_state_digest: str | None = None) -> None:
+                             expected_state_digest: str | None = None,
+                             expected_total: int | None = None) -> None:
+    if expected_total is None:
+        expected_total = SUPPLIER_EDR_SYNC_STATE.get("progress_total")
     started_at = now_iso()
+    started_monotonic = SUPPLIER_EDR_SYNC_STATE.get("_started_monotonic", time.monotonic())
     log_id = None
     try:
         SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Завантаження вкладок ФОП та ЮО…",
                                        started_at=started_at, updated_at=None, processed=0,
-                                       inserted=0, updated=0, error=None)
+                                       progress_processed=0, progress_total=expected_total,
+                                       stage="loading_source", inserted=0, updated=0, error=None)
         with db() as con:
             edr_sync_v2.migrate(con)
             log_id = con.execute("INSERT INTO supplier_edr_sync_log(started_at,status,actor,trigger) VALUES (?,?,?,?)",
@@ -5555,11 +5581,20 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
         snapshot = supplier_edr_source_snapshot()
         if snapshot["source_fingerprint"] != expected_fingerprint:
             raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
+        SUPPLIER_EDR_SYNC_STATE.update(stage="validating_preview", message="Перевірка актуальності Preview…")
         synced_at = now_iso()
         with db() as con:
             edr_sync_v2.migrate(con)
             con.commit()
             con.execute("BEGIN IMMEDIATE")
+            SUPPLIER_EDR_SYNC_STATE.update(stage="applying", message="Застосування змін Google → PQM…")
+            def progress(update: dict) -> None:
+                SUPPLIER_EDR_SYNC_STATE.update(
+                    stage=update.get("stage", "applying"),
+                    progress_processed=int(update.get("processed", 0)),
+                    progress_total=int(update.get("total", 0)),
+                    processed=int(update.get("processed", 0)),
+                    message="Застосування змін Google → PQM…")
             result = edr_sync_v2.apply(
                 con, snapshot, expected_fingerprint, confirmed=True, actor=actor,
                 synced_at=synced_at, sync_manager=sync_current_supplier_manager,
@@ -5570,6 +5605,7 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                 reconcile_manager_nazk=reconcile_supplier_nazk_after_edr_manager_change,
                 expected_state_digest=expected_state_digest,
                 sandbox_mode=SANDBOX_MODE,
+                progress_callback=progress,
             )
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,
               inserted=?,updated=?,source_fingerprint=?,unchanged=?,details_json=? WHERE id=?""",
@@ -5578,7 +5614,10 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                json.dumps(result, ensure_ascii=False), log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False,
             message=f"Застосовано: {result['inserted']} нових, {result['updated_profiles']} змінених профілів",
-            updated_at=synced_at, processed=result["processed"], inserted=result["inserted"],
+            stage="completed", updated_at=synced_at, processed=result["processed"],
+            progress_processed=result["processed"], progress_total=result["processed"],
+            duration_seconds=round(max(0.0, time.monotonic() - started_monotonic), 1),
+            inserted=result["inserted"],
             updated=result["updated_profiles"], changed_fields=result["changed_fields"], error=None,
             last_completed_at=synced_at, last_result="completed",
             last_result_summary={"successful": result["inserted"] + result["updated_profiles"],
@@ -5595,6 +5634,8 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                             (finished_at, str(exc), log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False, message=f"Помилка синхронізації ЄДР: {exc}",
                                        updated_at=finished_at, error=str(exc), last_completed_at=finished_at,
+                                       stage="failed", duration_seconds=round(
+                                           max(0.0, time.monotonic() - started_monotonic), 1),
                                        last_result="failed", last_message=f"Помилка синхронізації ЄДР: {exc}",
                                        last_result_summary={"successful": 0, "inserted": 0, "updated": 0,
                                                             "skipped_conflicts": 0, "unchanged": 0,
@@ -14001,8 +14042,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
-            if SUPPLIER_EDR_SYNC_STATE["running"]:
-                return self.send_json(SUPPLIER_EDR_SYNC_STATE, 409)
+            with SUPPLIER_EDR_SYNC_LOCK:
+                if SUPPLIER_EDR_SYNC_STATE["running"]:
+                    return self.send_json({"error": "Синхронізація ЄДР уже виконується",
+                                           "state": supplier_edr_sync_status()["state"]}, 409)
             fingerprint = str(payload.get("source_fingerprint") or "").strip().lower()
             if payload.get("confirmed") is not True or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
                 return self.send_json({"error": "Спочатку виконайте preview і явно підтвердьте той самий source fingerprint"}, 409)
@@ -14023,10 +14066,28 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "Немає готових до застосування записів"}, 409)
             except (GooglePhaseError, ValueError, RuntimeError, OSError) as exc:
                 return self.send_json({"error": str(exc)}, 409)
-            SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Підготовка синхронізації довідника ЄДР…",
-                                           started_at=now_iso(), updated_at=None, error=None)
-            threading.Thread(target=supplier_edr_sync_worker,
-                             args=(fingerprint, self.auth_user, state_digest), daemon=True).start()
+            with SUPPLIER_EDR_SYNC_LOCK:
+                if SUPPLIER_EDR_SYNC_STATE["running"]:
+                    return self.send_json({"error": "Синхронізація ЄДР уже виконується",
+                                           "state": supplier_edr_sync_status()["state"]}, 409)
+                started_monotonic = time.monotonic()
+                SUPPLIER_EDR_SYNC_STATE.update(
+                    running=True, message="Підготовка синхронізації довідника ЄДР…",
+                    started_at=now_iso(), updated_at=None, error=None, stage="queued",
+                    processed=0, progress_processed=0,
+                    progress_total=int(current_plan.get("summary", {}).get("total_rows", 0)),
+                    _started_monotonic=started_monotonic)
+                worker = threading.Thread(target=supplier_edr_sync_worker,
+                    args=(fingerprint, self.auth_user, state_digest), daemon=True)
+                try:
+                    worker.start()
+                except Exception as exc:
+                    SUPPLIER_EDR_SYNC_STATE.update(running=False, stage="failed", error=str(exc),
+                        message="Не вдалося запустити синхронізацію ЄДР", last_result="failed",
+                        last_message="Не вдалося запустити синхронізацію ЄДР",
+                        last_result_summary={"successful": 0, "inserted": 0, "updated": 0,
+                                             "skipped_conflicts": 0, "unchanged": 0, "errors": 1})
+                    return self.send_json({"error": "Не вдалося запустити синхронізацію ЄДР"}, 503)
             return self.send_json({"started": True}, 202)
         if parsed.path == "/api/supplier-edr-sync/conflicts.xlsx":
             payload = self.read_json()
