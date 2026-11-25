@@ -16,8 +16,12 @@ ARCHIVE = 'validation/fixtures/document_release_parent_0678d46.zip'
 PIN = '6579cd45b89cb59d9ed7ea820e578bff21b0817ac698da98f3639a553ff952ac'
 ADDITIVE_ARCHIVE = 'validation/fixtures/document_release_parent_0678d46_addendum_v1.zip'
 ADDITIVE_PIN = 'bb9524ba26b6778b9fd70a57487e6c5610fda41325dfab638961e89c81e4fbef'
+V31_ADDITIVE_ARCHIVE = 'validation/fixtures/document_release_parent_0678d46_addendum_v31.zip'
+V31_ADDITIVE_PIN = 'e74cbc29eca7d178f94a44edc23d154b845bbae611e71cd18497a24fc2e6be0d'
 V1_SOURCE_ARCHIVE = 'validation/fixtures/document_release_v1_source_6e0a9ef.zip'
 V1_SOURCE_PIN = '309313cc321244321c9921515c8bea8ea54ec78f4b069419130afb5fecc0c2f9'
+V1_SOURCE_V31_ADDENDUM = 'validation/fixtures/document_release_v1_source_6e0a9ef_addendum_v31.zip'
+V1_SOURCE_V31_ADDENDUM_PIN = 'b505a33cffbe3d424c1be9fd064938c8823b429c46dbc79fc1566bdd81a20128'
 V1_SOURCE_COMMIT = '6e0a9ef928e5ed09876c2218560bd27c3385ca09'
 V1_SOURCE_TREE = 'ad66a3c5830293fdc41dfe0c5b3400a8c7ffc6c9'
 _CACHE = {}
@@ -40,6 +44,27 @@ def verify_v1_source(source):
     archive_raw = (source / V1_SOURCE_ARCHIVE).read_bytes()
     if hashlib.sha256(archive_raw).hexdigest() != V1_SOURCE_PIN:
         raise AssertionError('V1 source archive changed')
+    v31_addendum_raw = (source / V1_SOURCE_V31_ADDENDUM).read_bytes()
+    if hashlib.sha256(v31_addendum_raw).hexdigest() != V1_SOURCE_V31_ADDENDUM_PIN:
+        raise AssertionError('V1 source V31 addendum changed')
+    with zipfile.ZipFile(source / V1_SOURCE_V31_ADDENDUM) as v31_addendum:
+        addendum_index = json.loads(v31_addendum.read('INDEX.json'))
+        addendum_files = addendum_index.get('files')
+        if (addendum_index.get('commit') != V1_SOURCE_COMMIT
+                or addendum_index.get('tree') != V1_SOURCE_TREE
+                or addendum_index.get('contract_sha256') != hashlib.sha256(contract_raw).hexdigest()
+                or v31_addendum.comment.decode() != V1_SOURCE_COMMIT
+                or not isinstance(addendum_files, dict)
+                or set(addendum_files) != {'styles.css', 'validation/local_release_20260911/test_edr_sync_v2.py'}
+                or set(v31_addendum.namelist()) != {'INDEX.json', 'files/styles.css',
+                    'files/validation/local_release_20260911/test_edr_sync_v2.py'}):
+            raise AssertionError('Wrong V1 source V31 addendum metadata')
+        for name, expected in addendum_files.items():
+            if name not in contract['files']:
+                raise AssertionError('V1 source V31 addendum path is outside contract: ' + name)
+            actual = hashlib.sha256(_text_bytes(name, v31_addendum.read('files/' + name))).hexdigest()
+            if actual != expected.get('sha256') or actual != contract['files'][name]:
+                raise AssertionError('V1 source V31 addendum pin mismatch: ' + name)
     with zipfile.ZipFile(source / V1_SOURCE_ARCHIVE) as archive:
         index = json.loads(archive.read('INDEX.json'))
         overrides = index.get('files')
@@ -52,7 +77,13 @@ def verify_v1_source(source):
                 or set(archive.namelist()) != {'INDEX.json', *('files/' + n for n in overrides)}):
             raise AssertionError('Wrong V1 source snapshot metadata')
         for name, expected in contract['files'].items():
-            raw = archive.read('files/' + name) if name in overrides else (source / name).read_bytes()
+            if name in overrides:
+                raw = archive.read('files/' + name)
+            elif name in addendum_files:
+                with zipfile.ZipFile(source / V1_SOURCE_V31_ADDENDUM) as v31_addendum:
+                    raw = v31_addendum.read('files/' + name)
+            else:
+                raw = (source / name).read_bytes()
             actual = hashlib.sha256(_text_bytes(name, raw)).hexdigest()
             if actual != expected:
                 raise AssertionError('V1 source pin mismatch: ' + name)
@@ -91,6 +122,25 @@ def baseline_root(source):
         for name in additive_overrides:
             if additive_index['files'][name] != index['files'][name]:
                 raise AssertionError('Accepted document baseline addendum pin mismatch: ' + name)
+    v31_additive_raw = (source / V31_ADDITIVE_ARCHIVE).read_bytes()
+    if hashlib.sha256(v31_additive_raw).hexdigest() != V31_ADDITIVE_PIN:
+        raise AssertionError('Accepted document baseline V31 addendum changed')
+    with zipfile.ZipFile(source / V31_ADDITIVE_ARCHIVE) as v31_additive:
+        v31_index = json.loads(v31_additive.read('INDEX.json'))
+        v31_overrides = v31_index.get('overrides')
+        if (v31_index.get('sha') != BASE_SHA or v31_index.get('tree') != BASE_TREE
+                or v31_additive.comment.decode() != BASE_SHA
+                or not isinstance(v31_overrides, list)
+                or len(v31_overrides) != len(set(v31_overrides))
+                or set(v31_index.get('files', {})) != set(v31_overrides)
+                or set(v31_additive.namelist()) != {'INDEX.json', *('files/' + n for n in v31_overrides)}
+                or not set(v31_overrides).issubset(index['files'])
+                or set(v31_overrides).intersection(index['overrides'])
+                or set(v31_overrides).intersection(additive_overrides)):
+            raise AssertionError('Wrong accepted document baseline V31 addendum')
+        for name in v31_overrides:
+            if v31_index['files'][name] != index['files'][name]:
+                raise AssertionError('Accepted document baseline V31 addendum pin mismatch: ' + name)
     if source not in _CACHE:
         with zipfile.ZipFile(source / ARCHIVE) as archive:
             tmp = tempfile.TemporaryDirectory(prefix='pqm-documents-accepted-')
@@ -104,6 +154,9 @@ def baseline_root(source):
                 elif name in additive_overrides:
                     with zipfile.ZipFile(source / ADDITIVE_ARCHIVE) as additive:
                         content = additive.read('files/' + name)
+                elif name in v31_overrides:
+                    with zipfile.ZipFile(source / V31_ADDITIVE_ARCHIVE) as v31_additive:
+                        content = v31_additive.read('files/' + name)
                 else:
                     content = (source / name).read_bytes()
                 if blob_oid(content) != expected['oid']:

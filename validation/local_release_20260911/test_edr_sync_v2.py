@@ -548,7 +548,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         seen = []
         source = snapshot(row())
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin",
-          synced_at="2026-09-15T18:00:00", sync_manager=lambda *args: seen.append(args[-1]) or {"changed": True})
+          synced_at="2026-09-15T18:00:00", sync_manager=lambda *args: seen.append(args[-2]) or {"changed": True})
         self.assertEqual(seen, ["2026-09-15"])
         self.assertEqual(result["manager_changes"], 1)
 

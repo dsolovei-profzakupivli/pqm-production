@@ -29,7 +29,8 @@
     26,
     27,
     28,
-    29
+    29,
+    30
   ],
   "integrity_test_versions": [
     1,
@@ -61,7 +62,8 @@
     27,
     28,
     29,
-    30
+    30,
+    31
   ],
   "integrity_manifest_dir": "validation/local_release_20261116",
   "snapshot_support_files": [
@@ -174,7 +176,9 @@
     "run_integrated_writer_ui_v28_candidate_history.py",
     "run_google_writer_update_append_v2_v26_history.py",
     "document_release_history_v2.py",
-    "docker_release_gate_csv_ui_v3.py"
+    "docker_release_gate_csv_ui_v3.py",
+    "run_integrated_writer_ui_v30_history.py",
+    "supplier_edr_apply_modal_browser.cjs"
   ],
   "root_level_release_files": [
     ".dockerignore",
@@ -183,7 +187,8 @@
     "application_documents_ui.js",
     "application_documents_ui.css",
     "document_check_ui.js",
-    "document_check_ui.css"
+    "document_check_ui.css",
+    "test_google_writer_integrated_candidate_integrity_v31.py"
   ],
   "release_fixture_basenames": [
     "supplier_classification_parent_integrity_6b9830b.zip",
@@ -267,7 +272,9 @@
     "csv_ui_gate_parent_c0c1df0.zip",
     "document_release_parent_0678d46.zip",
     "document_release_parent_0678d46_addendum_v1.zip",
-    "document_release_v1_source_6e0a9ef.zip"
+    "document_release_v1_source_6e0a9ef.zip",
+    "document_release_parent_0678d46_addendum_v31.zip",
+    "document_release_v1_source_6e0a9ef_addendum_v31.zip"
   ],
   "pinned_release_files": {
     "validation/run_c246_historical_integrity_snapshots_v1.py": "98817c305569e973b84edb3529f13a3426853fdf42de99cb99d389376206a39f",
@@ -297,7 +304,8 @@
     "test_csv_ui_integration_integrity.py",
     "test_csv_ui_gate_integrity.py",
     "test_document_check_current_acceptance.py",
-    "test_document_release_integrity_v1.py"
+    "test_document_release_integrity_v1.py",
+    "test_supplier_edr_apply_v31.py"
   ],
   "infrastructure_auxiliary_files": [
     "validation/google_writer_historical_integrity_snapshots_v1.json"

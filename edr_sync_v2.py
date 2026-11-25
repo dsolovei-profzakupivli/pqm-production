@@ -1830,7 +1830,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
           reestablish_manager=None,
           refresh_manager_controls=None, reconcile_manager_nazk=None,
           expected_state_digest: str | None = None,
-          sandbox_mode: bool = False) -> dict:
+          sandbox_mode: bool = False, progress_callback=None) -> dict:
     """Apply only a confirmed, unchanged snapshot; caller owns the transaction."""
     if not confirmed:
         raise PermissionError("Потрібне явне підтвердження застосування preview")
@@ -1856,19 +1856,32 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "skipped_no_verification_timestamp": 0,
               "skipped_conflicts": 0,
               "skipped_ineligible_new": 0, "changed_fields": {}, "errors": 0}
-    for plan in preview["items"]:
+    progress_total = len(preview["items"])
+    def report_progress(processed: int) -> None:
+        if progress_callback:
+            try:
+                progress_callback({"processed": processed, "total": progress_total,
+                                  "stage": "applying"})
+            except Exception:
+                # Progress reporting is observational and must not alter Apply semantics.
+                pass
+    report_progress(0)
+    for processed_index, plan in enumerate(preview["items"], 1):
         item = plan["incoming"]
         if sandbox_mode and plan.get("row_state") == "conflict":
             counts["skipped_conflicts"] += 1
+            report_progress(processed_index)
             continue
         if plan.get("row_state") == "skipped":
             counts["skipped_no_verification_timestamp"] += int(
                 "verification_timestamp_unavailable" in plan.get("skip_reasons", []))
             counts["skipped_ineligible_new"] += int(not plan["apply_allowed"])
             # Undated rows leave profiles, receipts, history, and NAZK tasks untouched.
+            report_progress(processed_index)
             continue
         if not plan["apply_allowed"]:
             counts["skipped_ineligible_new"] += 1
+            report_progress(processed_index)
             continue
         # Receipt is technical provenance of a real matched source row, not an I/L event.
         # It is inside the caller's successful Apply transaction; Preview never records it.
@@ -1951,6 +1964,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                     counts["changed_fields"][field] = counts["changed_fields"].get(field, 0) + 1
             else:
                 counts["unchanged"] += 1
+            report_progress(processed_index)
             continue
         existing = con.execute("SELECT * FROM supplier_edr_profiles WHERE supplier_code=?",
                                (item["supplier_code"],)).fetchone()
@@ -2025,7 +2039,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 changed_fields=plan["changed_fields"], snapshot=event_snapshot, created_at=synced_at))
         if plan["manager_change_kind"] == "representation_enrichment" and enrich_manager:
             result = enrich_manager(con, item["supplier_code"], effective["manager_name"],
-                                    f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
+                                    f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]),
+                                    item["edr_checked_at"])
             if result.get("enriched"):
                 counts["manager_representation_enrichments"] += 1
         elif plan["manager_change_kind"] == "manager_reestablished" and (reestablish_manager or establish_manager):
@@ -2041,7 +2056,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 counts["newly_established_managers"] += 1
         elif plan["manager_change_kind"] == "real_identity_change" and sync_manager:
             result = sync_manager(con, item["supplier_code"], effective["manager_name"],
-                                  f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
+                                  f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]),
+                                  item["edr_checked_at"])
             if result.get("changed"):
                 counts["manager_changes"] += 1
                 counts["manager_identity_changes"] += 1
@@ -2050,5 +2066,6 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 if reconcile_manager_nazk:
                     reconcile_manager_nazk(con, item["supplier_code"])
                     counts["nazk_manager_reconciliations"] += 1
+        report_progress(processed_index)
     return {**counts, "source_fingerprint": expected_fingerprint,
             "processed": preview["summary"]["total_rows"], "preview_summary": preview["summary"]}
