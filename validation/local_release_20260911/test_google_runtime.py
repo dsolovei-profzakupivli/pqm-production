@@ -127,13 +127,14 @@ class GoogleRuntimeTests(unittest.TestCase):
         patches = self.common_patches()
         with patches[0], patches[1], patches[2], patches[3], \
              patch.object(server, "google_effective_enabled", return_value=True), \
+             patch.object(server, "google_edr_effective_enabled", return_value=True), \
              patch.object(server, "supplier_edr_sync_preview",
                           return_value={"source_fingerprint": fingerprint,
                                         "state_digest": state_digest, "summary": {}}), \
              patch.object(server, "supplier_edr_source_snapshot",
                           return_value={"source_fingerprint": fingerprint}), \
              patch.object(server.edr_sync_v2, "build_preview",
-                          return_value={"conflicts": []}), \
+                          return_value={"conflicts": [], "summary": {"ready_to_apply": 1}}), \
              patch.object(server.edr_sync_v2, "preview_state_digest",
                           return_value=state_digest), \
              patch.object(server, "supplier_edr_sync_worker") as worker:

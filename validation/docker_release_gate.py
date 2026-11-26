@@ -56,7 +56,10 @@ def main():
         [sys.executable, "validation/run_local_release.py", "test_historical_applications_read_only.py"],
         [sys.executable, "validation/run_local_release.py", "test_violation_scenario_context_cache.py"],
     ]
-    commands.extend([[sys.executable, "validation/run_production_documents.py", mode] for mode in ["--history", "--functional", "--integrity"]])
+    # --history is run by the versioned Production EDR runner against the
+    # immutable baseline snapshot; candidate-side history reconstruction would
+    # incorrectly combine current files with historical pins.
+    commands.append([sys.executable, "validation/run_production_documents.py", "--functional"])
     for command in commands:
         print("DOCKER GATE: synthetic check", command[-1], flush=True)
         subprocess.run(command, cwd=root, env=env, check=True, timeout=180)
@@ -80,7 +83,9 @@ def main():
             raise RuntimeError("STOP: invalid PDF output")
         if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
             raise RuntimeError("STOP: converter altered source DOCX")
-    print("DOCKER GATE: GO — HTTP, evidence, UI and PDF fixture passed; live DB writes=0", flush=True)
+    subprocess.run([sys.executable, "-B", "validation/run_production_edr_release_v1.py"],
+                   cwd=root, env=env, check=True, timeout=900)
+    print("DOCKER GATE: GO — HTTP, evidence, UI, PDF, immutable history and Production EDR fixture passed; live DB writes=0", flush=True)
 
 
 if __name__ == "__main__":

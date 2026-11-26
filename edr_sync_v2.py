@@ -34,6 +34,26 @@ TRACKED_FIELDS = (
     "termination_decision_details", "termination_record_date", "termination_record_number",
 )
 
+CONFLICT_REASON_DETAILS = {
+    "missing_supplier_code": ("Не вказано ідентифікатор постачальника", "Ідентифікатор"),
+    "duplicate_supplier_code": ("Ідентифікатор повторюється у джерелі", "Ідентифікатор"),
+    "ambiguous_missing_current_manager_evidence": ("Неоднозначні дані про поточного керівника", "ПІБ керівника"),
+    "changed_values_without_officer": ("Зміни не мають уповноваженої особи перевірки", "УО перевірки"),
+    "current_verification_date_missing": ("У PQM відсутня дата попередньої перевірки", "Дата перевірки ЄДР"),
+    "malformed_current_verification_datetime": ("У PQM некоректна дата попередньої перевірки", "Дата перевірки ЄДР"),
+    "malformed_termination_record_date": ("Некоректна дата запису про припинення", "Дата запису про припинення"),
+    "mirror_change_requires_strictly_newer_verification_timestamp": ("Зміна приміток або даних припинення потребує новішої перевірки", "Дані Google"),
+    "source_business_values_not_newer_than_pqm": ("Дані Google не новіші за дані PQM", "Дані постачальника"),
+}
+
+
+def conflict_reason_details(reason) -> tuple[str, str]:
+    code = str(reason or "")
+    if code.startswith("missing_source_column:"):
+        column = code.split(":", 1)[1]
+        return f"У Google Sheets відсутня обов’язкова колонка «{column}»", column
+    return CONFLICT_REASON_DETAILS.get(code, ("Потрібна окрема перевірка даних", "Дані постачальника"))
+
 
 def normalize_code(value) -> str:
     return re.sub(r"\D", "", str(value or ""))
@@ -312,6 +332,10 @@ def migrate(con) -> None:
     );
     CREATE INDEX IF NOT EXISTS ix_supplier_edr_verification_events_current
       ON supplier_edr_verification_events(supplier_code,occurred_at DESC,id DESC);
+    CREATE TABLE IF NOT EXISTS supplier_google_receipts (
+      supplier_code TEXT PRIMARY KEY, received_at TEXT NOT NULL, actor TEXT NOT NULL,
+      source_sheet TEXT NOT NULL, source_row INTEGER NOT NULL, source_fingerprint TEXT NOT NULL
+    );
     """)
     columns = {row[1] for row in con.execute("PRAGMA table_info(supplier_edr_profiles)")}
     for name in ("termination_record_date", "termination_record_number"):
@@ -375,6 +399,11 @@ def google_prozorro_presentation(status: str) -> str:
 
 
 def _eligible_codes(con, supplier_codes=None) -> set[str]:
+    """Return suppliers with a historical PQM protocol decision.
+
+    This is the legacy population used by shared Prozorro status projections;
+    EDR synchronization has a separate qualification-based population below.
+    """
     if not _table_exists(con, "submissions") or not _table_exists(con, "application_fields") or "protocol_decision" not in _columns(con, "application_fields"):
         return set()
     requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}
@@ -389,13 +418,47 @@ def _eligible_codes(con, supplier_codes=None) -> set[str]:
         AND TRIM(COALESCE(s.supplier_code,''))<>''""" + suffix, args) if normalize_code(row[0])}
 
 
+def _edr_eligible_codes(con, supplier_codes=None) -> set[str]:
+    """EDR sync population uses Prozorro qualification outcomes, not PQM decisions."""
+    if not _table_exists(con, "submissions") or not _table_exists(con, "qualifications"):
+        return set()
+    submission_columns = _columns(con, "submissions")
+    qualification_columns = _columns(con, "qualifications")
+    if "qualification_id" in submission_columns:
+        qualification_join = "q.id=s.qualification_id"
+    elif "submission_id" in qualification_columns:
+        qualification_join = "q.submission_id=s.id"
+    else:
+        return set()
+    requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}
+    suffix, args = "", ()
+    if requested:
+        suffix = " AND s.supplier_code IN (" + ",".join("?" for _ in requested) + ")"
+        args = tuple(requested)
+    return {normalize_code(row[0]) for row in con.execute(f"""
+      SELECT DISTINCT s.supplier_code FROM submissions s
+      JOIN qualifications q ON {qualification_join}
+      WHERE q.status IN ('active','unsuccessful')
+        AND TRIM(COALESCE(s.supplier_code,''))<>''""" + suffix, args) if normalize_code(row[0])}
+
+
 def _latest_application_names(con) -> dict[str, str]:
     names = {}
-    if not _table_exists(con, "submissions"):
+    if not _table_exists(con, "submissions") or not _table_exists(con, "qualifications"):
         return names
-    for row in con.execute("""SELECT supplier_code,supplier_name,date_published,id FROM submissions
-      WHERE TRIM(COALESCE(supplier_code,''))<>''
-      ORDER BY COALESCE(NULLIF(date_published,''),'') DESC,id DESC"""):
+    submission_columns = _columns(con, "submissions")
+    qualification_columns = _columns(con, "qualifications")
+    if "qualification_id" in submission_columns:
+        qualification_join = "q.id=s.qualification_id"
+    elif "submission_id" in qualification_columns:
+        qualification_join = "q.submission_id=s.id"
+    else:
+        return names
+    for row in con.execute(f"""SELECT s.supplier_code,s.supplier_name,s.date_published,s.id FROM submissions s
+      JOIN qualifications q ON {qualification_join}
+      WHERE q.status IN ('active','unsuccessful')
+        AND TRIM(COALESCE(s.supplier_code,''))<>''
+      ORDER BY COALESCE(NULLIF(s.date_published,''),'') DESC,s.id DESC"""):
         code = normalize_code(row[0])
         if code and code not in names and str(row[1] or "").strip():
             names[code] = str(row[1]).strip()
@@ -611,7 +674,7 @@ def build_preview(con, snapshot: dict) -> dict:
     if tuple(snapshot.get("headers") or ()) != HEADERS:
         raise ValueError("Google EDR source columns do not match the canonical A:O structure")
     rows = snapshot["rows"]
-    eligible = _eligible_codes(con)
+    eligible = _edr_eligible_codes(con)
     profiles = _profiles(con)
     managers = _current_managers(con)
     manager_history = _closed_manager_history(con)
@@ -672,7 +735,8 @@ def build_preview(con, snapshot: dict) -> dict:
         raw_checked_at = incoming.get("edr_checked_at_source")
         datetime_gate = incoming_verification_gate(
             raw_checked_at if str(raw_checked_at or "").strip() else None,
-            current_gate_value, require_time=True)
+            current_gate_value, require_time=True,
+            compare_current_date_only_at_midnight=True)
         if datetime_gate["reason"] in {"incoming_blank", "incoming_invalid", "current_invalid"}:
             verification_decision = "blank_verification_preserved"
         elif datetime_gate["reason"] == "incoming_date_only":
@@ -819,10 +883,17 @@ def build_preview(con, snapshot: dict) -> dict:
                       "current_profile": old, "current_manager_name": current_manager,
                       "current_supplier_name": old_current_name,
                       "planned_supplier_name": new_current_name,
+                      "apply_changes_expected": bool(code not in profiles or changes or event_changed or (
+                          code in profiles and (str(old.get("source_sheet") or "") != incoming["source_sheet"]
+                          or int(old.get("source_row") or 0) != incoming["source_row"]))),
                       "factual_status_protected": status_protected,
                       "conflicts": sorted(set(row_conflicts)), "incoming": incoming})
     summary["conflicts"] = len(conflicts)
     summary["conflict"] = len(conflicts)
+    ready = [plan for plan in items if plan.get("row_state") == "eligible" and plan.get("apply_allowed")]
+    summary["ready_to_apply"] = len(ready)
+    summary["ready_with_changes"] = sum(bool(plan.get("apply_changes_expected")) for plan in ready)
+    summary["ready_unchanged"] = summary["ready_to_apply"] - summary["ready_with_changes"]
     return {"source_fingerprint": snapshot["source_fingerprint"], "summary": summary,
             "items": items, "conflicts": conflicts, "duplicate_codes": duplicate_codes,
             "previewed_at": datetime.now().astimezone().isoformat()}
@@ -1361,7 +1432,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
           synced_at: str, sync_manager=None, enrich_manager=None, establish_manager=None,
           reestablish_manager=None,
           refresh_manager_controls=None, reconcile_manager_nazk=None,
-          expected_state_digest: str | None = None) -> dict:
+          expected_state_digest: str | None = None,
+          allow_partial_conflicts: bool = False, progress_callback=None) -> dict:
     """Apply only a confirmed, unchanged snapshot; caller owns the transaction."""
     if not confirmed:
         raise PermissionError("Потрібне явне підтвердження застосування preview")
@@ -1372,7 +1444,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
     preview = build_preview(con, snapshot)
     if expected_state_digest is not None and preview_state_digest(preview) != expected_state_digest:
         raise RuntimeError("PQM state changed after reviewed preview")
-    if preview["conflicts"]:
+    if preview["conflicts"] and not allow_partial_conflicts:
         raise ValueError("Apply заблоковано: preview містить конфлікти")
     counts = {"inserted": 0, "updated_profiles": 0, "unchanged": 0,
               "manager_changes": 0, "manager_identity_changes": 0,
@@ -1382,20 +1454,27 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "verification_events": 0,
               "nazk_manager_reconciliations": 0,
               "termination_clears": 0, "termination_events": 0,
+              "received_suppliers": 0,
               "skipped_no_verification_timestamp": 0, "skipped_conflicts": 0,
               "skipped_ineligible_new": 0, "changed_fields": {}}
-    for plan in preview["items"]:
+    for processed_index, plan in enumerate(preview["items"], 1):
         item = plan["incoming"]
+        if plan.get("row_state") == "conflict":
+            counts["skipped_conflicts"] += 1
+            if progress_callback:
+                progress_callback(processed_index, len(preview["items"]))
+            continue
         if plan.get("row_state") == "skipped":
             counts["skipped_no_verification_timestamp"] += int(
                 "verification_timestamp_unavailable" in plan.get("skip_reasons", []))
             counts["skipped_ineligible_new"] += int(not plan["apply_allowed"])
-            continue
-        if plan.get("row_state") == "conflict":
-            counts["skipped_conflicts"] += 1
+            if progress_callback:
+                progress_callback(processed_index, len(preview["items"]))
             continue
         if not plan["apply_allowed"]:
             counts["skipped_ineligible_new"] += 1
+            if progress_callback:
+                progress_callback(processed_index, len(preview["items"]))
             continue
         existing = con.execute("SELECT * FROM supplier_edr_profiles WHERE supplier_code=?",
                                (item["supplier_code"],)).fetchone()
@@ -1452,7 +1531,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 changed_fields=plan["changed_fields"], snapshot=event_snapshot, created_at=synced_at))
         if plan["manager_change_kind"] == "representation_enrichment" and enrich_manager:
             result = enrich_manager(con, item["supplier_code"], effective["manager_name"],
-                                    f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
+                                    f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]),
+                                    source_timestamp=item["edr_checked_at"])
             if result.get("enriched"):
                 counts["manager_representation_enrichments"] += 1
         elif plan["manager_change_kind"] == "manager_reestablished" and (reestablish_manager or establish_manager):
@@ -1468,7 +1548,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 counts["newly_established_managers"] += 1
         elif plan["manager_change_kind"] == "real_identity_change" and sync_manager:
             result = sync_manager(con, item["supplier_code"], effective["manager_name"],
-                                  f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
+                                  f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]),
+                                  source_timestamp=item["edr_checked_at"])
             if result.get("changed"):
                 counts["manager_changes"] += 1
                 counts["manager_identity_changes"] += 1
@@ -1477,5 +1558,20 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 if reconcile_manager_nazk:
                     reconcile_manager_nazk(con, item["supplier_code"])
                     counts["nazk_manager_reconciliations"] += 1
+        con.execute("""INSERT INTO supplier_google_receipts
+          (supplier_code,received_at,actor,source_sheet,source_row,source_fingerprint)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(supplier_code) DO UPDATE SET
+          received_at=excluded.received_at,actor=excluded.actor,
+          source_sheet=excluded.source_sheet,source_row=excluded.source_row,
+          source_fingerprint=excluded.source_fingerprint""",
+          (item["supplier_code"], synced_at, actor, item["source_sheet"],
+           item["source_row"], expected_fingerprint))
+        counts["received_suppliers"] += 1
+        if progress_callback:
+            progress_callback(processed_index, len(preview["items"]))
+    ready_to_apply = int(preview["summary"].get("ready_to_apply", 0))
+    if counts["inserted"] + counts["updated_profiles"] + counts["unchanged"] != ready_to_apply:
+        raise AssertionError("Apply counters do not reconcile with the reviewed ready rows")
     return {**counts, "source_fingerprint": expected_fingerprint,
+            "ready_to_apply": ready_to_apply,
             "processed": preview["summary"]["total_rows"], "preview_summary": preview["summary"]}

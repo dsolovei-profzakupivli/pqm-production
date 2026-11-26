@@ -56,6 +56,7 @@ jobs:
           node validation/production_documents_browser.cjs
           node validation/production_document_results_browser.cjs
           node validation/production_csv_versions_browser.cjs
+          PQM_TEST_BROWSER="$PQM_CHROMIUM_EXECUTABLE" node validation/production_edr_display_toasts_browser.cjs
           docker run --rm --network none --entrypoint python \
             -v "$RUNNER_TEMP/pqm-production-mvs:/evidence" \
             -e PQM_SANDBOX=0 -e PQM_ENV=local -e PQM_DATA_DIR=/tmp/pqm-doc-fixture \
@@ -104,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --network none --entrypoint python pqm-ci:tested \
-            -B validation/run_local_release.py 2>&1 | tee ci-evidence/regression.log
+            -B validation/run_production_edr_release_v1.py 2>&1 | tee ci-evidence/regression.log
       - name: Save evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

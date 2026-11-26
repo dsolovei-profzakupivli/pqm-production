@@ -95,7 +95,8 @@ def google_verification_instant(value):
     return parsed
 
 
-def incoming_verification_gate(incoming, current, *, require_time=True):
+def incoming_verification_gate(incoming, current, *, require_time=True,
+                               compare_current_date_only_at_midnight=False):
     """Accept only a strictly newer source instant; date-only PQM needs a later day."""
     new = google_verification_instant(incoming) if require_time else verification_instant(incoming)
     old = verification_instant(current)
@@ -105,7 +106,8 @@ def incoming_verification_gate(incoming, current, *, require_time=True):
         return {"accepted": False, "reason": "current_invalid"}
     if old["kind"] == "blank":
         return {"accepted": True, "reason": "initial"}
-    if require_time and not has_observation_time(current):
+    if (require_time and not compare_current_date_only_at_midnight
+            and not has_observation_time(current)):
         new_day = new["value"].astimezone(KYIV).date()
         old_day = old["value"].astimezone(KYIV).date()
         if new_day <= old_day:
