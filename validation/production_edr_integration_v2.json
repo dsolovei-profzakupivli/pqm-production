@@ -23,13 +23,13 @@
   ],
   "candidate_paths": {
     ".github/workflows/release-checks.yml": "87b4f0f19c81778699f441b7fa52cd0bf40aa3b2e05d56b8befd934bef2e5284",
-    "app.js": "a65a8ac79884a4092f527b7534f77ccb7836b29d522e8dac3e5a264cec390e30",
+    "app.js": "ab7973cb64457fdff05b3dd710d3f71a144cf8cdbf9f038c8fbbb862a703c27b",
     "server.py": "af6cee5626eda7ce1cec850782d1ad7bfdc7130e884d15c0eace5e906f08f2a4",
     "validation/docker_release_gate.py": "6cab3ea2df44e679d8e708f74822c0732b5ced158eb5ae33c07486f376dc081f",
     "validation/local_release_20260911/test_production_edr_apply_permissions_v2.py": "8049d7eeb4de1622a9d4c35676ead4f34f4e74c47ce4d844955d5ad229fe3b2f",
     "validation/local_release_20260911/test_supplier_edr_dates.py": "1d8420aa800e36f8c13591a363d14f4f9d0a02add8b940c066ae55f89af64f70",
     "validation/local_release_20260911/test_supplier_edr_filter.py": "7b36c7397b07da3a2e4ee27e165e5de0bb7a641088e324195d1a643464fb7e65",
-    "validation/production_edr_apply_permissions_browser_v2.cjs": "01a78017cf4e80f47f200e4179d63d006f6887f2d266754f1afbe9b8b032e32d"
+    "validation/production_edr_apply_permissions_browser_v2.cjs": "0b6757065a18f5505e25f17855ee18e0bff1956d3fc40124539985c73a018086"
   },
   "protected_paths": {
     "validation/production_edr_integration_v1.json": "0a8711b9ad178be88195865b225d2c86c07772e7c90702f84c8e25d4c51c49a2",

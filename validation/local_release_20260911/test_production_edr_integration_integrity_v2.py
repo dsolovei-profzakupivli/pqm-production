@@ -11,7 +11,7 @@ import server
 
 
 MANIFEST = Path("validation/production_edr_integration_v2.json")
-MANIFEST_SHA256 = "b45850370f4d51dfe2a6c20a3bc303b349b73e8eba080fcda308513ea23371ea"
+MANIFEST_SHA256 = "e42b17510713c75fb5b9de3fc86c161f7cc5427e791dfd413dc3310f0b5a1944"
 V1_MANIFEST_SHA256 = "0a8711b9ad178be88195865b225d2c86c07772e7c90702f84c8e25d4c51c49a2"
 V1_ARCHIVE = Path("validation/fixtures/production_edr_candidate_v1.zip")
 V1_UNCHANGED_TESTS_ARCHIVE = Path("validation/fixtures/production_edr_v1_unmodified_tests.zip")

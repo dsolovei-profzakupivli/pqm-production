@@ -16,7 +16,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "validation/production_edr_integration_v2.json"
-MANIFEST_SHA256 = "b45850370f4d51dfe2a6c20a3bc303b349b73e8eba080fcda308513ea23371ea"
+MANIFEST_SHA256 = "e42b17510713c75fb5b9de3fc86c161f7cc5427e791dfd413dc3310f0b5a1944"
 V1_MANIFEST_SHA256 = "0a8711b9ad178be88195865b225d2c86c07772e7c90702f84c8e25d4c51c49a2"
 V1_COMMIT = "192e07f5c4e9a439feac63ff993385ff7a43c407"
 V1_TREE = "e2223939eaa4bfcdf8f1a0c14181367cbce28aaf"
