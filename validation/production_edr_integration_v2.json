@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "contract_id": "pqm_production_edr_integration_v2",
+  "v1_candidate_commit": "192e07f5c4e9a439feac63ff993385ff7a43c407",
+  "v1_candidate_tree": "e2223939eaa4bfcdf8f1a0c14181367cbce28aaf",
+  "v1_manifest_sha256": "0a8711b9ad178be88195865b225d2c86c07772e7c90702f84c8e25d4c51c49a2",
+  "v1_candidate_archive": "validation/fixtures/production_edr_candidate_v1.zip",
+  "v1_candidate_archive_sha256": "5199d8db22fc688d94b0289902b3907d5aa4b0084ca7d2d70f5d14055bbfe4ca",
+  "v1_unchanged_tests_archive": "validation/fixtures/production_edr_v1_unmodified_tests.zip",
+  "v1_unchanged_tests_archive_sha256": "fab4c372969941e7906f8c784ffef0f9584c0bb77dce5091153d80c0dfb4e3ab",
+  "v1_unchanged_test_paths": [
+    "validation/local_release_20260911/test_supplier_edr_dates.py",
+    "validation/local_release_20260911/test_supplier_edr_filter.py"
+  ],
+  "v1_unchanged_test_sha256": {
+    "validation/local_release_20260911/test_supplier_edr_dates.py": "714e1efce21a921611de23bce2b9310d22396def1188f58af7e1a163f8957278",
+    "validation/local_release_20260911/test_supplier_edr_filter.py": "1310a8820f6abac8abb9b814877c1839051a2a94928ffff39ad329123abc5b45"
+  },
+  "migration_sources": [
+    "edr_sync_v2.py",
+    "edr_sync_review.py",
+    "google_verification_contract.py"
+  ],
+  "candidate_paths": {
+    ".github/workflows/release-checks.yml": "87b4f0f19c81778699f441b7fa52cd0bf40aa3b2e05d56b8befd934bef2e5284",
+    "app.js": "a65a8ac79884a4092f527b7534f77ccb7836b29d522e8dac3e5a264cec390e30",
+    "server.py": "af6cee5626eda7ce1cec850782d1ad7bfdc7130e884d15c0eace5e906f08f2a4",
+    "validation/docker_release_gate.py": "6cab3ea2df44e679d8e708f74822c0732b5ced158eb5ae33c07486f376dc081f",
+    "validation/local_release_20260911/test_production_edr_apply_permissions_v2.py": "8049d7eeb4de1622a9d4c35676ead4f34f4e74c47ce4d844955d5ad229fe3b2f",
+    "validation/local_release_20260911/test_supplier_edr_dates.py": "1d8420aa800e36f8c13591a363d14f4f9d0a02add8b940c066ae55f89af64f70",
+    "validation/local_release_20260911/test_supplier_edr_filter.py": "7b36c7397b07da3a2e4ee27e165e5de0bb7a641088e324195d1a643464fb7e65",
+    "validation/production_edr_apply_permissions_browser_v2.cjs": "01a78017cf4e80f47f200e4179d63d006f6887f2d266754f1afbe9b8b032e32d"
+  },
+  "protected_paths": {
+    "validation/production_edr_integration_v1.json": "0a8711b9ad178be88195865b225d2c86c07772e7c90702f84c8e25d4c51c49a2",
+    "validation/run_production_edr_release_v1.py": "329b71a1662117db308f325230e7b6486b1155e565fcc6a675d4addb4f7af0d8",
+    "validation/local_release_20260911/test_production_edr_integration_integrity_v1.py": "f27e7b99e73c721d837a4e3c10549f1dacff5244bdfaac9ce421c1e3a59cb877",
+    "validation/fixtures/production_edr_integration_parent_da5cb5c.zip": "80a78c5d6264e970ea7cd62832653793d69703bb442d53f7933055c8fefd67ab",
+    "validation/fixtures/production_edr_candidate_v1.zip": "5199d8db22fc688d94b0289902b3907d5aa4b0084ca7d2d70f5d14055bbfe4ca",
+    "validation/fixtures/production_edr_v1_unmodified_tests.zip": "fab4c372969941e7906f8c784ffef0f9584c0bb77dce5091153d80c0dfb4e3ab",
+    "edr_sync_v2.py": "fd8b4c32b5d4fea6615e3dbb4af0b6dc6222ff37c80f828d33fe0283c9dd455d",
+    "edr_sync_review.py": "cdd2a73c92db6d4a5b25b0afb2a7115e5490f338d3bec430401cd87681a9914d",
+    "google_verification_contract.py": "8fb03a26416cb2eeffad419bbfb7df5480e01b5c81bb7e56916b1ebdf338f6a4",
+    "validation/local_release_20260911/test_production_documents_integrity.py": "f88c8692e016e8d9a9ddc3a6dea1f2f20d8499f99caa9da4dfbec743c843bd8b"
+  },
+  "v1_candidate_only_modules": [
+    "test_production_documents_integrity.py",
+    "test_production_edr_display_toasts_integrity.py",
+    "test_production_edr_google_nazk_daily_sync_integrity_v2.py",
+    "test_production_edr_google_nazk_integrity.py"
+  ]
+}

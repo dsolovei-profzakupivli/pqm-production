@@ -1190,6 +1190,18 @@ def production_edr_partial_apply_enabled() -> bool:
     return os.environ.get("PQM_PRODUCTION_EDR_PARTIAL_APPLY", "0").strip() == "1"
 
 
+def production_edr_apply_enabled() -> bool:
+    """Production EDR writes require a separate default-off grant; Sandbox is unchanged."""
+    return SANDBOX_MODE or os.environ.get("PQM_PRODUCTION_EDR_APPLY_ENABLED", "0").strip() == "1"
+
+
+def _require_supplier_edr_apply_enabled() -> None:
+    if not google_edr_effective_enabled():
+        raise PermissionError("Google → PQM синхронізацію ЄДР вимкнено")
+    if not production_edr_apply_enabled():
+        raise PermissionError("Режим лише перегляду. Застосування змін вимкнено")
+
+
 def set_google_runtime_enabled(enabled: bool, actor: str) -> dict:
     result = set_runtime_feature_enabled(GOOGLE_RUNTIME_FEATURE_KEY, enabled, actor, ENABLE_GOOGLE)
     if not enabled:
@@ -4661,6 +4673,7 @@ def supplier_edr_sync_status() -> dict:
     return {"total": total, "last": dict(last) if last else None, "oauth": google_oauth_status(),
             "source_url": f"https://docs.google.com/spreadsheets/d/{SUPPLIER_EDR_SHEET_ID}/edit",
             "enabled": google_edr_effective_enabled(),
+            "apply_enabled": production_edr_apply_enabled(),
             "partial_apply_enabled": production_edr_partial_apply_enabled(),
             "state": dict(SUPPLIER_EDR_SYNC_STATE)}
 
@@ -4950,7 +4963,9 @@ def supplier_edr_sync_preview() -> dict:
         "details_total": len(details),
         "details_complete": True,
         "apply_available": bool(preview["summary"].get("ready_to_apply", 0)) and
+                           production_edr_apply_enabled() and
                            (not preview["conflicts"] or production_edr_partial_apply_enabled()),
+        "apply_enabled": production_edr_apply_enabled(),
         "partial_apply_enabled": production_edr_partial_apply_enabled(),
         "db_writes": changes,
         "google_writes": 0,
@@ -5058,6 +5073,10 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
     started_clock = time.perf_counter()
     log_id = None
     try:
+        # Fail closed before creating a sync-log row or touching business tables.
+        _require_supplier_edr_apply_enabled()
+        if not SANDBOX_MODE:
+            allow_partial_conflicts = production_edr_partial_apply_enabled()
         SUPPLIER_EDR_SYNC_STATE.update(running=True, message="Завантаження вкладок ФОП та ЮО…",
                                        started_at=started_at, updated_at=None, processed=0,
                                        progress_total=0, stage="source", elapsed_seconds=0,
@@ -5070,9 +5089,12 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
             raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
         synced_at = now_iso()
         with db() as con:
+            _require_supplier_edr_apply_enabled()
             edr_sync_v2.migrate(con)
             con.commit()
             con.execute("BEGIN IMMEDIATE")
+            # Recheck at the write boundary as defense in depth for any future caller.
+            _require_supplier_edr_apply_enabled()
             def report_progress(processed, total):
                 SUPPLIER_EDR_SYNC_STATE.update(stage="apply", processed=processed,
                     progress_total=total, elapsed_seconds=round(time.perf_counter()-started_clock, 1),
@@ -12638,6 +12660,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             if not google_edr_effective_enabled():
                 return self.send_json({"error": "Google integration вимкнено адміністратором"}, 403)
+            if not production_edr_apply_enabled():
+                return self.send_json({"error": "Режим лише перегляду. Застосування змін вимкнено"}, 403)
             fingerprint = str(payload.get("source_fingerprint") or "").strip().lower()
             if payload.get("confirmed") is not True or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
                 return self.send_json({"error": "Спочатку виконайте preview і явно підтвердьте той самий source fingerprint"}, 409)

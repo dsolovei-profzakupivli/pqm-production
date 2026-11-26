@@ -1154,7 +1154,9 @@ async function previewSupplierEdrSync(){
     supplierEdrPreview=data;
     const metrics=Object.entries(supplierEdrMetricLabels).map(([key,label])=>`<article><span>${esc(label)}</span><strong>${Number(data.summary?.[key]||0).toLocaleString('uk-UA')}</strong></article>`).join('');
     const conflicts=Number(data.conflicts_total||0);
-    $('#supplierEdrPreviewBody').innerHTML=`<div class="edr-preview-grid">${metrics}</div><p class="muted">Підсумки рахують рядки таблиці; кількість постачальників і змінених полів наведена окремо. Конфліктні рядки не входять до готових.</p><p><strong>Fingerprint:</strong> <code>${esc(data.source_fingerprint)}</code></p>${conflicts?`<p class="sync-note ${data.partial_apply_enabled?'warning':'error'}">${data.partial_apply_enabled?'Конфліктні рядки буде пропущено; незалежні готові записи можна застосувати.':'Часткове застосування конфліктів вимкнено адміністратором.'} Конфліктів: ${conflicts.toLocaleString('uk-UA')}.</p>`:'<p class="sync-note success">Конфліктів немає. Застосуються лише готові записи після явного підтвердження.</p>'}`;
+    const applyEnabled=data.apply_enabled!==false;
+    const applyModeNote=applyEnabled?'':`<p class="sync-note warning" role="status">Режим лише перегляду. Застосування змін вимкнено</p>`;
+    $('#supplierEdrPreviewBody').innerHTML=`<div class="edr-preview-grid">${metrics}</div><p class="muted">Підсумки рахують рядки таблиці; кількість постачальників і змінених полів наведена окремо. Конфліктні рядки не входять до готових.</p><p><strong>Fingerprint:</strong> <code>${esc(data.source_fingerprint)}</code></p>${conflicts?`<p class="sync-note ${data.partial_apply_enabled?'warning':'error'}">${data.partial_apply_enabled?'Конфліктні рядки буде пропущено; незалежні готові записи можна застосувати.':'Часткове застосування конфліктів вимкнено адміністратором.'} Конфліктів: ${conflicts.toLocaleString('uk-UA')}.</p>`:'<p class="sync-note success">Конфліктів немає. Застосуються лише готові записи після явного підтвердження.</p>'}${applyModeNote}`;
     if(conflicts)$('#supplierEdrPreviewBody').insertAdjacentHTML('beforeend','<button id="supplierEdrConflictDownload" type="button" class="ghost">Завантажити перелік конфліктів · XLSX</button>');
     if(Array.isArray(data.details)&&data.details_complete===true){
       supplierEdrReviewCategory='all';supplierEdrReviewSearch='';supplierEdrReviewPage=1;
@@ -1166,7 +1168,9 @@ async function previewSupplierEdrSync(){
       renderSupplierEdrReviewDetails();
     }
     if(conflicts)$('#supplierEdrConflictDownload').onclick=()=>downloadSupplierEdrConflicts().catch(error=>toast(error.message,'error'));
-    $('#supplierEdrPreviewApply').disabled=!data.apply_available||!Array.isArray(data.details)||!data.details_complete||!data.state_digest;
+    const applyButton=$('#supplierEdrPreviewApply');
+    applyButton.disabled=!applyEnabled||!data.apply_available||!Array.isArray(data.details)||!data.details_complete||!data.state_digest;
+    applyButton.title=!applyEnabled?'Режим лише перегляду. Застосування змін вимкнено':'';
     $('#supplierEdrPreviewDialog').showModal();
   }catch(error){
     if(error.phase==='oauth_token_refresh'&&error.google_error==='invalid_grant'){
@@ -1211,6 +1215,7 @@ function supplierEdrErrorUk(message){
 async function startSupplierEdrSync(){
   if(supplierEdrApplyInFlight)return;
   try{
+    if(supplierEdrPreview?.apply_enabled===false)throw new Error('Режим лише перегляду. Застосування змін вимкнено');
     if(!supplierEdrPreview?.source_fingerprint)throw new Error('Спочатку виконайте preview');
     if(!window.confirm('Застосувати готові записи з показаного Preview Google → PQM? Конфліктні рядки буде повністю пропущено.'))return;
     supplierEdrApplyInFlight=true;

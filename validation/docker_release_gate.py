@@ -83,7 +83,7 @@ def main():
             raise RuntimeError("STOP: invalid PDF output")
         if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
             raise RuntimeError("STOP: converter altered source DOCX")
-    subprocess.run([sys.executable, "-B", "validation/run_production_edr_release_v1.py"],
+    subprocess.run([sys.executable, "-B", "validation/run_production_edr_release_v2.py"],
                    cwd=root, env=env, check=True, timeout=900)
     print("DOCKER GATE: GO — HTTP, evidence, UI, PDF, immutable history and Production EDR fixture passed; live DB writes=0", flush=True)
 
