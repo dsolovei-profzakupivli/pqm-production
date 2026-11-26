@@ -130,7 +130,8 @@ if(displayDate('')!=='')process.exit(4);`);
              patch.object(server, 'LOCAL_ROLE_IMPERSONATION', True), \
              patch.object(server, 'google_edr_effective_enabled', return_value=True), \
              patch.object(server, 'supplier_edr_source_snapshot', side_effect=delayed_snapshot), \
-             patch.object(server.edr_sync_v2, 'build_preview', return_value={'conflicts': []}), \
+             patch.object(server.edr_sync_v2, 'build_preview',
+                          return_value={'conflicts': [], 'summary': {'ready_to_apply': 1}}), \
              patch.object(server.edr_sync_v2, 'preview_state_digest', return_value=digest), \
              patch.object(server, 'supplier_edr_sync_worker') as worker:
             server.SUPPLIER_EDR_SYNC_STATE.update(running=False, run_id=None, error=None)
@@ -147,15 +148,19 @@ if(displayDate('')!=='')process.exit(4);`);
             self.assertTrue(server.SUPPLIER_EDR_SYNC_STATE['run_id'])
             server.SUPPLIER_EDR_SYNC_STATE.update(running=False, run_id=None, error=None)
 
-    def test_apply_frontend_has_single_flight_polling_and_cross_tab_toast_dedupe(self):
+    def test_apply_frontend_has_single_flight_polling_and_persistent_result_modal(self):
         app = Path('app.js').read_text(encoding='utf-8')
         flow = app.split('async function startSupplierEdrSync()', 1)[1].split('\n}', 1)[0]
         self.assertIn('if(supplierEdrApplyInFlight)return', flow)
         self.assertIn("$('#supplierEdrPreviewApply').disabled=true", flow)
         self.assertIn('setTimeout(poll,2000)', flow)
         self.assertNotIn('setInterval(', flow)
-        self.assertIn('pqm.supplierEdrLastCompletionToast', flow)
-        self.assertIn("state.run_id", flow)
+        self.assertIn('showSupplierEdrApplyResult(state)', flow)
+        self.assertEqual(flow.count('showSupplierEdrApplyResult(state)'), 1)
+        self.assertLess(flow.index('supplierEdrApplyInFlight=false'),
+                        flow.index('showSupplierEdrApplyResult(state)'))
+        self.assertIn("$('#supplierEdrApplyResultDialog')", app)
+        self.assertIn('dialog.showModal()', app)
         self.assertIn('loadQualifiedSuppliersFiltered()', flow)
         self.assertIn("activeModule==='edrMonitoring'", flow)
 

@@ -81,7 +81,7 @@ def main():
             from validation.production_integrity_routes import route_integrity_suite
             route_integrity_suite(suite, root)
             from validation.production_documents_routes import route_suite as document_routes
-            document_routes(suite, ROOT)
+            document_routes(suite, Path(os.environ.get('PQM_PRODUCTION_EDR_BASELINE_ROOT') or ROOT))
             result=unittest.TextTestRunner(verbosity=2).run(suite)
             return 0 if result.wasSuccessful() else 1
         finally:

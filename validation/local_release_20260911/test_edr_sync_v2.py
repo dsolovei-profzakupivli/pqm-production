@@ -26,6 +26,13 @@ def database():
       CREATE TABLE registry_contracts(supplier_code TEXT,status TEXT,framework_id TEXT);
       CREATE TABLE frameworks(id TEXT PRIMARY KEY,status TEXT,raw_json TEXT DEFAULT '{}');
       CREATE TABLE qualifications(id TEXT,status TEXT,submission_id TEXT);
+      CREATE TRIGGER fixture_qualification_from_legacy_decision AFTER INSERT ON application_fields
+      WHEN NEW.protocol_decision IN ('admit','reject') BEGIN
+        INSERT OR IGNORE INTO qualifications(id,status,submission_id)
+        VALUES('fixture-q-'||NEW.submission_id,
+          CASE NEW.protocol_decision WHEN 'admit' THEN 'active' ELSE 'unsuccessful' END,
+          NEW.submission_id);
+      END;
     """)
     sync.migrate(con)
     return con
@@ -274,8 +281,8 @@ class EdrSyncV2Tests(unittest.TestCase):
         source = snapshot(row(manager="ТКАЧЕНКО НАТАЛІЯ МИКОЛАЇВНА"))
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True,
           actor="admin", synced_at="2026-09-15T18:00:00",
-          sync_manager=lambda *args: calls.__setitem__("change", calls["change"] + 1) or {"changed": True},
-          enrich_manager=lambda *args: calls.__setitem__("enrich", calls["enrich"] + 1) or {"enriched": True},
+          sync_manager=lambda *args, **kwargs: calls.__setitem__("change", calls["change"] + 1) or {"changed": True},
+          enrich_manager=lambda *args, **kwargs: calls.__setitem__("enrich", calls["enrich"] + 1) or {"enriched": True},
           refresh_manager_controls=lambda *args: calls.__setitem__("nazk", calls["nazk"] + 1))
         self.assertEqual(calls, {"change": 0, "enrich": 1, "nazk": 0})
         self.assertEqual(result["manager_identity_changes"], 0)
@@ -498,12 +505,15 @@ class EdrSyncV2Tests(unittest.TestCase):
         self.assertEqual(result["summary"]["legacy_ineligible"], 1)
         self.assertTrue(result["items"][0]["apply_allowed"])
 
-    def test_new_population_requires_final_decision(self):
+    def test_new_population_requires_active_or_unsuccessful_qualification(self):
         con = database()
         denied = sync.build_preview(con, snapshot(row()))["items"][0]
         self.assertFalse(denied["apply_allowed"])
         con.execute("INSERT INTO submissions VALUES ('s1','12345678','OLD','2026-09-01')")
-        con.execute("INSERT INTO application_fields VALUES ('s1','reject','2026-09-02','УО','')")
+        con.execute("INSERT INTO qualifications VALUES ('q1','pending','s1')")
+        pending = sync.build_preview(con, snapshot(row()))["items"][0]
+        self.assertFalse(pending["apply_allowed"])
+        con.execute("UPDATE qualifications SET status='unsuccessful' WHERE id='q1'")
         allowed = sync.build_preview(con, snapshot(row()))["items"][0]
         self.assertTrue(allowed["apply_allowed"])
 
@@ -520,7 +530,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         seen = []
         source = snapshot(row())
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin",
-          synced_at="2026-09-15T18:00:00", sync_manager=lambda *args: seen.append(args[-1]) or {"changed": True})
+          synced_at="2026-09-15T18:00:00", sync_manager=lambda *args, **kwargs: seen.append(args[4]) or {"changed": True})
         self.assertEqual(seen, ["2026-09-15"])
         self.assertEqual(result["manager_changes"], 1)
 

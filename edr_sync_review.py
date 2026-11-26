@@ -47,8 +47,10 @@ def details(preview: dict) -> list[dict]:
             current = (plan["current_manager_name"] if field == "manager_name"
                        else old.get(field, ""))
             google = incoming.get(field, "")
-            planned = effective.get(field, "") if plan["apply_allowed"] else current
-            action = ("skipped_ineligible" if not plan["apply_allowed"] else
+            planned = (current if plan["conflicts"] else
+                       effective.get(field, "") if plan["apply_allowed"] else current)
+            action = ("skipped_conflict" if plan["conflicts"] else
+                      "skipped_ineligible" if not plan["apply_allowed"] else
                       "clear" if field in MIRROR_FIELDS and not google else "update")
             reason = ("google_owned_full_mirror" if field in MIRROR_FIELDS else
                       "fresh_google_evidence")
@@ -68,25 +70,33 @@ def details(preview: dict) -> list[dict]:
             result.append({**base, "field": "current_supplier_name", "category": "names_manager",
                 "current_pqm_value": plan["current_supplier_name"],
                 "google_value": incoming["full_name"],
-                "planned_pqm_value": (plan["planned_supplier_name"] if plan["apply_allowed"] else plan["current_supplier_name"]),
-                "action": "update" if plan["apply_allowed"] else "skipped_ineligible",
+                "planned_pqm_value": (plan["current_supplier_name"] if plan["conflicts"] or not plan["apply_allowed"] else plan["planned_supplier_name"]),
+                "action": "skipped_conflict" if plan["conflicts"] else "update" if plan["apply_allowed"] else "skipped_ineligible",
                 "reason": "name_projection"})
         if plan["conflicts"]:
             result.append({**base, "field": "conflict", "category": "conflicts",
                 "current_pqm_value": "", "google_value": "", "planned_pqm_value": "",
-                "action": "blocked", "reason": plan["conflicts"]})
+                "action": "blocked", "reason": plan["conflicts"],
+                "reason_label": [edr_sync_v2.conflict_reason_details(code)[0]
+                                 for code in plan["conflicts"]]})
     return result
 
 
 def summary_additions(preview: dict, rows: list[dict]) -> dict:
     changed = {item["supplier_code"] for item in preview["items"]
-               if item["apply_allowed"] and (item["changed_fields"] or item["verification_event_change"])}
+               if item["row_state"] == "eligible" and item["apply_allowed"]
+               and item.get("apply_changes_expected")}
     blocked = {item["supplier_code"] for item in preview["items"] if item["conflicts"]}
+    ready = [item for item in preview["items"]
+             if item["row_state"] == "eligible" and item["apply_allowed"]]
     notes = [row for row in rows if row["field"] == "edr_notes"]
     return {"changed_suppliers": len(changed),
-            "no_op_suppliers": sum(1 for item in preview["items"]
-                                   if item["apply_allowed"] and not item["changed_fields"]
-                                   and not item["verification_event_change"] and not item["conflicts"]),
+            "no_op_suppliers": len({item["supplier_code"] for item in ready
+                                     if not item.get("apply_changes_expected")}),
+            "ready_to_apply": len(ready),
+            "ready_with_changes": sum(bool(item.get("apply_changes_expected")) for item in ready),
+            "ready_unchanged": sum(not item.get("apply_changes_expected") for item in ready),
+            "partial_apply_enabled": False,
             "blocked_suppliers": len(blocked),
             "eligible": int(preview["summary"].get("eligible", 0)),
             "skipped": int(preview["summary"].get("skipped", 0)),

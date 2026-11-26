@@ -61,7 +61,7 @@ class SupplierEdrFilterTests(unittest.TestCase):
                               'Дата перевірки':'10.09.2026 15:00:00','УО':'Тестова УО'}.items():values[headers.index(key)]=value
             sheet=[headers,values]
             sheet_read=lambda name: sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
-            with patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
+            with patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'fixture','ЮО':'fixture'}),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'google_effective_enabled',return_value=True),patch.object(server,'now_iso',return_value='2026-09-10T10:00:00Z'):
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed')

@@ -47,7 +47,7 @@ class SupplierEdrDateTests(unittest.TestCase):
         for date,stamp,expected_synced_at in cases:
             source_sheet=self.sheet(date=date)
             sheet_read=lambda name: source_sheet if name=='ЮО' else [list(edr_sync_v2.HEADERS)]
-            with patch.object(server,'db',return_value=con),patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'unused','ЮО':'unused'}),patch.object(server,'now_iso',return_value=stamp),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'refresh_current_submission_nazk_controls') as refresh:
+            with patch.object(server,'db',return_value=con),patch.object(server,'_google_edr_sheet_values',side_effect=sheet_read),patch.object(server,'SUPPLIER_EDR_SHEETS',{'ФОП':'unused','ЮО':'unused'}),patch.object(server,'now_iso',return_value=stamp),patch.object(server,'SUPPLIER_EDR_SYNC_STATE',{}),patch.object(server,'google_effective_enabled',return_value=True),patch.object(server,'refresh_current_submission_nazk_controls') as refresh:
                 fingerprint=server.supplier_edr_source_snapshot()['source_fingerprint']
                 server.supplier_edr_sync_worker(fingerprint,'test')
                 self.assertEqual(server.SUPPLIER_EDR_SYNC_STATE['last_result'],'completed',

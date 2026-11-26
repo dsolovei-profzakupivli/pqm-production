@@ -50,7 +50,7 @@ class EdrPreviewSkipContractTests(unittest.TestCase):
         reconciled = []
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True,
             actor="test", synced_at="2026-10-30T12:00:00+02:00",
-            sync_manager=lambda *args: {"changed": True},
+            sync_manager=lambda *args, **kwargs: {"changed": True},
             reconcile_manager_nazk=lambda _con, code: reconciled.append(code))
         self.assertEqual(result["skipped_no_verification_timestamp"], 3)
         self.assertEqual(result["manager_identity_changes"], 1)
@@ -85,7 +85,7 @@ class EdrPreviewSkipContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sync.apply(con, source, source["source_fingerprint"], confirmed=True,
                 actor="test", synced_at="2026-10-30T12:00:00+02:00",
-                sync_manager=lambda *args: callbacks.append("manager") or {"changed": True})
+                sync_manager=lambda *args, **kwargs: callbacks.append("manager") or {"changed": True})
         after = [tuple(r) for r in con.execute("SELECT supplier_code,manager_name,edr_status,edr_checked_at FROM supplier_edr_profiles ORDER BY supplier_code")]
         self.assertEqual(after, before)
         self.assertEqual(callbacks, [])
