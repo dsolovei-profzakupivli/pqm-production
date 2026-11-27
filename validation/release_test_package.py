@@ -45,6 +45,11 @@ def load_package_manifest(source_root: Path) -> dict:
     integrated = Path(source_root) / 'validation/release_test_package_integrated_v11.json'
     if integrated.is_file():
         path = integrated
+    v311 = Path(source_root) / 'validation/release_test_package_v31_1_v12.json'
+    if (Path(source_root) / 'validation/v31_1/bridge.py').is_file() or v311.is_file():
+        if not (Path(source_root) / 'validation/v31_1/bridge.py').is_file():raise RuntimeError('Missing V31.1 bridge (no legacy fallback)')
+        if not v311.is_file():raise RuntimeError('Missing V31.1 release package (no legacy fallback)')
+        path = v311
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
         raise RuntimeError(f"Unsupported release test package manifest: {path}")
@@ -218,6 +223,10 @@ def _dynamic_copy_pairs(source_root: Path, infrastructure_root: Path,
     source_root = Path(source_root)
     infrastructure_root = Path(infrastructure_root)
     pairs: list[tuple[Path, Path]] = []
+    if manifest.get('v31_1_bridge'):
+        from validation.v31_1.bridge import safe_source
+        return [(safe_source(source_root,item['source']),Path(item['target'])) for item in manifest['v31_1_dynamic_files']]
+
     excluded = {"data", "validation", "__pycache__", "backups", "output", "logs", "evidence"}
     for source in source_root.iterdir():
         if source.name.startswith(".") or source.name in excluded:
@@ -267,10 +276,15 @@ def stage_dynamic_package_files(source_root: Path, staging_root: Path,
     """Stage the same tree/glob payload that preflight later verifies."""
     manifest = manifest or load_package_manifest(source_root)
     staging_root = Path(staging_root)
+    if manifest.get('v31_1_bridge'):
+        from validation.v31_1.bridge import validate_paths
+        validate_paths(source_root,staging_root)
     for source, relative_target in _dynamic_copy_pairs(
         Path(source_root), Path(infrastructure_root), manifest
     ):
         target = staging_root / relative_target
+        if manifest.get('v31_1_bridge') and staging_root.resolve() not in target.resolve().parents:
+            raise RuntimeError('Unsafe explicit package destination')
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 

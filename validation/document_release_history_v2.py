@@ -39,6 +39,10 @@ def _text_bytes(name, raw):
 def verify_v1_source(source):
     """Verify V1's exact file pins against its source commit plus additive overrides."""
     source = Path(source).resolve()
+    if (source/'validation/v31_1/bridge.py').is_file():
+        from validation.v31_1 import bridge
+        with bridge.historical_source(source) as pinned_source:
+            return verify_v1_source(pinned_source)
     contract_raw = _text_bytes('document_release_v1.json', (source / 'validation/document_release_v1.json').read_bytes())
     contract = json.loads(contract_raw)
     archive_raw = (source / V1_SOURCE_ARCHIVE).read_bytes()
@@ -93,6 +97,10 @@ def verify_v1_source(source):
 
 def baseline_root(source):
     source = Path(source).resolve()
+    if (source/'validation/v31_1/bridge.py').is_file():
+        from validation.v31_1 import bridge
+        with bridge.historical_source(source) as pinned_source:
+            return baseline_root(pinned_source)
     if source in _ACCEPTED_ROOTS:
         return source
     raw = (source / ARCHIVE).read_bytes()
@@ -255,6 +263,10 @@ def run_accepted(source, mode):
 if __name__ == '__main__':
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
+    if (root/'validation/v31_1/bridge.py').is_file():
+        from validation.v31_1 import bridge as v311
+        delegated=v311.legacy_entry(root, 'validation/document_release_history_v2.py', sys.argv[1:])
+        if delegated is not None:raise SystemExit(delegated)
     if sys.argv[1:] in [['--accepted-node'], ['--accepted-browser']]:
         raise SystemExit(run_accepted(root, sys.argv[1].removeprefix('--accepted-')))
     if sys.argv[1:] in [['--node-history'], ['--browser-history'], ['--supplier-history']]:
@@ -265,4 +277,5 @@ if __name__ == '__main__':
         install_windows_sqlite_uri_compatibility()
     suite = unittest.defaultTestLoader.loadTestsFromNames([n for n in sys.argv[1:] if n not in {'-v', '--verbose'}])
     route_integrity_suite(suite, root)
+    if (root/'validation/v31_1/bridge.py').is_file():suite=v311.route_suite(suite,root,'github')
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

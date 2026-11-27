@@ -23,6 +23,7 @@ import legacy_google_factual_edr_preview
 import legacy_google_termination_audit
 import legacy_google_termination_import
 import edr_sync_v2
+import edr_sync_identity
 import google_verification_contract
 import supplier_evidence_shadow_hooks_v3 as evidence_shadow
 import google_writer_execution
@@ -98,6 +99,7 @@ from nazk_workflow import (
     get_submission_nazk_control, get_submission_nazk_state, get_submission_nazk_states,
     get_submission_nazk_presentation_state,
     get_supplier_application_nazk_state, get_supplier_nazk_presentation_state,
+    EDRManagerReconcileContext,
     registry_matches,
     reconcile_active_supplier_nazk,
     transitional_submission_backfill_dry_run,
@@ -4891,7 +4893,7 @@ def sync_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, m
                                   source: str = "ЄДР", observed_at: str | None = None,
                                   source_timestamp: str | None = None) -> dict:
     """Keep one current manager while preserving every observed previous manager."""
-    code = re.sub(r"\D", "", supplier_code or "")
+    code = edr_sync_identity.code(supplier_code)
     name = " ".join((manager_name or "").split())
     normalized = normalize_manager_name(name)
     observed = observed_at or now_iso()
@@ -4932,7 +4934,7 @@ def enrich_current_supplier_manager(con: sqlite3.Connection, supplier_code: str,
                                     source: str = "ЄДР", observed_at: str | None = None,
                                     source_timestamp: str | None = None) -> dict:
     """Improve the current manager display without opening a new identity cycle."""
-    code = re.sub(r"\D", "", supplier_code or "")
+    code = edr_sync_identity.code(supplier_code)
     name = " ".join((manager_name or "").split())
     current = con.execute("""SELECT id,manager_name,source,updated_at FROM supplier_managers
       WHERE supplier_code=? AND is_current=1 ORDER BY id DESC LIMIT 1""", (code,)).fetchone()
@@ -4960,7 +4962,7 @@ def enrich_current_supplier_manager(con: sqlite3.Connection, supplier_code: str,
 def establish_current_supplier_manager(con: sqlite3.Connection, supplier_code: str, manager_name: str,
                                        source: str = "ЄДР", observed_at: str | None = None) -> dict:
     """Create the first known manager without manufacturing a previous cycle."""
-    code = re.sub(r"\D", "", supplier_code or "")
+    code = edr_sync_identity.code(supplier_code)
     name = " ".join((manager_name or "").split())
     normalized = normalize_manager_name(name)
     observed = observed_at or now_iso()
@@ -5001,7 +5003,7 @@ def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_c
     Historical/closed submissions are intentionally excluded: an old submission result must
     never be transferred to another manager or used to close a future submission.
     """
-    code = re.sub(r"\D", "", supplier_code or "")
+    code = edr_sync_identity.code(supplier_code)
     if not code:
         return 0
     rows = con.execute("""SELECT DISTINCT s.id
@@ -5020,7 +5022,8 @@ def refresh_current_submission_nazk_controls(con: sqlite3.Connection, supplier_c
 
 def reconcile_supplier_nazk_after_edr_manager_change(
         con: sqlite3.Connection, supplier_code: str,
-        actor: str = "PQM confirmed EDR manager change") -> dict:
+        actor: str = "PQM confirmed EDR manager change",
+        _edr_apply_context: EDRManagerReconcileContext | None = None) -> dict:
     """Reconcile one supplier from persisted NAZK data after a verified manager change.
 
     This path never fetches the NAZK registry. It closes tasks tied to a former
@@ -5028,11 +5031,40 @@ def reconcile_supplier_nazk_after_edr_manager_change(
     reconciles and materializes the current manager's persisted registry matches
     only when the supplier still has effective active qualifications.
     """
-    code = re.sub(r"\D", "", str(supplier_code or ""))
+    code = edr_sync_identity.code(supplier_code)
     if not code:
         return {"skipped": "missing_supplier_code", "cancelled_old_manager": 0,
                 "cancelled_inactive_supplier": 0, "checks_created": 0,
                 "tasks_created": 0, "tasks_existing": 0}
+    if _edr_apply_context is not None:
+        current_manager = _edr_apply_context.current_manager(con, code)
+        task_rows = _edr_apply_context.task_rows_for(code)
+        cancelled_manager = operational_tasks.reconcile_irrelevant_nazk_managers(
+            con, actor=actor, supplier_codes=[code], prefetched_task_rows=task_rows,
+            current_manager=current_manager)
+        active = _edr_apply_context.active_applications.get(code, [])
+        cancelled_inactive = operational_tasks.reconcile_stale_nazk_tasks(
+            con, actor=actor, supplier_codes=[code], active_applications={code: active},
+            prefetched_task_rows=task_rows)
+        if not active:
+            _edr_apply_context.refresh_task_rows(con, code)
+            return {"skipped": "no_effective_active_qualifications",
+                    "cancelled_old_manager": cancelled_manager["cancelled"],
+                    "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+                    "checks_created": 0, "tasks_created": 0, "tasks_existing": 0}
+        checks = reconcile_active_supplier_nazk(
+            con, apply=True, supplier_codes=[code], _edr_context=_edr_apply_context)
+        tasks = operational_tasks.materialize_nazk_tasks(
+            con, actor=actor, supplier_codes=[code],
+            active_applications=_edr_apply_context.active_applications,
+            supplier_names=_edr_apply_context.supplier_names,
+            prefetched_checks=_edr_apply_context.current_checks.get(code, []))
+        _edr_apply_context.refresh_task_rows(con, code)
+        return {"skipped": None,
+                "cancelled_old_manager": cancelled_manager["cancelled"],
+                "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
+                "checks_created": sum(bool(item.get("created")) for item in checks.get("items", [])),
+                "tasks_created": tasks["created"], "tasks_existing": tasks["existing"]}
     cancelled_manager = operational_tasks.reconcile_irrelevant_nazk_managers(
         con, actor=actor, supplier_codes=[code])
     active = operational_tasks._active_application_map(con).get(code, [])
@@ -5051,6 +5083,18 @@ def reconcile_supplier_nazk_after_edr_manager_change(
             "cancelled_inactive_supplier": cancelled_inactive["cancelled"],
             "checks_created": sum(bool(item.get("created")) for item in checks.get("items", [])),
             "tasks_created": tasks["created"], "tasks_existing": tasks["existing"]}
+
+
+def make_edr_apply_nazk_reconciler():
+    """Return a per-Apply callback that lazily shares NAZK inputs within that Apply."""
+    context = None
+    def reconcile(con, supplier_code):
+        nonlocal context
+        if context is None:
+            context = EDRManagerReconcileContext(con)
+        return reconcile_supplier_nazk_after_edr_manager_change(
+            con, supplier_code, _edr_apply_context=context)
+    return reconcile
 
 
 def sync_supplier_managers_from_edr() -> dict:
@@ -5363,13 +5407,13 @@ def supplier_edr_source_snapshot() -> dict:
 
 def supplier_google_row(code: str) -> dict:
     """Resolve the current literal identity in the authorized PROD sheet, read-only."""
-    literal = str(code or "").strip()
-    if not literal or len(literal) > 64 or any(char in literal for char in "/?#"):
+    literal = edr_sync_v2.literal_supplier_code(code)
+    if not literal.strip() or len(literal) > 64 or any(char in literal for char in "/?#"):
         raise ValueError("Invalid literal supplier identity")
     matches = []
     for tab in ("ФОП", "ЮО"):
         for row_number, row in enumerate(_google_sheet_values(tab), 1):
-            if len(row) > 1 and str(row[1]).strip() == literal:
+            if len(row) > 1 and edr_sync_v2.literal_supplier_code(row[1]) == literal:
                 matches.append((tab, row_number))
                 if len(matches) > 1:
                     raise ValueError("Google supplier identity is ambiguous")
@@ -5457,7 +5501,7 @@ def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
                "Конфліктне поле", "Значення PQM", "Значення Google",
                "Дата й час перевірки PQM", "Дата й час перевірки Google",
                "УО в PQM", "УО в Google", "Посилання на картку PQM"]
-    plans = {(str(item.get("supplier_code") or ""), int(item.get("source_row") or 0)): item
+    plans = {(str(item.get("supplier_code") or ""), str(item.get('source_sheet') or ''), int(item.get("source_row") or 0)): item
              for item in preview.get("items", [])}
     field_map = {
         "Ідентифікатор": ("supplier_code", "supplier_code"),
@@ -5474,12 +5518,13 @@ def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
     sheet = workbook.active
     sheet.title = "Конфлікти Preview"
     sheet.append(headers)
+    row_number = 1
     for conflict in preview.get("conflicts", []):
         code = str(conflict.get("supplier_code") or "")
         source_row = int(conflict.get("source_row") or 0)
-        plan = plans.get((code, source_row), {})
+        plan = plans.get((code, str(conflict.get('source_sheet') or ''), source_row), {})
         incoming = plan.get("incoming") or {}
-        profile = plan.get("current_profile") or {}
+        profile = plan.get("current_table_values", plan.get("current_profile")) or {}
         reasons = conflict.get("reasons") or ["unknown_conflict"]
         supplier_name = (str(plan.get("current_supplier_name") or "").strip()
                          or str(incoming.get("full_name") or "").strip()
@@ -5491,22 +5536,32 @@ def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
                          else plan.get("current_verification_officer") if field_label == "УО перевірки"
                          else plan.get("current_manager_name") if field_label == "ПІБ керівника"
                          else profile.get(current_field, "") if current_field else "")
-            google_value = incoming.get(incoming_field, "") if incoming_field else ""
+            google_value = (incoming.get('edr_status_source', incoming.get('edr_status', ''))
+                            if incoming_field == 'edr_status' else incoming.get(incoming_field, '') if incoming_field else '')
+            if field_label in {'Дата перевірки ЄДР', 'Дата запису про припинення'}:
+                pqm_value = _supplier_edr_excel_datetime(pqm_value,
+                    plan.get('current_verification_precision') if field_label=='Дата перевірки ЄДР' else 'day')
+                google_value = _supplier_edr_excel_datetime(google_value,
+                    'day' if field_label=='Дата запису про припинення' else None)
+                if isinstance(pqm_value, datetime):pqm_value=pqm_value.strftime('%d.%m.%Y %H:%M:%S')
+                if isinstance(google_value, datetime):google_value=google_value.strftime('%d.%m.%Y %H:%M:%S')
             row = [str(incoming.get("source_sheet") or ""), code, supplier_name, reason_label,
                    field_label, str(pqm_value or ""), str(google_value or ""),
-                   _supplier_edr_excel_datetime(plan.get("current_verification_date")),
+                   _supplier_edr_excel_datetime(plan.get("current_verification_date"), plan.get('current_verification_precision')),
                    _supplier_edr_excel_datetime(incoming.get("edr_checked_at")),
                    str(plan.get("current_verification_officer") or ""),
                    str(incoming.get("edr_officer") or ""), ""]
             sheet.append(row)
-            for cell in sheet[sheet.max_row]:
+            row_number += 1
+            for column in range(1, len(headers) + 1):
+                cell = sheet.cell(row_number, column)
                 if isinstance(cell.value, str):
                     cell.data_type = "s"
             for index in (2,):
-                sheet.cell(sheet.max_row, index).number_format = "@"
+                sheet.cell(row_number, index).number_format = "@"
             for index in (8, 9):
-                sheet.cell(sheet.max_row, index).number_format = "dd.mm.yyyy hh:mm:ss"
-            link_cell = sheet.cell(sheet.max_row, 12)
+                sheet.cell(row_number, index).number_format = "dd.mm.yyyy hh:mm:ss"
+            link_cell = sheet.cell(row_number, 12)
             link_cell.value = "Відкрити картку постачальника"
             query = urllib.parse.urlencode({"view": "suppliers", "supplier_code": code})
             origin = (os.environ.get("PQM_PUBLIC_BASE_URL", "").strip().rstrip("/")
@@ -5534,13 +5589,20 @@ def supplier_edr_conflict_xlsx(preview: dict) -> bytes:
     return output.getvalue()
 
 
-def _supplier_edr_excel_datetime(value):
+def _supplier_edr_excel_datetime(value, precision=None):
     """Convert a source timestamp to a timezone-naive Excel datetime in Kyiv."""
     if value is None or value == "":
         return None
+    text = str(value).strip()
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', text):
+        return datetime.strptime(text, '%Y-%m-%d').strftime('%d.%m.%Y')
+    if re.fullmatch(r'\d{2}\.\d{2}\.\d{4}', text):
+        return text
     parsed = edr_sync_v2.verification_instant(value)
+    if precision == 'day' and parsed.get('kind') == 'datetime':
+        return parsed['value'].astimezone(edr_sync_v2.KYIV).strftime('%d.%m.%Y')
     if parsed.get("kind") != "datetime":
-        return None
+        return str(value)
     return parsed["value"].astimezone(edr_sync_v2.KYIV).replace(tzinfo=None)
 
 
@@ -5595,36 +5657,37 @@ def supplier_edr_sync_worker(expected_fingerprint: str, actor: str,
                     progress_total=int(update.get("total", 0)),
                     processed=int(update.get("processed", 0)),
                     message="Застосування змін Google → PQM…")
+            manager_callbacks = edr_sync_identity.callbacks(con, {
+                'sync_manager':sync_current_supplier_manager,'enrich_manager':enrich_current_supplier_manager,
+                'establish_manager':establish_current_supplier_manager,'reestablish_manager':reestablish_current_supplier_manager,
+                'refresh_manager_controls':refresh_current_submission_nazk_controls,
+                'reconcile_manager_nazk':make_edr_apply_nazk_reconciler()})
             result = edr_sync_v2.apply(
                 con, snapshot, expected_fingerprint, confirmed=True, actor=actor,
-                synced_at=synced_at, sync_manager=sync_current_supplier_manager,
-                enrich_manager=enrich_current_supplier_manager,
-                establish_manager=establish_current_supplier_manager,
-                reestablish_manager=reestablish_current_supplier_manager,
-                refresh_manager_controls=refresh_current_submission_nazk_controls,
-                reconcile_manager_nazk=reconcile_supplier_nazk_after_edr_manager_change,
+                synced_at=synced_at, **manager_callbacks,
                 expected_state_digest=expected_state_digest,
                 sandbox_mode=SANDBOX_MODE,
                 progress_callback=progress,
             )
             con.execute("""UPDATE supplier_edr_sync_log SET finished_at=?,status='completed',processed=?,
               inserted=?,updated=?,source_fingerprint=?,unchanged=?,details_json=? WHERE id=?""",
-              (synced_at, result["processed"], result["inserted"], result["updated_profiles"],
-               result["source_fingerprint"], result["unchanged"],
+              (synced_at, result["processed"], result["inserted"], result["business_updated_profiles"],
+               result["source_fingerprint"], result["ready_unchanged"],
                json.dumps(result, ensure_ascii=False), log_id))
         SUPPLIER_EDR_SYNC_STATE.update(running=False,
-            message=f"Застосовано: {result['inserted']} нових, {result['updated_profiles']} змінених профілів",
+            message=f"Застосовано: {result['inserted']} нових, {result['business_updated_profiles']} змінених профілів",
             stage="completed", updated_at=synced_at, processed=result["processed"],
             progress_processed=result["processed"], progress_total=result["processed"],
             duration_seconds=round(max(0.0, time.monotonic() - started_monotonic), 1),
             inserted=result["inserted"],
-            updated=result["updated_profiles"], changed_fields=result["changed_fields"], error=None,
+            updated=result["business_updated_profiles"], changed_fields=result["changed_fields"], error=None,
             last_completed_at=synced_at, last_result="completed",
-            last_result_summary={"successful": result["inserted"] + result["updated_profiles"],
-                                 "inserted": result["inserted"], "updated": result["updated_profiles"],
+            last_result_summary={"successful": result['received_suppliers'],
+                                 "inserted": result["inserted"], "updated": result["business_updated_profiles"],
+                                 "technical_receipts": result['technical_receipts'],
                                  "skipped_conflicts": result["skipped_conflicts"],
-                                 "unchanged": result["unchanged"], "errors": result.get("errors", 0)},
-            last_message=f"Застосовано: {result['inserted']} нових, {result['updated_profiles']} змінених профілів")
+                                 "unchanged": result["ready_unchanged"], "errors": result.get("errors", 0)},
+            last_message=f"Застосовано: {result['inserted']} нових, {result['business_updated_profiles']} змінених профілів")
     except Exception as exc:
         SERVER_LOG.exception("Supplier EDR synchronization failed")
         finished_at = now_iso()
@@ -5893,82 +5956,15 @@ def _edr_monitoring_status(value) -> str:
 
 
 def _edr_monitoring_rows() -> list[dict]:
-    """Cache the set-based projection; every request still filters and paginates on the server."""
+    """Keep the table's existing cache/invalidation over the shared projection."""
+    import edr_monitoring_projection
     fingerprint = _edr_monitoring_revision()
     with EDR_MONITORING_CACHE_LOCK:
-        if EDR_MONITORING_CACHE["fingerprint"] == fingerprint:
-            return EDR_MONITORING_CACHE["rows"]
+        if EDR_MONITORING_CACHE['fingerprint'] == fingerprint:
+            return EDR_MONITORING_CACHE['rows']
         with db() as con:
-            profiles = {row["supplier_code"]: dict(row) for row in con.execute(
-                "SELECT * FROM supplier_edr_profiles WHERE supplier_code<>''")}
-            registry = {row["supplier_code"]: dict(row) for row in con.execute(
-                "SELECT * FROM supplier_registry_summary WHERE supplier_code<>''")}
-            latest_app = {row["supplier_code"]: dict(row) for row in con.execute("""SELECT * FROM (
-              SELECT s.supplier_code,s.supplier_name,COALESCE(af.manager_name,'') manager_name,
-                COALESCE(s.date_published,'') latest_application_date,
-                ROW_NUMBER() OVER(PARTITION BY s.supplier_code ORDER BY
-                  COALESCE(s.date_published,'') DESC,s.id DESC) rank
-              FROM submissions s LEFT JOIN application_fields af ON af.submission_id=s.id
-              JOIN qualifications q ON q.id=s.qualification_id
-              WHERE s.supplier_code<>'' AND q.status IN ('active','unsuccessful')) WHERE rank=1""")}
-            active_qualification_dates = edr_sync_v2.active_qualification_dates(con)
-            managers = {row["supplier_code"]: row["manager_name"] for row in con.execute("""SELECT supplier_code,manager_name FROM (
-              SELECT supplier_code,manager_name,ROW_NUMBER() OVER(PARTITION BY supplier_code ORDER BY
-                COALESCE(updated_at,created_at,'') DESC,id DESC) rank FROM supplier_managers
-               WHERE is_current=1 AND TRIM(COALESCE(manager_name,''))<>'') WHERE rank=1""")}
-            ledger = {}
-            for raw in con.execute("SELECT * FROM supplier_edr_verification_events"):
-                item = dict(raw); code = item["supplier_code"]
-                if edr_sync_v2.normalized_date(item.get("occurred_at")):
-                    ledger.setdefault(code, []).append(item)
-            population = edr_sync_v2.monitoring_population_codes(con)
-            supplier_types = supplier_classification.build_index(con)
-            manual_types = supplier_manual_classification.build_index(con)
-            card_identities = set(profiles) | set(registry) | set(latest_app)
-            card_variants = {}
-            for literal in card_identities:
-                normalized = re.sub(r"\D", "", literal)
-                if normalized:
-                    card_variants.setdefault(normalized, set()).add(literal)
-            verifications = edr_sync_v2.current_verification_projections(con, population)
-            canonical_statuses = edr_sync_v2.canonical_prozorro_statuses(con, population)
-            rows = []
-            for code in population:
-                profile, reg, application = profiles.get(code, {}), registry.get(code, {}), latest_app.get(code, {})
-                verification = verifications[code]
-                status = canonical_statuses[code]
-                checked = verification["verification_date"]
-                officer_raw = verification["verification_officer_raw"]
-                displayed_edr_status = edr_sync_v2.operational_edr_status(
-                    status, active_qualification_dates.get(code, ""), ledger.get(code, []),
-                    profile.get("edr_status", ""), profile.get("edr_checked_at", ""),
-                    verification.get("edr_admission_date", ""),
-                    verification.get("edr_admission_officer", ""))
-                rows.append({"supplier_code": code,
-                  **supplier_classification.public_fields(supplier_manual_classification.apply_effective(
-                      supplier_classification.resolve(supplier_types, code), manual_types.get(code))),
-                  "supplier_card_available": bool(re.fullmatch(r"[0-9]+", code) and code in card_identities
-                      and card_variants.get(code) == {code}),
-                  "supplier_name": profile.get("full_name") or application.get("supplier_name") or reg.get("supplier_name", ""),
-                  "edr_full_name": _edr_monitoring_name(profile.get("full_name")),
-                  "edr_short_name": _edr_monitoring_name(profile.get("short_name")),
-                  "manager_name": managers.get(code) or profile.get("manager_name") or application.get("manager_name", ""),
-                  "edr_status": _edr_monitoring_status(displayed_edr_status), "prozorro_status": status,
-                  "termination_details": str(profile.get("termination_decision_details") or "").strip(),
-                  "termination_record_date": str(profile.get("termination_record_date") or "").strip(),
-                  "termination_record_number": str(profile.get("termination_record_number") or "").strip(),
-                  "last_admission_date": verification["last_admission_date"],
-                  "latest_application_date": edr_sync_v2.normalized_date(application.get("latest_application_date")),
-                  "verification_date": checked,
-                  "verification_officer": verification["verification_officer"],
-                  "verification_officer_raw": officer_raw,
-                  "verification_event_type": verification["verification_event_type"],
-                  "verification_source": verification["verification_source"],
-                  "google_note": str(profile.get("edr_notes") or "").strip(),
-                  "freshness": edr_sync_v2.freshness_state(status, checked)["bucket"]})
-        # Re-read after building: a concurrent mutation invalidates rather than blessing stale rows.
-        final_fingerprint = _edr_monitoring_revision()
-        if final_fingerprint == fingerprint:
+            rows = edr_monitoring_projection.build(con)['rows']
+        if _edr_monitoring_revision() == fingerprint:
             EDR_MONITORING_CACHE.update(fingerprint=fingerprint, rows=rows)
         return rows
 
@@ -6484,6 +6480,7 @@ def list_qualified_suppliers(params: dict, *, connection=None) -> dict:
         item["edr_freshness_marker"] = canonical_state.get("marker", "⚪ Не перевірено")
         item["edr_freshness_bucket"] = canonical_state.get("bucket", "not_checked")
         item["edr_verification_date"] = canonical_state.get("verification_date", "")
+        item['edr_verification_datetime_precision'] = edr_sync_v2.verification_display_precision(verification or {})
         item["edr_verification_officer"] = canonical_state.get("verification_officer", "")
         item["last_registry_event"] = latest_registry_events.get(item.get("code"), {})
         item["amcu_match"] = bool(code and code in amcu_codes)
@@ -6847,6 +6844,7 @@ def supplier_profile(supplier_code: str) -> dict:
     if verification:
         profile_data.update(edr_checked_at=verification.get("occurred_at") or "",
                             edr_officer=verification.get("officer") or "",
+                            verification_datetime_precision=edr_sync_v2.verification_display_precision(verification),
                             verification_event_type=verification.get("event_type") or "")
     classification_details = supplier_classification_details(code)
     return {"code": code, "latest_submission_name": latest_submission_name, "summary": dict(summary) if summary else {}, "edr_profile": profile_data,

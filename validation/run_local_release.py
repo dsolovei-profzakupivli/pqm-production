@@ -316,6 +316,25 @@ def install_windows_sqlite_uri_compatibility():
 
 def main():
     old_cwd=Path.cwd()
+    configured_source=os.environ.get('PQM_RELEASE_SOURCE_ROOT')
+    explicit_current_source=bool(configured_source and ROOT==Path(configured_source).resolve()
+        and os.environ.get('PQM_RELEASE_MODE')!='historical_integrity')
+    v311_bridge = ((ROOT/'validation/v31_1/bridge.py').is_file() or ROOT==INFRA_ROOT or explicit_current_source)
+    if v311_bridge:
+        sys.path.insert(0,str(ROOT))
+        from validation.v31_1 import bridge as v311
+        if sys.argv[1:]==['--v31-1-preflight']:
+            return v311.main(['--root',str(ROOT),'--entrypoint','local','--phase','check'])
+        v311.preflight(ROOT,'local')
+        if os.environ.get('PQM_RELEASE_MODE','') not in {'','baseline_full','baseline_candidate','historical_integrity'}:
+            raise RuntimeError('Unknown Release Gate mode')
+        if len(sys.argv)>2 or sys.argv[1:] and not sys.argv[1].endswith('.py'):
+            raise RuntimeError('Unknown Release Gate test selection')
+        if len(sys.argv)>1 and Path(sys.argv[1]).stem in {*v311.MODULES,'test_google_writer_integrated_candidate_integrity_v31'}:
+            if Path(sys.argv[1]).stem=='test_google_writer_integrated_candidate_integrity_v31':v311.phase(ROOT,'pin','local')
+            else:
+                v311.phase(ROOT,'history','local');v311.phase(ROOT,'superseded','local')
+            return 0
     mode=os.environ.get('PQM_RELEASE_MODE','')
     manifest_root=ROOT
     if mode=='historical_integrity' and not (ROOT/PACKAGE_MANIFEST).is_file():
@@ -333,6 +352,8 @@ def main():
             if source_path.is_file():
                 copy_pinned_release_file(ROOT,root,relative_path,expected_sha256)
         v2_archive=ROOT/'validation/fixtures/pqm_sync_ui_integrated_v2_0d7e059.zip'
+        if v311_bridge and mode!='historical_integrity' and not v2_archive.is_file():
+            raise RuntimeError('Missing pinned v2 archive: refusing source-tree generation in V31.1')
         if mode!='historical_integrity' and not v2_archive.is_file():
             v2_archive.parent.mkdir(parents=True,exist_ok=True)
             archive_env=os.environ.copy()
@@ -385,10 +406,12 @@ def main():
             with closing(server.db()) as con:
                 with con:scheduler_runtime.migrate(con)
             suite=unittest.defaultTestLoader.discover(str(root),pattern=sys.argv[1] if len(sys.argv)>1 else 'test_*.py')
+            if v311_bridge and suite.countTestCases()==0:raise RuntimeError('Empty Release Gate test selection')
             if mode=='historical_integrity' or full_candidate_run or mode=='baseline_candidate':
                 suite=selected_suite(suite,'historical_integrity' if mode=='historical_integrity' else 'candidate')
             from validation.document_release_history_v2 import route_integrity_suite
-            route_integrity_suite(suite, ROOT, module_root=root)
+            route_integrity_suite(suite, root if v311_bridge else ROOT, module_root=root)
+            if v311_bridge:suite=v311.route_suite(suite,ROOT,'local',required=full_candidate_run)
             if full_candidate_run:
                 suite.addTests(unittest.defaultTestLoader.loadTestsFromNames(['validation.test_document_check_policy', 'validation.test_application_documents_source_indexes', 'validation.test_document_partial_selection', 'validation.test_document_partial_http', 'validation.test_mvs_parameter_statuses', 'validation.test_mvs_parameter_analysis']))
             background_exceptions=UnhandledThreadExceptionMonitor()
@@ -582,8 +605,8 @@ def main():
                 [sys.executable,str(ROOT/'validation/run_integrated_writer_ui_v30_history.py')],
                 cwd=old_cwd,check=False)
             integrated_v31_current=run_release_subprocess(
-                [sys.executable,'-B','-m','unittest','-v',
-                 'test_google_writer_integrated_candidate_integrity_v31'],
+                ([sys.executable,'-B',str(ROOT/'validation/v31_1/bridge.py'),'--root',str(ROOT),'--entrypoint','local','--phase','pin'] if v311_bridge else
+                 [sys.executable,'-B','-m','unittest','-v','test_google_writer_integrated_candidate_integrity_v31']),
                 cwd=ROOT,check=False)
             return 0 if candidate_ok and v1_overlay.returncode==0 and v2_overlay.returncode==0 and v3_overlay.returncode==0 and edr_v1_overlay.returncode==0 and google_timezone_v1_overlay.returncode==0 and classification_parent_overlay.returncode==0 and classification_v3_overlay.returncode==0 and manual_classification_v4_overlay.returncode==0 and source_integrity_overlays.returncode==0 and date_only_previous_contract_overlays.returncode==0 and date_only_status_v2_overlay.returncode==0 and preview_digest_v1_overlay.returncode==0 and checkpointed_apply_v1_overlay.returncode==0 and partial_reconciliation_second_v1_overlay.returncode==0 and sandbox_preview_append_only_v1_overlay.returncode==0 and sandbox_preview_workflow_v1_overlay.returncode==0 and first_append_only_v1_overlay.returncode==0 and prepared_retry_v1_overlay.returncode==0 and receipt_recovery_v1_overlay.returncode==0 and all_scope_recovery_v1_overlay.returncode==0 and legacy_append_reconciliation_v1_overlay.returncode==0 and legacy_append_reconciliation_v2_overlay.returncode==0 and immutable_google_writer_source_overlays.returncode==0 and writer_history_snapshots.returncode==0 and integrated_v1_history.returncode==0 and integrated_v2_history.returncode==0 and integrated_v3_history.returncode==0 and integrated_v4_history.returncode==0 and integrated_v5_history.returncode==0 and integrated_v6_history.returncode==0 and integrated_v7_history.returncode==0 and integrated_v8_history.returncode==0 and integrated_v9_history.returncode==0 and integrated_v10_history.returncode==0 and integrated_v11_history.returncode==0 and integrated_v12_history.returncode==0 and integrated_v13_history.returncode==0 and integrated_v14_history.returncode==0 and integrated_v15_history.returncode==0 and integrated_v16_history.returncode==0 and integrated_v17_history.returncode==0 and integrated_v18_history.returncode==0 and integrated_v19_history.returncode==0 and integrated_v20_history.returncode==0 and integrated_v21_history.returncode==0 and integrated_v22_history.returncode==0 and integrated_v23_history.returncode==0 and integrated_v24_history.returncode==0 and integrated_v25_history.returncode==0 and integrated_v26_history.returncode==0 and integrated_v27_history.returncode==0 and integrated_v28_history.returncode==0 and integrated_v27_candidate_history.returncode==0 and integrated_v28_candidate_history.returncode==0 and update_append_v2_v26_history.returncode==0 and integrated_v29_candidate_history.returncode==0 and integrated_v30_history.returncode==0 and integrated_v31_current.returncode==0 and background_exceptions.report() else 1
         finally:

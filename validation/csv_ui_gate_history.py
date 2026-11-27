@@ -27,6 +27,10 @@ _CACHE = {}
 
 def parent_root(source):
     source = Path(source).resolve()
+    if (source/'validation/v31_1/bridge.py').is_file():
+        from validation.v31_1 import bridge
+        with bridge.historical_source(source) as pinned_source:
+            return parent_root(pinned_source)
     if hashlib.sha256((source / ARCHIVE).read_bytes()).hexdigest() != PIN:
         raise AssertionError('Integrated v1 parent archive changed')
     if source not in _CACHE:
@@ -104,7 +108,12 @@ def route_integrity_suite(suite, source, module_root=None):
 
 def historical_server(source):
     from validation.csv_ui_history import baseline_root
-    root = baseline_root(source)
+    if (source/'validation/v31_1/bridge.py').is_file():
+        from validation.v31_1 import bridge
+        with bridge.historical_source(source) as pinned_source:
+            root = baseline_root(pinned_source)
+    else:
+        root = baseline_root(source)
     alias = '_csv_ui_gate_csv001_server'
     if alias not in sys.modules:
         spec = importlib.util.spec_from_file_location(alias, root / 'server.py')
@@ -137,6 +146,10 @@ def run_legacy(source, mode, node='node'):
 if __name__ == '__main__':
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
+    if (root/'validation/v31_1/bridge.py').is_file():
+        from validation.v31_1 import bridge as v311
+        delegated=v311.legacy_entry(root, 'validation/csv_ui_gate_history.py', sys.argv[1:])
+        if delegated is not None:raise SystemExit(delegated)
     if sys.argv[1:] in [['--node-history'], ['--browser-history'], ['--supplier-history']]:
         raise SystemExit(run_legacy(root, sys.argv[1].removeprefix('--').removesuffix('-history')))
     if sys.platform == 'win32':
@@ -144,4 +157,5 @@ if __name__ == '__main__':
         install_windows_sqlite_uri_compatibility()
     suite = unittest.defaultTestLoader.loadTestsFromNames([n for n in sys.argv[1:] if n not in {'-v', '--verbose'}])
     route_integrity_suite(suite, root)
+    if (root/'validation/v31_1/bridge.py').is_file():suite=v311.route_suite(suite,root,'github')
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

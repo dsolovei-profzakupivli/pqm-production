@@ -181,21 +181,18 @@ jobs:
           echo "PQM_INTEGRATED_V30_SNAPSHOT_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-integrated-v30-candidate-snapshot.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           git archive --format=zip e436c952b17fc79ccb8fc1f8c366cbbf18ca31fc > "$RUNNER_TEMP/pqm-update-append-v2-v26-full.zip"
           echo "PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256=$(sha256sum "$RUNNER_TEMP/pqm-update-append-v2-v26-full.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          # Historical V27-V30 contracts run from exact snapshots; V31 pins this tree.
+          # V31 exact pin test_google_writer_integrated_candidate_integrity_v31 uses its pinned snapshot.
+          # Current EDR suites: test_edr_sync_v2, test_supplier_edr_apply_v31,
+          # test_permanent_edr_sync_safety, test_sandbox_edr_review remain on V31.1.
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/v31_1/bridge.py --entrypoint github --phase python --evidence "$RUNNER_TEMP/pqm-v311-evidence"
           "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/document_release_history_v2.py -v \
             test_google_writer_integrated_candidate_integrity_v29 \
-            test_google_writer_integrated_candidate_integrity_v31 \
             validation.local_release_20260911.test_release_test_package \
             validation.local_release_20260911.test_integrated_snapshot_staging \
             validation.local_release_20260911.test_uo_work_queue_http \
             test_google_writer_update_append_v2_integrity \
             test_google_writer_update_append_v3_integrity \
-            validation.local_release_20260911.test_edr_sync_v2 \
-            validation.local_release_20260911.test_supplier_edr_apply_v31 \
-            validation.local_release_20260911.test_permanent_edr_sync_safety \
-            validation.local_release_20260911.test_sandbox_edr_review \
             test_google_writer_saved_continuation_audit \
-            test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_workflow_routes_historical_and_current_integrity_checks \
             test_release_gate_infrastructure.ReleaseGateInfrastructureTests.test_container_release_gate_stages_missing_v2_archive_with_initialized_cwd \
             validation.local_release_20260911.test_sandbox_integrity_audit \
             validation.local_release_20260911.test_sandbox_functionality_integrity
@@ -204,6 +201,12 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/pqm-playwright" --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
           "$RUNNER_TEMP/pqm-playwright/node_modules/.bin/playwright" install --with-deps chromium
+      - name: V31.1 EDR browser regressions on the checked-out candidate
+        shell: bash
+        env:
+          NODE_PATH: ${{ runner.temp }}/pqm-playwright/node_modules
+        run: |
+          "$RUNNER_TEMP/pqm-release-python/bin/python" -B validation/v31_1/bridge.py --entrypoint github --phase browser --evidence "$RUNNER_TEMP/pqm-v311-evidence"
       - name: Run Appeals browser regressions on the checked-out revision
         shell: bash
         env:
@@ -394,6 +397,7 @@ jobs:
           name: pqm-checks-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ci-evidence/
+            ${{ runner.temp }}/pqm-v311-evidence/
             ${{ runner.temp }}/pqm-uo-work-layout-evidence/
             ${{ runner.temp }}/pqm-registry-filter-evidence/
             ${{ runner.temp }}/pqm-unified-filter-evidence/

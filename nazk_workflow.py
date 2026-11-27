@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import nazk_evidence
+import edr_sync_identity
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -854,6 +855,55 @@ def get_supplier_nazk_state(con: sqlite3.Connection, supplier_code: str) -> dict
             "previous_check_id": latest["id"] if latest else None}
 
 
+def apply_supplier_nazk_state(con: sqlite3.Connection, supplier_code: str, state: dict,
+                              matches: list[dict], *, timestamp: str | None = None) -> dict:
+    """Apply an already evaluated supplier state without re-reading shared registry data."""
+    if state.get("action") == "archive_duplicate_cycles":
+        changed = archive_duplicate_nazk_checks(
+            con, state.get("duplicate_check_ids") or [], state["covering_factual_check"],
+            timestamp=timestamp,
+        )
+        return {**state, "archived": changed}
+    if state.get("action") != "create_needs_review":
+        return state
+    existing = con.execute(
+        """SELECT id FROM supplier_nazk_checks WHERE supplier_code=? AND manager_id=?
+           AND workflow_status IN ('needs_review','request_to_supplier','request_to_nazk','waiting_response')
+           ORDER BY id DESC LIMIT 1""",
+        (supplier_code, state["manager_id"]),
+    ).fetchone()
+    if existing:
+        return {**state, "check_id": existing["id"], "created": False}
+    timestamp = timestamp or now_iso()
+    manager_tax_id = con.execute("SELECT COALESCE(manager_tax_id,'') FROM supplier_managers WHERE id=?",
+                                 (state["manager_id"],)).fetchone()[0]
+    cursor = con.execute(
+        """INSERT INTO supplier_nazk_checks
+           (supplier_code,manager_id,manager_name,workflow_status,result,started_at,comment,is_legacy,
+            created_at,created_by,updated_at,updated_by,person_tax_id)
+           VALUES (?,?,?,'needs_review',NULL,?,'',0,?,'PQM SYSTEM',?,'PQM SYSTEM',?)""",
+        (supplier_code, state["manager_id"], state["manager_name"], timestamp, timestamp, timestamp,manager_tax_id),
+    )
+    check_id = int(cursor.lastrowid)
+    for match in matches:
+        con.execute(
+            """INSERT OR IGNORE INTO supplier_nazk_check_matches
+               (check_id,nazk_source_id,match_status,created_at) VALUES (?,?,'candidate',?)""",
+            (check_id, match["source_id"], timestamp),
+        )
+    event_type = {
+        "legacy_refuted_without_coverage": "check_created_due_legacy_without_coverage",
+        "legacy_archived_current_match": "check_created_due_reactivation",
+    }.get(state.get("reason"), "check_created_due_current_match")
+    con.execute(
+        """INSERT INTO supplier_nazk_check_events
+           (check_id,event_type,event_at,event_by,new_workflow_status,details_json)
+           VALUES (?,?,?,'PQM SYSTEM','needs_review',?)""",
+        (check_id, event_type, timestamp, json.dumps({"reason": state.get("reason")}, ensure_ascii=False)),
+    )
+    return {**state, "check_id": check_id, "created": True}
+
+
 def _supplier_state_from_prefetched(active_count: int, manager: dict | None,
                                     matches: list[dict], checks: list[dict]) -> dict:
     if active_count <= 0:
@@ -900,58 +950,121 @@ def _supplier_state_from_prefetched(active_count: int, manager: dict | None,
 def reconcile_supplier_nazk(con: sqlite3.Connection, supplier_code: str, *, apply: bool = False,
                             timestamp: str | None = None) -> dict:
     state = get_supplier_nazk_state(con, supplier_code)
-    if apply and state.get("action") == "archive_duplicate_cycles":
-        changed = archive_duplicate_nazk_checks(
-            con, state.get("duplicate_check_ids") or [], state["covering_factual_check"],
-            timestamp=timestamp,
-        )
-        return {**state, "archived": changed}
-    if not apply or state.get("action") != "create_needs_review":
+    if not apply or state.get("action") not in {"archive_duplicate_cycles", "create_needs_review"}:
         return state
-    existing = con.execute(
-        """SELECT id FROM supplier_nazk_checks WHERE supplier_code=? AND manager_id=?
-           AND workflow_status IN ('needs_review','request_to_supplier','request_to_nazk','waiting_response')
-           ORDER BY id DESC LIMIT 1""",
-        (supplier_code, state["manager_id"]),
-    ).fetchone()
-    if existing:
-        return {**state, "check_id": existing["id"], "created": False}
-    timestamp = timestamp or now_iso()
-    manager_tax_id = con.execute("SELECT COALESCE(manager_tax_id,'') FROM supplier_managers WHERE id=?",
-                                 (state["manager_id"],)).fetchone()[0]
-    cursor = con.execute(
-        """INSERT INTO supplier_nazk_checks
-           (supplier_code,manager_id,manager_name,workflow_status,result,started_at,comment,is_legacy,
-            created_at,created_by,updated_at,updated_by,person_tax_id)
-           VALUES (?,?,?,'needs_review',NULL,?,'',0,?,'PQM SYSTEM',?,'PQM SYSTEM',?)""",
-        (supplier_code, state["manager_id"], state["manager_name"], timestamp, timestamp, timestamp,manager_tax_id),
-    )
-    check_id = int(cursor.lastrowid)
-    for match in registry_matches(con, state["manager_name"]):
-        con.execute(
-            """INSERT OR IGNORE INTO supplier_nazk_check_matches
-               (check_id,nazk_source_id,match_status,created_at) VALUES (?,?,'candidate',?)""",
-            (check_id, match["source_id"], timestamp),
-        )
-    event_type = {
-        "legacy_refuted_without_coverage": "check_created_due_legacy_without_coverage",
-        "legacy_archived_current_match": "check_created_due_reactivation",
-    }.get(state.get("reason"), "check_created_due_current_match")
-    con.execute(
-        """INSERT INTO supplier_nazk_check_events
-           (check_id,event_type,event_at,event_by,new_workflow_status,details_json)
-           VALUES (?,?,?,'PQM SYSTEM','needs_review',?)""",
-        (check_id, event_type, timestamp, json.dumps({"reason": state.get("reason")}, ensure_ascii=False)),
-    )
-    return {**state, "check_id": check_id, "created": True}
+    return apply_supplier_nazk_state(con, supplier_code, state,
+        registry_matches(con, state.get("manager_name", "")), timestamp=timestamp)
+
+
+class EDRManagerReconcileContext:
+    """Apply-scoped shared NAZK inputs for EDR manager callbacks only.
+
+    Large read sets are loaded once. Mutable manager/check/task state is read or
+    refreshed for the affected supplier inside the still-open Apply transaction.
+    This object is created lazily by the EDR callback and is never module-global.
+    """
+    def __init__(self, con: sqlite3.Connection):
+        import operational_tasks
+        self.current_checks: dict[str, list[dict]] = {}
+        self.active_applications = operational_tasks._active_application_map(con)
+        self.supplier_names = operational_tasks._supplier_name_map(con)
+        self.active_counts = {str(row[0]): int(row[1] or 0) for row in con.execute(
+            "SELECT supplier_code,active_count FROM supplier_registry_summary WHERE active_count>0")}
+        self.registry_by_name: dict[str, list[dict]] = {}
+        for row in con.execute(
+            """SELECT source_id,full_name,offense_name,court_case_number,sentence_date,punishment_start,
+                      decision_url,raw_json FROM nazk_registry WHERE COALESCE(full_name,'')<>''
+               ORDER BY sentence_date,source_id"""
+        ):
+            item = dict(row)
+            self.registry_by_name.setdefault(normalize_name(item.get("full_name")), []).append(item)
+        self.task_rows_by_supplier: dict[str, list[dict]] = {}
+        for raw in con.execute(
+            """SELECT t.id,t.supplier_code,t.status,c.manager_id,c.manager_name
+               FROM operational_tasks t LEFT JOIN supplier_nazk_checks c
+                 ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+               WHERE t.task_type='nazk_check' AND t.status NOT IN ('completed','cancelled')"""
+        ):
+            row = dict(raw)
+            self.task_rows_by_supplier.setdefault(self._code(row.get("supplier_code")), []).append(row)
+
+    @staticmethod
+    def _code(value):
+        import edr_sync_identity
+        return edr_sync_identity.code(value)
+
+    def task_rows_for(self, supplier_code: str) -> list[dict]:
+        return self.task_rows_by_supplier.get(self._code(supplier_code), [])
+
+    def refresh_task_rows(self, con: sqlite3.Connection, supplier_code: str) -> None:
+        code = self._code(supplier_code)
+        self.task_rows_by_supplier[code] = [dict(row) for row in con.execute(
+            """SELECT t.id,t.supplier_code,t.status,c.manager_id,c.manager_name
+               FROM operational_tasks t LEFT JOIN supplier_nazk_checks c
+                 ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
+               WHERE t.task_type='nazk_check' AND t.status NOT IN ('completed','cancelled')
+                 AND t.supplier_code=?""", (supplier_code,))]
+
+    @staticmethod
+    def current_manager(con: sqlite3.Connection, supplier_code: str) -> dict | None:
+        row = con.execute(
+            """SELECT id,manager_name FROM supplier_managers WHERE supplier_code=? AND is_current=1
+               ORDER BY id DESC LIMIT 1""", (supplier_code,)).fetchone()
+        return dict(row) if row else None
+
+    def supplier_inputs(self, con: sqlite3.Connection, supplier_code: str):
+        active_count = self.active_counts.get(self._code(supplier_code), 0)
+        manager = self.current_manager(con, supplier_code)
+        matches = (self.registry_by_name.get(normalize_name(manager.get("manager_name")), [])
+                   if manager else [])
+        if manager:
+            checks = [dict(row) for row in con.execute(
+                """SELECT c.*,GROUP_CONCAT(cm.nazk_source_id) source_ids
+                   FROM supplier_nazk_checks c LEFT JOIN supplier_nazk_check_matches cm ON cm.check_id=c.id
+                   WHERE c.supplier_code=? AND (c.manager_id=? OR
+                     (c.manager_id IS NULL AND NORMALIZE_NAME(c.manager_name)=?))
+                   GROUP BY c.id ORDER BY COALESCE(c.completed_at,c.started_at,c.created_at) DESC,c.id DESC""",
+                (supplier_code, manager["id"], normalize_name(manager["manager_name"])))]
+        else:
+            checks = []
+        return active_count, manager, matches, checks
 
 
 def reconcile_active_supplier_nazk(con: sqlite3.Connection, *, apply: bool = False,
-                                   supplier_codes: list[str] | None = None) -> dict:
+                                   supplier_codes: list[str] | None = None,
+                                   _edr_context: EDRManagerReconcileContext | None = None) -> dict:
     counters = Counter()
     reasons = Counter()
     items = []
-    allowed = {str(code or "").strip() for code in supplier_codes or []} if supplier_codes is not None else None
+    allowed = {(edr_sync_identity.literal(code) if edr_sync_identity.active() else str(code or "").strip())
+               for code in supplier_codes or []} if supplier_codes is not None else None
+    if _edr_context is not None:
+        # This branch is only supplied by the request-local EDR Apply callback.
+        # It reads the mutable supplier state narrowly after each manager change,
+        # while reusing the apply-scoped active-application and registry snapshots.
+        for supplier_code in sorted(allowed or ()):
+            active_count, manager, matches, checks = _edr_context.supplier_inputs(con, supplier_code)
+            if active_count <= 0:
+                # Reconciliation may be inactive because the materialized
+                # summary is absent, while Apply still has effective active
+                # qualifications and persisted checks to materialize as tasks.
+                # Preserve the fetched result (including an actual empty list)
+                # instead of making the caller confuse it with "not fetched".
+                _edr_context.current_checks[supplier_code] = checks
+                continue
+            state = _supplier_state_from_prefetched(active_count, manager, matches, checks)
+            if apply and state.get("action") in {"create_needs_review", "archive_duplicate_cycles"}:
+                state = apply_supplier_nazk_state(con, supplier_code, state, matches)
+                active_count, manager, matches, checks = _edr_context.supplier_inputs(con, supplier_code)
+            counters[state["state"]] += 1
+            if state.get("reason"):
+                reasons[state["reason"]] += 1
+            if state.get("action") == "create_needs_review":
+                items.append({"supplier_code": supplier_code, **state})
+            _edr_context.current_checks[supplier_code] = checks
+        return {"mode": "apply" if apply else "dry-run", "active_suppliers": sum(counters.values()),
+                "states": dict(sorted(counters.items())), "reasons": dict(sorted(reasons.items())),
+                "potential_needs_review": len(items), "items": items}
     suppliers = [dict(row) for row in con.execute(
         """SELECT s.supplier_code,s.active_count,m.id manager_id,m.manager_name
            FROM supplier_registry_summary s LEFT JOIN supplier_managers m
