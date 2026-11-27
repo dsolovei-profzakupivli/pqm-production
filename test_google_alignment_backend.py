@@ -4,13 +4,73 @@ import json
 from unittest.mock import patch
 from types import SimpleNamespace
 import edr_sync_v2 as sync
+import edr_monitoring_projection as projection
 from validation.local_release_20260911.test_edr_sync_v2 import database, row, snapshot
+
+_PROJECTION_BUILD = projection.build
+
+
+def legacy_fixture_projection(con, *args, **kwargs):
+    """Adapt only the explicit in-memory legacy fixture to the current read projection."""
+    if con.execute("SELECT 1 FROM sqlite_master WHERE name='supplier_registry_summary'").fetchone():
+        return _PROJECTION_BUILD(con, *args, **kwargs)
+    if any(row[2] for row in con.execute("PRAGMA database_list")):
+        raise RuntimeError("Legacy projection adapter accepts only in-memory fixtures")
+    views = []
+    additions = {
+        "submissions": {"qualification_id": "(SELECT id FROM main.qualifications q WHERE q.submission_id=t.id LIMIT 1)",
+                        "framework_id": "''"},
+        "qualifications": {"decision_date": "''"},
+        "application_fields": {"manager_name": "''"},
+        "registry_contracts": {"qualification_id": "NULL"},
+    }
+    try:
+        con.execute("CREATE TEMP VIEW supplier_registry_summary AS SELECT '' supplier_code,'' supplier_name WHERE 0")
+        views.append("supplier_registry_summary")
+        for name, extra in additions.items():
+            columns = {item[1] for item in con.execute("PRAGMA main.table_info(" + name + ")")}
+            missing = {key: expression for key, expression in extra.items() if key not in columns}
+            if missing:
+                con.execute("CREATE TEMP VIEW " + name + " AS SELECT t.*," +
+                            ",".join(expression + " AS " + key for key, expression in missing.items()) +
+                            " FROM main." + name + " t")
+                views.append(name)
+        for name, keys in (
+            ("frameworks", {"id": "'v311-unit-active'", "status": "'active'", "raw_json": "'{}'"}),
+            ("registry_contracts", {"supplier_code": "p.supplier_code", "status": "'active'",
+                                    "framework_id": "'v311-unit-active'"}),
+        ):
+            if name in views:
+                con.execute("DROP VIEW temp." + name)
+                views.remove(name)
+            original_columns = {item[1] for item in con.execute("PRAGMA main.table_info(" + name + ")")}
+            columns = [item[1] for item in con.execute("PRAGMA main.table_info(" + name + ")")]
+            if name == "registry_contracts" and "qualification_id" not in columns:
+                columns.append("qualification_id")
+            base = ",".join("t." + column if column in original_columns else "NULL AS " + column
+                            for column in columns)
+            generated = ",".join(keys.get(column, "NULL") for column in columns)
+            extra = (" FROM main.supplier_edr_profiles p WHERE NOT EXISTS "
+                     "(SELECT 1 FROM main.registry_contracts rc WHERE rc.supplier_code=p.supplier_code)"
+                     if name == "registry_contracts" else
+                     " WHERE NOT EXISTS (SELECT 1 FROM main.frameworks WHERE id='v311-unit-active')")
+            con.execute("CREATE TEMP VIEW " + name + " AS SELECT " + base + " FROM main." + name +
+                        " t UNION ALL SELECT " + generated + extra)
+            views.append(name)
+        return _PROJECTION_BUILD(con, *args, **kwargs)
+    finally:
+        for name in reversed(views):
+            con.execute("DROP VIEW temp." + name)
 
 
 class GoogleAlignmentBackend(unittest.TestCase):
     def setUp(self):
         self.con = database()
         self.addCleanup(self.con.close)
+        self.projection_patch = patch.object(projection, "build",
+                                             side_effect=legacy_fixture_projection)
+        self.projection_patch.start()
+        self.addCleanup(self.projection_patch.stop)
         self.con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,short_name,manager_name,edr_status,edr_checked_at,edr_officer,synced_at) VALUES ('12345678','Verified name','Short','Manager','Зареєстровано','2026-10-12T17:03:00+03:00','Original UO','Prozorro technical time')")
 
     def apply(self, source):

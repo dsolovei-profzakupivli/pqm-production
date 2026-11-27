@@ -29,6 +29,12 @@ def digest(raw, name):
         raw = raw.replace(b'\r\n', b'\n')
     return hashlib.sha256(raw).hexdigest()
 class DocumentReleaseIntegrity(unittest.TestCase):
+    def _assert_pinned_runtime(self, root, contract):
+        root = Path(root).resolve()
+        self.assertFalse((root / '.git').exists())
+        for name, expected in contract['accepted_baseline_runtime'].items():
+            self.assertEqual(digest((root / name).read_bytes(), name), expected, name)
+
     def test_current_package_and_unchanged_history(self):
         raw = (ROOT / 'validation/document_release_v1.json').read_bytes()
         self.assertEqual(digest(raw, 'contract.json'), CONTRACT_SHA)
@@ -38,14 +44,17 @@ class DocumentReleaseIntegrity(unittest.TestCase):
         self.assertEqual(history.verify_v1_source(ROOT), contract)
     def test_history_sha_tree_and_original_runtime(self):
         root = history.baseline_root(ROOT)
-        self.assertFalse((root / '.git').exists())
         contract = json.loads((ROOT / 'validation/document_release_v1.json').read_text(encoding='utf8'))
-        for name, expected in contract['accepted_baseline_runtime'].items():
-            self.assertEqual(digest((root / name).read_bytes(), name), expected)
+        self._assert_pinned_runtime(root, contract)
         from validation.local_release_20260911 import test_csv_ui_gate_integrity as old
         suite = unittest.TestSuite([old.GateRepairIntegrity('test_current_files_and_original_contracts')])
         history.route_integrity_suite(suite, ROOT)
-        self.assertEqual(old.ROOT, root)
+        routed = Path(old.ROOT).resolve()
+        self._assert_pinned_runtime(routed, contract)
+        for name, expected in contract['accepted_baseline_runtime'].items():
+            self.assertEqual((root / name).read_bytes().replace(b'\r\n', b'\n'),
+                             (routed / name).read_bytes().replace(b'\r\n', b'\n'), name)
+            self.assertEqual(digest((routed / name).read_bytes(), name), expected, name)
         result = unittest.TestResult();suite.run(result)
         self.assertTrue(result.wasSuccessful(), str(result.failures) + str(result.errors))
     def _load_v28(self, path):
@@ -109,12 +118,18 @@ class DocumentReleaseIntegrity(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, 'SHA/tree'):
                     history.baseline_root(folder)
     def test_historical_and_container_failures_propagate(self):
-        with patch.object(history.subprocess, 'run', return_value=SimpleNamespace(returncode=7)) as run:
+        accepted = history.baseline_root(ROOT)
+        contract = json.loads((ROOT / 'validation/document_release_v1.json').read_text(encoding='utf8'))
+        self._assert_pinned_runtime(accepted, contract)
+        with patch.object(history, 'baseline_root', return_value=accepted), \
+             patch.object(history.subprocess, 'run', return_value=SimpleNamespace(returncode=7)) as run:
             self.assertEqual(history.run_accepted(ROOT, 'node'), 7)
-            self.assertEqual(run.call_args.kwargs['cwd'], history.baseline_root(ROOT))
+            self.assertEqual(Path(run.call_args.kwargs['cwd']).resolve(), accepted.resolve())
+            self._assert_pinned_runtime(run.call_args.kwargs['cwd'], contract)
         spec = importlib.util.spec_from_file_location('_document_candidate_gate', ROOT / 'validation/docker_release_gate_csv_ui_v3.py')
         gate = importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
-        with patch.object(gate.subprocess, 'run', side_effect=subprocess.CalledProcessError(9, ['synthetic'])):
+        with patch.object(gate.sys, 'argv', [str(ROOT / 'validation/docker_release_gate_csv_ui_v3.py')]), \
+             patch.object(gate.subprocess, 'run', side_effect=subprocess.CalledProcessError(9, ['synthetic'])):
             with self.assertRaises(subprocess.CalledProcessError):gate.main()
     def test_historical_browser_fixture_has_sandbox_guard(self):
         with tempfile.TemporaryDirectory() as folder:
