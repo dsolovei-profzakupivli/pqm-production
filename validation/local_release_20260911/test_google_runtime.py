@@ -12,9 +12,23 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from collections import Counter
 
 import auth_access
 import server
+
+
+def _expected_xlsx_date(value):
+    if not value:
+        return None
+    text = str(value)
+    if text == "2026-11-23":
+        return "23.11.2026"
+    if text == "23.11.2026 00:00:00":
+        return datetime(2026, 11, 23, 0, 0, 0)
+    if text == "2026-11-23T16:00:37Z":
+        return datetime(2026, 11, 23, 18, 0, 37)
+    raise AssertionError(f"unexpected fixture timestamp: {text!r}")
 
 
 class FakeResponse:
@@ -91,6 +105,125 @@ class GoogleRuntimeTests(unittest.TestCase):
                 return response.status, dict(response.headers), response.read()
         finally:
             http.shutdown(); http.server_close(); thread.join()
+
+    @staticmethod
+    def _xlsx_conflict_signature(sheet):
+        return Counter(tuple(sheet.cell(row_number, column).value
+                             for column in (1, 2, 4, 5, 8, 9, 10, 11))
+                       for row_number in range(2, sheet.max_row + 1))
+
+    def _assert_xlsx_matches_preview(self, sheet, preview, source_rows, pqm_profiles):
+        expected = Counter()
+        identities = []
+        for conflict in preview["conflicts"]:
+            code = str(conflict["supplier_code"])
+            source_sheet = str(conflict["source_sheet"])
+            source_row = int(conflict["source_row"])
+            identity = (code, source_sheet, source_row)
+            identities.append(identity)
+            source = source_rows[identity]
+            profile = pqm_profiles[code]
+            for reason in conflict["reasons"]:
+                reason_label, field_label = server.edr_sync_v2.conflict_reason_details(reason)
+                pqm_date = _expected_xlsx_date(profile["checked"])
+                google_date = _expected_xlsx_date(source["checked"])
+                expected.update([(source_sheet, code, reason_label, field_label,
+                                  pqm_date, google_date, profile["officer"] if profile["checked"] else None,
+                                  source["officer"])])
+        self.assertEqual(len(identities), preview["conflicts_total"])
+        self.assertEqual(len(set(identities)), len(identities), "Preview contains duplicate conflict identities")
+        self.assertEqual(set(identities), {
+            (code, source_sheet, source_row)
+            for code, source_sheet, source_row in source_rows
+        }, "Preview fixture must expose every sheet/code/row identity exactly once")
+        self.assertIn(("00000003", "ЮО", 4), identities,
+                      "Preview must include the independently reported ЮО / 00000003 conflict")
+        actual = self._xlsx_conflict_signature(sheet)
+        self.assertEqual(actual, expected,
+                         f"missing={ascii(expected - actual)} extra={ascii(actual - expected)}")
+
+    def test_conflict_xlsx_real_preview_matches_sheet_and_row_identity(self):
+        from openpyxl import load_workbook
+        from validation.local_release_20260911.test_edr_sync_v2 import row
+
+        pqm_profiles = {
+            "00000001": {"checked": "2026-11-23", "officer": "УО PQM", "status": "Зареєстровано"},
+            "00000002": {"checked": "", "officer": "УО PQM", "status": "Зареєстровано"},
+            "00000003": {"checked": "2026-11-23T16:00:37Z", "officer": "УО PQM", "status": "Зареєстровано"},
+        }
+        checked_values = {"00000001": "23.11.2026 00:00:00", "00000002": "",
+                          "00000003": "2026-11-23T16:00:37Z"}
+        source_rows = {}
+        for index, code in enumerate(pqm_profiles, 2):
+            source_rows[(code, "ФОП", index)] = {"checked": checked_values[code], "manager": "Manager", "officer": "УО",
+                                                  "status": "Припинено"}
+            source_rows[(code, "ЮО", index)] = {"checked": "", "manager": "Manager", "officer": "УО",
+                                                 "status": "Припинено"}
+
+        with patch.object(server, "DB_PATH", self.db_path), patch.object(server, "SANDBOX_MODE", True):
+            server.init_db()
+            with server.db() as con:
+                con.execute("""INSERT INTO frameworks
+                    (id,pretty_id,title,dk_code,status,raw_json,synced_at)
+                    VALUES ('f','f','Fixture','44530000-4','active','{}','fixture')""")
+                for code in pqm_profiles:
+                    con.execute("""INSERT INTO submissions
+                        (id,framework_id,supplier_name,supplier_code,date_published,status,
+                         qualification_id,documents_json,raw_json,synced_at)
+                        VALUES (?, 'f', 'Fixture', ?, '2026-11-23', 'active', ?, '[]', '{}', 'fixture')""",
+                        ("s-" + code, code, "q-" + code))
+                    con.execute("""INSERT INTO qualifications
+                        (id,framework_id,submission_id,status,decision_date,documents_json,raw_json,synced_at)
+                        VALUES (?, 'f', ?, 'active', '2026-11-23', '[]', '{}', 'fixture')""",
+                        ("q-" + code, "s-" + code))
+                    con.execute("""INSERT INTO supplier_registry_summary
+                        (supplier_code,supplier_name,refreshed_at) VALUES(?,?,?)""",
+                        (code, "Fixture " + code, "fixture"))
+                    profile = pqm_profiles[code]
+                    con.execute("""INSERT INTO supplier_edr_profiles
+                        (supplier_code,full_name,short_name,manager_name,edr_status,edr_checked_at,
+                         edr_officer,source_sheet,source_row,synced_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,'fixture')""",
+                        (code, "PQM " + code[-1], "PQM " + code[-1], "Manager", profile["status"],
+                         profile["checked"], profile["officer"], "ФОП", int(code[-1]) + 1))
+
+        fop_rows = [list(server.edr_sync_v2.HEADERS)]
+        uo_rows = [list(server.edr_sync_v2.HEADERS)]
+        for code in pqm_profiles:
+            fop = row(code=code, status="Припинено", checked=checked_values[code], manager="Manager")
+            uo = row(code=code, status="Припинено", checked="", manager="Manager")
+            fop_rows.append(fop)
+            uo_rows.append(uo)
+        source = server.edr_sync_v2.source_snapshot(
+            {"ФОП": fop_rows, "ЮО": uo_rows}, spreadsheet_id="synthetic-edr-xlsx")
+        patches = self.common_patches() + (
+            patch.object(server, "SANDBOX_MODE", True),
+            patch.object(server, "google_edr_effective_enabled", return_value=True),
+            patch.object(server, "supplier_edr_source_snapshot", return_value=source),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            preview_status, preview = self.request("/api/supplier-edr-sync/preview", payload={})
+            self.assertEqual(preview_status, 200, preview)
+            self.assertGreater(preview["conflicts_total"], 0)
+            export_status, headers, body = self.request_bytes(
+                "/api/supplier-edr-sync/conflicts.xlsx",
+                {"source_fingerprint": preview["source_fingerprint"],
+                 "state_digest": preview["state_digest"]})
+        self.assertEqual(export_status, 200)
+        self.assertIn("spreadsheetml.sheet", headers.get("Content-Type", ""))
+        sheet = load_workbook(BytesIO(body)).active
+        self.assertEqual(sheet.max_row - 1, sum(len(item["reasons"]) for item in preview["conflicts"]))
+        self.assertEqual(sheet.freeze_panes, "A2")
+        self.assertEqual(sheet.auto_filter.ref, f"A1:L{sheet.max_row}")
+        self._assert_xlsx_matches_preview(sheet, preview, source_rows, pqm_profiles)
+
+        rows = {tuple(sheet.cell(row_number, column).value for column in (1, 2)): row_number
+                for row_number in range(2, sheet.max_row + 1)}
+        self.assertEqual(sheet.cell(rows[("ФОП", "00000001")], 8).value, "23.11.2026")
+        self.assertEqual(sheet.cell(rows[("ФОП", "00000003")], 8).value, datetime(2026, 11, 23, 18, 0, 37))
+        self.assertEqual(sheet.cell(rows[("ФОП", "00000003")], 9).value, datetime(2026, 11, 23, 18, 0, 37))
+        self.assertIsNone(sheet.cell(rows[("ЮО", "00000002")], 8).value)
+        self.assertIsNone(sheet.cell(rows[("ЮО", "00000002")], 9).value)
 
     def common_patches(self):
         return (
@@ -245,8 +378,11 @@ class GoogleRuntimeTests(unittest.TestCase):
         items, conflicts = [], []
         for index in range(31):
             code = f"{index:010d}"
-            pqm_checked = None if index == 1 else "2026-11-23" if index == 0 else "2026-11-23T16:00:00Z"
-            google_checked = None if index == 1 else "2026-11-23T17:04:26Z" if index == 0 else "23.11.2026 00:00:00"
+            pqm_checked = ("2026-11-23" if index == 0 else None if index == 1
+                           else "2026-11-23T16:00:00Z")
+            google_checked = ("23.11.2026 00:00:00" if index == 0 else None if index == 1
+                              else "2026-11-23T16:00:00Z" if index > 2
+                              else "not-a-date")
             items.append({"supplier_code": code, "source_row": index + 2,
                           "source_sheet": "ФОП", "current_profile": {"edr_status": "PQM"},
                           "current_supplier_name": "Постачальник", "current_verification_date": pqm_checked,
@@ -254,12 +390,12 @@ class GoogleRuntimeTests(unittest.TestCase):
                           "incoming": {"source_sheet": "ФОП", "full_name": "Google name",
                                        "edr_status": "Google", "edr_checked_at": google_checked,
                                        "edr_officer": "УО Google"}})
-            reason = ("current_verification_date_missing" if index == 0 else
-                      "malformed_current_verification_datetime" if index == 1 else
+            reason = ("same_timestamp_verification_conflict" if index == 0 else
+                      "current_verification_date_missing" if index == 1 else
                       "malformed_verification_date" if index == 2 else
                       "same_timestamp_verification_conflict")
             conflicts.append({"supplier_code": code, "source_row": index + 2,
-                              "reasons": [reason]})
+                              "source_sheet": "ФОП", "reasons": [reason]})
         preview = {"items": items, "conflicts": conflicts}
         with patch.object(server, "DB_PATH", self.db_path), \
              patch.object(server, "AUTH_ENABLED", False), \
@@ -283,14 +419,16 @@ class GoogleRuntimeTests(unittest.TestCase):
         self.assertEqual(sheet.cell(2, 2).number_format, "@")
         self.assertEqual(sheet.cell(32, 2).value, "0000000030")
         self.assertEqual(sheet.cell(2, 4).value,
-                         server.edr_sync_v2.conflict_reason_details("current_verification_date_missing")[0])
+                         server.edr_sync_v2.conflict_reason_details("same_timestamp_verification_conflict")[0])
         self.assertEqual(sheet.cell(3, 4).value,
-                         "У PQM некоректна дата попередньої перевірки")
+                         server.edr_sync_v2.conflict_reason_details("current_verification_date_missing")[0])
         self.assertEqual(sheet.cell(4, 4).value,
                          server.edr_sync_v2.conflict_reason_details("malformed_verification_date")[0])
-        self.assertIsInstance(sheet.cell(2, 8).value, datetime)
-        self.assertEqual(sheet.cell(2, 8).value, datetime(2026, 11, 23, 0, 0, 0))
-        self.assertEqual(sheet.cell(2, 9).value, datetime(2026, 11, 23, 19, 4, 26))
+        self.assertEqual(sheet.cell(2, 8).value, "23.11.2026")
+        self.assertEqual(sheet.cell(2, 9).value, datetime(2026, 11, 23, 0, 0, 0))
+        self.assertIsInstance(sheet.cell(5, 8).value, datetime)
+        self.assertEqual(sheet.cell(5, 8).value, datetime(2026, 11, 23, 18, 0, 0))
+        self.assertEqual(sheet.cell(5, 9).value, datetime(2026, 11, 23, 18, 0, 0))
         self.assertEqual(sheet.cell(2, 8).number_format, "dd.mm.yyyy hh:mm:ss")
         self.assertEqual(sheet.cell(2, 9).number_format, "dd.mm.yyyy hh:mm:ss")
         self.assertIsNone(sheet.cell(3, 8).value)
@@ -298,6 +436,7 @@ class GoogleRuntimeTests(unittest.TestCase):
         self.assertEqual(sheet.cell(2, 10).value, "УО PQM")
         self.assertEqual(sheet.cell(2, 11).value, "УО Google")
         self.assertIn("supplier_code=0000000000", sheet.cell(2, 12).hyperlink.target)
+
 
     def test_preview_conflict_reasons_are_localized_and_keep_internal_codes(self):
         reasons = ["current_verification_date_missing", "malformed_current_verification_datetime",

@@ -1,10 +1,12 @@
 """Regression tests for local Release Gate staging and isolation adapters."""
+import ast
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -32,9 +34,371 @@ def repository_root(test_file=__file__):
 
 
 REPOSITORY_ROOT = repository_root()
+V31_GITHUB_ROUTE = "validation/v31_1/bridge.py --entrypoint github --phase python"
+V31_GITHUB_RUN_COMMANDS_SHA256 = "8db52fef836166b8ee51f7f53765fffe139b8209178b39f82f864408e8cfda89"
+
+
+def _workflow_steps(workflow):
+    """Read step structure without binding the contract to YAML indentation width."""
+    lines = workflow.splitlines()
+    start_matches = [(index, len(match.group(1)), match.group(2))
+                     for index, line in enumerate(lines)
+                     if (match := re.match(r"^( *)-\s+name:\s*(.*?)\s*$", line))]
+    if not start_matches:
+        return []
+    step_indent = min(indent for _, indent, _ in start_matches)
+    starts = [(index, name) for index, indent, name in start_matches if indent == step_indent]
+    steps = []
+    for position, (start, name) in enumerate(starts):
+        end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
+        block = lines[start:end]
+        step = {"name": name, "run": None,
+                "shell": None, "if": None, "continue-on-error": False}
+        field_lines = []
+        for line in block[1:]:
+            match = re.match(r"^( *)((?:run|shell|if|continue-on-error)):\s*(.*?)\s*$", line)
+            if match and len(match.group(1)) > step_indent:
+                field_lines.append((len(match.group(1)), match.group(2), match.group(3)))
+        if not field_lines:
+            steps.append(step)
+            continue
+        field_indent = min(indent for indent, _, _ in field_lines)
+        index = 1
+        while index < len(block):
+            match = re.match(r"^( *)((?:run|shell|if|continue-on-error)):\s*(.*?)\s*$", block[index])
+            if not match or len(match.group(1)) != field_indent:
+                index += 1
+                continue
+            key, value = match.group(2), match.group(3).strip()
+            if key == "run" and value in {"|", "|-", "|+"}:
+                content = []
+                index += 1
+                while index < len(block):
+                    child = block[index]
+                    child_indent = len(child) - len(child.lstrip(" "))
+                    if child.strip() and child_indent <= field_indent:
+                        break
+                    content.append(child)
+                    index += 1
+                content_indent = min(
+                    len(line) - len(line.lstrip(" ")) for line in content if line.strip()
+                ) if any(line.strip() for line in content) else field_indent + 1
+                step["run"] = "\n".join(
+                    line[content_indent:] if line.strip() else "" for line in content
+                )
+                continue
+            if key == "shell":
+                step["shell"] = _yaml_scalar_without_comment(value).strip("'\"")
+            elif key == "if":
+                step["if"] = _yaml_scalar_without_comment(value).strip("'\"") or None
+            elif key == "continue-on-error":
+                step["continue-on-error"] = (
+                    _yaml_scalar_without_comment(value).lower().strip("'\"") == "true"
+                )
+            index += 1
+        steps.append(step)
+    return steps
+
+
+def _shell_commands(script):
+    """Tokenize simple shell statements, honoring comments, quotes, and continuations."""
+    result = []
+    pending = ""
+    for physical in script.splitlines():
+        line = physical.strip()
+        if not line:
+            continue
+        continued = line.endswith("\\")
+        pending += (line[:-1] if continued else line) + " "
+        if continued:
+            continue
+        lexer = shlex.shlex(pending, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens = list(lexer)
+        if tokens:
+            result.append(tokens)
+        pending = ""
+    if pending:
+        lexer = shlex.shlex(pending, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens = list(lexer)
+        if tokens:
+            result.append(tokens)
+    return result
+
+
+def _yaml_scalar_without_comment(value):
+    """Remove a YAML trailing comment while preserving quoted # characters."""
+    quote = None
+    escaped = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote == "'":
+            if char == "'":
+                if index + 1 < len(value) and value[index + 1] == "'":
+                    index += 1
+                else:
+                    quote = None
+        elif quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote = None
+        elif escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+        index += 1
+    return value.strip()
+
+
+def _shell_comment_start(command):
+    """Return the first active shell-comment offset, respecting escapes and quotes."""
+    quote = None
+    escaped = False
+    for index, char in enumerate(command):
+        if quote == "'":
+            if char == "'":
+                quote = None
+        elif quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote = None
+        elif escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "#" and (index == 0 or command[index - 1].isspace()):
+            return index
+    return None
+
+
+def _insert_before_shell_comment(command, addition):
+    """Add active shell syntax before a trailing comment, never inside it."""
+    comment_start = _shell_comment_start(command)
+    if comment_start is None:
+        return command.rstrip() + " " + addition
+    active = command[:comment_start].rstrip()
+    comment = command[comment_start:]
+    return active + " " + addition + " " + comment
+
+
+def _validated_v31_workflow_step(workflow):
+    candidates = [step for step in _workflow_steps(workflow)
+                  if isinstance(step["run"], str) and "validation/v31_1/bridge.py" in step["run"]
+                  and "--phase python" in step["run"]]
+    if len(candidates) != 1:
+        raise AssertionError(f"Expected one V31.1 bridge workflow step; found {len(candidates)}")
+    step = candidates[0]
+    if step["if"] is not None:
+        raise AssertionError("V31.1 workflow step must be unconditional")
+    if step["continue-on-error"]:
+        raise AssertionError("V31.1 workflow step is allowed to fail")
+    if step["shell"] != "bash":
+        raise AssertionError(f"V31.1 workflow step must use bash, got {step['shell']!r}")
+    commands = _shell_commands(step["run"])
+    command_fingerprint = hashlib.sha256(
+        json.dumps(commands, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if command_fingerprint != V31_GITHUB_RUN_COMMANDS_SHA256:
+        raise AssertionError("V31.1 workflow command sequence changed from its approved fail-closed contract")
+    if not commands or commands[0] != ["set", "-euo", "pipefail"]:
+        raise AssertionError("V31.1 workflow must begin with the approved fail-fast shell mode")
+    route_commands = [tokens for tokens in commands
+                      if any("validation/v31_1/bridge.py" in token for token in tokens)]
+    if len(route_commands) != 1:
+        raise AssertionError(f"Expected one executable V31.1 bridge invocation; found {len(route_commands)}")
+    expected = ["$RUNNER_TEMP/pqm-release-python/bin/python", "-B",
+                "validation/v31_1/bridge.py", "--entrypoint", "github", "--phase", "python",
+                "--evidence", "$RUNNER_TEMP/pqm-v311-evidence"]
+    if route_commands[0] != expected:
+        raise AssertionError(f"V31.1 bridge is not a direct required invocation: {route_commands[0]!r}")
+    return step
 
 
 class ReleaseGateInfrastructureTests(unittest.TestCase):
+    def test_v311_route_is_active_and_negative_mutations_fail_closed(self):
+        workflow_path = REPOSITORY_ROOT / ".github/workflows/release-checks.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        step = _validated_v31_workflow_step(workflow)
+        self.assertIn(V31_GITHUB_ROUTE, step["run"])
+
+        runner = (REPOSITORY_ROOT / "validation/run_local_release.py").read_text(encoding="utf-8")
+        runner_ast = ast.parse(runner)
+        main = next(node for node in runner_ast.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "main")
+        route_calls = [node for node in ast.walk(main)
+                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                       and isinstance(node.func.value, ast.Name) and node.func.value.id == "v311"
+                       and node.func.attr == "route_suite"]
+        self.assertEqual(len(route_calls), 1, "The stock local entrypoint must route its suite through V31.1")
+        route_call = route_calls[0]
+        self.assertEqual([keyword.arg for keyword in route_call.keywords], ["required"])
+        self.assertIsInstance(route_call.keywords[0].value, ast.Name)
+        self.assertEqual(route_call.keywords[0].value.id, "full_candidate_run")
+
+        def change_route_line(transform, text=workflow):
+            lines = text.splitlines(keepends=True)
+            hits = [index for index, line in enumerate(lines) if V31_GITHUB_ROUTE in line]
+            self.assertEqual(len(hits), 1)
+            index = hits[0]
+            body = lines[index].rstrip("\r\n")
+            newline = lines[index][len(body):]
+            indent = body[:len(body) - len(body.lstrip())]
+            lines[index] = transform(indent, body[len(indent):]) + newline
+            return "".join(lines)
+
+        def mutate_route_step_field(text, field, replacement):
+            header = "      - name: " + step["name"] + "\n"
+            start = text.index(header)
+            next_step = re.search(r"(?m)^      - name: ", text[start + len(header):])
+            end = start + len(header) + next_step.start() if next_step else len(text)
+            block = text[start:end]
+            pattern = rf"(?m)^([ ]*{re.escape(field)}:\s*[^\r\n]*?)\s*$"
+            changed, count = re.subn(pattern, replacement, block, count=1)
+            self.assertEqual(count, 1, f"Expected one {field} field in required workflow step")
+            return text[:start] + changed + text[end:]
+
+        route_step_header = "      - name: " + step["name"] + "\n"
+        command_contract_error = (
+            "V31.1 workflow command sequence changed from its approved fail-closed contract"
+        )
+        mutations = {
+            "commented command": (
+                change_route_line(lambda indent, body: indent + "# " + body),
+                command_contract_error,
+            ),
+            "deleted command": (
+                change_route_line(lambda indent, body: indent + "true"),
+                "Expected one V31.1 bridge workflow step; found 0",
+            ),
+            "wrong version route": (
+                change_route_line(
+                    lambda indent, body: indent + body.replace("--phase python", "--phase unit", 1)),
+                "Expected one V31.1 bridge workflow step; found 0",
+            ),
+            "disabled required step": (
+                workflow.replace(route_step_header, route_step_header + "        if: false\n", 1),
+                "V31.1 workflow step must be unconditional",
+            ),
+            "echo instead of execution": (
+                change_route_line(lambda indent, body: indent + "echo " + body),
+                command_contract_error,
+            ),
+            "swallowed failure": (
+                change_route_line(
+                    lambda indent, body: indent + _insert_before_shell_comment(body, "|| true")
+                ),
+                command_contract_error,
+            ),
+            "continue on error": (
+                workflow.replace(
+                    route_step_header, route_step_header + "        continue-on-error: true\n", 1),
+                "V31.1 workflow step is allowed to fail",
+            ),
+        }
+        def insert_before_route(text, inserted):
+            lines = text.splitlines(keepends=True)
+            hits = [index for index, line in enumerate(lines) if V31_GITHUB_ROUTE in line]
+            self.assertEqual(len(hits), 1)
+            index = hits[0]
+            indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+            lines.insert(index, indent + inserted + "\n")
+            return "".join(lines)
+
+        def append_after_route(text, inserted):
+            lines = text.splitlines(keepends=True)
+            hits = [index for index, line in enumerate(lines) if V31_GITHUB_ROUTE in line]
+            self.assertEqual(len(hits), 1)
+            index = hits[0]
+            indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+            lines.insert(index + 1, indent + inserted + "\n")
+            return "".join(lines)
+
+        harmless_shell_comment = change_route_line(
+            lambda indent, body: indent + body + " # harmless trailing comment"
+        )
+        harmless_yaml_comment = mutate_route_step_field(
+            workflow, "shell", r"\1 # harmless YAML comment"
+        )
+        positive_variants = {
+            "unchanged workflow": workflow,
+            "extra blank line": append_after_route(workflow, ""),
+            "standalone shell comment": insert_before_route(workflow, "# harmless comment"),
+            "YAML comment after shell value": harmless_yaml_comment,
+            "shell comment after bridge": harmless_shell_comment,
+            "both harmless comments": mutate_route_step_field(
+                harmless_shell_comment, "shell", r"\1 # harmless YAML comment"
+            ),
+        }
+        for label, candidate in positive_variants.items():
+            with self.subTest(positive_variant=label):
+                self.assertEqual(_validated_v31_workflow_step(candidate)["shell"], "bash")
+
+        for quoted_hash, expected_value in (
+            ('runner --value "quoted # value" # trailing comment', "quoted # value"),
+            ("runner --value 'quoted # value' # trailing comment", "quoted # value"),
+            (r"runner --value escaped\#value # trailing comment", "escaped#value"),
+        ):
+            with self.subTest(quoted_hash=quoted_hash):
+                commented_mutation = _insert_before_shell_comment(quoted_hash, "|| true")
+                self.assertEqual(
+                    _shell_commands(commented_mutation),
+                    [["runner", "--value", expected_value, "||", "true"]],
+                )
+
+        mutations["disable errexit before bridge"] = (
+            insert_before_route(workflow, "set +e"), command_contract_error
+        )
+        mutations["disable errexit then continue successfully"] = (
+            append_after_route(insert_before_route(workflow, "set +e"), "true"),
+            command_contract_error,
+        )
+        mutations["swallowed failure before trailing shell comment"] = (
+            change_route_line(
+                lambda indent, body: indent + _insert_before_shell_comment(body, "|| true"),
+                text=harmless_shell_comment,
+            ),
+            command_contract_error,
+        )
+        for label, (mutated, expected_error) in mutations.items():
+            with self.subTest(mutation=label), self.assertRaisesRegex(
+                AssertionError, re.escape(expected_error)
+            ):
+                _validated_v31_workflow_step(mutated)
+
+        child_script = textwrap.dedent("""
+            import sys, unittest
+            import validation.v31_1.bridge as bridge
+            class CandidateEdRTest(unittest.TestCase):
+                def runTest(self): pass
+            CandidateEdRTest.__module__ = 'test_edr_sync_v2'
+            routed = bridge.route_suite(unittest.TestSuite([CandidateEdRTest()]), '.', 'local', required=True)
+            def fail_required_delegate(*args, **kwargs): raise RuntimeError('synthetic required delegate failure')
+            bridge.phase = fail_required_delegate
+            result = unittest.TextTestRunner(verbosity=2).run(routed)
+            raise SystemExit(0 if result.wasSuccessful() else 23)
+        """)
+        delegate = subprocess.run([sys.executable, "-B", "-c", child_script],
+                                  cwd=REPOSITORY_ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(delegate.returncode, 23, delegate.stdout + delegate.stderr)
+        self.assertIn("ERROR", delegate.stderr)
+        self.assertIn("synthetic required delegate failure", delegate.stderr)
+
     def test_document_baseline_hydrates_v31_changed_styles_from_pinned_addendum(self):
         accepted = document_history.baseline_root(REPOSITORY_ROOT)
         raw = (accepted / "styles.css").read_bytes()
@@ -399,7 +763,7 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         previous_integrated_overlay = "test_google_writer_integrated_candidate_integrity_v5"
         previous_current_overlay = "test_google_writer_integrated_candidate_integrity_v8"
         previous_integrated_overlay_v9 = "test_google_writer_integrated_candidate_integrity_v9"
-        current_overlay = "test_google_writer_integrated_candidate_integrity_v31"
+        current_overlay = "validation/v31_1/bridge.py"
         integrated_v1_runner = "validation/run_integrated_writer_ui_v1_history.py"
         integrated_v1_snapshot = "3eda8169d8dae0d76bf14b276c16e6773dd746d6"
         integrated_v2_runner = "validation/run_integrated_writer_ui_v2_history.py"
@@ -606,9 +970,11 @@ class ReleaseGateInfrastructureTests(unittest.TestCase):
         self.assertIn("PQM_INTEGRATED_V20_SNAPSHOT_ARCHIVE_SHA256", workflow)
         self.assertIn("PQM_INTEGRATED_V21_SNAPSHOT_ARCHIVE_SHA256", workflow)
         self.assertNotIn("COPY .git", workflow)
-        current_integrity_start = workflow.index(current_overlay + " " + chr(92))
-        current_integrity_end = workflow.index("\n      - name: Install Playwright", current_integrity_start)
-        current_integrity_command = workflow[current_integrity_start:current_integrity_end]
+        current_step = _validated_v31_workflow_step(workflow)
+        run_lines = current_step["run"].splitlines()
+        route_index = next(index for index, line in enumerate(run_lines)
+                           if V31_GITHUB_ROUTE in line)
+        current_integrity_command = "\n".join(run_lines[route_index:])
         self.assertIn(current_overlay, current_integrity_command)
         self.assertNotIn("test_google_writer_integrated_candidate_integrity_v24", current_integrity_command)
         self.assertNotIn("test_google_writer_integrated_candidate_integrity_v25", current_integrity_command)

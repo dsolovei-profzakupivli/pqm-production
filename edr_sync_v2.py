@@ -15,6 +15,7 @@ import unicodedata
 from datetime import date, datetime, timezone
 
 import supplier_activity
+import edr_sync_identity
 import supplier_evidence_shadow_hooks_v3 as evidence_shadow
 from google_verification_contract import (incoming_verification_gate, verification_timestamp,
     google_verification_timestamp, verification_instant, verified_admission_signature,
@@ -64,6 +65,7 @@ INDEPENDENT_MIRROR_SAFE_CONFLICTS = (INDEPENDENT_MIRROR_DATE_CONFLICTS |
                                      INDEPENDENT_MIRROR_MISSING_SOURCE_CONFLICTS)
 
 CONFLICT_REASON_DETAILS = {
+    'google_edr_status_required': ('У Google відсутній актуальний статус ЄДР: заповніть статус і повторіть Preview', 'Статус ЄДР'),
     "missing_supplier_code": ("Не вказано ідентифікатор постачальника", "Ідентифікатор"),
     "duplicate_supplier_code": ("Ідентифікатор повторюється у джерелі", "Ідентифікатор"),
     "sandbox_officer_identity_unavailable": ("Не вдалося визначити УО перевірки", "УО перевірки"),
@@ -101,6 +103,11 @@ def conflict_reason_labels(reasons) -> list[str]:
 
 def normalize_code(value) -> str:
     return re.sub(r"\D", "", str(value or ""))
+
+
+def literal_supplier_code(value) -> str:
+    """EDR-only identity: preserve every original character, including zeros/spaces."""
+    return "" if value is None else str(value)
 
 
 def normalize_person(value) -> str:
@@ -268,12 +275,14 @@ def source_snapshot(values_by_sheet: dict[str, list[list]], *,
             if not any(padded):
                 continue
             item = dict(zip(HEADERS, padded))
+            # B is an identity, not a cleaned display value.
+            item[HEADERS[1]] = literal_supplier_code(raw[1]) if len(raw) > 1 else ''
             item["_source_present_columns"] = min(len(raw), len(HEADERS))
             # A truncated source row is not evidence that omitted cells are blank.
             if len(raw) > 8 and isinstance(raw[8], (int, float)) and not isinstance(raw[8], bool):
                 item[HEADERS[8]] = raw[8]
             item.update(source_sheet=sheet, source_row=row_number,
-                        supplier_code=normalize_code(item["Код ЄДРПОУ"]))
+                        supplier_code=literal_supplier_code(item["Код ЄДРПОУ"]))
             rows.append(item)
     serialized = json.dumps(
         {"contract": 3, "spreadsheet_id": spreadsheet_id,
@@ -286,12 +295,13 @@ def source_snapshot(values_by_sheet: dict[str, list[list]], *,
 def source_item(row: dict) -> dict:
     status = canonical_edr_status(row.get("Статус в реєстрі (ЄДР)"))
     return {
-        "supplier_code": normalize_code(row.get("supplier_code") or row.get("Код ЄДРПОУ")),
+        "supplier_code": literal_supplier_code(row.get("supplier_code") or row.get("Код ЄДРПОУ")),
         "full_name": str(row.get("Повна назва з ЄДР") or "").strip(),
         "short_name": str(row.get("Скорочена назва з ЄДР") or "").strip(),
         "manager_name": str(row.get("ПІБ для перевірки") or "").strip(),
         # This Google-owned placeholder is not factual EDR evidence.
         "edr_status": "" if status == "Немає інформації" else status,
+        "edr_status_source": status,
         "edr_checked_at": google_verification_timestamp(row.get("Дата перевірки")),
         "edr_checked_at_source": row.get("Дата перевірки"),
         "source_present_columns": int(row.get("_source_present_columns", len(HEADERS))),
@@ -450,23 +460,25 @@ def google_prozorro_presentation(status: str) -> str:
             "Призупинений": "🟠 Призупинений"}[status]
 
 
-def _eligible_codes(con, supplier_codes=None) -> set[str]:
+def _eligible_codes(con, supplier_codes=None, *, identity=None) -> set[str]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     if not _table_exists(con, "submissions") or not _table_exists(con, "qualifications"):
         return set()
-    requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}
+    requested = {identity(code) for code in (supplier_codes or []) if identity(code)}
     suffix, args = "", ()
     if requested:
         suffix = " AND s.supplier_code IN (" + ",".join("?" for _ in requested) + ")"
         args = tuple(requested)
     link = "q.id=s.qualification_id" if "qualification_id" in _columns(con, "submissions") else "q.submission_id=s.id"
-    return {normalize_code(row[0]) for row in con.execute(f"""
+    return {identity(row[0]) for row in con.execute(f"""
       SELECT DISTINCT s.supplier_code FROM submissions s
       JOIN qualifications q ON {link}
       WHERE q.status IN ('active','unsuccessful')
-        AND TRIM(COALESCE(s.supplier_code,''))<>''""" + suffix, args) if normalize_code(row[0])}
+        AND TRIM(COALESCE(s.supplier_code,''))<>''""" + suffix, args) if identity(row[0])}
 
 
-def _latest_application_names(con) -> dict[str, str]:
+def _latest_application_names(con, *, identity=None) -> dict[str, str]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     names = {}
     if not _table_exists(con, "submissions") or not _table_exists(con, "qualifications"):
         return names
@@ -475,65 +487,72 @@ def _latest_application_names(con) -> dict[str, str]:
       JOIN qualifications q ON {link}
       WHERE q.status IN ('active','unsuccessful') AND TRIM(COALESCE(s.supplier_code,''))<>''
       ORDER BY COALESCE(NULLIF(s.date_published,''),'') DESC,s.id DESC"""):
-        code = normalize_code(row[0])
+        code = identity(row[0])
         if code and code not in names and str(row[1] or "").strip():
             names[code] = str(row[1]).strip()
     return names
 
 
-def _code_filter(column: str, supplier_codes=None) -> tuple[str, tuple]:
-    requested = tuple(sorted({normalize_code(code) for code in (supplier_codes or [])
-                              if normalize_code(code)}))
+def _code_filter(column: str, supplier_codes=None, *, identity=None) -> tuple[str, tuple]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
+    requested = tuple(sorted({identity(code) for code in (supplier_codes or [])
+                              if identity(code)}))
     if not requested:
         return "", ()
     return f" WHERE {column} IN (" + ",".join("?" for _ in requested) + ")", requested
 
 
-def _profiles(con, supplier_codes=None) -> dict[str, dict]:
+def _profiles(con, supplier_codes=None, *, identity=None) -> dict[str, dict]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     if not _table_exists(con, "supplier_edr_profiles"):
         return {}
     columns = _columns(con, "supplier_edr_profiles")
     rows = {}
-    suffix, args = _code_filter("supplier_code", supplier_codes)
+    suffix, args = _code_filter("supplier_code", supplier_codes, identity=identity)
     for raw in con.execute("SELECT * FROM supplier_edr_profiles" + suffix, args):
         item = dict(raw)
         for key in ("termination_record_date", "termination_record_number"):
             if key not in columns:
                 item[key] = ""
-        code = normalize_code(item.get("supplier_code"))
+        code = identity(item.get("supplier_code"))
         if code:
             rows[code] = item
     return rows
 
 
-def _current_managers(con, supplier_codes=None) -> dict[str, dict]:
+def _current_managers(con, supplier_codes=None, *, identity=None) -> dict[str, dict]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     if not _table_exists(con, "supplier_managers"):
         return {}
     rows = {}
-    suffix, args = _code_filter("supplier_code", supplier_codes)
+    suffix, args = _code_filter("supplier_code", supplier_codes, identity=identity)
     condition = "is_current=1" + (" AND " + suffix.removeprefix(" WHERE ") if suffix else "")
     for raw in con.execute(f"""SELECT * FROM supplier_managers WHERE {condition}
       ORDER BY COALESCE(NULLIF(updated_at,''),created_at) DESC,id DESC""", args):
-        item = dict(raw); code = normalize_code(item.get("supplier_code"))
+        item = dict(raw); code = identity(item.get("supplier_code"))
         if code and code not in rows:
             rows[code] = item
     return rows
 
 
-def _closed_manager_history(con) -> dict[str, list[dict]]:
+def _closed_manager_history(con, *, identity=None, supplier_codes=None) -> dict[str, list[dict]]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     rows: dict[str, list[dict]] = {}
     if not _table_exists(con, "supplier_managers"):
         return rows
-    for raw in con.execute("""SELECT * FROM supplier_managers WHERE is_current=0
-      ORDER BY COALESCE(NULLIF(valid_to,''),NULLIF(updated_at,''),created_at) DESC,id DESC"""):
+    suffix,args = _code_filter('supplier_code',supplier_codes,identity=identity)
+    for raw in con.execute("SELECT * FROM supplier_managers WHERE is_current=0"+
+      (' AND '+suffix.removeprefix(' WHERE ') if suffix else '')+
+      " ORDER BY COALESCE(NULLIF(valid_to,''),NULLIF(updated_at,''),created_at) DESC,id DESC",args):
         item = dict(raw)
-        code = normalize_code(item.get("supplier_code"))
+        code = identity(item.get("supplier_code"))
         if code and valid_manager_name(item.get("manager_name")):
             rows.setdefault(code, []).append(item)
     return rows
 
 
-def _latest_application_managers(con, supplier_codes=None) -> dict[str, dict]:
+def _latest_application_managers(con, supplier_codes=None, *, identity=None) -> dict[str, dict]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     rows = {}
     if not (_table_exists(con, "submissions") and _table_exists(con, "application_fields")) \
             or "manager_name" not in _columns(con, "application_fields"):
@@ -542,14 +561,14 @@ def _latest_application_managers(con, supplier_codes=None) -> dict[str, dict]:
     submission_columns = _columns(con, "submissions")
     source_expr = "COALESCE(af.manager_name_source,'')" if "manager_name_source" in source_columns else "''"
     synced_expr = "COALESCE(s.synced_at,'')" if "synced_at" in submission_columns else "''"
-    suffix, args = _code_filter("s.supplier_code", supplier_codes)
+    suffix, args = _code_filter("s.supplier_code", supplier_codes, identity=identity)
     for raw in con.execute(f"""SELECT s.supplier_code,af.manager_name,s.id,s.date_published,
       {synced_expr} synced_at,{source_expr} manager_name_source
       FROM submissions s JOIN application_fields af ON af.submission_id=s.id
       WHERE TRIM(COALESCE(af.manager_name,''))<>''
       {('AND ' + suffix.removeprefix(' WHERE ')) if suffix else ''}
       ORDER BY COALESCE(NULLIF(s.date_published,''),NULLIF({synced_expr},''),'') DESC,s.id DESC""", args):
-        code = normalize_code(raw[0])
+        code = identity(raw[0])
         if code and code not in rows and valid_manager_name(raw[1]):
             rows[code] = {"manager_name": clean(raw[1]), "source": "application",
                           "source_submission_id": raw[2], "observed_at": raw[3] or raw[4] or "",
@@ -557,28 +576,30 @@ def _latest_application_managers(con, supplier_codes=None) -> dict[str, dict]:
     return rows
 
 
-def known_manager_map(con, supplier_codes=None) -> dict[str, dict]:
+def known_manager_map(con, supplier_codes=None, *, identity=None, profiles=None, managers=None) -> dict[str, dict]:
     """Resolve current known identity without materializing or mutating it."""
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     result = {}
-    for code, row in _current_managers(con, supplier_codes).items():
+    for code, row in (managers if managers is not None else _current_managers(con, supplier_codes, identity=identity)).items():
         if valid_manager_name(row.get("manager_name")):
             result[code] = {**row, "resolution_source": "supplier_managers"}
-    for code, row in _profiles(con, supplier_codes).items():
+    for code, row in (profiles if profiles is not None else _profiles(con, supplier_codes, identity=identity)).items():
         if code not in result and valid_manager_name(row.get("manager_name")):
             result[code] = {"manager_name": clean(row.get("manager_name")),
                             "source": f"Google Sheets: {row.get('source_sheet') or 'ЄДР'}",
                             "observed_at": row.get("edr_checked_at") or row.get("synced_at") or "",
                             "updated_at": row.get("synced_at") or "",
                             "resolution_source": "edr_profile"}
-    for code, row in _latest_application_managers(con, supplier_codes).items():
+    for code, row in _latest_application_managers(con, supplier_codes, identity=identity).items():
         if code not in result:
             result[code] = {**row, "resolution_source": "application"}
     return result
 
 
-def resolve_known_manager(con, supplier_code: str) -> dict:
-    code = normalize_code(supplier_code)
-    return known_manager_map(con, [code]).get(code, {})
+def resolve_known_manager(con, supplier_code: str, *, identity=None) -> dict:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
+    code = identity(supplier_code)
+    return known_manager_map(con, [code], identity=identity).get(code, {})
 
 
 def classify_manager_transition(current_row: dict, known: dict, confirmed_name, evidence=(), history=()) -> dict:
@@ -618,31 +639,41 @@ def classify_manager_transition(current_row: dict, known: dict, confirmed_name, 
             "previous_name": "", "conflicting_evidence": []}
 
 
-def _manager_identity_evidence(con) -> dict[str, set[str]]:
+def _manager_identity_evidence(con, *, identity=None, profiles=None, supplier_codes=None) -> dict[str, set[str]]:
     """Collect supplier-scoped stronger identity evidence for conflict checks."""
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     evidence: dict[str, set[str]] = {}
     queries = []
     if _table_exists(con, "supplier_managers"):
         queries.append("SELECT supplier_code,manager_name FROM supplier_managers")
-    if _table_exists(con, "supplier_edr_profiles"):
+    if profiles is None and _table_exists(con, "supplier_edr_profiles"):
         queries.append("SELECT supplier_code,manager_name FROM supplier_edr_profiles")
     if _table_exists(con, "submissions") and _table_exists(con, "application_fields") \
             and "manager_name" in _columns(con, "application_fields"):
         queries.append("""SELECT s.supplier_code,af.manager_name FROM submissions s
           JOIN application_fields af ON af.submission_id=s.id""")
+    batches = []
     for query in queries:
-        for supplier_code, manager_name in con.execute(query):
-            code = normalize_code(supplier_code)
+        column='s.supplier_code' if 'JOIN application_fields' in query else 'supplier_code'
+        suffix,args = _code_filter(column,supplier_codes,identity=identity)
+        batches.append(con.execute(query+suffix,args))
+    if profiles is not None:
+        batches.append(((code,row.get('manager_name')) for code,row in profiles.items()
+            if supplier_codes is None or code in supplier_codes))
+    for batch in batches:
+        for supplier_code, manager_name in batch:
+            code = identity(supplier_code)
             name = clean(manager_name)
             if code and _full_person_signature(name):
                 evidence.setdefault(code, set()).add(name)
     return evidence
 
 
-def _existing_codes(con) -> set[str]:
-    codes = set(_profiles(con))
+def _existing_codes(con, *, identity=None) -> set[str]:
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
+    codes = set(_profiles(con, identity=identity))
     if _table_exists(con, "submissions"):
-        codes.update(normalize_code(row[0]) for row in con.execute(
+        codes.update(identity(row[0]) for row in con.execute(
             "SELECT DISTINCT supplier_code FROM submissions WHERE TRIM(COALESCE(supplier_code,''))<>''"))
     return {code for code in codes if code}
 
@@ -700,28 +731,36 @@ def canonical_sandbox_officer(con) -> str:
 
 def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
     """Return a factual field-level diff without issuing any SQL write."""
+    identity = literal_supplier_code
     if tuple(snapshot.get("headers") or ()) != HEADERS:
         raise ValueError("Google EDR source columns do not match the canonical A:O structure")
     rows = snapshot["rows"]
-    eligible = _eligible_codes(con)
-    profiles = _profiles(con)
-    managers = _current_managers(con)
-    manager_history = _closed_manager_history(con)
-    known_managers = known_manager_map(con)
-    manager_evidence = _manager_identity_evidence(con)
-    applications = _latest_application_names(con)
-    existing = _existing_codes(con)
-    codes = {normalize_code(row.get("supplier_code")) for row in rows}
-    verifications = current_verification_projections(con, codes)
-    ledger = {}
-    for batch in (list(sorted(codes))[i:i + 500] for i in range(0, len(codes), 500)):
-        if batch:
-            placeholders = ",".join("?" for _ in batch)
-            for event in con.execute(f"SELECT * FROM supplier_edr_verification_events WHERE supplier_code IN ({placeholders})", batch):
-                ledger.setdefault(event["supplier_code"], []).append(dict(event))
+    eligible = _eligible_codes(con, identity=identity)
+    import edr_monitoring_projection
+    codes = {identity(row.get('supplier_code')) for row in rows if identity(row.get('supplier_code')).strip()}
+    context = edr_monitoring_projection.build(con, codes, sync_only=True, eligible_codes=eligible)
+    profiles = context['profiles']
+    table_values = {row['supplier_code']: edr_monitoring_projection.comparison_values(row)
+                    for row in context['rows']}
+    table_names = {row['supplier_code']: row['supplier_name'] for row in context['rows']}
+    del context['rows']
+    manager_codes = {identity(row.get('supplier_code')) for row in rows
+        if identity(row.get('supplier_code')).strip() and clean(row.get(HEADERS[3])) and (identity(row.get('supplier_code')) not in context['manager_current_codes']
+            or not _same('manager_name',row.get(HEADERS[3]),
+                table_values.get(identity(row.get('supplier_code')),{}).get('manager_name','')))}
+    # Identity/history evidence is needed only for a proposed manager change.
+    managers = _current_managers(con, manager_codes, identity=identity) if manager_codes else {}
+    manager_history = _closed_manager_history(con, identity=identity, supplier_codes=manager_codes) if manager_codes else {}
+    known_managers = known_manager_map(con, manager_codes, identity=identity,
+        profiles={code:profiles[code] for code in manager_codes if code in profiles}, managers=managers) if manager_codes else {}
+    manager_evidence = _manager_identity_evidence(con, identity=identity, profiles=profiles,
+        supplier_codes=manager_codes) if manager_codes else {}
+    existing = set(profiles) | context['submission_codes']
+    verifications = context['verifications']
+    ledger = context['ledger']
     occurrences = {}
     for row in rows:
-        code = normalize_code(row.get("supplier_code"))
+        code = identity(row.get("supplier_code"))
         if code:
             occurrences.setdefault(code, []).append((row.get("source_sheet"), row.get("source_row")))
     duplicate_codes = {code: places for code, places in occurrences.items() if len(places) > 1}
@@ -749,8 +788,10 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
     for raw in rows:
         incoming = source_item(raw); code = incoming["supplier_code"]
         row_conflicts = []
-        if not code:
+        if not code.strip():
             row_conflicts.append("missing_supplier_code")
+        if not incoming['edr_status_source'] or incoming['edr_status_source'].casefold() == 'немає інформації':
+            row_conflicts.append('google_edr_status_required')
         if code in duplicate_codes:
             row_conflicts.append("duplicate_supplier_code")
         matched = bool(code and code in existing)
@@ -758,15 +799,17 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         else: summary["unmatched"] += 1
         legacy = bool(code and code not in eligible)
         if legacy: summary["legacy_ineligible"] += 1
-        old = profiles.get(code, {})
+        raw_profile = profiles.get(code, {})
+        comparison = table_values.get(code, {})
+        old = {**raw_profile, **comparison}
         current = verifications.get(code, {})
         incoming_day = incoming["edr_checked_at"]
         current_day = current.get("verification_date", "")
-        current_officer = current.get("verification_officer_raw", "")
+        current_officer = comparison.get('edr_officer', current.get('verification_officer_raw', ''))
         selected_current_event = current.get("selected_event") or {}
         raw_current_verification_date = (selected_current_event.get("occurred_at")
-            or old.get("edr_checked_at") or current_day)
-        current_gate_value = (current.get("selected_event") or {}).get("occurred_at") or current_day
+            or raw_profile.get("edr_checked_at") or current_day)
+        current_gate_value = selected_current_event.get('occurred_at') or current_day or raw_current_verification_date
         source_checked_at = raw.get("Дата перевірки")
         gate_checked_at = source_checked_at if str(source_checked_at or "").strip() else None
         datetime_gate = incoming_verification_gate(gate_checked_at, current_gate_value,
@@ -774,7 +817,9 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         source_present_columns = incoming["source_present_columns"]
         source_missing_fields = [HEADERS[index] for index in (6, 8, 9, 10, 12)
                                  if source_present_columns <= index]
-        current_manager = managers.get(code, {}).get("manager_name") or old.get("manager_name", "")
+        current_manager = comparison.get('manager_name', '')
+        if datetime_gate['accepted'] and not _has_edr_checking_officer(incoming['edr_officer']):
+            row_conflicts.append('changed_values_without_officer')
         fact_values = (
             ("manager_name", incoming["manager_name"], current_manager),
             ("edr_status", incoming["edr_status"], old.get("edr_status", "")),
@@ -826,7 +871,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
             row_conflicts.append("same_timestamp_verification_conflict")
         if not incoming_day and changed_facts:
             row_conflicts.append("verification_date_required")
-        elif not current_day and has_existing_facts and changed_facts:
+        elif not current_day and has_existing_facts and changed_facts and str(raw_current_verification_date or "").strip():
             row_conflicts.append("malformed_current_verification_datetime"
                 if str(raw_current_verification_date or "").strip()
                 else "current_verification_date_missing")
@@ -838,7 +883,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         summary["factual_status_protected"] += int(status_protected)
         changes = []
         manager_classification = {"kind": "same", "conflicting_evidence": []}
-        if incoming["manager_name"] and not older:
+        if incoming["manager_name"] and not older and (not _same('manager_name', current_manager, incoming['manager_name'])
+                or code in manager_codes and not valid_manager_name(managers.get(code,{}).get('manager_name'))):
             manager_classification = classify_manager_transition(
                 managers.get(code, {}), known_managers.get(code, {}), incoming["manager_name"],
                 manager_evidence.get(code, ()), manager_history.get(code, ()))
@@ -861,8 +907,8 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
             changes.append("full_name"); summary["full_name_changes"] += 1
         if incoming["short_name"] and not older and not _same("short_name", old.get("short_name"), incoming["short_name"]):
             changes.append("short_name"); summary["short_name_changes"] += 1
-        old_current_name = current_supplier_name(old.get("full_name"), applications.get(code))
-        new_current_name = current_supplier_name((incoming["full_name"] if not older else "") or old.get("full_name"), applications.get(code))
+        old_current_name = table_names.get(code, '')
+        new_current_name = current_supplier_name(incoming['full_name'], old_current_name) if not older else old_current_name
         if old_current_name != new_current_name:
             summary["current_supplier_name_changes"] += 1
         termination_fields = ("termination_decision_details", "termination_record_date", "termination_record_number")
@@ -919,7 +965,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
         pair_accepted = datetime_gate["accepted"]
         event_changed = bool(pair_accepted and not historical_normalization
                              and incoming["edr_checked_at"] and incoming["edr_officer"]
-                             and not _event_exists(con, code, snapshot_hash))
+                             and (code, snapshot_hash) not in context['event_hashes'])
         if event_changed:
             summary["verification_event_changes"] += 1
         evidence_changes = any(field not in (*termination_fields, "edr_notes") for field in changes) or event_changed
@@ -959,7 +1005,7 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                 summary[f"{field}_changes"] += 1
             if "full_name" in fop_name_enrichment_fields:
                 new_current_name = current_supplier_name(
-                    incoming["full_name"], applications.get(code))
+                    incoming["full_name"], old_current_name)
                 summary["current_supplier_name_changes"] += int(old_current_name != new_current_name)
 
         skip_reasons = []
@@ -1011,17 +1057,21 @@ def build_preview(con, snapshot: dict, *, sandbox_mode: bool = False) -> dict:
                       "fop_name_enrichment_fields": fop_name_enrichment_fields,
                       "sandbox_historical_officer_normalization": historical_normalization,
                       "current_verification_date": current_day,
+                      "current_verification_precision": current.get('verification_datetime_precision','missing'),
                       "current_verification_officer": current_officer,
-                      "current_profile": old, "current_manager_name": current_manager,
+                      "current_profile": raw_profile, "current_table_values": comparison,
+                      "current_manager_name": current_manager,
+                      "current_manager_evidence": managers.get(code, {}),
                       "current_supplier_name": old_current_name,
                       "planned_supplier_name": new_current_name,
                       "factual_status_protected": status_protected,
                       "conflicts": sorted(set(row_conflicts)), "incoming": incoming})
     summary["conflicts"] = len(conflicts)
     summary["conflict"] = len(conflicts)
-    return {"source_fingerprint": snapshot["source_fingerprint"], "summary": summary,
-            "items": items, "conflicts": conflicts, "duplicate_codes": duplicate_codes,
-            "previewed_at": datetime.now().astimezone().isoformat()}
+    from edr_sync_comparison import finalize
+    return finalize({"source_fingerprint": snapshot["source_fingerprint"], "summary": summary,
+            "items": items, "conflicts": conflicts, "duplicate_codes": duplicate_codes, 'sandbox_mode':sandbox_mode,
+            "previewed_at": datetime.now().astimezone().isoformat()})
 
 
 def _is_verification_event(item):
@@ -1044,9 +1094,10 @@ def _admission_projection_sql(con):
     return joined, condition, date_field
 
 
-def current_verification_event(con, supplier_code: str) -> dict | None:
+def current_verification_event(con, supplier_code: str, *, identity=None) -> dict | None:
     """Resolve date+officer from one event; never combine fields across events."""
-    code = normalize_code(supplier_code)
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
+    code = identity(supplier_code)
     candidates = []
     if _table_exists(con, "supplier_edr_verification_events"):
         candidates.extend(item for row in con.execute("""SELECT *
@@ -1137,12 +1188,47 @@ def _has_edr_checking_officer(value: str) -> bool:
     return bool(normalized) and normalized not in {"не визначено", "не призначено"}
 
 
-def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
+def verification_display_precision(event: dict) -> str:
+    """Presentation evidence only: never changes instants, event order or gates."""
+    explicit=event.get('source_datetime_precision')
+    if explicit in {'day','instant'}:return explicit
+    raw=event.get('occurred_at');parsed=verification_instant(raw)
+    if parsed['kind']!='datetime':return 'missing'
+    try:
+        evidence=json.loads(event['snapshot_json']) if event.get('snapshot_json') else {}
+        for key in ('edr_checked_at_source','verification_date'):
+            observed=evidence.get(key) if isinstance(evidence,dict) else None
+            known=verification_instant(observed)
+            if known['kind']=='datetime' and known['value']==parsed['value']:
+                return decision_datetime_precision(observed)
+    except (TypeError,ValueError):pass
+    if not re.search(r'[ T]\d{2}:\d{2}',str(raw or '')):return 'day'
+    local=parsed['value'].astimezone(KYIV)
+    # Old profile snapshots may contain a synthesized local-midnight instant.
+    # A bare profile is not evidence that an actual check occurred at 00:00.
+    if event.get('event_type')=='google_clarity_profile' and not any((local.hour,local.minute,local.second,local.microsecond)):
+        return 'day'
+    return 'instant'
+
+
+def current_verification_projections(con, supplier_codes, *, profiles=None, ledger=None) -> dict[str, dict]:
     """UI-compatible current verification selection by literal supplier identity."""
     codes = {str(code) for code in supplier_codes if str(code or "").strip()}
     candidates = {code: [] for code in codes}
     admissions = {}
     edr_admissions = {}
+    officer_cache = {}
+    if ledger is not None:
+        for code in codes:
+            candidates[code].extend(item for item in ledger.get(code, []) if _is_verification_event(item)
+                and normalized_date(item.get('occurred_at')))
+    if profiles is not None:
+        for code in codes:
+            row = profiles.get(code, {});checked = str(row.get('edr_checked_at') or '').strip()
+            if verification_timestamp(checked):
+                candidates[code].append({'event_type':'google_clarity_profile','occurred_at':checked,
+                    'officer':row.get('edr_officer') or '', 'source':'Google/Clarity profile snapshot',
+                    'created_at':row.get('synced_at') or ''})
     qualification_link = ("qualification_id" in _columns(con, "submissions")
                           and _table_exists(con, "qualifications"))
     qualification_join = "LEFT JOIN qualifications q ON q.id=s.qualification_id" if qualification_link else ""
@@ -1150,13 +1236,13 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
                           and "decision_date" in _columns(con, "qualifications") else "NULL")
     for batch in (list(sorted(codes))[i:i + 500] for i in range(0, len(codes), 500)):
         placeholders = ",".join("?" for _ in batch)
-        for row in con.execute(f"""SELECT * FROM supplier_edr_verification_events
-          WHERE supplier_code IN ({placeholders})""", batch):
+        for row in (() if ledger is not None else con.execute(f"""SELECT * FROM supplier_edr_verification_events
+          WHERE supplier_code IN ({placeholders})""", batch)):
             item = dict(row)
             if _is_verification_event(item) and normalized_date(item.get("occurred_at")):
                 candidates[item["supplier_code"]].append(item)
-        for row in con.execute(f"""SELECT supplier_code,edr_checked_at,edr_officer,synced_at
-          FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch):
+        for row in (() if profiles is not None else con.execute(f"""SELECT supplier_code,edr_checked_at,edr_officer,synced_at
+          FROM supplier_edr_profiles WHERE supplier_code IN ({placeholders})""", batch)):
             checked = str(row["edr_checked_at"] or "").strip()
             if verification_timestamp(checked):
                 candidates[row["supplier_code"]].append({
@@ -1194,12 +1280,15 @@ def current_verification_projections(con, supplier_codes) -> dict[str, dict]:
         raw_officer = str(selected.get("officer") or "").strip()
         selected_raw = str(selected.get('occurred_at') or '')
         verified_signed_at = verified_admission_signature(selected)
-        precision = decision_datetime_precision(selected_raw)
+        precision = verification_display_precision(selected)
+        officer_key = (raw_officer, selected.get('event_type',''))
+        if officer_key not in officer_cache:
+            officer_cache[officer_key] = projected_verification_officer(con, *officer_key)
         result[code] = {"verification_date": verification_timestamp(selected.get("occurred_at")),
           "verification_datetime_precision":precision,
           "signature_timestamp_available":bool(verified_signed_at),
           "signature_timestamp_source":'verified_protocol_signature' if verified_signed_at else 'NOT_AVAILABLE',
-          "verification_officer": projected_verification_officer(con, raw_officer, selected.get('event_type','')),
+          "verification_officer": officer_cache[officer_key],
           "verification_officer_raw": raw_officer,
           "verification_event_type": selected.get("event_type", ""),
           "verification_source": selected.get("source", ""),
@@ -1335,10 +1424,11 @@ def active_qualification_dates(con) -> dict[str, str]:
     return dates
 
 
-def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
+def prozorro_statuses(con, supplier_codes=None, *, identity=None, eligible_codes=None) -> dict[str, str]:
     """One shared four-state resolver for every supplier code in PQM."""
-    requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}
-    eligible = _eligible_codes(con, requested or None)
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
+    requested = {identity(code) for code in (supplier_codes or []) if identity(code)}
+    eligible = _eligible_codes(con, requested or None, identity=identity) if eligible_codes is None else eligible_codes
     ever, active, suspended = set(), set(), set()
     framework_columns = _columns(con, "frameworks")
     raw_expr = "COALESCE(json_extract(f.raw_json,'$.qualificationPeriod.endDate'),'')" \
@@ -1354,7 +1444,7 @@ def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
       FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
       WHERE TRIM(COALESCE(rc.supplier_code,''))<>''{registry_filter}
       GROUP BY rc.supplier_code""", registry_args):
-        code = normalize_code(row[0]); ever.add(code)
+        code = identity(row[0]); ever.add(code)
         if row[1]: active.add(code)
         if row[2]: suspended.add(code)
     result = {}
@@ -1364,24 +1454,29 @@ def prozorro_statuses(con, supplier_codes=None) -> dict[str, str]:
     return result
 
 
-def canonical_prozorro_statuses(con, supplier_codes) -> dict[str, str]:
+def canonical_prozorro_statuses(con, supplier_codes, *, identity=None, eligible_codes=None) -> dict[str, str]:
     """The same literal-code resolver for EDR monitoring and full-registry."""
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
     codes = {str(code) for code in supplier_codes if str(code or "").strip()}
-    statuses = prozorro_statuses(con)
+    key = literal_supplier_code if identity is literal_supplier_code else lambda value: str(value or '').strip()
+    statuses = prozorro_statuses(con, identity=identity, eligible_codes=eligible_codes)
+    if identity is literal_supplier_code:
+        return {code:statuses.get(code,'Неактивний') for code in codes}
     active = supplier_activity.effective_active_sql("rc", "f")
-    activity = {str(row["supplier_code"] or "").strip(): bool(row["is_active"])
+    activity = {key(row["supplier_code"]): bool(row["is_active"])
       for row in con.execute(f"""SELECT rc.supplier_code,
         MAX(CASE WHEN {active} THEN 1 ELSE 0 END) is_active
         FROM registry_contracts rc LEFT JOIN frameworks f ON f.id=rc.framework_id
         WHERE TRIM(COALESCE(rc.supplier_code,''))<>'' GROUP BY rc.supplier_code""")}
-    return {code: statuses.get(code.strip()) or ("Активний" if activity.get(code.strip()) else "Неактивний")
+    return {code: statuses.get(key(code)) or ("Активний" if activity.get(key(code)) else "Неактивний")
             for code in codes}
 
 
-def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None = None) -> dict[str, dict]:
+def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None = None, *, identity=None) -> dict[str, dict]:
     """Resolve coherent verification, Prozorro status and freshness in one place."""
-    requested = {normalize_code(code) for code in (supplier_codes or []) if normalize_code(code)}
-    statuses = prozorro_statuses(con, requested or None)
+    identity = (literal_supplier_code if edr_sync_identity.active() else normalize_code) if identity is None else identity
+    requested = {identity(code) for code in (supplier_codes or []) if identity(code)}
+    statuses = prozorro_statuses(con, requested or None, identity=identity)
     codes = requested or set(statuses)
     events: dict[str, list[dict]] = {code: [] for code in codes}
     if _table_exists(con, "supplier_edr_verification_events"):
@@ -1390,7 +1485,7 @@ def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None =
             event_filter = " WHERE supplier_code IN (" + ",".join("?" for _ in requested) + ")"
             event_args = tuple(requested)
         for row in con.execute("SELECT * FROM supplier_edr_verification_events" + event_filter, event_args):
-            item = dict(row); code = normalize_code(item.get("supplier_code"))
+            item = dict(row); code = identity(item.get("supplier_code"))
             if code in codes and _is_verification_event(item):
                 events.setdefault(code, []).append(item)
     profile_states = {}
@@ -1403,11 +1498,12 @@ def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None =
         status_expr = "edr_status" if "edr_status" in profile_columns else "'' edr_status"
         for row in con.execute("""SELECT supplier_code,edr_checked_at,edr_officer,source_sheet,
           source_row,synced_at,""" + status_expr + " FROM supplier_edr_profiles" + profile_filter, profile_args):
-            code = normalize_code(row[0]); occurred = verification_timestamp(row[1])
+            code = identity(row[0]); occurred = verification_timestamp(row[1])
             profile_states[code] = {"edr_checked_at": row[1] or "", "edr_status": row[6] or ""}
             if code in codes and occurred:
                 events.setdefault(code, []).append({"supplier_code": code,
                   "event_type": "google_clarity_profile", "occurred_at": occurred,
+                  "source_datetime_precision": verification_display_precision({'event_type':'google_clarity_profile','occurred_at':row[1]}),
                   "officer": row[2] or "", "source": "Google/Clarity profile snapshot",
                   "source_submission_id": "", "source_sheet": row[3] or "",
                   "source_row": int(row[4] or 0), "created_at": row[5] or ""})
@@ -1436,7 +1532,7 @@ def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None =
           FROM normalized_admissions WHERE COALESCE(occurred_at,'')<>''
         ) SELECT supplier_code,source_submission_id,raw_date,officer
           FROM ranked_admissions""", admission_args):
-            code = normalize_code(row[0]); occurred = (verification_timestamp(row[2])
+            code = identity(row[0]); occurred = (verification_timestamp(row[2])
                 if decision_datetime_precision(row[2]) == 'instant' else normalized_date(row[2]))
             if code in codes and occurred:
                 events.setdefault(code, []).append({"supplier_code": code, "event_type": "admission",
@@ -1471,8 +1567,13 @@ def canonical_supplier_edr_states(con, supplier_codes=None, today: date | None =
 
 def _insert_event(con, *, item: dict, event_type: str, occurred_at: str, officer: str,
                   source: str, changed_fields: list[str], snapshot: dict, created_at: str) -> bool:
+    identity_snapshot = snapshot
+    if event_type == 'google_clarity' and snapshot.get('_comparison_status_unchanged'):
+        snapshot = dict(snapshot)
+        snapshot['google_status_observation'] = snapshot.get('edr_status_source', snapshot.get('edr_status', ''))
+        snapshot['edr_status'] = ''  # source observation is not a new factual status assertion
     payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
-    digest = (row_snapshot_hash(snapshot) if event_type == "google_clarity"
+    digest = (row_snapshot_hash(identity_snapshot) if event_type == "google_clarity"
               else hashlib.sha256(payload.encode("utf-8")).hexdigest())
     cursor = con.execute("""INSERT OR IGNORE INTO supplier_edr_verification_events
       (supplier_code,event_type,occurred_at,officer,source,source_submission_id,source_sheet,
@@ -1742,7 +1843,7 @@ def materialize_effective_admission(con, contract_id: str, created_at: str) -> b
     return True
 
 
-def effective_profile_fields(plan: dict, old: dict) -> dict:
+def _effective_profile_fields_legacy(plan: dict, old: dict) -> dict:
     """The one canonical field decision shared by Apply and SANDBOX review."""
     item = plan["incoming"]
     if plan.get("datetime_gate", {}).get("accepted") is False:
@@ -1784,6 +1885,16 @@ def effective_profile_fields(plan: dict, old: dict) -> dict:
     return effective
 
 
+def effective_profile_fields(plan: dict, old: dict) -> dict:
+    effective = _effective_profile_fields_legacy(plan, old)
+    if 'write_fields' in plan:
+        allowed = set(plan['write_fields'])
+        # A table projection must never overwrite raw factual evidence incidentally.
+        return {field: value if field in allowed else old.get(field, '')
+                for field, value in effective.items()}
+    return effective
+
+
 def _conflicts_are_mirror_only(preview: dict) -> bool:
     """Permit only approved date/source-availability conflicts for safe mirror updates."""
     conflicts = preview.get("conflicts") or []
@@ -1791,13 +1902,13 @@ def _conflicts_are_mirror_only(preview: dict) -> bool:
         return True
     plans = {}
     for item in preview.get("items") or []:
-        code = normalize_code(item.get("supplier_code"))
+        code = literal_supplier_code(item.get("supplier_code"))
         if not code or code in plans:
             return False
         plans[code] = item
     seen = set()
     for conflict in conflicts:
-        code = normalize_code(conflict.get("supplier_code"))
+        code = literal_supplier_code(conflict.get("supplier_code"))
         item = plans.get(code)
         reasons = set(conflict.get("reasons") or ())
         updates = {change.get("field") for change in (item or {}).get("mirror_field_changes", [])
@@ -1818,7 +1929,7 @@ def preview_state_digest(preview: dict) -> str:
         "supplier_code", "current_profile", "current_manager_name", "current_verification_date",
         "current_verification_officer", "verification_decision", "factual_status_protected",
         "changed_fields", "verification_event_change", "conflicts", "incoming", "datetime_gate",
-        "row_state", "skip_reasons")}
+        "row_state", "skip_reasons", "current_table_values", "field_decisions", "write_fields", 'manager_restoration_allowed')}
         for plan in preview["items"]]
     encoded = json.dumps(business, ensure_ascii=False, sort_keys=True, default=str,
                          separators=(",", ":")).encode("utf-8")
@@ -1838,6 +1949,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
         raise ValueError("Некоректний source fingerprint")
     if snapshot["source_fingerprint"] != expected_fingerprint:
         raise RuntimeError("Google source змінився після preview. Виконайте новий preview")
+    reuse_profiles = con.in_transaction
     preview = build_preview(con, snapshot, sandbox_mode=sandbox_mode)
     if expected_state_digest is not None and preview_state_digest(preview) != expected_state_digest:
         raise RuntimeError("PQM state changed after reviewed preview")
@@ -1857,6 +1969,7 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
               "skipped_conflicts": 0,
               "skipped_ineligible_new": 0, "changed_fields": {}, "errors": 0}
     progress_total = len(preview["items"])
+    business_codes = set()
     def report_progress(processed: int) -> None:
         if progress_callback:
             try:
@@ -1894,8 +2007,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
         con.execute('UPDATE supplier_edr_profiles SET last_google_received_at=? WHERE supplier_code=?',
                     (synced_at,item["supplier_code"]))
         if not plan["datetime_gate"]["accepted"]:
-            existing = con.execute("SELECT * FROM supplier_edr_profiles WHERE supplier_code=?",
-                                   (item["supplier_code"],)).fetchone()
+            existing = ((plan['current_profile'] if plan['existing_profile'] else None) if reuse_profiles else
+                con.execute('SELECT * FROM supplier_edr_profiles WHERE supplier_code=?',(item['supplier_code'],)).fetchone())
             old = dict(existing) if existing else {}
             if plan.get("mirror_clear_fields"):
                 previous_values = {field: plan.get("current_profile", {}).get(field, "") or ""
@@ -1935,15 +2048,18 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
             mirror_updates = {change["field"]: change.get("planned", "")
                               for change in plan.get("mirror_field_changes", [])
                               if change.get("field") in INDEPENDENT_GOOGLE_MIRROR_FIELDS and
+                              change.get("field") in plan.get('write_fields', []) and
                               change.get("action") in {"update", "clear"}}
             changed = {field: value for field, value in mirror_updates.items()
                        if str(old.get(field, "") or "") != str(value or "")}
             fop_name_updates = {
                 field: item[field] for field in plan.get("fop_name_enrichment_fields", [])
-                if not str(old.get(field) or "").strip()
+                if field in plan.get('write_fields', [])
                 and str(item.get(field) or "").strip()
             }
             changed.update(fop_name_updates)
+            if changed:
+                business_codes.add(item['supplier_code'])
             if existing and changed:
                 assignments = [f"{field}=?" for field in changed]
                 assignments.append("synced_at=?")
@@ -1966,9 +2082,10 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 counts["unchanged"] += 1
             report_progress(processed_index)
             continue
-        existing = con.execute("SELECT * FROM supplier_edr_profiles WHERE supplier_code=?",
-                               (item["supplier_code"],)).fetchone()
+        existing = ((plan['current_profile'] if plan['existing_profile'] else None) if reuse_profiles else
+            con.execute('SELECT * FROM supplier_edr_profiles WHERE supplier_code=?',(item['supplier_code'],)).fetchone())
         old = dict(existing) if existing else {}
+        if existing:old['last_google_received_at']=synced_at
         if plan.get("mirror_clear_fields") and old:
             previous_values = {field: old.get(field, "") or ""
                                for field in plan["mirror_clear_fields"]}
@@ -2000,6 +2117,8 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                     changed_fields=["termination_decision_details", "termination_record_date",
                                     "termination_record_number"], snapshot=historical, created_at=synced_at))
         effective = effective_profile_fields(plan, old)
+        if not existing or any(str(old.get(f) or '') != str(v or '') for f,v in effective.items()):
+            business_codes.add(item['supplier_code'])
         effective["last_google_received_at"] = synced_at
         if not existing:
             columns = ["supplier_code", *effective, "source_sheet", "source_row", "synced_at"]
@@ -2026,9 +2145,11 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
         if plan["termination_explicit_clear"]:
             counts["termination_clears"] += 1
         if plan["verification_event_change"]:
+            business_codes.add(item['supplier_code'])
             # Hash/store the same source observation preview checked, not profile
             # fallback values (which may differ when the source cell is blank).
             event_snapshot = dict(item)
+            event_snapshot['_comparison_status_unchanged'] = 'edr_status' not in plan.get('write_fields', [])
             if plan["verification_decision"] == "same_date_officer_update_accepted":
                 event_snapshot["same_day_officer_update"] = True
             if plan["factual_status_protected"]:
@@ -2037,25 +2158,28 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                 con, item=item, event_type="google_clarity", occurred_at=item["edr_checked_at"],
                 officer=item["edr_officer"], source=f"Google Sheets: {item['source_sheet']}",
                 changed_fields=plan["changed_fields"], snapshot=event_snapshot, created_at=synced_at))
-        if plan["manager_change_kind"] == "representation_enrichment" and enrich_manager:
-            result = enrich_manager(con, item["supplier_code"], effective["manager_name"],
+        callback_manager = item['manager_name'] if plan.get('manager_restoration_allowed') else effective['manager_name']
+        if 'manager_name' not in plan.get('write_fields', []) and not plan.get('manager_restoration_allowed'):
+            pass
+        elif plan["manager_change_kind"] == "representation_enrichment" and enrich_manager:
+            result = enrich_manager(con, item["supplier_code"], callback_manager,
                                     f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]),
                                     item["edr_checked_at"])
             if result.get("enriched"):
                 counts["manager_representation_enrichments"] += 1
         elif plan["manager_change_kind"] == "manager_reestablished" and (reestablish_manager or establish_manager):
             callback = reestablish_manager or establish_manager
-            result = callback(con, item["supplier_code"], effective["manager_name"],
+            result = callback(con, item["supplier_code"], callback_manager,
                               f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
             if result.get("reestablished") or result.get("established"):
                 counts["manager_reestablishments"] += 1
         elif plan["manager_change_kind"] == "missing_current_manager" and establish_manager:
-            result = establish_manager(con, item["supplier_code"], effective["manager_name"],
+            result = establish_manager(con, item["supplier_code"], callback_manager,
                                        f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]))
             if result.get("established"):
                 counts["newly_established_managers"] += 1
         elif plan["manager_change_kind"] == "real_identity_change" and sync_manager:
-            result = sync_manager(con, item["supplier_code"], effective["manager_name"],
+            result = sync_manager(con, item["supplier_code"], callback_manager,
                                   f"Google Sheets: {item['source_sheet']}", normalized_date(item["edr_checked_at"]),
                                   item["edr_checked_at"])
             if result.get("changed"):
@@ -2067,5 +2191,10 @@ def apply(con, snapshot: dict, expected_fingerprint: str, *, confirmed: bool, ac
                     reconcile_manager_nazk(con, item["supplier_code"])
                     counts["nazk_manager_reconciliations"] += 1
         report_progress(processed_index)
+    ready = [p for p in preview['items'] if p['apply_allowed'] and (p['row_state']=='eligible'
+        or not sandbox_mode and p.get('independent_mirror_only'))]
+    counts.update(business_updated_profiles=sum(p['supplier_code'] in business_codes and p['existing_profile'] for p in ready),
+                  ready_unchanged=sum(p['supplier_code'] not in business_codes for p in ready),
+                  technical_receipts=counts['received_suppliers'])
     return {**counts, "source_fingerprint": expected_fingerprint,
             "processed": preview["summary"]["total_rows"], "preview_summary": preview["summary"]}

@@ -1,0 +1,56 @@
+{
+  "version": "sandbox-v31.1-local-v1",
+  "baseline": "7b6dccd102b2250b750e0b7e52b3cfe3c3dfda04",
+  "normalization": "CRLF to LF only; exact remaining bytes",
+  "runtime_lf_sha256": {
+    "app.js": "bc3e1a7bcc7235d81273e540ee5160dbcff8cba0dd091f0c4e701525d44d315d",
+    "server.py": "c30417b0fbe082db2a8e265be95f2038b39bcdd93c0aebcfe41a497fbbda5cf8",
+    "edr_sync_v2.py": "10e4ed3d8446e16e0b3a0b2f5ae21450a7f6ed3ff94836b3cf6ee47f7265888c",
+    "operational_tasks.py": "e99bfaf8b3379e6ed5021636d5ce671967e0c6de3b1ea93b0ed5264ab79fad44",
+    "sandbox_edr_review.py": "945cd8e5e919cd2c03a6a7a1d86fb988f4c765585c0b62995461a8b08b9fd371",
+    "edr_monitoring_projection.py": "d0a647cc5337d3abe69669ccd739fbbb75079d9d36fb92eff28342eb2ce1fec2",
+    "edr_sync_comparison.py": "99a4ae8df2b0dec80ad2c834c577cdf2363d3dc82fa627da4f31c26e2f614044",
+    "edr_sync_identity.py": "8dd15262d868bc866c0b1dbd2c2308691ab3132639c17449b5a100e1f0a7897b",
+    "nazk_workflow.py": "8f469b886e00406f844ced1901895d2f535e1b95e3423e28345247ca9377ae2b"
+  },
+  "protected_lf_sha256": {
+    "google_verification_contract.py": "cded357168c112dc1117bfd6b5a5c2e144820bd6cfea80b56468d7f3cee4a0dd",
+    "migrations/20260908_block3_operational_tasks.sql": "1048efd227ac27042d6e9eef3205367ed32bf7fdf2c5bcef24991f0eda946dce",
+    "migrations/20260909_navigation_icon_library.sql": "fb37b0a2165eaa984b96ce338a7a7b51ae0a37d5265b2c22f981e21f2f00f1dc",
+    "migrations/20260909_navigation_settings.sql": "debe23d3451f78d92665ce70e12347a52d18fe6e12c7441e6b6a0b432f2b6ea0",
+    "migrations/20260909_operational_task_cards.sql": "00ec303b7043455a42a2112b55a15a45fe76a43b2a1a03e979afce5d3df9da5d",
+    "migrations/20260912_google_oauth_hardening.sql": "926296dabf83a29f9560e68466d12b8a535722fefedae5bb1174b9ddbca3fa99",
+    "migrations/20260912_nazk_check_evidence.sql": "23df0716fe03c82848e56031aab861ec0efe4067f3f9be2f6b9bfd43e9faa7b6",
+    "migrations/20260912_runtime_feature_settings.sql": "d4061644abfba7246e2925da439fe2da52a36370094e0dcf94c3e939edacbc39",
+    "migrations/20260915_amcu_completion_lifecycle.sql": "cafc80b9986e69e093334f63d85532ccd75532d27fcf1e1b455e546e63848d6a",
+    "migrations/20260915_edr_google_sync_v2.sql": "5b41d089bc097aefb0ab793cba33070602a679c9fe8200a0e3a96fd9aab59d2e",
+    "migrations/20261005_supplier_evidence_v3.sql": "abdcf6e50018bde332ef7c18bd7448b9a6e9ae2aaedfb48ab092fd1a012116b7",
+    "migrations/20261006_supplier_evidence_recording_v3.sql": "5293c0c468e7df7a2a8cdab56d2f399a6fb147e78ffe3c9b8e38ab6eb2ae3d96",
+    "migrations/additive.py": "d94288c56535e2105ec54a42393f0ab93db9f18e021a74e1c33d0a00ac8b5f7f",
+    "migrations/target_schema.json": "89ecf81da9d0473529993bfb2e9167d07e3d6951ce2475414f16bc1e16db5a00",
+    "migrations/web_nazk_history.py": "46980e0560212526658b55caef85846d8f13e2fe75578bc4a86dc6513477f54a",
+    "sandbox_runtime.py": "fa882ef95613fe17731e7e4f91823cf31a0bb5f1db09912cebfb0607171b6514",
+    "supplier_activity.py": "064e7d6fc70cbbddf8f9e78f60fd6e509191997197fbb7949122a279a984589b",
+    "supplier_registry_integration.py": "8e094dc79f08e31d06bbb6a4c6836b29eb2e27086423035773531a189b12431d",
+    "validation/c246_historical_integrity_snapshots_v1.json": "9cc63f46d931ac18e83f1bcce8693c23604e740640031fc312b6e93d4b38eff8",
+    "validation/google_writer_historical_integrity_snapshots_v1.json": "682e1f7c5a036b33da86fcdbcf2d581870bcc6eed17eb134d04364f5de41d2c2",
+    "validation/local_release_20260911/preview_digest_contract_v1.json": "5f55d204acd1f22d2550dd23160c00877f3a7f28292658147179e464e0e07a32",
+    "validation/local_release_20260911/sandbox_edr_google_nazk_contract_v2.json": "84b11fa0f453906aaa0138f1238f06c3843ac7105b4647f2504343e9b0e8ce10",
+    "validation/local_release_20261109/google_writer_manifest_compatibility_v2.json": "3b2af6306f75f93503332d214a636c87dcfc75ce0ca0497821d84441d701d494",
+    "validation/memory_stage1_followup_integrity_v2.json": "7ccb52587b2b8ec0e96d89a22e2534bba31787b37d03371a6be97ae5fab852cf",
+    "validation/memory_stage1_integrity.json": "4b4543ae2a901a1711e489e0447e88e5a86ceb33098240d04735b198491b662c",
+    "validation/release_test_package_integrity_v3.json": "cc0a58d6263014e0c8f16ed8ba580413fa72cf5f916371d70fb789335ea09649",
+    "validation/sandbox_integrity_audit_v1.json": "c504c142dbd5ebeda060dc1afe5e414630d2f1b80fbce431aca1870357a85fc9"
+  },
+  "inbound_excluded_columns": {
+    "A": "freshness marker: excluded from Google-to-PQM business comparison and plan",
+    "F": "Prozorro status: PQM-owned, outbound-only",
+    "H": "latest application date: PQM-owned, outbound-only"
+  },
+  "acceptance_criteria": [
+    "A/F/H are absent from Google-to-PQM incoming business values, field decisions, write fields, conflict details, and Preview state digest",
+    "The source fingerprint remains a separate freshness guard over the Google source snapshot",
+    "PQM-to-Google behavior is unchanged",
+    "One Apply loads each large shared NAZK/active-application dataset once; only supplier-specific mutable state is refreshed per manager callback"
+  ]
+}

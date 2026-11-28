@@ -8,6 +8,7 @@ import calendar
 from urllib.parse import urlsplit
 import supplier_activity
 import edr_sync_v2
+import edr_sync_identity
 import nazk_evidence
 from document_semantics import supplier_code_semantics
 from supplier_identity import current_manager_rnokpp
@@ -156,7 +157,7 @@ def _loads(value):
 
 
 def _digits(value):
-    return re.sub(r"\D", "", str(value or ""))
+    return edr_sync_identity.code(value)
 
 
 def _supplier_name(con, code):
@@ -252,12 +253,13 @@ def _effective_active_applications(con, code):
     return [dict(row) for row in rows]
 
 
-def reconcile_stale_nazk_tasks(con, actor="PQM task builder", supplier_codes=None, active_applications=None):
+def reconcile_stale_nazk_tasks(con, actor="PQM task builder", supplier_codes=None, active_applications=None,
+                               prefetched_task_rows=None):
     """Cancel non-terminal NAZK tasks whose supplier has no effective qualification."""
     allowed={_digits(code) for code in supplier_codes or [] if _digits(code)} if supplier_codes is not None else None
     active=active_applications if active_applications is not None else _active_application_map(con)
-    rows=con.execute("""SELECT id,supplier_code,status FROM operational_tasks
-      WHERE task_type='nazk_check' AND status NOT IN ('completed','cancelled')""").fetchall()
+    rows=(prefetched_task_rows if prefetched_task_rows is not None else con.execute("""SELECT id,supplier_code,status FROM operational_tasks
+      WHERE task_type='nazk_check' AND status NOT IN ('completed','cancelled')""").fetchall())
     stamp=now_iso(); cancelled=[]
     for row in rows:
         code=_digits(row["supplier_code"])
@@ -269,6 +271,8 @@ def reconcile_stale_nazk_tasks(con, actor="PQM task builder", supplier_codes=Non
             _event(con,row["id"],"cancelled_no_active_qualifications",actor,row["status"],"cancelled",
                    {"reason_code":"no_active_qualifications","effective_active_count":0})
             cancelled.append(row["id"])
+            if isinstance(row,dict):
+                row["status"]="cancelled"
     return {"cancelled":len(cancelled),"task_ids":cancelled}
 
 
@@ -291,31 +295,47 @@ def reconcile_stale_nazk_tasks_after_prozorro_sync(con, sync_result, actor="PQM 
     return {"skipped": None, **result}
 
 
-def reconcile_irrelevant_nazk_managers(con, actor="PQM task builder", supplier_codes=None):
+def reconcile_irrelevant_nazk_managers(con, actor="PQM task builder", supplier_codes=None,
+                                       prefetched_task_rows=None, current_manager=None):
     """Cancel active NAZK work when its historical person is no longer current."""
     allowed={_digits(code) for code in supplier_codes or [] if _digits(code)} if supplier_codes is not None else None
-    rows=con.execute("""SELECT t.id,t.supplier_code,t.status,t.source_context,c.manager_id,c.manager_name,
+    rows=(prefetched_task_rows if prefetched_task_rows is not None else con.execute("""SELECT t.id,t.supplier_code,t.status,t.source_context,c.manager_id,c.manager_name,
       sm.id current_manager_id,sm.manager_name current_manager_name
       FROM operational_tasks t
       LEFT JOIN supplier_nazk_checks c ON c.id=CAST(json_extract(t.source_context,'$.nazk_check_id') AS INTEGER)
       LEFT JOIN supplier_managers sm ON DIGITS(sm.supplier_code)=DIGITS(t.supplier_code) AND sm.is_current=1
-      WHERE t.task_type='nazk_check' AND t.status NOT IN ('completed','cancelled')""").fetchall()
+      WHERE t.task_type='nazk_check' AND t.status NOT IN ('completed','cancelled')""").fetchall())
+    if prefetched_task_rows is not None:
+        rows=[row for row in rows if allowed is None or _digits(row["supplier_code"]) in allowed]
+        current_manager_id=(current_manager or {}).get("id")
+        current_manager_name=(current_manager or {}).get("manager_name") or ""
+    else:
+        current_manager_id=current_manager_name=None
     stamp=now_iso(); cancelled=[]
     for row in rows:
         code=_digits(row["supplier_code"])
         if allowed is not None and code not in allowed: continue
-        same=(row["manager_id"] is not None and row["current_manager_id"]==row["manager_id"])
+        current_id = current_manager_id if prefetched_task_rows is not None else row["current_manager_id"]
+        current_name = current_manager_name if prefetched_task_rows is not None else row["current_manager_name"]
+        same=(row["manager_id"] is not None and current_id==row["manager_id"])
         if row["manager_id"] is None:
-            same=bool(row["current_manager_name"] and con.execute(
-                "SELECT NORMALIZE_NAME(?)=NORMALIZE_NAME(?)",(row["manager_name"],row["current_manager_name"])).fetchone()[0])
+            if prefetched_task_rows is not None:
+                import nazk_workflow
+                same=bool(current_name and nazk_workflow.normalize_name(row["manager_name"])==
+                          nazk_workflow.normalize_name(current_name))
+            else:
+                same=bool(current_name and con.execute(
+                    "SELECT NORMALIZE_NAME(?)=NORMALIZE_NAME(?)",(row["manager_name"],current_name)).fetchone()[0])
         if same: continue
         cursor=con.execute("""UPDATE operational_tasks SET status='cancelled',resolution_code='manager_changed',
           resolution_text='Скасовано — зникла підстава для виключення. Особа, щодо якої виявлено НАЗК, більше не є поточним керівником постачальника.',resolved_at=?,resolved_by=?,updated_at=?,version=version+1
           WHERE id=? AND status NOT IN ('completed','cancelled')""",(stamp,actor,stamp,row["id"]))
         if cursor.rowcount:
             _event(con,row["id"],"cancelled_manager_changed",actor,row["status"],"cancelled",
-                   {"reason_code":"manager_changed","task_person":row["manager_name"],"current_manager":row["current_manager_name"]})
+                   {"reason_code":"manager_changed","task_person":row["manager_name"],"current_manager":current_name})
             cancelled.append(row["id"])
+            if isinstance(row,dict):
+                row["status"]="cancelled"
     return {"cancelled":len(cancelled),"task_ids":cancelled}
 
 
@@ -342,20 +362,21 @@ def _create(con, key, task_type, code, priority, source, document, status="new",
 
 
 def materialize_nazk_tasks(con, actor="PQM task builder", *, supplier_codes=None,
-                           active_applications=None, supplier_names=None):
+                           active_applications=None, supplier_names=None, prefetched_checks=None):
     """Create only NAZK operational tasks from existing supplier-level checks."""
     migrate(con)
     allowed={_digits(code) for code in supplier_codes or [] if _digits(code)} if supplier_codes is not None else None
     active_applications = active_applications if active_applications is not None else _active_application_map(con)
     supplier_names = supplier_names if supplier_names is not None else _supplier_name_map(con)
     counts={"created":0,"existing":0,"completed":0,"nazk":0}
-    checks=[dict(r) for r in con.execute("""SELECT c.*,GROUP_CONCAT(m.nazk_source_id) source_ids
+    checks=([dict(r) for r in prefetched_checks] if prefetched_checks is not None else
+      [dict(r) for r in con.execute("""SELECT c.*,GROUP_CONCAT(m.nazk_source_id) source_ids
       FROM supplier_nazk_checks c
       JOIN supplier_managers sm ON DIGITS(sm.supplier_code)=DIGITS(c.supplier_code) AND sm.is_current=1
         AND ((c.manager_id IS NOT NULL AND c.manager_id=sm.id)
           OR (c.manager_id IS NULL AND NORMALIZE_NAME(c.manager_name)=sm.normalized_name))
       LEFT JOIN supplier_nazk_check_matches m ON m.check_id=c.id
-      GROUP BY c.id ORDER BY c.id""")]
+      GROUP BY c.id ORDER BY c.id""")])
     for check in checks:
         code=_digits(check["supplier_code"])
         if allowed is not None and code not in allowed: continue

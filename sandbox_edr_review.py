@@ -18,6 +18,9 @@ MIRROR_FIELDS = {"termination_decision_details", "termination_record_date",
 
 def details(preview: dict) -> list[dict]:
     """Every changed field, with the exact Apply field decision; never truncate."""
+    if preview['items'] and 'field_decisions' in preview['items'][0]:
+        from edr_sync_comparison import details as planned_details
+        return planned_details(preview)
     result = []
     for plan in preview["items"]:
         incoming = plan["incoming"]
@@ -89,6 +92,12 @@ def details(preview: dict) -> list[dict]:
 
 
 def summary_additions(preview: dict, rows: list[dict]) -> dict:
+    if 'ready_to_apply' in preview['summary']:
+        return {key: preview['summary'][key] for key in ('changed_suppliers','no_op_suppliers',
+            'm_note_updates','m_note_clears','ready_to_apply','ready_with_changes','ready_unchanged',
+            'detected_differences','available_changes','blocked_changes','skipped_changes','technical_receipts')} | {
+            'blocked_suppliers':len({p['supplier_code'] for p in preview['items'] if p['conflicts']}),
+            'malformed_blocked':sum(any(r.startswith('malformed_') for r in p['conflicts']) for p in preview['items'])}
     changed = {item["supplier_code"] for item in preview["items"]
                if (item.get("row_state") == "eligible" or item.get("independent_mirror_only")) and
                (item["changed_fields"] or item["verification_event_change"])}

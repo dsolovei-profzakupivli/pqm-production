@@ -42,8 +42,15 @@ def isolated_test_environment(source=None):
 
 def main():
     root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0,str(root))
+    from validation.v31_1 import bridge as v311
+    if sys.argv[1:]==['--v31-1-preflight']:
+        return v311.main(['--root',str(root),'--entrypoint','predeploy','--phase','check'])
+    if sys.argv[1:]:raise RuntimeError('Unknown predeploy Gate arguments')
+    v311.preflight(root,'predeploy')
     env = isolated_test_environment()
     commands = [
+        [sys.executable, str(root/'validation/v31_1/bridge.py'), '--entrypoint', 'predeploy', '--phase', 'python'],
         [sys.executable, str(root / "validation/test_sandbox_theme.py")],
         [sys.executable, str(root / "validation/sandbox_smoke.py")],
         [sys.executable, str(root / "validation/sandbox_editable_smoke.py")],
@@ -78,7 +85,10 @@ def main():
     ]
     for command in commands:
         print("DOCKER GATE: synthetic check", command[-1], flush=True)
-        subprocess.run(command, cwd=root, env=env, check=True, timeout=180)
+        if len(command)>1 and command[1]==str(root/'validation/v31_1/bridge.py'):
+            subprocess.run(command, cwd=root, env=env, check=True, timeout=600)
+        else:
+            subprocess.run(command, cwd=root, env=env, check=True, timeout=180)
 
     # Converter smoke cannot generate or replace any operational document.
     from docx import Document
