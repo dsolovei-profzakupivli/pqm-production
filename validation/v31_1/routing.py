@@ -4,6 +4,12 @@ MODULES = (
     'test_edr_monitoring', 'test_edr_google_nazk_manager_reconcile',
     'test_supplier_edr_dates', 'test_permanent_edr_sync_safety',
 )
+HISTORICAL_MESSAGES_MODULES = (
+    'test_sandbox_messages_integrity',
+    'test_sandbox_nazk_messages_integrated_integrity',
+    'test_nazk_authority_request_integrity',
+    'test_messages_historical_line_endings',
+)
 SUPERSEDED = {
     'test_permanent_edr_sync_safety.PermanentSyncSafetyTests.test_missing_current_verification_date_does_not_replace_existing_facts': {
         'old': 'Missing PQM verification date blocks replacing existing facts.',

@@ -11,9 +11,11 @@ def database():
     con.row_factory = sqlite3.Row
     con.create_function("DIGITS", 1, sync.normalize_code, deterministic=True)
     con.executescript("""
-      CREATE TABLE submissions(id TEXT PRIMARY KEY,supplier_code TEXT,supplier_name TEXT,date_published TEXT);
+      CREATE TABLE submissions(id TEXT PRIMARY KEY,supplier_code TEXT,supplier_name TEXT,date_published TEXT,
+        qualification_id TEXT DEFAULT '',framework_id TEXT DEFAULT '');
       CREATE TABLE application_fields(submission_id TEXT PRIMARY KEY,protocol_decision TEXT,
-        protocol_date TEXT,protocol_officer TEXT,review_officer TEXT);
+        protocol_date TEXT,protocol_officer TEXT,review_officer TEXT,manager_name TEXT DEFAULT '',
+        manager_name_source TEXT DEFAULT '');
       CREATE TABLE supplier_edr_profiles(supplier_code TEXT PRIMARY KEY,full_name TEXT DEFAULT '',
         short_name TEXT DEFAULT '',manager_name TEXT DEFAULT '',edr_status TEXT DEFAULT '',
         edr_checked_at TEXT DEFAULT '',termination_decision_details TEXT DEFAULT '',
@@ -24,12 +26,49 @@ def database():
         source TEXT DEFAULT '',updated_at TEXT,created_at TEXT);
       CREATE TABLE supplier_edr_sync_log(id INTEGER PRIMARY KEY,started_at TEXT,status TEXT,
         finished_at TEXT,processed INTEGER DEFAULT 0,inserted INTEGER DEFAULT 0,updated INTEGER DEFAULT 0,error TEXT DEFAULT '');
-      CREATE TABLE registry_contracts(supplier_code TEXT,status TEXT,framework_id TEXT);
-      CREATE TABLE frameworks(id TEXT PRIMARY KEY,status TEXT,raw_json TEXT DEFAULT '{}');
-      CREATE TABLE qualifications(id TEXT,status TEXT,submission_id TEXT);
+      CREATE TABLE registry_contracts(id TEXT DEFAULT '',framework_id TEXT DEFAULT '',qualification_id TEXT DEFAULT '',
+        supplier_code TEXT,status TEXT,milestones_json TEXT DEFAULT '[]',raw_json TEXT DEFAULT '{}',synced_at TEXT DEFAULT '');
+      CREATE TABLE frameworks(id TEXT PRIMARY KEY,status TEXT,raw_json TEXT DEFAULT '{}',pretty_id TEXT DEFAULT '',
+        title TEXT DEFAULT '',dk_code TEXT DEFAULT '',synced_at TEXT DEFAULT '');
+      CREATE TABLE qualifications(id TEXT PRIMARY KEY,status TEXT,submission_id TEXT,framework_id TEXT DEFAULT '',
+        decision_date TEXT DEFAULT '',raw_json TEXT DEFAULT '{}',synced_at TEXT DEFAULT '');
+      CREATE TABLE supplier_registry_summary(supplier_code TEXT PRIMARY KEY,supplier_name TEXT DEFAULT '',
+        qualifications_count INTEGER DEFAULT 0,active_count INTEGER DEFAULT 0,inactive_count INTEGER DEFAULT 0,
+        suspended_count INTEGER DEFAULT 0,frameworks_count INTEGER DEFAULT 0,dk_codes TEXT DEFAULT '',
+        last_qualification TEXT DEFAULT '',refreshed_at TEXT DEFAULT '');
     """)
     sync.migrate(con)
     return con
+
+
+def qualify_submission(con, submission_id, qualification_id, status='active', *,
+                       framework_id='', decision_date='2026-09-01'):
+    """Link an explicit synthetic qualification using the current native schema."""
+    con.execute("INSERT INTO qualifications(id,status,submission_id,framework_id,decision_date) VALUES(?,?,?,?,?)",
+                (qualification_id, status, submission_id, framework_id, decision_date))
+    con.execute("UPDATE submissions SET qualification_id=?,framework_id=? WHERE id=?",
+                (qualification_id, framework_id, submission_id))
+
+
+def eligible_supplier(con, supplier_code, *, name='ПОВНА НАЗВА', status='active'):
+    """Seed a realistic active framework, registry contract and qualification."""
+    profile = con.execute("SELECT full_name FROM supplier_edr_profiles WHERE supplier_code=?",
+                          (supplier_code,)).fetchone()
+    if profile and profile[0]:
+        name = profile[0]
+    submission_id = f'fixture-submission-{supplier_code}'
+    qualification_id = f'fixture-qualification-{supplier_code}'
+    framework_id = f'fixture-framework-{supplier_code}'
+    con.execute("INSERT INTO frameworks(id,status,raw_json) VALUES(?,'active','{}')", (framework_id,))
+    con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published,framework_id) VALUES(?,?,?,?,?)",
+                (submission_id, supplier_code, name, '2026-09-01', framework_id))
+    qualify_submission(con, submission_id, qualification_id, status,
+                       framework_id=framework_id, decision_date='2026-09-01')
+    con.execute("INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status) VALUES(?,?,?,?, 'active')",
+                (f'fixture-contract-{supplier_code}', framework_id, qualification_id, supplier_code))
+    con.execute("INSERT INTO supplier_registry_summary(supplier_code,supplier_name,qualifications_count,active_count,frameworks_count,refreshed_at) VALUES(?,?,1,1,1,'fixture')",
+                (supplier_code, name))
+    return submission_id, qualification_id
 
 
 def row(code="12345678", status="Зареєстровано", checked="15.09.2026", officer="УО",
@@ -65,10 +104,10 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_new_google_code_with_decided_application_creates_canonical_names(self):
         con = database()
         code = '46130719'
-        con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('application-1', code, 'Заявка', '2026-09-01'))
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES(?,?,?,?)", ('application-1', code, 'Заявка', '2026-09-01'))
         con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
                     ('application-1', 'admit', '2026-09-02', 'УО'))
-        con.execute("INSERT INTO qualifications VALUES ('q1','active','application-1')")
+        qualify_submission(con, 'application-1', 'q1')
         google_row = row(code=code, checked='15.09.2026')
         source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)],
                                        'ЮО': [list(sync.HEADERS), google_row]})
@@ -99,10 +138,10 @@ class EdrSyncV2Tests(unittest.TestCase):
         for incoming in ('✅ Зареєстровано', 'Зареєстровано'):
             with self.subTest(incoming=incoming):
                 con = database()
-                con.execute("INSERT INTO submissions VALUES(?,?,?,?)", ('s1', '46130719', 'Заявка', '2026-09-01'))
+                con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES(?,?,?,?)", ('s1', '46130719', 'Заявка', '2026-09-01'))
                 con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES(?,?,?,?)",
                             ('s1', 'admit', '2026-09-02', 'УО'))
-                con.execute("INSERT INTO qualifications VALUES ('q1','active','s1')")
+                qualify_submission(con, 's1', 'q1')
                 values = row(code='46130719', status=incoming)
                 source = snapshot(values)
                 self.assertEqual(source['rows'][0]['Статус в реєстрі (ЄДР)'], incoming)
@@ -123,8 +162,12 @@ class EdrSyncV2Tests(unittest.TestCase):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?)",
                     ('12345678', '✅ Зареєстровано', 'ФОП', 12, 'old'))
+        eligible_supplier(con, '12345678')
         values = row(checked='')
-        values[3] = values[4] = values[11] = ''
+        # A valid equivalent source status lets this test isolate row-move
+        # handling while preserving the historical display value in PQM.
+        values[4] = 'Зареєстровано'
+        values[3] = values[11] = ''
         values[13] = values[14] = ''
         source = snapshot(values)
         source['rows'][0]['source_row'] = 99
@@ -146,6 +189,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,synced_at) VALUES(?,?,?,?)",
                     ('12345678', '✅Зареєстровано', '2026-09-14', 'old'))
+        eligible_supplier(con, '12345678')
         source = snapshot(row(status='Зареєстровано'))
         preview = sync.build_preview(con, source)
         self.assertEqual(preview['summary']['edr_status_changes'], 0)
@@ -157,6 +201,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_verification_row_move_preserves_event_identity_and_provenance(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES('12345678','old')")
+        eligible_supplier(con, '12345678')
         source = snapshot(row())
         source['rows'][0]['source_row'] = 100
         self.assertEqual(self.apply_observation(con, source)['verification_events'], 1)
@@ -194,6 +239,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con = database()
         for code in ('12345678', '87654321'):
             con.execute('INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES(?,?)', (code, 'old'))
+            eligible_supplier(con, code)
         source = snapshot(row(), row(code='87654321'))
         self.assertEqual(sync.build_preview(con, source)['summary']['verification_event_changes'], 2)
         self.assertEqual(self.apply_observation(con, source)['verification_events'], 2)
@@ -204,6 +250,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_blank_source_profile_preservation_does_not_change_event_hash(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,edr_checked_at,synced_at) VALUES('12345678','KNOWN FULL NAME','2026-09-14','old')")
+        eligible_supplier(con, '12345678', name='KNOWN FULL NAME')
         values = row()
         values[13] = ''
         source = snapshot(values)
@@ -217,8 +264,10 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_active_registry_evidence_and_newer_profile_form_canonical_projection(self):
         con = database()
         con.execute("INSERT INTO frameworks(id,status,raw_json) VALUES('f1','active','{}')")
-        con.execute("INSERT INTO registry_contracts VALUES('0013500191','active','f1')")
-        con.execute("INSERT INTO submissions VALUES('s1','0013500191','Історична назва','2025-01-21')")
+        con.execute("INSERT INTO registry_contracts(supplier_code,status,framework_id) VALUES('0013500191','active','f1')")
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES('s1','0013500191','Історична назва','2025-01-21')")
+        qualify_submission(con, 's1', 'q1', decision_date='2025-01-20')
+        con.execute("UPDATE registry_contracts SET qualification_id='q1' WHERE supplier_code='0013500191'")
         con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer) VALUES('s1','admit','22.01.2025','ДМИТРО САВВА')")
         con.execute("""INSERT INTO supplier_edr_profiles
           (supplier_code,edr_status,edr_checked_at,edr_officer,source_sheet,source_row,synced_at)
@@ -279,8 +328,8 @@ class EdrSyncV2Tests(unittest.TestCase):
         con = database()
         con.execute("""INSERT INTO supplier_edr_profiles
           (supplier_code,manager_name,synced_at) VALUES ('12345678','ТКАЧЕНКО Н.М.','old')""")
-        con.execute("INSERT INTO submissions VALUES ('s1','12345678','OLD','2026-09-01')")
-        con.execute("""ALTER TABLE application_fields ADD COLUMN manager_name TEXT DEFAULT ''""")
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES ('s1','12345678','OLD','2026-09-01')")
+        qualify_submission(con, 's1', 'q1')
         con.execute("""INSERT INTO application_fields
           (submission_id,protocol_decision,manager_name) VALUES ('s1','admit','ТКАЧЕНКО НІНА МИХАЙЛІВНА')""")
         preview = sync.build_preview(con, snapshot(row(
@@ -311,6 +360,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         import server
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES ('12345678','old')")
+        eligible_supplier(con, '12345678')
         source = snapshot(row(manager="ЗАЙЧУК СЕРГІЙ ВАЛЕНТИНОВИЧ"))
         refreshes = []
         first = sync.apply(con, source, source["source_fingerprint"], confirmed=True,
@@ -344,9 +394,8 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_application_known_manager_is_reestablished_without_identity_change_or_nazk(self):
         import server
         con = database()
-        con.execute("ALTER TABLE application_fields ADD COLUMN manager_name TEXT DEFAULT ''")
-        con.execute("ALTER TABLE application_fields ADD COLUMN manager_name_source TEXT DEFAULT ''")
-        con.execute("INSERT INTO submissions VALUES ('s1','12345678','OLD','2026-08-30')")
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES ('s1','12345678','OLD','2026-08-30')")
+        qualify_submission(con, 's1', 'q1')
         con.execute("""INSERT INTO application_fields
           (submission_id,protocol_decision,manager_name,manager_name_source)
           VALUES ('s1','admit','ЗАЙЧУК СЕРГІЙ ВАЛЕНТИНОВИЧ','manual')""")
@@ -378,6 +427,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         import server
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES ('12345678','old')")
+        eligible_supplier(con, '12345678')
         con.execute("""INSERT INTO supplier_managers
           (id,supplier_code,manager_name,normalized_name,valid_from,valid_to,is_current,source,updated_at,created_at)
           VALUES (17,'12345678','ЗАЙЧУК СЕРГІЙ ВАЛЕНТИНОВИЧ','зайчук сергій валентинович',
@@ -417,8 +467,7 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_application_fallback_resolver_does_not_materialize_rows(self):
         con = database()
-        con.execute("ALTER TABLE application_fields ADD COLUMN manager_name TEXT DEFAULT ''")
-        con.execute("INSERT INTO submissions VALUES ('s1','12345678','OLD','2026-08-30')")
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES ('s1','12345678','OLD','2026-08-30')")
         con.execute("""INSERT INTO application_fields
           (submission_id,protocol_decision,manager_name)
           VALUES ('s1','admit','ЗАЙЧУК СЕРГІЙ ВАЛЕНТИНОВИЧ')""")
@@ -528,10 +577,10 @@ class EdrSyncV2Tests(unittest.TestCase):
         con = database()
         denied = sync.build_preview(con, snapshot(row()))["items"][0]
         self.assertFalse(denied["apply_allowed"])
-        con.execute("INSERT INTO submissions VALUES ('s1','12345678','OLD','2026-09-01')")
-        con.execute("INSERT INTO application_fields VALUES ('s1','reject','2026-09-02','УО','')")
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES ('s1','12345678','OLD','2026-09-01')")
+        con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer,review_officer) VALUES ('s1','reject','2026-09-02','УО','')")
         self.assertFalse(sync.build_preview(con, snapshot(row()))["items"][0]["apply_allowed"])
-        con.execute("INSERT INTO qualifications VALUES ('q1','unsuccessful','s1')")
+        qualify_submission(con, 's1', 'q1', status='unsuccessful')
         allowed = sync.build_preview(con, snapshot(row()))["items"][0]
         self.assertTrue(allowed["apply_allowed"])
 
@@ -545,6 +594,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_manager_observed_at_comes_from_source(self):
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,manager_name,edr_checked_at,synced_at) VALUES ('12345678','СТАРИЙ','2026-09-14','old')")
+        eligible_supplier(con, '12345678')
         seen = []
         source = snapshot(row())
         result = sync.apply(con, source, source["source_fingerprint"], confirmed=True, actor="admin",
@@ -556,6 +606,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         import server
         con = database()
         con.execute("INSERT INTO supplier_edr_profiles(supplier_code,synced_at) VALUES ('12345678','old')")
+        eligible_supplier(con, '12345678')
         source = snapshot(row())
         callbacks = dict(sync_manager=server.sync_current_supplier_manager,
           enrich_manager=server.enrich_current_supplier_manager,
@@ -576,6 +627,7 @@ class EdrSyncV2Tests(unittest.TestCase):
           edr_officer,manager_name,full_name,short_name,synced_at) VALUES
           ('12345678','Зареєстровано','2026-08-01','Запис № 7','2026-07-01','N-7','Примітка','УО',
            'НОВИЙ КЕРІВНИК','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА','old')""")
+        eligible_supplier(con, '12345678')
         values = row(status="Зареєстровано")
         values[6] = values[9] = values[10] = values[12] = ''
         source = snapshot(values)
@@ -603,6 +655,7 @@ class EdrSyncV2Tests(unittest.TestCase):
                   termination_record_date,termination_record_number,edr_notes,synced_at)
                   VALUES('12345678','НОВИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
                   ?,'УО','old G','2026-01-01','old K','old M','old')""", (current_date,))
+                eligible_supplier(con, '12345678')
                 values = row(checked=incoming_date, status='Зареєстровано')
                 values[3] = ''  # do not introduce a manager identity transition in this mirror-only case
                 values[6], values[9], values[10], values[12] = ('new G', '2026-02-02', 'new K', 'new M')
@@ -627,6 +680,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,
           termination_decision_details,termination_record_date,termination_record_number,edr_notes,synced_at)
           VALUES('12345678','2026-09-15','old G','2026-08-01','old K','old M','old')""")
+        eligible_supplier(con, '12345678')
         values = row(checked='')
         values[6] = values[9] = values[10] = values[12] = ''
         source = snapshot(values)
@@ -649,6 +703,7 @@ class EdrSyncV2Tests(unittest.TestCase):
                 con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,
                   termination_decision_details,synced_at)
                   VALUES('12345678','2026-09-15','old G','old')""")
+                eligible_supplier(con, '12345678')
                 values = row(checked='')
                 values[6] = 'new G'
                 source = snapshot(values)
@@ -666,6 +721,7 @@ class EdrSyncV2Tests(unittest.TestCase):
           full_name,short_name,edr_checked_at,edr_officer,termination_decision_details,edr_notes,synced_at)
           VALUES('12345678','СТАРИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
           '2026-09-15','УО','old G','old M','old')""")
+        eligible_supplier(con, '12345678')
         values = row(checked='', manager='НОВИЙ КЕРІВНИК', status='Припинено')
         values[6], values[12] = 'new G', 'new M'
         source = snapshot(values)
@@ -685,6 +741,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,edr_officer,
           termination_decision_details,termination_record_date,termination_record_number,edr_notes,synced_at)
           VALUES('12345678','Зареєстровано','2026-09-15T12:00:00+03:00','УО','old G','2026-01-01','old K','old M','old')""")
+        eligible_supplier(con, '12345678')
         values = row(checked='2026-09-15T12:00:00+03:00', status='Припинено', manager='')
         values[6], values[9], values[10], values[12] = ('new G', '2026-02-02', 'new K', 'new M')
         source = snapshot(values)
@@ -706,6 +763,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_status,edr_checked_at,
           termination_decision_details,synced_at)
           VALUES('12345678','Зареєстровано','2026-09-15','old G','old')""")
+        eligible_supplier(con, '12345678')
         values = row(checked='', manager='')
         values[6], values[9] = 'new G', 'not-a-date'
         source = snapshot(values)
@@ -723,6 +781,7 @@ class EdrSyncV2Tests(unittest.TestCase):
         con.execute("""INSERT INTO supplier_edr_profiles(supplier_code,edr_checked_at,edr_officer,
           termination_decision_details,termination_record_date,termination_record_number,edr_notes,synced_at)
           VALUES('12345678','2026-09-15','УО','G','2026-01-01','K','M','old')""")
+        eligible_supplier(con, '12345678')
         values = row(checked='2026-09-15', officer='УО')
         values[6], values[9], values[10], values[12] = ('G','2026-01-01','K','M')
         source = snapshot(values)
@@ -760,6 +819,7 @@ class EdrSyncV2Tests(unittest.TestCase):
           termination_record_number,edr_notes,synced_at) VALUES
           ('12345678','НОВИЙ КЕРІВНИК','Зареєстровано','ПОВНА НАЗВА','СКОРОЧЕНА НАЗВА',
            '2026-09-15','УО','old G','2025-01-01','old K','keep M','old')""")
+        eligible_supplier(con, '12345678')
         values = row(checked='')
         values[6], values[9], values[10] = 'new G', '2026-01-01', 'new K'
         source = sync.source_snapshot({'ФОП': [list(sync.HEADERS)], 'ЮО': [list(sync.HEADERS), values[:12]]})
@@ -791,7 +851,7 @@ class EdrSyncV2Tests(unittest.TestCase):
     def test_eligible_supplier_can_receive_mirror_profile_without_verification_date(self):
         con = database()
         con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES('s1','12345678','ТОВ','2026-09-01')")
-        con.execute("INSERT INTO qualifications(id,status,submission_id) VALUES('q1','active','s1')")
+        qualify_submission(con, 's1', 'q1')
         values = row(checked='')
         values[6], values[9], values[10], values[12] = ('G','2026-01-01','K','M')
         source = snapshot(values)
@@ -809,11 +869,12 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_status_and_marker(self):
         con = database()
-        con.execute("INSERT INTO submissions VALUES ('s1','11111111','A','2026-09-01')")
-        con.execute("INSERT INTO application_fields VALUES ('s1','reject','2026-09-02','УО','')")
-        con.execute("INSERT INTO qualifications VALUES ('q1','unsuccessful','s1')")
-        con.execute("INSERT INTO frameworks VALUES ('f1','active','{}')")
-        con.executemany("INSERT INTO registry_contracts VALUES (?,?,?)", [('22222222','active','f1'),('33333333','suspended','f1'),('44444444','cancelled','f1')])
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES ('s1','11111111','A','2026-09-01')")
+        con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer,review_officer) VALUES ('s1','reject','2026-09-02','УО','')")
+        qualify_submission(con, 's1', 'q1', status='unsuccessful')
+        con.execute("UPDATE registry_contracts SET qualification_id='q1' WHERE supplier_code='11111111'")
+        con.execute("INSERT INTO frameworks(id,status,raw_json) VALUES ('f1','active','{}')")
+        con.executemany("INSERT INTO registry_contracts(supplier_code,status,framework_id) VALUES (?,?,?)", [('22222222','active','f1'),('33333333','suspended','f1'),('44444444','cancelled','f1')])
         statuses = sync.prozorro_statuses(con)
         self.assertEqual(statuses['11111111'], 'Ще не в реєстрі')
         self.assertEqual(statuses['22222222'], 'Активний')
@@ -853,8 +914,8 @@ class EdrSyncV2Tests(unittest.TestCase):
 
     def test_latest_verification_keeps_date_and_officer_from_same_event(self):
         con = database()
-        con.execute("INSERT INTO submissions VALUES ('s1','12345678','Supplier','2026-09-01')")
-        con.execute("INSERT INTO application_fields VALUES ('s1','admit','2026-09-10','УО ДОПУСКУ','')")
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES ('s1','12345678','Supplier','2026-09-01')")
+        con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer,review_officer) VALUES ('s1','admit','2026-09-10','УО ДОПУСКУ','')")
         sync._insert_event(con,item={'supplier_code':'12345678'},event_type='google_clarity',
           occurred_at='2026-09-12',officer='УО CLARITY',source='Google Sheets',changed_fields=[],
           snapshot={'supplier_code':'12345678','event':'newer'},created_at='2026-09-12')
@@ -867,8 +928,8 @@ class EdrSyncV2Tests(unittest.TestCase):
         sync._insert_event(con,item={'supplier_code':'12345678'},event_type='google_clarity',
           occurred_at='2026-09-01',officer='УО CLARITY',source='Google Sheets',changed_fields=[],
           snapshot={'supplier_code':'12345678','event':'older'},created_at='2026-09-01')
-        con.execute("INSERT INTO submissions VALUES ('s2','12345678','Supplier','2026-09-13')")
-        con.execute("INSERT INTO application_fields VALUES ('s2','admit','2026-09-14','УО ПРОТОКОЛУ','')")
+        con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published) VALUES ('s2','12345678','Supplier','2026-09-13')")
+        con.execute("INSERT INTO application_fields(submission_id,protocol_decision,protocol_date,protocol_officer,review_officer) VALUES ('s2','admit','2026-09-14','УО ПРОТОКОЛУ','')")
         state=sync.canonical_supplier_edr_states(con,['12345678'],today=date(2026,9,15))['12345678']
         self.assertEqual((state['verification_date'],state['verification_officer']),('2026-09-14','УО ПРОТОКОЛУ'))
 

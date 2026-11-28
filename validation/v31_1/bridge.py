@@ -1,25 +1,33 @@
 """Fail-closed V31/V31.1 test-only bridge. No runtime imports or Git dependency."""
 import argparse
+import base64
 from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 import zipfile
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import pins
-from routing import CONTRACT, ENTRYPOINTS, MODULES, SUPERSEDED, V31_INFRASTRUCTURE_CONTRACT
+from routing import (CONTRACT, ENTRYPOINTS, HISTORICAL_MESSAGES_MODULES, MODULES,
+                     SUPERSEDED, V31_INFRASTRUCTURE_CONTRACT)
 
 ROOT = HERE.parents[1]
 ARCHIVE = 'validation/v31_1/baseline_v31.zip'
 INVENTORY = 'validation/v31_1/bridge_manifest.json'
+ADDENDUM_MANIFEST = 'validation/v31_1/addendum_manifest.json'
+ADDENDUM_MANIFEST_SHA256 = '2024ab838a58fa87259f773b5acdb1cac14f96a3dacca0502af030105fb07e5c'
+ACCEPTED_CANDIDATE = '9c71c52bb4e7698a80b85577dc4caad6d220e60e'
+ACCEPTED_CANDIDATE_TREE = 'c0c6c866daa8eff5a6e1bbe2c50085011f8226d1'
 
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
@@ -77,7 +85,154 @@ def validate_current(root, contract=CONTRACT):
             raise RuntimeError('V31.1 test infrastructure SHA mismatch: ' + name)
     for name in package['staging_files'] + package['bridge_files']:
         safe_source(root, name)
+    validate_addendum(root)
     return package
+
+def validate_lf_file(root, name, expected):
+    content=safe_source(root,name).read_bytes()
+    if sha(content.replace(b'\r\n',b'\n'))!=expected:
+        raise RuntimeError('V31.1 addendum file SHA mismatch: '+name)
+    return content
+
+def validate_history_snapshot(manifest):
+    snapshot=manifest.get('history_snapshot')
+    required={'format','commit','tree','file_count','delta_count','files','delta_zip_sha256','delta_zip_base64'}
+    if not isinstance(snapshot,dict) or set(snapshot)!=required:
+        raise RuntimeError('Invalid pinned Messages/NAZK snapshot schema')
+    if (snapshot.get('format')!='git-blob-delta-v1'
+            or snapshot.get('commit')!='86ea864399869e77a4b1f841098e01e04c5a5e74'
+            or snapshot.get('tree')!='fe9e2000919923a6442f75da422a5217a17325c8'
+            or snapshot.get('file_count')!=721):
+        raise RuntimeError('Pinned Messages/NAZK snapshot identity mismatch')
+    files=snapshot.get('files')
+    if not isinstance(files,dict) or len(files)!=snapshot['file_count']:
+        raise RuntimeError('Incomplete pinned Messages/NAZK snapshot index')
+    deltas=[]
+    for name,record in files.items():
+        relative(name)
+        if (not isinstance(record,dict) or set(record)!={'mode','git_blob','blob_sha256','sha256','archive_eol','delivery'}
+                or record['mode'] not in {'100644','100755'}
+                or not re.fullmatch(r'[0-9a-f]{40}',record['git_blob'])
+                or not re.fullmatch(r'[0-9a-f]{64}',record['blob_sha256'])
+                or not re.fullmatch(r'[0-9a-f]{64}',record['sha256'])
+                or record['archive_eol'] not in {'blob','crlf'}
+                or record['delivery'] not in {'candidate','delta'}):
+            raise RuntimeError('Invalid pinned Messages/NAZK snapshot entry: '+name)
+        if record['delivery']=='delta':deltas.append(name)
+    if len(deltas)!=snapshot.get('delta_count'):
+        raise RuntimeError('Pinned Messages/NAZK delta count mismatch')
+    try:archive=base64.b64decode(snapshot['delta_zip_base64'],validate=True)
+    except (ValueError,TypeError) as exc:raise RuntimeError('Invalid pinned Messages/NAZK delta encoding') from exc
+    if sha(archive)!=snapshot.get('delta_zip_sha256'):
+        raise RuntimeError('Pinned Messages/NAZK delta SHA mismatch')
+    try:
+        with zipfile.ZipFile(__import__('io').BytesIO(archive)) as z:
+            infos=z.infolist();names=[item.filename for item in infos]
+            if (len(names)!=len(set(names)) or set(names)!=set(deltas)
+                    or sum(item.file_size for item in infos)>16*1024*1024):
+                raise RuntimeError('Pinned Messages/NAZK delta membership mismatch')
+            for item in infos:
+                relative(item.filename)
+                if (item.is_dir() or item.flag_bits&1
+                        or stat.S_IFMT(item.external_attr>>16) not in (0,stat.S_IFREG)):
+                    raise RuntimeError('Unsafe pinned Messages/NAZK delta member')
+                raw=z.read(item)
+                record=files[item.filename]
+                blob=raw.replace(b'\r\n',b'\n') if record['archive_eol']=='crlf' else raw
+                if (sha(raw)!=record['sha256'] or sha(blob)!=record['blob_sha256']
+                        or hashlib.sha1(b'blob '+str(len(blob)).encode('ascii')+b'\0'+blob).hexdigest()!=record['git_blob']):
+                    raise RuntimeError('Pinned Messages/NAZK delta blob mismatch: '+item.filename)
+    except (OSError,zipfile.BadZipFile,KeyError) as exc:
+        raise RuntimeError('Invalid pinned Messages/NAZK delta archive') from exc
+    return snapshot
+
+def _git_environment():
+    environment=os.environ.copy()
+    for key in tuple(environment):
+        if key.startswith('GIT_'):
+            environment.pop(key,None)
+    return environment
+
+def _git(root,*args):
+    environment=_git_environment()
+    result=subprocess.run(['git','-C',str(Path(root).resolve()),*args],capture_output=True,
+        text=True,encoding='utf-8',errors='replace',check=False,env=environment)
+    if result.returncode:
+        raise RuntimeError('Required V31.1 addendum Git check failed: '+result.stderr.strip())
+    return result.stdout
+
+def validate_addendum(root):
+    root=Path(root).resolve()
+    raw=safe_source(root,ADDENDUM_MANIFEST).read_bytes().replace(b'\r\n',b'\n')
+    if sha(raw)!=ADDENDUM_MANIFEST_SHA256:
+        raise RuntimeError('V31.1 additive test contract SHA mismatch')
+    try:manifest=json.loads(raw)
+    except (UnicodeDecodeError,json.JSONDecodeError) as exc:raise RuntimeError('Invalid V31.1 additive contract') from exc
+    required={'contract','base_commit','base_tree','history_commit','history_tree','history_test_count',
+        'history_modules','candidate_test','allowed_paths','candidate_lf_sha256','protected_lf_sha256',
+        'protected_raw_sha256','frozen_base_lf_sha256','prior_contract','protected_windows_raw_sha256',
+        'history_snapshot'}
+    if set(manifest)!=required or manifest.get('contract')!='sandbox-v31.1-additive-test-only':
+        raise RuntimeError('Unexpected V31.1 additive contract schema')
+    if (manifest.get('base_commit')!=ACCEPTED_CANDIDATE or manifest.get('base_tree')!=ACCEPTED_CANDIDATE_TREE
+            or manifest.get('history_commit')!='86ea864399869e77a4b1f841098e01e04c5a5e74'
+            or manifest.get('history_tree')!='fe9e2000919923a6442f75da422a5217a17325c8'):
+        raise RuntimeError('V31.1 additive contract identity mismatch')
+    if (manifest.get('history_test_count')!=21 or tuple(manifest.get('history_modules',()))!=HISTORICAL_MESSAGES_MODULES
+            or manifest.get('candidate_test')!='validation.local_release_20260911.test_nazk_authority_request_integrity.NazkAuthorityRequestIntegrityTests.test_generation_route_uses_tasks_manage_and_direction_is_separate'):
+        raise RuntimeError('V31.1 additive test routing contract mismatch')
+    if manifest.get('prior_contract')!={
+        'contract_sha256':'58e730cb4dbf1ef8bb0caa77f244d691b7345986817333fa1b76be722db21a16',
+        'bridge_inventory_sha256':'2875a4040d23eefd62cb7fb7e58b94d271952bfcc0fab1789a11237c0e722e29',
+        'snapshot_archive_sha256':'a8dd8b1f90606d53001992c10970dd4e08a701362317346505cfa9bd7b1343cb',
+        'v31_edr_test_pin':'d1f00506169fc135e8ff1b4c42bfa04b64c6ed52ce8a008df35eea930c6cd03c'}:
+        raise RuntimeError('Frozen V31.1 historical pins changed')
+    allowed=manifest.get('allowed_paths')
+    if not isinstance(allowed,list) or not allowed or allowed!=sorted(set(allowed)):
+        raise RuntimeError('Invalid V31.1 additive path allowlist')
+    for name in allowed:relative(name)
+    for name,expected in manifest.get('candidate_lf_sha256',{}).items():
+        validate_lf_file(root,name,expected)
+    candidate_test='validation/local_release_20260911/test_nazk_authority_request_integrity.py'
+    if candidate_test not in manifest.get('candidate_lf_sha256',{}):
+        raise RuntimeError('Required current NAZK route test is not integrity-pinned')
+    validate_history_snapshot(manifest)
+    for name,record in manifest['history_snapshot']['files'].items():
+        if record['delivery']=='candidate':safe_source(root,name)
+    for name,expected in manifest.get('protected_lf_sha256',{}).items():
+        validate_lf_file(root,name,expected)
+    for name,expected in manifest.get('protected_raw_sha256',{}).items():
+        if sha(safe_source(root,name).read_bytes())!=expected:
+            raise RuntimeError('V31.1 protected binary SHA mismatch: '+name)
+    if os.name=='nt':
+        for name,expected in manifest.get('protected_windows_raw_sha256',{}).items():
+            if sha(safe_source(root,name).read_bytes())!=expected:
+                raise RuntimeError('V31.1 protected Windows file SHA mismatch: '+name)
+    git_root=Path(root).resolve()
+    git_marker=git_root/'.git'
+    if git_marker.is_dir() or git_marker.is_file():
+        # Git ancestry and frozen base blobs belong to the authoritative source
+        # checkout, not a reduced release staging tree that may resolve a
+        # different enclosing repository.
+        for name,expected in manifest.get('frozen_base_lf_sha256',{}).items():
+            raw_blob=subprocess.run(['git','-C',str(git_root),'show',ACCEPTED_CANDIDATE+':'+name],
+                capture_output=True,check=False,env=_git_environment())
+            if raw_blob.returncode or sha(raw_blob.stdout.replace(b'\r\n',b'\n'))!=expected:
+                raise RuntimeError('Frozen V31.1 accepted contract changed: '+name)
+        head=_git(git_root,'rev-parse','--verify','HEAD').strip()
+        head_tree=_git(git_root,'rev-parse','--verify',head+'^{tree}').strip()
+        if head==ACCEPTED_CANDIDATE and head_tree!=ACCEPTED_CANDIDATE_TREE:
+            raise RuntimeError('Accepted V31.1 base tree mismatch')
+        if subprocess.run(['git','-C',str(git_root),'merge-base','--is-ancestor',ACCEPTED_CANDIDATE,head],
+                          capture_output=True,check=False,env=_git_environment()).returncode:
+            raise RuntimeError('V31.1 additive candidate is not based on the accepted commit')
+        changed={x for x in _git(git_root,'diff','--name-only','-z',ACCEPTED_CANDIDATE,'--').split('\x00') if x}
+        untracked={x for x in _git(git_root,'ls-files','--others','--exclude-standard','-z').split('\x00') if x}
+        untracked={x for x in untracked if not x.startswith('evidence/')}
+        actual=changed|untracked
+        if actual!=set(allowed):
+            raise RuntimeError('V31.1 additive changed-file scope mismatch: '+repr(sorted(actual^set(allowed))))
+    return manifest
 
 def validate_snapshot(root):
     archive = safe_source(root, ARCHIVE)
@@ -123,8 +278,8 @@ def preflight(root, entrypoint='local', contract=CONTRACT):
     root = Path(root).resolve()
     if entrypoint not in ENTRYPOINTS:
         raise RuntimeError('Unknown Gate entrypoint')
-    package = validate_current(root, contract)
     validate_snapshot(root)
+    package = validate_current(root, contract)
     temp = temporary_base(root)
     if shutil.disk_usage(temp).free < 1024**3:
         raise RuntimeError('Insufficient temporary disk space (minimum 1 GiB)')
@@ -167,6 +322,17 @@ def extract_snapshot(root,target):
 @contextmanager
 def historical_source(root):
     """Pinned data for old source contracts; loaded functional modules stay current."""
+    requested=Path(root).resolve()
+    # run_local_release executes delivered tests from a deliberately reduced
+    # staging tree. That tree may carry this bridge but omit additive trust
+    # anchors; use the already-preflighted checkout only for the immutable
+    # historical source material, never as a replacement for candidate tests.
+    if (not (requested/ADDENDUM_MANIFEST).is_file()
+            or not (requested/ARCHIVE).is_file()):
+        trusted=Path(os.environ.get('PQM_RELEASE_SOURCE_ROOT') or ROOT).resolve()
+        if (requested!=trusted and (requested/'validation/v31_1/bridge.py').is_file()
+                and (trusted/ADDENDUM_MANIFEST).is_file() and (trusted/ARCHIVE).is_file()):
+            root=trusted
     preflight(root)
     with temporary(root) as folder:
         target=folder/'v31';target.mkdir();extract_snapshot(root,target)
@@ -183,12 +349,16 @@ def stage(root, target, *, baseline=False):
     else:
         copy_files(root, target, package['staging_files'] + package['bridge_files'])
     references(root, target)
+    if not baseline:
+        # Verify the actual delivered tree after copying, not only its source.
+        validate_current(target)
     return len(package['staging_files'] + package['bridge_files'])
 
 def child_environment(root, folder, evidence, baseline=False):
     allowed = ('PATH','SystemRoot','WINDIR','COMSPEC','TEMP','TMP','LOCALAPPDATA','HOME',
                'NODE_PATH','PQM_NODE','PQM_CHROMIUM','PLAYWRIGHT_BROWSERS_PATH')
     env = {k:os.environ[k] for k in allowed if k in os.environ}
+    env['PQM_RELEASE_SOURCE_ROOT']=str(Path(root).resolve())
     for key,value in os.environ.items():
         if (key.startswith('PQM_INTEGRATED_V') and key.endswith(('_SNAPSHOT_ARCHIVE','_SNAPSHOT_ARCHIVE_SHA256'))
                 or key in {'PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE','PQM_UPDATE_APPEND_V2_V26_FULL_ARCHIVE_SHA256'}
@@ -219,13 +389,13 @@ raise SystemExit(code)
 """
     return [sys.executable,'-B','-X','utf8','-c',bootstrap,str(script)]
 
-def run_script(root, script, *, baseline=False, evidence=None, extra=None):
+def run_script(root, script, *, baseline=False, evidence=None, extra=None, arguments=()):
     evidence = Path(evidence or Path(root)/'evidence').resolve();evidence.mkdir(parents=True,exist_ok=True)
     with temporary(root) as folder:
         target = folder/'runtime';target.mkdir();stage(root,target,baseline=baseline)
         env = child_environment(root,folder,evidence,baseline)
         if extra:env.update(extra)
-        command=monitored_command(script)
+        command=monitored_command(script)+list(arguments)
         result=subprocess.run(command,cwd=target,env=env,check=False)
         if result.returncode:raise RuntimeError('V31.1 test phase failed: '+script)
 
@@ -240,6 +410,8 @@ def historical(root, evidence=None):
 
 def phase(root, name, entrypoint='local', evidence=None):
     preflight(root,entrypoint)
+    if evidence is None:
+        evidence=Path(root)/'evidence'/('V31_1_'+name+'_'+uuid.uuid4().hex)
     if name=='check':return
     if name=='pin':return historical(root,evidence)
     if name=='python':
@@ -251,6 +423,12 @@ def phase(root, name, entrypoint='local', evidence=None):
     scripts={'unit':'test_current.py','history':'history_run.py','browser':'browser.py',
              'routing':'test_bridge.py','profile':'profile_run.py','measure':'measure.py'}
     if name not in scripts:raise RuntimeError('Unknown V31.1 phase: '+str(name))
+    if name=='history':
+        run_script(root,'validation/v31_1/'+scripts[name],evidence=evidence)
+        run_script(root,'validation/run_messages_integrated_v1_history_addendum.py',
+            evidence=evidence,arguments=('--history-only',))
+        run_script(root,'validation/v31_1/test_addendum.py',evidence=evidence)
+        return
     return run_script(root,'validation/v31_1/'+scripts[name],evidence=evidence)
 
 def legacy_entry(root, script, arguments):
@@ -298,10 +476,38 @@ def route_suite(suite, source, entrypoint='local', *, required=False):
             if isinstance(item,unittest.TestSuite):visit(item)
             else:leaves.append(item)
     visit(suite)
+    source=Path(source).resolve()
+    manifest=validate_addendum(source)
+    target_id=manifest['candidate_test']
+    target_module=target_id.rsplit('.',2)[0]
+    matching=[test for test in leaves if test.id()==target_id]
+    routed_modules={*MODULES,*HISTORICAL_MESSAGES_MODULES,'test_google_writer_integrated_candidate_integrity_v31'}
+    version_routed=any(
+        test.__class__.__module__.rsplit('.',1)[-1] in routed_modules
+        or test.id().endswith(V31_INFRASTRUCTURE_CONTRACT)
+        for test in leaves
+    )
+    if required and not version_routed:
+        raise RuntimeError('Missing version-routed tests in full Release suite')
+    if len(matching)>1:
+        raise RuntimeError('Duplicated current NAZK route test')
+    if matching:
+        module=sys.modules.get(target_module)
+        module_file=getattr(module,'__file__',None) if module else None
+        if not module_file:
+            raise RuntimeError('Mandatory current NAZK route test module is not loaded')
+        actual=Path(module_file).resolve()
+        if source not in actual.parents:
+            raise RuntimeError('Mandatory current NAZK route test was loaded outside delivered staging')
+        relative_name=actual.relative_to(source).as_posix()
+        expected=manifest['candidate_lf_sha256'].get(relative_name)
+        if not expected:
+            raise RuntimeError('Mandatory current NAZK route test lacks a staged content pin')
+        validate_lf_file(source,relative_name,expected)
     result=[];replaced=False
     for test in leaves:
         module=test.__class__.__module__.rsplit('.',1)[-1]
-        if module in {*MODULES,'test_google_writer_integrated_candidate_integrity_v31'} or test.id().endswith(V31_INFRASTRUCTURE_CONTRACT):
+        if module in routed_modules or test.id().endswith(V31_INFRASTRUCTURE_CONTRACT):
             if not replaced:
                 result.append(unittest.FunctionTestCase(lambda:phase(source,'python',entrypoint),
                     description='V31.1 exact version routing: current 41+120, historical pin+3, routing negatives'))

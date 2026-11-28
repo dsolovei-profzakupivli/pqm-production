@@ -19,6 +19,19 @@ class SandboxCanonicalOfficerTests(unittest.TestCase):
             con.execute("INSERT INTO supplier_edr_profiles(supplier_code,full_name,short_name,manager_name,edr_status,edr_checked_at,edr_officer,source_sheet,source_row,synced_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (code, 'ПОВНА НАЗВА', 'СКОРОЧЕНА НАЗВА', '', 'Зареєстровано',
                          '2026-07-22T12:00:00+03:00', current_officer, 'ФОП', i+2, 'test'))
+            submission_id = f'application-{code}'
+            qualification_id = f'qualification-{code}'
+            framework_id = f'framework-{code}'
+            con.execute("INSERT INTO supplier_registry_summary(supplier_code,supplier_name,qualifications_count,active_count,frameworks_count) VALUES(?,?,1,1,1)",
+                        (code, 'ПОВНА НАЗВА'))
+            con.execute("INSERT INTO submissions(id,supplier_code,supplier_name,date_published,qualification_id,framework_id) VALUES(?,?,?,?,?,?)",
+                        (submission_id, code, 'ПОВНА НАЗВА', '2026-07-01', qualification_id, framework_id))
+            con.execute("INSERT INTO qualifications(id,status,submission_id,framework_id,decision_date) VALUES(?,?,?,?,?)",
+                        (qualification_id, 'active', submission_id, framework_id, '2026-07-01'))
+            con.execute("INSERT INTO frameworks(id,status,raw_json) VALUES(?,?,?)",
+                        (framework_id, 'active', '{}'))
+            con.execute("INSERT INTO registry_contracts(id,framework_id,qualification_id,supplier_code,status) VALUES(?,?,?,?,?)",
+                        (f'contract-{code}', framework_id, qualification_id, code, 'active'))
             rows.append(row(code=code, checked='22.07.2026', officer=OFFICER, manager=''))
         return con, snapshot(*rows)
 
